@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare four exact-TypeDB-3.12.1 Manager-filter reports."""
+"""Compare four Manager-filter reports that share one models matrix profile."""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_sdk_conformance import (  # noqa: E402, F401
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+from sdk_conformance_common import (  # noqa: E402, F401
     ContractError,
     _duplicate_key_object,
     _exact_object,
@@ -21,23 +22,24 @@ from compare_sdk_conformance import (  # noqa: E402, F401
     _regular_bytes,
     canonical_json_bytes,
 )
-from compare_sdk_conformance import validate_producer_source as check_producer_source  # noqa: E402
+from sdk_conformance_common import validate_producer_source as check_producer_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
-PROVIDER_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
+PROVIDER_RELATIVE = "tests/contracts/sdk_conformance/models/provider-3.12.1.tql"
 
 REPORT_FORMAT = "typebridge.manager-filter-live-report/v1"
 SUMMARY_FORMAT = "typebridge.manager-filter-live-summary/v1"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# The models catalog profile; reports may carry any models matrix profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 REPORT_OUTPUT_ENV = "TYPE_BRIDGE_MANAGER_LIVE_REPORT"
 REPORT_WRITE_SEMANTICS = "create_new"
 
 SOURCE_SHA256 = {
     "schema": "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-    "journey": "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+    "journey": "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f",
     "provider": "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
 }
 SOURCE_PATHS = {
@@ -250,7 +252,7 @@ def _manager_observation(journey: dict[str, Any]) -> dict[str, Any]:
 
 
 def load_contract() -> ManagerManagerLiveContract:
-    """Derive the focused live observation from the frozen Sdk V3 journey."""
+    """Derive the focused live observation from the frozen Models journey."""
 
     authority: dict[str, dict[str, str]] = {}
     journey_raw = b""
@@ -274,19 +276,21 @@ def load_contract() -> ManagerManagerLiveContract:
         "Manager journey",
     )
     if (
-        journey["format"] != "typebridge.sdk-journey/v3"
-        or journey["fixture_id"] != "sdk-v3"
+        journey["format"] != "typebridge.sdk-models-journey/v1"
+        or journey["fixture_id"] != "models"
         or journey["version"] != 3
         or journey["semantic_profile"] != SEMANTIC_PROFILE
     ):
-        raise ContractError("invalid_journey_authority", "sdk-v3 identity drifted")
+        raise ContractError("invalid_journey_authority", "models identity drifted")
     return ManagerManagerLiveContract(
         authority=authority,
         observation=_manager_observation(journey),
     )
 
 
-def expected_report(binding: str, contract: ManagerManagerLiveContract) -> dict[str, Any]:
+def expected_report(
+    binding: str, contract: ManagerManagerLiveContract, semantic_profile: str = SEMANTIC_PROFILE
+) -> dict[str, Any]:
     """Return the one exact canonical report value admitted for a binding."""
 
     if binding not in REPORT_BINDINGS:
@@ -296,7 +300,7 @@ def expected_report(binding: str, contract: ManagerManagerLiveContract) -> dict[
         "binding": binding,
         "format": REPORT_FORMAT,
         "observation": copy.deepcopy(contract.observation),
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile,
     }
 
 
@@ -320,7 +324,9 @@ def _load_report(
     binding = report["binding"]
     if type(binding) is not str or binding not in REPORT_BINDINGS:
         raise ContractError("unknown_binding", f"report {path} has an unknown binding")
-    if report != expected_report(binding, contract):
+    if report != expected_report(
+        binding, contract, profile_matrix.declared_profile("models", report, SEMANTIC_PROFILE)
+    ):
         raise ContractError(
             "manager_live_observation_mismatch",
             f"{binding} report differs from the independently derived manager contract",
@@ -354,7 +360,11 @@ def compare_reports(paths: list[Path]) -> dict[str, Any]:
         "observation_sha256": hashlib.sha256(
             canonical_json_bytes(contract.observation)
         ).hexdigest(),
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile_matrix.shared_value(
+            (report["semantic_profile"] for report in reports.values()),
+            "semantic profile",
+            error=ContractError,
+        ),
     }
 
 

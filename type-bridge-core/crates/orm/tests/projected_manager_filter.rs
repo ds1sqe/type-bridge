@@ -359,6 +359,34 @@ async fn first_requires_every_effective_key_before_opening_a_transaction() {
 }
 
 #[tokio::test]
+async fn all_admits_a_model_without_a_stable_key() {
+    // `unkeyed` owns only an optional unique attribute, so it has no field a
+    // bounded window could order by. `all` is a complete fetch and needs
+    // none: the request is admitted and stops at the mock's capabilities.
+    let installed = installed(BindingTarget::Python);
+    let filter =
+        ProjectedManagerFilter::try_new(&installed, type_id(TypeKind::Entity, "unkeyed")).unwrap();
+    let backend = MockBackend::new(Vec::new());
+    let queries = backend.queries.clone();
+    let database = Database::with_backend(Box::new(backend), "manager-filter");
+    let error = ProjectedManagerFilterExecutor::new(&installed)
+        .all(
+            &database,
+            &filter,
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.category(),
+        SdkDiagnosticCategory::UnsupportedCapability
+    );
+    assert_eq!(error.code().as_str(), "missing_provider_capability");
+    assert!(queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn first_accepts_repeated_semantically_equal_duration_key_evidence() {
     let installed = installed(BindingTarget::Python);
     let duration_keyed = type_id(TypeKind::Entity, "duration-keyed");
@@ -414,16 +442,15 @@ fn validated_exact_count_query_converts_but_richer_predicates_do_not() {
     let base = session.query(shape).unwrap();
     let identifier = root.field("identifier").unwrap();
     let exact = base
-        .where_predicates_in_order([
-            identifier.compare_value(
-                ComparisonOp::Equal,
-                type_bridge_orm::AttributeValue::String("ada".into()),
-            ),
-            identifier.compare_value(
-                ComparisonOp::NotEqual,
-                type_bridge_orm::AttributeValue::String("grace".into()),
-            ),
-        ])
+        .where_predicate(identifier.compare_value(
+            ComparisonOp::Equal,
+            type_bridge_orm::AttributeValue::String("ada".into()),
+        ))
+        .unwrap()
+        .where_predicate(identifier.compare_value(
+            ComparisonOp::NotEqual,
+            type_bridge_orm::AttributeValue::String("grace".into()),
+        ))
         .unwrap()
         .validate_count_by(&root)
         .unwrap();
@@ -486,7 +513,7 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
             ))
             .unwrap();
     }
-    let validated = query.validate_manager_count_by(&root).unwrap();
+    let validated = query.validate_count_by(&root).unwrap();
     let converted =
         ProjectedManagerFilter::try_from_validated_exact_query(&installed, &validated).unwrap();
     assert_eq!(
@@ -500,11 +527,7 @@ fn manager_query_validation_flattens_the_full_boolean_term_ceiling() {
             type_bridge_orm::AttributeValue::String("one-too-many".into()),
         ))
         .unwrap()
-        .validate_manager_count_by(&root)
+        .validate_count_by(&root)
         .unwrap_err();
-    assert!(
-        over_limit
-            .to_string()
-            .contains("manager_filter_predicate_limit")
-    );
+    assert!(over_limit.to_string().contains("structural_limit_exceeded"));
 }

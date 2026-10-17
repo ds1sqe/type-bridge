@@ -111,7 +111,7 @@ and applies the same result-shape validation for direct and remote execution.
 Bindings expose language-native typed builders without embedding pre-authored
 plan bytes.
 
-The separately retained raw/V1 query facades are isolated compatibility
+The raw TypeQL builders (`Query`, `QueryBuilder`) are retained compatibility
 contracts. Generated V2 packages do not depend on them except where an
 explicit raw query helper is documented.
 
@@ -123,7 +123,7 @@ multi-operation work. Native database, transaction, prepared-request, and
 reply handles are one-shot/lease-aware and reject use after close or consume.
 
 Provider selection first obtains or accepts an exact server version, validates
-the 3.11–3.12 support window, and then chooses band 8 or 9. Unknown and retired
+the 3.11–3.13 support window, and then chooses band 8 or 9. Unknown and retired
 versions fail before application data work. See [TypeDB integration](typedb.md).
 
 ## Migration and archive separation
@@ -159,6 +159,21 @@ The executable operation inventory and removal map are the audit authority for
 operation maps to generated evidence or a separately retained query/archive
 contract.
 
+Legacy query nodes remain deprecated until 3.0. The core TypeQL adapter owns
+structured query lowering, official parsing, rendering, and checked projection
+back to those nodes. Internal callers use `QueryCompiler::try_compile` and
+propagate errors; Python exports also emit `DeprecationWarning`. Only deprecated
+caller-owned `Raw` fragments bypass structured lowering and retain their text.
+Released String compiler wrappers retain their historical non-`Has` relation
+attribute discard behavior and otherwise return empty output when lowering is
+impossible. They do not expose the checked contract.
+
+V2 read lowering builds opaque adapter nodes for patterns, local functions,
+modifiers, document fetches and execution bounds. The adapter renders the
+complete pipeline. Canonical plan bytes and driver given-row values retain
+their existing contract. Pre-change query snapshots compare official ASTs
+for each captured plan and invocation.
+
 ## Change checklist
 
 When changing a shared operation:
@@ -172,3 +187,14 @@ When changing a shared operation:
 
 See [Testing](testing.md), [typed-query contract](typed-query-contract.md), and
 [Rust generated parity](rust-generated-parity.md) for executable evidence.
+
+Active schema emitters and readers use the same adapter. The frozen
+`archive_parser.rs` remains behind `_parser` for released archive recovery
+until 3.0. It is a reader for legacy inputs, not an emitter, so the one-AST
+rule holds. Existing snapshot and migration bytes keep their checksums;
+new artifacts use official-AST rendering. Caller-owned function bodies retain
+their exact bytes after official validation; headers use AST rendering, and
+restored output must reparse to the same AST. This preserves provider-export
+fingerprints for commented TOML functions. Change detection compares typed
+schema structures or managed semantic fingerprints, independently of text
+formatting. Snapshot integrity still hashes the actual stored bytes.

@@ -7,7 +7,20 @@ use std::process::{Command, Output};
 const USERNAME_ENV: &str = "TYPEBRIDGE_TLS_TEST_USERNAME_MUST_NOT_EXIST";
 const PASSWORD_ENV: &str = "TYPEBRIDGE_TLS_TEST_PASSWORD_MUST_NOT_EXIST";
 
+/// Environment variable naming the semantic profile of the lane under test.
+const SEMANTIC_PROFILE_ENV: &str = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+
+/// The lane's workspace profile, else `typedb-3.12.1/v1`. These checks never
+/// reach a server, so the profile only has to be one the workspace accepts.
+fn semantic_profile() -> String {
+    std::env::var(SEMANTIC_PROFILE_ENV)
+        .ok()
+        .filter(|profile| !profile.is_empty())
+        .unwrap_or_else(|| "typedb-3.12.1/v1".to_owned())
+}
+
 fn write_workspace(root: &Path, transport: &str) {
+    let profile = semantic_profile();
     fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
     fs::create_dir_all(root.join("migrations/v2")).expect("migration directory");
     fs::create_dir_all(root.join("certs")).expect("certificate directory");
@@ -27,7 +40,7 @@ fn write_workspace(root: &Path, transport: &str) {
         format!(
             "format: typebridge.workspace/v1\n\
              schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: tls-test\n\
-             compatibility:\n  semantic-profile: typedb-3.12.1/v1\n\
+             compatibility:\n  semantic-profile: {profile}\n\
              migrations:\n  directory: migrations/v2\n  app-label: tlstest\n\
              environments:\n  checked:\n    database: tls_test\n    uri: never-contact.invalid:1729\n    \
              migrate: 'true'\n    credential:\n      username: env:{USERNAME_ENV}\n      password: \

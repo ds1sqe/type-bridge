@@ -13,6 +13,7 @@ use std::fmt;
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
+use type_bridge_core_lib::__internal as tql;
 
 use serde::Serialize;
 use type_bridge_contract::capability::CapabilitySet;
@@ -29,9 +30,9 @@ use type_bridge_schema_migration::{
     ExecutionScope, GroupEventRecord, JournalEntry, LeaseHolderId, MigrationApplyApproval,
     MigrationApplyPlanError, MigrationApplyTarget, MigrationDirectory, MigrationExecutionJournal,
     MigrationExecutionOutcome, MigrationHistoryGraph, MigrationLease, MigrationLeaseStore,
-    MigrationRollbackOutcome, MigrationSafetyPolicy, MigrationVerifyReport, OpenPlanRecord,
-    OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord, RollbackStepEventRecord,
-    RolledBackRecord, SchemaLoweringBinding, VerifiedMigrationApplyPlan,
+    MigrationProfile, MigrationRollbackOutcome, MigrationSafetyPolicy, MigrationVerifyReport,
+    OpenPlanRecord, OpenRollbackPlanRecord, PlanRecord, RollbackPlanRecord,
+    RollbackStepEventRecord, RolledBackRecord, SchemaLoweringBinding, VerifiedMigrationApplyPlan,
     VerifiedSchemaMigrationManifest, build_verified_migration_apply_plan,
     build_verified_migration_rollback_plan, canonical_history_declared_legacy_bridge_count_in,
     discover_verified_migration_chain_in, discover_verified_migration_chain_with_evidence_in,
@@ -197,7 +198,7 @@ impl LegacyExecutionBinding {
 
     pub(crate) async fn validate_contents(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
         managed_scope: &str,
     ) -> Result<(), Diagnostic> {
         match self {
@@ -225,7 +226,7 @@ impl LegacyExecutionBinding {
 
     async fn inspect_read_only(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
         managed_scope: &str,
     ) -> Result<LegacyBindingReadInspection, Diagnostic> {
         match self {
@@ -315,7 +316,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_legacy_ledger(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
         let current = load_verified_legacy_partition(
             transaction,
@@ -335,7 +336,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_exact_anchor(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
         match load_legacy_cutover_anchor(transaction, &self.managed_scope).await? {
             Some(observed) if observed == self.anchor_fingerprint => Ok(()),
@@ -352,7 +353,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_exact_contents(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<(), Diagnostic> {
         self.validate_legacy_ledger(transaction).await?;
         self.validate_exact_anchor(transaction).await
@@ -360,7 +361,7 @@ impl LegacyBridgeBinding {
 
     async fn validate_pending_import_contents(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<VerifiedLegacyAppliedPartition, Diagnostic> {
         let current = load_verified_legacy_partition(
             transaction,
@@ -397,7 +398,7 @@ impl LegacyBridgeBinding {
 
     async fn inspect_read_only(
         &self,
-        transaction: &mut type_bridge_orm::Transaction,
+        transaction: &mut type_bridge_orm::OwnedTransaction,
     ) -> Result<LegacyBindingReadInspection, Diagnostic> {
         let current = match load_verified_legacy_partition(
             transaction,
@@ -599,7 +600,7 @@ impl<'a> LegacyCheckpointStore<'a> {
 
     async fn validate_guarded_authority(
         &self,
-        guard: &mut type_bridge_orm::Transaction,
+        guard: &mut type_bridge_orm::OwnedTransaction,
         lease: &MigrationLease,
         sentinel_expectation: LegacyCutoverSentinelExpectation<'_>,
     ) -> Result<(), Diagnostic> {
@@ -1098,7 +1099,7 @@ impl<'a> LegacyBoundStore<'a> {
 
     async fn validate_guard(
         &self,
-        guard: &mut type_bridge_orm::Transaction,
+        guard: &mut type_bridge_orm::OwnedTransaction,
         lease: &MigrationLease,
         expected: &ManagedSchemaState,
     ) -> Result<(), Diagnostic> {
@@ -1410,8 +1411,21 @@ impl TypeDbMigrationRunner {
     ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
         self.require_supported_execution_binding()?;
         let graph = self.discover_in(directory)?;
+        self.apply_discovered_in(directory, &graph, target, holder, approvals)
+            .await
+    }
+
+    /// Apply one already discovered graph after the execution binding gate.
+    async fn apply_discovered_in(
+        &self,
+        directory: &MigrationDirectory,
+        graph: &MigrationHistoryGraph,
+        target: &MigrationApplyTarget,
+        holder: &LeaseHolderId,
+        approvals: &[MigrationApplyApproval],
+    ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
         let adopted_authority = self.verify_adopted_extension_state(directory).await?;
-        require_adoption_authority_pair(&graph, adopted_authority.is_some())?;
+        require_adoption_authority_pair(graph, adopted_authority.is_some())?;
         let observation_authority =
             ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
         let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
@@ -1435,14 +1449,14 @@ impl TypeDbMigrationRunner {
             .into());
         }
         let legacy_binding = LegacyExecutionBinding::from_applied_graph(
-            &graph,
+            graph,
             &basis,
             adopted_authority.as_deref(),
             &self.managed_database,
             &self.journal_database,
             self.context.scope_id().as_str(),
         )?;
-        let expected_current = self.expected_applied_state(&graph, &basis)?;
+        let expected_current = self.expected_applied_state(graph, &basis)?;
         self.require_legacy_binding_guarded(
             &store,
             holder,
@@ -1457,7 +1471,7 @@ impl TypeDbMigrationRunner {
         }
 
         let plan = build_verified_migration_apply_plan(
-            &graph,
+            graph,
             &basis,
             target,
             &self.context,
@@ -1479,7 +1493,8 @@ impl TypeDbMigrationRunner {
             legacy_binding.clone(),
             self.context.scope_id().as_str().to_owned(),
             observation_authority.clone(),
-        )?;
+        )?
+        .for_replayed_profile_bridge(graph, &plan);
         let guarded_store = LegacyBoundStore::for_apply(
             &store,
             &self.managed_database,
@@ -1494,6 +1509,65 @@ impl TypeDbMigrationRunner {
             self.verify_adopted_extension_state(directory).await?;
         }
         Ok(MigrationDirectoryApplyOutcome::Executed(outcome))
+    }
+
+    /// Record the published profile-upgrade bridge in the applied ledger.
+    ///
+    /// The caller publishes the bridge manifest into `directory` first (see
+    /// [`type_bridge_schema_migration::discover_history_for_profile_upgrade_in`]);
+    /// this method only records what the canonical history already carries.
+    /// The runner's context is the newer profile the bridge moves to, and its
+    /// execution binding must be the server paired with that profile.
+    ///
+    /// The ledger must stand exactly at the bridge's parent, the last
+    /// older-profile migration, and the live managed schema must equal that
+    /// parent's target schema read under the newer profile; otherwise the
+    /// call refuses with `migration_upgrade_profile_live_drift`. The bridge
+    /// then applies as a zero-operation step through the ordinary apply
+    /// coordinator, under the same lease and ledger writer as `apply`. When
+    /// the ledger already records the bridge, the call returns
+    /// [`MigrationDirectoryApplyOutcome::UpToDate`].
+    pub async fn upgrade_profile_in(
+        &self,
+        directory: &MigrationDirectory,
+        holder: &LeaseHolderId,
+    ) -> Result<MigrationDirectoryApplyOutcome, MigrationDirectoryApplyError> {
+        self.require_supported_execution_binding()?;
+        let graph = self.discover_in(directory)?;
+        let bridge = require_profile_upgrade_bridge(&graph, &self.context)?;
+        let adopted_authority = self.verify_adopted_extension_state(directory).await?;
+        require_adoption_authority_pair(&graph, adopted_authority.is_some())?;
+        let observation_authority =
+            ManagedObservationAuthority::from_adopted(adopted_authority.as_ref());
+        let catalog = VerifiedMigrationCatalog::new(graph.manifests().map(|(_, m)| m))?;
+        let store = TypeDbMigrationStore::new(&self.execution_binding, catalog)?;
+        store.ensure_control_schema().await?;
+        let basis = self.load_applied_basis(&store, holder).await?;
+        if profile_upgrade_bridge_recorded(&graph, bridge, &basis)? {
+            return Ok(MigrationDirectoryApplyOutcome::UpToDate);
+        }
+
+        let export = self.managed_database.schema_text().await.map_err(|error| {
+            upgrade_profile_failure(
+                "migration_upgrade_profile_live_export_failed",
+                "managed database schema cannot be exported for the profile upgrade",
+            )
+            .with_detail("provider", error.to_string())
+        })?;
+        let live = rebuild_live_managed_state_with_authority(
+            DocumentId::new("typebridge-upgrade-profile-live.typeql")?,
+            &export,
+            &self.genesis_source,
+            &self.context,
+            &observation_authority,
+        )?;
+        require_profile_upgrade_live_state(&live, bridge)?;
+
+        // The coordinator re-reads the ledger and live state under its own
+        // lease; its stale-plan gates refuse if either moved since.
+        let target = MigrationApplyTarget::Explicit(BTreeSet::from([bridge.id().clone()]));
+        self.apply_discovered_in(directory, &graph, &target, holder, &[])
+            .await
     }
 
     /// Verify the migration state triad and report every drift finding.
@@ -2266,6 +2340,92 @@ impl TypeDbMigrationRunner {
     }
 }
 
+fn upgrade_profile_failure(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+        type_bridge_contract::diagnostic::DiagnosticCode::new(code)
+            .expect("static profile-upgrade diagnostic code"),
+        message,
+    )
+}
+
+/// Return the history's profile-upgrade bridge into the runner's profile.
+///
+/// The bridge must move to exactly the runner context's profile from a
+/// strictly older one, so the runner's server pairing is the bridge target's.
+fn require_profile_upgrade_bridge<'g>(
+    graph: &'g MigrationHistoryGraph,
+    context: &ManagedDeltaContext,
+) -> Result<&'g VerifiedSchemaMigrationManifest, Diagnostic> {
+    let bridge = graph
+        .manifests()
+        .map(|(_, manifest)| manifest)
+        .find(|manifest| manifest.is_profile_bridge())
+        .ok_or_else(|| {
+            upgrade_profile_failure(
+                "migration_upgrade_profile_bridge_missing",
+                "the canonical history carries no profile-upgrade bridge to record",
+            )
+        })?;
+    let from = bridge
+        .profile_bridge()
+        .expect("a profile bridge names its source profile")
+        .from();
+    let newer = MigrationProfile::for_semantic_profile(context.semantic_profile())
+        .is_some_and(|to| from < to);
+    if bridge.semantic_profile().id() != context.semantic_profile() || !newer {
+        return Err(upgrade_profile_failure(
+            "migration_upgrade_profile_target_mismatch",
+            "the profile bridge does not move to a newer profile equal to the execution profile",
+        )
+        .with_detail(
+            "bridge_profile",
+            bridge.semantic_profile().id().as_str().to_owned(),
+        )
+        .with_detail(
+            "execution_profile",
+            context.semantic_profile().as_str().to_owned(),
+        ));
+    }
+    Ok(bridge)
+}
+
+/// Decide whether the ledger already records `bridge`.
+///
+/// Before the bridge the applied frontier must be exactly its parent: the
+/// ledger head is the last older-profile migration.
+fn profile_upgrade_bridge_recorded(
+    graph: &MigrationHistoryGraph,
+    bridge: &VerifiedSchemaMigrationManifest,
+    basis: &BTreeSet<MigrationId>,
+) -> Result<bool, Diagnostic> {
+    if basis.contains(bridge.id()) {
+        return Ok(true);
+    }
+    if graph.applied_frontier(basis)? != bridge.parents() {
+        return Err(upgrade_profile_failure(
+            "migration_upgrade_profile_ledger_not_at_bridge_parent",
+            "the applied ledger does not stand at the last migration before the profile bridge",
+        ));
+    }
+    Ok(false)
+}
+
+/// Require the live managed state, read under the newer profile, to be the
+/// bridge target: the older-profile head's schema, unchanged.
+fn require_profile_upgrade_live_state(
+    live: &ManagedSchemaState,
+    bridge: &VerifiedSchemaMigrationManifest,
+) -> Result<(), Diagnostic> {
+    if live != bridge.target_state() {
+        return Err(upgrade_profile_failure(
+            "migration_upgrade_profile_live_drift",
+            "live managed schema differs from the history head it is upgraded from",
+        ));
+    }
+    Ok(())
+}
+
 fn legacy_import_failure(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
         type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
@@ -2285,11 +2445,11 @@ fn same_adopted_authority(
 }
 
 async fn finish_schema_guard<T>(
-    guard: &mut type_bridge_orm::Transaction,
+    guard: &mut type_bridge_orm::OwnedTransaction,
     primary: Result<T, Diagnostic>,
     operation: &'static str,
 ) -> Result<T, Diagnostic> {
-    match (primary, guard.rollback().await) {
+    match (primary, crate::provider::rollback_and_close(guard).await) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(cleanup)) => Err(schema_guard_cleanup_failure(cleanup, None, operation)),
@@ -2421,7 +2581,7 @@ fn read_guard_cleanup_failure(cleanup: OrmError, primary: Option<&Diagnostic>) -
 }
 
 async fn load_verified_legacy_partition(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     expectation: LegacyCutoverSentinelExpectation<'_>,
     unreadable_message: &'static str,
 ) -> Result<VerifiedLegacyAppliedPartition, Diagnostic> {
@@ -2569,7 +2729,7 @@ fn legacy_cutover_fingerprint(
 }
 
 async fn load_legacy_cutover_anchor(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
 ) -> Result<Option<String>, Diagnostic> {
     observe_legacy_cutover_anchor(transaction, managed_scope)
@@ -2591,11 +2751,20 @@ impl LegacyAnchorObservationError {
 }
 
 async fn observe_legacy_cutover_anchor(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
 ) -> Result<Option<String>, LegacyAnchorObservationError> {
-    let schema_query = "match entity $t; fetch { \"label\": label($t) };";
-    let schema_values = legacy_anchor_query_values(transaction, schema_query)
+    let schema_query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![tql::schema_kind_pattern("$t", "entity")?]),
+            tql::fetch(vec![(
+                "label",
+                tql::fetch_expr(tql::function("label", vec![tql::var("t")?])?),
+            )])?,
+        ]))
+    })
+    .map_err(LegacyAnchorObservationError::Infrastructure)?;
+    let schema_values = legacy_anchor_query_values(transaction, &schema_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
     let mut anchor_type_present = false;
@@ -2615,14 +2784,38 @@ async fn observe_legacy_cutover_anchor(
         return Ok(None);
     }
 
-    let existence_query =
-        format!("match $anchor isa {LEGACY_CUTOVER_ENTITY}; fetch {{ \"exists\": true }};");
+    let existence_query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![tql::entity("anchor", LEGACY_CUTOVER_ENTITY, vec![])?]),
+            tql::fetch(vec![(
+                "exists",
+                tql::fetch_expr(tql::literal_source("true")?),
+            )])?,
+        ]))
+    })
+    .map_err(LegacyAnchorObservationError::Infrastructure)?;
     let existence = legacy_anchor_query_values(transaction, &existence_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
-    let detail_query = format!(
-        "match $anchor isa {LEGACY_CUTOVER_ENTITY}, has {LEGACY_CUTOVER_KEY} $key, has {LEGACY_CUTOVER_SCOPE} $scope, has {LEGACY_CUTOVER_FINGERPRINT} $fingerprint; fetch {{ \"key\": $key, \"scope\": $scope, \"fingerprint\": $fingerprint }};"
-    );
+    let detail_query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![
+            tql::match_stage(vec![tql::entity(
+                "anchor",
+                LEGACY_CUTOVER_ENTITY,
+                vec![
+                    (LEGACY_CUTOVER_KEY, tql::var("key")?),
+                    (LEGACY_CUTOVER_SCOPE, tql::var("scope")?),
+                    (LEGACY_CUTOVER_FINGERPRINT, tql::var("fingerprint")?),
+                ],
+            )?]),
+            tql::fetch(vec![
+                ("key", tql::fetch_expr(tql::var("key")?)),
+                ("scope", tql::fetch_expr(tql::var("scope")?)),
+                ("fingerprint", tql::fetch_expr(tql::var("fingerprint")?)),
+            ])?,
+        ]))
+    })
+    .map_err(LegacyAnchorObservationError::Infrastructure)?;
     let values = legacy_anchor_query_values(transaction, &detail_query)
         .await
         .map_err(LegacyAnchorObservationError::Infrastructure)?;
@@ -2690,7 +2883,7 @@ fn parse_legacy_cutover_anchor(
 }
 
 async fn legacy_anchor_query_values(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     query: &str,
 ) -> Result<Vec<serde_json::Value>, Diagnostic> {
     match transaction.query(query).await.map_err(|error| {
@@ -2709,16 +2902,24 @@ async fn legacy_anchor_query_values(
 }
 
 async fn insert_legacy_cutover_anchor(
-    transaction: &mut type_bridge_orm::Transaction,
+    transaction: &mut type_bridge_orm::OwnedTransaction,
     managed_scope: &str,
     fingerprint: &str,
 ) -> Result<(), Diagnostic> {
-    let query = format!(
-        "insert $anchor isa {LEGACY_CUTOVER_ENTITY}, has {LEGACY_CUTOVER_KEY} {}, has {LEGACY_CUTOVER_SCOPE} {}, has {LEGACY_CUTOVER_FINGERPRINT} {};",
-        typeql_string_literal(LEGACY_CUTOVER_SINGLETON_KEY),
-        typeql_string_literal(managed_scope),
-        typeql_string_literal(fingerprint),
-    );
+    let query = anchor_typeql_query(|| {
+        Ok(tql::pipeline(vec![tql::insert(vec![tql::entity(
+            "anchor",
+            LEGACY_CUTOVER_ENTITY,
+            vec![
+                (
+                    LEGACY_CUTOVER_KEY,
+                    tql::string(LEGACY_CUTOVER_SINGLETON_KEY)?,
+                ),
+                (LEGACY_CUTOVER_SCOPE, tql::string(managed_scope)?),
+                (LEGACY_CUTOVER_FINGERPRINT, tql::string(fingerprint)?),
+            ],
+        )?])]))
+    })?;
     transaction.query(&query).await.map_err(|error| {
         legacy_import_failure(
             "migration_legacy_import_anchor_insert_failed",
@@ -2729,8 +2930,15 @@ async fn insert_legacy_cutover_anchor(
     Ok(())
 }
 
-fn typeql_string_literal(value: &str) -> String {
-    serde_json::to_string(value).expect("UTF-8 strings are JSON representable")
+fn anchor_typeql_query(
+    build: impl FnOnce() -> Result<tql::Query, tql::TqlError>,
+) -> Result<String, Diagnostic> {
+    build().and_then(|query| tql::render(&query)).map_err(|_| {
+        legacy_import_failure(
+            "migration_legacy_import_anchor_typeql_shape",
+            "legacy anchor query cannot be lowered to TypeQL",
+        )
+    })
 }
 
 fn expected_managed_internal_schema() -> Result<DeclaredSchema, Diagnostic> {
@@ -2810,6 +3018,7 @@ mod tests {
     use type_bridge_contract::codec::FormatVersion;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_core_lib::version::Version;
     use type_bridge_orm::DatabaseConnectionAuthority;
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
@@ -2819,6 +3028,7 @@ mod tests {
 
     struct NoIoRunnerBackend {
         calls: Arc<AtomicUsize>,
+        server: Option<Version>,
     }
 
     impl DriverBackend for NoIoRunnerBackend {
@@ -2834,6 +3044,10 @@ mod tests {
         fn is_open(&self) -> bool {
             self.calls.fetch_add(1, Ordering::SeqCst);
             true
+        }
+
+        fn server_version(&self) -> Option<Version> {
+            self.server
         }
 
         fn close_connection(&self) -> Result<(), OrmError> {
@@ -2897,6 +3111,15 @@ mod tests {
         journal_name: &str,
         shared_authority: bool,
     ) -> (TypeDbMigrationRunner, Arc<AtomicUsize>) {
+        no_io_runner_with_server(profile, journal_name, shared_authority, None)
+    }
+
+    fn no_io_runner_with_server(
+        profile: &str,
+        journal_name: &str,
+        shared_authority: bool,
+        server: Option<Version>,
+    ) -> (TypeDbMigrationRunner, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let managed_authority = DatabaseConnectionAuthority::isolated();
         let journal_authority = if shared_authority {
@@ -2907,6 +3130,7 @@ mod tests {
         let managed = Arc::new(Database::with_backend_authority(
             Box::new(NoIoRunnerBackend {
                 calls: Arc::clone(&calls),
+                server,
             }),
             "managed",
             managed_authority,
@@ -2914,6 +3138,7 @@ mod tests {
         let journal = Arc::new(Database::with_backend_authority(
             Box::new(NoIoRunnerBackend {
                 calls: Arc::clone(&calls),
+                server,
             }),
             journal_name,
             journal_authority,
@@ -2924,8 +3149,12 @@ mod tests {
             SemanticProfileId::new(profile).expect("semantic profile"),
             capabilities.clone(),
         );
-        let lowering =
-            SchemaLoweringBinding::current(capabilities).expect("schema lowering binding");
+        // A valid 3.12.1 lowering binding, so only the context profile can refuse.
+        let lowering = SchemaLoweringBinding::for_semantic_profile(
+            &type_bridge_schema_migration::MigrationProfile::Typedb3_12_1.semantic_profile_id(),
+            capabilities,
+        )
+        .expect("schema lowering binding");
         (
             TypeDbMigrationRunner::new(
                 managed,
@@ -3018,6 +3247,13 @@ mod tests {
             .expect_err("path rollback must reject the execution binding");
         assert_apply_diagnostic_code(error, expected);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let error = runner
+            .upgrade_profile_in(&directory, &holder)
+            .await
+            .expect_err("profile upgrade must reject the execution binding");
+        assert_apply_diagnostic_code(error, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -3047,6 +3283,146 @@ mod tests {
             "migration_typedb_server_version_unknown",
         )
         .await;
+
+        // A profile upgrade to 3.13.6 runs only on the server paired with it,
+        // never on the 3.12.x server the history was applied on.
+        let (old_server_runner, old_server_calls) = no_io_runner_with_server(
+            "typedb-3.13.6/v1",
+            "managed__tbv2_journal",
+            true,
+            Some(Version::new(3, 12, 3)),
+        );
+        assert_every_connected_runner_path_rejects_without_database_io(
+            &old_server_runner,
+            &old_server_calls,
+            "migration_typedb_server_version_unsupported",
+        )
+        .await;
+    }
+
+    #[test]
+    fn replay_below_the_bridge_admits_the_older_profile_in_the_provider() {
+        let scope = ManagedScopeId::new("profile-bridge-scope").expect("scope");
+        let [root, more, bridge, after] = crate::store::tests::bridged_catalog_fixture(&scope);
+        let new = ManagedDeltaContext::new(
+            scope.clone(),
+            MigrationProfile::Typedb3_13_6.semantic_profile_id(),
+            type_bridge_schema_migration::migration_runtime_capability_vocabulary()
+                .expect("runtime capabilities"),
+        );
+        let lowering = SchemaLoweringBinding::for_context(&new).expect("lowering binding");
+        let graph = MigrationHistoryGraph::from_verified([
+            root.clone(),
+            more.clone(),
+            bridge.clone(),
+            after,
+        ])
+        .expect("bridged graph");
+        let plan_from = |applied: BTreeSet<MigrationId>| {
+            build_verified_migration_apply_plan(
+                &graph,
+                &applied,
+                &MigrationApplyTarget::DefaultHead,
+                &new,
+                &lowering,
+                &MigrationSafetyPolicy::default_policy(),
+                &[],
+            )
+            .expect("plan")
+        };
+
+        let replay = plan_from(BTreeSet::new());
+        assert_eq!(
+            crate::provider::replayed_profile_bridge_source(&graph, &replay, &new),
+            Some(MigrationProfile::Typedb3_12_1.semantic_profile_id())
+        );
+        let past = plan_from(BTreeSet::from([
+            root.id().clone(),
+            more.id().clone(),
+            bridge.id().clone(),
+        ]));
+        assert_eq!(
+            crate::provider::replayed_profile_bridge_source(&graph, &past, &new),
+            None
+        );
+    }
+
+    #[test]
+    fn profile_upgrade_gates_the_bridge_ledger_position_and_live_state() {
+        let scope = ManagedScopeId::new("profile-bridge-scope").expect("scope");
+        let [root, more, bridge, after] = crate::store::tests::bridged_catalog_fixture(&scope);
+        let context = |profile: MigrationProfile| {
+            ManagedDeltaContext::new(
+                scope.clone(),
+                profile.semantic_profile_id(),
+                CapabilitySet::new(),
+            )
+        };
+        let new = context(MigrationProfile::Typedb3_13_6);
+        let old = context(MigrationProfile::Typedb3_12_1);
+        let ids = |manifests: &[&VerifiedSchemaMigrationManifest]| {
+            manifests
+                .iter()
+                .map(|manifest| manifest.id().clone())
+                .collect::<BTreeSet<_>>()
+        };
+
+        let unbridged = MigrationHistoryGraph::from_verified([root.clone(), more.clone()])
+            .expect("unbridged graph");
+        let error = require_profile_upgrade_bridge(&unbridged, &new).expect_err("no bridge");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_upgrade_profile_bridge_missing"
+        );
+
+        let graph = MigrationHistoryGraph::from_verified([
+            root.clone(),
+            more.clone(),
+            bridge.clone(),
+            after.clone(),
+        ])
+        .expect("bridged graph");
+        let found = require_profile_upgrade_bridge(&graph, &new).expect("bridge to the runner");
+        assert_eq!(found.id(), bridge.id());
+        // A runner on the source profile is not the upgrade target.
+        let error = require_profile_upgrade_bridge(&graph, &old).expect_err("same profile");
+        assert_eq!(
+            error.code().as_str(),
+            "migration_upgrade_profile_target_mismatch"
+        );
+
+        // Before the bridge, the ledger must stand exactly at its parent.
+        assert!(!profile_upgrade_bridge_recorded(&graph, found, &ids(&[&root, &more])).unwrap());
+        for behind in [ids(&[]), ids(&[&root])] {
+            let error = profile_upgrade_bridge_recorded(&graph, found, &behind)
+                .expect_err("ledger behind the bridge parent");
+            assert_eq!(
+                error.code().as_str(),
+                "migration_upgrade_profile_ledger_not_at_bridge_parent"
+            );
+        }
+        // Recorded already, with or without descendants: idempotent.
+        assert!(
+            profile_upgrade_bridge_recorded(&graph, found, &ids(&[&root, &more, &bridge])).unwrap()
+        );
+        assert!(
+            profile_upgrade_bridge_recorded(&graph, found, &ids(&[&root, &more, &bridge, &after]))
+                .unwrap()
+        );
+
+        // The live schema must be the parent's, read under the new profile.
+        require_profile_upgrade_live_state(bridge.target_state(), found).expect("no drift");
+        for drifted in [
+            more.target_state(),
+            after.target_state(),
+            root.target_state(),
+        ] {
+            let error = require_profile_upgrade_live_state(drifted, found).expect_err("drift");
+            assert_eq!(
+                error.code().as_str(),
+                "migration_upgrade_profile_live_drift"
+            );
+        }
     }
 
     #[test]
@@ -3395,7 +3771,8 @@ mod tests {
 
     #[test]
     fn anchor_literals_escape_every_control_character() {
-        let literal = typeql_string_literal("scope\0\u{0008}\u{000c}\n\r\t\"");
+        let literal =
+            tql::render_expression(&tql::string("scope\0\u{0008}\u{000c}\n\r\t\"").unwrap());
         assert_eq!(literal, "\"scope\\u0000\\b\\f\\n\\r\\t\\\"\"");
         assert!(!literal.chars().any(|character| character.is_control()));
     }

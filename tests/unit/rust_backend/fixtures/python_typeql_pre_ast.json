@@ -1,0 +1,345 @@
+{
+  "emitters": [
+    {
+      "case": "add_attribute",
+      "forward": [
+        "define\nattribute lower-age, value integer;"
+      ],
+      "reverse": [
+        "undefine\nlower-age;"
+      ]
+    },
+    {
+      "case": "remove_attribute",
+      "forward": [
+        "undefine\nlower-age;"
+      ],
+      "reverse": null
+    },
+    {
+      "case": "add_entity",
+      "forward": [
+        "define\nentity lower-person,\n    owns lower-name @key;"
+      ],
+      "reverse": [
+        "undefine\nlower-person;"
+      ]
+    },
+    {
+      "case": "remove_entity",
+      "forward": [
+        "undefine\nlower-person;"
+      ],
+      "reverse": null
+    },
+    {
+      "case": "add_ownership",
+      "forward": [
+        "define\nlower-person owns lower-age @card(0..1);"
+      ],
+      "reverse": [
+        "undefine\nowns lower-age from lower-person;"
+      ]
+    },
+    {
+      "case": "remove_ownership",
+      "forward": [
+        "undefine\nowns lower-age from lower-person;"
+      ],
+      "reverse": null
+    },
+    {
+      "case": "modify_ownership",
+      "forward": [
+        "redefine\nlower-person owns lower-age @card(1..1);"
+      ],
+      "reverse": [
+        "redefine\nlower-person owns lower-age @card(0..1);"
+      ]
+    },
+    {
+      "case": "add_relation",
+      "forward": [
+        "define\nrelation lower-employment,\n    relates employee,\n    relates employer;\nlower-person plays lower-employment:employee;\nlower-company plays lower-employment:employer;"
+      ],
+      "reverse": [
+        "undefine\nlower-employment;"
+      ]
+    },
+    {
+      "case": "remove_relation",
+      "forward": [
+        "undefine\nlower-employment;"
+      ],
+      "reverse": null
+    },
+    {
+      "case": "add_role",
+      "forward": [
+        "define\nlower-employment relates reviewer;\nlower-person plays lower-employment:reviewer;"
+      ],
+      "reverse": [
+        "undefine\nrelates reviewer from lower-employment;"
+      ]
+    },
+    {
+      "case": "remove_role",
+      "forward": [
+        "undefine\nrelates reviewer from lower-employment;"
+      ],
+      "reverse": null
+    },
+    {
+      "case": "add_role_player",
+      "forward": [
+        "define\nlower-company plays lower-employment:employee;"
+      ],
+      "reverse": [
+        "undefine\nplays lower-employment:employee from lower-company;"
+      ]
+    },
+    {
+      "case": "remove_role_player",
+      "forward": [
+        "undefine\nplays lower-employment:employee from lower-company;"
+      ],
+      "reverse": [
+        "define\nlower-company plays lower-employment:employee;"
+      ]
+    },
+    {
+      "case": "run_typeql",
+      "forward": [
+        "define attribute lower-nick, value string;"
+      ],
+      "reverse": null
+    },
+    {
+      "case": "rename_attribute",
+      "forward_error": "RenameAttribute('lower-name' -> 'lower-full-name') has no executable TypeQL lowering; author the rename via author_migration(..., attribute_renames=[(old, new)]) or use the primitive operations explicitly",
+      "reverse": null
+    },
+    {
+      "case": "modify_type_annotations",
+      "forward": [
+        "define\nlower-person @doc(\"A person.\");\nlower-person @meta(\"owner\", \"core\");"
+      ],
+      "reverse": [
+        "undefine\n@doc from lower-person;\n@meta(\"owner\") from lower-person;"
+      ]
+    },
+    {
+      "case": "modify_role_annotations",
+      "forward": [
+        "define\nlower-employment relates employee @doc(\"The employed party.\");"
+      ],
+      "reverse": [
+        "undefine\n@doc from lower-employment relates employee;"
+      ]
+    },
+    {
+      "case": "schema_LowerName",
+      "schema": "attribute lower-name, value string;"
+    },
+    {
+      "case": "schema_LowerAge",
+      "schema": "attribute lower-age, value integer;"
+    },
+    {
+      "case": "schema_LowerCode",
+      "schema": "attribute lower-code, value string @regex(\"^[A-Z]{3}$\");"
+    },
+    {
+      "case": "schema_LowerPerson",
+      "schema": "entity lower-person,\n    owns lower-name @key;"
+    },
+    {
+      "case": "schema_LowerPersonWithAge",
+      "schema": "entity lower-person,\n    owns lower-name @key,\n    owns lower-age @card(0..1);"
+    },
+    {
+      "case": "schema_LowerCompany",
+      "schema": "entity lower-company,\n    owns lower-name @key;"
+    },
+    {
+      "case": "schema_LowerEmployment",
+      "schema": "relation lower-employment,\n    relates employee,\n    relates employer;"
+    },
+    {
+      "case": "query_match",
+      "query": "match $p isa person;"
+    },
+    {
+      "case": "query_fetch",
+      "query": "match $p isa person;\nfetch { \"p\": {  $p.*}};"
+    },
+    {
+      "case": "query_sort_limit",
+      "query": "match $p isa person;\nsort $p desc;\noffset 2;\nlimit 3;\nfetch { \"p\": {  $p.*}};"
+    },
+    {
+      "case": "query_insert",
+      "query": "insert $p isa person, has name \"A\";"
+    }
+  ],
+  "matches": [
+    {
+      "case": "entity",
+      "old": "match $e isa lower-person, has lower-name \"Alice\"; ",
+      "new_existing_typed_path": "match $e isa lower-person, has lower-name \"Alice\";",
+      "equivalent": true
+    },
+    {
+      "case": "relation",
+      "old": "match $r isa lower-employment (employee: $employee, employer: $employer); $employee isa lower-person, has lower-name \"Alice\"; $employer isa lower-company, has lower-name \"Acme\";",
+      "new_existing_typed_path": "match $r isa lower-employment (employee: $employee, employer: $employer); $employee isa lower-person, has lower-name \"Alice\"; $employer isa lower-company, has lower-name \"Acme\";",
+      "equivalent": true
+    }
+  ],
+  "keys": [
+    {
+      "case": "string",
+      "old": "match $e isa key-holder-string, has key-string \"hello\";",
+      "new_existing_typed_path": "match $e isa key-holder-string, has key-string \"hello\";",
+      "equivalent": true
+    },
+    {
+      "case": "integer",
+      "old": "match $e isa key-holder-integer, has key-integer 42;",
+      "new_existing_typed_path": "match $e isa key-holder-integer, has key-integer 42;",
+      "equivalent": true
+    },
+    {
+      "case": "double",
+      "old": "match $e isa key-holder-double, has key-double 1.5;",
+      "new_existing_typed_path": "match $e isa key-holder-double, has key-double 1.5;",
+      "equivalent": true
+    },
+    {
+      "case": "boolean",
+      "old": "match $e isa key-holder-boolean, has key-boolean true;",
+      "new_existing_typed_path": "match $e isa key-holder-boolean, has key-boolean true;",
+      "equivalent": true
+    },
+    {
+      "case": "date",
+      "old": "match $e isa key-holder-date, has key-date 2026-10-16;",
+      "new_existing_typed_path": "match $e isa key-holder-date, has key-date 2026-10-16;",
+      "equivalent": true
+    },
+    {
+      "case": "datetime",
+      "old": "match $e isa key-holder-datetime, has key-datetime 2026-10-16T10:11:12;",
+      "new_existing_typed_path": "match $e isa key-holder-datetime, has key-datetime 2026-10-16T10:11:12;",
+      "equivalent": true
+    },
+    {
+      "case": "datetime-tz",
+      "old": "match $e isa key-holder-datetime-tz, has key-datetime-tz 2026-10-16T10:11:12-04:00;",
+      "new_existing_typed_path": "match $e isa key-holder-datetime-tz, has key-datetime-tz 2026-10-16T10:11:12-04:00;",
+      "equivalent": true
+    },
+    {
+      "case": "decimal",
+      "old": "match $e isa key-holder-decimal, has key-decimal 1.25dec;",
+      "new_existing_typed_path": "match $e isa key-holder-decimal, has key-decimal 1.25dec;",
+      "equivalent": true
+    },
+    {
+      "case": "duration",
+      "old": "match $e isa key-holder-duration, has key-duration P1D;",
+      "new_existing_typed_path": "match $e isa key-holder-duration, has key-duration P1D;",
+      "equivalent": true
+    }
+  ],
+  "schemas": [
+    {
+      "case": "attribute_doc_meta",
+      "schema": "attribute legacy-name @doc(\"name \\\"doc\\\"\") @meta(\"a\", \"first\") @meta(\"z\", \"last\"), value string;"
+    },
+    {
+      "case": "attribute_range",
+      "schema": "attribute legacy-age, value integer @range(0..150);"
+    },
+    {
+      "case": "entity_parent",
+      "schema": "entity legacy-parent @abstract @doc(\"parent\") @meta(\"owner\", \"schema\"),\n    owns legacy-name @key;"
+    },
+    {
+      "case": "entity_child",
+      "schema": "entity legacy-child, sub legacy-parent,\n    owns legacy-age @card(0..1);"
+    },
+    {
+      "case": "relation_base",
+      "schema": "relation legacy-base @abstract,\n    relates participant[] @abstract;"
+    },
+    {
+      "case": "relation_child_ordered",
+      "schema": "relation legacy-review @abstract, sub legacy-base,\n    relates reviewer[] as participant[] @abstract @doc(\"reviewer\"),\n    owns legacy-name[] @doc(\"names\") @meta(\"owner\", \"bridge\");"
+    }
+  ],
+  "functions": [
+    {
+      "case": "ids",
+      "types": [
+        "id"
+      ],
+      "is_stream": true,
+      "args": [],
+      "options": {
+        "limit": 3,
+        "offset": 2,
+        "sort_var": "id"
+      },
+      "query": "match let $id in ids();\nsort $id asc;\noffset 2;\nlimit 3;\nfetch { \"id\": $id};"
+    },
+    {
+      "case": "pair",
+      "types": [
+        "integer",
+        "integer"
+      ],
+      "is_stream": false,
+      "args": [],
+      "options": {
+        "result_vars": [
+          "left",
+          "right"
+        ],
+        "fetch_keys": [
+          "a",
+          "b"
+        ],
+        "sort_var": "right",
+        "sort_order": "desc",
+        "limit": 2
+      },
+      "query": "match let $left, $right = pair();\nsort $right desc;\nlimit 2;\nfetch { \"a\": $left, \"b\": $right};"
+    },
+    {
+      "case": "answer",
+      "types": [
+        "integer"
+      ],
+      "is_stream": false,
+      "args": [],
+      "options": {},
+      "query": "match let $integer = answer();\nfetch { \"integer\": $integer};"
+    },
+    {
+      "case": "echo",
+      "types": [
+        "integer"
+      ],
+      "is_stream": false,
+      "args": [
+        [
+          "seed",
+          7
+        ]
+      ],
+      "options": {},
+      "query": "match let $integer = echo(7);\nfetch { \"integer\": $integer};"
+    }
+  ]
+}

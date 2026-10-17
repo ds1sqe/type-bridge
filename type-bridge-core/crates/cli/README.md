@@ -2,8 +2,9 @@
 
 The `type-bridge` command-line interface for split-YAML workspaces, generated
 bindings, and canonical schema migrations. Schema checking, generation, and
-migration authoring/planning are offline; apply, verify, and adopt connect only
-through an explicitly selected workspace environment.
+migration authoring/planning are offline; apply, verify, rollback, adopt, and
+upgrade-profile connect only through an explicitly selected workspace
+environment.
 
 ## Install and start
 
@@ -50,9 +51,11 @@ one directory lock.
 
 The crate has no optional features. It is released in lockstep with TypeBridge
 2.2.6 and requires Rust 1.88+. Offline schema checking, generation, migration
-authoring, and planning accept the frozen TypeDB 3.11.5 and 3.12.1 semantic
-profiles. Connected migration apply, verify, and adopt require exactly TypeDB
-3.12.1.
+authoring, and planning accept the frozen TypeDB 3.11.5, 3.12.1, and 3.13.6
+semantic profiles. Connected migration commands run on exactly two profile/server
+pairs: `typedb-3.12.1/v1` with TypeDB 3.12.3 and `typedb-3.13.6/v1` with
+TypeDB 3.13.6. `migration upgrade-profile` moves a history from the first
+to the second.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-cli/2.2.6) ·

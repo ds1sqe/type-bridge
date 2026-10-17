@@ -15,7 +15,7 @@ def test_c_projected_producer_uses_generated_public_projection_paths() -> None:
     harness = HARNESS.read_text()
     consumer = CONSUMER.read_text()
 
-    assert "sdk-v3/schema-v3.yaml" in harness
+    assert "models/schema.yaml" in harness
     assert "CEmitter::new()" in harness
     assert '"projected"' in harness and '"projected_foreign"' in harness
     assert "type_bridge_projected_thing_open_v1" in consumer
@@ -35,7 +35,7 @@ def test_c_projected_producer_does_not_import_expected_parity_evidence() -> None
 
     for forbidden in (
         "expected_report",
-        'journey-v3.json")',
+        'journey.json")',
         "batch_parity",
         "filter_parity",
     ):

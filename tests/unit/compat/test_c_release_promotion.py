@@ -372,9 +372,9 @@ def test_sealing_preserves_all_accepted_archive_bytes(
     )
     reports = tmp_path / "reports"
     for version, bindings in audit.REPORT_BINDINGS.items():
-        (reports / f"v{version}").mkdir(parents=True)
+        (reports / version).mkdir(parents=True)
         for binding in bindings:
-            (reports / f"v{version}" / f"{binding}.json").write_text("{}")
+            (reports / version / f"{binding}.json").write_text("{}")
     calls: list[dict[str, Any]] = []
 
     def accepted_audit(**arguments: Any) -> tuple[dict[str, Any], str]:

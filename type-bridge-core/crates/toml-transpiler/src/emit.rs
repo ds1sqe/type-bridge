@@ -1,357 +1,212 @@
-//! TypeQL define-block emitter.
-//!
-//! [`emit`] is a total function over the typed model — it never inspects raw
-//! `toml::Value` tables and never calls `.unwrap()` on optional fields.
-
-use indexmap::IndexMap;
-
+//! Checked schema construction through the shared official-AST adapter.
 use crate::model::{TomlOwns, TomlPlays, TomlSchema};
+use indexmap::IndexMap;
+use type_bridge_core_lib::__internal as tql;
 
-/// Normalise a `TomlOwns` entry into `(name, key, unique, ordered, distinct, card)`.
-fn owns_parts(entry: &TomlOwns) -> (&str, bool, bool, bool, bool, Option<&str>) {
-    match entry {
-        TomlOwns::Name(n) => (n.as_str(), false, false, false, false, None),
-        TomlOwns::Annotated(a) => (
-            a.attribute.as_str(),
-            a.key,
-            a.unique,
-            a.ordered,
-            a.distinct,
-            a.card.as_deref(),
-        ),
+// TOML accepts these historical aliases; TypeDB requires builtin value keywords.
+fn value_domain(domain: &str) -> &str {
+    match domain {
+        "long" | "int" => "integer",
+        "bool" => "boolean",
+        other => other,
     }
 }
 
-/// Doc/meta of a `TomlOwns` entry (`None`/empty for the bare-name form).
-fn owns_doc_meta(entry: &TomlOwns) -> (Option<&str>, Option<&IndexMap<String, String>>) {
-    match entry {
-        TomlOwns::Name(_) => (None, None),
-        TomlOwns::Annotated(a) => (a.doc.as_deref(), Some(&a.meta)),
-    }
-}
-
-/// Render a TypeQL string literal for `@doc` / `@meta` values, escaping
-/// backslashes, quotes, and control characters the way TypeDB's schema
-/// export renders them (mirrors the ORM emitter's escaping).
-fn escaped_string_literal(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    out
-}
-
-/// Append ` @doc("...")` / ` @meta("k", "v")` tokens (TypeDB 3.12+) to a
-/// clause. Meta entries emit in TOML declaration order. Returns whether
-/// anything was appended (used for `, sub` comma placement in heads).
-fn push_doc_meta(
-    clause: &mut String,
-    doc: Option<&str>,
-    meta: Option<&IndexMap<String, String>>,
-) -> bool {
-    let mut appended = false;
-    if let Some(text) = doc {
-        clause.push_str(&format!(" @doc({})", escaped_string_literal(text)));
-        appended = true;
-    }
-    if let Some(meta) = meta {
-        for (key, value) in meta {
-            clause.push_str(&format!(
-                " @meta({}, {})",
-                escaped_string_literal(key),
-                escaped_string_literal(value)
-            ));
-            appended = true;
-        }
-    }
-    appended
-}
-
-/// Build a type declaration head that preserves `@abstract`, `@doc`/`@meta`,
-/// and `sub`. Any annotation before `sub` switches to the `, sub` comma form.
-fn type_head(
-    kind: &str,
-    name: &str,
-    is_abstract: bool,
-    parent: Option<&str>,
+fn doc_meta(
+    output: &mut Vec<tql::SchemaAnnotation>,
     doc: Option<&str>,
     meta: &IndexMap<String, String>,
-) -> String {
-    let mut head = format!("{kind} {name}");
-    if is_abstract {
-        head.push_str(" @abstract");
+) -> Result<(), tql::TqlError> {
+    if let Some(doc) = doc {
+        output.push(tql::schema_doc(doc)?);
     }
-    let has_doc_meta = push_doc_meta(&mut head, doc, Some(meta));
-    if let Some(parent) = parent {
-        if is_abstract || has_doc_meta {
-            head.push_str(&format!(", sub {parent}"));
-        } else {
-            head.push_str(&format!(" sub {parent}"));
-        }
+    for (key, value) in meta {
+        output.push(tql::schema_meta(key, value)?);
     }
-    head
+    Ok(())
 }
-
-/// Emit a `plays` clause with optional plays-side cardinality.
-fn plays_clause(entry: &TomlPlays) -> String {
-    let mut clause = format!("plays {}:{}", entry.relation, entry.role);
-    if let Some(ref card) = entry.card {
-        clause.push_str(&format!(" @card({card})"));
+fn head(
+    abstract_: bool,
+    doc: Option<&str>,
+    meta: &IndexMap<String, String>,
+) -> Result<Vec<tql::SchemaAnnotation>, tql::TqlError> {
+    let mut output = Vec::new();
+    if abstract_ {
+        output.push(tql::schema_flag("abstract")?);
     }
-    clause
+    doc_meta(&mut output, doc, meta)?;
+    Ok(output)
 }
-
-/// Emit a canonical TypeQL `define` block from a typed schema model.
-///
-/// Output format:
-/// ```text
-/// define
-/// attribute <name> [@abstract][, sub <parent>], value <type>[@ regex(...)];
-///   -- OR --
-/// attribute <name> @abstract, value <type>;
-///   -- OR --
-/// attribute <name> [@abstract,] sub <parent>;            (no value clause)
-/// ...
-/// entity <name>[@abstract][, sub <parent>][, owns <a>[@key|@unique|@card(m..n)], plays <r>:<role>[@card(m..n)]];
-/// ...
-/// relation <name>[@abstract][, sub <parent>][, relates <r>[@ card(m..n)], owns <a>[@key|...], plays <r>:<role>[@card(m..n)]];
-/// ...
-/// <signature>:
-/// <body>
-/// ...
-/// struct <name>, value <f> <t>[?], ...;
-/// ...
-/// ```
-///
-/// Declaration order within each section matches TOML document order (preserved
-/// by [`indexmap::IndexMap`]).  Sections appear in the fixed order: attributes,
-/// entities, relations, functions, structs.
-pub fn emit(schema: &TomlSchema) -> String {
-    let mut out = String::from("define\n");
-
-    // --- attributes ---
-    for (name, attr) in &schema.attributes {
-        // Build clause list (comma-separated items after the type+sub+abstract head).
-        // The head itself is: `attribute <name>[sub <parent>] [@abstract]`
-        // Then value + value-annotations follow as additional clauses.
-
-        for ann in &attr.annotations {
-            out.push_str(&format!("# @{}\n", ann));
-        }
-        if let Some(case) = &attr.bindgen_case {
-            out.push_str(&format!("# @case({})\n", case));
-        }
-
-        let head = type_head(
-            "attribute",
-            name,
-            attr.is_abstract,
-            attr.sub.as_deref(),
-            attr.doc.as_deref(),
-            &attr.meta,
-        );
-
-        // Build the value clause (with optional value-level annotations).
-        let value_clause = if let Some(ref vt) = attr.value {
-            let mut clause = format!("value {}", vt);
-            if let Some(ref rx) = attr.regex {
-                clause.push_str(&format!(r#" @regex("{}")"#, rx));
+fn metadata(annotations: &[String], case: Option<&str>) -> Vec<String> {
+    let mut output = annotations.to_vec();
+    if let Some(case) = case {
+        output.push(format!("case({case})"));
+    }
+    output
+}
+fn parent(
+    output: &mut Vec<tql::SchemaCapability>,
+    name: Option<&str>,
+) -> Result<(), tql::TqlError> {
+    if let Some(name) = name {
+        output.push(tql::schema_sub(name)?);
+    }
+    Ok(())
+}
+fn owns(entry: &TomlOwns) -> Result<tql::SchemaCapability, tql::TqlError> {
+    match entry {
+        TomlOwns::Name(name) => tql::schema_owns(name, false, vec![]),
+        TomlOwns::Annotated(entry) => {
+            let mut annotations = Vec::new();
+            for (name, present) in [
+                ("key", entry.key),
+                ("unique", entry.unique),
+                ("distinct", entry.distinct),
+            ] {
+                if present {
+                    annotations.push(tql::schema_flag(name)?);
+                }
             }
-            if let Some(ref vals) = attr.values {
-                let quoted: Vec<String> = vals.iter().map(|v| format!("\"{}\"", v)).collect();
-                clause.push_str(&format!(" @values({})", quoted.join(", ")));
+            if let Some(card) = &entry.card {
+                annotations.push(tql::schema_annotation("card", Some(card))?);
             }
-            if let Some(ref rng) = attr.range {
-                clause.push_str(&format!(" @range({})", rng));
-            }
-            Some(clause)
-        } else {
-            None
-        };
-
-        match value_clause {
-            Some(vc) => {
-                // `attribute X [@abstract], value T[@annotation...];`
-                out.push_str(&format!("{}, {};\n", head, vc));
-            }
-            None => {
-                // No value clause: valid for sub-attributes after validation.
-                out.push_str(&format!("{};\n", head));
-            }
+            doc_meta(&mut annotations, entry.doc.as_deref(), &entry.meta)?;
+            tql::schema_owns(&entry.attribute, entry.ordered, annotations)
         }
     }
-
-    // --- entities ---
+}
+fn plays(entry: &TomlPlays) -> Result<tql::SchemaCapability, tql::TqlError> {
+    let annotations = entry
+        .card
+        .as_deref()
+        .map(|card| tql::schema_annotation("card", Some(card)))
+        .transpose()?
+        .into_iter()
+        .collect();
+    tql::schema_plays(&entry.relation, &entry.role, annotations)
+}
+/// Emit checked official schema nodes in TOML declaration order.
+pub fn emit(schema: &TomlSchema) -> Result<String, tql::TqlError> {
+    let mut definitions = Vec::new();
+    for (name, attribute) in &schema.attributes {
+        let mut capabilities = Vec::new();
+        parent(&mut capabilities, attribute.sub.as_deref())?;
+        if let Some(domain) = &attribute.value {
+            let mut annotations = Vec::new();
+            if let Some(regex) = &attribute.regex {
+                annotations.push(tql::schema_regex_source(regex)?);
+            }
+            if let Some(values) = &attribute.values {
+                annotations.push(tql::schema_values_source(
+                    &values.iter().map(String::as_str).collect::<Vec<_>>(),
+                )?);
+            }
+            if let Some(range) = &attribute.range {
+                annotations.push(tql::schema_annotation("range", Some(range))?);
+            }
+            capabilities.push(tql::schema_value(value_domain(domain), annotations)?);
+        }
+        definitions.push((
+            tql::schema_type(
+                Some("attribute"),
+                name,
+                head(
+                    attribute.is_abstract,
+                    attribute.doc.as_deref(),
+                    &attribute.meta,
+                )?,
+                capabilities,
+            )?,
+            metadata(&attribute.annotations, attribute.bindgen_case.as_deref()),
+        ));
+    }
     for (name, entity) in &schema.entities {
-        // Build the type-head: `entity <name>` + optional abstract/sub tokens.
-        for ann in &entity.annotations {
-            out.push_str(&format!("# @{}\n", ann));
-        }
-        if let Some(case) = &entity.bindgen_case {
-            out.push_str(&format!("# @case({})\n", case));
-        }
-        let head = type_head(
-            "entity",
-            name,
-            entity.is_abstract,
-            entity.sub.as_deref(),
-            entity.doc.as_deref(),
-            &entity.meta,
-        );
-
-        let mut clauses: Vec<String> = Vec::new();
+        let mut capabilities = Vec::new();
+        parent(&mut capabilities, entity.sub.as_deref())?;
         for entry in &entity.owns {
-            let (attr_name, key, unique, ordered, distinct, card) = owns_parts(entry);
-            let mut clause = format!("owns {}", attr_name);
-            if ordered {
-                clause.push_str("[]");
-            }
-            if key {
-                clause.push_str(" @key");
-            }
-            if unique {
-                clause.push_str(" @unique");
-            }
-            if distinct {
-                clause.push_str(" @distinct");
-            }
-            if let Some(c) = card {
-                clause.push_str(&format!(" @card({})", c));
-            }
-            let (doc, meta) = owns_doc_meta(entry);
-            push_doc_meta(&mut clause, doc, meta);
-            clauses.push(clause);
+            capabilities.push(owns(entry)?);
         }
-        for p in &entity.plays {
-            clauses.push(plays_clause(p));
+        for entry in &entity.plays {
+            capabilities.push(plays(entry)?);
         }
-
-        if clauses.is_empty() {
-            out.push_str(&format!("{};\n", head));
-        } else {
-            out.push_str(&format!("{}, {};\n", head, clauses.join(", ")));
-        }
+        definitions.push((
+            tql::schema_type(
+                Some("entity"),
+                name,
+                head(entity.is_abstract, entity.doc.as_deref(), &entity.meta)?,
+                capabilities,
+            )?,
+            metadata(&entity.annotations, entity.bindgen_case.as_deref()),
+        ));
     }
-
-    // --- relations ---
     for (name, relation) in &schema.relations {
-        // Build the type-head: `relation <name>` + optional abstract/sub tokens.
-        for ann in &relation.annotations {
-            out.push_str(&format!("# @{}\n", ann));
-        }
-        if let Some(case) = &relation.bindgen_case {
-            out.push_str(&format!("# @case({})\n", case));
-        }
-        let head = type_head(
-            "relation",
-            name,
-            relation.is_abstract,
-            relation.sub.as_deref(),
-            relation.doc.as_deref(),
-            &relation.meta,
-        );
-
-        let mut clauses: Vec<String> = Vec::new();
+        let mut capabilities = Vec::new();
+        parent(&mut capabilities, relation.sub.as_deref())?;
         for role in &relation.roles {
-            let mut clause = format!("relates {}", role.name);
-            if role.ordered {
-                clause.push_str("[]");
-            }
-            if let Some(ref ov) = role.overrides {
-                clause.push_str(&format!(" as {}", ov));
-            }
+            let mut annotations = Vec::new();
             if role.is_abstract {
-                clause.push_str(" @abstract");
+                annotations.push(tql::schema_flag("abstract")?);
             }
             if role.distinct {
-                clause.push_str(" @distinct");
+                annotations.push(tql::schema_flag("distinct")?);
             }
-            if let Some(ref card) = role.card {
-                clause.push_str(&format!(" @card({})", card));
+            if let Some(card) = &role.card {
+                annotations.push(tql::schema_annotation("card", Some(card))?);
             }
-            push_doc_meta(&mut clause, role.doc.as_deref(), Some(&role.meta));
-            clauses.push(clause);
+            doc_meta(&mut annotations, role.doc.as_deref(), &role.meta)?;
+            capabilities.push(tql::schema_relates(
+                &role.name,
+                role.ordered,
+                role.overrides.as_deref(),
+                annotations,
+            )?);
         }
         for entry in &relation.owns {
-            let (attr_name, key, unique, ordered, distinct, card) = owns_parts(entry);
-            let mut clause = format!("owns {}", attr_name);
-            if ordered {
-                clause.push_str("[]");
-            }
-            if key {
-                clause.push_str(" @key");
-            }
-            if unique {
-                clause.push_str(" @unique");
-            }
-            if distinct {
-                clause.push_str(" @distinct");
-            }
-            if let Some(c) = card {
-                clause.push_str(&format!(" @card({})", c));
-            }
-            let (doc, meta) = owns_doc_meta(entry);
-            push_doc_meta(&mut clause, doc, meta);
-            clauses.push(clause);
+            capabilities.push(owns(entry)?);
         }
-        for p in &relation.plays {
-            clauses.push(plays_clause(p));
+        for entry in &relation.plays {
+            capabilities.push(plays(entry)?);
         }
-
-        if clauses.is_empty() {
-            out.push_str(&format!("{};\n", head));
-        } else {
-            out.push_str(&format!("{}, {};\n", head, clauses.join(", ")));
-        }
+        definitions.push((
+            tql::schema_type(
+                Some("relation"),
+                name,
+                head(
+                    relation.is_abstract,
+                    relation.doc.as_deref(),
+                    &relation.meta,
+                )?,
+                capabilities,
+            )?,
+            metadata(&relation.annotations, relation.bindgen_case.as_deref()),
+        ));
     }
-
-    // --- functions ---
-    //
-    // Each function emits as `<signature>:\n<body>\n`.
-    // The emitter owns the `:` separator — `signature` carries NO trailing colon.
-    // The body string is written verbatim (no parsing by the transpiler).
-    for (_name, func) in &schema.functions {
-        out.push_str(&func.signature);
-        out.push_str(":\n");
-        out.push_str(&func.body);
-        out.push('\n');
+    for function in schema.functions.values() {
+        definitions.push((
+            tql::schema_function(&function.signature, &function.body)?,
+            vec![],
+        ));
     }
-
-    // --- structs ---
-    //
-    // Each struct emits as `struct <name>, value <f> <t>[?], ...;`.
-    // A `?` suffix is appended to the type name when the field is optional.
-    // A struct with zero fields emits `struct <name>;` best-effort; downstream
-    // parsing will surface the error (the parser requires at least one field).
-    for (name, s) in &schema.structs {
-        if s.fields.is_empty() {
-            out.push_str(&format!("struct {};\n", name));
-        } else {
-            let field_clauses: Vec<String> = s
-                .fields
-                .iter()
-                .map(|f| {
-                    if f.optional {
-                        format!("value {} {}?", f.name, f.value_type)
-                    } else {
-                        format!("value {} {}", f.name, f.value_type)
-                    }
-                })
-                .collect();
-            out.push_str(&format!("struct {}, {};\n", name, field_clauses.join(", ")));
-        }
+    for (name, structure) in &schema.structs {
+        definitions.push((
+            tql::schema_struct(
+                name,
+                structure
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            field.name.as_str(),
+                            value_domain(&field.value_type),
+                            field.optional,
+                        )
+                    })
+                    .collect(),
+            )?,
+            vec![],
+        ));
     }
-
-    out
+    tql::render_schema_document(definitions)
 }
 
 #[cfg(test)]
@@ -384,7 +239,7 @@ owns = ["name", "age"]
             "output must contain attribute name declaration; got:\n{result}"
         );
         assert!(
-            result.contains("attribute age, value long;"),
+            result.contains("attribute age, value integer;"),
             "output must contain attribute age declaration; got:\n{result}"
         );
         assert!(
@@ -607,7 +462,7 @@ abstract = true
         );
     }
 
-    /// `sub = "isbn"` with no `value` emits `attribute isbn-13 sub isbn;` (no `value` token).
+    /// `sub = "isbn"` with no `value` emits `attribute isbn-13, sub isbn;` (no `value` token).
     #[test]
     fn test_emit_attribute_sub() {
         let toml_text = r#"
@@ -619,8 +474,8 @@ sub = "isbn"
 "#;
         let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
         assert!(
-            result.contains("attribute isbn-13 sub isbn;"),
-            "expected `attribute isbn-13 sub isbn;`; got:\n{result}"
+            result.contains("attribute isbn-13, sub isbn;"),
+            "expected `attribute isbn-13, sub isbn;`; got:\n{result}"
         );
         assert!(
             !result.contains("isbn-13 sub isbn,"),
@@ -749,7 +604,7 @@ range = "0..150"
         );
     }
 
-    /// `entity X @abstract` and `entity Y sub X` both emit correctly.
+    /// `entity X @abstract` and `entity Y, sub X` both emit correctly.
     #[test]
     fn test_emit_entity_abstract_and_sub() {
         let toml_text = r#"
@@ -765,12 +620,12 @@ sub = "book"
             "expected `entity book @abstract;`; got:\n{result}"
         );
         assert!(
-            result.contains("entity hardback sub book;"),
-            "expected `entity hardback sub book;`; got:\n{result}"
+            result.contains("entity hardback, sub book;"),
+            "expected `entity hardback, sub book;`; got:\n{result}"
         );
     }
 
-    /// `relation authoring sub contribution, ...` emits correctly.
+    /// `relation authoring, sub contribution, ...` emits correctly.
     #[test]
     fn test_emit_relation_sub() {
         let toml_text = r#"
@@ -783,8 +638,8 @@ roles = [{ name = "author", as = "contributor" }]
 "#;
         let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
         assert!(
-            result.contains("relation authoring sub contribution,"),
-            "expected `relation authoring sub contribution,`; got:\n{result}"
+            result.contains("relation authoring, sub contribution,"),
+            "expected `relation authoring, sub contribution,`; got:\n{result}"
         );
         assert!(
             result.contains("relates author as contributor"),
@@ -797,7 +652,7 @@ roles = [{ name = "author", as = "contributor" }]
     // -------------------------------------------------------------------------
 
     /// A stream-return function emits `<signature>:\n<body>` — the emitter
-    /// appends `:` and the body is written verbatim.
+    /// parses the signature and body into official function nodes.
     #[test]
     fn test_emit_function_passthrough() {
         let toml_text = r#"
@@ -839,7 +694,7 @@ body = "  match $line has price $p;\n  return max($p);"
     }
 
     /// Two non-optional struct fields emit as
-    /// `struct person-name, value first-name string, value last-name string;`.
+    /// `struct person-name:first-name value string, last-name value string;`.
     #[test]
     fn test_emit_struct_basic() {
         let toml_text = r#"
@@ -851,7 +706,7 @@ fields = [
 "#;
         let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
         assert!(
-            result.contains("struct person-name, value first-name string, value last-name string;"),
+            result.contains("struct person-name:first-name value string, last-name value string;"),
             "expected two-field struct declaration; got:\n{result}"
         );
     }
@@ -868,7 +723,7 @@ fields = [
 "#;
         let result = toml_to_typeql(toml_text).expect("toml_to_typeql failed");
         assert!(
-            result.contains("value m long?"),
+            result.contains("m value integer?"),
             "optional field must emit `<type>?` suffix; got:\n{result}"
         );
         assert!(
@@ -910,7 +765,7 @@ owns = ["name"]
 
     /// Integration smoke: a TOML with one function and one struct feeds through
     /// `toml_to_typeql` end-to-end — the output contains the function head with
-    /// the emitter-appended `:`, the verbatim body, and the struct line.
+    /// the signature, parsed body, and corrected struct declaration.
     #[test]
     fn test_emit_p0_functions_structs_smoke() {
         let toml_text = r#"
@@ -922,7 +777,7 @@ owns = ["name"]
 
 [functions.count-users]
 signature = "fun count-users($u: user) -> { integer }"
-body = "  match $u isa user;\n  return { 1 };"
+body = "  match $u isa user;\n  let $one = 1; return { $one };"
 
 [structs.person-name]
 fields = [
@@ -938,22 +793,22 @@ fields = [
             result.contains("fun count-users($u: user) -> { integer }:"),
             "function head must carry the emitter-appended colon; got:\n{result}"
         );
-        // Function: verbatim body contains `return`
+        // Function: parsed body contains `return`
         assert!(
             result.contains("return"),
-            "verbatim body must contain `return`; got:\n{result}"
+            "parsed body must contain `return`; got:\n{result}"
         );
         // Struct: standard two-field form + optional field with `?`
         assert!(
-            result.contains("struct person-name,"),
+            result.contains("struct person-name:"),
             "struct declaration must be present; got:\n{result}"
         );
         assert!(
-            result.contains("value middle-name string?"),
+            result.contains("middle-name value string?"),
             "optional struct field must emit `<type>?`; got:\n{result}"
         );
         assert!(
-            result.contains("value first-name string"),
+            result.contains("first-name value string"),
             "non-optional struct field must emit without `?`; got:\n{result}"
         );
     }
@@ -992,16 +847,16 @@ value = "integer"
             "expected `attribute isbn @abstract, value string;`; got:\n{result}"
         );
         assert!(
-            result.contains("attribute isbn-13 sub isbn;"),
-            "expected `attribute isbn-13 sub isbn;`; got:\n{result}"
+            result.contains("attribute isbn-13, sub isbn;"),
+            "expected `attribute isbn-13, sub isbn;`; got:\n{result}"
         );
         assert!(
             result.contains("entity book @abstract"),
             "expected `entity book @abstract`; got:\n{result}"
         );
         assert!(
-            result.contains("entity hardback sub book"),
-            "expected `entity hardback sub book`; got:\n{result}"
+            result.contains("entity hardback, sub book"),
+            "expected `entity hardback, sub book`; got:\n{result}"
         );
     }
 

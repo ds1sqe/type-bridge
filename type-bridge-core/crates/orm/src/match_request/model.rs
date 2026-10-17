@@ -102,6 +102,11 @@ pub enum MatchMode {
     Subtypes,
 }
 
+type_bridge_contract::enum_spellings!(MatchMode, "match_mode", canonical {
+    "exact" => Exact,
+    "subtypes" => Subtypes,
+});
+
 /// An explicitly permitted topology-level cross join.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct BindingPair {
@@ -153,6 +158,19 @@ pub enum ComparisonOp {
     /// Regular-expression match.
     Regex,
 }
+
+type_bridge_contract::enum_spellings!(ComparisonOp, "comparison_operator", canonical {
+    "equal" => Equal,
+    "not_equal" => NotEqual,
+    "less_than" => LessThan,
+    "less_than_or_equal" => LessThanOrEqual,
+    "greater_than" => GreaterThan,
+    "greater_than_or_equal" => GreaterThanOrEqual,
+    "contains" => Contains,
+    "starts_with" => StartsWith,
+    "ends_with" => EndsWith,
+    "regex" => Regex,
+});
 
 /// A typed boolean match expression.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -400,6 +418,16 @@ pub enum Reduction {
     Std,
 }
 
+type_bridge_contract::enum_spellings!(Reduction, "reducer", canonical {
+    "count" => Count,
+    "sum" => Sum,
+    "min" => Min,
+    "max" => Max,
+    "mean" => Mean,
+    "median" => Median,
+    "std" => Std,
+});
+
 impl Reduction {
     /// Whether this reducer consumes a bound scalar field input.
     #[must_use]
@@ -444,6 +472,11 @@ pub enum SortDirection {
     Descending,
 }
 
+type_bridge_contract::enum_spellings!(SortDirection, "sort_direction", canonical {
+    "ascending" => Ascending,
+    "descending" => Descending,
+});
+
 /// Explicit ordering behavior for a missing or null key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -455,6 +488,12 @@ pub enum MissingOrder {
     /// Place a missing key after all present keys.
     Last,
 }
+
+type_bridge_contract::enum_spellings!(MissingOrder, "missing_order", canonical {
+    "reject" => Reject,
+    "first" => First,
+    "last" => Last,
+});
 
 /// A bounded result window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -473,7 +512,17 @@ pub enum RowCardinality {
     ExactlyOne,
     /// Return a resource-bounded ordered sequence of selected rows.
     BoundedMany,
+    /// Return every selected row. The window's limit is the most rows the
+    /// caller accepts: more is refused, never cut off, so the rows need no
+    /// order and the selected types need no unique key.
+    Complete,
 }
+
+type_bridge_contract::enum_spellings!(RowCardinality, "row_cardinality", canonical {
+    "exactly_one" => ExactlyOne,
+    "bounded_many" => BoundedMany,
+    "complete" => Complete,
+});
 
 /// Terminal operation over a typed match plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

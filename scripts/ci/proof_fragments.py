@@ -9,14 +9,19 @@ import json
 import os
 import re
 import stat
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[2]
+# The proof-fragment sets' catalog profile; fragments default to it.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("queries")
 REPORT_BINDINGS = frozenset({"python", "node", "rust", "c"})
 MAX_FRAGMENT_BYTES = 64 * 1024
 MAX_SOURCES = 16
@@ -210,6 +215,7 @@ def _load_fragment(path: Path) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class ProofContract:
+    suite: str
     proof_schema_relative: str
     allowlist_relative: str
     journey_relative: str
@@ -252,10 +258,9 @@ class ProofContract:
                 "invalid_allowlist", "committed allowlist is invalid JSON"
             ) from error
         allowlist = _exact_keys(value, {"format", "semantic_profile", "bindings"}, "allowlist")
-        if (
-            allowlist["format"] != self.allowlist_format
-            or allowlist["semantic_profile"] != SEMANTIC_PROFILE
-        ):
+        if allowlist["format"] != self.allowlist_format or allowlist[
+            "semantic_profile"
+        ] not in profile_matrix.supported_profiles(self.suite):
             raise ProofFragmentError("invalid_allowlist", "committed allowlist authority is not v1")
         bindings = _exact_keys(allowlist["bindings"], set(REPORT_BINDINGS), "allowlist bindings")
         producers = bindings[binding]
@@ -346,8 +351,17 @@ class ProofContract:
         run_nonce: str,
         allowed_lanes: Iterable[ObservationLane] | None = None,
         root: Path = ROOT,
+        semantic_profile: str | None = None,
     ) -> dict[ObservationLane, Any]:
-        """Validate fragments and return their exact, closed observation lane map."""
+        """Validate fragments and return their exact, closed observation lane map.
+
+        Every fragment must carry ``semantic_profile``, a matrix entry of this
+        set; it defaults to the set catalog's own profile.
+        """
+
+        if semantic_profile is None:
+            semantic_profile = profile_matrix.catalog_profile(self.suite)
+        profile_matrix.select(self.suite, semantic_profile, error=ProofFragmentError)
 
         if expected_binding not in REPORT_BINDINGS:
             raise ProofFragmentError("invalid_binding", f"unknown binding {expected_binding!r}")
@@ -393,7 +407,7 @@ class ProofContract:
                 raise ProofFragmentError(
                     "binding_mismatch", f"fragment {path} belongs to another binding"
                 )
-            if fragment["semantic_profile"] != SEMANTIC_PROFILE:
+            if fragment["semantic_profile"] != semantic_profile:
                 raise ProofFragmentError(
                     "profile_mismatch", f"fragment {path} has the wrong profile"
                 )
@@ -529,25 +543,26 @@ class ProofContract:
 
 # Only these two accepted contracts emit same-run proof fragments.
 CONTRACTS = {
-    version: ProofContract(
-        proof_schema_relative=f"tests/contracts/sdk_conformance/sdk-v{version}/proof-fragment-schema-v1.json",
-        allowlist_relative=f"tests/contracts/sdk_conformance/sdk-v{version}/proof-fragment-allowlist-v1.json",
-        journey_relative=f"tests/contracts/sdk_conformance/sdk-v{version}/journey-v{version}.json",
-        fragment_format=f"typebridge.sdk-v{version}-proof-fragment/v1",
-        allowlist_format=f"typebridge.sdk-v{version}-proof-fragment-allowlist/v1",
+    suite: ProofContract(
+        suite=suite,
+        proof_schema_relative=f"{profile_matrix.suite_directory(suite)}/proof-fragment-schema.json",
+        allowlist_relative=f"{profile_matrix.suite_directory(suite)}/proof-fragment-allowlist.json",
+        journey_relative=profile_matrix.contract_relative(suite, "journey"),
+        fragment_format=f"typebridge.sdk-{suite}-proof-fragment/v1",
+        allowlist_format=f"typebridge.sdk-{suite}-proof-fragment-allowlist/v1",
         proof_kinds=kinds,
         max_results=limit,
     )
-    for version, kinds, limit in (
-        (2, frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
-        (3, frozenset({"direct_runtime", "diagnostic"}), 4),
+    for suite, kinds, limit in (
+        ("queries", frozenset({"direct_runtime", "remote_runtime", "diagnostic", "lifecycle"}), 16),
+        ("models", frozenset({"direct_runtime", "diagnostic"}), 4),
     )
 }
 
 
 def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sdk", required=True, type=int, choices=sorted(CONTRACTS))
+    parser.add_argument("--suite", required=True, choices=sorted(CONTRACTS))
     parser.add_argument("--binding", required=True, choices=sorted(REPORT_BINDINGS))
     parser.add_argument("--run-nonce", required=True)
     parser.add_argument(
@@ -555,18 +570,26 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         action="store_true",
         help="write the validated closed observation lanes as canonical JSON",
     )
+    parser.add_argument(
+        "--semantic-profile",
+        default=os.environ.get(profile_matrix.SEMANTIC_PROFILE_ENV) or None,
+        help="profile the fragments ran on (default: TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, "
+        "else the catalog's own profile)",
+    )
     parser.add_argument("fragments", nargs="+", type=Path)
     args = parser.parse_args(argv)
-    contract = CONTRACTS[args.sdk]
+    contract = CONTRACTS[args.suite]
+    suite = args.suite
     try:
         observations = contract.load_proof_fragments(
             args.fragments,
             expected_binding=args.binding,
             run_nonce=args.run_nonce,
             root=root,
+            semantic_profile=args.semantic_profile,
         )
     except ProofFragmentError as error:
-        print(f"sdk-v{args.sdk} proof fragments rejected: {error}")
+        print(f"{suite} proof fragments rejected: {error}")
         return 1
     if args.observations_json:
         rows = [
@@ -579,7 +602,7 @@ def main(argv: list[str] | None = None, *, root: Path = ROOT) -> int:
         ]
         print(canonical_json_bytes(rows).decode("utf-8"), end="")
     else:
-        print(f"validated {len(observations)} sdk-v{args.sdk} proof lanes for {args.binding}")
+        print(f"validated {len(observations)} {suite} proof lanes for {args.binding}")
     return 0
 
 

@@ -3,6 +3,7 @@
 //! Constructs AST clauses from entity trait methods and compiles them
 //! to TypeQL strings ready for execution.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::HashSet;
 
 use type_bridge_contract::id::TypeKind;
@@ -33,7 +34,9 @@ use crate::value::AttributeValue;
 pub fn build_insert_with_iid<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
     let clauses = entity.to_insert_with_iid_fetch(var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a polymorphic fetch query with optional filters.
@@ -46,7 +49,9 @@ pub fn build_insert_with_iid<T: TypeBridgeEntity>(entity: &T, var: &str) -> Resu
 pub fn build_fetch<T: TypeBridgeEntity>(filters: &[Filter], var: &str) -> Result<String> {
     let clauses = T::build_polymorphic_fetch(var, T::TYPE_NAME, filters);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a match + delete query for a specific entity instance.
@@ -62,7 +67,9 @@ pub fn build_delete<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String
         Clause::Delete(vec![Statement::DeleteThing(var.to_string())]),
     ];
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a count query with optional filters.
@@ -100,7 +107,9 @@ pub fn build_count<T: TypeBridgeEntity>(filters: &[Filter], var: &str) -> Result
         },
     ];
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -115,7 +124,9 @@ pub fn build_dynamic_entity_insert_with_iid(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_insert_clauses(descriptor, attributes, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a put + fetch-IID query for a runtime entity descriptor.
@@ -126,7 +137,9 @@ pub fn build_dynamic_entity_put(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_put_clauses(descriptor, attributes, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a match + update query for a runtime entity descriptor.
@@ -138,7 +151,9 @@ pub fn build_dynamic_entity_update(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_update_clauses(descriptor, iid, attributes, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a strict match + update query for one exact entity IID.
@@ -149,7 +164,9 @@ pub fn build_dynamic_entity_update_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_update_exact_clauses(descriptor, iid, attributes, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a polymorphic fetch query for a runtime entity descriptor.
@@ -160,7 +177,9 @@ pub fn build_dynamic_entity_fetch(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_fetch_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an exact-type fetch query for a runtime entity descriptor.
@@ -170,7 +189,9 @@ pub fn build_dynamic_entity_fetch_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_fetch_exact_clauses(descriptor, filters, var);
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware fetch query for a runtime entity descriptor.
@@ -191,7 +212,9 @@ pub fn build_dynamic_entity_expr_fetch(
         var,
     )?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware exact-type fetch query for a runtime entity descriptor.
@@ -211,7 +234,9 @@ pub fn build_dynamic_entity_expr_fetch_exact(
         offset,
         var,
     )?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a cross-type or narrowed attribute-owner lookup query.
@@ -288,7 +313,9 @@ pub fn build_dynamic_has_lookup_query(
         ]),
     ];
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a polymorphic IID fetch query for a runtime entity descriptor.
@@ -299,7 +326,9 @@ pub fn build_dynamic_entity_fetch_by_iid(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_fetch_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an exact-type IID fetch query for a runtime entity descriptor.
@@ -309,7 +338,9 @@ pub fn build_dynamic_entity_fetch_by_iid_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_fetch_by_iid_exact_clauses(descriptor, iid, var);
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a count query for a runtime entity descriptor.
@@ -320,7 +351,9 @@ pub fn build_dynamic_entity_count(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_count_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a strict exact-type count query for a runtime entity descriptor.
@@ -329,7 +362,9 @@ pub fn build_dynamic_entity_count_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_count_exact_clauses(descriptor, var);
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an identity-only subtype discovery query.
@@ -339,7 +374,9 @@ pub fn build_dynamic_entity_identity_discovery(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_identity_discovery_clauses(descriptor, iid, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 pub fn build_dynamic_relation_identity_discovery(
@@ -347,22 +384,22 @@ pub fn build_dynamic_relation_identity_discovery(
     iid: Option<&str>,
     var: &str,
 ) -> Result<String> {
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_identity_discovery_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_identity_discovery_clauses(
             descriptor, iid, var,
-        )?),
-    )
+        )?)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 pub fn build_dynamic_relation_count_exact(
     descriptor: &RelationDescriptor,
     var: &str,
 ) -> Result<String> {
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_count_exact_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_count_exact_clauses(
             descriptor, var,
-        )),
-    )
+        ))
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 pub fn build_dynamic_relation_delete_by_iid_exact(
@@ -370,11 +407,11 @@ pub fn build_dynamic_relation_delete_by_iid_exact(
     iid: &str,
     var: &str,
 ) -> Result<String> {
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_delete_by_iid_exact_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_delete_by_iid_exact_clauses(
             descriptor, iid, var,
-        )?),
-    )
+        )?)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a strict exact-type lookup from every usable projected key value.
@@ -385,8 +422,17 @@ pub fn build_dynamic_entity_exact_key_lookup(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<Option<String>> {
-    crate::_dynamic::entity_exact_key_lookup_clauses(descriptor, attributes, var)
-        .map(|clauses| clauses.map(|clauses| QueryCompiler::new().compile(&clauses)))
+    crate::_dynamic::entity_exact_key_lookup_clauses(descriptor, attributes, var).and_then(
+        |clauses| {
+            clauses
+                .map(|clauses| {
+                    QueryCompiler::new()
+                        .try_compile(&clauses)
+                        .map_err(|error| OrmError::QueryExecution(error.to_string()))
+                })
+                .transpose()
+        },
+    )
 }
 
 /// Build an expression-aware count query for a runtime entity descriptor.
@@ -397,7 +443,9 @@ pub fn build_dynamic_entity_expr_count(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_expr_count_clauses(descriptor, expressions, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware exact-type count query for a runtime entity descriptor.
@@ -407,7 +455,9 @@ pub fn build_dynamic_entity_expr_count_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_expr_count_exact_clauses(descriptor, expressions, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware exact-type limit-one existence query.
@@ -417,7 +467,9 @@ pub fn build_dynamic_entity_expr_exists_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_expr_exists_exact_clauses(descriptor, expressions, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware aggregate query for a runtime entity descriptor.
@@ -430,7 +482,9 @@ pub fn build_dynamic_entity_expr_aggregate(
     let clauses =
         crate::_dynamic::entity_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware group-by aggregate query for a runtime entity descriptor.
@@ -449,7 +503,9 @@ pub fn build_dynamic_entity_expr_group_by_aggregate(
         var,
     )?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an aggregate query for a runtime entity descriptor.
@@ -461,7 +517,9 @@ pub fn build_dynamic_entity_aggregate(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_aggregate_clauses(descriptor, filters, aggregates, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a group-by aggregate query for a runtime entity descriptor.
@@ -480,7 +538,9 @@ pub fn build_dynamic_entity_group_by_aggregate(
         var,
     )?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an IID-based delete query for a runtime entity descriptor.
@@ -491,7 +551,9 @@ pub fn build_dynamic_entity_delete_by_iid(
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a strict IID-based delete query for a runtime entity descriptor.
@@ -501,7 +563,9 @@ pub fn build_dynamic_entity_delete_by_iid_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::entity_delete_by_iid_exact_clauses(descriptor, iid, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -545,7 +609,9 @@ pub fn build_update<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String
         Clause::Update(update_statements),
     ];
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an idempotent put query (insert-or-update) for an entity.
@@ -596,7 +662,9 @@ pub fn build_put<T: TypeBridgeEntity>(entity: &T, var: &str) -> Result<String> {
     }]));
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -617,7 +685,9 @@ pub fn build_relation_insert_with_iid<R: TypeBridgeRelation>(
 ) -> Result<String> {
     let clauses = relation.to_insert_with_iid_fetch(var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a polymorphic fetch query for relations with optional filters.
@@ -627,7 +697,9 @@ pub fn build_relation_fetch<R: TypeBridgeRelation>(
 ) -> Result<String> {
     let clauses = R::build_polymorphic_fetch(var, R::TYPE_NAME, filters);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a match + delete query for a specific relation instance.
@@ -638,7 +710,9 @@ pub fn build_relation_delete<R: TypeBridgeRelation>(relation: &R, var: &str) -> 
         Clause::Delete(vec![Statement::DeleteThing(var.to_string())]),
     ];
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a count query for relations with optional filters.
@@ -673,7 +747,9 @@ pub fn build_relation_count<R: TypeBridgeRelation>(
         },
     ];
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -690,7 +766,9 @@ pub fn build_dynamic_relation_insert_with_iid(
     let clauses =
         crate::_dynamic::relation_insert_clauses(descriptor, attributes, role_players, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build the projected executor's one-query exact entity-player insert.
@@ -734,7 +812,9 @@ pub(crate) fn build_projected_relation_insert_with_iid(
             *is_strict = true;
         }
     }
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build strict identity-only lookup using supplied relation key ownership.
@@ -743,8 +823,14 @@ pub fn build_dynamic_relation_exact_key_lookup(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<Option<String>> {
-    crate::_dynamic::relation_exact_key_lookup_clauses(descriptor, attributes, var)
-        .map(|c| c.map(|clauses| QueryCompiler::new().compile(&clauses)))
+    crate::_dynamic::relation_exact_key_lookup_clauses(descriptor, attributes, var).and_then(|c| {
+        c.map(|clauses| {
+            QueryCompiler::new()
+                .try_compile(&clauses)
+                .map_err(|error| OrmError::QueryExecution(error.to_string()))
+        })
+        .transpose()
+    })
 }
 
 /// Build a strict resolved-player relation insert with IID fetch.
@@ -754,11 +840,11 @@ pub fn build_dynamic_relation_insert_resolved_with_iid(
     resolved: &[(String, String, String)],
     var: &str,
 ) -> Result<String> {
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_insert_resolved_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_insert_resolved_clauses(
             descriptor, attributes, resolved, var,
-        )?),
-    )
+        )?)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build the projected executor's kind-aware resolved-player relation insert.
@@ -779,7 +865,9 @@ pub(crate) fn build_projected_relation_insert_resolved_with_iid(
         RELATION_VAR,
     )?;
     replace_resolved_player_patterns(&mut clauses, resolved, 0)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a put + fetch-IID query for a runtime relation descriptor.
@@ -791,7 +879,9 @@ pub fn build_dynamic_relation_put(
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_put_clauses(descriptor, attributes, role_players, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a match + update query for a runtime relation descriptor.
@@ -805,7 +895,9 @@ pub fn build_dynamic_relation_update(
     let clauses =
         crate::_dynamic::relation_update_clauses(descriptor, iid, attributes, role_players, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build strict exact relation attribute replacement without role mutation.
@@ -815,11 +907,11 @@ pub fn build_dynamic_relation_update_exact(
     attributes: &DynamicAttributeMap,
     var: &str,
 ) -> Result<String> {
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_update_exact_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_update_exact_clauses(
             descriptor, iid, attributes, var,
-        )?),
-    )
+        )?)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build strict identity-only resolution for one selected relation player.
@@ -881,7 +973,9 @@ pub fn build_dynamic_relation_player_lookup(
             var: var.into(),
         }]),
     ];
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build the projected executor's kind-aware exact role-player lookup.
@@ -928,14 +1022,16 @@ pub(crate) fn build_projected_role_player_lookup(
             value: Some(value.to_ast_value()),
         });
     }
-    Ok(QueryCompiler::new().compile(&[
-        Clause::Match(patterns),
-        Clause::Fetch(vec![FetchItem::Function {
-            key: "iid".into(),
-            func_name: "iid".into(),
-            var: PLAYER_VAR.into(),
-        }]),
-    ]))
+    QueryCompiler::new()
+        .try_compile(&[
+            Clause::Match(patterns),
+            Clause::Fetch(vec![FetchItem::Function {
+                key: "iid".into(),
+                func_name: "iid".into(),
+                var: PLAYER_VAR.into(),
+            }]),
+        ])
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 fn validate_dynamic_relation_player_identity(
@@ -986,11 +1082,11 @@ pub fn build_dynamic_relation_clear_role(
             "unsafe or inactive relation role".into(),
         ));
     }
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_clear_role_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_clear_role_clauses(
             descriptor, iid, role, var,
-        )?),
-    )
+        )?)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 /// Build one strict exact relation attachment query from resolved players.
 pub fn build_dynamic_relation_attach(
@@ -1017,11 +1113,11 @@ pub fn build_dynamic_relation_attach(
             ));
         }
     }
-    Ok(
-        QueryCompiler::new().compile(&crate::_dynamic::relation_attach_clauses(
+    QueryCompiler::new()
+        .try_compile(&crate::_dynamic::relation_attach_clauses(
             descriptor, iid, resolved, var,
-        )?),
-    )
+        )?)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build the projected executor's kind-aware exact role attachment.
@@ -1037,7 +1133,9 @@ pub(crate) fn build_projected_relation_attach(
     // The first match pattern identifies the outer relation. Player patterns
     // follow in the exact order of `resolved`.
     replace_resolved_player_patterns(&mut clauses, resolved, 1)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 fn projected_resolved_legacy(
@@ -1118,7 +1216,9 @@ pub fn build_dynamic_relation_fetch(
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_fetch_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an exact-type fetch query for a runtime relation descriptor.
@@ -1128,7 +1228,9 @@ pub fn build_dynamic_relation_fetch_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_fetch_exact_clauses(descriptor, filters, var);
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a polymorphic fetch query for a runtime relation descriptor with role-player filters.
@@ -1145,7 +1247,9 @@ pub fn build_dynamic_relation_fetch_with_role_filters(
         var,
     );
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware fetch query for a runtime relation descriptor.
@@ -1166,7 +1270,9 @@ pub fn build_dynamic_relation_expr_fetch(
         var,
     )?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware exact-type fetch query for a runtime relation descriptor.
@@ -1186,7 +1292,9 @@ pub fn build_dynamic_relation_expr_fetch_exact(
         offset,
         var,
     )?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a polymorphic IID fetch query for a runtime relation descriptor.
@@ -1197,7 +1305,9 @@ pub fn build_dynamic_relation_fetch_by_iid(
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_fetch_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an exact-type IID fetch query for a runtime relation descriptor.
@@ -1207,7 +1317,9 @@ pub fn build_dynamic_relation_fetch_by_iid_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_fetch_by_iid_exact_clauses(descriptor, iid, var);
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a count query for a runtime relation descriptor.
@@ -1218,7 +1330,9 @@ pub fn build_dynamic_relation_count(
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_count_clauses(descriptor, filters, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware count query for a runtime relation descriptor.
@@ -1229,7 +1343,9 @@ pub fn build_dynamic_relation_expr_count(
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_expr_count_clauses(descriptor, expressions, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware exact-type count query for a runtime relation descriptor.
@@ -1239,7 +1355,9 @@ pub fn build_dynamic_relation_expr_count_exact(
     var: &str,
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_expr_count_exact_clauses(descriptor, expressions, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware exact-type limit-one existence query.
@@ -1250,7 +1368,9 @@ pub fn build_dynamic_relation_expr_exists_exact(
 ) -> Result<String> {
     let clauses =
         crate::_dynamic::relation_expr_exists_exact_clauses(descriptor, expressions, var)?;
-    Ok(QueryCompiler::new().compile(&clauses))
+    QueryCompiler::new()
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware aggregate query for a runtime relation descriptor.
@@ -1263,7 +1383,9 @@ pub fn build_dynamic_relation_expr_aggregate(
     let clauses =
         crate::_dynamic::relation_expr_aggregate_clauses(descriptor, expressions, aggregates, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an expression-aware group-by aggregate query for a runtime relation descriptor.
@@ -1282,7 +1404,9 @@ pub fn build_dynamic_relation_expr_group_by_aggregate(
         var,
     )?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an aggregate query for a runtime relation descriptor.
@@ -1295,7 +1419,9 @@ pub fn build_dynamic_relation_aggregate(
     let clauses =
         crate::_dynamic::relation_aggregate_clauses(descriptor, filters, aggregates, var)?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a group-by aggregate query for a runtime relation descriptor.
@@ -1314,7 +1440,9 @@ pub fn build_dynamic_relation_group_by_aggregate(
         var,
     )?;
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an IID-based delete query for a runtime relation descriptor.
@@ -1325,7 +1453,9 @@ pub fn build_dynamic_relation_delete_by_iid(
 ) -> Result<String> {
     let clauses = crate::_dynamic::relation_delete_by_iid_clauses(descriptor, iid, var);
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -1416,7 +1546,9 @@ pub fn build_expr_fetch<T: TypeBridgeEntity>(
     clauses.push(Clause::Fetch(fetch_items));
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a count query with expression-based filters.
@@ -1438,7 +1570,9 @@ pub fn build_expr_count<T: TypeBridgeEntity>(filters: &[Expr], var: &str) -> Res
     ];
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an aggregation query with expression-based filters.
@@ -1468,7 +1602,9 @@ pub fn build_expr_aggregate<T: TypeBridgeEntity>(
     ];
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -1564,7 +1700,9 @@ pub fn build_relation_expr_fetch<R: TypeBridgeRelation>(
     clauses.push(Clause::Fetch(fetch_items));
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a count query for relations with expression-based filters.
@@ -1589,7 +1727,9 @@ pub fn build_relation_expr_count<R: TypeBridgeRelation>(
     ];
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build an aggregation query for relations with expression-based filters.
@@ -1619,7 +1759,9 @@ pub fn build_relation_expr_aggregate<R: TypeBridgeRelation>(
     ];
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 // ------------------------------------------------------------------
@@ -1661,7 +1803,9 @@ pub fn build_expr_group_by_aggregate<T: TypeBridgeEntity>(
     ];
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 /// Build a group-by aggregation query for relations.
@@ -1699,7 +1843,9 @@ pub fn build_relation_group_by_aggregate<R: TypeBridgeRelation>(
     ];
 
     let compiler = QueryCompiler::new();
-    Ok(compiler.compile(&clauses))
+    compiler
+        .try_compile(&clauses)
+        .map_err(|error| OrmError::QueryExecution(error.to_string()))
 }
 
 #[cfg(test)]
@@ -1716,7 +1862,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             entity,
-            "match\n$p isa! person, iid 0x10;\nfetch {\n  \"iid\": iid($p)\n};"
+            "match $p isa! person, iid 0x10; fetch { \"iid\": iid($p)};"
         );
 
         let relation =
@@ -1724,7 +1870,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             relation,
-            "match\n$p isa! event;\n$p iid 0x20;\nfetch {\n  \"iid\": iid($p)\n};"
+            "match $p isa! event; $p iid 0x20; fetch { \"iid\": iid($p)};"
         );
     }
 
@@ -1739,7 +1885,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             relation,
-            "match\n$p isa! event;\n$p has identifier $p_identity;\n$p_identity isa identifier; $p_identity \"a\\\\\\\"b\";\nfetch {\n  \"iid\": iid($p)\n};"
+            "match $p isa! event; $p has identifier $p_identity; $p_identity isa identifier \"a\\\\\\\"b\"; fetch { \"iid\": iid($p)};"
         );
     }
 

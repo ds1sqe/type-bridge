@@ -1,13 +1,13 @@
 {
   "include": [
     "type_bridge",
+    "perf",
     "tests",
     "examples"
   ],
   "exclude": [
     "tests/unit/type-check-except",
-    "tests/contracts/typed_query/python/documented_examples.py",
-    "tests/contracts/typed_query/python/negative.py"
+    "tests/contracts/typed_query/python/documented_examples.py"
   ],
   "venvPath": ".",
   "venv": ".venv",

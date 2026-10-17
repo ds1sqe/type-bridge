@@ -47,6 +47,8 @@ pub(crate) enum AllocationSite {
     QueryThingHandle,
     QueryValueHandle,
     QueryRemoteContextHandle,
+    ProxyConnectionHandle,
+    ProxyConnectionBytes,
     QueryRemoteAdvertisementBytes,
     QueryRemotePendingHandle,
     QueryRemoteClaimHandle,

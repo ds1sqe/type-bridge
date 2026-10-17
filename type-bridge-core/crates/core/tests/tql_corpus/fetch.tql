@@ -1,0 +1,1 @@
+match $x isa person, has name $n; fetch { "x": $x, "name": $x.name, "names": [ $x.name], "ordered": $x.name[], "all": {  $x.*}, "nested": { "n": $n}, "function": label($x), "stream": [ all-names($x)], "computed": 1 + 2, "quote\"key": true};

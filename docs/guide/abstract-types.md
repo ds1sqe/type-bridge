@@ -42,8 +42,8 @@ session = Person.query(db)
 only_people = session.exact(Person)
 all_parties = session.subtypes(Party)
 
-people = session.query(only_people).rows(limit=100)
-parties = session.query(all_parties).rows(limit=100)
+people = await session.query(only_people).rows(limit=100)
+parties = await session.query(all_parties).rows(limit=100)
 ```
 
 `exact` matches exactly the selected schema type. `subtypes` includes concrete

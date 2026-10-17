@@ -14,10 +14,8 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_schema::ManagedDeltaContext;
 
-use crate::{
-    MigrationHistoryGraph, VerifiedSchemaMigrationManifest, decode_verified_manifest,
-    encode_verified_manifest,
-};
+use crate::history::{decode_verified_manifest_in_own_profile, require_workspace_profile_heads};
+use crate::{MigrationHistoryGraph, VerifiedSchemaMigrationManifest, encode_verified_manifest};
 
 /// Exact wire discriminator for the first immutable migration-history bundle.
 pub const MIGRATION_HISTORY_BUNDLE_V1: &str = "typebridge.migration-history-bundle/v1";
@@ -222,7 +220,8 @@ pub fn decode_verified_migration_history_bundle(
                 "bundled manifest bytes do not match their detached digest",
             ));
         }
-        let manifest = decode_verified_manifest(&manifest_bytes, (&source_schema, context))?;
+        let manifest =
+            decode_verified_manifest_in_own_profile(&manifest_bytes, &source_schema, context)?;
         if encode_declared_schema(manifest.target_schema())?
             != encode_declared_schema(&target_schema)?
         {
@@ -236,6 +235,7 @@ pub fn decode_verified_migration_history_bundle(
     }
 
     let graph = MigrationHistoryGraph::from_verified(manifests)?;
+    require_workspace_profile_heads(&graph, context.semantic_profile())?;
     let bundle = VerifiedMigrationHistoryBundle::from_graph(&graph)?;
     let expected_heads = wire
         .content

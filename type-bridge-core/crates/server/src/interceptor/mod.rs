@@ -16,4 +16,6 @@ pub use crud_interceptor::{CrudInterceptor, CrudInterceptorAdapter};
 pub use traits::InterceptError;
 pub use traits::{Interceptor, RequestContext};
 #[cfg(feature = "v2-query")]
-pub use traits::{V2PolicyOutcome, V2PolicyRequest};
+pub use traits::{
+    StagedWriteAuthority, V2PolicyOutcome, V2PolicyRequest, V3CommitOutcome, V3PolicyPlan,
+};

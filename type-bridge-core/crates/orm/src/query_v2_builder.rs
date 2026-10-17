@@ -14,9 +14,7 @@ use type_bridge_contract::diagnostic::{
     Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticDetailValue,
 };
 use type_bridge_contract::id::{AttributeId, FunctionId, Label, RoleId, TypeId, TypeKind};
-use type_bridge_contract::limits::{
-    MAX_BOOLEAN_TERMS, MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES, StructuralLimits,
-};
+use type_bridge_contract::limits::{QueryLimits, StructuralLimits};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
@@ -94,20 +92,18 @@ macro_rules! define_closed_builder_vocabulary {
         $manifest:ident,
         $name_function:ident,
         $variant_type:ty,
-        { $($variant:path => $spelling:literal),+ $(,)? }
+        [ $($variant:path),+ $(,)? ]
     ) => {
-        #[doc = "Closed public spellings generated from the exhaustive enum mapping."]
+        #[doc = "Closed public spellings, each the enum's one canonical spelling."]
         #[doc(hidden)]
         pub const $manifest: &[($variant_type, &str)] = &[
-            $(($variant, $spelling)),+
+            $(($variant, $variant.spelling())),+
         ];
 
-        #[doc = "Return the source-owned spelling for one closed enum variant."]
+        #[doc = "Return the canonical spelling for one closed enum variant."]
         #[doc(hidden)]
         pub const fn $name_function(value: $variant_type) -> &'static str {
-            match value {
-                $($variant => $spelling),+
-            }
+            value.spelling()
         }
     };
 }
@@ -116,89 +112,112 @@ define_closed_builder_vocabulary!(
     QUERY_BUILDER_VALUE_TYPES,
     query_builder_value_type_name,
     ValueTypeTag,
-    {
-        ValueTypeTag::String => "string",
-        ValueTypeTag::Long => "long",
-        ValueTypeTag::Double => "double",
-        ValueTypeTag::Boolean => "boolean",
-        ValueTypeTag::Date => "date",
-        ValueTypeTag::DateTime => "datetime",
-        ValueTypeTag::DateTimeTz => "datetime_tz",
-        ValueTypeTag::Decimal => "decimal",
-        ValueTypeTag::Duration => "duration",
-    }
+    [
+        ValueTypeTag::String,
+        ValueTypeTag::Long,
+        ValueTypeTag::Double,
+        ValueTypeTag::Boolean,
+        ValueTypeTag::Date,
+        ValueTypeTag::DateTime,
+        ValueTypeTag::DateTimeTz,
+        ValueTypeTag::Decimal,
+        ValueTypeTag::Duration,
+    ]
 );
 
-macro_rules! define_queryable_type_kinds {
-    (
-        accepted { $($accepted:path => $spelling:literal),+ $(,)? }
-        rejected { $($rejected:path),+ $(,)? }
-    ) => {
-        /// Closed schema-kind subset accepted by `isa` authoring.
-        #[doc(hidden)]
-        pub const QUERY_BUILDER_TYPE_KINDS: &[(TypeKind, &str)] = &[
-            $(($accepted, $spelling)),+
-        ];
-
-        /// Return the source-owned `isa` spelling, or `None` for non-queryable kinds.
-        #[doc(hidden)]
-        pub const fn query_builder_type_kind_name(kind: TypeKind) -> Option<&'static str> {
-            match kind {
-                $($accepted => Some($spelling)),+,
-                $($rejected => None),+
-            }
-        }
-    };
+/// The schema kinds `isa` and `links` authoring accepts: every [`TypeKind`]
+/// except `struct`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[doc(hidden)]
+pub enum QueryableTypeKind {
+    /// [`TypeKind::Entity`].
+    Entity,
+    /// [`TypeKind::Relation`].
+    Relation,
+    /// [`TypeKind::Attribute`].
+    Attribute,
 }
 
-define_queryable_type_kinds!(
-    accepted {
-        TypeKind::Entity => "entity",
-        TypeKind::Relation => "relation",
-        TypeKind::Attribute => "attribute",
+type_bridge_contract::enum_spellings!(QueryableTypeKind, "queryable_type_kind", canonical {
+    "entity" => Entity,
+    "relation" => Relation,
+    "attribute" => Attribute,
+});
+
+impl QueryableTypeKind {
+    /// The schema kind this spelling names.
+    #[must_use]
+    pub const fn type_kind(self) -> TypeKind {
+        match self {
+            Self::Entity => TypeKind::Entity,
+            Self::Relation => TypeKind::Relation,
+            Self::Attribute => TypeKind::Attribute,
+        }
     }
-    rejected {
-        TypeKind::Struct,
+
+    /// The queryable kind of `kind`, or `None` for a non-queryable kind.
+    #[must_use]
+    pub const fn from_type_kind(kind: TypeKind) -> Option<Self> {
+        match kind {
+            TypeKind::Entity => Some(Self::Entity),
+            TypeKind::Relation => Some(Self::Relation),
+            TypeKind::Attribute => Some(Self::Attribute),
+            TypeKind::Struct => None,
+        }
     }
-);
+}
+
+/// Closed schema-kind subset accepted by `isa` authoring.
+#[doc(hidden)]
+pub const QUERY_BUILDER_TYPE_KINDS: &[(TypeKind, &str)] = &[
+    (TypeKind::Entity, QueryableTypeKind::Entity.spelling()),
+    (TypeKind::Relation, QueryableTypeKind::Relation.spelling()),
+    (TypeKind::Attribute, QueryableTypeKind::Attribute.spelling()),
+];
+
+/// Return the canonical `isa` spelling, or `None` for non-queryable kinds.
+#[doc(hidden)]
+pub const fn query_builder_type_kind_name(kind: TypeKind) -> Option<&'static str> {
+    match QueryableTypeKind::from_type_kind(kind) {
+        Some(kind) => Some(kind.spelling()),
+        None => None,
+    }
+}
 
 define_closed_builder_vocabulary!(
     QUERY_BUILDER_COMPARATORS,
     query_builder_comparator_name,
     ValueComparator,
-    {
-        ValueComparator::Equal => "equal",
-        ValueComparator::NotEqual => "not_equal",
-        ValueComparator::Less => "less",
-        ValueComparator::LessOrEqual => "less_or_equal",
-        ValueComparator::Greater => "greater",
-        ValueComparator::GreaterOrEqual => "greater_or_equal",
-    }
+    [
+        ValueComparator::Equal,
+        ValueComparator::NotEqual,
+        ValueComparator::Less,
+        ValueComparator::LessOrEqual,
+        ValueComparator::Greater,
+        ValueComparator::GreaterOrEqual,
+    ]
 );
 
 define_closed_builder_vocabulary!(
     QUERY_BUILDER_ORDER_DIRECTIONS,
     query_builder_order_direction_name,
     OrderDirection,
-    {
-        OrderDirection::Ascending => "ascending",
-        OrderDirection::Descending => "descending",
-    }
+    [OrderDirection::Ascending, OrderDirection::Descending]
 );
 
 define_closed_builder_vocabulary!(
     QUERY_BUILDER_REDUCERS,
     query_builder_reducer_name,
     Reducer,
-    {
-        Reducer::Count => "count",
-        Reducer::Max => "max",
-        Reducer::Mean => "mean",
-        Reducer::Median => "median",
-        Reducer::Min => "min",
-        Reducer::Std => "std",
-        Reducer::Sum => "sum",
-    }
+    [
+        Reducer::Count,
+        Reducer::Max,
+        Reducer::Mean,
+        Reducer::Median,
+        Reducer::Min,
+        Reducer::Std,
+        Reducer::Sum,
+    ]
 );
 
 /// Closed reducer/result pairs admitted by plan-local functions.
@@ -212,76 +231,34 @@ pub const QUERY_BUILDER_LOCAL_RETURNS: &[(Reducer, ValueTypeTag)] = &[
 /// Parse the exact low-level scalar-domain spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_value_type(value: &str) -> Result<ValueTypeTag, Diagnostic> {
-    QUERY_BUILDER_VALUE_TYPES
-        .iter()
-        .find_map(|(value_type, spelling)| (*spelling == value).then_some(*value_type))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_value_type_unknown",
-                "value type must use one exact canonical scalar-domain spelling",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level schema-kind spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_type_kind(value: &str) -> Result<TypeKind, Diagnostic> {
-    QUERY_BUILDER_TYPE_KINDS
-        .iter()
-        .find_map(|(kind, spelling)| (*spelling == value).then_some(*kind))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_type_kind_unknown",
-                "type kind must be entity, relation, or attribute",
-            )
-        })
+    value
+        .parse()
+        .map(QueryableTypeKind::type_kind)
+        .map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level comparator spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_comparator(value: &str) -> Result<ValueComparator, Diagnostic> {
-    QUERY_BUILDER_COMPARATORS
-        .iter()
-        .find_map(|(comparator, spelling)| (*spelling == value).then_some(*comparator))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_comparator_unknown",
-                "comparator must use one exact canonical comparator spelling",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level sort-direction spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_order_direction(value: &str) -> Result<OrderDirection, Diagnostic> {
-    QUERY_BUILDER_ORDER_DIRECTIONS
-        .iter()
-        .find_map(|(direction, spelling)| (*spelling == value).then_some(*direction))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_order_direction_unknown",
-                "order direction must be ascending or descending",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Parse the exact low-level reducer spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_reducer(value: &str) -> Result<Reducer, Diagnostic> {
-    QUERY_BUILDER_REDUCERS
-        .iter()
-        .find_map(|(reducer, spelling)| (*spelling == value).then_some(*reducer))
-        .ok_or_else(|| {
-            builder_failure(
-                DiagnosticCategory::InvalidContract,
-                "query_builder_reducer_unknown",
-                "reducer must use one exact canonical reducer spelling",
-            )
-        })
+    value.parse().map_err(Diagnostic::from)
 }
 
 /// Convert one checked host primitive into its exact canonical scalar.
@@ -560,6 +537,109 @@ pub fn query_builder_invocation_input_byte_limit_error() -> Diagnostic {
     )
 }
 
+/// Bound the length of a host collection before a binding materializes it.
+///
+/// `length` is what the host reported, or `None` when the host could not
+/// represent it. A length above `maximum` is refused with `oversized`,
+/// annotated with the ceiling that refused it.
+#[doc(hidden)]
+pub fn query_builder_bounded_len(
+    length: Option<usize>,
+    maximum: usize,
+    oversized: fn() -> Diagnostic,
+) -> Result<usize, Diagnostic> {
+    match length {
+        Some(length) if length <= maximum => Ok(length),
+        _ => Err(QueryLimits::annotate_refusal(oversized(), maximum)),
+    }
+}
+
+/// The structural budget of the invocation rows a binding reads from host
+/// values for one authored plan.
+///
+/// A binding reads rows and values one at a time and checks each here before
+/// keeping it, so an oversized invocation is refused before the host
+/// collection is materialized. Bytes are counted as the canonical JSON array
+/// of row arrays the invocation encodes to.
+#[doc(hidden)]
+pub struct QueryInvocationRowBudget<'plan> {
+    plan: &'plan AuthoredQueryPlan,
+    input_bytes: usize,
+}
+
+impl<'plan> QueryInvocationRowBudget<'plan> {
+    /// Start an empty budget (`[]`) for `plan`.
+    #[must_use]
+    pub const fn new(plan: &'plan AuthoredQueryPlan) -> Self {
+        Self {
+            plan,
+            input_bytes: 2,
+        }
+    }
+
+    /// The columns each row must carry, in order.
+    #[must_use]
+    pub fn columns(&self) -> &'plan [InputColumn] {
+        self.plan.input_columns()
+    }
+
+    /// Bound the host-reported row count by the plan's `input_rows`.
+    pub fn row_count(&self, length: Option<usize>) -> Result<usize, Diagnostic> {
+        query_builder_bounded_len(
+            length,
+            self.plan.limits().structural.input_rows,
+            query_builder_invocation_row_limit_error,
+        )
+    }
+
+    /// Admit row `row_index` with the host-reported number of values.
+    ///
+    /// The row must carry exactly one value per column; its brackets and
+    /// separator are charged to the byte budget.
+    pub fn open_row(
+        &mut self,
+        row_index: usize,
+        value_count: Option<usize>,
+    ) -> Result<usize, Diagnostic> {
+        let limits = self.plan.limits().structural;
+        let value_count = query_builder_bounded_len(
+            value_count,
+            limits.bindings,
+            query_builder_invocation_row_arity_error,
+        )?;
+        if value_count != self.columns().len() {
+            return Err(query_builder_invocation_row_arity_error());
+        }
+        self.charge(usize::from(row_index > 0).saturating_add(2))?;
+        Ok(value_count)
+    }
+
+    /// Charge value `column_index` of the open row (`None` is JSON `null`).
+    pub fn add_value(
+        &mut self,
+        column_index: usize,
+        value: &Option<CanonicalValue>,
+    ) -> Result<(), Diagnostic> {
+        let encoded = serde_json::to_vec(value).map_err(|_| self.refusal())?;
+        self.charge(usize::from(column_index > 0).saturating_add(encoded.len()))
+    }
+
+    fn charge(&mut self, bytes: usize) -> Result<(), Diagnostic> {
+        self.input_bytes = self.input_bytes.saturating_add(bytes);
+        if self.input_bytes > self.plan.limits().structural.input_bytes {
+            return Err(self.refusal());
+        }
+        Ok(())
+    }
+
+    fn refusal(&self) -> Diagnostic {
+        QueryLimits::annotate_refusal(
+            query_builder_invocation_input_byte_limit_error(),
+            self.plan.limits().structural.input_bytes,
+        )
+    }
+}
+
 /// Convert an exact host integer into a bounded reachability depth.
 #[doc(hidden)]
 pub fn query_builder_depth(value: i128) -> Result<u8, Diagnostic> {
@@ -776,7 +856,10 @@ impl PatternMetrics {
         root_only: Some(RootOnlyPattern::FunctionCall),
     };
 
-    fn composite(children: impl IntoIterator<Item = Self>) -> Result<Self, Diagnostic> {
+    fn composite(
+        limits: StructuralLimits,
+        children: impl IntoIterator<Item = Self>,
+    ) -> Result<Self, Diagnostic> {
         let mut depth = 1usize;
         let mut nodes = 1usize;
         for child in children {
@@ -788,24 +871,24 @@ impl PatternMetrics {
             nodes,
             root_only: None,
         };
-        metrics.ensure_bounded()?;
+        metrics.ensure_bounded(limits)?;
         Ok(metrics)
     }
 
-    fn ensure_bounded(self) -> Result<(), Diagnostic> {
-        if self.depth > MAX_PREDICATE_DEPTH {
-            return Err(builder_failure(
+    fn ensure_bounded(self, limits: StructuralLimits) -> Result<(), Diagnostic> {
+        if self.depth > limits.predicate_depth {
+            return Err(limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_depth_limit",
                 "plan pattern depth exceeds the structural ceiling",
-            ));
+            )));
         }
-        if self.nodes > MAX_PREDICATE_NODES {
-            return Err(builder_failure(
+        if self.nodes > limits.predicate_nodes {
+            return Err(limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_node_limit",
                 "plan pattern count exceeds the structural ceiling",
-            ));
+            )));
         }
         Ok(())
     }
@@ -1258,6 +1341,13 @@ impl AuthoredQueryPlan {
     pub fn input_columns(&self) -> &[InputColumn] {
         self.plan.inputs()
     }
+
+    /// Return the limits this plan was authored under.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.plan.limits()
+    }
 }
 
 /// One immutable typed invocation bound to an authored plan fingerprint.
@@ -1330,6 +1420,7 @@ pub struct QueryPlanBuilder {
     bindings: Vec<BindingDeclaration>,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
+    limits: QueryLimits,
     owner: HandleOwner,
     pattern_nodes: usize,
     pipeline: Vec<AuthoredStage>,
@@ -1403,12 +1494,14 @@ impl QueryPlanBuilder {
     /// Start one builder under exactly one schema authority.
     #[must_use]
     pub fn new(authority: Arc<QueryAuthority>) -> Self {
+        let limits = authority.limits();
         let owner = HandleOwner::new(authority.identity());
         Self {
             authority,
             bindings: Vec::new(),
             functions: Vec::new(),
             inputs: Vec::new(),
+            limits,
             owner,
             pattern_nodes: 0,
             pipeline: Vec::new(),
@@ -1423,7 +1516,7 @@ impl QueryPlanBuilder {
     pub(crate) fn finalize_compatibility(
         input: QueryCompatibilityPlanInput,
         context: &MigrationAssertionValidationContext<'_>,
-        limits: StructuralLimits,
+        limits: QueryLimits,
     ) -> Result<ValidatedQuery, Diagnostic> {
         validate_components(
             QueryPlanComponents {
@@ -1437,6 +1530,15 @@ impl QueryPlanBuilder {
             context,
             limits,
         )
+    }
+
+    /// Return the limits this builder authors under.
+    ///
+    /// A binding reads these to bound foreign input before materializing it,
+    /// so its early refusals use the same ceilings as the builder's own.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
     }
 
     /// Return the first finalized value, if finalization succeeded.
@@ -1454,12 +1556,16 @@ impl QueryPlanBuilder {
         variable: impl Into<String>,
     ) -> Result<QueryBindingHandle, Diagnostic> {
         self.ensure_active()?;
-        if !StructuralLimits::CANONICAL.allows_bindings(self.bindings.len() + 1) {
-            return Err(builder_failure(
+        if !self
+            .limits
+            .structural
+            .allows_bindings(self.bindings.len() + 1)
+        {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_builder_authored_binding_limit",
                 "authored binding symbols exceed the canonical binding ceiling",
-            ));
+            )));
         }
         let variable = QueryVariable::new(variable)?;
         let id = AuthoredBindingId(self.bindings.len());
@@ -1481,12 +1587,16 @@ impl QueryPlanBuilder {
         optional: bool,
     ) -> Result<QueryInputHandle, Diagnostic> {
         self.ensure_active()?;
-        if !StructuralLimits::CANONICAL.allows_bindings(self.inputs.len() + 1) {
-            return Err(builder_failure(
+        if !self
+            .limits
+            .structural
+            .allows_bindings(self.inputs.len() + 1)
+        {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_input_limit",
                 "plan input column count exceeds the structural ceiling",
-            ));
+            )));
         }
         let public_name = QueryVariable::new(public_name)?;
         if self
@@ -1504,11 +1614,11 @@ impl QueryPlanBuilder {
             ));
         }
         let ordinal = u16::try_from(self.inputs.len()).map_err(|_| {
-            builder_failure(
+            self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_input_limit",
                 "plan input column count exceeds the structural ceiling",
-            )
+            ))
         })?;
         let id = InputColumnId::new(ordinal);
         self.inputs
@@ -1596,8 +1706,10 @@ impl QueryPlanBuilder {
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_owner(&relation.owner)?;
-        if players.is_empty() || players.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_role_player_limit_error());
+        if players.is_empty() || players.len() > self.limits.structural.boolean_terms {
+            return Err(self
+                .limits
+                .annotate(query_builder_role_player_limit_error()));
         }
         let mut authored = Vec::with_capacity(players.len());
         for (role, player) in players {
@@ -1632,11 +1744,16 @@ impl QueryPlanBuilder {
     pub fn not(&self, patterns: Vec<QueryPatternHandle>) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_pattern_owners(&patterns)?;
-        if patterns.is_empty() || patterns.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_negation_term_limit_error());
+        if patterns.is_empty() || patterns.len() > self.limits.structural.boolean_terms {
+            return Err(self
+                .limits
+                .annotate(query_builder_negation_term_limit_error()));
         }
         self.ensure_patterns_nestable(&patterns)?;
-        let metrics = PatternMetrics::composite(patterns.iter().map(|pattern| pattern.metrics))?;
+        let metrics = PatternMetrics::composite(
+            self.limits.structural,
+            patterns.iter().map(|pattern| pattern.metrics),
+        )?;
         let patterns = patterns
             .into_iter()
             .map(|pattern| pattern.pattern)
@@ -1650,21 +1767,25 @@ impl QueryPlanBuilder {
         branches: Vec<Vec<QueryPatternHandle>>,
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
-        if branches.is_empty() || branches.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_disjunction_term_limit_error());
+        if branches.is_empty() || branches.len() > self.limits.structural.boolean_terms {
+            return Err(self
+                .limits
+                .annotate(query_builder_disjunction_term_limit_error()));
         }
         let mut authored = Vec::with_capacity(branches.len());
         let mut child_metrics = Vec::new();
         for branch in branches {
             self.ensure_pattern_owners(&branch)?;
-            if branch.is_empty() || branch.len() > MAX_BOOLEAN_TERMS {
-                return Err(query_builder_disjunction_term_limit_error());
+            if branch.is_empty() || branch.len() > self.limits.structural.boolean_terms {
+                return Err(self
+                    .limits
+                    .annotate(query_builder_disjunction_term_limit_error()));
             }
             self.ensure_patterns_nestable(&branch)?;
             child_metrics.extend(branch.iter().map(|pattern| pattern.metrics));
             authored.push(branch.into_iter().map(|pattern| pattern.pattern).collect());
         }
-        let metrics = PatternMetrics::composite(child_metrics)?;
+        let metrics = PatternMetrics::composite(self.limits.structural, child_metrics)?;
         self.pattern_with_metrics(AuthoredPattern::Or { branches: authored }, metrics)
     }
 
@@ -1675,8 +1796,8 @@ impl QueryPlanBuilder {
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_pattern_owners(&patterns)?;
-        if patterns.is_empty() || patterns.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_try_term_limit_error());
+        if patterns.is_empty() || patterns.len() > self.limits.structural.boolean_terms {
+            return Err(self.limits.annotate(query_builder_try_term_limit_error()));
         }
         if patterns.iter().any(|pattern| !pattern.pattern.is_flat()) {
             return Err(builder_failure(
@@ -1685,8 +1806,10 @@ impl QueryPlanBuilder {
                 "the first optional vocabulary admits only isa, has, links, and value patterns",
             ));
         }
-        let mut metrics =
-            PatternMetrics::composite(patterns.iter().map(|pattern| pattern.metrics))?;
+        let mut metrics = PatternMetrics::composite(
+            self.limits.structural,
+            patterns.iter().map(|pattern| pattern.metrics),
+        )?;
         metrics.root_only = Some(RootOnlyPattern::Try);
         let patterns = patterns
             .into_iter()
@@ -1720,20 +1843,20 @@ impl QueryPlanBuilder {
                 "reachability minimum depth must not exceed its maximum depth",
             ));
         }
-        if usize::from(max_depth) > MAX_PREDICATE_DEPTH {
-            return Err(builder_failure(
+        if usize::from(max_depth) > self.limits.structural.predicate_depth {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_reachable_depth",
                 "reachability requires a finite hop bound within the depth ceiling",
-            ));
+            )));
         }
         let expanded = reachability_nodes(min_depth, max_depth);
-        if expanded > MAX_PREDICATE_NODES {
-            return Err(builder_failure(
+        if expanded > self.limits.structural.predicate_nodes {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_reachable_expansion_limit",
                 "reachability expansion exceeds the plan pattern-node ceiling",
-            ));
+            )));
         }
         self.pattern_with_metrics(
             AuthoredPattern::Reachable {
@@ -1762,8 +1885,10 @@ impl QueryPlanBuilder {
     ) -> Result<QueryPatternHandle, Diagnostic> {
         self.ensure_active()?;
         self.ensure_owner(&assigned.owner)?;
-        if arguments.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_function_argument_limit_error());
+        if arguments.len() > self.limits.structural.boolean_terms {
+            return Err(self
+                .limits
+                .annotate(query_builder_function_argument_limit_error()));
         }
         let function = match function {
             QueryFunctionTarget::Schema(function) => function,
@@ -1900,15 +2025,21 @@ impl QueryPlanBuilder {
                 "a plan-local function cannot shadow a schema function",
             ));
         }
-        if !StructuralLimits::CANONICAL.allows_bindings(self.functions.len() + 1) {
-            return Err(builder_failure(
+        if !self
+            .limits
+            .structural
+            .allows_bindings(self.functions.len() + 1)
+        {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_local_function_limit",
                 "plan-local function count exceeds the structural ceiling",
-            ));
+            )));
         }
-        if bindings.is_empty() || !StructuralLimits::CANONICAL.allows_bindings(bindings.len()) {
-            return Err(query_builder_local_binding_limit_error());
+        if bindings.is_empty() || !self.limits.structural.allows_bindings(bindings.len()) {
+            return Err(self
+                .limits
+                .annotate(query_builder_local_binding_limit_error()));
         }
         if parameters.is_empty() || parameters.len() > bindings.len() {
             return Err(builder_failure(
@@ -1917,8 +2048,8 @@ impl QueryPlanBuilder {
                 "parameters must be a non-empty subset of local bindings",
             ));
         }
-        if body.is_empty() || body.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_local_body_limit_error());
+        if body.is_empty() || body.len() > self.limits.structural.boolean_terms {
+            return Err(self.limits.annotate(query_builder_local_body_limit_error()));
         }
 
         let consumed = self.binding_handle_set(&bindings)?;
@@ -1972,12 +2103,16 @@ impl QueryPlanBuilder {
             ));
         }
         let aggregate_nodes = self.pattern_nodes.saturating_add(body.len());
-        if !StructuralLimits::CANONICAL.allows_predicate_nodes(aggregate_nodes) {
-            return Err(builder_failure(
+        if !self
+            .limits
+            .structural
+            .allows_predicate_nodes(aggregate_nodes)
+        {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_node_limit",
                 "aggregate local and root pattern count exceeds the structural ceiling",
-            ));
+            )));
         }
 
         let mut referenced = BTreeSet::new();
@@ -2054,14 +2189,18 @@ impl QueryPlanBuilder {
             return Err(stage_order_failure());
         }
         let patterns = self.pattern_values(patterns)?;
-        let root_nodes = validate_root_patterns(&patterns)?;
+        let root_nodes = validate_root_patterns(self.limits.structural, &patterns)?;
         let aggregate_nodes = self.pattern_nodes.saturating_add(root_nodes);
-        if !StructuralLimits::CANONICAL.allows_predicate_nodes(aggregate_nodes) {
-            return Err(builder_failure(
+        if !self
+            .limits
+            .structural
+            .allows_predicate_nodes(aggregate_nodes)
+        {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_pattern_node_limit",
                 "aggregate local and root pattern count exceeds the structural ceiling",
-            ));
+            )));
         }
         let symbols = pattern_bindings(&patterns);
         self.preflight_scope_claim(&symbols, BindingScope::Root)?;
@@ -2137,8 +2276,10 @@ impl QueryPlanBuilder {
         groups: Vec<QueryBindingHandle>,
     ) -> Result<(), Diagnostic> {
         self.preflight_stage(4)?;
-        if assignments.is_empty() || assignments.len() > MAX_BOOLEAN_TERMS {
-            return Err(query_builder_reduce_term_limit_error());
+        if assignments.is_empty() || assignments.len() > self.limits.structural.boolean_terms {
+            return Err(self
+                .limits
+                .annotate(query_builder_reduce_term_limit_error()));
         }
         let groups = self.sorted_binding_handles(groups, false)?;
         for assignment in &assignments {
@@ -2216,8 +2357,8 @@ impl QueryPlanBuilder {
     /// Attach one ordered total-sort stage.
     pub fn sort(&mut self, terms: Vec<QueryOrderHandle>) -> Result<(), Diagnostic> {
         self.preflight_stage(5)?;
-        if terms.is_empty() || !StructuralLimits::CANONICAL.allows_order_terms(terms.len()) {
-            return Err(query_builder_sort_term_limit_error());
+        if terms.is_empty() || !self.limits.structural.allows_order_terms(terms.len()) {
+            return Err(self.limits.annotate(query_builder_sort_term_limit_error()));
         }
         let mut symbols = BTreeSet::new();
         let mut authored = Vec::with_capacity(terms.len());
@@ -2304,8 +2445,8 @@ impl QueryPlanBuilder {
     ) -> Result<AuthoredQueryPlan, Diagnostic> {
         self.ensure_active()?;
         self.ensure_match_attached()?;
-        if columns.is_empty() || !StructuralLimits::CANONICAL.allows_selected_slots(columns.len()) {
-            return Err(query_builder_row_output_limit_error());
+        if columns.is_empty() || !self.limits.structural.allows_selected_slots(columns.len()) {
+            return Err(self.limits.annotate(query_builder_row_output_limit_error()));
         }
         let mut seen = BTreeSet::new();
         let mut authored = Vec::with_capacity(columns.len());
@@ -2338,8 +2479,10 @@ impl QueryPlanBuilder {
     ) -> Result<AuthoredQueryPlan, Diagnostic> {
         self.ensure_active()?;
         self.ensure_match_attached()?;
-        if fields.is_empty() || !StructuralLimits::CANONICAL.allows_selected_slots(fields.len()) {
-            return Err(query_builder_document_output_limit_error());
+        if fields.is_empty() || !self.limits.structural.allows_selected_slots(fields.len()) {
+            return Err(self
+                .limits
+                .annotate(query_builder_document_output_limit_error()));
         }
         let mut keys = BTreeSet::new();
         let mut authored = Vec::with_capacity(fields.len());
@@ -2389,12 +2532,12 @@ impl QueryPlanBuilder {
                 (binding.scope == Some(BindingScope::Root)).then_some(AuthoredBindingId(index))
             })
             .collect::<Vec<_>>();
-        if root_order.is_empty() || !StructuralLimits::CANONICAL.allows_bindings(root_order.len()) {
-            return Err(builder_failure(
+        if root_order.is_empty() || !self.limits.structural.allows_bindings(root_order.len()) {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_binding_limit",
                 "plan binding count is empty or exceeds the structural ceiling",
-            ));
+            )));
         }
         let map = dense_binding_map(&root_order, self.bindings.len())?;
         let bindings = root_order
@@ -2422,7 +2565,7 @@ impl QueryPlanBuilder {
                 compatibility: QueryPlanV2Compatibility::native(),
             },
             &self.authority.context(),
-            StructuralLimits::CANONICAL,
+            self.limits,
         )?;
         let plan = validated.plan().clone();
         let canonical_bytes = plan.canonical_bytes()?;
@@ -2465,7 +2608,7 @@ impl QueryPlanBuilder {
         pattern: AuthoredPattern,
         metrics: PatternMetrics,
     ) -> Result<QueryPatternHandle, Diagnostic> {
-        metrics.ensure_bounded()?;
+        metrics.ensure_bounded(self.limits.structural)?;
         Ok(QueryPatternHandle {
             metrics,
             owner: self.owner.clone(),
@@ -2558,12 +2701,12 @@ impl QueryPlanBuilder {
                     .then_some(id)
             })
             .collect::<Vec<_>>();
-        if root_order.is_empty() || !StructuralLimits::CANONICAL.allows_bindings(root_order.len()) {
-            return Err(builder_failure(
+        if root_order.is_empty() || !self.limits.structural.allows_bindings(root_order.len()) {
+            return Err(self.limits.annotate(builder_failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_binding_limit",
                 "plan binding count is empty or exceeds the structural ceiling",
-            ));
+            )));
         }
         let map = dense_binding_map(&root_order, self.bindings.len())?;
         let bindings = root_order
@@ -2600,7 +2743,7 @@ impl QueryPlanBuilder {
                 compatibility: QueryPlanV2Compatibility::native(),
             },
             &self.authority.context(),
-            StructuralLimits::CANONICAL,
+            self.limits,
         )?;
         Ok(())
     }
@@ -2689,10 +2832,9 @@ impl QueryPlanBuilder {
                 }
             }
         }
-        if scope == BindingScope::Root
-            && !StructuralLimits::CANONICAL.allows_bindings(prospective_count)
+        if scope == BindingScope::Root && !self.limits.structural.allows_bindings(prospective_count)
         {
-            return Err(query_builder_binding_limit_error());
+            return Err(self.limits.annotate(query_builder_binding_limit_error()));
         }
         Ok(())
     }
@@ -3112,48 +3254,52 @@ impl AuthoredOperand {
     }
 }
 
-fn validate_root_patterns(patterns: &[Arc<AuthoredPattern>]) -> Result<usize, Diagnostic> {
-    if patterns.is_empty() || patterns.len() > MAX_BOOLEAN_TERMS {
-        return Err(query_builder_root_pattern_limit_error());
+fn validate_root_patterns(
+    limits: StructuralLimits,
+    patterns: &[Arc<AuthoredPattern>],
+) -> Result<usize, Diagnostic> {
+    if patterns.is_empty() || patterns.len() > limits.boolean_terms {
+        return Err(limits.annotate(query_builder_root_pattern_limit_error()));
     }
     let mut nodes = 0usize;
     for pattern in patterns {
-        inspect_authored_pattern(pattern, 1, &mut nodes)?;
+        inspect_authored_pattern(limits, pattern, 1, &mut nodes)?;
     }
     Ok(nodes)
 }
 
 fn inspect_authored_pattern(
+    limits: StructuralLimits,
     pattern: &AuthoredPattern,
     depth: usize,
     nodes: &mut usize,
 ) -> Result<(), Diagnostic> {
     *nodes = nodes.saturating_add(1);
-    if *nodes > MAX_PREDICATE_NODES {
-        return Err(builder_failure(
+    if *nodes > limits.predicate_nodes {
+        return Err(limits.annotate(builder_failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_pattern_node_limit",
             "plan pattern count exceeds the structural ceiling",
-        ));
+        )));
     }
-    if depth > MAX_PREDICATE_DEPTH {
-        return Err(builder_failure(
+    if depth > limits.predicate_depth {
+        return Err(limits.annotate(builder_failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_pattern_depth_limit",
             "plan pattern depth exceeds the structural ceiling",
-        ));
+        )));
     }
     match pattern {
         AuthoredPattern::Or { branches } => {
             for branch in branches {
                 for child in branch {
-                    inspect_authored_pattern(child, depth + 1, nodes)?;
+                    inspect_authored_pattern(limits, child, depth + 1, nodes)?;
                 }
             }
         }
         AuthoredPattern::Not { patterns } => {
             for child in patterns {
-                inspect_authored_pattern(child, depth + 1, nodes)?;
+                inspect_authored_pattern(limits, child, depth + 1, nodes)?;
             }
         }
         AuthoredPattern::Try { patterns } => {
@@ -3165,7 +3311,7 @@ fn inspect_authored_pattern(
                 ));
             }
             for child in patterns {
-                inspect_authored_pattern(child, depth + 1, nodes)?;
+                inspect_authored_pattern(limits, child, depth + 1, nodes)?;
             }
         }
         AuthoredPattern::Reachable {
@@ -3181,12 +3327,12 @@ fn inspect_authored_pattern(
                 ));
             }
             *nodes = nodes.saturating_add(reachability_nodes(*min_depth, *max_depth) - 1);
-            if *nodes > MAX_PREDICATE_NODES {
-                return Err(builder_failure(
+            if *nodes > limits.predicate_nodes {
+                return Err(limits.annotate(builder_failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_reachable_expansion_limit",
                     "reachability expansion exceeds the plan pattern-node ceiling",
-                ));
+                )));
             }
         }
         AuthoredPattern::FunctionCall { .. } if depth > 1 => {
@@ -3227,9 +3373,9 @@ fn pattern_bindings(patterns: &[Arc<AuthoredPattern>]) -> BTreeSet<AuthoredBindi
 fn validate_components(
     components: QueryPlanComponents,
     context: &MigrationAssertionValidationContext<'_>,
-    limits: StructuralLimits,
+    limits: QueryLimits,
 ) -> Result<ValidatedQuery, Diagnostic> {
-    let plan = QueryPlan::new_v2_with_functions(
+    let plan = QueryPlan::new_v2_with_functions_and_limits(
         components.bindings,
         components.functions,
         components.inputs,
@@ -3237,8 +3383,9 @@ fn validate_components(
         components.output,
         components.compatibility,
         context.managed_state().managed_semantic_schema().clone(),
+        limits,
     )?;
-    validate_query_plan(&plan, context, limits)
+    validate_query_plan(&plan, context, limits.structural)
 }
 
 fn dense_binding_map(
@@ -3427,7 +3574,9 @@ mod completeness_guard {
         }
         fn row_cardinality(value: QueryRowCardinalityV2) {
             match value {
-                QueryRowCardinalityV2::ExactlyOne | QueryRowCardinalityV2::BoundedMany => {}
+                QueryRowCardinalityV2::ExactlyOne
+                | QueryRowCardinalityV2::BoundedMany
+                | QueryRowCardinalityV2::Complete => {}
             }
         }
         fn model_slot(value: &QueryModelOutputSlotV2) {

@@ -18,8 +18,8 @@ Use the derive only on the generated selection shapes described in the
 are not a TypeBridge schema-authoring path.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.2.6 and requires Rust 1.88+. Generated clients target the TypeBridge 2.1
-TypeDB range of 3.11.x–3.12.x.
+2.2.6 and requires Rust 1.88+. Generated clients target TypeDB
+3.11.x–3.13.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-orm-derive/2.2.6) ·

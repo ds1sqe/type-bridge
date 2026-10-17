@@ -8,18 +8,19 @@ compile_error!(
 );
 
 use super::{CommitCertainty, CommitFailure, ExecuteError};
+use type_bridge_orm::session::backend::DriverBackend as _;
 use type_bridge_typedb_runtime as runtime;
 
 use runtime::PreparedSecureConnectOptions;
 pub use runtime::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B9};
 
-use super::backend::{BoxFuture, DriverBackend, QueryResultKind, TransactionOps, TransactionType};
+use super::backend::{BoxFuture, DriverBackend, QueryResultKind};
 use crate::config::{OutboundTlsMode, SecureTypeDBSection, TypeDBSection};
 use crate::error::PipelineError;
 
 /// Real TypeDB backend wrapping the shared runtime.
 pub(crate) struct RealTypeDBBackend {
-    inner: runtime::TypeDBRuntime,
+    inner: type_bridge_orm::session::real_driver::RealBackend,
 }
 
 impl RealTypeDBBackend {
@@ -30,7 +31,7 @@ impl RealTypeDBBackend {
     /// to gRPC-only negotiation when the HTTP endpoint is unavailable.
     pub(crate) async fn connect(config: &TypeDBSection) -> Result<Self, PipelineError> {
         let options = connect_options(config)?;
-        let inner = runtime::TypeDBRuntime::connect(
+        let inner = type_bridge_orm::session::real_driver::RealBackend::connect(
             &config.address,
             &config.username,
             &config.password,
@@ -48,29 +49,44 @@ impl RealTypeDBBackend {
         password: &str,
         options: PreparedSecureConnectOptions,
     ) -> Result<Self, PipelineError> {
-        let inner =
-            runtime::TypeDBRuntime::connect_prepared_secure(address, username, password, options)
-                .await
-                .map_err(sanitize_prepared_connect_error)?;
+        let inner = type_bridge_orm::session::real_driver::RealBackend::connect_prepared_secure(
+            address, username, password, options,
+        )
+        .await
+        .map_err(sanitize_prepared_connect_error)?;
         Ok(Self { inner })
+    }
+    pub(crate) fn database_handle(&self, database: &str) -> type_bridge_orm::Database {
+        type_bridge_orm::Database::with_backend(Box::new(self.inner.clone()), database)
     }
 }
 
 impl DriverBackend for RealTypeDBBackend {
-    fn open_transaction(
+    fn execute(
         &self,
         database: &str,
-        tx_type: TransactionType,
-    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, PipelineError>> {
-        let runtime_tx_type = runtime_tx_type(tx_type);
-        let database = database.to_string();
+        typeql: &str,
+        options: type_bridge_orm::session::staged::TransactionOptions,
+    ) -> BoxFuture<'_, Result<QueryResultKind, ExecuteError>> {
+        let database = self.database_handle(database);
+        let typeql = typeql.to_owned();
         Box::pin(async move {
-            let inner = self
-                .inner
-                .open_transaction(&database, runtime_tx_type)
+            let writes =
+                options.kind != Some(type_bridge_orm::session::staged::TransactionKind::Read);
+            let mut transaction = database.transaction(options);
+            let answer = transaction
+                .stage(type_bridge_orm::session::staged::StagedQuery::new(
+                    typeql, writes,
+                ))
+                .map_err(|error| PipelineError::QueryExecution(error.to_string()))?;
+            transaction
+                .commit()
                 .await
-                .map_err(PipelineError::from)?;
-            Ok(Box::new(RealTransaction { inner }) as Box<dyn TransactionOps>)
+                .map_err(|error| ExecuteError::from(*error.error))?;
+            let answer = answer
+                .get()
+                .map_err(|error| PipelineError::QueryExecution(error.to_string()))?;
+            Ok(query_result_kind((*answer).clone()))
         })
     }
 
@@ -106,32 +122,6 @@ impl DriverBackend for RealTypeDBBackend {
 
     fn is_open(&self) -> bool {
         self.inner.is_open()
-    }
-}
-
-struct RealTransaction {
-    inner: runtime::RuntimeTransaction,
-}
-
-impl TransactionOps for RealTransaction {
-    fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResultKind, PipelineError>> {
-        let typeql = typeql.to_string();
-        Box::pin(async move {
-            self.inner
-                .query(&typeql)
-                .await
-                .map(query_result_kind)
-                .map_err(PipelineError::from)
-        })
-    }
-
-    fn commit(&mut self) -> BoxFuture<'_, Result<(), ExecuteError>> {
-        Box::pin(async move {
-            self.inner
-                .commit_classified()
-                .await
-                .map_err(ExecuteError::from)
-        })
     }
 }
 
@@ -230,19 +220,13 @@ pub(crate) fn sanitize_prepared_connect_error(error: runtime::SecureConnectError
     }
 }
 
-fn runtime_tx_type(tx_type: TransactionType) -> runtime::TxType {
-    match tx_type {
-        TransactionType::Read => runtime::TxType::Read,
-        TransactionType::Write => runtime::TxType::Write,
-        TransactionType::Schema => runtime::TxType::Schema,
-    }
-}
-
-fn query_result_kind(result: runtime::QueryResult) -> QueryResultKind {
+fn query_result_kind(result: type_bridge_orm::session::backend::QueryResult) -> QueryResultKind {
     match result {
-        runtime::QueryResult::Ok => QueryResultKind::Ok,
-        runtime::QueryResult::Rows(rows) => QueryResultKind::Rows(rows),
-        runtime::QueryResult::Documents(docs) => QueryResultKind::Documents(docs),
+        type_bridge_orm::session::backend::QueryResult::Ok => QueryResultKind::Ok,
+        type_bridge_orm::session::backend::QueryResult::Rows(rows) => QueryResultKind::Rows(rows),
+        type_bridge_orm::session::backend::QueryResult::Documents(docs) => {
+            QueryResultKind::Documents(docs)
+        }
     }
 }
 
@@ -263,6 +247,7 @@ impl From<runtime::RuntimeError> for PipelineError {
 
 impl From<runtime::RuntimeCommitError> for ExecuteError {
     fn from(error: runtime::RuntimeCommitError) -> Self {
+        let failure = Some(error.failure());
         match error {
             runtime::RuntimeCommitError::Runtime(error) => Self::Pipeline(error.into()),
             runtime::RuntimeCommitError::Driver { certainty, message } => CommitFailure {
@@ -271,6 +256,7 @@ impl From<runtime::RuntimeCommitError> for ExecuteError {
                     runtime::CommitFailureCertainty::Unknown => CommitCertainty::Indeterminate,
                 },
                 message,
+                failure,
             }
             .into(),
         }
@@ -292,12 +278,71 @@ impl From<runtime::SecureConnectError> for PipelineError {
     }
 }
 
+impl From<type_bridge_orm::OrmError> for PipelineError {
+    fn from(error: type_bridge_orm::OrmError) -> Self {
+        match error {
+            type_bridge_orm::OrmError::UnsupportedVersion(error) => Self::UnsupportedVersion(error),
+            type_bridge_orm::OrmError::Connection(message) => Self::Connection(message),
+            type_bridge_orm::OrmError::QueryExecution(message)
+            | type_bridge_orm::OrmError::Transaction(message) => Self::QueryExecution(message),
+            other => Self::QueryExecution(other.to_string()),
+        }
+    }
+}
+impl From<type_bridge_orm::ClassifiedCommitError> for ExecuteError {
+    fn from(error: type_bridge_orm::ClassifiedCommitError) -> Self {
+        let failure = error.failure();
+        match error {
+            type_bridge_orm::ClassifiedCommitError::Orm(error) => Self::Pipeline(error.into()),
+            type_bridge_orm::ClassifiedCommitError::Driver { certainty, message } => {
+                CommitFailure {
+                    certainty: match certainty {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted => {
+                            CommitCertainty::Rejected
+                        }
+                        type_bridge_orm::CommitFailureCertainty::Unknown => {
+                            CommitCertainty::Indeterminate
+                        }
+                    },
+                    message,
+                    failure,
+                }
+                .into()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::error::Error as _;
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn core_commit_failure_preserves_certainty_and_original_text() {
+        for (certainty, expected) in [
+            (
+                type_bridge_orm::CommitFailureCertainty::DefinitelyAborted,
+                CommitCertainty::Rejected,
+            ),
+            (
+                type_bridge_orm::CommitFailureCertainty::Unknown,
+                CommitCertainty::Indeterminate,
+            ),
+        ] {
+            let error = ExecuteError::from(type_bridge_orm::ClassifiedCommitError::Driver {
+                certainty,
+                message: "original provider text".into(),
+            });
+            let ExecuteError::Commit(failure) = error else {
+                panic!("commit certainty was lost");
+            };
+            assert_eq!(failure.certainty, expected);
+            assert_eq!(failure.message, "original provider text");
+        }
+    }
 
     fn released_config() -> TypeDBSection {
         TypeDBSection {

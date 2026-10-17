@@ -11,6 +11,10 @@
 // using the same absolute imports in both compilation contexts.
 extern crate self as type_bridge_migration;
 
+#[cfg(test)]
+#[macro_use]
+mod typeql_test;
+
 pub mod adoption;
 pub mod author;
 pub mod backfill;

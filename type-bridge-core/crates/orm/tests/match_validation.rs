@@ -544,7 +544,35 @@ fn shape_page_order_and_stable_key_rules_are_operation_specific() {
             limit: 1,
         };
     }
-    no_key.validate(&registry).unwrap();
+    no_key.clone().validate(&registry).unwrap();
+
+    // A complete fetch cuts nothing off, so it needs no key either. It
+    // admits neither an offset nor an order.
+    let complete = |offset: u64, ordered: bool| {
+        let mut request = no_key.clone();
+        if let MatchOperation::FetchRows {
+            cardinality,
+            window,
+            order,
+            ..
+        } = &mut request.operation
+        {
+            *cardinality = RowCardinality::Complete;
+            *window = Window { offset, limit: 10 };
+            if ordered {
+                order.push(MatchOrder {
+                    field: field(&registry, 0, "skill", "label"),
+                    direction: SortDirection::Ascending,
+                    missing: MissingOrder::Reject,
+                });
+            }
+        }
+        request.validate(&registry)
+    };
+    let validated = complete(0, false).unwrap();
+    assert!(validated.stable_order().terms().is_empty());
+    assert_eq!(code(complete(5, false)), "invalid_complete_rows");
+    assert_eq!(code(complete(0, true)), "invalid_complete_rows");
 
     let unstable_collection = MatchRequest::v1(
         MatchPlan {

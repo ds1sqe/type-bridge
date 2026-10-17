@@ -4,6 +4,7 @@
 //! provider transaction, and executes under a mandatory server deadline. The
 //! typed request/result bytes remain owned by `type-bridge-contract`.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::future::Future;
@@ -21,24 +22,22 @@ use axum::routing::{get, post};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::query_remote::{
-    RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteExecutorBinding, RemoteQueryFailure,
+    RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteExecutorBinding,
 };
-#[cfg(test)]
-use type_bridge_contract::query_remote::{RemoteReply, decode_remote_reply};
 use type_bridge_contract::query_remote_v2::{
     CAP_QUERY_REMOTE_STATEMENT_LIMIT, query_remote_v2_required_capabilities,
 };
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
-use type_bridge_orm::Transaction;
+use type_bridge_orm::OwnedTransaction as Transaction;
 use type_bridge_orm::query_v2_prepared::{
     acquire_live_authority_rebuild_permit, verify_managed_query_control_scope,
 };
 #[cfg(test)]
 use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
 use type_bridge_orm::query_v2_remote::{
-    RemoteReplySigningKey, RemoteRequestFormat, execute_admitted_remote_request_versioned,
-    preflight_remote_request_versioned, remote_request_format,
+    RemoteReplySigningKey, encode_unbound_remote_failure_v2, execute_admitted_remote_request_v2,
+    preflight_remote_request_v2,
 };
 use type_bridge_orm::session::backend::{MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryV2AnswerLimits};
 use type_bridge_orm::session::database::Database;
@@ -46,6 +45,7 @@ use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
+use crate::idempotency::{IdempotencyConfig, IdempotencyStore};
 use crate::interceptor::{RequestContext, V2PolicyOutcome, V2PolicyRequest};
 use crate::pipeline::QueryPipeline;
 
@@ -59,10 +59,10 @@ fn new_v2_preflight_slots() -> Arc<tokio::sync::Semaphore> {
     Arc::new(tokio::sync::Semaphore::new(V2_PREFLIGHT_CONCURRENCY))
 }
 
-static V2_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+pub(super) static V2_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(new_v2_preflight_slots);
 
-async fn await_before_deadline<F>(deadline: Instant, future: F) -> Option<F::Output>
+pub(super) async fn await_before_deadline<F>(deadline: Instant, future: F) -> Option<F::Output>
 where
     F: Future,
 {
@@ -71,7 +71,7 @@ where
         .ok()
 }
 
-async fn close_v2_transaction(transaction: &mut Transaction) -> Result<(), ()> {
+pub(super) async fn close_v2_transaction(transaction: &mut Transaction) -> Result<(), ()> {
     match tokio::time::timeout(TRANSACTION_CLOSE_GRACE, transaction.close()).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) | Err(_) => Err(()),
@@ -185,18 +185,20 @@ impl RemoteReplayStore for InMemoryReplayStore {
 
 /// Everything one V2 query executor needs to serve envelopes.
 pub struct V2QueryState {
-    advertisement: RemoteCapabilities,
+    pub(super) advertisement: RemoteCapabilities,
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
-    ceilings: QueryV2AnswerLimits,
-    database: Database,
-    declared: DeclaredSchema,
+    pub(super) ceilings: QueryV2AnswerLimits,
+    pub(super) database: Database,
+    pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
-    execution_timeout: Duration,
-    replay_store: Arc<dyn RemoteReplayStore>,
-    signer: RemoteReplySigningKey,
+    pub(super) execution_timeout: Duration,
+    pub(super) replay_store: Arc<dyn RemoteReplayStore>,
+    pub(super) signer: RemoteReplySigningKey,
     control_policy: V2QueryControlPolicy,
+    pub(super) idempotency: Arc<IdempotencyStore>,
+    pub(super) allow_unauthenticated_staged_writes: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -292,6 +294,11 @@ impl V2QueryState {
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
             control_policy,
+            idempotency: Arc::new(
+                IdempotencyStore::new(IdempotencyConfig::default())
+                    .expect("default idempotency configuration is valid"),
+            ),
+            allow_unauthenticated_staged_writes: false,
         })
     }
 
@@ -335,6 +342,69 @@ impl V2QueryState {
         Ok(self)
     }
 
+    /// Advertise and enforce `limits` instead of the canonical query limits.
+    ///
+    /// The advertisement is the executor's only statement of its limits and
+    /// admission reads them back from it, so what a client is told and what
+    /// this executor enforces cannot diverge.
+    pub fn with_query_limits(
+        mut self,
+        limits: type_bridge_contract::limits::QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        let advertisement = self.advertisement.clone().with_query_limits(limits)?;
+        self.advertisement_fingerprint = advertisement.fingerprint()?;
+        self.advertisement = advertisement;
+        Ok(self)
+    }
+
+    /// Advertise and enforce `ceilings` instead of the default answer
+    /// policy: how much one query may return through this executor.
+    ///
+    /// As with the query limits, the advertisement is the statement admission
+    /// reads back. The hosting process's provider ceilings follow it, so a
+    /// raised policy is not cut short by an unrelated default.
+    pub fn with_answer_limits(
+        mut self,
+        ceilings: type_bridge_orm::QueryExecutionResourceLimits,
+    ) -> Result<Self, Diagnostic> {
+        let advertisement = self
+            .advertisement
+            .clone()
+            .with_answer_limits(ceilings.overrides())?;
+        self.advertisement_fingerprint = advertisement.fingerprint()?;
+        self.advertisement = advertisement;
+        self.ceilings.answer.max_items = ceilings.items;
+        self.ceilings.answer.max_bytes = ceilings.bytes;
+        self.ceilings.max_collection_members = ceilings.collection_members;
+        Ok(self)
+    }
+
+    /// Largest HTTP body the collector reads: the advertised request budget
+    /// plus framing slack.
+    pub(super) fn body_limit_bytes(&self) -> usize {
+        self.advertisement
+            .query_limits()
+            .remote_request_bytes
+            .saturating_add(V2_BODY_FRAMING_SLACK_BYTES)
+    }
+
+    /// Replace the retained-reply store for keyed `/v3/staged` requests.
+    #[must_use]
+    pub fn with_idempotency_store(mut self, store: Arc<IdempotencyStore>) -> Self {
+        self.idempotency = store;
+        self
+    }
+
+    /// Admit staged write transactions that no interceptor vouches for.
+    ///
+    /// Off by default: a staged write otherwise needs a policy answering
+    /// [`StagedWriteAuthority::Authenticated`](crate::interceptor::StagedWriteAuthority).
+    #[must_use]
+    pub fn with_unauthenticated_staged_writes(mut self, allow: bool) -> Self {
+        self.allow_unauthenticated_staged_writes = allow;
+        self
+    }
+
     /// Tighten the mandatory server execution duration.
     #[must_use]
     pub fn with_execution_timeout(mut self, timeout: Duration) -> Self {
@@ -342,29 +412,16 @@ impl V2QueryState {
         self
     }
 
-    fn signed_failure(&self, failure: &RemoteQueryFailure) -> Vec<u8> {
-        failure.encode_signed_or_fallback(&self.advertisement_fingerprint, &self.signer)
-    }
-
     fn unbound_failure(&self, diagnostic: &Diagnostic) -> Vec<u8> {
-        self.signed_failure(&RemoteQueryFailure::new(None, diagnostic))
+        encode_unbound_remote_failure_v2(
+            None,
+            diagnostic,
+            &self.advertisement_fingerprint,
+            &self.signer,
+        )
     }
 
-    fn unbound_failure_for(&self, format: RemoteRequestFormat, diagnostic: &Diagnostic) -> Vec<u8> {
-        match format {
-            RemoteRequestFormat::V1 => self.unbound_failure(diagnostic),
-            RemoteRequestFormat::V2 => {
-                type_bridge_orm::query_v2_remote::encode_unbound_remote_failure_v2(
-                    None,
-                    diagnostic,
-                    &self.advertisement_fingerprint,
-                    &self.signer,
-                )
-            }
-        }
-    }
-
-    async fn verify_live_authority(&self) -> Result<(), Diagnostic> {
+    pub(super) async fn verify_live_authority(&self) -> Result<(), Diagnostic> {
         self.verify_database_profile()?;
         let rebuild_permit = acquire_live_authority_rebuild_permit().await.map_err(|_| {
             diagnostic(
@@ -604,13 +661,11 @@ struct V2RouterState {
     query: Arc<V2QueryState>,
 }
 
-/// The remote envelope has its own 32 MiB owning-format budget plus framing
-/// slack for the HTTP body collector.
-const V2_BODY_LIMIT_BYTES: usize =
-    type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES + 64 * 1024;
+/// Framing slack the HTTP body collector allows beyond the request budget.
+pub(super) const V2_BODY_FRAMING_SLACK_BYTES: usize = 64 * 1024;
 
-fn declared_v2_body_oversized(headers: &HeaderMap) -> bool {
-    let Ok(limit) = u64::try_from(V2_BODY_LIMIT_BYTES) else {
+pub(super) fn declared_v2_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
+    let Ok(limit) = u64::try_from(limit_bytes) else {
         return false;
     };
     headers.get_all(CONTENT_LENGTH).iter().any(|value| {
@@ -622,13 +677,18 @@ fn declared_v2_body_oversized(headers: &HeaderMap) -> bool {
     })
 }
 
-/// Build the V2 route surface under the same policy pipeline as V1.
+/// Build the V2 route surface under the same policy pipeline as V1, beside
+/// the additive staged V3 routes that share this executor identity.
 pub fn create_v2_router(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Router {
     let state = Arc::new(V2RouterState { pipeline, query });
     Router::new()
         .route("/v2/query", post(handle_v2_query))
         .route("/v2/capabilities", get(handle_v2_capabilities))
-        .with_state(state)
+        .with_state(Arc::clone(&state))
+        .merge(super::v3::create_v3_router(
+            Arc::clone(&state.pipeline),
+            Arc::clone(&state.query),
+        ))
 }
 
 /// Build the complete router: retained V1 routes beside the V2 surface.
@@ -698,7 +758,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
         }
     }
 
-    if declared_v2_body_oversized(request.headers()) {
+    if declared_v2_body_oversized(request.headers(), state.query.body_limit_bytes()) {
         let failure = state.query.unbound_failure(&body_oversized());
         return finish_v2_failure(
             &state,
@@ -751,7 +811,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
 
     let body = match await_before_deadline(
         mandatory_deadline,
-        to_bytes(request.into_body(), V2_BODY_LIMIT_BYTES),
+        to_bytes(request.into_body(), state.query.body_limit_bytes()),
     )
     .await
     {
@@ -783,12 +843,6 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
             .await;
         }
     };
-    // Select the additive payload version from the explicit discriminator
-    // before either decoder reconstructs a plan or invocation. Unknown and
-    // malformed formats intentionally retain the historical V1 rejection
-    // path.
-    let request_format = remote_request_format(&body);
-
     // Contract/schema/capability work is provider-independent and runs in a
     // bounded blocking pool. The owned permit remains in the blocking task if
     // the async request deadline elapses, preventing detached CPU saturation.
@@ -798,8 +852,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
     let preflight = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let context = MigrationAssertionValidationContext::new(&resolved, &managed);
-        preflight_remote_request_versioned(&body, &context, &advertisement, ceilings)
-            .map_err(Box::new)
+        preflight_remote_request_v2(&body, &context, &advertisement, ceilings).map_err(Box::new)
     });
     let admitted = match await_before_deadline(mandatory_deadline, preflight).await {
         Some(Ok(Ok(admitted))) => admitted,
@@ -814,9 +867,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
                 &policy_context,
                 &code,
                 failure.clone(),
-                state
-                    .query
-                    .unbound_failure_for(request_format, &policy_rejected()),
+                state.query.unbound_failure(&policy_rejected()),
                 failure,
             )
             .await;
@@ -827,31 +878,21 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
                 mandatory_deadline,
                 &policy_context,
                 "query_remote_preflight_unavailable",
-                state
-                    .query
-                    .unbound_failure_for(request_format, &unavailable()),
-                state
-                    .query
-                    .unbound_failure_for(request_format, &policy_rejected()),
-                state
-                    .query
-                    .unbound_failure_for(request_format, &deadline_exceeded()),
+                state.query.unbound_failure(&unavailable()),
+                state.query.unbound_failure(&policy_rejected()),
+                state.query.unbound_failure(&deadline_exceeded()),
             )
             .await;
         }
         None => {
-            let failure = state
-                .query
-                .unbound_failure_for(request_format, &deadline_exceeded());
+            let failure = state.query.unbound_failure(&deadline_exceeded());
             return finish_v2_failure(
                 &state,
                 mandatory_deadline,
                 &policy_context,
                 "transaction_deadline_exceeded",
                 failure.clone(),
-                state
-                    .query
-                    .unbound_failure_for(request_format, &policy_rejected()),
+                state.query.unbound_failure(&policy_rejected()),
                 failure,
             )
             .await;
@@ -861,47 +902,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
     let deadline_failure = admitted.bound_failure(&deadline_exceeded(), &state.query.signer);
     let response_policy_failure = admitted.bound_failure(&policy_rejected(), &state.query.signer);
 
-    // Preserve released V1 precedence and policy observability byte-for-byte:
-    // V1 plan authorization historically ran before replay reservation.
-    if request_format == RemoteRequestFormat::V1 {
-        let policy_request = V2PolicyRequest::new(admitted.plan(), admitted.invocation());
-        match await_before_deadline(
-            deadline,
-            state
-                .pipeline
-                .authorize_v2_request(&policy_request, &mut policy_context),
-        )
-        .await
-        {
-            Some(Ok(())) => {}
-            Some(Err(_)) => {
-                return finish_v2_failure(
-                    &state,
-                    deadline,
-                    &policy_context,
-                    "query_remote_policy_rejected",
-                    response_policy_failure.clone(),
-                    response_policy_failure,
-                    deadline_failure,
-                )
-                .await;
-            }
-            None => {
-                return finish_v2_failure(
-                    &state,
-                    deadline,
-                    &policy_context,
-                    "transaction_deadline_exceeded",
-                    deadline_failure.clone(),
-                    response_policy_failure,
-                    deadline_failure,
-                )
-                .await;
-            }
-        }
-    }
-
-    // V2 reserves the request nonce before plan-level policy callbacks.
+    // The request nonce is reserved before plan-level policy callbacks.
     // Transport authentication already ran before the body was collected, but
     // a replay must not invoke request-specific application hooks or construct
     // any live schema/provider/model host state.
@@ -949,41 +950,39 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
         }
     }
 
-    if request_format == RemoteRequestFormat::V2 {
-        let policy_request = V2PolicyRequest::new(admitted.plan(), admitted.invocation());
-        match await_before_deadline(
-            deadline,
-            state
-                .pipeline
-                .authorize_v2_request(&policy_request, &mut policy_context),
-        )
-        .await
-        {
-            Some(Ok(())) => {}
-            Some(Err(_)) => {
-                return finish_v2_failure(
-                    &state,
-                    deadline,
-                    &policy_context,
-                    "query_remote_policy_rejected",
-                    response_policy_failure.clone(),
-                    response_policy_failure,
-                    deadline_failure,
-                )
-                .await;
-            }
-            None => {
-                return finish_v2_failure(
-                    &state,
-                    deadline,
-                    &policy_context,
-                    "transaction_deadline_exceeded",
-                    deadline_failure.clone(),
-                    response_policy_failure,
-                    deadline_failure,
-                )
-                .await;
-            }
+    let policy_request = V2PolicyRequest::new(admitted.plan(), admitted.invocation());
+    match await_before_deadline(
+        deadline,
+        state
+            .pipeline
+            .authorize_v2_request(&policy_request, &mut policy_context),
+    )
+    .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(_)) => {
+            return finish_v2_failure(
+                &state,
+                deadline,
+                &policy_context,
+                "query_remote_policy_rejected",
+                response_policy_failure.clone(),
+                response_policy_failure,
+                deadline_failure,
+            )
+            .await;
+        }
+        None => {
+            return finish_v2_failure(
+                &state,
+                deadline,
+                &policy_context,
+                "transaction_deadline_exceeded",
+                deadline_failure.clone(),
+                response_policy_failure,
+                deadline_failure,
+            )
+            .await;
         }
     }
 
@@ -1183,7 +1182,7 @@ async fn handle_v2_query(State(state): State<Arc<V2RouterState>>, request: Reque
     }
     let reply_expectation = admitted.reply_expectation();
     let execute =
-        execute_admitted_remote_request_versioned(admitted, &mut transaction, &state.query.signer);
+        execute_admitted_remote_request_v2(admitted, &mut transaction, &state.query.signer);
     let bytes = match await_before_deadline(deadline, execute).await {
         Some(bytes) => bytes,
         None => {
@@ -1293,28 +1292,13 @@ async fn finish_v2_failure_after_transaction_close(
     .await
 }
 
-fn response_audit_deadline(request_deadline: Instant) -> Instant {
+pub(super) fn response_audit_deadline(request_deadline: Instant) -> Instant {
     Instant::now()
         .checked_add(RESPONSE_AUDIT_GRACE)
         .unwrap_or(request_deadline)
 }
 
-#[cfg(test)]
-fn bound_internal_response_failure(
-    state: &V2QueryState,
-    nonce: &str,
-    request: &type_bridge_contract::query_remote::RemoteRequestFingerprint,
-) -> (Vec<u8>, bool, String) {
-    let diagnostic = internal_response_invalid();
-    (
-        RemoteQueryFailure::bound(nonce.to_owned(), request, &diagnostic)
-            .encode_signed_or_fallback(&state.advertisement_fingerprint, &state.signer),
-        false,
-        diagnostic.code().as_str().to_owned(),
-    )
-}
-
-fn v2_request_metadata(
+pub(super) fn v2_request_metadata(
     headers: &HeaderMap,
     endpoint: &'static str,
 ) -> HashMap<String, serde_json::Value> {
@@ -1459,11 +1443,11 @@ async fn handle_v2_capabilities(
     }
 }
 
-fn envelope_response(bytes: Vec<u8>) -> Response {
+pub(super) fn envelope_response(bytes: Vec<u8>) -> Response {
     ([(CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
-fn diagnostic(
+pub(super) fn diagnostic(
     category: DiagnosticCategory,
     code: &'static str,
     message: &'static str,
@@ -1475,7 +1459,7 @@ fn diagnostic(
     )
 }
 
-fn unavailable() -> Diagnostic {
+pub(super) fn unavailable() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_provider_unavailable",
@@ -1483,7 +1467,7 @@ fn unavailable() -> Diagnostic {
     )
 }
 
-fn policy_rejected() -> Diagnostic {
+pub(super) fn policy_rejected() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_policy_rejected",
@@ -1491,7 +1475,7 @@ fn policy_rejected() -> Diagnostic {
     )
 }
 
-fn replayed() -> Diagnostic {
+pub(super) fn replayed() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_replay",
@@ -1499,7 +1483,7 @@ fn replayed() -> Diagnostic {
     )
 }
 
-fn replay_capacity() -> Diagnostic {
+pub(super) fn replay_capacity() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::ResourceLimit,
         "query_remote_replay_capacity",
@@ -1507,7 +1491,7 @@ fn replay_capacity() -> Diagnostic {
     )
 }
 
-fn replay_unavailable() -> Diagnostic {
+pub(super) fn replay_unavailable() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::Integrity,
         "query_remote_replay_unavailable",
@@ -1515,7 +1499,7 @@ fn replay_unavailable() -> Diagnostic {
     )
 }
 
-fn deadline_exceeded() -> Diagnostic {
+pub(super) fn deadline_exceeded() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::ResourceLimit,
         "transaction_deadline_exceeded",
@@ -1523,7 +1507,7 @@ fn deadline_exceeded() -> Diagnostic {
     )
 }
 
-fn body_oversized() -> Diagnostic {
+pub(super) fn body_oversized() -> Diagnostic {
     diagnostic(
         DiagnosticCategory::ResourceLimit,
         "query_remote_envelope_oversized",
@@ -1566,13 +1550,10 @@ mod tests {
     use type_bridge_contract::query_plan::{
         query_plan_capability_vocabulary, query_plan_v2_capability_vocabulary,
     };
-    use type_bridge_contract::query_remote::{
-        RemoteLimits, RemoteOutcome, RemoteOutcomeShape, RemoteQueryResponse,
-        RemoteReplyDecodeLimits, RemoteRequestFingerprint,
-    };
     use type_bridge_contract::query_remote_v2::{
-        RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryRequestV2, RemoteReducedValueV2,
-        RemoteReplyDecodeLimitsV2, RemoteReplyV2, RemoteRequestFingerprintV2,
+        QUERY_REMOTE_REQUEST_FORMAT_V2, RemoteLimitsV2, RemoteOutcomeV2, RemoteQueryFailureV2,
+        RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2,
+        RemoteReplyDecodeLimitsV2, RemoteReplyV2, RemoteRequestFingerprintV2, RemoteResultKindV2,
         decode_remote_reply_v2, decode_signed_remote_failure_v2,
     };
     use type_bridge_contract::schema::{
@@ -1581,7 +1562,7 @@ mod tests {
     };
     use type_bridge_contract::value::{Cardinality, ValueTypeTag};
     use type_bridge_orm::error::OrmError;
-    use type_bridge_orm::query_v2_remote::{encode_remote_request, encode_remote_request_v2};
+    use type_bridge_orm::query_v2_remote::encode_remote_request_v2;
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
     };
@@ -1593,6 +1574,7 @@ mod tests {
     use crate::test_helpers::MockExecutor;
 
     use super::*;
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
 
     const CURRENT_SCHEMA: &str = "define\nattribute transport-name, value string;\nentity transport-person, owns transport-name;";
     const STALE_SCHEMA: &str = "define\nattribute transport-name, value string;\nentity transport-person, owns transport-name;\nentity transport-unexpected;";
@@ -1601,11 +1583,18 @@ mod tests {
     #[derive(Default)]
     struct BackendMetrics {
         fail_close: AtomicBool,
+        fail_commit: AtomicBool,
         fail_query: AtomicBool,
+        commits: AtomicUsize,
         schema_exports: AtomicUsize,
         transaction_opens: AtomicUsize,
         transaction_closes: AtomicUsize,
         query_executions: AtomicUsize,
+        /// While set, every commit waits for `release_commit`.
+        hold_commit: AtomicBool,
+        release_commit: tokio::sync::Notify,
+        /// Rows every query answers with; empty by default.
+        rows: Mutex<Vec<serde_json::Value>>,
     }
 
     struct CountingBackend {
@@ -1698,17 +1687,41 @@ mod tests {
         fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.metrics.query_executions.fetch_add(1, Ordering::SeqCst);
             let fail = self.metrics.fail_query.load(Ordering::SeqCst);
+            let rows = self.metrics.rows.lock().expect("rows lock").clone();
             Box::pin(async move {
                 if fail {
                     Err(OrmError::QueryExecution("masked query fixture".into()))
                 } else {
-                    Ok(QueryResult::Rows(Vec::new()))
+                    Ok(QueryResult::Rows(rows))
                 }
             })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
             Box::pin(async { Ok(()) })
+        }
+
+        /// A failing commit reports the provider's redacted STC2 rendering.
+        fn commit_classified(
+            &mut self,
+        ) -> BoxFuture<'_, Result<(), type_bridge_orm::ClassifiedCommitError>> {
+            if self.metrics.fail_commit.load(Ordering::SeqCst) {
+                return Box::pin(async {
+                    Err(type_bridge_orm::ClassifiedCommitError::Driver {
+                        certainty: type_bridge_orm::CommitFailureCertainty::DefinitelyAborted,
+                        message: "[STC2] TypeDB commit rejected: isolation conflict".into(),
+                    })
+                });
+            }
+            let hold = self.metrics.hold_commit.load(Ordering::SeqCst);
+            let metrics = Arc::clone(&self.metrics);
+            Box::pin(async move {
+                if hold {
+                    metrics.release_commit.notified().await;
+                }
+                metrics.commits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
         }
 
         fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -1880,11 +1893,82 @@ mod tests {
         }
     }
 
+    /// One encoded V2 request carrying a V1-format plan, with the bindings a
+    /// client needs to authenticate its reply.
+    struct PreparedRequest {
+        bytes: Vec<u8>,
+        plan_fingerprint: QueryPlanFingerprint,
+        envelope: RemoteQueryRequestV2,
+        request_fingerprint: RemoteRequestFingerprintV2,
+    }
+
+    impl PreparedRequest {
+        fn decode_reply(
+            &self,
+            query: &V2QueryState,
+            reply: &[u8],
+        ) -> Result<RemoteReplyV2, Diagnostic> {
+            let limits = self.envelope.limits();
+            decode_remote_reply_v2(
+                reply,
+                &self.envelope,
+                &self.plan_fingerprint,
+                &self.request_fingerprint,
+                &query.advertisement_fingerprint,
+                query.advertisement.reply_key(),
+                RemoteReplyDecodeLimitsV2 {
+                    max_bytes: limits.max_bytes,
+                    max_items: limits.max_items,
+                    max_collection_members: limits.max_collection_members,
+                    max_graph_nodes: limits.max_graph_nodes,
+                    max_attribute_values: limits.max_attribute_values,
+                    max_role_players: limits.max_role_players,
+                },
+                &Ed25519RemoteReplyVerifier,
+            )
+        }
+
+        fn expect_response(&self, query: &V2QueryState, reply: &[u8]) {
+            assert!(matches!(
+                self.decode_reply(query, reply)
+                    .expect("authenticated reply"),
+                RemoteReplyV2::Response(_)
+            ));
+        }
+
+        fn expect_failure(&self, query: &V2QueryState, reply: &[u8]) -> RemoteQueryFailureV2 {
+            match self
+                .decode_reply(query, reply)
+                .expect("request-bound failure remains decodable at the success budget")
+            {
+                RemoteReplyV2::Failure(failure) => failure,
+                RemoteReplyV2::Response(_) => panic!("rejected request cannot succeed"),
+            }
+        }
+    }
+
+    fn fixture_limits(
+        max_bytes: u64,
+        max_items: u64,
+        max_collection_members: u64,
+    ) -> RemoteLimitsV2 {
+        RemoteLimitsV2 {
+            deadline_ms: Some(5_000),
+            max_bytes,
+            max_items,
+            max_collection_members,
+            max_graph_nodes: 0,
+            max_attribute_values: 0,
+            max_role_players: 0,
+            max_statements: 3,
+        }
+    }
+
     fn validated_request(
         authority: &AuthorityFixture,
         advertisement: &RemoteCapabilities,
         nonce: &str,
-    ) -> (Vec<u8>, QueryPlanFingerprint, RemoteRequestFingerprint) {
+    ) -> PreparedRequest {
         validated_request_for(
             authority,
             advertisement,
@@ -1893,12 +1977,7 @@ mod tests {
             QueryOutput::Rows {
                 columns: vec![BindingId::new(0).expect("binding id")],
             },
-            RemoteLimits {
-                deadline_ms: Some(5_000),
-                max_bytes: 1 << 20,
-                max_items: 100,
-                max_collection_members: 1 << 16,
-            },
+            fixture_limits(1 << 20, 100, 1 << 16),
         )
     }
 
@@ -1908,8 +1987,20 @@ mod tests {
         nonce: &str,
         operation: QueryOperation,
         output: QueryOutput,
-        limits: RemoteLimits,
-    ) -> (Vec<u8>, QueryPlanFingerprint, RemoteRequestFingerprint) {
+        limits: RemoteLimitsV2,
+    ) -> PreparedRequest {
+        try_validated_request_for(authority, advertisement, nonce, operation, output, limits)
+            .expect("remote request")
+    }
+
+    fn try_validated_request_for(
+        authority: &AuthorityFixture,
+        advertisement: &RemoteCapabilities,
+        nonce: &str,
+        operation: QueryOperation,
+        output: QueryOutput,
+        limits: RemoteLimitsV2,
+    ) -> Result<PreparedRequest, Diagnostic> {
         let mut bindings = vec![AssertionBinding::new(
             BindingId::new(0).expect("binding id"),
             QueryVariable::new("person").expect("binding variable"),
@@ -1944,12 +2035,18 @@ mod tests {
             .expect("validated query");
         let invocation =
             QueryInvocation::new(&plan, operation, Vec::new()).expect("query invocation");
-        let request = encode_remote_request(&validated, &invocation, advertisement, limits, nonce)
-            .expect("remote request");
+        let bytes =
+            encode_remote_request_v2(&validated, &invocation, advertisement, limits, nonce)?;
         let plan_fingerprint = QueryPlanFingerprint::compute(&plan).expect("plan fingerprint");
+        let envelope = RemoteQueryRequestV2::decode(&bytes).expect("request envelope");
         let request_fingerprint =
-            RemoteRequestFingerprint::compute(&request).expect("request fingerprint");
-        (request, plan_fingerprint, request_fingerprint)
+            RemoteRequestFingerprintV2::compute(&bytes).expect("request fingerprint");
+        Ok(PreparedRequest {
+            bytes,
+            plan_fingerprint,
+            envelope,
+            request_fingerprint,
+        })
     }
 
     fn validated_request_v2(
@@ -2107,11 +2204,27 @@ mod tests {
         advertisement: RemoteCapabilities,
         metrics: Arc<BackendMetrics>,
         nonce: &'static str,
-        plan_fingerprint: QueryPlanFingerprint,
         query: Arc<V2QueryState>,
-        request: Vec<u8>,
-        request_fingerprint: RemoteRequestFingerprint,
+        request: PreparedRequest,
         router: Router,
+    }
+
+    impl RouteFixture {
+        fn request_bytes(&self) -> Vec<u8> {
+            self.request.bytes.clone()
+        }
+
+        fn request_fingerprint(&self) -> &RemoteRequestFingerprintV2 {
+            &self.request.request_fingerprint
+        }
+
+        fn expect_response(&self, reply: &[u8]) {
+            self.request.expect_response(&self.query, reply);
+        }
+
+        fn expect_failure(&self, reply: &[u8]) -> RemoteQueryFailureV2 {
+            self.request.expect_failure(&self.query, reply)
+        }
     }
 
     fn default_pipeline() -> QueryPipeline {
@@ -2185,17 +2298,14 @@ mod tests {
         );
         let advertisement = query.advertisement.clone();
         let authority = authority_fixture(false);
-        let (request, plan_fingerprint, request_fingerprint) =
-            validated_request(&authority, &advertisement, TEST_NONCE);
+        let request = validated_request(&authority, &advertisement, TEST_NONCE);
         let router = create_router_with_v2(Arc::new(pipeline), Arc::clone(&query));
         RouteFixture {
             advertisement,
             metrics,
             nonce: TEST_NONCE,
-            plan_fingerprint,
             query,
             request,
-            request_fingerprint,
             router,
         }
     }
@@ -2379,8 +2489,8 @@ mod tests {
         }
     }
 
-    fn failure_code(query: &V2QueryState, bytes: &[u8]) -> String {
-        type_bridge_contract::query_remote::decode_signed_remote_failure(
+    fn signed_failure(query: &V2QueryState, bytes: &[u8]) -> Diagnostic {
+        decode_signed_remote_failure_v2(
             bytes,
             &query.advertisement_fingerprint,
             query.advertisement.reply_key(),
@@ -2391,9 +2501,36 @@ mod tests {
         .expect("failure envelope")
         .diagnostic()
         .expect("failure diagnostic")
-        .code()
-        .as_str()
-        .to_owned()
+    }
+
+    fn failure_code(query: &V2QueryState, bytes: &[u8]) -> String {
+        signed_failure(query, bytes).code().as_str().to_owned()
+    }
+
+    /// Code of a refusal that may be either a pre-request (unbound) failure
+    /// or a failure bound to `request` after admission.
+    fn rejection_code(query: &V2QueryState, request: &PreparedRequest, bytes: &[u8]) -> String {
+        let unbound = decode_signed_remote_failure_v2(
+            bytes,
+            &query.advertisement_fingerprint,
+            query.advertisement.reply_key(),
+            u64::try_from(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES)
+                .expect("wire ceiling"),
+            &Ed25519RemoteReplyVerifier,
+        );
+        let failure = match unbound {
+            Ok(failure) => failure,
+            Err(error) if error.code().as_str() == "query_remote_v2_failure_unexpected_binding" => {
+                request.expect_failure(query, bytes)
+            }
+            Err(error) => panic!("failure envelope: {error:?}"),
+        };
+        failure
+            .diagnostic()
+            .expect("failure diagnostic")
+            .code()
+            .as_str()
+            .to_owned()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2433,7 +2570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_route_dispatches_v1_and_v2_without_downgrade_and_replays_before_host_work() {
+    async fn one_route_dispatches_v1_and_v2_plans_without_downgrade_and_replays_before_host_work() {
         let policy_metrics = Arc::new(PolicyMetrics::default());
         let fixture = route_fixture(
             [CURRENT_SCHEMA; 4],
@@ -2441,26 +2578,9 @@ mod tests {
             pipeline_with_policy(Arc::clone(&policy_metrics), false),
         );
 
-        let v1 = post_query(&fixture.router, fixture.request.clone()).await;
-        assert!(matches!(
-            decode_remote_reply(
-                &v1,
-                fixture.nonce,
-                &fixture.plan_fingerprint,
-                &fixture.request_fingerprint,
-                &fixture.query.advertisement_fingerprint,
-                fixture.advertisement.reply_key(),
-                RemoteReplyDecodeLimits {
-                    shape: RemoteOutcomeShape::Rows { width: 1 },
-                    max_bytes: 1 << 20,
-                    max_items: 100,
-                    max_collection_members: 1 << 16,
-                },
-                &Ed25519RemoteReplyVerifier,
-            )
-            .expect("V1 reply"),
-            RemoteReply::Response(_)
-        ));
+        // A V1-format plan travels in the one V2 envelope.
+        let v1_plan = post_query(&fixture.router, fixture.request_bytes()).await;
+        fixture.expect_response(&v1_plan);
 
         let authority = authority_fixture(false);
         let v2_nonce = "server-v2-dispatch-nonce-0001";
@@ -2649,7 +2769,10 @@ mod tests {
                     .method("POST")
                     .uri("/v2/query")
                     .header(CONTENT_TYPE, "application/json")
-                    .header(CONTENT_LENGTH, V2_BODY_LIMIT_BYTES + 1)
+                    .header(
+                        CONTENT_LENGTH,
+                        MAX_REMOTE_ENVELOPE_BYTES + V2_BODY_FRAMING_SLACK_BYTES + 1,
+                    )
                     .body(Body::empty())
                     .expect("oversized request declaration"),
             )
@@ -2729,8 +2852,8 @@ mod tests {
                 QueryOutput::Rows {
                     columns: vec![BindingId::new(0).expect("binding id")],
                 },
-                RemoteOutcome::Rows { rows: Vec::new() },
-                RemoteOutcomeShape::Rows { width: 1 },
+                RemoteResultKindV2::Rows,
+                RemoteOutcomeV2::Rows { rows: Vec::new() },
             ),
             (
                 "documents",
@@ -2743,10 +2866,10 @@ mod tests {
                         },
                     )],
                 },
-                RemoteOutcome::Documents {
+                RemoteResultKindV2::Documents,
+                RemoteOutcomeV2::Documents {
                     documents: Vec::new(),
                 },
-                RemoteOutcomeShape::Documents { width: 1 },
             ),
             (
                 "count",
@@ -2754,8 +2877,8 @@ mod tests {
                 QueryOutput::Rows {
                     columns: vec![BindingId::new(0).expect("binding id")],
                 },
-                RemoteOutcome::Count { value: 0 },
-                RemoteOutcomeShape::Count,
+                RemoteResultKindV2::Count,
+                RemoteOutcomeV2::Count { value: 0 },
             ),
             (
                 "exists",
@@ -2763,22 +2886,17 @@ mod tests {
                 QueryOutput::Rows {
                     columns: vec![BindingId::new(0).expect("binding id")],
                 },
-                RemoteOutcome::Exists { value: false },
-                RemoteOutcomeShape::Exists,
+                RemoteResultKindV2::Exists,
+                RemoteOutcomeV2::Exists { value: false },
             ),
         ];
-        let limits = |max_bytes| RemoteLimits {
-            deadline_ms: Some(30_000),
-            max_bytes,
-            // A zero-item answer makes the empty/zero/false outcomes above the
-            // exact smallest admissible successes for all four shapes.
-            max_items: 0,
-            max_collection_members: 0,
-        };
+        // A zero-item answer makes the empty/zero/false outcomes above the
+        // exact smallest admissible successes for all four shapes.
+        let limits = |max_bytes| fixture_limits(max_bytes, 0, 0);
 
-        for (name, operation, output, outcome, response_shape) in &shapes {
+        for (name, operation, output, result_kind, outcome) in &shapes {
             let probe_nonce = format!("server-wire-floor-{name}-probe-0001");
-            let (_, plan, request) = validated_request_for(
+            let probe = validated_request_for(
                 &authority,
                 &fixture.advertisement,
                 &probe_nonce,
@@ -2787,19 +2905,25 @@ mod tests {
                 limits(1 << 20),
             );
             let floor = u64::try_from(
-                RemoteQueryResponse::new(&probe_nonce, &plan, &request, outcome.clone())
-                    .expect("minimal response")
-                    .signed_encoded_len(
-                        &fixture.query.advertisement_fingerprint,
-                        fixture.advertisement.reply_key(),
-                    )
-                    .expect("minimal signed response length"),
+                RemoteQueryResponseV2::new(
+                    &probe_nonce,
+                    &probe.envelope.plan().expect("probe plan"),
+                    &probe.request_fingerprint,
+                    *result_kind,
+                    outcome.clone(),
+                )
+                .expect("minimal response")
+                .signed_encoded_len(
+                    &fixture.query.advertisement_fingerprint,
+                    fixture.advertisement.reply_key(),
+                )
+                .expect("minimal signed response length"),
             )
             .expect("wire length");
 
             for (suffix, max_bytes) in [("zero", 0), ("below", floor - 1)] {
                 let nonce = format!("server-wire-floor-{name}-{suffix}-0001");
-                let (request_bytes, plan, request) = validated_request_for(
+                let request = validated_request_for(
                     &authority,
                     &fixture.advertisement,
                     &nonce,
@@ -2807,34 +2931,15 @@ mod tests {
                     output.clone(),
                     limits(max_bytes),
                 );
-                let body = post_query(&fixture.router, request_bytes).await;
-                let failure = match decode_remote_reply(
-                    &body,
-                    &nonce,
-                    &plan,
-                    &request,
-                    &fixture.query.advertisement_fingerprint,
-                    fixture.advertisement.reply_key(),
-                    RemoteReplyDecodeLimits {
-                        shape: *response_shape,
-                        max_bytes,
-                        max_items: 0,
-                        max_collection_members: 0,
-                    },
-                    &Ed25519RemoteReplyVerifier,
-                )
-                .expect("request-bound failure remains decodable at the success budget")
-                {
-                    RemoteReply::Failure(failure) => failure,
-                    RemoteReply::Response(_) => panic!("undersized request cannot succeed"),
-                };
+                let body = post_query(&fixture.router, request.bytes.clone()).await;
+                let failure = request.expect_failure(&fixture.query, &body);
                 assert_eq!(
                     failure
                         .diagnostic()
                         .expect("failure diagnostic")
                         .code()
                         .as_str(),
-                    "query_remote_response_oversized",
+                    "query_remote_v2_response_oversized",
                     "{name} at {suffix} budget",
                 );
             }
@@ -2843,9 +2948,9 @@ mod tests {
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 0);
 
-        for (name, operation, output, outcome, _) in shapes {
+        for (name, operation, output, result_kind, outcome) in shapes {
             let probe_nonce = format!("server-wire-floor-{name}-probe-0002");
-            let (_, plan, request) = validated_request_for(
+            let probe = validated_request_for(
                 &authority,
                 &fixture.advertisement,
                 &probe_nonce,
@@ -2854,17 +2959,23 @@ mod tests {
                 limits(1 << 20),
             );
             let floor = u64::try_from(
-                RemoteQueryResponse::new(&probe_nonce, &plan, &request, outcome.clone())
-                    .expect("minimal response")
-                    .signed_encoded_len(
-                        &fixture.query.advertisement_fingerprint,
-                        fixture.advertisement.reply_key(),
-                    )
-                    .expect("minimal signed response length"),
+                RemoteQueryResponseV2::new(
+                    &probe_nonce,
+                    &probe.envelope.plan().expect("probe plan"),
+                    &probe.request_fingerprint,
+                    result_kind,
+                    outcome.clone(),
+                )
+                .expect("minimal response")
+                .signed_encoded_len(
+                    &fixture.query.advertisement_fingerprint,
+                    fixture.advertisement.reply_key(),
+                )
+                .expect("minimal signed response length"),
             )
             .expect("wire length");
             let nonce = format!("server-wire-floor-{name}-exact-0001");
-            let (request_bytes, plan, request) = validated_request_for(
+            let request = validated_request_for(
                 &authority,
                 &fixture.advertisement,
                 &nonce,
@@ -2872,15 +2983,21 @@ mod tests {
                 output,
                 limits(floor),
             );
-            let expected = RemoteQueryResponse::new(&nonce, &plan, &request, outcome)
-                .expect("exact response")
-                .encode_signed(
-                    &fixture.query.advertisement_fingerprint,
-                    &fixture.query.signer,
-                )
-                .expect("exact signed response");
+            let expected = RemoteQueryResponseV2::new(
+                &nonce,
+                &request.envelope.plan().expect("exact plan"),
+                &request.request_fingerprint,
+                result_kind,
+                outcome,
+            )
+            .expect("exact response")
+            .encode_signed(
+                &fixture.query.advertisement_fingerprint,
+                &fixture.query.signer,
+            )
+            .expect("exact signed response");
             assert_eq!(u64::try_from(expected.len()).expect("wire length"), floor);
-            assert_eq!(post_query(&fixture.router, request_bytes).await, expected);
+            assert_eq!(post_query(&fixture.router, request.bytes).await, expected);
         }
         assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 8);
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 4);
@@ -2898,7 +3015,7 @@ mod tests {
         let body = post_query(&malformed.router, b"{".to_vec()).await;
         assert_eq!(
             failure_code(&malformed.query, &body),
-            "malformed_canonical_json"
+            "query_remote_v2_format_missing"
         );
         assert_eq!(
             malformed.metrics.transaction_opens.load(Ordering::SeqCst),
@@ -2913,21 +3030,25 @@ mod tests {
         );
         let foreign_signer = RemoteReplySigningKey::from_secret_bytes([0x91; 32]);
         let foreign_advertisement = RemoteCapabilities::new(
-            query_plan_capability_vocabulary(),
+            forged_owner.advertisement.capabilities().clone(),
             RemoteExecutorBinding::new("foreign-executor", "foreign-executor-epoch-0001")
                 .expect("foreign executor binding"),
             foreign_signer.public_key(),
         );
         let authority = authority_fixture(false);
-        let (foreign_request, _, _) = validated_request(
+        let foreign_request = validated_request(
             &authority,
             &foreign_advertisement,
             "server-foreign-owner-nonce-01",
         );
-        let body = post_query(&forged_owner.router, foreign_request).await;
+        let body = post_query(&forged_owner.router, foreign_request.bytes).await;
+        // The request names another executor, so no client can authenticate
+        // this reply against its own advertisement; inspect the signed payload.
+        let signed: serde_json::Value =
+            serde_json::from_slice(&body).expect("signed foreign-owner failure");
         assert_eq!(
-            failure_code(&forged_owner.query, &body),
-            "query_remote_executor_mismatch",
+            signed["payload"]["code"],
+            serde_json::json!("query_remote_v2_advertisement_mismatch"),
         );
         assert_eq!(
             forged_owner
@@ -2975,12 +3096,31 @@ mod tests {
         );
         assert_eq!(forged_v2.metrics.query_executions.load(Ordering::SeqCst), 0);
 
-        let unsupported = route_fixture([CURRENT_SCHEMA], CapabilitySet::new(), default_pipeline());
-        let body = post_query(&unsupported.router, unsupported.request.clone()).await;
-        assert_eq!(
-            failure_code(&unsupported.query, &body),
-            "query_remote_capability_unsupported"
+        // The advertisement fingerprint binds the capability set, so a plan
+        // the executor cannot run is refused when the request is encoded.
+        let unsupported = route_fixture(
+            [CURRENT_SCHEMA],
+            query_plan_capability_vocabulary(),
+            default_pipeline(),
         );
+        let bare = RemoteCapabilities::new(
+            query_remote_v2_required_capabilities(false),
+            unsupported.advertisement.executor().clone(),
+            unsupported.query.signer.public_key(),
+        );
+        let refused = try_validated_request_for(
+            &authority_fixture(false),
+            &bare,
+            "server-unsupported-nonce-0001",
+            QueryOperation::Rows,
+            QueryOutput::Rows {
+                columns: vec![BindingId::new(0).expect("binding id")],
+            },
+            fixture_limits(1 << 20, 100, 1 << 16),
+        )
+        .map(|_| ())
+        .expect_err("plan capabilities outside the advertisement are refused");
+        assert_eq!(refused.code().as_str(), "unsupported_required_capability");
         assert_eq!(
             unsupported.metrics.transaction_opens.load(Ordering::SeqCst),
             0,
@@ -2992,9 +3132,9 @@ mod tests {
             query_plan_capability_vocabulary(),
             default_pipeline(),
         );
-        let request = String::from_utf8(invalid.request.clone()).expect("request JSON");
+        let request = String::from_utf8(invalid.request_bytes()).expect("request JSON");
         let request = request.replace("\"rows\":[]", "\"rows\":[[]]");
-        assert_ne!(request.as_bytes(), invalid.request.as_slice());
+        assert_ne!(request.as_bytes(), invalid.request.bytes.as_slice());
         let body = post_query(&invalid.router, request.into_bytes()).await;
         assert_eq!(
             failure_code(&invalid.query, &body),
@@ -3009,14 +3149,14 @@ mod tests {
             default_pipeline(),
         );
         let stale_authority = authority_fixture(true);
-        let (request, _, _) = validated_request(
+        let request = validated_request(
             &stale_authority,
             &stale_plan.advertisement,
             "server-stale-plan-nonce-0001",
         );
-        let body = post_query(&stale_plan.router, request).await;
+        let body = post_query(&stale_plan.router, request.bytes.clone()).await;
         assert_eq!(
-            failure_code(&stale_plan.query, &body),
+            rejection_code(&stale_plan.query, &request, &body),
             "query_plan_managed_semantic_mismatch",
         );
         assert_eq!(
@@ -3030,9 +3170,9 @@ mod tests {
             query_plan_capability_vocabulary(),
             default_pipeline(),
         );
-        let body = post_query(&stale_live.router, stale_live.request.clone()).await;
+        let body = post_query(&stale_live.router, stale_live.request_bytes()).await;
         assert_eq!(
-            failure_code(&stale_live.query, &body),
+            rejection_code(&stale_live.query, &stale_live.request, &body),
             "query_remote_stale_schema"
         );
         assert_eq!(
@@ -3064,15 +3204,23 @@ mod tests {
             )
             .await
             .expect("pre-reserve nonce");
-        let body = post_query(&fixture.router, fixture.request.clone()).await;
-        assert_eq!(failure_code(&fixture.query, &body), "query_remote_replay");
+        let body = post_query(&fixture.router, fixture.request_bytes()).await;
+        assert_eq!(
+            fixture
+                .expect_failure(&body)
+                .diagnostic()
+                .expect("replay diagnostic")
+                .code()
+                .as_str(),
+            "query_remote_replay"
+        );
         assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0,);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 0,);
         assert_eq!(
             policy_metrics.requests.load(Ordering::SeqCst),
-            1,
-            "released V1 plan-policy-before-replay precedence remains unchanged"
+            0,
+            "replay rejects before request-specific application policy"
         );
         assert_eq!(
             policy_metrics.transports.load(Ordering::SeqCst),
@@ -3086,29 +3234,20 @@ mod tests {
             query_plan_capability_vocabulary(),
             pipeline_with_rejecting_request_policy(Arc::clone(&rejecting_metrics)),
         );
-        rejecting
-            .query
-            .replay_store
-            .reserve(
-                rejecting.advertisement.executor().epoch(),
-                rejecting.nonce,
-                Instant::now() + Duration::from_secs(60),
-            )
-            .await
-            .expect("pre-reserve rejecting V1 nonce");
-        let expected = RemoteQueryFailure::bound(
+        let expected = RemoteQueryFailureV2::bound(
             rejecting.nonce.to_owned(),
-            &rejecting.request_fingerprint,
+            rejecting.request_fingerprint(),
             &policy_rejected(),
         )
+        .expect("bound policy rejection")
         .encode_signed_or_fallback(
             &rejecting.query.advertisement_fingerprint,
             &rejecting.query.signer,
         );
-        let body = post_query(&rejecting.router, rejecting.request.clone()).await;
+        let body = post_query(&rejecting.router, rejecting.request_bytes()).await;
         assert_eq!(
             body, expected,
-            "released V1 policy rejection bytes retain precedence over replay"
+            "an admitted request rejected by plan-level policy returns exact bound bytes"
         );
         assert_eq!(rejecting_metrics.requests.load(Ordering::SeqCst), 1);
         assert_eq!(rejecting.metrics.schema_exports.load(Ordering::SeqCst), 0);
@@ -3119,34 +3258,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn v1_format_request_is_refused_before_host_work() {
+        let fixture = route_fixture(
+            [CURRENT_SCHEMA],
+            query_plan_capability_vocabulary(),
+            default_pipeline(),
+        );
+        let mut request: serde_json::Value =
+            serde_json::from_slice(&fixture.request.bytes).expect("V2 request JSON");
+        assert_eq!(
+            request["format"],
+            serde_json::json!(QUERY_REMOTE_REQUEST_FORMAT_V2)
+        );
+        request["format"] = serde_json::json!("typebridge.query-remote-request/v1");
+        let body = post_query(
+            &fixture.router,
+            serde_json::to_vec(&request).expect("V1-format request"),
+        )
+        .await;
+        let diagnostic = signed_failure(&fixture.query, &body);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "query_remote_v2_format_unsupported"
+        );
+        assert_eq!(
+            diagnostic.details().get("supported"),
+            Some(&DiagnosticDetailValue::Text(
+                QUERY_REMOTE_REQUEST_FORMAT_V2.to_owned()
+            )),
+        );
+        assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn authority_is_rechecked_across_one_data_snapshot_before_execution() {
         let stable = route_fixture(
             [CURRENT_SCHEMA, CURRENT_SCHEMA],
             query_plan_capability_vocabulary(),
             default_pipeline(),
         );
-        let body = post_query(&stable.router, stable.request.clone()).await;
-        assert!(matches!(
-            decode_remote_reply(
-                &body,
-                stable.nonce,
-                &stable.plan_fingerprint,
-                &stable.request_fingerprint,
-                &stable.query.advertisement_fingerprint,
-                stable.advertisement.reply_key(),
-                type_bridge_contract::query_remote::RemoteReplyDecodeLimits {
-                    shape: type_bridge_contract::query_remote::RemoteOutcomeShape::Rows {
-                        width: 1,
-                    },
-                    max_bytes: 1 << 20,
-                    max_items: 100,
-                    max_collection_members: 1 << 16,
-                },
-                &Ed25519RemoteReplyVerifier,
-            )
-            .expect("bound successful reply"),
-            RemoteReply::Response(_),
-        ));
+        let body = post_query(&stable.router, stable.request_bytes()).await;
+        stable.expect_response(&body);
         assert_eq!(stable.metrics.schema_exports.load(Ordering::SeqCst), 2);
         assert_eq!(stable.metrics.transaction_opens.load(Ordering::SeqCst), 1);
         assert_eq!(stable.metrics.transaction_closes.load(Ordering::SeqCst), 1);
@@ -3158,27 +3311,8 @@ mod tests {
             default_pipeline(),
         );
         changed.metrics.fail_close.store(true, Ordering::SeqCst);
-        let body = post_query(&changed.router, changed.request.clone()).await;
-        let failure = match decode_remote_reply(
-            &body,
-            changed.nonce,
-            &changed.plan_fingerprint,
-            &changed.request_fingerprint,
-            &changed.query.advertisement_fingerprint,
-            changed.advertisement.reply_key(),
-            type_bridge_contract::query_remote::RemoteReplyDecodeLimits {
-                shape: type_bridge_contract::query_remote::RemoteOutcomeShape::Rows { width: 1 },
-                max_bytes: 1 << 20,
-                max_items: 100,
-                max_collection_members: 1 << 16,
-            },
-            &Ed25519RemoteReplyVerifier,
-        )
-        .expect("bound stale reply")
-        {
-            RemoteReply::Failure(failure) => failure,
-            RemoteReply::Response(_) => panic!("stale post-open authority executed"),
-        };
+        let body = post_query(&changed.router, changed.request_bytes()).await;
+        let failure = changed.expect_failure(&body);
         assert_eq!(
             failure
                 .diagnostic()
@@ -3201,28 +3335,9 @@ mod tests {
             default_pipeline(),
         );
         fixture.metrics.fail_close.store(true, Ordering::SeqCst);
-        let body = post_query(&fixture.router, fixture.request.clone()).await;
-        assert!(matches!(
-            decode_remote_reply(
-                &body,
-                fixture.nonce,
-                &fixture.plan_fingerprint,
-                &fixture.request_fingerprint,
-                &fixture.query.advertisement_fingerprint,
-                fixture.advertisement.reply_key(),
-                type_bridge_contract::query_remote::RemoteReplyDecodeLimits {
-                    shape: type_bridge_contract::query_remote::RemoteOutcomeShape::Rows {
-                        width: 1,
-                    },
-                    max_bytes: 1 << 20,
-                    max_items: 100,
-                    max_collection_members: 1 << 16,
-                },
-                &Ed25519RemoteReplyVerifier,
-            )
-            .expect("close failure must not replace the bound primary reply"),
-            RemoteReply::Response(_),
-        ));
+        let body = post_query(&fixture.router, fixture.request_bytes()).await;
+        // A close failure must not replace the bound primary reply.
+        fixture.expect_response(&body);
         assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
@@ -3237,16 +3352,17 @@ mod tests {
         );
         fixture.metrics.fail_query.store(true, Ordering::SeqCst);
         fixture.metrics.fail_close.store(true, Ordering::SeqCst);
-        let body = post_query(&fixture.router, fixture.request.clone()).await;
-        let expected = RemoteQueryFailure::bound(
+        let body = post_query(&fixture.router, fixture.request_bytes()).await;
+        let expected = RemoteQueryFailureV2::bound(
             fixture.nonce.to_owned(),
-            &fixture.request_fingerprint,
+            fixture.request_fingerprint(),
             &diagnostic(
                 DiagnosticCategory::Integrity,
-                "query_remote_provider_failed",
-                "the executor provider call failed",
+                "query_remote_v2_provider_failed",
+                "the V2 executor provider call failed",
             ),
         )
+        .expect("bound provider failure")
         .encode_signed_or_fallback(
             &fixture.query.advertisement_fingerprint,
             &fixture.query.signer,
@@ -3455,26 +3571,20 @@ mod tests {
             query_plan_capability_vocabulary(),
             default_pipeline(),
         );
-        let request = type_bridge_contract::query_remote::RemoteRequestFingerprint::compute(
-            b"canonical-request-fixture",
+        let diagnostic = internal_response_invalid();
+        let bytes = RemoteQueryFailureV2::bound(
+            fixture.nonce.to_owned(),
+            fixture.request_fingerprint(),
+            &diagnostic,
         )
-        .expect("request fingerprint");
-        let nonce = "internal-reply-nonce-000001";
-        let (bytes, success, code) =
-            bound_internal_response_failure(&fixture.query, nonce, &request);
-        assert!(!success);
-        assert_eq!(code, "query_remote_internal_response_invalid");
-        let failure = type_bridge_contract::query_remote::decode_signed_remote_failure(
-            &bytes,
+        .expect("bound internal failure")
+        .encode_signed_or_fallback(
             &fixture.query.advertisement_fingerprint,
-            fixture.advertisement.reply_key(),
-            u64::try_from(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES)
-                .expect("wire ceiling"),
-            &Ed25519RemoteReplyVerifier,
-        )
-        .expect("bound failure");
+            &fixture.query.signer,
+        );
+        let failure = fixture.expect_failure(&bytes);
         failure
-            .verify_binding(nonce, &request)
+            .verify_binding(fixture.nonce, fixture.request_fingerprint())
             .expect("internal failure binding");
         assert_eq!(
             failure.diagnostic().expect("diagnostic").code().as_str(),
@@ -3561,5 +3671,9 @@ mod tests {
             metadata["http_headers"]["authorization"],
             serde_json::json!(["Bearer first", "Bearer second"]),
         );
+    }
+
+    mod v3_staged {
+        include!("v3_tests.rs");
     }
 }

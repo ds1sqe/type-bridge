@@ -1,0 +1,105 @@
+{
+  "binding": "rust",
+  "format": "type-bridge-perf-pipelines/v1",
+  "pipelines": [
+    {
+      "name": "insert_one",
+      "operations": 1,
+      "samples": [
+        {
+          "stages": {
+            "tb.commit": 1642619,
+            "tb.decode": 6332,
+            "tb.orm.plan": 62655,
+            "tb.query.compile": 22665,
+            "tb.runtime.execute": 1362156
+          },
+          "total_ns": 6399784
+        },
+        {
+          "stages": {
+            "tb.commit": 1433957,
+            "tb.decode": 6220,
+            "tb.orm.plan": 61570,
+            "tb.query.compile": 22513,
+            "tb.runtime.execute": 1407717
+          },
+          "total_ns": 6231673
+        },
+        {
+          "stages": {
+            "tb.commit": 1590547,
+            "tb.decode": 5955,
+            "tb.orm.plan": 61483,
+            "tb.query.compile": 22517,
+            "tb.runtime.execute": 1463238
+          },
+          "total_ns": 6451929
+        }
+      ]
+    },
+    {
+      "name": "batch_given_rows_1k",
+      "operations": 1000,
+      "samples": [
+        {
+          "stages": {
+            "tb.commit": 47454544,
+            "tb.decode": 9817262,
+            "tb.orm.plan": 7454460,
+            "tb.query.compile": 639150,
+            "tb.runtime.execute": 47101629
+          },
+          "total_ns": 127639016
+        },
+        {
+          "stages": {
+            "tb.commit": 65075713,
+            "tb.decode": 10842344,
+            "tb.orm.plan": 7431616,
+            "tb.query.compile": 652280,
+            "tb.runtime.execute": 181843222
+          },
+          "total_ns": 280953783
+        },
+        {
+          "stages": {
+            "tb.commit": 50255248,
+            "tb.decode": 10797779,
+            "tb.orm.plan": 7469783,
+            "tb.query.compile": 647571,
+            "tb.runtime.execute": 193801996
+          },
+          "total_ns": 278201290
+        }
+      ]
+    },
+    {
+      "name": "migration_apply",
+      "operations": 1,
+      "samples": [
+        {
+          "stages": {
+            "tb.commit": 30796251,
+            "tb.decode": 971485,
+            "tb.orm.plan": 61443,
+            "tb.query.compile": 1236426,
+            "tb.runtime.execute": 372586492
+          },
+          "total_ns": 789337423
+        },
+        {
+          "stages": {
+            "tb.commit": 35715607,
+            "tb.decode": 1051324,
+            "tb.orm.plan": 71549,
+            "tb.query.compile": 1434759,
+            "tb.runtime.execute": 433303276
+          },
+          "total_ns": 831278254
+        }
+      ]
+    }
+  ],
+  "warmup": 1
+}

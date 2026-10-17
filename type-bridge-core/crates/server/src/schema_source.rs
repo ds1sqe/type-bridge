@@ -48,7 +48,7 @@ impl SchemaSource for FileSchemaSource {
         let content = std::fs::read_to_string(&self.path).map_err(|e| {
             PipelineError::Schema(format!("Failed to read schema file '{}': {}", self.path, e))
         })?;
-        TypeSchema::from_typeql(&content).map_err(parse_schema_error)
+        type_bridge_core_lib::__internal::parse_schema(&content).map_err(parse_schema_error)
     }
 }
 
@@ -75,7 +75,7 @@ impl InMemorySchemaSource {
 
 impl SchemaSource for InMemorySchemaSource {
     fn load(&self) -> Result<TypeSchema, PipelineError> {
-        TypeSchema::from_typeql(&self.typeql).map_err(parse_schema_error)
+        type_bridge_core_lib::__internal::parse_schema(&self.typeql).map_err(parse_schema_error)
     }
 }
 

@@ -16,12 +16,20 @@
 #define TYPE_BRIDGE_CALL
 #endif
 
+#if defined(_MSC_VER)
+#define TYPE_BRIDGE_DEPRECATED(msg) __declspec(deprecated(msg))
+#elif defined(__GNUC__) || defined(__clang__)
+#define TYPE_BRIDGE_DEPRECATED(msg) __attribute__((deprecated(msg)))
+#else
+#define TYPE_BRIDGE_DEPRECATED(msg)
+#endif
+
 /*
  * Native layout/behavior compatibility, independent from the TypeBridge
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 6u
+#define TYPE_BRIDGE_C_ABI_MINOR 7u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -174,6 +182,23 @@ typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 #define TYPE_BRIDGE_QUERY_DEFAULT_COLLECTION_MEMBERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS 3u
+/* ABI 1.7: the per-transport defaults. */
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ITEMS UINT64_C(100000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_BYTES UINT64_C(67108864)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_GRAPH_NODES UINT64_C(1000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ATTRIBUTE_VALUES UINT64_C(4000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_COLLECTION_MEMBERS UINT64_C(1000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ROLE_PLAYERS UINT64_C(1000000)
+#define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_STATEMENTS 3u
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ITEMS UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_BYTES UINT64_C(33554432)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_GRAPH_NODES UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ATTRIBUTE_VALUES UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_COLLECTION_MEMBERS UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_ROLE_PLAYERS UINT64_C(65536)
+#define TYPE_BRIDGE_QUERY_PROXY_DEFAULT_STATEMENTS 3u
 #define TYPE_BRIDGE_QUERY_REMOTE_ENVELOPE_BYTES_MAX 33554432u
 
 typedef uint32_t type_bridge_query_match_mode_t;
@@ -435,6 +460,18 @@ typedef struct type_bridge_query_terminal_descriptor_v1 {
   uint64_t reserved[4];
 } type_bridge_query_terminal_descriptor_v1_t;
 
+/*
+ * ABI 1.7: one named override of a canonical query limit. `name` is
+ * `name_length` bytes of UTF-8, not NUL-terminated, spelling one stable limit
+ * name such as "canonical_bytes" or "boolean_terms". A limit that is not named
+ * keeps its canonical default.
+ */
+typedef struct type_bridge_query_limit_override_v1 {
+  const uint8_t *name;
+  size_t name_length;
+  uint64_t value;
+} type_bridge_query_limit_override_v1_t;
+
 typedef struct type_bridge_query_execution_limits_v1 {
   uint32_t struct_size;
   uint32_t version;
@@ -451,9 +488,17 @@ typedef struct type_bridge_query_execution_limits_v1 {
 } type_bridge_query_execution_limits_v1_t;
 
 /*
- * NULL execution limits select these canonical hard defaults. A non-NULL
- * descriptor is componentwise clamped to these hard maxima and every zero
- * field is an actual zero ceiling, never a request to substitute a default.
+ * NULL execution limits select the defaults of their transport: a direct
+ * database, transaction, or call takes TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*,
+ * a proxy connection or remote context TYPE_BRIDGE_QUERY_PROXY_DEFAULT_*
+ * (what one remote envelope carries). TYPE_BRIDGE_QUERY_DEFAULT_* and this
+ * initializer keep their 2.2 values, which are the proxy defaults. A
+ * non-NULL descriptor's values are kept as given, never clamped: a
+ * dimension may tighten or raise its default, and a value past its
+ * supported maximum (a timeout past one day, more than 3 statements) is
+ * refused. A connection's answer limits are a ceiling every call on it is
+ * constrained by. Every zero field is an actual zero ceiling, never a
+ * request to substitute a default.
  * Direct execution reports the shared statement-limit diagnostic before its
  * first provider statement. Remote preparation preserves zero through the
  * authenticated request when the executor advertises that capability.
@@ -507,9 +552,10 @@ typedef struct type_bridge_runtime_config_v1 {
  * rejects comma-delimited endpoint lists until a per-endpoint HTTP probe
  * policy is defined. `http_port` is the authoritative TypeDB HTTP
  * version-probe port. The C ABI never accepts a caller-claimed server version
- * and admits only a detected exact 3.12.1. database_open_v1 also requires the
- * verified package's exact typedb-3.12.1/v1 semantic profile; other verified
- * profiles return TYPE_BRIDGE_STATUS_UNSUPPORTED before provider I/O.
+ * and admits only the detected exact release bound by the verified package's
+ * semantic profile: 3.12.3 for typedb-3.12.1/v1, 3.13.6 for typedb-3.13.6/v1.
+ * Other verified profiles return TYPE_BRIDGE_STATUS_UNSUPPORTED before
+ * provider I/O.
  */
 typedef struct type_bridge_database_config_v1 {
   uint32_t struct_size;
@@ -992,6 +1038,65 @@ type_bridge_execution_diagnostics_close(
     type_bridge_execution_diagnostics_t **diagnostics);
 
 /*
+ * ABI 1.7: the typed provider failure of one diagnostic, such as a staged
+ * commit's. The ABI 1.6 detail set above is unchanged; these fields are read
+ * only here. A diagnostic without a typed failure reports
+ * TYPE_BRIDGE_FAILURE_OUTCOME_NONE with every other field zero. retry_safe is
+ * one when repeating the whole transaction cannot duplicate a commit;
+ * op_index (when has_op_index is one) names the failed staged plan in staging
+ * order. code borrows the diagnostics handle and is empty when unknown.
+ */
+#define TYPE_BRIDGE_FAILURE_OUTCOME_NONE 0u
+#define TYPE_BRIDGE_FAILURE_OUTCOME_REJECTED 1u
+#define TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE 2u
+
+#define TYPE_BRIDGE_FAILURE_PHASE_NONE 0u
+#define TYPE_BRIDGE_FAILURE_PHASE_QUERY 1u
+#define TYPE_BRIDGE_FAILURE_PHASE_COMMIT 2u
+
+#define TYPE_BRIDGE_FAILURE_REASON_NONE 0u
+#define TYPE_BRIDGE_FAILURE_REASON_CONFLICT 1u
+#define TYPE_BRIDGE_FAILURE_REASON_CARDINALITY 2u
+#define TYPE_BRIDGE_FAILURE_REASON_UNIQUE 3u
+#define TYPE_BRIDGE_FAILURE_REASON_CONSTRAINT 4u
+#define TYPE_BRIDGE_FAILURE_REASON_OTHER 5u
+
+#define TYPE_BRIDGE_FAILURE_LOCK_NONE 0u
+#define TYPE_BRIDGE_FAILURE_LOCK_EXCLUSIVE 1u
+#define TYPE_BRIDGE_FAILURE_LOCK_REQUIRE_DELETED_KEY 2u
+#define TYPE_BRIDGE_FAILURE_LOCK_DELETING_REQUIRED_KEY 3u
+#define TYPE_BRIDGE_FAILURE_LOCK_UNKNOWN 4u
+
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_NONE 0u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_ABSTRACT 1u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_REGEX 2u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_RANGE 3u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_VALUES 4u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_DISTINCT 5u
+#define TYPE_BRIDGE_FAILURE_ANNOTATION_UNKNOWN 6u
+
+typedef struct type_bridge_execution_failure_v1 {
+  uint32_t struct_size;
+  uint32_t outcome;
+  uint32_t phase;
+  uint32_t reason;
+  uint32_t lock_kind;
+  uint32_t annotation;
+  uint8_t retry_safe;
+  uint8_t has_op_index;
+  uint8_t reserved0[2];
+  uint32_t op_index;
+  type_bridge_byte_view_t code;
+  uint64_t reserved[4];
+} type_bridge_execution_failure_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_execution_diagnostics_failure_get_v1(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    size_t diagnostic_index,
+    type_bridge_execution_failure_v1_t *out_failure);
+
+/*
  * The synchronous runtime hides a Tokio multi-thread scheduler. A runtime
  * owns database children and a database owns transaction children. Parent
  * close returns TYPE_BRIDGE_STATUS_IN_USE without changing the owner pointer
@@ -1048,7 +1153,8 @@ type_bridge_database_close(
  * Transaction opens borrow the exact package authority retained by the
  * database; the original package handle may already be closed. Read and write
  * handles are distinct C types. Model operations will borrow these handles;
- * only the terminal functions below consume them. A commit cancelled before
+ * commit, rollback and close consume them; rollback_keep preserves them on
+ * success. A commit cancelled before
  * dispatch leaves the write handle live. Once commit dispatch begins, success
  * or the classified provider outcome consumes the handle. Active write close
  * rolls back; read close closes without commit. Every operation on one mutable
@@ -1083,10 +1189,335 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_write_transaction_rollback(
     type_bridge_write_transaction_t **transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+/* ABI 1.7: successful rollback preserves the same handle for more work.
+ * Provider rollback failure consumes the handle; preflight failure retains it.
+ * A null owner slot is an idempotent success.
+ * A successful rollback also clears a prior borrowed-operation poison state.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_write_transaction_rollback_keep(
+    type_bridge_write_transaction_t **transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_write_transaction_close(
     type_bridge_write_transaction_t **transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/*
+ * ABI 1.7: deferred transactions. A plan is decoded from canonical
+ * query-plan/v3 bytes under declared schema bytes; C never serializes plans.
+ * Staging sends nothing. A staged transaction is a reusable logical
+ * transaction: commit sends every staged plan in one provider transaction,
+ * and commit and rollback keep the handle usable until close, the only
+ * release. After a definite commit outcome (success or a typed failure) the
+ * handle stages new work; committing with nothing staged is a no-op success.
+ * After an unknown proxy outcome commit_retry resends the identical request,
+ * and commit with nothing newly staged is refused until a retry or rollback.
+ * A direct provider commit cannot retry: its
+ * TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN leaves the handle ready for new
+ * work, and commit_retry is refused. Rollback discards staged plans and any
+ * unknown outcome. Stage, commit, commit_retry and rollback on a null handle
+ * return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; close and the frees accept a
+ * null owner and clear the owner they release. The open handle keeps its
+ * database busy (TYPE_BRIDGE_STATUS_IN_USE on database close) until close.
+ * A contained panic during commit poisons the handle: stage, commit and
+ * commit_retry then return TYPE_BRIDGE_STATUS_EXECUTION_FAILED with
+ * c_transaction_poisoned; rollback recovers it and close releases it.
+ * Pending answers and plans outlive the transaction that staged them.
+ *
+ * Output slots may be unaligned. Outputs that overlap each other, an input
+ * buffer, an input handle or bytes it retains return
+ * TYPE_BRIDGE_STATUS_INVALID_ARGUMENT before anything is written; otherwise
+ * every non-null output is cleared first.
+ */
+typedef struct type_bridge_plan type_bridge_plan_t;
+typedef struct type_bridge_staged_transaction type_bridge_staged_transaction_t;
+typedef struct type_bridge_pending type_bridge_pending_t;
+
+#define TYPE_BRIDGE_TRANSACTION_READ 1u
+#define TYPE_BRIDGE_TRANSACTION_WRITE 2u
+
+typedef enum type_bridge_plan_answer_kind {
+    TYPE_BRIDGE_PLAN_ANSWER_ROWS = 1,
+    TYPE_BRIDGE_PLAN_ANSWER_COUNT = 2,
+    TYPE_BRIDGE_PLAN_ANSWER_EXISTS = 3,
+    TYPE_BRIDGE_PLAN_ANSWER_MATCHED = 4
+} type_bridge_plan_answer_kind_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_v3_decode(
+    const uint8_t *schema, size_t schema_len,
+    const uint8_t *plan, size_t plan_len,
+    type_bridge_plan_t **out_plan,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Reports the canonical length in out_len; a null or short buffer returns
+ * TYPE_BRIDGE_STATUS_RESOURCE_LIMIT without writing bytes. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_v3_canonical_bytes(
+    const type_bridge_plan_t *plan, uint8_t *buffer, size_t capacity,
+    size_t *out_len);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_plan_free(type_bridge_plan_t **plan);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_transaction(
+    const type_bridge_database_t *database, uint32_t kind,
+    type_bridge_staged_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_stage(
+    type_bridge_staged_transaction_t *transaction,
+    const type_bridge_plan_t *plan,
+    type_bridge_pending_t **out_pending,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_commit(
+    type_bridge_staged_transaction_t *transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_commit_retry(
+    type_bridge_staged_transaction_t *transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_rollback(
+    type_bridge_staged_transaction_t *transaction);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_close(
+    type_bridge_staged_transaction_t **transaction);
+
+/* Rows report the row count as the value; exists reports 0 or 1. Before a
+ * commit this returns TYPE_BRIDGE_STATUS_IN_USE; after a failed commit,
+ * rollback or close it returns TYPE_BRIDGE_STATUS_EXECUTION_FAILED. A
+ * non-OK status leaves both outputs zero. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_answer(
+    const type_bridge_pending_t *pending,
+    type_bridge_plan_answer_kind_t *out_kind, uint64_t *out_value);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_pending_free(type_bridge_pending_t **pending);
+
+/*
+ * ABI 1.7: the plan builder. It forwards to the one core builder every SDK
+ * uses, so a program gives the same canonical query-plan/v3 bytes in C,
+ * Rust, Python and TypeScript:
+ * - Binding ids are dense in creation order. exact, subtypes, field, links,
+ *   compare and let add to the plan's single leading match in call order.
+ * - Write calls append stages in call order; consecutive update, insert, put
+ *   or delete calls share one stage.
+ * - Derived variable names come from labels (item, item_stock) with _2, _3,
+ *   ... on collision. input and let names are explicit and must be fresh.
+ * - A plan with writes answers MATCHED, or ROWS once returning names
+ *   columns. A read answers ROWS, or COUNT / EXISTS.
+ *
+ * Identities (types, owned fields, roles), values and expressions are
+ * registered once and named by dense ids in their own spaces. Operands are
+ * (kind, id) pairs: a binding, an input column, a registered value or, where
+ * an expression is accepted (let, expr_arith, expr_call), a registered
+ * expression. Labels, names and text values are UTF-8 views copied during
+ * the call. Doubles use exact IEEE-754 bits, Booleans exactly zero or one,
+ * and temporal and decimal values their canonical lexical forms.
+ *
+ * Calls never fail on content: an invalid label, constant, value or id still
+ * returns an id, and build reports the first such argument, else the core
+ * builder's first invalid call, else any plan validation failure, through
+ * its diagnostics. A call returns TYPE_BRIDGE_STATUS_INVALID_ARGUMENT only
+ * for a null builder or output slot, a view or array with null data and a
+ * non-zero length, or an output that overlaps the builder handle or an
+ * input. Output slots may be unaligned; a fenced output is cleared first.
+ * build returns a plan handle and leaves the builder usable. Builders are
+ * not thread-safe.
+ */
+typedef struct type_bridge_plan_builder type_bridge_plan_builder_t;
+
+#define TYPE_BRIDGE_PLAN_THING_ENTITY 1u
+#define TYPE_BRIDGE_PLAN_THING_RELATION 2u
+
+#define TYPE_BRIDGE_PLAN_OPERAND_NONE 0u
+#define TYPE_BRIDGE_PLAN_OPERAND_BINDING 1u
+#define TYPE_BRIDGE_PLAN_OPERAND_INPUT 2u
+#define TYPE_BRIDGE_PLAN_OPERAND_VALUE 3u
+#define TYPE_BRIDGE_PLAN_OPERAND_EXPR 4u
+
+#define TYPE_BRIDGE_PLAN_COMPARE_EQUAL 1u
+#define TYPE_BRIDGE_PLAN_COMPARE_NOT_EQUAL 2u
+#define TYPE_BRIDGE_PLAN_COMPARE_LESS 3u
+#define TYPE_BRIDGE_PLAN_COMPARE_LESS_OR_EQUAL 4u
+#define TYPE_BRIDGE_PLAN_COMPARE_GREATER 5u
+#define TYPE_BRIDGE_PLAN_COMPARE_GREATER_OR_EQUAL 6u
+
+#define TYPE_BRIDGE_PLAN_ARITH_ADD 1u
+#define TYPE_BRIDGE_PLAN_ARITH_SUB 2u
+#define TYPE_BRIDGE_PLAN_ARITH_MUL 3u
+#define TYPE_BRIDGE_PLAN_ARITH_DIV 4u
+#define TYPE_BRIDGE_PLAN_ARITH_MOD 5u
+#define TYPE_BRIDGE_PLAN_ARITH_POW 6u
+
+/* min and max take two arguments; the others take one and a second
+ * argument of kind TYPE_BRIDGE_PLAN_OPERAND_NONE. */
+#define TYPE_BRIDGE_PLAN_CALL_ABS 1u
+#define TYPE_BRIDGE_PLAN_CALL_CEIL 2u
+#define TYPE_BRIDGE_PLAN_CALL_FLOOR 3u
+#define TYPE_BRIDGE_PLAN_CALL_ROUND 4u
+#define TYPE_BRIDGE_PLAN_CALL_MIN 5u
+#define TYPE_BRIDGE_PLAN_CALL_MAX 6u
+#define TYPE_BRIDGE_PLAN_CALL_LENGTH 7u
+
+/* A row cell left absent (an optional input column). */
+#define TYPE_BRIDGE_PLAN_VALUE_ABSENT 0xFFFFFFFFu
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_new(type_bridge_plan_builder_t **out_builder);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_plan_builder_free(type_bridge_plan_builder_t **builder);
+
+/* Identities: kind is TYPE_BRIDGE_PLAN_THING_*; owns and role take a
+ * registered type id (role takes the declaring relation). */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_type(type_bridge_plan_builder_t *builder,
+                              uint32_t kind, type_bridge_byte_view_t label,
+                              uint32_t *out_type);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_owns(type_bridge_plan_builder_t *builder,
+                              uint32_t owner_type,
+                              type_bridge_byte_view_t attribute,
+                              uint32_t *out_field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_role(type_bridge_plan_builder_t *builder,
+                              uint32_t relation_type,
+                              type_bridge_byte_view_t role,
+                              uint32_t *out_role);
+
+/* Values: ids usable as TYPE_BRIDGE_PLAN_OPERAND_VALUE and as row cells. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_string(type_bridge_plan_builder_t *builder,
+                                      type_bridge_byte_view_t input,
+                                      uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_long(type_bridge_plan_builder_t *builder,
+                                    int64_t input, uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_double(type_bridge_plan_builder_t *builder,
+                                      uint64_t input_bits,
+                                      uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_boolean(type_bridge_plan_builder_t *builder,
+                                       uint8_t input, uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_date(type_bridge_plan_builder_t *builder,
+                                    type_bridge_byte_view_t input,
+                                    uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_datetime(type_bridge_plan_builder_t *builder,
+                                        type_bridge_byte_view_t input,
+                                        uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_datetime_tz(type_bridge_plan_builder_t *builder,
+                                           type_bridge_byte_view_t input,
+                                           uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_decimal(type_bridge_plan_builder_t *builder,
+                                       type_bridge_byte_view_t input,
+                                       uint32_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_value_duration(type_bridge_plan_builder_t *builder,
+                                        type_bridge_byte_view_t input,
+                                        uint32_t *out_value);
+
+/* Match. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_exact(type_bridge_plan_builder_t *builder,
+                               uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_subtypes(type_bridge_plan_builder_t *builder,
+                                  uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_field(type_bridge_plan_builder_t *builder,
+                               uint32_t owner, uint32_t field,
+                               uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_links(type_bridge_plan_builder_t *builder,
+                               uint32_t relation, uint32_t role,
+                               uint32_t player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_compare(type_bridge_plan_builder_t *builder,
+                                 uint32_t left_kind, uint32_t left,
+                                 uint32_t comparator, uint32_t right_kind,
+                                 uint32_t right);
+/* value_type is a type_bridge_projected_value_kind_t; optional is 0 or 1. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_input(type_bridge_plan_builder_t *builder,
+                               type_bridge_byte_view_t name,
+                               type_bridge_projected_value_kind_t value_type,
+                               uint8_t optional, uint32_t *out_input);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_let(type_bridge_plan_builder_t *builder,
+                             type_bridge_byte_view_t name, uint32_t kind,
+                             uint32_t id, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_expr_arith(type_bridge_plan_builder_t *builder,
+                                    uint32_t op, uint32_t left_kind,
+                                    uint32_t left, uint32_t right_kind,
+                                    uint32_t right, uint32_t *out_expr);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_expr_call(type_bridge_plan_builder_t *builder,
+                                   uint32_t function, uint32_t first_kind,
+                                   uint32_t first, uint32_t second_kind,
+                                   uint32_t second, uint32_t *out_expr);
+
+/* Write. Field and player calls on a thing require an insert or put
+ * binding; update and thing_field take a plain operand. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_update(type_bridge_plan_builder_t *builder,
+                                uint32_t owner, uint32_t field,
+                                uint32_t operand_kind, uint32_t operand);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_update_player(type_bridge_plan_builder_t *builder,
+                                       uint32_t relation, uint32_t role,
+                                       uint32_t player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_insert(type_bridge_plan_builder_t *builder,
+                                uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_put(type_bridge_plan_builder_t *builder,
+                             uint32_t type, uint32_t *out_binding);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_thing_field(type_bridge_plan_builder_t *builder,
+                                     uint32_t thing, uint32_t field,
+                                     uint32_t operand_kind, uint32_t operand);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_thing_player(type_bridge_plan_builder_t *builder,
+                                      uint32_t thing, uint32_t role,
+                                      uint32_t player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_delete(type_bridge_plan_builder_t *builder,
+                                uint32_t thing);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_delete_field(type_bridge_plan_builder_t *builder,
+                                      uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_delete_player(type_bridge_plan_builder_t *builder,
+                                       uint32_t relation, uint32_t role,
+                                       uint32_t player);
+
+/* Rows, output and build. A row holds one value id (or
+ * TYPE_BRIDGE_PLAN_VALUE_ABSENT) per input column, in column order. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_row(type_bridge_plan_builder_t *builder,
+                             const uint32_t *values, size_t count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_returning(type_bridge_plan_builder_t *builder,
+                                   const uint32_t *bindings, size_t count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_count(type_bridge_plan_builder_t *builder);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_exists(type_bridge_plan_builder_t *builder);
+/* Validates against the package's compiled declared schema and managed
+ * semantics, as the Rust SDK builds against its generated package. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_build(const type_bridge_plan_builder_t *builder,
+                               const type_bridge_schema_package_t *package,
+                               type_bridge_plan_t **out_plan,
+                               type_bridge_execution_diagnostics_t **out_diagnostics);
 
 /*
  * Immutable typed queries accept generated tokens only and keep all plans
@@ -1097,6 +1528,19 @@ type_bridge_write_transaction_close(
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_session_open(const type_bridge_schema_package_t *package,
+    type_bridge_query_session_t **out_session,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/*
+ * ABI 1.7: open a session whose queries are validated, encoded, and executed
+ * under caller-supplied query limits. NULL overrides with a zero count select
+ * the canonical defaults. An unknown name, a repeated name, or an unsupported
+ * value returns TYPE_BRIDGE_STATUS_INVALID_ARGUMENT and opens nothing.
+ */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_query_session_open_with_limits_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_query_limit_override_v1_t *overrides,
+    size_t override_count,
     type_bridge_query_session_t **out_session,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1307,6 +1751,87 @@ type_bridge_read_transaction_query_execute_v1(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
 /*
+ * ABI 1.7: the built-in proxy connection to a TypeBridge server. A terminal
+ * runs on any connection type through that type's one *_query_execute_v1 call:
+ * database, read transaction, or proxy, with the same result family and
+ * diagnostics. Open and execute are synchronous and block the calling thread;
+ * the connection owns its I/O and needs no runtime handle. Every byte view is
+ * copied during open and need not be NUL terminated. `endpoint` is the server
+ * base URL (https:// for TLS). `tls_mode` is one of TYPE_BRIDGE_TLS_DISABLED,
+ * TYPE_BRIDGE_TLS_NATIVE_ROOTS, or TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;
+ * `custom_root_ca_path` names a PEM bundle in custom-root mode and is empty
+ * otherwise. `headers` (such as Authorization) is sent with every request and
+ * may be NULL when `header_count` is 0. An empty `pinned_advertisement`
+ * fetches the server's capability advertisement during open; a nonempty one is
+ * used instead. `connection_limits` bounds the open; `answer_limits` is the
+ * ceiling every terminal on the connection is constrained by. NULL limits
+ * select the defaults. Reserved words must be zero. Manager terminals run only
+ * on a database or read transaction.
+ */
+#define TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION 1u
+#define TYPE_BRIDGE_PROXY_ENDPOINT_BYTES_MAX 4096u
+#define TYPE_BRIDGE_PROXY_CUSTOM_ROOT_PATH_BYTES_MAX 4096u
+#define TYPE_BRIDGE_PROXY_HEADER_COUNT_MAX 64u
+#define TYPE_BRIDGE_PROXY_HEADER_BYTES_MAX 8192u
+
+typedef struct type_bridge_proxy_connection type_bridge_proxy_connection_t;
+
+typedef struct type_bridge_proxy_header_v1 {
+  type_bridge_byte_view_t name;
+  type_bridge_byte_view_t value;
+} type_bridge_proxy_header_v1_t;
+
+typedef struct type_bridge_proxy_connection_options_v1 {
+  uint32_t struct_size;
+  uint32_t version;
+  type_bridge_byte_view_t endpoint;
+  uint32_t tls_mode;
+  uint32_t reserved0;
+  type_bridge_byte_view_t custom_root_ca_path;
+  const type_bridge_proxy_header_v1_t *headers;
+  size_t header_count;
+  type_bridge_byte_view_t pinned_advertisement;
+  const type_bridge_query_execution_limits_v1_t *connection_limits;
+  const type_bridge_query_execution_limits_v1_t *answer_limits;
+  uint64_t reserved[4];
+} type_bridge_proxy_connection_options_v1_t;
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_open_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_proxy_connection_options_v1_t *options,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_proxy_connection_t **out_connection,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
+/* ABI 1.7: a deferred transaction on the proxy. Open fetches the server's
+ * staged advertisement, which must name the connection's executor and reply
+ * key; nothing else is sent until commit, one signed exchange carrying every
+ * staged plan. An unknown commit outcome keeps the handle for
+ * type_bridge_staged_transaction_commit_retry. The transaction may outlive
+ * the connection; stage, commit, rollback and close are those of
+ * type_bridge_database_transaction. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_transaction(
+    const type_bridge_proxy_connection_t *proxy, uint32_t kind,
+    type_bridge_staged_transaction_t **out_transaction,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_query_execute_v1(const type_bridge_proxy_connection_t *proxy,
+    const type_bridge_query_terminal_t *terminal,
+    type_bridge_query_terminal_kind_t expected_terminal_kind,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_query_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/*
+ * The remote context is the exchange extension point for hosts that own the
+ * route to a TypeBridge server: it is not a second session. Terminals come
+ * from the same query session, and the context only replaces the built-in
+ * route with a caller-driven open/prepare/send/claim/decode exchange; its
+ * limits are the connection ceiling every prepared request is constrained by.
  * Caller-transport remote execution performs no hidden network operation.
  * Context open copies and authenticates one capability advertisement against
  * the exact retained generated package. Prepare mints a fresh invocation and

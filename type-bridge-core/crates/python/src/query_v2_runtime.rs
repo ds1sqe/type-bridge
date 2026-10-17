@@ -14,23 +14,22 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUnicodeEncodeError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyByteArray, PyBytes, PyInt, PyString};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyInt, PyString};
 use pythonize::pythonize;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::fingerprint::Fingerprint;
+use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_BYTES};
 use type_bridge_contract::limits::{
-    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES,
-    MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
 use type_bridge_contract::query_remote::{
-    RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
-    remote_limit_invalid,
+    checked_remote_deadline, checked_remote_limit, remote_deadline_limit, remote_limit_invalid,
 };
+use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::query_v2_prepared::{
-    PendingRemoteQuery, QueryAuthority, decode_remote_capabilities, execute_prepared_local,
-    prepare_remote_query, query_v2_host_string_unicode_error,
+    PendingRemoteQueryV2, QueryAuthority, decode_remote_capabilities, execute_prepared_local,
+    prepare_remote_query_v2, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
 use type_bridge_schema::{
@@ -54,13 +53,14 @@ pub(crate) fn value_error(diagnostic: &Diagnostic) -> PyErr {
             diagnostic.code().as_str(),
             diagnostic.message(),
         ));
+        // One attribute per key of the diagnostic's serde form, the same JSON
+        // Node and the C ABI emit.
         let attach = || -> PyResult<()> {
             let value = py_error.value(py);
-            value.setattr("category", diagnostic.category().as_str())?;
-            value.setattr("code", diagnostic.code().as_str())?;
-            value.setattr("message", diagnostic.message())?;
-            value.setattr("path", pythonize(py, diagnostic.path().segments())?)?;
-            value.setattr("details", pythonize(py, diagnostic.details())?)?;
+            let form = pythonize(py, diagnostic)?.cast_into::<PyDict>()?;
+            for (key, item) in form.iter() {
+                value.setattr(key.cast_into::<PyString>()?, item)?;
+            }
             Ok(())
         };
         match attach() {
@@ -72,10 +72,6 @@ pub(crate) fn value_error(diagnostic: &Diagnostic) -> PyErr {
 
 const LOCAL_WORKER_FAILED: &str =
     "query_v2_local_worker_failed: local provider worker terminated unexpectedly";
-// `SemanticProfileId` freezes this tighter identifier ceiling inside the
-// contract validator; mirror it at the FFI ownership boundary so Python and
-// Node never allocate beyond the value that validator can admit.
-const MAX_SEMANTIC_PROFILE_ID_BYTES: usize = 255;
 
 fn binding_diagnostic(
     category: DiagnosticCategory,
@@ -108,6 +104,14 @@ impl PyQueryV2Authority {
 
 #[pymethods]
 impl PyQueryV2Authority {
+    /// Derive an authority over the same schema whose plans are authored,
+    /// decoded, and validated under `query_limits`.
+    fn with_query_limits(&self, query_limits: &crate::match_runtime::PyQueryLimits) -> Self {
+        Self {
+            authority: Arc::new(self.authority.rebound_with_limits(query_limits.inner())),
+        }
+    }
+
     /// Build one authority from canonical declared-schema bytes.
     #[new]
     fn new(
@@ -135,7 +139,7 @@ impl PyQueryV2Authority {
 /// One prepared request with an atomic one-shot reply decoder.
 #[pyclass(name = "PendingQueryV2Remote", frozen)]
 pub struct PyPendingQueryV2Remote {
-    pending: PendingRemoteQuery,
+    pending: PendingRemoteQueryV2,
 }
 
 pub(crate) enum PythonBytes<'py> {
@@ -259,7 +263,7 @@ fn build_query_v2_authority(
     let profile = PythonString::extract(profile, "profile")?;
     let declared_schema = declared_schema.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
     let scope = scope.bounded_snapshot(MAX_CANONICAL_STRING_BYTES)?;
-    let profile = profile.bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)?;
+    let profile = profile.bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)?;
     let authority = py
         .detach(move || QueryAuthority::from_declared_bytes(&declared_schema, &scope, &profile))
         .map_err(|diagnostic| value_error(&diagnostic))?;
@@ -358,7 +362,7 @@ fn build_query_v2_query_only_authority(
     let profile = PythonString::extract(profile, "profile")?;
     let declared_schema = declared_schema.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
     let scope = scope.bounded_snapshot(MAX_CANONICAL_STRING_BYTES)?;
-    let profile = profile.bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)?;
+    let profile = profile.bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)?;
     let (database, _) = database.handles();
     let authority = py
         .detach(move || {
@@ -471,8 +475,9 @@ pub fn query_v2_execute_local(
     let plan = PythonBytes::extract(plan, "plan")?;
     let invocation_json = PythonString::extract(invocation_json, "invocation_json")?;
     let limits = local_limits(deadline_ms)?;
-    let plan = plan.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
-    let invocation_json = invocation_json.bounded_snapshot(MAX_QUERY_INVOCATION_BYTES)?;
+    let query_limits = authority.authority.limits();
+    let plan = plan.bounded_snapshot(query_limits.codec.max_bytes.saturating_add(1));
+    let invocation_json = invocation_json.bounded_snapshot(query_limits.invocation_bytes())?;
     let (db, runtime) = database.handles();
     let authority = Arc::clone(&authority.authority);
     contain_local_worker_panic(|| {
@@ -495,13 +500,22 @@ fn remote_limits(
     max_bytes: &Bound<'_, PyAny>,
     max_collection_members: &Bound<'_, PyAny>,
     deadline_ms: Option<&Bound<'_, PyAny>>,
-) -> PyResult<RemoteLimits> {
-    let build = || -> Result<RemoteLimits, Diagnostic> {
-        Ok(RemoteLimits {
+) -> PyResult<RemoteLimitsV2> {
+    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
+        // A low-level plan returns no hydration graph, so the graph budgets
+        // keep the proxy (wire) defaults this remote request travels under.
+        let policy = type_bridge_orm::QueryExecutionResourceLimits::default_for(
+            type_bridge_orm::AnswerTransport::Proxy,
+        );
+        Ok(RemoteLimitsV2 {
             deadline_ms: checked_remote_deadline(python_optional_limit(deadline_ms)?)?,
             max_bytes: checked_remote_limit(python_limit(max_bytes)?)?,
             max_items: checked_remote_limit(python_limit(max_items)?)?,
             max_collection_members: checked_remote_limit(python_limit(max_collection_members)?)?,
+            max_graph_nodes: policy.graph_nodes,
+            max_attribute_values: policy.attribute_values,
+            max_role_players: policy.role_players,
+            max_statements: policy.statements,
         })
     };
     build().map_err(|diagnostic| value_error(&diagnostic))
@@ -544,13 +558,14 @@ pub fn query_v2_prepare_remote(
     let invocation_json = PythonString::extract(invocation_json, "invocation_json")?;
     let advertisement = PythonBytes::extract(advertisement, "advertisement")?;
     let limits = remote_limits(max_items, max_bytes, max_collection_members, deadline_ms)?;
-    let plan = plan.bounded_snapshot(MAX_CANONICAL_BYTES.saturating_add(1));
-    let invocation_json = invocation_json.bounded_snapshot(MAX_QUERY_INVOCATION_BYTES)?;
+    let query_limits = authority.authority.limits();
+    let plan = plan.bounded_snapshot(query_limits.codec.max_bytes.saturating_add(1));
+    let invocation_json = invocation_json.bounded_snapshot(query_limits.invocation_bytes())?;
     let advertisement = advertisement.bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
     let authority = Arc::clone(&authority.authority);
     let pending = py
         .detach(move || {
-            prepare_remote_query(&authority, &plan, &invocation_json, &advertisement, limits)
+            prepare_remote_query_v2(&authority, &plan, &invocation_json, &advertisement, limits)
         })
         .map_err(|diagnostic| value_error(&diagnostic))?;
     Ok(PyPendingQueryV2Remote { pending })
@@ -581,7 +596,7 @@ mod tests {
     use pythonize::depythonize;
 
     use super::{
-        LOCAL_WORKER_FAILED, MAX_SEMANTIC_PROFILE_ID_BYTES, PyQueryV2Authority, PythonBytes,
+        LOCAL_WORKER_FAILED, MAX_FINGERPRINT_IDENTIFIER_BYTES, PyQueryV2Authority, PythonBytes,
         PythonString, QueryV2Error, build_query_v2_authority_from_schema_authority,
         contain_local_worker_panic, python_limit, value_error,
     };
@@ -876,21 +891,21 @@ mod tests {
 
             let exact_profile = format!(
                 "{}/v1",
-                "a".repeat(MAX_SEMANTIC_PROFILE_ID_BYTES - "/v1".len())
+                "a".repeat(MAX_FINGERPRINT_IDENTIFIER_BYTES - "/v1".len())
             );
             let exact_value = PyString::new(py, &exact_profile);
             let profile = PythonString::extract(exact_value.as_any(), "profile")
                 .expect("profile string")
-                .bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)
+                .bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)
                 .expect("UTF-8 profile");
             assert_eq!(profile, exact_profile);
             SemanticProfileId::new(profile).expect("exact profile ceiling is valid");
 
             let profile = PythonString::extract(value.as_any(), "profile")
                 .expect("profile string")
-                .bounded_snapshot(MAX_SEMANTIC_PROFILE_ID_BYTES)
+                .bounded_snapshot(MAX_FINGERPRINT_IDENTIFIER_BYTES)
                 .expect("UTF-8 profile");
-            assert_eq!(profile.len(), MAX_SEMANTIC_PROFILE_ID_BYTES + 1);
+            assert_eq!(profile.len(), MAX_FINGERPRINT_IDENTIFIER_BYTES + 1);
             assert_eq!(
                 SemanticProfileId::new(profile)
                     .expect_err("oversized profile marker")

@@ -37,11 +37,22 @@ regex = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["sync", "time"] }
 
+[[test]]
+name = "plan_builder_live"
+required-features = ["typedb"]
+
 [dev-dependencies]
 type-bridge-contract = { path = "../contract", version = "2.2.6" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json = "1"
 sha2 = "0.10"
+# The live plan-builder tests drive the SDK against an in-process server.
+# Path-only, so the published SDK manifest gains no dependency on them.
+type-bridge-server = { path = "../server" }
+type-bridge-core-lib = { path = "../core" }
+axum = "0.8"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

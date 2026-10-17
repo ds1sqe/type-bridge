@@ -96,14 +96,13 @@ def test_plays_card_emits_card_annotation_on_plays_line() -> None:
     pytest.importorskip("type_bridge_core")
     typeql = generate_define_block(_schema(entities=[PcCompany], relations=[PcEmployment]))
 
-    assert "pc-company plays pc-employment:employer @card(0..1);" in typeql
+    assert "pc-company, plays pc-employment:employer @card(0..1);" in typeql
 
 
-def test_no_plays_card_emits_bare_plays_line_byte_identical() -> None:
+def test_no_plays_card_emits_bare_plays_clause() -> None:
     pytest.importorskip("type_bridge_core")
     typeql = generate_define_block(_schema(entities=[PcPerson], relations=[PcContract]))
 
-    # Invariant 4 regression lock: no plays_cardinality anywhere ⇒ no @card emitted, and the
-    # plays line is the bare form unchanged from today.
-    assert "pc-person plays pc-contract:party;" in typeql
+    # Without plays_cardinality the clause has no @card annotation.
+    assert "pc-person, plays pc-contract:party;" in typeql
     assert "@card" not in typeql

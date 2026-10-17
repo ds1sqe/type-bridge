@@ -1,4 +1,4 @@
-name = "rust-sdk-v5-codec"
+name = "sdk-serialization-rust-codec"
 version = "0.0.0"
 dependencies = [
  "type-bridge",

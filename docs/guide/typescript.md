@@ -155,7 +155,7 @@ The constructor admits only generated player types allowed by the canonical
 `plays` facts. Generated reference values can supply an existing IID/key without
 hydrating a complete player.
 
-## Direct queries
+## Queries
 
 ```ts
 import { QuerySession } from "./generated/typescript/dist/index.js";
@@ -167,11 +167,19 @@ const employmentVar = session.exact(Employment);
 const adult = person.field(Person.age).gte(Age.create(18n));
 const employee = employmentVar.role(Employment.employee).connects(person);
 
-const rows = session
+const rows = await session
   .query(person, employmentVar)
   .where(adult, employee)
   .rows({ limit: 100n });
 ```
+
+`QuerySession(connection, { resources, cancellation, queryLimits })` runs on a
+direct `RustDatabase` or transaction, or on a proxy connection (see
+[Proxy queries](#proxy-queries)). Composition is synchronous and performs no
+I/O. Every terminal (`one`, `first`, `rows`, `pageBy`, `countBy`, `existsBy`,
+`aggregate`, grouped `aggregate`) returns a `Promise` on every connection;
+direct terminals run off the JavaScript thread, so they do not block the event
+loop.
 
 The generated query facade supports exact/subtype bindings, owner-aware fields
 and roles, comparison/string/Boolean predicates, explicit cross joins, bounded
@@ -181,7 +189,7 @@ counts, existence, and direct reducers/grouping.
 ```ts
 const left = session.exact(Person);
 const right = session.exact(Person);
-const pairs = session
+const pairs = await session
   .query(left, right)
   .allowCrossJoin(left, right)
   .rows({ limit: 10n });
@@ -203,47 +211,183 @@ try {
 }
 ```
 
+A successful `rollback()` keeps the transaction usable. You can execute more
+work and commit it; call `close()` to end it without committing.
+
+
 Generated managers never commit a caller-owned transaction. Close read
 transactions after their final query terminal.
 
-## Remote queries
+## Staged transactions and plans
 
-The generated package exports `RemoteQuerySession` and privately embeds its
-verified Query V2 authority. Supply the exact server advertisement, a
-caller-owned one-exchange callback, and resource limits—never an authority file
-or `QueryV2Authority`:
+A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
+`let` values, then updates, inserts, puts and deletes. A staged transaction
+queues plans and runs them all at commit, in order, as one TypeDB
+transaction. Nothing opens before `commit`, and a plan that matches no row
+writes nothing, so one plan is a complete conditional write.
+
+The one-query purchase checks the stock and the balance, takes the item and
+the price, and records the purchase:
+
+```ts
+import { Plan, type RustDatabase } from "@type-bridge/node";
+import {
+  Account,
+  Item,
+  Purchase,
+  schemaAuthority,
+} from "./generated/typescript/dist/index.js";
+
+function purchase(order: string, itemId: string, accountId: string): Plan {
+  const plan = Plan.builder();
+  const item = plan.exact(Item);
+  const buyer = plan.exact(Account);
+  const orderInput = plan.input("order_id", "string");
+  const itemInput = plan.input("item_id", "string");
+  const accountInput = plan.input("account_id", "string");
+  const itemKey = plan.field(item, Item.itemId);
+  const buyerKey = plan.field(buyer, Account.accountId);
+  const stock = plan.field(item, Item.stock);
+  const price = plan.field(item, Item.price);
+  const balance = plan.field(buyer, Account.balance);
+  plan
+    .where(itemKey.eq(itemInput))
+    .where(buyerKey.eq(accountInput))
+    .where(stock.gt(0n))
+    .where(balance.ge(price));
+  const nextStock = plan.let("next_stock", stock.sub(1n));
+  const nextBalance = plan.let("next_balance", balance.sub(price));
+  plan.update(item, Item.stock, nextStock).update(buyer, Account.balance, nextBalance);
+  plan
+    .insert(Purchase)
+    .field(Purchase.orderId, orderInput)
+    .player(Purchase.buyer, buyer)
+    .player(Purchase.item, item);
+  plan.row([orderInput.value(order), itemInput.value(itemId), accountInput.value(accountId)]);
+  return plan.build(schemaAuthority());
+}
+
+async function buy(db: RustDatabase): Promise<boolean> {
+  await using tx = db.stagedTransaction();
+  const bought = tx.stage(purchase("O1", "I1", "A1"));
+  await tx.commit();
+  // `{ kind: "matched", value: 0 }`: out of stock or short of funds; nothing was written.
+  const answer = bought.get();
+  return answer.kind === "matched" && answer.value === 1;
+}
+```
+
+The builder takes the generated model, field and role tokens, so a field of
+another model does not type-check. `schemaAuthority()` is the generated
+package's embedded authority; a `QueryV2Authority` over declared-schema bytes
+works too. Builder calls never throw on content: `build` throws the first
+invalid call (an invalid literal, a reused name, a field the thing does not
+own, a key update) as a `QueryV2Error`. Nothing is checked against TypeDB
+until commit. Literals are `string`, `bigint` (long) and `boolean` values,
+or the typed helpers (`double(1.5)`, `decimal("1.25")`, `date(...)`); a
+plain `number` is not a literal.
+
+- **Reads.** A plan without writes answers `{ kind: "rows" }` of the columns
+  passed to `returning`, or `count()` / `exists()`.
+- **Writes.** A write plan answers `{ kind: "matched", value }`, the number
+  of rows its pipeline wrote, or with `returning([...])` the rows from the
+  same pipeline.
+- **Batches.** Each `row` binds the inputs once; many rows run the one plan
+  over all of them.
+- **Expressions.** `let` takes `add`, `sub`, `mul`, `div` and `mod` over
+  values, inputs and literals, and `PlanExpr.pow`, `abs`, `ceil`, `floor`,
+  `round`, `min`, `max` and `length`.
+- **Answers.** Each `stage` returns a `PendingPlanAnswer`; `get()` resolves
+  after a successful commit. A failed commit stores nothing and rejects with
+  a `QueryV2Error` whose `code` and `failure` name the typed outcome; every
+  answer of that commit throws the same failure.
+- **Kinds.** `db.stagedTransaction("read" | "write" | "schema")` fixes the
+  kind; without one, a staged write makes it `write`. `read` refuses write
+  plans and `schema` refuses every plan.
+- **Reuse.** `rollback()` discards the queued plans and keeps the
+  transaction; `close()` ends it. TypeScript never commits implicitly:
+  `await using` closes the transaction at scope exit without committing
+  (Node 18.18 or newer, and TypeScript 5.2 or newer or `@types/node` for
+  the `using` declaration).
+
+`RustDatabase.transaction(kind)` keeps its released meaning, the eager
+`RustTransactionContext` the generated managers and query sessions run on;
+the staged transaction is `stagedTransaction(kind)`. Generated managers do
+not stage plans yet.
+
+Building is deterministic and shared with the Rust, Python and C builders:
+handles are numbered in creation order, match terms keep their call order,
+consecutive writes of one kind share a stage, and names come from labels
+(`item`, `item_stock`). The same program has the same canonical plan bytes
+(`plan.canonicalBytes()`) in every language.
+
+## Proxy queries
+
+A proxy connection runs the same program against a TypeBridge server. Only the
+connection changes:
 
 ```ts
 import {
+  ExchangeConnection,
   Person,
-  RemoteQuerySession,
+  QueryExecutionResourceLimits,
+  QuerySession,
+  connectProxy,
 } from "./generated/typescript/dist/index.js";
 
-const remote = new RemoteQuerySession(
-  advertisementBytes,
-  exchange,
-  {
-    maxItems: 100n,
-    maxBytes: 8_388_608n,
-    maxCollectionMembers: 1_000n,
-    maxGraphNodes: 1_000n,
-    maxAttributeValues: 1_000n,
-    maxRolePlayers: 1_000n,
-    deadlineMs: 30_000n,
-  },
+// The built-in HTTP route to the server's /v2/capabilities and /v2/query.
+const proxy = await connectProxy("https://typebridge.example", {
+  headers: [["Authorization", `Bearer ${token}`]],
+});
+const session = new QuerySession(proxy);
+
+// Or a host-owned transport that routes and authenticates itself.
+const hosted = new QuerySession(
+  new ExchangeConnection(advertisementBytes, exchange),
+  { resources: new QueryExecutionResourceLimits({ items: 100n }) },
 );
-const person = remote.exact(Person);
-const rows = await remote.query(person).rows({ limit: 50n });
+
+const person = session.exact(Person);
+const rows = await session.query(person).rows({ limit: 50n });
 ```
 
-`advertisementBytes` must come from the intended server over authenticated TLS
-or be pinned out of band. `exchange` performs one authenticated request and
-returns the exact response bytes; TypeBridge does not choose an HTTP client,
-credential policy, or retry policy. Query composition performs no I/O; `one`,
-`first`, bounded `rows`, `pageBy`, `countBy`, `existsBy`, and typed
-`aggregate`/`groupBy` each perform one exchange and hydrate the same generated
-classes and scalar groups as direct execution. Generated remote mutation APIs
-are not advertised.
+Both connections use the package's privately embedded, verified Query V2
+authority; no authority file or `QueryV2Authority` is passed. `connectProxy`
+fetches the server advertisement over the configured TLS mode (`tls`,
+`tlsRootCa`), or takes a pinned `advertisement`; `headers` carries caller
+authentication. It follows no redirects. `ExchangeConnection` takes
+advertisement bytes that came from the intended server over authenticated TLS
+or were pinned out of band, and an `exchange(request, signal?)` function that
+performs one request and resolves to the exact reply bytes; the host owns the
+HTTP client, credentials, and retry policy. Either takes `answerLimits`, the
+ceiling every session on the connection runs under.
+
+Each terminal performs one exchange and hydrates the same generated classes
+and scalar groups as direct execution.
+
+Writes cross the proxy as staged transactions.
+`await ProxyConnection.transaction(kind)` returns a `StagedTransaction`, the
+class `RustDatabase.stagedTransaction(kind)` returns for direct staging
+(see [Staged transactions and plans](#staged-transactions-and-plans)).
+`tx.stage(plan)` queues a built plan (`tx.stagePlan(bytes, declaredSchema)`
+queues canonical plan bytes), and
+`await tx.commit()` sends the staged stack as one
+`typebridge.query-remote-request/v3` envelope to `POST /v3/staged`. The reply
+is signed and verified before any answer resolves; answers and typed failures
+match direct execution, and `commit_outcome_unknown` stays unknown. Each commit
+attempt carries a fresh random 16-byte idempotency key. After an unknown
+outcome, such as a dropped reply (`tx.hasUnknownOutcome()` is `true`),
+`await tx.commitRetry()` resends the same
+request with the same key and the server replays its stored reply, so the
+writes apply at most once. Any refusal other than a verified
+`commit_definitely_aborted` (for example `retry_later` while the first attempt
+is still committing) keeps its code but stays unknown, so `commitRetry()`
+stays available. The `/v3/capabilities` advertisement must name the same
+executor and reply key as the connection's advertisement
+(`query_remote_v3_advertisement_mismatch` otherwise); pin it with the
+`stagedAdvertisement` connect option. Writes need a caller the server's interceptor vouches for; otherwise the commit
+fails with `staged_write_not_authorized`. See the
+[staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
 ## Runtime boundary
 
@@ -258,3 +402,9 @@ Generated TypeScript packages require `@type-bridge/node` 2.1 or newer within
 the 2.x line. The npm package publishes native modules for Linux glibc
 (`x64`/`arm64`), macOS (`x64`/`arm64`), and Windows (`x64`/`arm64`); other
 targets build from source and must satisfy the repository toolchain.
+
+Provider query and commit errors expose readonly `error.failure` data on
+`QueryV2Error`: `phase`, `reason`, `lock_kind`, `annotation`, `op_index`,
+`retry_safe` and the TypeDB `code`. Rust classifies these fields; TypeScript
+only forwards them. A safe retry reruns the complete transaction on a new
+snapshot. An unknown commit outcome requires reconciliation before retry.

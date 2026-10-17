@@ -1,12 +1,28 @@
-//! TypeQL query compiler — converts AST [`Clause`](crate::ast::Clause)s into TypeQL query strings.
+//! TypeQL query compiler — converts AST nodes ([`QueryNode`](crate::ast::QueryNode),
+//! usually [`Clause`](crate::ast::Clause)s) into TypeQL query strings.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use crate::ast::{
-    Clause, Constraint, FetchItem, LetAssignment, LiteralValue, Pattern, ReduceAssignment,
-    SortField, Statement, TypedComparisonOperator, TypedFetchRows, TypedFunctionArgument,
-    TypedHydrateThings, TypedLiteral, TypedMatchPredicate, TypedMatchTarget, TypedMissingOrder,
-    TypedPageRematch, TypedRootScan, TypedScalarOperand, TypedSortDirection, Value,
+    Clause, Constraint, Pattern, QueryNode, Statement, TypedComparisonOperator, TypedFetchRows,
+    TypedFunctionArgument, TypedHydrateThings, TypedLiteral, TypedMatchPredicate, TypedMatchTarget,
+    TypedMissingOrder, TypedPageRematch, TypedRootScan, TypedScalarOperand, TypedSortDirection,
+    Value,
 };
+#[cfg(test)]
+use crate::ast::{FetchItem, LetAssignment, LiteralValue, ReduceAssignment, SortField};
+
 use crate::decimal::parse_decimal;
+use crate::tql;
+/// Opaque, non-exhaustive error returned by the checked compile and parse
+/// entry points ([`QueryCompiler::try_compile`],
+/// [`parse_typeql_query_checked`](crate::query_parser::parse_typeql_query_checked)).
+pub use crate::tql::TqlError;
+impl From<tql::TqlError> for TypedCompileError {
+    fn from(value: tql::TqlError) -> Self {
+        Self::new(value.to_string())
+    }
+}
+
 use crate::reserved_words::is_reserved_word;
 use std::sync::OnceLock;
 use type_bridge_contract::id::is_canonical_thing_iid;
@@ -105,27 +121,36 @@ impl TypedParameterMode {
         field: u16,
         operator: TypedComparisonOperator,
         value: &TypedLiteral,
-    ) -> String {
-        let Self::Prepared(parameters) = self else {
-            return compile_typed_value_comparison(field, operator, value);
+    ) -> Result<tql::Pattern, TypedCompileError> {
+        let operand = match self {
+            Self::Prepared(parameters) if prepared_typed_value(operator, value).is_some() => {
+                let name = format!("g{}", parameters.len());
+                parameters.push(TypedQueryParameter {
+                    name: name.clone(),
+                    value: TypedQueryParameterValue::Literal(value.clone()),
+                });
+                tql::var(&name)?
+            }
+            _ => {
+                let value = match (operator, value) {
+                    (TypedComparisonOperator::StartsWith, TypedLiteral::String(v)) => {
+                        TypedLiteral::String(format!("^{}.*", regex::escape(v)))
+                    }
+                    (TypedComparisonOperator::EndsWith, TypedLiteral::String(v)) => {
+                        TypedLiteral::String(format!(".*{}$", regex::escape(v)))
+                    }
+                    _ => value.clone(),
+                };
+                tql::typed_literal(&value)?
+            }
         };
-        let Some(value) = prepared_typed_value(operator, value) else {
-            return compile_typed_value_comparison(field, operator, value);
-        };
-        let name = format!("g{}", parameters.len());
-        let comparison = format!(
-            "{} {} ${name}",
-            field_variable(field),
-            comparison_token(operator)
-        );
-        parameters.push(TypedQueryParameter {
-            name,
-            value: TypedQueryParameterValue::Literal(value),
-        });
-        comparison
+        Ok(tql::compare(
+            tql::var(&field_variable(field))?,
+            comparison_token(operator),
+            operand,
+        )?)
     }
-
-    fn canonical(&mut self, value: &CanonicalValue) -> Result<String, TypedCompileError> {
+    fn canonical(&mut self, value: &CanonicalValue) -> Result<tql::Expr, TypedCompileError> {
         let Self::Prepared(parameters) = self else {
             return Err(TypedCompileError::new(
                 "schema-function projected values require provider given-row support",
@@ -136,34 +161,42 @@ impl TypedParameterMode {
             name: name.clone(),
             value: TypedQueryParameterValue::Canonical(value.clone()),
         });
-        Ok(format!("${name}"))
+        Ok(tql::var(&name)?)
     }
-
+    fn render(&self, mut stages: Vec<tql::Stage>) -> Result<String, TypedCompileError> {
+        if let Self::Prepared(parameters) = self
+            && !parameters.is_empty()
+        {
+            let columns = parameters
+                .iter()
+                .map(|p| {
+                    let tag = match &p.value {
+                        TypedQueryParameterValue::Canonical(v) => v.value_type(),
+                        TypedQueryParameterValue::Literal(v) => match v {
+                            TypedLiteral::String(_) => ValueTypeTag::String,
+                            TypedLiteral::Long(_) => ValueTypeTag::Long,
+                            TypedLiteral::Double(_) => ValueTypeTag::Double,
+                            TypedLiteral::Boolean(_) => ValueTypeTag::Boolean,
+                            _ => unreachable!("unsupported given values stay inline"),
+                        },
+                    };
+                    (p.name.as_str(), tag)
+                })
+                .collect::<Vec<_>>();
+            stages.insert(0, tql::given(&columns)?);
+        }
+        Ok(tql::render(&tql::pipeline(stages))?)
+    }
     fn finish(self, typeql: String) -> PreparedTypedStatement {
         let Self::Prepared(parameters) = self else {
-            unreachable!("only prepared compiler paths finish prepared statements")
-        };
-        let typeql = if parameters.is_empty() {
-            typeql
-        } else {
-            let header = parameters
-                .iter()
-                .map(|parameter| {
-                    format!(
-                        "${}: {}",
-                        parameter.name,
-                        typed_parameter_value_type(&parameter.value)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("given {header};\n{typeql}")
+            unreachable!()
         };
         PreparedTypedStatement { typeql, parameters }
     }
 }
 
-/// Compiles a sequence of [`Clause`] AST nodes into a TypeQL query string.
+/// Compiles AST nodes into TypeQL. It is the only TypeQL renderer for the
+/// untyped AST; bindings send their nodes here instead of rendering them.
 pub struct QueryCompiler {}
 
 impl Default for QueryCompiler {
@@ -178,13 +211,17 @@ impl QueryCompiler {
         QueryCompiler {}
     }
 
-    /// Compile a slice of clauses into a complete TypeQL query string.
+    /// Compile legacy clauses or stage fragments using released compatibility behavior.
+    ///
+    /// Non-`Has` relation attributes are discarded, as in the released renderer.
+    /// Other unrenderable structured inputs return an empty string. Caller-owned
+    /// `Raw` text is emitted verbatim. Use [`Self::try_compile`] to receive errors.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
     pub fn compile(&self, clauses: &[Clause]) -> String {
-        clauses
-            .iter()
-            .map(|c| self.compile_clause(c))
-            .collect::<Vec<_>>()
-            .join("\n")
+        tql::compile_legacy_released(clauses)
     }
 
     /// Compile one canonical typed selected-row statement.
@@ -250,50 +287,34 @@ impl QueryCompiler {
                 "typed tuple scan requires distinct unordered identities at offset zero and limit two",
             ));
         }
-
-        let mut patterns = query
-            .targets
-            .iter()
-            .map(|target| {
-                format!(
-                    "{} {} {}",
-                    binding_variable(target.binding),
-                    if target.exact { "isa!" } else { "isa" },
-                    target.type_name
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut patterns = typed_target_patterns(&query.targets)?;
         if let Some(predicate) = &query.predicate {
-            let mut next_reachability = 0;
-            patterns.push(self.render_typed_predicate(
+            patterns.extend(self.render_typed_predicate(
                 &query.targets,
                 &query.fields,
                 predicate,
                 parameters,
-                &mut next_reachability,
+                &mut 0,
             )?);
         }
-        let projection = query
-            .projection
-            .iter()
-            .map(|binding| binding_variable(*binding))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut rendered = format!("match\n{};", patterns.join(";\n"));
+        let mut stages = vec![tql::match_stage(patterns)];
         if query.predicate.as_ref().is_some_and(contains_reachable) {
             append_reachability_reduce(
-                &mut rendered,
-                query
-                    .targets
-                    .iter()
-                    .map(|target| binding_variable(target.binding)),
-            );
+                &mut stages,
+                query.targets.iter().map(|t| binding_variable(t.binding)),
+            )?;
         }
-        rendered.push_str(&format!(
-            "\nselect {projection};\ndistinct;\nlimit {};",
-            query.limit
-        ));
-        Ok(rendered)
+        let names = query
+            .projection
+            .iter()
+            .map(|b| binding_variable(*b))
+            .collect::<Vec<_>>();
+        stages.push(tql::select(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?);
+        stages.push(tql::distinct());
+        stages.push(tql::limit(query.limit));
+        parameters.render(stages)
     }
 
     fn render_typed_fetch_rows(
@@ -302,88 +323,47 @@ impl QueryCompiler {
         parameters: &mut TypedParameterMode,
     ) -> Result<String, TypedCompileError> {
         validate_typed_fetch_rows(query)?;
-
-        let mut patterns = query
-            .targets
-            .iter()
-            .map(|target| {
-                format!(
-                    "{} {} {}",
-                    binding_variable(target.binding),
-                    if target.exact { "isa!" } else { "isa" },
-                    target.type_name
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let ordered_fields = query
+        let mut patterns = typed_target_patterns(&query.targets)?;
+        for id in query
             .order
             .iter()
-            .map(|order| order.field)
-            .collect::<std::collections::BTreeSet<_>>();
-        for field_id in ordered_fields {
-            let field = typed_field(&query.fields, field_id)?;
-            patterns.push(format!(
-                "{} has {} {}",
-                binding_variable(field.owner),
-                field.field_name,
-                field_variable(field.id)
-            ));
+            .map(|o| o.field)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            patterns.push(typed_has(typed_field(&query.fields, id)?)?);
         }
         if let Some(predicate) = &query.predicate {
-            let mut next_reachability = 0;
-            patterns.push(self.render_typed_predicate(
+            patterns.extend(self.render_typed_predicate(
                 &query.targets,
                 &query.fields,
                 predicate,
                 parameters,
-                &mut next_reachability,
+                &mut 0,
             )?);
         }
-
-        let mut rendered = format!("match\n{};", patterns.join(";\n"));
-        // Provider evidence must retain every positive binding. Canonical
-        // selected-tuple projection/distinctness remains in the typed AST and
-        // is applied by the Rust executor/result validator.
-        let mut selected = query
+        let mut stages = vec![tql::match_stage(patterns)];
+        let mut names = query
             .targets
             .iter()
-            .map(|target| binding_variable(target.binding))
+            .map(|t| binding_variable(t.binding))
             .collect::<Vec<_>>();
-        selected.extend(query.order.iter().map(|order| field_variable(order.field)));
-        selected.dedup();
+        names.extend(query.order.iter().map(|o| field_variable(o.field)));
+        names.dedup();
         if query.predicate.as_ref().is_some_and(contains_reachable) {
-            append_reachability_reduce(&mut rendered, selected.iter().cloned());
+            append_reachability_reduce(&mut stages, names.iter().cloned())?;
         }
-        rendered.push_str("\nselect ");
-        rendered.push_str(&selected.join(", "));
-        rendered.push(';');
+        stages.push(tql::select(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?);
         if query.distinct {
-            rendered.push_str("\ndistinct;");
+            stages.push(tql::distinct());
         }
-        if !query.order.is_empty() {
-            rendered.push_str("\nsort ");
-            rendered.push_str(
-                &query
-                    .order
-                    .iter()
-                    .map(|order| {
-                        let direction = match order.direction {
-                            TypedSortDirection::Ascending => "asc",
-                            TypedSortDirection::Descending => "desc",
-                        };
-                        format!("{} {direction}", field_variable(order.field))
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
-            rendered.push(';');
-        }
+        append_typed_order(&mut stages, &query.order)?;
         if query.offset > 0 {
-            rendered.push_str(&format!("\noffset {};", query.offset));
+            stages.push(tql::offset(query.offset));
         }
-        rendered.push_str(&format!("\nlimit {};", query.limit));
-        Ok(rendered)
+        stages.push(tql::limit(query.limit));
+        parameters.render(stages)
     }
 
     /// Compile one typed distinct-root stream.
@@ -412,59 +392,49 @@ impl QueryCompiler {
         parameters: &mut TypedParameterMode,
     ) -> Result<String, TypedCompileError> {
         validate_typed_root_scan(query)?;
-        let mut patterns = typed_target_patterns(&query.targets);
-        let ordered_fields = query
+        let mut patterns = typed_target_patterns(&query.targets)?;
+        for id in query
             .order
             .iter()
-            .map(|order| order.field)
-            .collect::<std::collections::BTreeSet<_>>();
-        for field_id in ordered_fields {
-            let field = typed_field(&query.fields, field_id)?;
-            patterns.push(format!(
-                "{} has {} {}",
-                binding_variable(field.owner),
-                field.field_name,
-                field_variable(field.id)
-            ));
+            .map(|o| o.field)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            patterns.push(typed_has(typed_field(&query.fields, id)?)?);
         }
         if let Some(predicate) = &query.predicate {
-            let mut next_reachability = 0;
-            patterns.push(self.render_typed_predicate(
+            patterns.extend(self.render_typed_predicate(
                 &query.targets,
                 &query.fields,
                 predicate,
                 parameters,
-                &mut next_reachability,
+                &mut 0,
             )?);
         }
-
-        let mut selected = vec![binding_variable(query.root)];
-        selected.extend(query.order.iter().map(|order| field_variable(order.field)));
-        selected.dedup();
-        let mut rendered = format!("match\n{};", patterns.join(";\n"));
+        let mut names = vec![binding_variable(query.root)];
+        names.extend(query.order.iter().map(|o| field_variable(o.field)));
+        names.dedup();
+        let mut stages = vec![tql::match_stage(patterns)];
         if query.predicate.as_ref().is_some_and(contains_reachable) {
             let mut environment = query
                 .targets
                 .iter()
-                .map(|target| binding_variable(target.binding))
+                .map(|t| binding_variable(t.binding))
                 .collect::<Vec<_>>();
-            environment.extend(query.order.iter().map(|order| field_variable(order.field)));
-            environment.dedup();
-            append_reachability_reduce(&mut rendered, environment);
+            environment.extend(query.order.iter().map(|o| field_variable(o.field)));
+            append_reachability_reduce(&mut stages, environment)?;
         }
-        rendered.push_str(&format!("\nselect {};\ndistinct;", selected.join(", ")));
-        if !query.order.is_empty() {
-            rendered.push_str("\nsort ");
-            rendered.push_str(&compile_typed_order(&query.order));
-            rendered.push(';');
+        stages.push(tql::select(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?);
+        stages.push(tql::distinct());
+        append_typed_order(&mut stages, &query.order)?;
+        if let Some(n) = query.offset.filter(|n| *n > 0) {
+            stages.push(tql::offset(n));
         }
-        if let Some(offset) = query.offset.filter(|offset| *offset > 0) {
-            rendered.push_str(&format!("\noffset {offset};"));
+        if let Some(n) = query.limit {
+            stages.push(tql::limit(n));
         }
-        if let Some(limit) = query.limit {
-            rendered.push_str(&format!("\nlimit {limit};"));
-        }
-        Ok(rendered)
+        parameters.render(stages)
     }
 
     /// Compile one exact root-IID batch re-match with complete graph hydration.
@@ -517,75 +487,68 @@ impl QueryCompiler {
         parameters: &mut TypedParameterMode,
     ) -> Result<String, TypedCompileError> {
         validate_typed_page_rematch(query)?;
-        let mut patterns = typed_target_patterns(&query.targets);
+        let mut patterns = typed_target_patterns(&query.targets)?;
         if let Some(predicate) = &query.predicate {
-            let mut next_reachability = 0;
-            patterns.push(self.render_typed_predicate(
+            patterns.extend(self.render_typed_predicate(
                 &query.targets,
                 &query.fields,
                 predicate,
                 parameters,
-                &mut next_reachability,
+                &mut 0,
             )?);
         }
-        patterns.push(
+        patterns.push(tql::or(
             query
                 .root_concept_ids
                 .iter()
-                .map(|concept_id| {
-                    format!("{{ {} iid {concept_id}; }}", binding_variable(query.root))
+                .map(|id| {
+                    Ok(vec![tql::thing(
+                        &binding_variable(query.root),
+                        vec![tql::iid(id)?],
+                    )?])
                 })
-                .collect::<Vec<_>>()
-                .join(" or "),
-        );
-        patterns.extend(query.targets.iter().map(|target| {
-            format!(
-                "{} isa! {}",
-                binding_variable(target.binding),
-                type_variable(target.binding)
-            )
-        }));
-
+                .collect::<Result<_, tql::TqlError>>()?,
+        ));
+        for t in &query.targets {
+            patterns.push(tql::thing(
+                &binding_variable(t.binding),
+                vec![tql::isa(&type_variable(t.binding), true)?],
+            )?);
+        }
+        let mut stages = vec![tql::match_stage(patterns)];
+        if query.predicate.as_ref().is_some_and(contains_reachable) {
+            let mut names = query
+                .targets
+                .iter()
+                .map(|t| binding_variable(t.binding))
+                .collect::<Vec<_>>();
+            names.extend(query.targets.iter().map(|t| type_variable(t.binding)));
+            append_reachability_reduce(&mut stages, names)?;
+        }
+        if let Some(n) = limit {
+            stages.push(tql::limit(n));
+        }
         let bindings = query
             .targets
             .iter()
-            .map(|target| {
-                let binding = binding_variable(target.binding);
-                let binding_key = format!("b{}", target.binding);
-                let roles = if target.kind == crate::ast::TypedThingKind::Relation {
-                    format!(
-                        ", \"roles\": [ match {binding} links ($role: $player); $player isa! $player_type; fetch {{ \"role\": label($role), \"player_concept_id\": iid($player), \"player_concrete_type\": label($player_type), \"attributes\": {{ $player.* }} }}; ]"
-                    )
-                } else {
-                    String::new()
-                };
-                format!(
-                    "\"{binding_key}\": {{ \"concept_id\": iid({binding}), \"concrete_type\": label({}), \"attributes\": {{ {binding}.* }}{roles} }}",
-                    type_variable(target.binding)
-                )
+            .map(|t| {
+                Ok((
+                    format!("b{}", t.binding),
+                    typed_thing_fetch(
+                        &binding_variable(t.binding),
+                        &type_variable(t.binding),
+                        t.kind,
+                    )?,
+                ))
             })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut rendered = format!("match\n{};", patterns.join(";\n"));
-        if query.predicate.as_ref().is_some_and(contains_reachable) {
-            let mut environment = query
-                .targets
+            .collect::<Result<Vec<_>, TypedCompileError>>()?;
+        stages.push(tql::fetch(
+            bindings
                 .iter()
-                .map(|target| binding_variable(target.binding))
-                .collect::<Vec<_>>();
-            environment.extend(
-                query
-                    .targets
-                    .iter()
-                    .map(|target| type_variable(target.binding)),
-            );
-            append_reachability_reduce(&mut rendered, environment);
-        }
-        if let Some(limit) = limit {
-            rendered.push_str(&format!("\nlimit {limit};"));
-        }
-        rendered.push_str(&format!("\nfetch {{ {bindings} }};"));
-        Ok(rendered)
+                .map(|(key, value)| (key.as_str(), value.clone()))
+                .collect(),
+        )?);
+        parameters.render(stages)
     }
 
     /// Compile one canonical batched IID hydration statement.
@@ -671,28 +634,37 @@ impl QueryCompiler {
                 "typed hydration identity count exceeds the provider limit range",
             )
         })?;
-        let branches = query
-            .targets
-            .iter()
-            .flat_map(|target| {
-                target.concept_ids.iter().map(move |concept_id| {
-                    format!(
-                        "{{ $thing iid {concept_id}; $thing isa {}; let $binding = {}; }}",
-                        target.declared_type, target.binding
-                    )
-                })
-            })
-            .collect::<Vec<_>>()
-            .join(" or ");
-        let roles = match batch_kind {
-            crate::ast::TypedThingKind::Entity => String::new(),
-            crate::ast::TypedThingKind::Relation => {
-                ", \"roles\": [ match $thing links ($role: $player); $player isa! $player_type; fetch { \"role\": label($role), \"player_concept_id\": iid($player), \"player_concrete_type\": label($player_type), \"attributes\": { $player.* } }; ]".to_owned()
+        let mut branches = Vec::new();
+        for target in &query.targets {
+            for id in &target.concept_ids {
+                branches.push(vec![
+                    tql::thing("thing", vec![tql::iid(id)?])?,
+                    tql::thing("thing", vec![tql::isa(&target.declared_type, false)?])?,
+                    tql::let_value(
+                        &["binding"],
+                        tql::typed_literal(&TypedLiteral::Long(i64::from(target.binding)))?,
+                        false,
+                    )?,
+                ]);
             }
-        };
-        Ok(format!(
-            "match\n{branches};\n$thing isa! $type;\nlimit {answer_limit};\nfetch {{ \"binding\": $binding, \"concept_id\": iid($thing), \"concrete_type\": label($type), \"attributes\": {{ $thing.* }}{roles} }};"
-        ))
+        }
+        let patterns = vec![
+            tql::or(branches),
+            tql::thing("thing", vec![tql::isa("$type", true)?])?,
+        ];
+        let mut entries = typed_thing_entries("thing", "type", batch_kind)?;
+        entries.insert(0, ("binding".into(), tql::fetch_expr(tql::var("binding")?)));
+        let stages = vec![
+            tql::match_stage(patterns),
+            tql::limit(answer_limit),
+            tql::fetch(
+                entries
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.clone()))
+                    .collect(),
+            )?,
+        ];
+        TypedParameterMode::Inline.render(stages)
     }
 
     fn render_typed_predicate(
@@ -702,22 +674,18 @@ impl QueryCompiler {
         predicate: &TypedMatchPredicate,
         parameters: &mut TypedParameterMode,
         next_reachability: &mut usize,
-    ) -> Result<String, TypedCompileError> {
-        match predicate {
+    ) -> Result<Vec<tql::Pattern>, TypedCompileError> {
+        Ok(match predicate {
             TypedMatchPredicate::FieldValue {
                 field,
                 operator,
                 value,
             } => {
                 let field = typed_field(fields, *field)?;
-                let has = format!(
-                    "{} has {} {}",
-                    binding_variable(field.owner),
-                    field.field_name,
-                    field_variable(field.id)
-                );
-                let comparison = parameters.comparison(field.id, *operator, value);
-                Ok(format!("{has}; {comparison}"))
+                vec![
+                    typed_has(field)?,
+                    parameters.comparison(field.id, *operator, value)?,
+                ]
             }
             TypedMatchPredicate::FieldComparison {
                 left,
@@ -726,18 +694,15 @@ impl QueryCompiler {
             } => {
                 let left = typed_field(fields, *left)?;
                 let right = typed_field(fields, *right)?;
-                Ok(format!(
-                    "{} has {} {}; {} has {} {}; {} {} {}",
-                    binding_variable(left.owner),
-                    left.field_name,
-                    field_variable(left.id),
-                    binding_variable(right.owner),
-                    right.field_name,
-                    field_variable(right.id),
-                    field_variable(left.id),
-                    comparison_token(*operator),
-                    field_variable(right.id)
-                ))
+                vec![
+                    typed_has(left)?,
+                    typed_has(right)?,
+                    tql::compare(
+                        tql::var(&field_variable(left.id))?,
+                        comparison_token(*operator),
+                        tql::var(&field_variable(right.id))?,
+                    )?,
+                ]
             }
             TypedMatchPredicate::FunctionComparison {
                 calls,
@@ -745,78 +710,64 @@ impl QueryCompiler {
                 operator,
                 right,
             } => {
-                let mut rendered = Vec::with_capacity(calls.len().saturating_add(1));
-                let mut scalar_fields = std::collections::BTreeSet::new();
+                let mut patterns = Vec::new();
+                let mut seen = std::collections::BTreeSet::new();
                 for operand in [left, right] {
                     if let TypedScalarOperand::Field { field } = operand
-                        && scalar_fields.insert(*field)
+                        && seen.insert(*field)
                     {
-                        let field = typed_field(fields, *field)?;
-                        rendered.push(format!(
-                            "{} has {} {}",
-                            binding_variable(field.owner),
-                            field.field_name,
-                            field_variable(field.id)
-                        ));
+                        patterns.push(typed_has(typed_field(fields, *field)?)?);
                     }
                 }
                 for call in calls {
                     let arguments = call
                         .arguments
                         .iter()
-                        .map(|argument| match argument {
+                        .map(|a| match a {
                             TypedFunctionArgument::Binding { binding } => {
-                                Ok(binding_variable(*binding))
+                                Ok(tql::var(&binding_variable(*binding))?)
                             }
                             TypedFunctionArgument::Value { value } => parameters.canonical(value),
                             TypedFunctionArgument::CallResult { call } => {
-                                Ok(function_variable(*call))
+                                Ok(tql::var(&function_variable(*call))?)
                             }
                         })
                         .collect::<Result<Vec<_>, TypedCompileError>>()?;
-                    rendered.push(format!(
-                        "let {} = {}({})",
-                        function_variable(call.result),
-                        call.function,
-                        arguments.join(", ")
-                    ));
+                    patterns.push(tql::let_value(
+                        &[&function_variable(call.result)],
+                        tql::function(&call.function, arguments)?,
+                        false,
+                    )?);
                 }
-                let left = render_typed_scalar_operand(left, parameters)?;
-                let right = render_typed_scalar_operand(right, parameters)?;
-                rendered.push(format!("{left} {} {right}", comparison_token(*operator)));
-                Ok(rendered.join("; "))
+                patterns.push(tql::compare(
+                    render_typed_scalar_operand(left, parameters)?,
+                    comparison_token(*operator),
+                    render_typed_scalar_operand(right, parameters)?,
+                )?);
+                patterns
             }
             TypedMatchPredicate::FieldPresence { field, present } => {
-                let field = typed_field(fields, *field)?;
-                let has = format!(
-                    "{} has {} {}",
-                    binding_variable(field.owner),
-                    field.field_name,
-                    field_variable(field.id)
-                );
-                if *present {
-                    // Presence is an existential predicate. A positive `has`
-                    // would keep the value variable in the match and multiply
-                    // owners with cardinality-many fields before reductions.
-                    Ok(format!("not {{ not {{ {has}; }}; }}"))
+                let absent = tql::not(vec![typed_has(typed_field(fields, *field)?)?]);
+                // Double negation keeps presence existential without multiplying owners.
+                vec![if *present {
+                    tql::not(vec![absent])
                 } else {
-                    Ok(format!("not {{ {has}; }}"))
-                }
+                    absent
+                }]
             }
-            TypedMatchPredicate::BindingIid { binding, iid } => {
-                Ok(format!("{} iid {iid}", binding_variable(*binding)))
-            }
+            TypedMatchPredicate::BindingIid { binding, iid } => vec![tql::thing(
+                &binding_variable(*binding),
+                vec![tql::iid(iid)?],
+            )?],
             TypedMatchPredicate::RoleEdge {
                 relation,
                 role_name,
                 player,
                 ..
-            } => Ok(format!(
-                "{} links ({}: {})",
-                binding_variable(*relation),
-                role_name,
-                binding_variable(*player)
-            )),
+            } => vec![tql::thing(
+                &binding_variable(*relation),
+                vec![tql::links(vec![(role_name, &binding_variable(*player))])?],
+            )?],
             TypedMatchPredicate::Reachable {
                 relation_type,
                 role_from,
@@ -826,458 +777,152 @@ impl QueryCompiler {
                 min_depth,
                 max_depth,
             } => {
-                let reachability = *next_reachability;
-                *next_reachability = (*next_reachability).saturating_add(1);
-                let zero_witness = format!("$R{reachability}z");
+                let id = *next_reachability;
+                *next_reachability = next_reachability.saturating_add(1);
                 let source_target = typed_target(targets, *source)?;
-                let mut branches = Vec::with_capacity(
-                    usize::from(*max_depth)
-                        .saturating_sub(usize::from(*min_depth))
-                        .saturating_add(1),
-                );
+                let witness = format!("$R{id}z");
+                let mut branches = Vec::new();
                 for length in usize::from(*min_depth)..=usize::from(*max_depth) {
                     if length == 0 {
-                        // TypeDB 3.12 cannot plan a bare identity branch beside
-                        // relation branches. Anchor one fresh witness to the
-                        // canonical source descriptor while the source's own
-                        // target pattern retains its exact/subtype semantics.
-                        branches.push(format!(
-                            "{{ {zero_witness} isa {}; {} is {zero_witness}; {} is {zero_witness}; }}",
-                            source_target.type_name,
-                            binding_variable(*source),
-                            binding_variable(*target)
-                        ));
+                        // Anchor the identity branch for TypeDB's disjunction planner.
+                        branches.push(vec![
+                            tql::thing(&witness, vec![tql::isa(&source_target.type_name, false)?])?,
+                            tql::identity(&binding_variable(*source), &witness)?,
+                            tql::identity(&binding_variable(*target), &witness)?,
+                        ]);
                         continue;
                     }
-                    // TypeDB requires variables introduced inside disjunction
-                    // branches to remain branch-local. A hop ordinal alone is
-                    // reused by paths of different lengths (for example h1 in
-                    // both the two-hop and three-hop branches), which makes
-                    // the variable spuriously required across sibling scopes.
-                    let intermediate = |hop: usize| format!("$R{reachability}l{length}h{hop}");
-                    let mut hops = Vec::with_capacity(length);
+                    let mut hops = Vec::new();
                     for hop in 1..=length {
+                        // Fresh names keep intermediates local to each path length.
                         let from = if hop == 1 {
                             binding_variable(*source)
                         } else {
-                            intermediate(hop - 1)
+                            format!("$R{id}l{length}h{}", hop - 1)
                         };
                         let to = if hop == length {
                             binding_variable(*target)
                         } else {
-                            intermediate(hop)
+                            format!("$R{id}l{length}h{hop}")
                         };
-                        hops.push(format!(
-                            "({role_from}: {from}, {role_to}: {to}) isa! {relation_type};"
-                        ));
+                        hops.push(tql::anonymous_relation(
+                            vec![(role_from, &from), (role_to, &to)],
+                            vec![tql::isa(relation_type, true)?],
+                        )?);
                     }
-                    branches.push(format!("{{ {} }}", hops.join(" ")));
+                    branches.push(hops);
                 }
-                Ok(branches.join(" or "))
+                vec![tql::or(branches)]
             }
-            TypedMatchPredicate::And { expressions } => expressions
-                .iter()
-                .map(|child| {
-                    self.render_typed_predicate(
+            TypedMatchPredicate::And { expressions } => {
+                let mut values = Vec::new();
+                for child in expressions {
+                    values.extend(self.render_typed_predicate(
                         targets,
                         fields,
                         child,
                         parameters,
                         next_reachability,
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map(|children| children.join("; ")),
-            TypedMatchPredicate::Or { expressions } => expressions
-                .iter()
-                .map(|child| {
-                    self.render_typed_predicate(
-                        targets,
-                        fields,
-                        child,
-                        parameters,
-                        next_reachability,
-                    )
-                    .map(|child| format!("{{ {child}; }}"))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map(|children| children.join(" or ")),
-            TypedMatchPredicate::Not { expression } => self
-                .render_typed_predicate(targets, fields, expression, parameters, next_reachability)
-                .map(|child| format!("not {{ {child}; }}")),
-        }
+                    )?);
+                }
+                values
+            }
+            TypedMatchPredicate::Or { expressions } => vec![tql::or(
+                expressions
+                    .iter()
+                    .map(|child| {
+                        self.render_typed_predicate(
+                            targets,
+                            fields,
+                            child,
+                            parameters,
+                            next_reachability,
+                        )
+                    })
+                    .collect::<Result<_, _>>()?,
+            )],
+            TypedMatchPredicate::Not { expression } => {
+                vec![tql::not(self.render_typed_predicate(
+                    targets,
+                    fields,
+                    expression,
+                    parameters,
+                    next_reachability,
+                )?)]
+            }
+        })
     }
 
-    /// Compile a single clause into its TypeQL string representation.
+    /// Compile legacy clauses or stage fragments, rejecting malformed structured nodes.
+    ///
+    /// Deprecated caller-owned `Raw` text remains a verbatim escape hatch.
+    pub fn try_compile(&self, clauses: &[Clause]) -> Result<String, TqlError> {
+        crate::tql::compile_legacy(clauses)
+    }
+
+    /// Compile one legacy node, rejecting invalid or unrepresentable nodes.
+    pub fn try_compile_node(&self, node: &QueryNode) -> Result<String, TqlError> {
+        crate::tql::compile_legacy_node(node)
+    }
+
+    /// Compile one legacy node with released compatibility behavior.
+    /// Non-Has relation attributes are dropped; other invalid shapes return empty output.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
+    pub fn compile_node(&self, node: &QueryNode) -> String {
+        tql::compile_legacy_node_released(node)
+    }
+
+    /// Compile one legacy clause. Invalid shapes use the released compatibility behavior.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
     pub fn compile_clause(&self, clause: &Clause) -> String {
-        match clause {
-            Clause::Match(patterns) => {
-                let p_str = patterns
-                    .iter()
-                    .map(|p| self.compile_pattern(p))
-                    .collect::<Vec<_>>()
-                    .join(";\n");
-                format!("match\n{};", p_str)
-            }
-            Clause::Insert(statements) => {
-                let s_str = statements
-                    .iter()
-                    .map(|s| self.compile_statement(s))
-                    .collect::<Vec<_>>()
-                    .join(";\n");
-                format!("insert\n{};", s_str)
-            }
-            Clause::Put(statements) => {
-                let s_str = statements
-                    .iter()
-                    .map(|s| self.compile_statement(s))
-                    .collect::<Vec<_>>()
-                    .join(";\n");
-                format!("put\n{};", s_str)
-            }
-            Clause::Delete(statements) => {
-                let s_str = statements
-                    .iter()
-                    .map(|s| self.compile_statement(s))
-                    .collect::<Vec<_>>()
-                    .join(";\n");
-                format!("delete\n{};", s_str)
-            }
-            Clause::Update(statements) => {
-                let s_str = statements
-                    .iter()
-                    .map(|s| self.compile_statement(s))
-                    .collect::<Vec<_>>()
-                    .join(";\n");
-                format!("update\n{};", s_str)
-            }
-            Clause::Fetch(items) => {
-                let i_str = items
-                    .iter()
-                    .map(|i| self.compile_fetch_item(i))
-                    .collect::<Vec<_>>()
-                    .join(",\n  ");
-                format!("fetch {{\n  {}\n}};", i_str)
-            }
-            Clause::MatchLet(assignments) => {
-                let a_str = assignments
-                    .iter()
-                    .map(|a| self.compile_let_assignment(a))
-                    .collect::<Vec<_>>()
-                    .join(";\n");
-                format!("match\n{};", a_str)
-            }
-            Clause::Reduce {
-                assignments,
-                group_by,
-            } => {
-                let a_str = assignments
-                    .iter()
-                    .map(|a| self.compile_reduce_assignment(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let mut res = format!("reduce {}", a_str);
-                if let Some(gb) = group_by {
-                    res.push_str(&format!(" groupby {}", gb));
-                }
-                res.push(';');
-                res
-            }
-            Clause::Sort(fields) => {
-                let f_str = fields
-                    .iter()
-                    .map(|f| self.compile_sort_field(f))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("sort {};", f_str)
-            }
-            Clause::Limit(n) => format!("limit {};", n),
-            Clause::Offset(n) => format!("offset {};", n),
-        }
+        self.compile(std::slice::from_ref(clause))
     }
 
-    fn compile_pattern(&self, pattern: &Pattern) -> String {
-        match pattern {
-            Pattern::Entity {
-                variable,
-                type_name,
-                constraints,
-                is_strict,
-            } => {
-                let op = if *is_strict { "isa!" } else { "isa" };
-                let mut parts = vec![format!("{} {} {}", variable, op, type_name)];
-                for c in constraints {
-                    parts.push(self.compile_constraint(c));
-                }
-                parts.join(", ")
-            }
-            Pattern::Relation {
-                variable,
-                type_name,
-                role_players,
-                constraints,
-            } => {
-                let roles_str = if !role_players.is_empty() {
-                    let r_str = role_players
-                        .iter()
-                        .map(|rp| format!("{}: {}", rp.role, rp.player_var))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("({}) ", r_str)
-                } else {
-                    "".to_string()
-                };
-                let mut parts = vec![
-                    format!("{} isa {} {}", variable, type_name, roles_str)
-                        .trim()
-                        .to_string(),
-                ];
-                for c in constraints {
-                    parts.push(self.compile_constraint(c));
-                }
-                parts.join(", ")
-            }
-            Pattern::SubType {
-                variable,
-                parent_type,
-            } => format!("{} sub {}", variable, parent_type),
-            Pattern::Has {
-                thing_var,
-                attr_type,
-                attr_var,
-            } => format!("{} has {} {}", thing_var, attr_type, attr_var),
-            Pattern::ValueComparison {
-                var,
-                operator,
-                value,
-            } => format!("{} {} {}", var, operator, self.compile_value(value)),
-            Pattern::Not(patterns) => {
-                let inner = patterns
-                    .iter()
-                    .map(|p| self.compile_pattern(p))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                format!("not {{ {}; }}", inner)
-            }
-            Pattern::Try(patterns) => {
-                let inner = patterns
-                    .iter()
-                    .map(|p| self.compile_pattern(p))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                format!("try {{ {}; }}", inner)
-            }
-            Pattern::Or(alternatives) => alternatives
-                .iter()
-                .map(|alt| {
-                    let inner = alt
-                        .iter()
-                        .map(|p| self.compile_pattern(p))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    format!("{{ {}; }}", inner)
-                })
-                .collect::<Vec<_>>()
-                .join(" or "),
-            Pattern::Iid { variable, iid } => format!("{} iid {}", variable, iid),
-            Pattern::Attribute {
-                variable,
-                type_name,
-                value,
-            } => {
-                if let Some(v) = value {
-                    format!(
-                        "{} isa {}; {} {}",
-                        variable,
-                        type_name,
-                        variable,
-                        self.compile_value(v)
-                    )
-                } else {
-                    format!("{} isa {}", variable, type_name)
-                }
-            }
-            Pattern::Raw(content) => content.clone(),
-        }
+    /// Compile one legacy pattern. Invalid shapes use the released compatibility behavior.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
+    pub fn compile_pattern(&self, pattern: &Pattern) -> String {
+        self.compile_node(&QueryNode::Pattern(pattern.clone()))
     }
 
-    fn compile_statement(&self, stmt: &Statement) -> String {
-        match stmt {
-            Statement::Has {
-                subject_var,
-                attr_name,
-                value,
-            } => format!(
-                "{} has {} {}",
-                subject_var,
-                attr_name,
-                self.compile_value(value)
-            ),
-            Statement::Isa {
-                variable,
-                type_name,
-            } => format!("{} isa {}", variable, type_name),
-            Statement::Relation {
-                variable,
-                type_name,
-                role_players,
-                include_variable,
-                attributes,
-            } => {
-                let r_str = role_players
-                    .iter()
-                    .map(|rp| format!("{}: {}", rp.role, rp.player_var))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let roles_str = format!("({})", r_str);
-                let base = if *include_variable {
-                    format!("{} isa {}, links {}", variable, type_name, roles_str)
-                } else {
-                    format!("{} isa {}", roles_str, type_name)
-                };
-                if attributes.is_empty() {
-                    base
-                } else {
-                    let a_str = attributes
-                        .iter()
-                        .map(|a| {
-                            if let Statement::Has {
-                                attr_name, value, ..
-                            } = a
-                            {
-                                format!("has {} {}", attr_name, self.compile_value(value))
-                            } else {
-                                "".to_string()
-                            }
-                        })
-                        .filter(|s| !s.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{}, {}", base, a_str)
-                }
-            }
-            Statement::DeleteThing(variable) => variable.clone(),
-            Statement::Raw(content) => content.clone(),
-        }
+    /// Compile one legacy statement. Invalid shapes use the released compatibility behavior.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
+    pub fn compile_statement(&self, statement: &Statement) -> String {
+        self.compile_node(&QueryNode::Statement(statement.clone()))
     }
 
-    fn compile_constraint(&self, constraint: &Constraint) -> String {
-        match constraint {
-            Constraint::Iid(iid) => format!("iid {}", iid),
-            Constraint::Has { attr_name, value } => {
-                format!("has {} {}", attr_name, self.compile_value(value))
-            }
-            Constraint::Isa { type_name, strict } => {
-                format!("{} {}", if *strict { "isa!" } else { "isa" }, type_name)
-            }
-        }
+    /// Compile one legacy constraint. Invalid shapes use the released compatibility behavior.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
+    pub fn compile_constraint(&self, constraint: &Constraint) -> String {
+        self.compile_node(&QueryNode::Constraint(constraint.clone()))
     }
 
-    fn compile_value(&self, value: &Value) -> String {
-        match value {
-            Value::Literal(lit) => self.format_literal(lit),
-            Value::Variable(var) => var.clone(),
-            Value::FunctionCall(func) => {
-                let args = func
-                    .args
-                    .iter()
-                    .map(|a| self.compile_value(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{}({})", func.function, args)
-            }
-            Value::Arithmetic(arith) => format!(
-                "({} {} {})",
-                self.compile_value(&arith.left),
-                arith.operator,
-                self.compile_value(&arith.right)
-            ),
-        }
+    /// Compile one legacy value. Invalid shapes use the released compatibility behavior.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+    )]
+    pub fn compile_value(&self, value: &Value) -> String {
+        self.compile_node(&QueryNode::Value(value.clone()))
     }
 
-    fn format_literal(&self, lit: &LiteralValue) -> String {
-        match &lit.value {
-            serde_json::Value::String(s) => {
-                if lit.value_type == "string" {
-                    format!(
-                        "\"{}\"",
-                        s.replace("\\", "\\\\")
-                            .replace("\"", "\\\"")
-                            .replace("\n", "\\n")
-                            .replace("\r", "\\r")
-                            .replace("\t", "\\t")
-                    )
-                } else if lit.value_type == "decimal" {
-                    s.strip_suffix("dec")
-                        .map_or_else(|| format!("{s}dec"), |value| format!("{value}dec"))
-                } else {
-                    // Dates, datetimes, durations are passed as strings but not quoted in TypeQL
-                    s.clone()
-                }
-            }
-            serde_json::Value::Bool(b) => {
-                if *b {
-                    "true".to_string()
-                } else {
-                    "false".to_string()
-                }
-            }
-            serde_json::Value::Number(n) => {
-                if lit.value_type == "decimal" {
-                    format!("{}dec", n)
-                } else {
-                    n.to_string()
-                }
-            }
-            _ => lit.value.to_string(),
-        }
-    }
-
-    fn compile_let_assignment(&self, assign: &LetAssignment) -> String {
-        let vars = assign.variables.join(", ");
-        let op = if assign.is_stream { "in" } else { "=" };
-        format!(
-            "let {} {} {}",
-            vars,
-            op,
-            self.compile_value(&assign.expression)
-        )
-    }
-
-    fn compile_fetch_item(&self, item: &FetchItem) -> String {
-        match item {
-            FetchItem::Attribute {
-                key,
-                var,
-                attr_name,
-            } => format!("\"{}\": {}.{}", key, var, attr_name),
-            FetchItem::Variable { key, var } => format!("\"{}\": {}", key, var),
-            FetchItem::AttributeList {
-                key,
-                var,
-                attr_name,
-            } => format!("\"{}\": [{}.{}]", key, var, attr_name),
-            FetchItem::Function {
-                key,
-                func_name,
-                var,
-            } => format!("\"{}\": {}({})", key, func_name, var),
-            FetchItem::Wildcard { key, var } => format!("\"{}\": {}.*", key, var),
-            FetchItem::NestedWildcard { key, var } => format!("\"{}\": {{ {}.* }}", key, var),
-        }
-    }
-
-    fn compile_reduce_assignment(&self, assign: &ReduceAssignment) -> String {
-        format!(
-            "{} = {}",
-            assign.variable,
-            self.compile_value(&assign.expression)
-        )
-    }
-
-    fn compile_sort_field(&self, field: &SortField) -> String {
-        let dir = if field.ascending { "asc" } else { "desc" };
-        format!("{} {}", field.variable, dir)
+    #[cfg(test)]
+    fn format_literal(&self, literal: &LiteralValue) -> String {
+        self.compile_value(&Value::Literal(literal.clone()))
     }
 }
 
@@ -1296,11 +941,11 @@ fn function_variable(call: u16) -> String {
 fn render_typed_scalar_operand(
     operand: &TypedScalarOperand,
     parameters: &mut TypedParameterMode,
-) -> Result<String, TypedCompileError> {
+) -> Result<tql::Expr, TypedCompileError> {
     match operand {
-        TypedScalarOperand::Field { field } => Ok(field_variable(*field)),
+        TypedScalarOperand::Field { field } => Ok(tql::var(&field_variable(*field))?),
         TypedScalarOperand::Value { value } => parameters.canonical(value),
-        TypedScalarOperand::CallResult { call } => Ok(function_variable(*call)),
+        TypedScalarOperand::CallResult { call } => Ok(tql::var(&function_variable(*call))?),
     }
 }
 
@@ -1324,44 +969,123 @@ fn contains_reachable(predicate: &TypedMatchPredicate) -> bool {
     }
 }
 
-fn append_reachability_reduce(rendered: &mut String, variables: impl IntoIterator<Item = String>) {
+fn append_reachability_reduce(
+    stages: &mut Vec<tql::Stage>,
+    variables: impl IntoIterator<Item = String>,
+) -> Result<(), TypedCompileError> {
     let mut seen = std::collections::BTreeSet::new();
-    let variables = variables
+    let names = variables
         .into_iter()
-        .filter(|variable| seen.insert(variable.clone()))
+        .filter(|v| seen.insert(v.clone()))
         .collect::<Vec<_>>();
-    debug_assert!(!variables.is_empty());
-    rendered.push_str("\nreduce $RreachableProofCount = count groupby ");
-    rendered.push_str(&variables.join(", "));
-    rendered.push(';');
+    debug_assert!(!names.is_empty());
+    stages.push(tql::count(
+        "RreachableProofCount",
+        None,
+        &names.iter().map(String::as_str).collect::<Vec<_>>(),
+    )?);
+    Ok(())
 }
-
-fn typed_target_patterns(targets: &[TypedMatchTarget]) -> Vec<String> {
+fn typed_target_patterns(
+    targets: &[TypedMatchTarget],
+) -> Result<Vec<tql::Pattern>, TypedCompileError> {
     targets
         .iter()
-        .map(|target| {
-            format!(
-                "{} {} {}",
-                binding_variable(target.binding),
-                if target.exact { "isa!" } else { "isa" },
-                target.type_name
-            )
+        .map(|t| {
+            Ok(tql::thing(
+                &binding_variable(t.binding),
+                vec![tql::isa(&t.type_name, t.exact)?],
+            )?)
         })
         .collect()
 }
-
-fn compile_typed_order(order: &[crate::ast::TypedMatchOrder]) -> String {
-    order
-        .iter()
-        .map(|order| {
-            let direction = match order.direction {
-                TypedSortDirection::Ascending => "asc",
-                TypedSortDirection::Descending => "desc",
-            };
-            format!("{} {direction}", field_variable(order.field))
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
+fn typed_has(field: &crate::ast::TypedFieldBinding) -> Result<tql::Pattern, TypedCompileError> {
+    Ok(tql::thing(
+        &binding_variable(field.owner),
+        vec![tql::has(
+            &field.field_name,
+            tql::var(&field_variable(field.id))?,
+        )?],
+    )?)
+}
+fn append_typed_order(
+    stages: &mut Vec<tql::Stage>,
+    order: &[crate::ast::TypedMatchOrder],
+) -> Result<(), TypedCompileError> {
+    if !order.is_empty() {
+        let fields = order
+            .iter()
+            .map(|o| {
+                (
+                    field_variable(o.field),
+                    matches!(o.direction, TypedSortDirection::Descending),
+                )
+            })
+            .collect::<Vec<_>>();
+        stages.push(tql::sort(
+            &fields
+                .iter()
+                .map(|(n, d)| (n.as_str(), *d))
+                .collect::<Vec<_>>(),
+        )?);
+    }
+    Ok(())
+}
+fn typed_thing_entries(
+    binding: &str,
+    type_name: &str,
+    kind: crate::ast::TypedThingKind,
+) -> Result<Vec<(String, tql::FetchValue)>, TypedCompileError> {
+    let mut entries = vec![
+        (
+            "concept_id".into(),
+            tql::fetch_expr(tql::function("iid", vec![tql::var(binding)?])?),
+        ),
+        (
+            "concrete_type".into(),
+            tql::fetch_expr(tql::function("label", vec![tql::var(type_name)?])?),
+        ),
+        ("attributes".into(), tql::fetch_attributes(binding)?),
+    ];
+    if kind == crate::ast::TypedThingKind::Relation {
+        let patterns = vec![
+            tql::thing(binding, vec![tql::links(vec![("$role", "$player")])?])?,
+            tql::thing("player", vec![tql::isa("$player_type", true)?])?,
+        ];
+        let fetch = tql::fetch(vec![
+            (
+                "role",
+                tql::fetch_expr(tql::function("label", vec![tql::var("role")?])?),
+            ),
+            (
+                "player_concept_id",
+                tql::fetch_expr(tql::function("iid", vec![tql::var("player")?])?),
+            ),
+            (
+                "player_concrete_type",
+                tql::fetch_expr(tql::function("label", vec![tql::var("player_type")?])?),
+            ),
+            ("attributes", tql::fetch_attributes("player")?),
+        ])?;
+        entries.push((
+            "roles".into(),
+            tql::fetch_subquery(vec![tql::match_stage(patterns), fetch]),
+        ));
+    }
+    Ok(entries)
+}
+fn typed_thing_fetch(
+    binding: &str,
+    type_name: &str,
+    kind: crate::ast::TypedThingKind,
+) -> Result<tql::FetchValue, TypedCompileError> {
+    let entries = typed_thing_entries(binding, type_name, kind)?;
+    Ok(tql::fetch_object(
+        entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect(),
+    )?)
 }
 
 fn valid_typed_iid(value: &str) -> bool {
@@ -2018,35 +1742,6 @@ fn valid_typeql_duration(value: &str) -> bool {
         .is_match(value)
 }
 
-fn compile_typed_value_comparison(
-    field: u16,
-    operator: TypedComparisonOperator,
-    value: &TypedLiteral,
-) -> String {
-    let field = field_variable(field);
-    match (operator, value) {
-        (TypedComparisonOperator::StartsWith, TypedLiteral::String(value)) => format!(
-            "{field} like {}",
-            compile_typed_literal(&TypedLiteral::String(format!(
-                "^{}.*",
-                regex::escape(value)
-            )))
-        ),
-        (TypedComparisonOperator::EndsWith, TypedLiteral::String(value)) => format!(
-            "{field} like {}",
-            compile_typed_literal(&TypedLiteral::String(format!(
-                ".*{}$",
-                regex::escape(value)
-            )))
-        ),
-        _ => format!(
-            "{field} {} {}",
-            comparison_token(operator),
-            compile_typed_literal(value)
-        ),
-    }
-}
-
 fn prepared_typed_value(
     operator: TypedComparisonOperator,
     value: &TypedLiteral,
@@ -2070,39 +1765,6 @@ fn prepared_typed_value(
     }
 }
 
-fn prepared_typed_value_type(value: &TypedLiteral) -> &'static str {
-    match value {
-        TypedLiteral::String(_) => "string",
-        TypedLiteral::Long(_) => "integer",
-        TypedLiteral::Double(_) => "double",
-        TypedLiteral::Boolean(_) => "boolean",
-        TypedLiteral::Date(_)
-        | TypedLiteral::DateTime(_)
-        | TypedLiteral::DateTimeTz(_)
-        | TypedLiteral::Decimal(_)
-        | TypedLiteral::Duration(_) => {
-            unreachable!("unsupported prepared values remain inline")
-        }
-    }
-}
-
-fn typed_parameter_value_type(value: &TypedQueryParameterValue) -> &'static str {
-    match value {
-        TypedQueryParameterValue::Literal(value) => prepared_typed_value_type(value),
-        TypedQueryParameterValue::Canonical(value) => match value.value_type() {
-            ValueTypeTag::String => "string",
-            ValueTypeTag::Long => "integer",
-            ValueTypeTag::Double => "double",
-            ValueTypeTag::Boolean => "boolean",
-            ValueTypeTag::Date => "date",
-            ValueTypeTag::DateTime => "datetime",
-            ValueTypeTag::DateTimeTz => "datetime-tz",
-            ValueTypeTag::Decimal => "decimal",
-            ValueTypeTag::Duration => "duration",
-        },
-    }
-}
-
 fn comparison_token(operator: TypedComparisonOperator) -> &'static str {
     match operator {
         TypedComparisonOperator::Equal => "==",
@@ -2118,30 +1780,6 @@ fn comparison_token(operator: TypedComparisonOperator) -> &'static str {
     }
 }
 
-fn compile_typed_literal(value: &TypedLiteral) -> String {
-    match value {
-        TypedLiteral::String(value) => format!(
-            "\"{}\"",
-            value
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r")
-                .replace('\t', "\\t")
-        ),
-        TypedLiteral::Long(value) => value.to_string(),
-        TypedLiteral::Double(value) => value.to_string(),
-        TypedLiteral::Boolean(value) => value.to_string(),
-        TypedLiteral::Date(value)
-        | TypedLiteral::DateTime(value)
-        | TypedLiteral::DateTimeTz(value)
-        | TypedLiteral::Duration(value) => value.clone(),
-        TypedLiteral::Decimal(value) => value
-            .strip_suffix("dec")
-            .map_or_else(|| format!("{value}dec"), |value| format!("{value}dec")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2151,6 +1789,16 @@ mod tests {
         TypedMatchOrder, TypedMatchTarget, TypedMissingOrder, TypedThingKind,
     };
     use serde_json::json;
+    fn compile_typed_value_comparison(
+        field: u16,
+        operator: TypedComparisonOperator,
+        value: &TypedLiteral,
+    ) -> String {
+        let pattern = TypedParameterMode::Inline
+            .comparison(field, operator, value)
+            .unwrap();
+        crate::tql::render_pattern(&pattern).unwrap()
+    }
 
     #[test]
     fn typed_typeql_labels_reject_injection_and_reserved_words() {
@@ -2248,7 +1896,7 @@ mod tests {
                 value: TypedQueryParameterValue::Canonical(CanonicalValue::Long(40)),
             }]
         );
-        assert!(prepared.typeql.starts_with("given $g0: integer;\nmatch\n"));
+        assert!(prepared.typeql.starts_with("given $g0: integer; match "));
         assert!(prepared.typeql.contains("$b0 has score $f0"));
         assert!(prepared.typeql.contains(
             "let $c0 = qualifying-score($b0, $g0); let $c1 = identity-score($c0); $c1 == $f0"
@@ -2266,12 +1914,7 @@ mod tests {
                     },
                 ))
                 .unwrap(),
-            "match\n\
-             $b0 isa person;\n\
-             not { not { $b0 has score $f0; }; };\n\
-             select $b0;\n\
-             distinct;\n\
-             limit 1;"
+            "match $b0 isa person; not { not { $b0 has score $f0; \n}; \n}; select $b0; distinct; limit 1;"
         );
         assert_eq!(
             compiler()
@@ -2282,12 +1925,7 @@ mod tests {
                     },
                 ))
                 .unwrap(),
-            "match\n\
-             $b0 isa person;\n\
-             not { $b0 has score $f0; };\n\
-             select $b0;\n\
-             distinct;\n\
-             limit 1;"
+            "match $b0 isa person; not { $b0 has score $f0; \n}; select $b0; distinct; limit 1;"
         );
         assert_eq!(
             compiler()
@@ -2296,12 +1934,7 @@ mod tests {
                     iid: "0xAb12".into(),
                 },))
                 .unwrap(),
-            "match\n\
-             $b0 isa person;\n\
-             $b0 iid 0xAb12;\n\
-             select $b0;\n\
-             distinct;\n\
-             limit 1;"
+            "match $b0 isa person; $b0 iid 0xAb12; select $b0; distinct; limit 1;"
         );
 
         let error = compiler()
@@ -2694,7 +2327,7 @@ mod tests {
             type_name: "name".into(),
             value: Some(lit(json!("John"), "string")),
         };
-        assert_eq!(c.compile_pattern(&p), "$a isa name; $a \"John\"");
+        assert_eq!(c.compile_pattern(&p), "$a isa name \"John\"");
     }
 
     #[test]
@@ -2737,7 +2370,7 @@ mod tests {
             constraints: vec![],
             is_strict: false,
         }]);
-        assert_eq!(c.compile_pattern(&p), "not { $p isa person; }");
+        assert_eq!(c.compile_pattern(&p), "not { $p isa person; \n}");
     }
 
     #[test]
@@ -2918,7 +2551,7 @@ mod tests {
             constraints: vec![],
             is_strict: false,
         }]);
-        assert_eq!(c.compile_clause(&clause), "match\n$p isa person;");
+        assert_eq!(c.compile_clause(&clause), "match $p isa person;");
     }
 
     #[test]
@@ -2939,7 +2572,7 @@ mod tests {
         ]);
         assert_eq!(
             c.compile_clause(&clause),
-            "match\n$p isa person;\n$p has name $n;"
+            "match $p isa person; $p has name $n;"
         );
     }
 
@@ -2951,7 +2584,7 @@ mod tests {
             attr_name: "name".into(),
             value: lit(json!("Alice"), "string"),
         }]);
-        assert_eq!(c.compile_clause(&clause), "insert\n$p has name \"Alice\";");
+        assert_eq!(c.compile_clause(&clause), "insert $p has name \"Alice\";");
     }
 
     #[test]
@@ -2970,7 +2603,7 @@ mod tests {
         ]);
         assert_eq!(
             c.compile_clause(&clause),
-            "put\n$p isa person;\n$p has name \"Alice\";"
+            "put $p isa person; $p has name \"Alice\";"
         );
     }
 
@@ -2978,7 +2611,7 @@ mod tests {
     fn test_clause_delete() {
         let c = compiler();
         let clause = Clause::Delete(vec![Statement::DeleteThing("$p".into())]);
-        assert_eq!(c.compile_clause(&clause), "delete\n$p;");
+        assert_eq!(c.compile_clause(&clause), "delete $p;");
     }
 
     #[test]
@@ -2989,7 +2622,7 @@ mod tests {
             attr_name: "age".into(),
             value: lit(json!(31), "long"),
         }]);
-        assert_eq!(c.compile_clause(&clause), "update\n$p has age 31;");
+        assert_eq!(c.compile_clause(&clause), "update $p has age == 31;");
     }
 
     #[test]
@@ -3008,7 +2641,7 @@ mod tests {
         ]);
         assert_eq!(
             c.compile_clause(&clause),
-            "fetch {\n  \"name\": $p.name,\n  \"person\": $p\n};"
+            "fetch { \"name\": $p.name, \"person\": $p};"
         );
     }
 
@@ -3047,10 +2680,99 @@ mod tests {
         let result = c.compile_clause(&clause);
         assert!(result.contains("\"name\": $p.name"));
         assert!(result.contains("\"person\": $p"));
-        assert!(result.contains("\"emails\": [$p.email]"));
+        assert!(result.contains("\"emails\": [ $p.email]"));
         assert!(result.contains("\"count\": count($p)"));
-        assert!(result.contains("\"all\": $p.*"));
-        assert!(result.contains("\"nested\": { $p.* }"));
+        assert!(result.contains("\"all\": {  $p.*}"));
+        assert!(result.contains("\"nested\": {  $p.*}"));
+    }
+
+    #[test]
+    fn test_fetch_raw_item_passes_through() {
+        let c = compiler();
+        let clause = Clause::Fetch(vec![
+            FetchItem::Raw("\"raw_name\": $p.person-name".into()),
+            FetchItem::Variable {
+                key: "person".into(),
+                var: "$p".into(),
+            },
+        ]);
+        assert_eq!(
+            c.compile_clause(&clause),
+            "fetch { \"raw_name\": $p.person-name, \"person\": $p };"
+        );
+        let wire: FetchItem = serde_json::from_value(json!({"Raw": "\"k\": $p.*"})).unwrap();
+        assert_eq!(wire, FetchItem::Raw("\"k\": $p.*".into()));
+    }
+
+    /// Decode a node from the tagged form bindings send, then compile it.
+    fn compile_wire_node(node: serde_json::Value) -> String {
+        let node: QueryNode = serde_json::from_value(node).expect("query node wire form");
+        compiler().compile_node(&node)
+    }
+
+    #[test]
+    fn test_node_clause() {
+        let rendered = compile_wire_node(json!({"Clause": {"Match": [
+            {"type": "Entity", "data": {
+                "variable": "$p", "type_name": "person", "constraints": [], "is_strict": false
+            }}
+        ]}}));
+        assert_eq!(rendered, "match $p isa person;");
+    }
+
+    #[test]
+    fn test_node_pattern() {
+        let rendered = compile_wire_node(json!({"Pattern": {"type": "Entity", "data": {
+            "variable": "$p",
+            "type_name": "person",
+            "constraints": [{"type": "Has", "data": {
+                "attr_name": "name",
+                "value": {"type": "Literal", "data": {"value": "Alice", "value_type": "string"}}
+            }}],
+            "is_strict": true
+        }}}));
+        assert_eq!(rendered, "$p isa! person, has name \"Alice\"");
+    }
+
+    #[test]
+    fn test_node_statement() {
+        let rendered = compile_wire_node(json!({"Statement": {"type": "Relation", "data": {
+            "variable": "$r",
+            "type_name": "employment",
+            "role_players": [{"role": "employee", "player_var": "$p"}],
+            "include_variable": false,
+            "attributes": [{"type": "Has", "data": {
+                "subject_var": "$r",
+                "attr_name": "since",
+                "value": {"type": "Literal", "data": {"value": "2024-01-02", "value_type": "date"}}
+            }}]
+        }}}));
+        assert_eq!(
+            rendered,
+            "(employee: $p) isa employment, has since 2024-01-02"
+        );
+    }
+
+    #[test]
+    fn test_node_constraint() {
+        let rendered = compile_wire_node(json!({"Constraint": {"type": "Has", "data": {
+            "attr_name": "score",
+            "value": {"type": "Literal", "data": {"value": "1.50", "value_type": "decimal"}}
+        }}}));
+        assert_eq!(rendered, "has score 1.50dec");
+    }
+
+    #[test]
+    fn test_node_value() {
+        let rendered = compile_wire_node(json!({"Value": {"type": "Arithmetic", "data": {
+            "left": {"type": "Variable", "data": "$a"},
+            "operator": "+",
+            "right": {"type": "FunctionCall", "data": {
+                "function": "abs",
+                "args": [{"type": "Literal", "data": {"value": -2, "value_type": "long"}}]
+            }}
+        }}}));
+        assert_eq!(rendered, "($a + abs(-2))");
     }
 
     #[test]
@@ -3064,7 +2786,7 @@ mod tests {
             }),
             is_stream: false,
         }]);
-        assert_eq!(c.compile_clause(&clause), "match\nlet $x = count($p);");
+        assert_eq!(c.compile_clause(&clause), "match let $x = count($p);");
     }
 
     #[test]
@@ -3073,12 +2795,15 @@ mod tests {
         let clause = Clause::MatchLet(vec![LetAssignment {
             variables: vec!["$x".into()],
             expression: Value::FunctionCall(FunctionCallValue {
-                function: "fetch".into(),
+                function: "fetch_items".into(),
                 args: vec![Value::Variable("$p".into())],
             }),
             is_stream: true,
         }]);
-        assert_eq!(c.compile_clause(&clause), "match\nlet $x in fetch($p);");
+        assert_eq!(
+            c.compile_clause(&clause),
+            "match let $x in fetch_items($p);"
+        );
     }
 
     #[test]
@@ -3250,8 +2975,8 @@ mod tests {
             }]),
         ];
         let result = c.compile(&clauses);
-        assert!(result.starts_with("match\n"));
-        assert!(result.contains("insert\n"));
+        assert!(result.starts_with("match "));
+        assert!(result.contains("insert "));
     }
 
     #[test]
@@ -3271,8 +2996,8 @@ mod tests {
             }]),
         ];
         let result = c.compile(&clauses);
-        assert!(result.starts_with("match\n"));
-        assert!(result.contains("put\n"));
+        assert!(result.starts_with("match "));
+        assert!(result.contains("put "));
     }
 
     #[test]
@@ -3288,7 +3013,7 @@ mod tests {
             Clause::Delete(vec![Statement::DeleteThing("$p".into())]),
         ];
         let result = c.compile(&clauses);
-        assert_eq!(result, "match\n$p isa person;\ndelete\n$p;");
+        assert_eq!(result, "match $p isa person; delete $p;");
     }
 
     #[test]
@@ -3307,7 +3032,7 @@ mod tests {
             }]),
         ];
         let result = c.compile(&clauses);
-        assert!(result.starts_with("match\n"));
+        assert!(result.starts_with("match "));
         assert!(result.contains("fetch {"));
     }
 
@@ -3333,7 +3058,7 @@ mod tests {
             },
         ];
         let result = c.compile(&clauses);
-        assert!(result.starts_with("match\n"));
+        assert!(result.starts_with("match "));
         assert!(result.contains("reduce $c = count($p);"));
     }
 
@@ -3406,7 +3131,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_insert() {
-        roundtrip("insert\n$p isa person;\n$p has name \"Alice\";");
+        roundtrip("insert $p isa person; $p has name \"Alice\";");
     }
 
     #[test]
@@ -3416,7 +3141,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_put() {
-        roundtrip("put\n$p isa person;\n$p has name \"Alice\";");
+        roundtrip("put $p isa person; $p has name \"Alice\";");
     }
 
     #[test]
@@ -3436,7 +3161,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_match_fetch_wildcard() {
-        roundtrip("match $p isa person;\nfetch {\n  \"\": $p.*\n};");
+        roundtrip("match $p isa person;\nfetch {\n  \"\": {$p.*}\n};");
     }
 
     #[test]
@@ -3482,27 +3207,27 @@ mod tests {
 
     #[test]
     fn test_roundtrip_sort_single() {
-        roundtrip("match $p isa person;\nsort $age asc;");
+        roundtrip("match $p isa person; sort $age asc;");
     }
 
     #[test]
     fn test_roundtrip_sort_multiple() {
-        roundtrip("match $p isa person;\nsort $name asc, $age desc;");
+        roundtrip("match $p isa person; sort $name asc, $age desc;");
     }
 
     #[test]
     fn test_roundtrip_limit() {
-        roundtrip("match $p isa person;\nlimit 10;");
+        roundtrip("match $p isa person; limit 10;");
     }
 
     #[test]
     fn test_roundtrip_offset() {
-        roundtrip("match $p isa person;\noffset 20;");
+        roundtrip("match $p isa person; offset 20;");
     }
 
     #[test]
     fn test_roundtrip_sort_limit_offset() {
-        roundtrip("match $p isa person;\nsort $age asc;\nlimit 10;\noffset 5;");
+        roundtrip("match $p isa person; sort $age asc; limit 10; offset 5;");
     }
 
     #[test]
@@ -3568,13 +3293,7 @@ mod tests {
                 prepared,
                 PreparedTypedStatement {
                     typeql: format!(
-                        "given $g0: {value_type};\n\
-                         match\n\
-                         $b0 isa person;\n\
-                         $b0 has score $f0; $f0 == $g0;\n\
-                         select $b0;\n\
-                         distinct;\n\
-                         limit 1;"
+                        "given $g0: {value_type}; match $b0 isa person; $b0 has score $f0; $f0 == $g0; select $b0; distinct; limit 1;"
                     ),
                     parameters: vec![TypedQueryParameter {
                         name: "g0".into(),
@@ -3590,12 +3309,7 @@ mod tests {
                     "needle".into(),
                 )))
                 .unwrap(),
-            "match\n\
-             $b0 isa person;\n\
-             $b0 has score $f0; $f0 == \"needle\";\n\
-             select $b0;\n\
-             distinct;\n\
-             limit 1;"
+            "match $b0 isa person; $b0 has score $f0; $f0 == \"needle\"; select $b0; distinct; limit 1;"
         );
     }
 
@@ -3635,15 +3349,7 @@ mod tests {
         let prepared = compiler().prepare_typed_fetch_rows(&query).unwrap();
         assert_eq!(
             prepared.typeql,
-            concat!(
-                "given $g0: string;\n",
-                "match\n",
-                "$b0 isa person;\n",
-                r#"$b0 has score $f0; $f0 like "^A\\.\\+%.*"; { $b0 has score $f0; $f0 contains $g0; } or { not { $b0 has score $f0; $f0 like ".*\\[x\\]\\$50%$"; }; }; $b0 has score $f0; $f0 like "^A[[:alpha:]]+%$";"#,
-                "\nselect $b0;\n",
-                "distinct;\n",
-                "limit 1;",
-            )
+            "given $g0: string; match $b0 isa person; $b0 has score $f0; $f0 like \"^A\\\\.\\\\+%.*\"; { $b0 has score $f0; $f0 contains $g0; } or { not { $b0 has score $f0; \n $f0 like \".*\\\\[x\\\\]\\\\$50%$\"; \n}; }; $b0 has score $f0; $f0 like \"^A[[:alpha:]]+%$\"; select $b0; distinct; limit 1;"
         );
         assert_eq!(
             prepared.parameters,
@@ -3684,13 +3390,7 @@ mod tests {
         let prepared = compiler().prepare_typed_fetch_rows(&query).unwrap();
         assert_eq!(
             prepared.typeql,
-            "given $g0: integer, $g1: boolean;\n\
-             match\n\
-             $b0 isa person;\n\
-             $b0 has score $f0; $f0 == 1.25dec; $b0 has score $f0; $f0 == $g0; $b0 has score $f0; $f0 == P1D; $b0 has score $f0; $f0 == $g1;\n\
-             select $b0;\n\
-             distinct;\n\
-             limit 1;"
+            "given $g0: integer, $g1: boolean; match $b0 isa person; $b0 has score $f0; $f0 == 1.25dec; $b0 has score $f0; $f0 == $g0; $b0 has score $f0; $f0 == P1D; $b0 has score $f0; $f0 == $g1; select $b0; distinct; limit 1;"
         );
         assert_eq!(
             prepared.parameters,
@@ -3738,13 +3438,7 @@ mod tests {
         let prepared_root = compiler().prepare_typed_root_scan(&root).unwrap();
         assert_eq!(
             prepared_root.typeql,
-            "given $g0: string;\n\
-             match\n\
-             $b0 isa person;\n\
-             $b0 has score $f0; $f0 == $g0;\n\
-             select $b0;\n\
-             distinct;\n\
-             limit 2;"
+            "given $g0: string; match $b0 isa person; $b0 has score $f0; $f0 == $g0; select $b0; distinct; limit 2;"
         );
 
         let rematch = TypedPageRematch {
@@ -3758,13 +3452,7 @@ mod tests {
         let prepared_rematch = compiler().prepare_typed_page_rematch(&rematch).unwrap();
         assert_eq!(
             prepared_rematch.typeql,
-            "given $g0: string;\n\
-             match\n\
-             $b0 isa person;\n\
-             $b0 has score $f0; $f0 == $g0;\n\
-             { $b0 iid 0x01; };\n\
-             $b0 isa! $t0;\n\
-             fetch { \"b0\": { \"concept_id\": iid($b0), \"concrete_type\": label($t0), \"attributes\": { $b0.* } } };"
+            "given $g0: string; match $b0 isa person; $b0 has score $f0; $f0 == $g0; { $b0 iid 0x01; }; $b0 isa! $t0; fetch { \"b0\": { \"concept_id\": iid($b0), \"concrete_type\": label($t0), \"attributes\": {  $b0.*}}};"
         );
         assert_eq!(prepared_root.parameters, prepared_rematch.parameters);
         assert_eq!(
@@ -3898,9 +3586,9 @@ mod tests {
         assert!(rendered.contains("$f0 like \"^Al.*\""));
         assert!(rendered.contains("$f0 != $f1"));
         assert!(rendered.contains("not {"));
-        assert!(rendered.contains("select $b0, $b1, $b2, $f1, $f0;\ndistinct;"));
+        assert!(rendered.contains("select $b0, $b1, $b2, $f1, $f0; distinct;"));
         assert!(rendered.contains("sort $f1 desc, $f0 asc;"));
-        assert!(rendered.ends_with("offset 5;\nlimit 10;"));
+        assert!(rendered.ends_with("offset 5; limit 10;"));
     }
 
     #[test]
@@ -3939,20 +3627,7 @@ mod tests {
 
         assert_eq!(
             compiler().compile_typed_fetch_rows(&query).unwrap(),
-            "match\n\
-             $b0 isa node;\n\
-             $b1 isa node;\n\
-             { $R0z isa node; $b0 is $R0z; $b1 is $R0z; } or \
-             { (origin: $b0, destination: $b1) isa! edge; } or \
-             { (origin: $b0, destination: $R0l2h1) isa! edge; \
-             (origin: $R0l2h1, destination: $b1) isa! edge; } or \
-             { (origin: $b0, destination: $R0l3h1) isa! edge; \
-             (origin: $R0l3h1, destination: $R0l3h2) isa! edge; \
-             (origin: $R0l3h2, destination: $b1) isa! edge; };\n\
-             reduce $RreachableProofCount = count groupby $b0, $b1;\n\
-             select $b0, $b1;\n\
-             distinct;\n\
-             limit 5;"
+            "match $b0 isa node; $b1 isa node; { $R0z isa node; $b0 is $R0z; $b1 is $R0z; } or { (origin: $b0, destination: $b1) isa! edge; } or { (origin: $b0, destination: $R0l2h1) isa! edge; (origin: $R0l2h1, destination: $b1) isa! edge; } or { (origin: $b0, destination: $R0l3h1) isa! edge; (origin: $R0l3h1, destination: $R0l3h2) isa! edge; (origin: $R0l3h2, destination: $b1) isa! edge; }; reduce $RreachableProofCount = count groupby $b0, $b1; select $b0, $b1; distinct; limit 5;"
         );
     }
 
@@ -3995,14 +3670,7 @@ mod tests {
         // schema types are disjoint.
         assert_eq!(
             compiler().compile_typed_fetch_rows(&query).unwrap(),
-            "match\n\
-             $b0 isa base-node;\n\
-             $b1 isa! different-node;\n\
-             { $R0z isa base-node; $b0 is $R0z; $b1 is $R0z; };\n\
-             reduce $RreachableProofCount = count groupby $b0, $b1;\n\
-             select $b0, $b1;\n\
-             distinct;\n\
-             limit 1;"
+            "match $b0 isa base-node; $b1 isa! different-node; { $R0z isa base-node; $b0 is $R0z; $b1 is $R0z; }; reduce $RreachableProofCount = count groupby $b0, $b1; select $b0, $b1; distinct; limit 1;"
         );
     }
 
@@ -4085,16 +3753,7 @@ mod tests {
             limit: 2,
         };
 
-        let expected = concat!(
-            "match\n",
-            "$b0 isa! person;\n",
-            "$b1 isa employment;\n",
-            "$b2 isa! company;\n",
-            "$b1 links (employee: $b0);\n",
-            "select $b2, $b0;\n",
-            "distinct;\n",
-            "limit 2;",
-        );
+        let expected = "match $b0 isa! person; $b1 isa employment; $b2 isa! company; $b1 links (employee: $b0); select $b2, $b0; distinct; limit 2;";
         assert_eq!(
             compiler().compile_typed_tuple_scan(&query).unwrap(),
             expected
@@ -4374,8 +4033,8 @@ mod tests {
         };
         let rendered = compiler().compile_typed_root_scan(&root_scan).unwrap();
         assert!(rendered.contains("$b1 links (employee: $b0)"));
-        assert!(rendered.contains("select $b0, $f0;\ndistinct;"));
-        assert!(rendered.contains("sort $f0 asc;\noffset 2;\nlimit 3;"));
+        assert!(rendered.contains("select $b0, $f0; distinct;"));
+        assert!(rendered.contains("sort $f0 asc; offset 2; limit 3;"));
 
         let rematch = TypedPageRematch {
             targets,
@@ -4405,11 +4064,11 @@ mod tests {
         let bounded = compiler()
             .compile_typed_page_rematch_bounded(&rematch, 7)
             .unwrap();
-        assert!(bounded.contains("\nlimit 7;\nfetch {"));
+        assert!(bounded.contains(" limit 7; fetch {"));
         let prepared = compiler()
             .prepare_typed_page_rematch_bounded(&rematch, 7)
             .unwrap();
-        assert!(prepared.typeql.contains("\nlimit 7;\nfetch {"));
+        assert!(prepared.typeql.contains(" limit 7; fetch {"));
 
         let mut invalid = rematch;
         invalid.root_concept_ids = vec!["0x01; match $evil isa thing".into()];
@@ -4475,7 +4134,7 @@ mod tests {
         assert!(rendered.contains("$thing iid 0x01; $thing isa employment; let $binding = 3"));
         assert!(rendered.contains("$thing iid 0x0a; $thing isa employment; let $binding = 3"));
         assert!(rendered.contains("$thing isa! $type"));
-        assert!(rendered.contains("\nlimit 2;\nfetch {"));
+        assert!(rendered.contains(" limit 2; fetch {"));
         assert!(rendered.contains("$thing links ($role: $player)"));
         assert!(!rendered.contains("relation $type"));
         assert!(rendered.contains("$player isa! $player_type"));
@@ -4486,7 +4145,7 @@ mod tests {
         let rendered = compiler().compile_typed_hydrate_things(&entity).unwrap();
         assert!(rendered.contains("$thing iid 0x02; $thing isa person; let $binding = 4"));
         assert!(rendered.contains("$thing isa! $type"));
-        assert!(rendered.contains("\nlimit 1;\nfetch {"));
+        assert!(rendered.contains(" limit 1; fetch {"));
         assert!(!rendered.contains("links"));
         assert!(!rendered.contains("\"roles\""));
 

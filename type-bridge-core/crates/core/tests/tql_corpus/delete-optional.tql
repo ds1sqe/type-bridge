@@ -1,0 +1,2 @@
+match $x isa person; try { $x has name $a; 
+}; delete try { has $a of $x; };

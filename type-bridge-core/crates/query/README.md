@@ -20,7 +20,7 @@ an unvalidated contract plan directly to a provider.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.2.6 and requires Rust 1.88+. Its semantic contracts target TypeDB
-3.11.x–3.12.x, with 3.12.1 as the V2 conformance baseline.
+3.11.x–3.13.x, with 3.13.6 as the V2 conformance baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-query/2.2.6) ·

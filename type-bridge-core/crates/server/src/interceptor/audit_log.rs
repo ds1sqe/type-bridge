@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::io::Write;
 use std::sync::Arc;
 
@@ -174,6 +175,13 @@ impl Interceptor for AuditLogInterceptor {
 
     #[cfg(feature = "v2-query")]
     fn supports_v2(&self) -> bool {
+        true
+    }
+
+    /// The audit log authorizes nothing; it observes V3 replies through
+    /// [`Interceptor::on_v2_response`], which `/v3/staged` also runs.
+    #[cfg(feature = "v2-query")]
+    fn supports_v3(&self) -> bool {
         true
     }
 

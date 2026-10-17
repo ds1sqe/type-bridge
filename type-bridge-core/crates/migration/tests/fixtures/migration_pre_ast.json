@@ -1,0 +1,1163 @@
+[
+  {
+    "case": "add_attribute",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_000",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_attribute",
+          "attribute": {
+            "attr_name": "lower-age",
+            "value_type": "long"
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_000",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_attribute",
+              "forward": "define attribute lower-age, value integer;",
+              "reverse": "undefine\nlower-age;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "remove_attribute",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_001",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "remove_attribute",
+          "attr_name": "lower-age"
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_001",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "remove_attribute",
+              "forward": "undefine\nlower-age;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "add_entity",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_002",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_entity",
+          "entity": {
+            "type_name": "lower-person",
+            "is_abstract": false,
+            "parent_type": null,
+            "owned_attributes": [
+              {
+                "attr_name": "lower-name",
+                "value_type": "string",
+                "annotations": [
+                  "Key"
+                ],
+                "is_ordered": false
+              }
+            ],
+            "plays_cardinalities": {}
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_002",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_entity",
+              "forward": "define entity lower-person, owns lower-name @key;",
+              "reverse": "undefine\nlower-person;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "remove_entity",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_003",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "remove_entity",
+          "type_name": "lower-person"
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_003",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "remove_entity",
+              "forward": "undefine\nlower-person;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "add_ownership",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_004",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_ownership",
+          "owner_type": "lower-person",
+          "attribute": {
+            "attr_name": "lower-age",
+            "value_type": "long",
+            "annotations": [
+              {
+                "Card": [
+                  0,
+                  1
+                ]
+              }
+            ],
+            "is_ordered": false
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_004",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_ownership",
+              "forward": "define\nlower-person owns lower-age @card(0..1);",
+              "reverse": "undefine\nowns lower-age from lower-person;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "remove_ownership",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_005",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "remove_ownership",
+          "owner_type": "lower-person",
+          "attr_name": "lower-age"
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_005",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "remove_ownership",
+              "forward": "undefine\nowns lower-age from lower-person;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "modify_ownership",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_006",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "modify_ownership",
+          "owner_type": "lower-person",
+          "attr_name": "lower-age",
+          "old_annotations": "@card(0..1)",
+          "new_annotations": "@card(1..1)"
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_006",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_ownership",
+              "forward": "redefine\nlower-person owns lower-age @card(1..1);",
+              "reverse": "redefine\nlower-person owns lower-age @card(0..1);"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "add_relation",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_007",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_relation",
+          "relation": {
+            "type_name": "lower-employment",
+            "is_abstract": false,
+            "parent_type": null,
+            "owned_attributes": [],
+            "roles": [
+              {
+                "role_name": "employee",
+                "player_type_names": [
+                  "lower-person"
+                ],
+                "cardinality": null,
+                "overrides": null,
+                "is_abstract": false,
+                "ordered": false,
+                "distinct": false
+              },
+              {
+                "role_name": "employer",
+                "player_type_names": [
+                  "lower-company"
+                ],
+                "cardinality": null,
+                "overrides": null,
+                "is_abstract": false,
+                "ordered": false,
+                "distinct": false
+              }
+            ],
+            "plays_cardinalities": {}
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_007",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_relation",
+              "forward": "define relation lower-employment, relates employee, relates employer; lower-company, plays lower-employment:employer; lower-person, plays lower-employment:employee;",
+              "reverse": "undefine\nplays lower-employment:employee from lower-person;\nplays lower-employment:employer from lower-company;\nlower-employment;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "remove_relation",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_008",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "remove_relation",
+          "type_name": "lower-employment"
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_008",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "remove_relation",
+              "forward": "undefine\nlower-employment;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "add_role",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_009",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_role",
+          "relation_type": "lower-employment",
+          "role": {
+            "role_name": "reviewer",
+            "player_type_names": [
+              "lower-person"
+            ],
+            "cardinality": null,
+            "overrides": null,
+            "is_abstract": false,
+            "ordered": false,
+            "distinct": false
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_009",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_role",
+              "forward": "define\nlower-employment relates reviewer;\nlower-person plays lower-employment:reviewer;",
+              "reverse": "undefine\nplays lower-employment:reviewer from lower-person;\nrelates reviewer from lower-employment;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "remove_role",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_010",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "remove_role",
+          "relation_type": "lower-employment",
+          "role_name": "reviewer"
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_010",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "remove_role",
+              "forward": "undefine\nrelates reviewer from lower-employment;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "add_role_player",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_011",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_role_player",
+          "relation_type": "lower-employment",
+          "role_name": "employee",
+          "player_type_name": "lower-company"
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_011",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_role_player",
+              "forward": "define\nlower-company plays lower-employment:employee;",
+              "reverse": "undefine\nplays lower-employment:employee from lower-company;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "remove_role_player",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_012",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "remove_role_player",
+          "relation_type": "lower-employment",
+          "role_name": "employee",
+          "player_type_name": "lower-company"
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_012",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "remove_role_player",
+              "forward": "undefine\nplays lower-employment:employee from lower-company;",
+              "reverse": "define\nlower-company plays lower-employment:employee;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "run_typeql",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_013",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "run_typeql",
+          "forward": "define attribute lower-nick, value string;",
+          "reverse": null
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_013",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "run_typeql",
+              "forward": "define attribute lower-nick, value string;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "rename_attribute",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_014",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "rename_attribute",
+          "old_name": "lower-name",
+          "new_name": "lower-full-name",
+          "value_type": "string"
+        }
+      ],
+      "checksum": null,
+      "reversible": false
+    },
+    "error": "operation RenameAttribute is not supported for Rust planning; use RunTypeql or supported typed ops",
+    "parity": "unchanged rejection"
+  },
+  {
+    "case": "modify_type_annotations",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_015",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "modify_type_annotations",
+          "type_name": "lower-person",
+          "old_doc": null,
+          "new_doc": "A person.",
+          "old_meta": {},
+          "new_meta": {
+            "owner": "core"
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_015",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_type_annotations",
+              "forward": "define\nlower-person @doc(\"A person.\");\nlower-person @meta(\"owner\", \"core\");",
+              "reverse": "undefine\n@doc from lower-person;\n@meta(\"owner\") from lower-person;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "modify_role_annotations",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_016",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "modify_role_annotations",
+          "relation_type": "lower-employment",
+          "role_name": "employee",
+          "old_doc": null,
+          "new_doc": "The employed party.",
+          "old_meta": {},
+          "new_meta": {}
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_016",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_role_annotations",
+              "forward": "define\nlower-employment relates employee @doc(\"The employed party.\");",
+              "reverse": "undefine\n@doc from lower-employment relates employee;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "copy_attribute",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_017",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "copy_attribute",
+          "owner": "person",
+          "source": "old-name",
+          "dest": "new-name",
+          "filter": null
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_017",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Write",
+              "kind": "backfill",
+              "operation_kind": "copy_attribute",
+              "forward": "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;",
+              "reverse": "match $x isa person, has new-name $v;\ndelete $v of $x;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "copy_attribute",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_018",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "copy_attribute",
+          "owner": "person",
+          "source": "old-name",
+          "dest": "new-name",
+          "filter": "not { $x isa excluded; }"
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_018",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Write",
+              "kind": "backfill",
+              "operation_kind": "copy_attribute",
+              "forward": "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\n  not { $x isa excluded; };\ninsert\n  $x has new-name == $v;",
+              "reverse": "match $x isa person, has new-name $v;\ndelete $v of $x;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "copy_attribute",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_019",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "copy_attribute",
+          "owner": "person",
+          "source": "old-name",
+          "dest": "new-name",
+          "forward": "# retained comment\nmatch $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;",
+          "reverse": "match $x isa person, has new-name $v; delete $v of $x;"
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_019",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Write",
+              "kind": "backfill",
+              "operation_kind": "copy_attribute",
+              "forward": "# retained comment\nmatch $x isa person, has old-name $v; not { $x has new-name $d; }; insert $x has new-name == $v;",
+              "reverse": "match $x isa person, has new-name $v; delete $v of $x;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "modify_type_annotations",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_020",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "modify_type_annotations",
+          "type_name": "person",
+          "old_doc": "old",
+          "new_doc": "new",
+          "old_meta": {
+            "gone": "one",
+            "same": "old"
+          },
+          "new_meta": {
+            "added": "two",
+            "same": "new"
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_020",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_type_annotations",
+              "forward": "undefine\n@meta(\"gone\") from person;",
+              "reverse": "define\nperson @meta(\"gone\", \"one\");"
+            },
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_type_annotations",
+              "forward": "redefine\nperson @doc(\"new\");",
+              "reverse": "redefine\nperson @doc(\"old\");"
+            },
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_type_annotations",
+              "forward": "redefine\nperson @meta(\"same\", \"new\");",
+              "reverse": "redefine\nperson @meta(\"same\", \"old\");"
+            },
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_type_annotations",
+              "forward": "define\nperson @meta(\"added\", \"two\");",
+              "reverse": "undefine\n@meta(\"added\") from person;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "modify_role_annotations",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_021",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "modify_role_annotations",
+          "relation_type": "friendship",
+          "role_name": "friend",
+          "old_doc": "old",
+          "new_doc": null,
+          "old_meta": {
+            "gone": "one"
+          },
+          "new_meta": {}
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_021",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "modify_role_annotations",
+              "forward": "undefine\n@doc from friendship relates friend;\n@meta(\"gone\") from friendship relates friend;",
+              "reverse": "define\nfriendship relates friend @doc(\"old\");\nfriendship relates friend @meta(\"gone\", \"one\");"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "define_schema",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_022",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "define_schema",
+          "schema": {
+            "entities": {
+              "lower-company": {
+                "type_name": "lower-company",
+                "is_abstract": false,
+                "parent_type": null,
+                "owned_attributes": [
+                  {
+                    "attr_name": "lower-name",
+                    "value_type": "string",
+                    "annotations": [
+                      "Key"
+                    ],
+                    "is_ordered": false
+                  }
+                ],
+                "plays_cardinalities": {}
+              },
+              "lower-person": {
+                "type_name": "lower-person",
+                "is_abstract": false,
+                "parent_type": null,
+                "owned_attributes": [
+                  {
+                    "attr_name": "lower-name",
+                    "value_type": "string",
+                    "annotations": [
+                      "Key"
+                    ],
+                    "is_ordered": false
+                  }
+                ],
+                "plays_cardinalities": {}
+              }
+            },
+            "relations": {
+              "lower-employment": {
+                "type_name": "lower-employment",
+                "is_abstract": false,
+                "parent_type": null,
+                "owned_attributes": [],
+                "roles": [
+                  {
+                    "role_name": "employee",
+                    "player_type_names": [
+                      "lower-person"
+                    ],
+                    "cardinality": null,
+                    "overrides": null,
+                    "is_abstract": false,
+                    "ordered": false,
+                    "distinct": false
+                  },
+                  {
+                    "role_name": "employer",
+                    "player_type_names": [
+                      "lower-company"
+                    ],
+                    "cardinality": null,
+                    "overrides": null,
+                    "is_abstract": false,
+                    "ordered": false,
+                    "distinct": false
+                  }
+                ],
+                "plays_cardinalities": {}
+              }
+            },
+            "attributes": {
+              "lower-name": {
+                "attr_name": "lower-name",
+                "value_type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_022",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "define_schema",
+              "forward": "define attribute lower-name, value string; entity lower-company, owns lower-name @key; entity lower-person, owns lower-name @key; relation lower-employment, relates employee, relates employer; lower-company, plays lower-employment:employer; lower-person, plays lower-employment:employee;",
+              "reverse": null
+            }
+          ],
+          "reversible": false
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "annotated_child_entity",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_023",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_entity",
+          "entity": {
+            "type_name": "lower-person",
+            "is_abstract": true,
+            "parent_type": "base-person",
+            "owned_attributes": [
+              {
+                "attr_name": "lower-name",
+                "value_type": "string",
+                "annotations": [
+                  "Key"
+                ],
+                "is_ordered": false
+              }
+            ],
+            "plays_cardinalities": {},
+            "doc": "quoted \"doc\"\nline",
+            "meta": {
+              "owner": "core"
+            }
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_023",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_entity",
+              "forward": "define entity lower-person @abstract @doc(\"quoted \\\"doc\\\"\\nline\") @meta(\"owner\", \"core\"), sub base-person, owns lower-name @key;",
+              "reverse": "undefine\nlower-person;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "equivalent AST or byte-exact carried text"
+  },
+  {
+    "case": "annotated_ordered_specialized_role",
+    "migration": {
+      "app_label": "baseline",
+      "name": "case_024",
+      "dependencies": [],
+      "operations": [
+        {
+          "kind": "add_role",
+          "relation_type": "review",
+          "role": {
+            "role_name": "reviewer",
+            "player_type_names": [
+              "person",
+              "company"
+            ],
+            "cardinality": [
+              0,
+              2
+            ],
+            "overrides": "participant",
+            "is_abstract": true,
+            "ordered": true,
+            "distinct": true,
+            "doc": "reviewer",
+            "meta": {
+              "source": "baseline"
+            }
+          }
+        }
+      ],
+      "checksum": null,
+      "reversible": true
+    },
+    "plan": {
+      "to_apply": [
+        {
+          "app_label": "baseline",
+          "name": "case_024",
+          "action": "apply",
+          "steps": [
+            {
+              "tx_type": "Schema",
+              "kind": "schema",
+              "operation_kind": "add_role",
+              "forward": "define\nreview relates reviewer[] as participant @abstract @distinct @card(0..2);\nperson plays review:reviewer;\ncompany plays review:reviewer;",
+              "reverse": "undefine\nplays review:reviewer from person;\nplays review:reviewer from company;\nrelates reviewer[] from review;"
+            }
+          ],
+          "reversible": true
+        }
+      ],
+      "to_rollback": []
+    },
+    "parity": "old-invalid ordered specialisation"
+  }
+]

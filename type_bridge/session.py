@@ -21,6 +21,7 @@ from type_bridge.typedb_driver import (
 )
 
 if TYPE_CHECKING:
+    from type_bridge_core import Transaction as StagedTransaction
     from typedb.driver import Driver
     from typedb.driver import Transaction as TypeDBTransaction
 
@@ -783,6 +784,27 @@ class Database:
         )
         return TransactionContext(self, tx_type)
 
+    def staged_transaction(
+        self,
+        kind: Literal["read", "write", "schema"] | None = None,
+        *,
+        commit_on_exit: bool = True,
+    ) -> StagedTransaction:
+        """Create a staged transaction for typed plans.
+
+        Plans staged with ``tx.stage(plan)`` reach TypeDB only at
+        ``tx.commit()``, as one transaction; each ``Pending.result()`` then
+        answers ``Rows``, ``Count``, ``Exists`` or ``Matched``. As a context
+        manager it commits on a clean exit (unless ``commit_on_exit=False``),
+        discards on an exception, and closes; a commit whose outcome is
+        unknown raises and stays open for ``tx.commit_retry()``. An omitted
+        ``kind`` is inferred from the staged plans. ``transaction()`` keeps
+        its eager context.
+        """
+        from type_bridge._rust_runtime import rust_database_for
+
+        return rust_database_for(self).staged_transaction(kind, commit_on_exit=commit_on_exit)
+
     def execute_query(self, query: str, transaction_type: str = "read") -> list[dict[str, Any]]:
         """Execute a query and return results.
 
@@ -896,8 +918,8 @@ class Database:
         return schema
 
 
-class Transaction:
-    """Wrapper around TypeDB transaction."""
+class _DriverTransaction:
+    """Deprecated direct-driver wrapper; use Database.transaction()."""
 
     def __init__(self, tx: TypeDBTransaction):
         """Initialize transaction wrapper.
@@ -905,6 +927,11 @@ class Transaction:
         Args:
             tx: TypeDB transaction
         """
+        warnings.warn(
+            "Transaction is deprecated; use Database.transaction()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self._tx = tx
 
     def execute(self, query: str) -> list[dict[str, Any]]:
@@ -970,6 +997,10 @@ class Transaction:
         if self._tx.is_open():
             logger.debug("Closing transaction")
             self._tx.close()
+
+
+# Released module-level compatibility alias, retained until 3.0.
+Transaction = _DriverTransaction
 
 
 class _RustTransactionView:
@@ -1149,10 +1180,10 @@ class TransactionContext:
         self.transaction.commit()
 
     def rollback(self) -> None:
-        """Rollback the active transaction."""
+        """Roll back writes and keep the active transaction usable."""
         if self._rust_tx is not None:
             self._rust_tx.rollback()
-            self._rust_finalized = True
+            self._rust_finalized = False
             return
         self.transaction.rollback()
 

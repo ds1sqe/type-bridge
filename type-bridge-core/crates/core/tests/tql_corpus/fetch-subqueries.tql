@@ -1,0 +1,1 @@
+match $x isa person; fetch { "items": [ match $x has name $n;fetch { "name": $n};], "names": [ match $x has name $n; return { $n };], "first": ( match $x has name $n; return first $n; )};

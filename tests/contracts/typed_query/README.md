@@ -22,6 +22,11 @@ into `python/documented_examples.py` and
 the schema-codegen acceptance runners emit the canonical fixture package and
 then compile both complete examples with Pyright and `tsc`.
 
+`type-bridge-core/crates/c/tests/typed_query_corpus.rs` runs the refusal
+cases C can express (windows, selection and aggregate caps, group keys,
+reachability depth) through the C ABI and asserts the same code and category;
+it names every case it skips, with the reason.
+
 Python and TypeScript bindings must consume the same Rust semantics. A
 language-specific test may render or type a case, but it must not change the
 expected identity, multiplicity, error, transaction, or statement behavior.

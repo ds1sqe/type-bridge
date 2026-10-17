@@ -9,29 +9,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::{PyException, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyInt};
+use pyo3::sync::PyOnceLock;
+use pyo3::types::{PyAny, PyDict, PyInt, PyString, PyType};
 use pythonize::pythonize;
-use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{FunctionId, TypeId};
-use type_bridge_contract::sdk_diagnostic::{
-    SdkDiagnosticDetailValue, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
-};
+use type_bridge_contract::limits::QueryLimits;
+use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkExecutionDiagnostic};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
     AnswerCancellation, BindingHandle, ComparisonOp, FieldHandle, FunctionArgumentHandle,
     FunctionCallHandle, FunctionHandle, FunctionValueHandle, InstalledRuntimeProjection,
     MatchError, MissingOrder, OrderHandle, OrmError, PredicateHandle, ProjectedAttributeValue,
-    ProjectedQueryOrigin, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle,
-    Reduction, RoleHandle, RowCardinality, SelectionHandle, SessionHandle, ShapeHandle,
-    SortDirection, UnvalidatedMatchRequest, ValidatedMatchRequest, Window, lower_match_error,
-    query_resource_closed_diagnostic, validate_public_order_term_count,
+    ProjectedQueryOrigin, ProviderRuntimeOwner, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, QueryHandle, QueryTarget, QueryTargetError, Reduction,
+    RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
+    ShapeHandle, SortDirection, UnknownEnumValue, UnvalidatedMatchRequest, ValidatedMatchRequest,
+    Window, lower_match_error, lower_remote_query_diagnostic, query_resource_closed_diagnostic,
 };
 
 use crate::orm_runtime::{
     PyDescriptorRegistry, PyDynamicValue, PyRustDatabase, PyRustTransactionContext,
     provider_block_on,
 };
+use crate::proxy_connection_runtime::PyProxyConnection;
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
 pyo3::create_exception!(
@@ -156,9 +157,17 @@ impl PyQueryInvocationBudget {
     }
 }
 
+/// Where one generated terminal runs, as Python passes it.
+#[derive(Clone, Copy)]
+enum TerminalTarget<'a> {
+    Database(&'a PyRustDatabase),
+    Transaction(&'a PyRustTransactionContext),
+    Proxy(&'a PyProxyConnection),
+}
+
 /// Canonical cross-binding generated-query execution budgets.
 #[pyclass(name = "QueryExecutionResourceLimits", frozen, from_py_object)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct PyQueryExecutionResourceLimits {
     inner: QueryExecutionResourceLimits,
 }
@@ -167,12 +176,17 @@ impl PyQueryExecutionResourceLimits {
     pub(crate) const fn inner(&self) -> QueryExecutionResourceLimits {
         self.inner
     }
+
+    pub(crate) const fn from_inner(inner: QueryExecutionResourceLimits) -> Self {
+        Self { inner }
+    }
 }
 
 #[pymethods]
 impl PyQueryExecutionResourceLimits {
-    /// Construct a tighten-only resource policy. Every dimension is clamped
-    /// independently to the shared direct/remote ceiling; zero is valid.
+    /// Construct an answer policy. An omitted dimension keeps its default;
+    /// a given one may tighten or raise it, and zero is valid. A value above
+    /// a dimension's supported maximum is refused by name, never clamped.
     #[new]
     #[pyo3(signature = (
         timeout_milliseconds=None,
@@ -201,34 +215,39 @@ impl PyQueryExecutionResourceLimits {
             u64::from(defaults.statements),
             "statements",
         )?;
-        Ok(Self {
-            inner: QueryExecutionResourceLimits::tightened(
-                python_optional_resource_limit(
-                    timeout_milliseconds,
-                    defaults.timeout_milliseconds,
-                    "timeout_milliseconds",
-                )?,
-                python_optional_resource_limit(items, defaults.items, "items")?,
-                python_optional_resource_limit(bytes, defaults.bytes, "bytes")?,
-                python_optional_resource_limit(graph_nodes, defaults.graph_nodes, "graph_nodes")?,
-                python_optional_resource_limit(
-                    attribute_values,
-                    defaults.attribute_values,
-                    "attribute_values",
-                )?,
-                python_optional_resource_limit(
-                    collection_members,
-                    defaults.collection_members,
-                    "collection_members",
-                )?,
-                python_optional_resource_limit(
-                    role_players,
-                    defaults.role_players,
-                    "role_players",
-                )?,
-                u32::try_from(statements).unwrap_or(u32::MAX),
-            ),
-        })
+        let inner = QueryExecutionResourceLimits {
+            timeout_milliseconds: python_optional_resource_limit(
+                timeout_milliseconds,
+                defaults.timeout_milliseconds,
+                "timeout_milliseconds",
+            )?,
+            items: python_optional_resource_limit(items, defaults.items, "items")?,
+            bytes: python_optional_resource_limit(bytes, defaults.bytes, "bytes")?,
+            graph_nodes: python_optional_resource_limit(
+                graph_nodes,
+                defaults.graph_nodes,
+                "graph_nodes",
+            )?,
+            attribute_values: python_optional_resource_limit(
+                attribute_values,
+                defaults.attribute_values,
+                "attribute_values",
+            )?,
+            collection_members: python_optional_resource_limit(
+                collection_members,
+                defaults.collection_members,
+                "collection_members",
+            )?,
+            role_players: python_optional_resource_limit(
+                role_players,
+                defaults.role_players,
+                "role_players",
+            )?,
+            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+        }
+        .validate()
+        .map_err(|refusal| PyValueError::new_err(refusal.to_string()))?;
+        Ok(Self { inner })
     }
 
     #[getter]
@@ -301,6 +320,73 @@ impl PyQueryCancellation {
     #[getter]
     fn is_cancelled(&self) -> bool {
         self.inner.is_cancelled()
+    }
+}
+
+/// Query limits one generated session validates, encodes, and executes
+/// under.
+///
+/// Construct with keyword overrides of the canonical defaults, named exactly
+/// as [`type_bridge_contract::limits::QueryLimits::FIELDS`] lists them. Rust
+/// admits the values; an unknown name or an unsupported value is refused
+/// here, before any session exists.
+#[pyclass(name = "QueryLimits", frozen, from_py_object)]
+#[derive(Clone)]
+pub(crate) struct PyQueryLimits {
+    inner: QueryLimits,
+}
+
+impl PyQueryLimits {
+    pub(crate) const fn inner(&self) -> QueryLimits {
+        self.inner
+    }
+}
+
+#[pymethods]
+impl PyQueryLimits {
+    #[new]
+    #[pyo3(signature = (**overrides))]
+    fn new(overrides: Option<&Bound<'_, pyo3::types::PyDict>>) -> PyResult<Self> {
+        let mut named = Vec::new();
+        if let Some(overrides) = overrides {
+            for (name, value) in overrides.iter() {
+                let name = name
+                    .cast_exact::<pyo3::types::PyString>()
+                    .map_err(|_| PyTypeError::new_err("query limit names must be exact str"))?
+                    .to_str()?
+                    .to_owned();
+                let value = python_optional_resource_limit(Some(&value), 0, &name)?;
+                named.push((name, value));
+            }
+        }
+        QueryLimits::from_overrides(named.iter().map(|(name, value)| (name.as_str(), *value)))
+            .map(|inner| Self { inner })
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Return the stable names of every query limit.
+    #[staticmethod]
+    fn names() -> Vec<&'static str> {
+        QueryLimits::FIELDS.to_vec()
+    }
+
+    /// Return the effective value of one named limit.
+    fn get(&self, name: &str) -> PyResult<u64> {
+        self.inner
+            .get(name)
+            .map(|value| u64::try_from(value).unwrap_or(u64::MAX))
+            .ok_or_else(|| PyValueError::new_err(format!("`{name}` is not a known query limit")))
+    }
+
+    fn __repr__(&self) -> String {
+        let overrides = QueryLimits::FIELDS
+            .iter()
+            .filter_map(|name| {
+                let value = self.inner.get(name)?;
+                (Some(value) != QueryLimits::CANONICAL.get(name)).then(|| format!("{name}={value}"))
+            })
+            .collect::<Vec<_>>();
+        format!("QueryLimits({})", overrides.join(", "))
     }
 }
 
@@ -396,7 +482,7 @@ impl PyMatchSessionHandle {
         cancellation: AnswerCancellation,
     ) -> Self {
         Self {
-            inner: SessionHandle::new(registry),
+            inner: SessionHandle::with_limits(registry, QueryLimits::CANONICAL),
             installed: None,
             resources: resources.effective(),
             cancellation,
@@ -409,9 +495,10 @@ impl PyMatchSessionHandle {
         registry: Arc<DescriptorRegistry>,
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
+        query_limits: QueryLimits,
     ) -> Self {
         Self {
-            inner: SessionHandle::new(registry),
+            inner: SessionHandle::with_limits(registry, query_limits),
             installed: Some(installed),
             resources: resources.effective(),
             cancellation,
@@ -625,16 +712,41 @@ impl PyMatchSessionHandle {
     }
 }
 
-fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
-    let value = value
+/// Marshal an exact Python `int` into a native unsigned integer.
+///
+/// Type conversion only, with the exception classes 2.2 raised: a value
+/// outside the native range raises `ValueError`, and `bool` or another
+/// non-`int` value raises `not_int` (`ValueError` for a window, `TypeError`
+/// for a depth). Query rules on the converted value (a zero limit, a window
+/// overflow, a depth ceiling) belong to the core and surface as
+/// `MatchRequestError`.
+fn exact_unsigned<T: TryFrom<i128>>(
+    value: &Bound<'_, PyAny>,
+    name: &str,
+    max: u64,
+    not_int: fn(String) -> PyErr,
+) -> PyResult<T> {
+    let range = || PyValueError::new_err(format!("{name} must be an integer from 0 to {max}"));
+    value
         .cast_exact::<PyInt>()
-        .map_err(|_| PyTypeError::new_err(format!("{name} must be an exact Python int")))?
+        .map_err(|_| not_int(format!("{name} must be an exact Python int")))?
         .extract::<i128>()
-        .map_err(|_| {
-            PyValueError::new_err(format!("{name} must be an integer between 0 and 255"))
-        })?;
-    u8::try_from(value)
-        .map_err(|_| PyValueError::new_err(format!("{name} must be an integer between 0 and 255")))
+        .map_err(|_| range())
+        .and_then(|value| T::try_from(value).map_err(|_| range()))
+}
+
+fn python_reachability_depth(value: &Bound<'_, PyAny>, name: &str) -> PyResult<u8> {
+    exact_unsigned(value, name, u64::from(u8::MAX), PyTypeError::new_err)
+}
+
+pub(crate) fn python_window(
+    offset: &Bound<'_, PyAny>,
+    limit: &Bound<'_, PyAny>,
+) -> PyResult<Window> {
+    Ok(Window {
+        offset: exact_unsigned(offset, "offset", u64::MAX, PyValueError::new_err)?,
+        limit: exact_unsigned(limit, "limit", u64::MAX, PyValueError::new_err)?,
+    })
 }
 
 #[pymethods]
@@ -678,7 +790,7 @@ impl PyMatchFunctionCallHandle {
         field: PyRef<'_, PyMatchFieldHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_field(parse_comparison(operator)?, &field.inner)
+            .compare_field(parse_enum::<ComparisonOp>(operator)?, &field.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -689,7 +801,7 @@ impl PyMatchFunctionCallHandle {
         value: PyRef<'_, PyMatchFunctionValueHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_value(parse_comparison(operator)?, &value.inner)
+            .compare_value(parse_enum::<ComparisonOp>(operator)?, &value.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -700,7 +812,7 @@ impl PyMatchFunctionCallHandle {
         other: PyRef<'_, PyMatchFunctionCallHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_call(parse_comparison(operator)?, &other.inner)
+            .compare_call(parse_enum::<ComparisonOp>(operator)?, &other.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -783,9 +895,10 @@ impl PyMatchFieldHandle {
         value: PyRef<'_, PyDynamicValue>,
     ) -> PyResult<PyMatchPredicateHandle> {
         Ok(PyMatchPredicateHandle {
-            inner: self
-                .inner
-                .compare_value(parse_comparison(operator)?, value.attribute_value()),
+            inner: self.inner.compare_value(
+                parse_enum::<ComparisonOp>(operator)?,
+                value.attribute_value(),
+            ),
         })
     }
 
@@ -795,7 +908,7 @@ impl PyMatchFieldHandle {
         other: PyRef<'_, PyMatchFieldHandle>,
     ) -> PyResult<PyMatchPredicateHandle> {
         self.inner
-            .compare_field(parse_comparison(operator)?, &other.inner)
+            .compare_field(parse_enum::<ComparisonOp>(operator)?, &other.inner)
             .map(|inner| PyMatchPredicateHandle { inner })
             .map_err(py_match_orm_error)
     }
@@ -803,8 +916,8 @@ impl PyMatchFieldHandle {
     fn order(&self, direction: &str, missing: &str) -> PyResult<PyMatchOrderHandle> {
         Ok(PyMatchOrderHandle {
             inner: self.inner.order(
-                parse_sort_direction(direction)?,
-                parse_missing_order(missing)?,
+                parse_enum::<SortDirection>(direction)?,
+                parse_enum::<MissingOrder>(missing)?,
             ),
         })
     }
@@ -921,20 +1034,38 @@ impl PyMatchQueryHandle {
             .map_err(py_match_orm_error)
     }
 
+    /// Refuse group fields at `group_by()` with the reduction terminal's
+    /// diagnostic (`field_group_tuple_cap_exceeded` under `selected_slots`).
+    fn check_group_fields(
+        &self,
+        py: Python<'_>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+    ) -> PyResult<()> {
+        self.ensure_open()?;
+        let groups = groups
+            .iter()
+            .map(|group| group.borrow(py).inner.clone())
+            .collect::<Vec<_>>();
+        let groups = groups.iter().collect::<Vec<_>>();
+        self.inner
+            .check_group_fields(&groups)
+            .map_err(py_match_orm_error)
+    }
+
     fn fetch_rows_diagnostic(
         &self,
         py: Python<'_>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<String> {
         self.ensure_open()?;
         let order = order_handles(py, &order);
         let request = self.inner.fetch_rows(
             &order,
-            Window { offset, limit },
-            parse_cardinality(cardinality)?,
+            python_window(offset, limit)?,
+            parse_enum::<RowCardinality>(cardinality)?,
         );
         diagnostic_from_request(request)
     }
@@ -944,8 +1075,8 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<String> {
         self.ensure_open()?;
@@ -953,7 +1084,7 @@ impl PyMatchQueryHandle {
         diagnostic_from_request(self.inner.page_by(
             &root.inner,
             &order,
-            Window { offset, limit },
+            python_window(offset, limit)?,
             include_total,
         ))
     }
@@ -973,29 +1104,12 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         database: &PyRustDatabase,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_fetch_rows(
-                &orders,
-                Window { offset, limit },
-                parse_cardinality(cardinality)?,
-            )
-            .map_err(py_match_orm_error)?;
-        let registry = self.inner.registry_arc();
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            registry,
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
     }
 
     fn execute_fetch_rows_borrowed(
@@ -1003,29 +1117,25 @@ impl PyMatchQueryHandle {
         py: Python<'_>,
         transaction: &PyRustTransactionContext,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         cardinality: &str,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_fetch_rows(
-                &orders,
-                Window { offset, limit },
-                parse_cardinality(cardinality)?,
-            )
-            .map_err(py_match_orm_error)?;
-        let registry = self.inner.registry_arc();
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            registry,
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
+    }
+
+    fn execute_fetch_rows_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        cardinality: &str,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1036,28 +1146,19 @@ impl PyMatchQueryHandle {
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_page_by(
-                &root.inner,
-                &orders,
-                Window { offset, limit },
-                include_total,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
+        let target = TerminalTarget::Database(database);
+        self.page_by_on(
             py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
         )
     }
 
@@ -1069,28 +1170,43 @@ impl PyMatchQueryHandle {
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
-        offset: u64,
-        limit: u64,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
         include_total: bool,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let orders = order_handles(py, &order);
-        let validated = self
-            .inner
-            .validate_page_by(
-                &root.inner,
-                &orders,
-                Window { offset, limit },
-                include_total,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
+        let target = TerminalTarget::Transaction(transaction);
+        self.page_by_on(
             py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
+        )
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    fn execute_page_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        include_total: bool,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.page_by_on(
+            py,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
         )
     }
 
@@ -1100,19 +1216,8 @@ impl PyMatchQueryHandle {
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_count_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
     }
 
     fn execute_count_by_borrowed(
@@ -1121,19 +1226,18 @@ impl PyMatchQueryHandle {
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_count_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
+    }
+
+    fn execute_count_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
     }
 
     fn execute_exists_by_owned(
@@ -1142,19 +1246,8 @@ impl PyMatchQueryHandle {
         database: &PyRustDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_exists_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
     }
 
     fn execute_exists_by_borrowed(
@@ -1163,19 +1256,18 @@ impl PyMatchQueryHandle {
         transaction: &PyRustTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let validated = self
-            .inner
-            .validate_exists_by(&root.inner)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
+    }
+
+    fn execute_exists_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
     }
 
     #[pyo3(signature = (root, group, reducers, inputs))]
@@ -1209,25 +1301,9 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by(
-                &root.inner,
-                group.as_ref().map(|group| &group.inner),
-                &terms,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1242,25 +1318,26 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by(
-                &root.inner,
-                group.as_ref().map(|group| &group.inner),
-                &terms,
-            )
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (connection, root, group, reducers, inputs))]
+    fn execute_reduce_by_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
     }
 
     #[pyo3(signature = (root, group, reducers, inputs))]
@@ -1293,21 +1370,8 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1322,21 +1386,24 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
-            py,
-            transaction,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Transaction(transaction);
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (connection, root, group, reducers, inputs))]
+    fn execute_reduce_by_field_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
     }
 
     #[pyo3(signature = (root, groups, reducers, inputs))]
@@ -1371,26 +1438,8 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
-        let budget = self.begin_invocation()?;
-        let groups = groups
-            .iter()
-            .map(|group| group.borrow(py).inner.clone())
-            .collect::<Vec<_>>();
-        let groups = groups.iter().collect::<Vec<_>>();
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_fields(&root.inner, &groups, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_owned(
-            py,
-            database,
-            self.installed.as_ref(),
-            validated,
-            self.inner.registry_arc(),
-            budget,
-        )
+        let target = TerminalTarget::Database(database);
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
     }
 
     // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
@@ -1405,26 +1454,154 @@ impl PyMatchQueryHandle {
         reducers: Vec<String>,
         inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Transaction(transaction);
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
+    }
+
+    // PyO3 exposes these operation-local arguments as the stable Python terminal contract.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (connection, root, groups, reducers, inputs))]
+    fn execute_reduce_by_fields_proxy(
+        &self,
+        py: Python<'_>,
+        connection: &PyProxyConnection,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let target = TerminalTarget::Proxy(connection);
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
+    }
+}
+
+/// One body per terminal kind; the Python methods above only name the target.
+impl PyMatchQueryHandle {
+    /// Open one invocation budget, validate the request, and run it on
+    /// `target`. The budget is taken first so a closed query or an expired
+    /// session refuses before any validation work.
+    fn run_terminal(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        validate: impl FnOnce(&QueryHandle) -> Result<ValidatedMatchRequest, OrmError>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            validate(query).map_err(py_match_orm_error)
+        })
+    }
+
+    fn run_terminal_checked(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        validate: impl FnOnce(&QueryHandle) -> PyResult<ValidatedMatchRequest>,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
         let budget = self.begin_invocation()?;
-        let groups = groups
-            .iter()
-            .map(|group| group.borrow(py).inner.clone())
-            .collect::<Vec<_>>();
-        let groups = groups.iter().collect::<Vec<_>>();
-        let terms = reduce_terms(py, &reducers, &inputs)?;
-        let terms = borrow_reduce_terms(&terms);
-        let validated = self
-            .inner
-            .validate_reduce_by_fields(&root.inner, &groups, &terms)
-            .map_err(py_match_orm_error)?;
-        execute_validated_borrowed(
+        let validated = validate(&self.inner)?;
+        execute_on_target(
             py,
-            transaction,
+            target,
             self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
             budget,
         )
+    }
+
+    fn fetch_rows_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        order: &[Py<PyMatchOrderHandle>],
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        cardinality: &str,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let window = python_window(offset, limit)?;
+        self.run_terminal_checked(py, target, |query| {
+            let orders = order_handles(py, order);
+            query
+                .validate_fetch_rows(&orders, window, parse_enum::<RowCardinality>(cardinality)?)
+                .map_err(py_match_orm_error)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn page_by_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        order: &[Py<PyMatchOrderHandle>],
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        include_total: bool,
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        let window = python_window(offset, limit)?;
+        self.run_terminal(py, target, |query| {
+            let orders = order_handles(py, order);
+            query.validate_page_by(root, &orders, window, include_total)
+        })
+    }
+
+    fn reduce_by_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        group: Option<&BindingHandle>,
+        reducers: &[String],
+        inputs: &[Option<Py<PyMatchFieldHandle>>],
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let terms = reduce_terms(py, reducers, inputs)?;
+            let terms = borrow_reduce_terms(&terms);
+            query
+                .validate_reduce_by(root, group, &terms)
+                .map_err(py_match_orm_error)
+        })
+    }
+
+    fn reduce_by_field_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        group: &FieldHandle,
+        reducers: &[String],
+        inputs: &[Option<Py<PyMatchFieldHandle>>],
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let terms = reduce_terms(py, reducers, inputs)?;
+            let terms = borrow_reduce_terms(&terms);
+            query
+                .validate_reduce_by_field(root, group, &terms)
+                .map_err(py_match_orm_error)
+        })
+    }
+
+    fn reduce_by_fields_on(
+        &self,
+        py: Python<'_>,
+        target: TerminalTarget<'_>,
+        root: &BindingHandle,
+        groups: &[Py<PyMatchFieldHandle>],
+        reducers: &[String],
+        inputs: &[Option<Py<PyMatchFieldHandle>>],
+    ) -> PyResult<PyValidatedMatchResultHandle> {
+        self.run_terminal_checked(py, target, |query| {
+            let groups = groups
+                .iter()
+                .map(|group| group.borrow(py).inner.clone())
+                .collect::<Vec<_>>();
+            let groups = groups.iter().collect::<Vec<_>>();
+            let terms = reduce_terms(py, reducers, inputs)?;
+            let terms = borrow_reduce_terms(&terms);
+            query
+                .validate_reduce_by_fields(root, &groups, &terms)
+                .map_err(py_match_orm_error)
+        })
     }
 }
 
@@ -1443,7 +1620,7 @@ pub(crate) fn reduce_terms(
         .zip(inputs)
         .map(|(reducer, input)| {
             Ok((
-                parse_reduction(reducer)?,
+                parse_enum::<Reduction>(reducer)?,
                 input.as_ref().map(|field| field.borrow(py).inner.clone()),
             ))
         })
@@ -1459,57 +1636,102 @@ pub(crate) fn borrow_reduce_terms(
         .collect()
 }
 
-fn execute_validated_owned(
+/// Run one validated request on `target` through the shared terminal
+/// executor, which holds it to the connection's answer-limit ceiling, and
+/// materialize the result under the same constrained budget.
+fn execute_on_target(
     py: Python<'_>,
-    database: &PyRustDatabase,
+    target: TerminalTarget<'_>,
     installed: Option<&Arc<InstalledRuntimeProjection>>,
     validated: ValidatedMatchRequest,
-    registry: std::sync::Arc<DescriptorRegistry>,
+    registry: Arc<DescriptorRegistry>,
     budget: PyQueryInvocationBudget,
 ) -> PyResult<PyValidatedMatchResultHandle> {
-    let (database, runtime) = database.handles();
-    let origin = installed.map(|_| ProjectedQueryOrigin::for_database(database.as_ref()));
-    let result = provider_block_on(
+    match target {
+        TerminalTarget::Database(database) => {
+            let (database, runtime) = database.handles();
+            let origin = installed.map(|_| ProjectedQueryOrigin::for_database(database.as_ref()));
+            let target = QueryTarget::Database(database.as_ref());
+            execute_and_materialize(
+                py, &runtime, target, installed, origin, validated, registry, budget,
+            )
+        }
+        TerminalTarget::Transaction(transaction) => {
+            let (transaction, runtime) = transaction.handles();
+            let origin = installed
+                .map(|_| ProjectedQueryOrigin::for_transaction(&transaction))
+                .transpose()
+                .map_err(py_sdk_diagnostic)?;
+            let target = QueryTarget::Transaction(&transaction);
+            execute_and_materialize(
+                py, &runtime, target, installed, origin, validated, registry, budget,
+            )
+        }
+        TerminalTarget::Proxy(connection) => {
+            let origin = installed.map(|_| ProjectedQueryOrigin::remote_unbound());
+            let target = QueryTarget::Proxy(connection.connection());
+            execute_and_materialize(
+                py,
+                connection.runtime(),
+                target,
+                installed,
+                origin,
+                validated,
+                registry,
+                budget,
+            )
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_and_materialize(
+    py: Python<'_>,
+    runtime: &ProviderRuntimeOwner,
+    target: QueryTarget<'_>,
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
+    origin: Option<ProjectedQueryOrigin>,
+    validated: ValidatedMatchRequest,
+    registry: Arc<DescriptorRegistry>,
+    budget: PyQueryInvocationBudget,
+) -> PyResult<PyValidatedMatchResultHandle> {
+    // Materialization runs under the same ceiling-bound budget as execution.
+    let (resources, deadline) = target.budget(budget.resources, budget.deadline);
+    let budget = PyQueryInvocationBudget::from_parts(resources, deadline, budget.cancellation);
+    let (validated, result) = provider_block_on(
         py,
-        runtime.as_ref(),
-        database.execute_match_with_limits(
+        runtime,
+        target.execute(
             &registry,
-            &validated,
-            budget
-                .resources
-                .direct_with_deadline(budget.cancellation.clone(), budget.deadline),
+            validated,
+            budget.resources,
+            &budget.cancellation,
+            budget.deadline,
         ),
     )
-    .map_err(py_match_orm_error)?;
+    .map_err(py_query_target_error)?;
     validated_result_handle(installed, origin, validated, result, registry, budget)
 }
 
-fn execute_validated_borrowed(
-    py: Python<'_>,
-    transaction: &PyRustTransactionContext,
-    installed: Option<&Arc<InstalledRuntimeProjection>>,
-    validated: ValidatedMatchRequest,
-    registry: std::sync::Arc<DescriptorRegistry>,
-    budget: PyQueryInvocationBudget,
-) -> PyResult<PyValidatedMatchResultHandle> {
-    let (transaction, runtime) = transaction.handles();
-    let origin = installed
-        .map(|_| ProjectedQueryOrigin::for_transaction(&transaction))
-        .transpose()
-        .map_err(py_sdk_diagnostic)?;
-    let result = provider_block_on(
-        py,
-        runtime.as_ref(),
-        transaction.execute_match_with_limits(
-            &registry,
-            &validated,
-            budget
-                .resources
-                .direct_with_deadline(budget.cancellation.clone(), budget.deadline),
-        ),
-    )
-    .map_err(py_match_orm_error)?;
-    validated_result_handle(installed, origin, validated, result, registry, budget)
+/// Lower a terminal failure to the exception its stage raised before the
+/// shared executor existed.
+pub(crate) fn py_query_target_error(error: QueryTargetError) -> PyErr {
+    match error {
+        QueryTargetError::Direct(error) => py_match_orm_error(error),
+        QueryTargetError::Prepare(error) | QueryTargetError::Reply(error) => {
+            py_remote_model_error(error)
+        }
+        QueryTargetError::Interrupted(diagnostic) => py_sdk_diagnostic(diagnostic),
+    }
+}
+
+pub(crate) fn py_remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
+    match error {
+        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
+            py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
+        }
+        RemoteModelQueryV2Error::Match(error) => py_match_error(error),
+    }
 }
 
 pub(crate) fn validated_result_handle(
@@ -1573,90 +1795,136 @@ fn diagnostic_from_request(
         .map_err(|error| PyRuntimeError::new_err(format!("diagnostic was not UTF-8: {error}")))
 }
 
-fn revalidate_diagnostic(
-    registry: &DescriptorRegistry,
-    diagnostic: &str,
-) -> Result<String, MatchError> {
-    let unvalidated = UnvalidatedMatchRequest::from_canonical_bytes(diagnostic.as_bytes())?;
-    let validated = unvalidated.validate(registry)?;
-    validated.recheck_schema(registry)?;
-    Ok(diagnostic.to_owned())
+/// Parse `value` with the core enum's one parser. An unknown spelling raises
+/// `UnknownEnumValueError` carrying the `unknown_enum_value` diagnostic.
+pub(crate) fn parse_enum<T>(value: &str) -> PyResult<T>
+where
+    T: std::str::FromStr<Err = UnknownEnumValue>,
+{
+    value.parse().map_err(py_unknown_enum_value)
 }
 
+pub(crate) fn py_unknown_enum_value(error: UnknownEnumValue) -> PyErr {
+    py_value_error_diagnostic(
+        &UNKNOWN_ENUM_VALUE_ERROR,
+        &SdkExecutionDiagnostic::from(error),
+    )
+}
+
+/// Raise a projected member-count refusal as `ProjectedCardinalityError`.
+pub(crate) fn py_projected_cardinality(diagnostic: SdkExecutionDiagnostic) -> PyErr {
+    py_value_error_diagnostic(&PROJECTED_CARDINALITY_ERROR, &diagnostic)
+}
+
+fn py_value_error_diagnostic(
+    error_type: &'static ValueErrorType,
+    diagnostic: &SdkExecutionDiagnostic,
+) -> PyErr {
+    Python::attach(|py| match error_type.get(py) {
+        Ok(error_type) => structured_py_error(
+            py,
+            PyErr::from_type(error_type.clone(), diagnostic.message().as_str()),
+            diagnostic,
+        ),
+        Err(error) => error,
+    })
+}
+
+/// A structured SDK diagnostic class deriving from both `MatchRequestError`
+/// and `ValueError`, so code that caught the earlier host `ValueError` still
+/// catches the core's refusal.
+struct ValueErrorType {
+    name: &'static str,
+    doc: &'static str,
+    cell: PyOnceLock<Py<PyType>>,
+}
+
+impl ValueErrorType {
+    const fn new(name: &'static str, doc: &'static str) -> Self {
+        Self {
+            name,
+            doc,
+            cell: PyOnceLock::new(),
+        }
+    }
+
+    fn get<'py>(&'static self, py: Python<'py>) -> PyResult<&'py Bound<'py, PyType>> {
+        self.cell
+            .get_or_try_init(py, || {
+                let namespace = PyDict::new(py);
+                namespace.set_item("__module__", "type_bridge_core")?;
+                namespace.set_item("__doc__", self.doc)?;
+                let bases = (
+                    py.get_type::<MatchRequestError>(),
+                    py.get_type::<PyValueError>(),
+                );
+                py.get_type::<PyType>()
+                    .call1((self.name, bases, namespace))?
+                    .cast_into::<PyType>()
+                    .map(Bound::unbind)
+                    .map_err(PyErr::from)
+            })
+            .map(|error_type| error_type.bind(py))
+    }
+}
+
+static UNKNOWN_ENUM_VALUE_ERROR: ValueErrorType = ValueErrorType::new(
+    "UnknownEnumValueError",
+    "A spelling no core enum parser accepts (code `unknown_enum_value`).",
+);
+
+static INVALID_QUERY_REQUEST_ERROR: ValueErrorType = ValueErrorType::new(
+    "InvalidQueryRequestError",
+    "A query composition refusal that type-bridge 2.2 raised as `ValueError`: \
+     a window, selection, reducer, or group-by cap, or reachability depth \
+     bounds (codes `zero_window_limit`, `window_overflow`, \
+     `selection_cap_exceeded`, `empty_reducers`, `reducer_cap_exceeded`, \
+     `field_group_tuple_cap_exceeded`, `reachable_bounds`, \
+     `reachable_depth_limit`).",
+);
+
+/// The structured class for `diagnostic` that also derives from
+/// `ValueError`, for the refusals 2.2 raised as `ValueError`.
+fn value_error_type(diagnostic: &SdkExecutionDiagnostic) -> Option<&'static ValueErrorType> {
+    matches!(
+        diagnostic.code().as_str(),
+        "zero_window_limit"
+            | "window_overflow"
+            | "selection_cap_exceeded"
+            | "empty_reducers"
+            | "reducer_cap_exceeded"
+            | "field_group_tuple_cap_exceeded"
+            | "reachable_bounds"
+            | "reachable_depth_limit"
+    )
+    .then_some(&INVALID_QUERY_REQUEST_ERROR)
+}
+
+static PROJECTED_CARDINALITY_ERROR: ValueErrorType = ValueErrorType::new(
+    "ProjectedCardinalityError",
+    "A generated model member holds a value count outside its projected \
+     cardinality (codes `missing_required_field`, `field_cardinality_violation`, \
+     `missing_required_role`, `role_cardinality_violation`).",
+);
+
+/// Check `value` against the core enum named by `kind`; return its canonical
+/// spelling.
 #[pyfunction]
-fn revalidate_match_diagnostic(
-    registry: PyRef<'_, PyDescriptorRegistry>,
-    diagnostic: &str,
-) -> PyResult<String> {
-    let registry = registry.registry_arc();
-    revalidate_diagnostic(&registry, diagnostic).map_err(py_match_error)
-}
-
-fn parse_comparison(value: &str) -> PyResult<ComparisonOp> {
-    match value {
-        "equal" => Ok(ComparisonOp::Equal),
-        "not_equal" => Ok(ComparisonOp::NotEqual),
-        "less_than" => Ok(ComparisonOp::LessThan),
-        "less_than_or_equal" => Ok(ComparisonOp::LessThanOrEqual),
-        "greater_than" => Ok(ComparisonOp::GreaterThan),
-        "greater_than_or_equal" => Ok(ComparisonOp::GreaterThanOrEqual),
-        "contains" => Ok(ComparisonOp::Contains),
-        "starts_with" => Ok(ComparisonOp::StartsWith),
-        "ends_with" => Ok(ComparisonOp::EndsWith),
-        "regex" => Ok(ComparisonOp::Regex),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown comparison operator {value:?}"
-        ))),
-    }
-}
-
-fn parse_sort_direction(value: &str) -> PyResult<SortDirection> {
-    match value {
-        "ascending" => Ok(SortDirection::Ascending),
-        "descending" => Ok(SortDirection::Descending),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown sort direction {value:?}"
-        ))),
-    }
-}
-
-fn parse_missing_order(value: &str) -> PyResult<MissingOrder> {
-    match value {
-        "reject" => Ok(MissingOrder::Reject),
-        "first" => Ok(MissingOrder::First),
-        "last" => Ok(MissingOrder::Last),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown missing-value order {value:?}"
-        ))),
-    }
-}
-
-pub(crate) fn parse_cardinality(value: &str) -> PyResult<RowCardinality> {
-    match value {
-        "exactly_one" => Ok(RowCardinality::ExactlyOne),
-        "bounded_many" => Ok(RowCardinality::BoundedMany),
-        _ => Err(PyValueError::new_err(format!(
-            "unknown row cardinality {value:?}"
-        ))),
-    }
-}
-
-fn parse_reduction(value: &str) -> PyResult<Reduction> {
-    match value {
-        "count" => Ok(Reduction::Count),
-        "sum" => Ok(Reduction::Sum),
-        "min" => Ok(Reduction::Min),
-        "max" => Ok(Reduction::Max),
-        "mean" => Ok(Reduction::Mean),
-        "median" => Ok(Reduction::Median),
-        "std" => Ok(Reduction::Std),
-        _ => Err(PyValueError::new_err(format!("unknown reducer {value:?}"))),
-    }
+fn canonical_enum_spelling(kind: &str, value: &str) -> PyResult<&'static str> {
+    type_bridge_orm::canonical_enum_spelling(kind, value).map_err(py_unknown_enum_value)
 }
 
 pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
     match error {
         OrmError::Match(error) => py_match_error(error),
+        // Provider failures raised `RuntimeError` before typed failures; keep
+        // that class so `except RuntimeError` still matches.
+        other if other.failure().is_some() => {
+            crate::orm_runtime::py_provider_diagnostic(type_bridge_orm::lower_execution_error(
+                other,
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+            ))
+        }
         other => PyRuntimeError::new_err(other.to_string()),
     }
 }
@@ -1666,131 +1934,65 @@ pub(crate) fn py_match_error(error: MatchError) -> PyErr {
 }
 
 pub(crate) fn py_sdk_diagnostic(diagnostic: SdkExecutionDiagnostic) -> PyErr {
+    if let Some(error_type) = value_error_type(&diagnostic) {
+        return py_value_error_diagnostic(error_type, &diagnostic);
+    }
     Python::attach(|py| {
-        let query_category = diagnostic
-            .details()
-            .values()
-            .find_map(|detail| match detail {
-                SdkDiagnosticDetailValue::QueryCategory(category) => Some(category.as_str()),
-                _ => None,
-            });
-        let path = diagnostic
-            .path()
-            .iter()
-            .map(sdk_path_json)
-            .collect::<Vec<_>>();
-        let details = diagnostic
-            .details()
-            .iter()
-            .filter(|(_, value)| !matches!(value, SdkDiagnosticDetailValue::QueryCategory(_)))
-            .map(|(name, value)| (name.as_str().to_owned(), sdk_detail_json(value)))
-            .collect::<serde_json::Map<_, _>>();
-        let category = query_category.unwrap_or_else(|| diagnostic.category().as_str());
-        let message = diagnostic.message().as_str();
-        let py_error = MatchRequestError::new_err(message);
-        let attach = || -> PyResult<()> {
-            let value = py_error.value(py);
-            value.setattr("category", category)?;
-            value.setattr("sdk_category", diagnostic.category().as_str())?;
-            value.setattr("query_category", query_category)?;
-            value.setattr("code", diagnostic.code().as_str())?;
-            value.setattr("message", message)?;
-            value.setattr("path", pythonize(py, &path)?)?;
-            value.setattr("details", pythonize(py, &details)?)?;
-            Ok(())
-        };
-        match attach() {
-            Ok(()) => py_error,
-            Err(attribute_error) => attribute_error,
-        }
+        let py_error = MatchRequestError::new_err(diagnostic.message().as_str());
+        structured_py_error(py, py_error, &diagnostic)
     })
 }
 
-fn sdk_path_json(segment: &SdkDiagnosticPathSegment) -> Value {
-    match segment {
-        SdkDiagnosticPathSegment::Argument(name) => {
-            json!({"kind": "argument", "value": name.as_str()})
+/// Set one attribute on `py_error` per key of the diagnostic's canonical host
+/// JSON form (`version`, `category`, `sdk_category`, `query_category`,
+/// `code`, `message`, `path`, `details`).
+///
+/// The JSON form carries `count`, `byte_count`, and `signed` detail values as
+/// decimal strings so JSON numbers never lose precision; Python ints do not,
+/// so the exception's `details` hold them as `int`.
+pub(crate) fn structured_py_error(
+    py: Python<'_>,
+    py_error: PyErr,
+    diagnostic: &SdkExecutionDiagnostic,
+) -> PyErr {
+    let attach = || -> PyResult<()> {
+        let value = py_error.value(py);
+        if let Some(failure) = diagnostic.failure() {
+            let kwargs = pythonize(py, &failure.host_json())?.cast_into::<PyDict>()?;
+            let frozen = py
+                .import("type_bridge.failure")?
+                .getattr("Failure")?
+                .call((), Some(&kwargs))?;
+            value.setattr("failure", frozen)?;
         }
-        SdkDiagnosticPathSegment::Index(index) => json!({"kind": "index", "value": index}),
-        SdkDiagnosticPathSegment::Type(id) => json!({"kind": "type", "value": id}),
-        SdkDiagnosticPathSegment::Field(id) => json!({"kind": "field", "value": id}),
-        SdkDiagnosticPathSegment::Role(id) => json!({"kind": "role", "value": id}),
-        SdkDiagnosticPathSegment::Query(kind) => json!({"kind": kind.as_str()}),
-        SdkDiagnosticPathSegment::QueryBinding(binding) => {
-            json!({"kind": "binding", "value": binding})
+        let form = pythonize(py, &diagnostic.host_json())?.cast_into::<PyDict>()?;
+        if let Some(details) = form.get_item("details")? {
+            let details = details.cast_into::<PyDict>()?;
+            for (name, detail) in diagnostic.details() {
+                let number = match detail {
+                    SdkDiagnosticDetailValue::Count(number)
+                    | SdkDiagnosticDetailValue::ByteCount(number) => {
+                        number.into_pyobject(py)?.into_any()
+                    }
+                    SdkDiagnosticDetailValue::Signed(number) => {
+                        number.into_pyobject(py)?.into_any()
+                    }
+                    _ => continue,
+                };
+                if let Some(tagged) = details.get_item(name.as_str())? {
+                    tagged.cast_into::<PyDict>()?.set_item("value", number)?;
+                }
+            }
         }
-        SdkDiagnosticPathSegment::QueryField { owner, name } => json!({
-            "kind": "field",
-            "value": {"owner": owner.as_str(), "name": name.as_str()},
-        }),
-        SdkDiagnosticPathSegment::QueryRole { owner, name } => json!({
-            "kind": "role",
-            "value": {"owner": owner.as_str(), "name": name.as_str()},
-        }),
-        SdkDiagnosticPathSegment::QueryRoleEdge(edge) => {
-            json!({"kind": "role_edge", "value": edge})
+        for (key, item) in form.iter() {
+            value.setattr(key.cast_into::<PyString>()?, item)?;
         }
-        SdkDiagnosticPathSegment::QueryOutputSlot(slot) => {
-            json!({"kind": "output_slot", "value": slot})
-        }
-        SdkDiagnosticPathSegment::QueryOutputName(name) => {
-            json!({"kind": "output_name", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::ContractField(name) => {
-            json!({"kind": "contract_field", "value": name.as_str()})
-        }
-        SdkDiagnosticPathSegment::ContractIdentity(name) => {
-            json!({"kind": "contract_identity", "value": name.as_str()})
-        }
-        _ => json!({"kind": "unknown"}),
+        Ok(())
+    };
+    match attach() {
+        Ok(()) => py_error,
+        Err(attribute_error) => attribute_error,
     }
-}
-
-fn sdk_detail_json(value: &SdkDiagnosticDetailValue) -> Value {
-    match value {
-        SdkDiagnosticDetailValue::Boolean(value) => json!({"kind": "boolean", "value": value}),
-        SdkDiagnosticDetailValue::Count(value) => json!({"kind": "count", "value": value}),
-        SdkDiagnosticDetailValue::ByteCount(value) => {
-            json!({"kind": "byte_count", "value": value})
-        }
-        SdkDiagnosticDetailValue::Signed(value) => json!({"kind": "signed", "value": value}),
-        SdkDiagnosticDetailValue::QueryIdentity(value) => {
-            json!({"kind": "query_identity", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::QueryIdentityList(values) => json!({
-            "kind": "query_identity_list",
-            "value": values.iter().map(|value| value.as_str()).collect::<Vec<_>>(),
-        }),
-        SdkDiagnosticDetailValue::Capability(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::ValueType(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::Type(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Field(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Role(value) => json!({"kind": "text", "value": value}),
-        SdkDiagnosticDetailValue::Fingerprint(value) => {
-            json!({"kind": "text", "value": value})
-        }
-        SdkDiagnosticDetailValue::ProviderOperation(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::CommitOutcome(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        SdkDiagnosticDetailValue::QueryCategory(value) => {
-            json!({"kind": "text", "value": value.as_str()})
-        }
-        _ => json!({"kind": "text", "value": "redacted"}),
-    }
-}
-
-/// Apply the canonical public-order ceiling before a Python iterable is
-/// materialized into native order handles.
-#[pyfunction]
-pub(crate) fn validate_match_order_term_count(actual: usize) -> PyResult<()> {
-    validate_public_order_term_count(actual).map_err(py_match_error)
 }
 
 /// Register the native typed-match handle seam on the extension module.
@@ -1813,10 +2015,90 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyMatchShapeHandle>()?;
     module.add_class::<PyMatchQueryHandle>()?;
     module.add_class::<PyQueryExecutionResourceLimits>()?;
+    // Answer-policy defaults per transport, read from the core so Python
+    // holds no copies. A direct session (and an omitted
+    // `QueryExecutionResourceLimits` dimension) takes the direct values; a
+    // proxy connection without explicit limits takes the proxy values.
+    module.add(
+        "DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_ITEMS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_BYTES",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_GRAPH_NODES",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_ROLE_PLAYERS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+    )?;
+    module.add(
+        "DEFAULT_DIRECT_QUERY_STATEMENTS",
+        type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_ITEMS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_ITEMS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_BYTES",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_BYTES,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_GRAPH_NODES",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_GRAPH_NODES,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_ROLE_PLAYERS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+    )?;
+    module.add(
+        "DEFAULT_PROXY_QUERY_STATEMENTS",
+        type_bridge_orm::DEFAULT_PROXY_QUERY_STATEMENTS,
+    )?;
+    module.add_class::<PyQueryLimits>()?;
     module.add_class::<PyQueryCancellation>()?;
     crate::validated_result_runtime::register(module)?;
-    module.add_function(wrap_pyfunction!(revalidate_match_diagnostic, module)?)?;
-    module.add_function(wrap_pyfunction!(validate_match_order_term_count, module)?)?;
+    module.add_function(wrap_pyfunction!(canonical_enum_spelling, module)?)?;
+    module.add(
+        "UnknownEnumValueError",
+        UNKNOWN_ENUM_VALUE_ERROR.get(module.py())?,
+    )?;
+    module.add(
+        "ProjectedCardinalityError",
+        PROJECTED_CARDINALITY_ERROR.get(module.py())?,
+    )?;
+    module.add(
+        "InvalidQueryRequestError",
+        INVALID_QUERY_REQUEST_ERROR.get(module.py())?,
+    )?;
     Ok(())
 }
 
@@ -1830,6 +2112,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::{Duration, Instant};
 
+    use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use tokio::sync::Notify;
     use type_bridge_orm::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
@@ -1844,6 +2127,17 @@ mod tests {
     };
 
     use super::*;
+
+    /// A canonical diagnostic must validate and recheck against its registry.
+    fn revalidate_diagnostic(
+        registry: &DescriptorRegistry,
+        diagnostic: &str,
+    ) -> Result<String, MatchError> {
+        let unvalidated = UnvalidatedMatchRequest::from_canonical_bytes(diagnostic.as_bytes())?;
+        let validated = unvalidated.validate(registry)?;
+        validated.recheck_schema(registry)?;
+        Ok(diagnostic.to_owned())
+    }
 
     fn registry() -> Arc<DescriptorRegistry> {
         let registry = Arc::new(DescriptorRegistry::new());
@@ -1932,29 +2226,29 @@ mod tests {
     }
 
     fn emit_direct_cancellation_proof(observation: Value) {
-        let Ok(destination) = std::env::var("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT") else {
+        let Ok(destination) = std::env::var("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT") else {
             return;
         };
-        let nonce = std::env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
-            .expect("sdk-v2 proof fragment requires the same-run nonce");
+        let nonce = std::env::var("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
+            .expect("queries proof fragment requires the same-run nonce");
         assert!(
             nonce.len() == 64
                 && nonce
                     .bytes()
                     .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value)),
-            "sdk-v2 proof run nonce must be 64 lowercase hex characters"
+            "queries proof run nonce must be 64 lowercase hex characters"
         );
         let destination = PathBuf::from(destination);
         assert!(
             destination.is_absolute(),
-            "sdk-v2 proof fragment path must be absolute"
+            "queries proof fragment path must be absolute"
         );
         let parent = destination
             .parent()
             .expect("proof fragment path has no parent");
         let parent_metadata = parent
             .symlink_metadata()
-            .expect("sdk-v2 proof fragment parent is not inspectable");
+            .expect("queries proof fragment parent is not inspectable");
         assert!(parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink());
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let root = manifest
@@ -1964,15 +2258,15 @@ mod tests {
         let contract = json!({
             "allowlist": source_identity(
                 root,
-                "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json",
+                "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json",
             ),
             "journey": source_identity(
                 root,
-                "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
+                "tests/contracts/sdk_conformance/queries/journey.json",
             ),
             "proof_schema": source_identity(
                 root,
-                "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json",
+                "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json",
             ),
         });
         let sources = [
@@ -1982,7 +2276,7 @@ mod tests {
         let fragment = json!({
             "binding": "python",
             "contract": contract,
-            "format": "typebridge.sdk-v2-proof-fragment/v1",
+            "format": "typebridge.sdk-queries-proof-fragment/v1",
             "producer": {
                 "id": "python.native_direct_cancellation",
                 "sources": sources.map(|relative| source_identity(root, relative)),
@@ -1995,7 +2289,7 @@ mod tests {
                 "test_id": "python.native_direct_cancellation",
             }],
             "run_nonce": nonce,
-            "semantic_profile": "typedb-3.12.1/v1",
+            "semantic_profile": crate::sdk_profile_matrix::requested("queries").semantic_profile,
         });
         let mut payload = serde_json::to_vec(&fragment).unwrap();
         payload.push(b'\n');
@@ -2004,7 +2298,7 @@ mod tests {
             .write(true)
             .create_new(true)
             .open(destination)
-            .expect("sdk-v2 proof fragment destination must not exist");
+            .expect("queries proof fragment destination must not exist");
         output.write_all(&payload).unwrap();
         output.sync_all().unwrap();
     }
@@ -2172,19 +2466,34 @@ mod tests {
     }
 
     #[test]
-    fn reducer_names_parse_to_the_canonical_closed_vocabulary() {
-        for (name, expected) in [
-            ("count", Reduction::Count),
-            ("sum", Reduction::Sum),
-            ("min", Reduction::Min),
-            ("max", Reduction::Max),
-            ("mean", Reduction::Mean),
-            ("median", Reduction::Median),
-            ("std", Reduction::Std),
-        ] {
-            assert_eq!(parse_reduction(name).unwrap(), expected);
-        }
-        assert!(parse_reduction("variance").is_err());
+    fn unknown_enum_spelling_is_a_structured_value_error() {
+        Python::initialize();
+        let error = parse_enum::<Reduction>("variance").unwrap_err();
+        Python::attach(|py| {
+            let value = error.value(py);
+            assert!(value.is_instance_of::<MatchRequestError>());
+            assert!(value.is_instance_of::<PyValueError>());
+            assert_eq!(
+                value.get_type().name().unwrap().to_string(),
+                "UnknownEnumValueError"
+            );
+            let text = |name: &str| value.getattr(name).unwrap().extract::<String>().unwrap();
+            assert_eq!(text("category"), "invalid_input");
+            assert_eq!(text("code"), "unknown_enum_value");
+            let details: Value =
+                pythonize::depythonize(&value.getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details,
+                json!({
+                    "kind": {"kind": "query_identity", "value": "reducer"},
+                    "value": {"kind": "query_identity", "value": "variance"},
+                    "accepted": {
+                        "kind": "query_identity_list",
+                        "value": ["count", "sum", "min", "max", "mean", "median", "std"],
+                    },
+                })
+            );
+        });
     }
 
     #[test]
@@ -2437,7 +2746,6 @@ mod tests {
                 "QueryExecutionResourceLimits",
                 "QueryCancellation",
                 "MatchRequestError",
-                "revalidate_match_diagnostic",
             ] {
                 assert!(
                     module.hasattr(name).unwrap(),
@@ -2455,7 +2763,7 @@ mod tests {
     }
 
     #[test]
-    fn public_resource_limits_clamp_plus_one_and_preserve_zero() {
+    fn public_resource_limits_keep_a_raise_refuse_past_the_maximum_and_preserve_zero() {
         Python::initialize();
         Python::attach(|py| {
             let module = PyModule::new(py, "type_bridge_core").unwrap();
@@ -2464,7 +2772,7 @@ mod tests {
             globals.set_item("m", &module).unwrap();
             py.run(
                 pyo3::ffi::c_str!(
-                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 4)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)"
+                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nfor arguments in ({'timeout_milliseconds': 86400001}, {'statements': 4}):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
                 ),
                 Some(&globals),
                 None,
@@ -2472,20 +2780,29 @@ mod tests {
             .unwrap();
             let plus = globals.get_item("plus").unwrap().unwrap();
             let zero = globals.get_item("zero").unwrap().unwrap();
+            let refused = globals
+                .get_item("refused")
+                .unwrap()
+                .unwrap()
+                .extract::<Vec<String>>()
+                .unwrap();
+            assert_eq!(refused.len(), 2, "{refused:?}");
+            assert!(refused[0].contains("timeout_milliseconds"), "{refused:?}");
+            assert!(refused[1].contains("statements"), "{refused:?}");
             for (name, expected) in [
-                ("timeout_milliseconds", 30_000_u64),
-                ("items", 65_536),
-                ("bytes", 33_554_432),
-                ("graph_nodes", 65_536),
-                ("attribute_values", 65_536),
-                ("collection_members", 65_536),
-                ("role_players", 65_536),
+                ("timeout_milliseconds", 30_001_u64),
+                ("items", 65_537),
+                ("bytes", 33_554_433),
+                ("graph_nodes", 65_537),
+                ("attribute_values", 65_537),
+                ("collection_members", 65_537),
+                ("role_players", 65_537),
                 ("statements", 3),
             ] {
                 assert_eq!(
                     plus.getattr(name).unwrap().extract::<u64>().unwrap(),
                     expected,
-                    "{name} must clamp independently"
+                    "{name} must keep what the caller raised it to"
                 );
                 assert_eq!(
                     zero.getattr(name).unwrap().extract::<u64>().unwrap(),

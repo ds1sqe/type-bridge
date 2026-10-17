@@ -18,10 +18,10 @@ assert.deepEqual(optional.aliases, []);
 assert.equal(optional.revision, null);
 const roles = { name_: [marker, marker, marker], nameValue: [], reference_: [] };
 assert.equal(Archive.create(roles).name_.length, 3);
-assert.throws(() => Archive.create({ ...roles, name_: [] }), RangeError);
-assert.throws(() => Archive.create({ ...roles, reference_: [marker, marker, marker] }), RangeError);
+assert.throws(() => Archive.create({ ...roles, name_: [] }), { code: "missing_required_role" });
+assert.throws(() => Archive.create({ ...roles, reference_: [marker, marker, marker] }), { code: "role_cardinality_violation" });
 assert.equal(Archive.create({ ...roles, reference_: [marker, marker] }).reference_.length, 2);
-assert.throws(() => Marker.create({ ...values, name_: null }), RangeError);
+assert.throws(() => Marker.create({ ...values, name_: null }), { code: "missing_required_field" });
 const hydrateComplete = Object.getOwnPropertySymbols(Marker).find(
   (symbol) => symbol.description === "typebridge.hydrate-complete",
 );

@@ -179,17 +179,17 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
     }
     assert "typedb_runtime_band7_driver_pin" not in report
     assert report["typedb_runtime_driver_pin"] == "3.11.5"
-    assert report["typedb_runtime_band9_driver_pin"] == "3.12.3"
+    assert report["typedb_runtime_band9_driver_pin"] == "3.13.6"
     assert report["typedb_runtime_band9_components"] == {
         "typedb-driver": {
-            "checksum": "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
+            "checksum": "cd7eb7cce9def748f4436b8047890e39bab25ce9f8314a3bf72b19f9baadb0c9",
             "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "version": "3.12.3",
+            "version": "3.13.6",
         },
         "typedb-protocol": {
-            "checksum": "01f6b7eb813a853349ff22f385c120c61d04d4648318c92072e7e04dd81cdc3f",
+            "checksum": "055a7816df94fbf63be32c095202a62e9fc9f2de2c9134768858b3056f76b2fa",
             "source": "registry+https://github.com/rust-lang/crates.io-index",
-            "version": "3.12.0",
+            "version": "3.13.4",
         },
     }
     assert report["historical_band9_quarantine"] == [
@@ -230,6 +230,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
+        "type-bridge-perf",
     ]
     dependency_order = report["cargo_manifest_dependency_order"]
     assert isinstance(dependency_order, dict)
@@ -261,6 +262,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-node",
         "type-bridge-orm",
         "type-bridge-orm-derive",
+        "type-bridge-perf",
         "type-bridge-query",
         "type-bridge-schema",
         "type-bridge-schema-codegen",
@@ -629,12 +631,17 @@ def test_workspace_dependency_cannot_rename_a_historical_band9_package(
     tmp_path: Path,
 ) -> None:
     workspace = copy_workspace_manifests(tmp_path)
-    with workspace.open("a", encoding="utf-8") as manifest:
-        manifest.write(
-            "\n[workspace.dependencies]\n"
-            'retired-driver = { package = "type-bridge-typedb-driver-b9", '
-            'path = "vendor/typedb-driver-b9" }\n'
+    marker = "[workspace.dependencies]\n"
+    source = workspace.read_text()
+    assert marker in source
+    workspace.write_text(
+        source.replace(
+            marker,
+            marker + 'retired-driver = { package = "type-bridge-typedb-driver-b9", '
+            'path = "vendor/typedb-driver-b9" }\n',
+            1,
         )
+    )
 
     with pytest.raises(validator.ValidationError, match="forbidden historical band-9"):
         validate(workspace_manifest=workspace)
@@ -1275,7 +1282,7 @@ def test_band9_driver_requirement_must_exactly_match_runtime_constant(
     manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'typedb-driver = { version = "=3.12.3", optional = true }',
+            'typedb-driver = { version = "=3.13.6", optional = true }',
             'typedb-driver = { version = "3", optional = true }',
             1,
         )
@@ -1293,15 +1300,15 @@ def test_band9_runtime_constant_drift_hard_fails(tmp_path: Path) -> None:
     source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
     source.write_text(
         source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";',
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.4";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.6";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.7";',
             1,
         )
     )
 
     with pytest.raises(
         validator.ValidationError,
-        match="actual='=3.12.3', expected='=3.12.4'",
+        match="actual='=3.13.6', expected='=3.13.7'",
     ):
         validate(workspace_manifest=workspace)
 
@@ -1324,29 +1331,29 @@ def test_band9_pin_refresh_cannot_leave_native_provenance_stale(tmp_path: Path) 
     manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'typedb-driver = { version = "=3.12.3", optional = true }',
-            'typedb-driver = { version = "=3.12.4", optional = true }',
+            'typedb-driver = { version = "=3.13.6", optional = true }',
+            'typedb-driver = { version = "=3.13.7", optional = true }',
             1,
         )
     )
     runtime_source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
     runtime_source.write_text(
         runtime_source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";',
-            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.4";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.6";',
+            'pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.7";',
             1,
         )
     )
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        'version = "3.12.3"',
-        'version = "3.12.4"',
+        'version = "3.13.6"',
+        'version = "3.13.7"',
     )
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
+        "cd7eb7cce9def748f4436b8047890e39bab25ce9f8314a3bf72b19f9baadb0c9",
         "1" * 64,
     )
 
@@ -1360,7 +1367,7 @@ def test_band9_lockfile_must_bind_driver_to_audited_protocol(tmp_path: Path) -> 
         workspace,
         "typedb-driver",
         ' "typedb-protocol",',
-        ' "typedb-protocol 3.12.9",',
+        ' "typedb-protocol 3.13.9",',
     )
 
     with pytest.raises(validator.ValidationError, match="audited official typedb-protocol"):
@@ -1372,7 +1379,7 @@ def test_band9_lockfile_checksum_must_match_packaged_notices(tmp_path: Path) -> 
     replace_lock_package_text(
         workspace,
         "typedb-driver",
-        "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922",
+        "cd7eb7cce9def748f4436b8047890e39bab25ce9f8314a3bf72b19f9baadb0c9",
         "0" * 64,
     )
 
@@ -1384,8 +1391,8 @@ def test_band9_notice_version_must_match_resolved_protocol(tmp_path: Path) -> No
     workspace = copy_workspace_manifests(tmp_path)
     replace_both_native_notices(
         workspace,
-        "official `typedb-protocol` 3.12.0",
-        "official `typedb-protocol` 3.12.9",
+        "official `typedb-protocol` 3.13.4",
+        "official `typedb-protocol` 3.13.9",
     )
 
     with pytest.raises(validator.ValidationError, match="protocol version disagrees"):
@@ -1398,8 +1405,8 @@ def test_band9_notice_source_must_name_exact_official_crates_io_package(
     workspace = copy_workspace_manifests(tmp_path)
     replace_both_native_notices(
         workspace,
-        "TypeDB official crates.io package [3.12.3](https://crates.io/crates/typedb-driver/3.12.3)",
-        "TypeDB tag [3.12.3]"
+        "TypeDB official crates.io package [3.13.6](https://crates.io/crates/typedb-driver/3.13.6)",
+        "TypeDB tag [3.13.6]"
         "(https://github.com/typedb/typedb-driver/tree/0000000000000000000000000000000000000000)",
     )
 
@@ -1648,8 +1655,8 @@ def test_vendor_provenance_band9_versions_must_match_lockfile(tmp_path: Path) ->
     readme = workspace.parent / "vendor/README.md"
     readme.write_text(
         readme.read_text().replace(
-            "official `typedb-driver` 3.12.3 and `typedb-protocol` 3.12.0",
-            "official `typedb-driver` 3.12.9 and `typedb-protocol` 3.12.0",
+            "official `typedb-driver` 3.13.6 and `typedb-protocol` 3.13.4",
+            "official `typedb-driver` 3.13.9 and `typedb-protocol` 3.13.4",
             1,
         )
     )
@@ -1663,8 +1670,8 @@ def test_vendor_provenance_current_driver_prose_tracks_resolved_pin(tmp_path: Pa
     readme = workspace.parent / "vendor/README.md"
     readme.write_text(
         readme.read_text().replace(
-            "currently that is 3.12.3, exercised",
-            "currently that is 3.12.9, exercised",
+            "currently that is 3.13.6, exercised",
+            "currently that is 3.13.9, exercised",
             1,
         )
     )

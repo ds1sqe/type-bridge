@@ -1,6 +1,7 @@
 //! TypeDB attribute type trait and convenience macro.
 
 use serde::{Deserialize, Serialize};
+use type_bridge_contract::value::ValueTypeTag;
 
 use crate::value::AttributeValue;
 
@@ -33,35 +34,53 @@ pub enum ValueType {
     Duration,
 }
 
+type_bridge_contract::enum_spellings!(ValueType, "value_type", canonical {
+    "string" => String,
+    "long" => Long,
+    "double" => Double,
+    "boolean" => Boolean,
+    "date" => Date,
+    "datetime" => DateTime,
+    "datetime-tz" => DateTimeTz,
+    "decimal" => Decimal,
+    "duration" => Duration,
+});
+
 impl ValueType {
     /// Convert to the TypeDB value type string.
     pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::String => "string",
-            Self::Long => "long",
-            Self::Double => "double",
-            Self::Boolean => "boolean",
-            Self::Date => "date",
-            Self::DateTime => "datetime",
-            Self::DateTimeTz => "datetime-tz",
-            Self::Decimal => "decimal",
-            Self::Duration => "duration",
+        self.spelling()
+    }
+}
+
+impl From<ValueTypeTag> for ValueType {
+    fn from(value: ValueTypeTag) -> Self {
+        match value {
+            ValueTypeTag::String => Self::String,
+            ValueTypeTag::Long => Self::Long,
+            ValueTypeTag::Double => Self::Double,
+            ValueTypeTag::Boolean => Self::Boolean,
+            ValueTypeTag::Date => Self::Date,
+            ValueTypeTag::DateTime => Self::DateTime,
+            ValueTypeTag::DateTimeTz => Self::DateTimeTz,
+            ValueTypeTag::Decimal => Self::Decimal,
+            ValueTypeTag::Duration => Self::Duration,
         }
     }
+}
 
-    /// Parse from a TypeDB value type string.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "string" => Some(Self::String),
-            "long" => Some(Self::Long),
-            "double" => Some(Self::Double),
-            "boolean" => Some(Self::Boolean),
-            "date" => Some(Self::Date),
-            "datetime" => Some(Self::DateTime),
-            "datetime-tz" => Some(Self::DateTimeTz),
-            "decimal" => Some(Self::Decimal),
-            "duration" => Some(Self::Duration),
-            _ => None,
+impl From<ValueType> for ValueTypeTag {
+    fn from(value: ValueType) -> Self {
+        match value {
+            ValueType::String => Self::String,
+            ValueType::Long => Self::Long,
+            ValueType::Double => Self::Double,
+            ValueType::Boolean => Self::Boolean,
+            ValueType::Date => Self::Date,
+            ValueType::DateTime => Self::DateTime,
+            ValueType::DateTimeTz => Self::DateTimeTz,
+            ValueType::Decimal => Self::Decimal,
+            ValueType::Duration => Self::Duration,
         }
     }
 }

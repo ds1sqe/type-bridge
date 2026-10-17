@@ -1,13 +1,12 @@
 //! Schema package markers and type-branded installation handshake.
 
 use core::marker::PhantomData;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 
 use type_bridge_contract::projection::{ProjectionConfig, RuntimeProjection};
 use type_bridge_contract::schema::encode_declared_schema;
-use type_bridge_contract::sdk_diagnostic::{
-    SdkExecutionDiagnostic, SdkProjectionEvidenceSlotPresence,
-};
+use type_bridge_contract::sdk_diagnostic::SdkProjectionEvidenceSlotPresence;
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, VerifiedSchemaAuthority, decode_schema_authority,
     schema_authority_capability_vocabulary,
@@ -54,15 +53,8 @@ fn canonical_contract_error(error: type_bridge_contract::diagnostic::Diagnostic)
 }
 
 fn canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
-    if matches!(
-        &error,
-        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
-            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
-    ) {
-        return Error::from_sdk_execution(
-            SdkExecutionDiagnostic::projected_record_schema_mismatch(),
-            ModelValidationPhase::Input,
-        );
+    if let Some(diagnostic) = error.record_schema_mismatch() {
+        return Error::from_sdk_execution(diagnostic, ModelValidationPhase::Input);
     }
     Error::model_validation(
         ModelValidationPhase::Input,
@@ -118,6 +110,22 @@ fn generated_validation_path(segments: &[String]) -> String {
         }
     }
     path
+}
+
+/// Address and length of each embedded authority evidence string.
+type AuthorityEvidenceKey = [Option<(usize, usize)>; 4];
+
+/// Verified compiled authority of every package used so far. Embedded
+/// evidence is immutable, so verifying it once per package suffices.
+static VERIFIED_AUTHORITIES: LazyLock<
+    RwLock<HashMap<AuthorityEvidenceKey, Arc<VerifiedSchemaAuthority>>>,
+> = LazyLock::new(RwLock::default);
+
+#[cfg(test)]
+thread_local! {
+    /// Full authority verifications run on this thread.
+    pub(crate) static AUTHORITY_VERIFICATIONS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// A generated schema package marker carrying fingerprint evidence branded by `S: Schema`.
@@ -554,40 +562,54 @@ impl<S: Schema> SchemaPackage<S> {
         Ok(())
     }
 
-    /// Verify this generated package and open an already schema-bound direct
-    /// database through the canonical connection policy.
+    /// Verify this generated package and open a schema-bound connection,
+    /// direct or proxy as `policy` says.
     ///
-    /// Server compatibility is discovered authoritatively; callers cannot
-    /// supply or override the server version used for admission.
-    #[cfg(feature = "typedb")]
+    /// A direct connection discovers server compatibility authoritatively;
+    /// callers cannot supply or override the server version used for
+    /// admission. A proxy connection fetches and validates the server's
+    /// advertisement unless the policy pins one.
     pub async fn connect(
         self,
-        policy: type_bridge_orm::DirectConnectionPolicy,
-    ) -> Result<crate::session::Database<S>> {
+        policy: impl Into<crate::ConnectionPolicy>,
+    ) -> Result<crate::Connection<S>> {
         self.connect_with_cancellation(policy, type_bridge_orm::AnswerCancellation::default())
             .await
     }
 
-    /// Verify this generated package and open an already schema-bound direct
-    /// database with one wakeable connection-cancellation owner.
-    #[cfg(feature = "typedb")]
+    /// [`Self::connect`] with one wakeable connection-cancellation owner.
     pub async fn connect_with_cancellation(
         self,
-        policy: type_bridge_orm::DirectConnectionPolicy,
+        policy: impl Into<crate::ConnectionPolicy>,
         cancellation: type_bridge_orm::AnswerCancellation,
-    ) -> Result<crate::session::Database<S>> {
-        let (installed, authority) = self.verify_and_install_with_authority()?;
-        let match_registry = crate::session::build_match_registry(&installed)?;
-        let inner =
-            type_bridge_orm::Database::connect_direct(installed.as_ref(), &policy, cancellation)
+    ) -> Result<crate::Connection<S>> {
+        match policy.into() {
+            #[cfg(feature = "typedb")]
+            crate::ConnectionPolicy::Direct(policy) => {
+                let (installed, authority) = self.verify_and_install_with_authority()?;
+                let match_registry = crate::session::build_match_registry(&installed)?;
+                let inner = type_bridge_orm::Database::connect_direct(
+                    installed.as_ref(),
+                    &policy,
+                    cancellation,
+                )
                 .await
                 .map_err(Error::from_direct_connection)?;
-        Ok(crate::session::Database::from_bound_parts(
-            inner,
-            installed,
-            match_registry,
-            authority.map(|authority| authority.managed_scope().id().clone()),
-        ))
+                Ok(crate::Connection::Direct(
+                    crate::session::Database::from_bound_parts(
+                        inner,
+                        installed,
+                        match_registry,
+                        authority.map(|authority| authority.managed_scope().id().clone()),
+                    ),
+                ))
+            }
+            crate::ConnectionPolicy::Proxy(policy) => {
+                let proxy =
+                    crate::ProxyDatabase::connect_with_cancellation(policy, cancellation).await?;
+                Ok(crate::Connection::Proxy(proxy.with_schema(self)?))
+            }
+        }
     }
 
     /// Install the package's exact projection for generated successor-runtime validation.
@@ -795,6 +817,13 @@ impl<S: Schema> SchemaPackage<S> {
         self.runtime_projection_json
     }
 
+    /// The verified compiled authority plans of this package are built under.
+    pub(crate) fn plan_authority(&self) -> Result<Arc<VerifiedSchemaAuthority>> {
+        self.verify_embedded_authority()?.ok_or_else(|| {
+            authority_error("plans require a generated schema package with compiled authority")
+        })
+    }
+
     pub(crate) const fn declared_schema_json(&self) -> Option<&'static str> {
         self.declared_schema_json
     }
@@ -812,7 +841,7 @@ impl<S: Schema> SchemaPackage<S> {
         &self,
     ) -> Result<(
         Arc<type_bridge_orm::InstalledRuntimeProjection>,
-        Option<VerifiedSchemaAuthority>,
+        Option<Arc<VerifiedSchemaAuthority>>,
     )> {
         let authority_backed = self.schema_authority_json.is_some();
         // The detached semantic-fingerprint string is canonical evidence slot
@@ -843,12 +872,7 @@ impl<S: Schema> SchemaPackage<S> {
             )
         })?;
         if let Some(authority) = authority.as_ref() {
-            projection = projection.with_declared_schema_identity(
-                authority
-                    .resolved_schema()
-                    .declared_identity_fingerprint()
-                    .clone(),
-            );
+            projection = projection.with_schema_authority(authority);
         }
         let successor =
             authority_backed || projection_uses_ordered_collections(projection.projection());
@@ -864,13 +888,58 @@ impl<S: Schema> SchemaPackage<S> {
                 ),
             ));
         }
-        verify_rust_projection_evidence(&projection, authority.as_ref()).map_err(|error| {
+        verify_rust_projection_evidence(&projection, authority.as_deref()).map_err(|error| {
             classify_admission_error(successor, semantic_fingerprint_presence, error)
         })?;
         Ok((Arc::new(projection), authority))
     }
 
-    fn verify_embedded_authority(&self) -> Result<Option<VerifiedSchemaAuthority>> {
+    /// The package's verified compiled authority, verified once per package.
+    ///
+    /// Only a successful verification is cached. A package whose evidence
+    /// fails verification re-verifies on every call and so fails every call
+    /// with the same error.
+    fn verify_embedded_authority(&self) -> Result<Option<Arc<VerifiedSchemaAuthority>>> {
+        let key = self.authority_evidence_key();
+        let cached = VERIFIED_AUTHORITIES
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+            .cloned();
+        if let Some(authority) = cached {
+            return Ok(Some(authority));
+        }
+        // Verify outside the lock; a concurrent first use verifies twice and
+        // keeps whichever result lands first, both being identical.
+        let Some(authority) = self.verify_embedded_authority_uncached()? else {
+            return Ok(None);
+        };
+        let authority = VERIFIED_AUTHORITIES
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(key)
+            .or_insert_with(|| Arc::new(authority))
+            .clone();
+        Ok(Some(authority))
+    }
+
+    /// Identity of the evidence `verify_embedded_authority_uncached` reads.
+    ///
+    /// The evidence is immutable `'static` text, so equal addresses and
+    /// lengths mean equal bytes and an equal verification result. A
+    /// byte-identical copy at another address only verifies once more.
+    fn authority_evidence_key(&self) -> AuthorityEvidenceKey {
+        let identity =
+            |text: Option<&'static str>| text.map(|text| (text.as_ptr() as usize, text.len()));
+        [
+            identity(self.schema_authority_json),
+            identity(self.declared_schema_json),
+            identity(self.managed_scope_id),
+            identity(self.semantic_profile_id),
+        ]
+    }
+
+    fn verify_embedded_authority_uncached(&self) -> Result<Option<VerifiedSchemaAuthority>> {
         let parts = (
             self.schema_authority_json,
             self.declared_schema_json,
@@ -885,6 +954,8 @@ impl<S: Schema> SchemaPackage<S> {
                 "generated schema package contains incomplete compiled authority evidence",
             ));
         };
+        #[cfg(test)]
+        AUTHORITY_VERIFICATIONS.with(|count| count.set(count.get() + 1));
         if envelope.len() > MAX_SCHEMA_AUTHORITY_BYTES {
             return Err(authority_error(
                 "generated schema authority exceeds the canonical byte ceiling",

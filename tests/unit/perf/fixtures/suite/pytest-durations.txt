@@ -1,0 +1,27 @@
+........                                                                 [100%]
+============================== slowest durations ===============================
+0.04s call     tests/unit/perf/test_size.py::test_cli_writes_valid_result
+0.03s call     tests/unit/perf/test_size.py::test_duplicate_metric_identity_fails[names1]
+0.00s setup    tests/unit/perf/test_size.py::test_cli_writes_valid_result
+0.00s call     tests/unit/perf/test_size.py::test_duplicate_metric_identity_fails[names0]
+0.00s setup    tests/unit/perf/test_size.py::test_duplicate_metric_identity_fails[names1]
+0.00s call     tests/unit/perf/test_size.py::test_output_cannot_destroy_artifact
+0.00s setup    tests/unit/perf/test_size.py::test_invalid_artifact_fails[empty]
+0.00s setup    tests/unit/perf/test_size.py::test_invalid_artifact_fails[missing]
+0.00s setup    tests/unit/perf/test_size.py::test_invalid_artifact_fails[directory]
+0.00s setup    tests/unit/perf/test_size.py::test_duplicate_metric_identity_fails[names0]
+0.00s setup    tests/unit/perf/test_size.py::test_captured_npm_pack_size_matches_archive
+0.00s setup    tests/unit/perf/test_size.py::test_output_cannot_destroy_artifact
+0.00s call     tests/unit/perf/test_size.py::test_captured_npm_pack_size_matches_archive
+0.00s call     tests/unit/perf/test_size.py::test_invalid_artifact_fails[empty]
+0.00s call     tests/unit/perf/test_size.py::test_invalid_artifact_fails[missing]
+0.00s call     tests/unit/perf/test_size.py::test_invalid_artifact_fails[directory]
+0.00s teardown tests/unit/perf/test_size.py::test_output_cannot_destroy_artifact
+0.00s teardown tests/unit/perf/test_size.py::test_cli_writes_valid_result
+0.00s teardown tests/unit/perf/test_size.py::test_duplicate_metric_identity_fails[names1]
+0.00s teardown tests/unit/perf/test_size.py::test_invalid_artifact_fails[missing]
+0.00s teardown tests/unit/perf/test_size.py::test_invalid_artifact_fails[empty]
+0.00s teardown tests/unit/perf/test_size.py::test_duplicate_metric_identity_fails[names0]
+0.00s teardown tests/unit/perf/test_size.py::test_invalid_artifact_fails[directory]
+0.00s teardown tests/unit/perf/test_size.py::test_captured_npm_pack_size_matches_archive
+8 passed in 0.15s

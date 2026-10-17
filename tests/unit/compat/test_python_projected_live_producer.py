@@ -402,7 +402,7 @@ def test_main_never_publishes_after_journey_or_cleanup_failure(
         "_source_authority",
         lambda _root: (authority, {"journey": b"{}", "provider": b"define entity person;"}),
     )
-    monkeypatch.setattr(producer, "_load_package", lambda _root: object())
+    monkeypatch.setattr(producer, "_load_package", lambda _root, _semantic: object())
     monkeypatch.setattr(producer, "_json_object", lambda _raw, _label: {})
     monkeypatch.setattr(producer, "_record_index", lambda _journey: ({}, [], []))
 

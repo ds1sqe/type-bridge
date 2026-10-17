@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -11,8 +12,12 @@ use crate::executor::QueryExecutor;
 use crate::interceptor::crud_interceptor::{CrudInterceptor, CrudInterceptorAdapter};
 use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
 #[cfg(feature = "v2-query")]
-use crate::interceptor::{V2PolicyOutcome, V2PolicyRequest};
+use crate::interceptor::{V2PolicyOutcome, V2PolicyRequest, V3CommitOutcome, V3PolicyPlan};
 use crate::schema_source::SchemaSource;
+
+/// `client_id` of a request no transport policy has identified. It names no
+/// one, so nothing may be retained or charged under it.
+pub(crate) const UNAUTHENTICATED_CLIENT_ID: &str = "unknown";
 
 /// Input for a structured (AST-based) query.
 pub struct QueryInput {
@@ -123,13 +128,36 @@ impl QueryPipeline {
         self.validate_v2_coverage()?;
         Ok(RequestContext {
             request_id: uuid::Uuid::new_v4().to_string(),
-            client_id: "unknown".to_owned(),
+            client_id: UNAUTHENTICATED_CLIENT_ID.to_owned(),
             database: self.default_database.clone(),
             transaction_type: "read".to_owned(),
             metadata,
             timestamp: chrono::Utc::now(),
             crud_info: None,
         })
+    }
+
+    /// Prove every configured policy explicitly covers staged V3 requests.
+    ///
+    /// Unlike V2 coverage this does not gate startup: a server whose
+    /// policies predate V3 keeps serving V2 and refuses every V3 request
+    /// through [`Self::v3_request_context`].
+    #[cfg(feature = "v2-query")]
+    pub fn validate_v3_coverage(&self) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .ensure_v3_coverage()
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Construct one staged V3 policy context after proving every configured
+    /// interceptor explicitly supports both typed V2 and staged V3 requests.
+    #[cfg(feature = "v2-query")]
+    pub fn v3_request_context(
+        &self,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> Result<RequestContext, PipelineError> {
+        self.validate_v3_coverage()?;
+        self.v2_request_context(metadata)
     }
 
     /// Authenticate and rate-limit V2 transport metadata before envelope
@@ -158,6 +186,42 @@ impl QueryPipeline {
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }
 
+    /// Whether the configured policies admit a staged V3 write for this
+    /// caller. An interceptor error refuses.
+    #[cfg(feature = "v2-query")]
+    pub async fn authorize_v3_write(
+        &self,
+        context: &RequestContext,
+    ) -> Result<bool, PipelineError> {
+        self.interceptor_chain
+            .execute_v3_write_authority(context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Run the staged plan policies for plan `index`. An interceptor error
+    /// refuses the request.
+    #[cfg(feature = "v2-query")]
+    pub async fn authorize_v3_plan(
+        &self,
+        index: usize,
+        plan: V3PolicyPlan<'_>,
+        context: &RequestContext,
+    ) -> Result<(), PipelineError> {
+        self.interceptor_chain
+            .execute_v3_plan(index, plan, context)
+            .await
+            .map_err(|error| PipelineError::Interceptor(error.to_string()))
+    }
+
+    /// Let every policy observe a staged transaction's outcome.
+    #[cfg(feature = "v2-query")]
+    pub async fn observe_v3_commit(&self, outcome: &V3CommitOutcome<'_>, context: &RequestContext) {
+        self.interceptor_chain
+            .execute_v3_commit(outcome, context)
+            .await;
+    }
+
     /// Run configured response and audit policies for every V2 outcome.
     #[cfg(feature = "v2-query")]
     pub async fn finish_v2_request(
@@ -181,7 +245,7 @@ impl QueryPipeline {
 
         let mut ctx = RequestContext {
             request_id: request_id.clone(),
-            client_id: "unknown".to_string(),
+            client_id: UNAUTHENTICATED_CLIENT_ID.to_owned(),
             database: database.clone(),
             transaction_type: input.transaction_type.clone(),
             metadata: input.metadata,
@@ -213,7 +277,9 @@ impl QueryPipeline {
 
         // Compile to TypeQL
         let compiler = QueryCompiler::new();
-        let typeql = compiler.compile(&clauses);
+        let typeql = compiler
+            .try_compile(&clauses)
+            .map_err(|error| PipelineError::Validation(error.to_string()))?;
         ctx.metadata.insert(
             "compiled_typeql".to_string(),
             serde_json::Value::String(typeql.clone()),

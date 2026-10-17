@@ -385,6 +385,9 @@ int main(void) {
       getenv("TYPE_BRIDGE_MANAGER_LIVE_DATABASE");
   const char *username = getenv("TYPEDB_USERNAME");
   const char *password = getenv("TYPEDB_PASSWORD");
+  /* The harness selects the server from the SDK profile matrix. */
+  const char *expected_server_version =
+      getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
   const uint32_t http_port = required_http_port();
   type_bridge_schema_package_t *package = NULL;
   type_bridge_schema_package_t *foreign_package = NULL;
@@ -435,6 +438,8 @@ int main(void) {
   unsigned mask = 0u;
 
   CHECK(address != NULL && address[0] != '\0');
+  CHECK(expected_server_version != NULL &&
+        expected_server_version[0] != '\0');
   CHECK(database_name != NULL && database_name[0] != '\0');
   CHECK(username != NULL && username[0] != '\0');
   CHECK(password != NULL && http_port != 0u);
@@ -473,7 +478,7 @@ int main(void) {
         database != NULL && diagnostics == NULL);
   CHECK(type_bridge_database_server_version(database, &version) ==
             TYPE_BRIDGE_STATUS_OK &&
-        same_text(version, "3.12.3"));
+        same_text(version, expected_server_version));
 
   CHECK(open_person_create(
       package, "data-ada", "Ada", 38, 7, 40, 0u, 38, "2026-08-12",

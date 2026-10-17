@@ -1,0 +1,1 @@
+define attribute stamp, value datetime-tz @values(2026-10-15T12:30:00 Europe/London);

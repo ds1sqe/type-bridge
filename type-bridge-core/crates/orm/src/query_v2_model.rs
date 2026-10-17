@@ -16,7 +16,7 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{
     AttributeId, MAX_THING_IID_HEX_DIGITS, RoleId, TypeId, TypeKind, is_canonical_thing_iid,
 };
-use type_bridge_contract::limits::MAX_BINDINGS;
+use type_bridge_contract::limits::MAX_SUPPORTED_BINDINGS;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
     CompatibilityValueV2, HydrationBindingV2, HydrationDescriptorV2, HydrationFieldV2,
@@ -40,10 +40,10 @@ use type_bridge_core_lib::ast::{
 use type_bridge_query::ValidatedQuery;
 use unicase::UniCase;
 
-use crate::match_request::lowering::{
+use crate::match_request::reducer::reduce_rows;
+use crate::match_request::reducer::{
     LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain,
 };
-use crate::match_request::reducer::reduce_rows;
 use crate::match_request::result::{
     BoundConceptEvidence, ConceptId, HydratedAttribute, HydratedThing, ProviderSolutionEvidence,
     ReducedValue, ReductionRow,
@@ -62,7 +62,7 @@ use crate::session::backend::{
     MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, QueryV2AnswerLimits,
 };
 use crate::session::context::TransactionContext;
-use crate::session::transaction::Transaction;
+use crate::session::transaction::OwnedTransaction as Transaction;
 use crate::value::AttributeValue;
 
 type ExecResult<T> = Result<T, QueryV2ExecutionError>;
@@ -977,7 +977,7 @@ fn exactly_one_proof_byte_limit(
     selection: &TypedFetchRows,
 ) -> ExecResult<u64> {
     let projected_bindings = selection.projection.len();
-    if projected_bindings == 0 || projected_bindings > MAX_BINDINGS {
+    if projected_bindings == 0 || projected_bindings > MAX_SUPPORTED_BINDINGS {
         return Err(evidence_error(
             "query_v2_model_tuple_evidence",
             "distinct-tuple proof projection exceeds the validated binding ceiling",
@@ -2367,10 +2367,10 @@ async fn execute_rows(
     let provider_terminal = provider_projection_is_public(&statement);
     let needs_tuple_proof =
         cardinality.is_exactly_one() && !provider_terminal && tuple_proof.is_some();
-    let retain = if cardinality.is_exactly_one() {
-        2
-    } else {
-        offset.saturating_add(limit)
+    let retain = match cardinality {
+        QueryRowCardinalityV2::ExactlyOne => 2,
+        QueryRowCardinalityV2::BoundedMany => offset.saturating_add(limit),
+        QueryRowCardinalityV2::Complete => limit.saturating_add(1),
     };
     statement.offset = 0;
     statement.limit = if provider_terminal {
@@ -2401,6 +2401,14 @@ async fn execute_rows(
         require_exhausted(stats)?;
     }
     let solutions = consumer.finish();
+    if cardinality == QueryRowCardinalityV2::Complete
+        && u64::try_from(solutions.len()).unwrap_or(u64::MAX) > limit
+    {
+        return Err(resource_error(
+            "query_v2_model_complete_rows_exceeded",
+            "more distinct rows matched than the complete fetch accepts",
+        ));
+    }
 
     let authority = HydrationAuthority::new(hydration)?;
     let mut graph = GraphBuilder::new(reply_limits);
@@ -2968,7 +2976,7 @@ fn provider_reduction_solution(
             ))
         })
         .collect::<ExecResult<Vec<_>>>()?;
-    Ok(ProviderSolutionEvidence::new(bindings, Vec::new()))
+    Ok(ProviderSolutionEvidence::new(bindings))
 }
 
 fn descriptor_id(value: &TypeId) -> ExecResult<DescriptorId> {
@@ -3671,6 +3679,15 @@ fn evidence_failure(code: &'static str, message: &'static str) -> Diagnostic {
 mod tests {
     use super::*;
     use type_bridge_contract::value::{CanonicalValue, Cardinality, DecimalValue};
+
+    #[test]
+    fn live_binding_ordinals_accept_only_integral_in_range_numbers() {
+        assert_eq!(json_u16(&serde_json::json!(3.0)), Some(3));
+        assert_eq!(json_u16(&serde_json::json!({"value": 4.0})), Some(4));
+        assert_eq!(json_u16(&serde_json::json!(3.5)), None);
+        assert_eq!(json_u16(&serde_json::json!(-1.0)), None);
+        assert_eq!(json_u16(&serde_json::json!(65536.0)), None);
+    }
 
     #[test]
     fn graph_finish_orders_attribute_evidence_by_descriptor() {

@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).parents[3]
-MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
+MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 SEED_INVENTORY = ROOT / "tests/fixtures/generated-only-operation-parity-inventory.json"
 TYPED_QUERY_CORPUS = ROOT / "tests/contracts/typed_query/corpus-v1.json"
 
@@ -161,7 +161,7 @@ def test_full_sdk_manifest_has_closed_profiles_and_real_rust_owners() -> None:
     assert manifest["seed_inventory"] == SEED_INVENTORY.relative_to(ROOT).as_posix()
     assert manifest["canonical_case_catalog"] == {
         "state": "accepted_shared_runtime_baseline",
-        "path": "tests/contracts/sdk_conformance/sdk-v1",
+        "path": "tests/contracts/sdk_conformance/cases.json",
     }
     assert manifest["bindings"] == BINDINGS
     assert manifest["implementation_order"] == IMPLEMENTATION_ORDER
@@ -355,3 +355,20 @@ def test_remote_mutations_and_legacy_query_surfaces_cannot_count_as_support() ->
     }
     assert inventory["non_operations"][0]["id"] == "remote_mutations"
     assert any(case["id"] == "compat.legacy-root-surfaces" for case in corpus["cases"])
+
+
+def test_canonical_case_inventory_is_independent_of_the_smoke_suite() -> None:
+    manifest = _load(MANIFEST)
+    inventory = _load(ROOT / manifest["canonical_case_catalog"]["path"])
+    assert set(inventory) == {"format", "cases"}
+    assert inventory["format"] == "typebridge.sdk-cases/v1"
+    assert len(inventory["cases"]) == 44
+    assert len({case["id"] for case in inventory["cases"]}) == 44
+    assert {case["disposition"] for case in inventory["cases"]} == {
+        "shared_smoke",
+        "retained_evidence",
+        "known_gap",
+    }
+    assert {case["capability_id"] for case in inventory["cases"]} <= {
+        capability["id"] for capability in manifest["capabilities"]
+    }

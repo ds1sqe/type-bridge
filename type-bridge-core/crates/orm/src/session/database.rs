@@ -33,12 +33,10 @@ use super::backend::AnswerCancellation;
 use super::backend::BoxFuture;
 use super::backend::{DriverBackend, GivenRowsSpec, QueryResult, TxType};
 use super::context::TransactionContext;
-use super::transaction::Transaction;
+use super::transaction::OwnedTransaction as Transaction;
 use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
-use crate::match_request::selected_result_executor::{
-    ManagerHydratedRoots, ManagerRootSelection, SelectedResultExecutor,
-};
+use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
 #[cfg(feature = "typedb")]
 use crate::query_execution_limits::QueryExecutionDeadline;
@@ -53,7 +51,7 @@ use crate::query_execution_limits::QueryExecutionResourceLimits;
 /// [`Arc`]. The TypeDB driver handles connection pooling internally.
 #[derive(Clone)]
 pub struct Database {
-    backend: Arc<dyn DriverBackend>,
+    pub(super) backend: Arc<dyn DriverBackend>,
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
     answer_limits: Option<QueryExecutionResourceLimits>,
@@ -234,21 +232,19 @@ impl Database {
     {
         let prepared =
             super::direct_connection::prepare_direct_connection(installed, policy, &cancellation)?;
-        let transport = prepared.transport.with_generated_3_12_3_requirement();
-        let mut database = Self::connect_prepared_secure_with_control(
+        Self::connect_prepared_secure_with_control(
             &prepared.endpoint,
             &prepared.database,
             &prepared.username,
             &prepared.password,
-            transport,
+            prepared.transport,
             prepared.connection_limits,
+            prepared.answer_limits,
             prepared.deadline,
             cancellation,
         )
         .await
-        .map_err(super::direct_connection::lower_secure_connection)?;
-        database.answer_limits = Some(prepared.answer_limits);
-        Ok(database)
+        .map_err(super::direct_connection::lower_secure_connection)
     }
 
     /// Create a Database with a custom backend (for testing).
@@ -276,6 +272,23 @@ impl Database {
             connection_authority,
             database_name: database_name.into(),
             answer_limits: None,
+        }
+    }
+
+    /// Create a custom-backend database bound to an immutable answer ceiling.
+    ///
+    /// The custom-backend counterpart of a controlled connection: every
+    /// operation on this handle and every transaction it opens runs under
+    /// `answer_limits`, exactly as on [`Self::connect_direct`].
+    #[doc(hidden)]
+    pub fn with_backend_answer_limits(
+        backend: Box<dyn DriverBackend>,
+        database_name: impl Into<String>,
+        answer_limits: QueryExecutionResourceLimits,
+    ) -> Self {
+        Self {
+            answer_limits: Some(answer_limits.effective()),
+            ..Self::with_backend(backend, database_name)
         }
     }
 
@@ -370,10 +383,11 @@ impl Database {
     /// Connect through prepared trust using one common bounded invocation.
     ///
     /// The caller must capture `deadline` before any credential resolution or
-    /// provider work. Only connection-applicable dimensions are forwarded:
-    /// items, bytes, and statements. Graph, attribute, collection, and role
-    /// ceilings remain uncharged because opening a connection performs none of
-    /// that work.
+    /// provider work. Only connection-applicable dimensions of `limits` are
+    /// forwarded: items, bytes, and statements. Graph, attribute, collection,
+    /// and role ceilings remain uncharged because opening a connection
+    /// performs none of that work. `answer_limits` becomes the immutable
+    /// answer ceiling of the returned handle and every transaction it opens.
     #[cfg(feature = "typedb")]
     #[doc(hidden)]
     #[allow(clippy::too_many_arguments)]
@@ -384,6 +398,7 @@ impl Database {
         password: &str,
         options: super::real_driver::PreparedSecureConnectOptions,
         limits: QueryExecutionResourceLimits,
+        answer_limits: QueryExecutionResourceLimits,
         deadline: QueryExecutionDeadline,
         cancellation: AnswerCancellation,
     ) -> super::real_driver::SecureResult<Self> {
@@ -405,24 +420,52 @@ impl Database {
             options.with_connection_control(control),
         )
         .await
+        .map(|database| Self {
+            answer_limits: Some(answer_limits.effective()),
+            ..database
+        })
+    }
+
+    /// Create a deferred transaction. No provider transaction opens until commit.
+    pub fn transaction(
+        &self,
+        options: super::staged::TransactionOptions,
+    ) -> super::staged::Transaction {
+        super::staged::Transaction::new(
+            Arc::clone(&self.backend),
+            self.database_name.clone(),
+            options,
+        )
+    }
+
+    pub(crate) async fn open_eager(
+        &self,
+        kind: super::staged::TransactionKind,
+        options: super::staged::TransactionOptions,
+    ) -> Result<super::eager::EagerTransaction> {
+        super::eager::EagerTransaction::open(self, kind, options).await
     }
 
     /// Open a read transaction.
     pub async fn read_transaction(&self) -> Result<Transaction> {
-        let tx = self
-            .backend
-            .open_transaction(&self.database_name, TxType::Read)
+        let eager = self
+            .open_eager(
+                super::staged::TransactionKind::Read,
+                super::staged::TransactionOptions::default(),
+            )
             .await?;
-        Ok(Transaction::new(tx, TxType::Read, self.server_version()))
+        Ok(Transaction::from_eager(eager))
     }
 
     /// Open a write transaction.
     pub async fn write_transaction(&self) -> Result<Transaction> {
-        let tx = self
-            .backend
-            .open_transaction(&self.database_name, TxType::Write)
+        let eager = self
+            .open_eager(
+                super::staged::TransactionKind::Write,
+                super::staged::TransactionOptions::default(),
+            )
             .await?;
-        Ok(Transaction::new(tx, TxType::Write, self.server_version()))
+        Ok(Transaction::from_eager(eager))
     }
 
     /// Open a bounded read-capable transaction whose schema cannot change
@@ -436,15 +479,14 @@ impl Database {
         &self,
         timeout: Duration,
     ) -> Result<(Transaction, String)> {
-        let fenced = self
-            .backend
-            .open_schema_fenced_read_transaction(&self.database_name, timeout)
-            .await?;
-        let (transaction, schema_text) = fenced.into_parts();
-        Ok((
-            Transaction::new(transaction, TxType::Write, self.server_version()),
-            schema_text,
-        ))
+        let (eager, schema) = super::eager::EagerTransaction::open_fenced(
+            self.backend.as_ref(),
+            &self.database_name,
+            timeout,
+            self.server_version(),
+        )
+        .await?;
+        Ok((Transaction::from_eager(eager), schema))
     }
 
     /// Open an owned schema transaction.
@@ -452,19 +494,49 @@ impl Database {
     /// Migration coordinators use this form to execute bounded assertions and
     /// an ordered schema statement group before one explicit commit.
     pub async fn schema_transaction(&self) -> Result<Transaction> {
-        let tx = self
-            .backend
-            .open_transaction(&self.database_name, TxType::Schema)
+        let eager = self
+            .open_eager(
+                super::staged::TransactionKind::Schema,
+                super::staged::TransactionOptions::default(),
+            )
             .await?;
-        Ok(Transaction::new(tx, TxType::Schema, self.server_version()))
+        Ok(Transaction::from_eager(eager))
     }
 
     /// Create a shared [`TransactionContext`] for grouping operations.
+    ///
+    /// The transaction inherits this handle's answer ceiling.
     pub async fn transaction_context(&self, tx_type: TxType) -> Result<TransactionContext> {
+        self.open_transaction_context(tx_type, self.answer_limits)
+            .await
+    }
+
+    /// Create a [`TransactionContext`] whose answer ceiling is `limits`
+    /// tightened by this handle's ceiling.
+    ///
+    /// A transaction can narrow, never widen, its connection's ceiling.
+    #[doc(hidden)]
+    pub async fn transaction_context_with_answer_limits(
+        &self,
+        tx_type: TxType,
+        limits: QueryExecutionResourceLimits,
+    ) -> Result<TransactionContext> {
+        let answer_limits = match self.answer_limits {
+            Some(ceiling) => limits.constrained_by(ceiling),
+            None => limits.effective(),
+        };
+        self.open_transaction_context(tx_type, Some(answer_limits))
+            .await
+    }
+
+    async fn open_transaction_context(
+        &self,
+        tx_type: TxType,
+        answer_limits: Option<QueryExecutionResourceLimits>,
+    ) -> Result<TransactionContext> {
         let capabilities = self.backend.match_capabilities();
         let tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
+            .open_eager(tx_type.into(), super::staged::TransactionOptions::default())
             .await?;
         Ok(TransactionContext::new(
             tx,
@@ -472,7 +544,7 @@ impl Database {
             capabilities,
             self.server_version(),
             self.execution_identity(),
-            self.answer_limits,
+            answer_limits,
         ))
     }
 
@@ -496,41 +568,6 @@ impl Database {
         SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
             .execute_compatible_owned(self, validated)
             .await
-    }
-
-    pub(crate) async fn execute_manager_roots_with_limits(
-        &self,
-        registry: &DescriptorRegistry,
-        validated: &ValidatedMatchRequest,
-        selection: ManagerRootSelection,
-        limits: MatchExecutionLimits,
-    ) -> Result<ManagerHydratedRoots> {
-        SelectedResultExecutor::new(registry, self.backend.match_capabilities(), limits)
-            .execute_manager_roots_owned(self, validated, selection)
-            .await
-    }
-
-    /// Execute through the retained direct V1 implementation for live parity tests.
-    ///
-    /// This test-only seam is intentionally unavailable in normal builds. It
-    /// lets the integration corpus compare the released executor semantics
-    /// with the production V1-to-V2 compatibility path without changing which
-    /// path public callers use.
-    #[cfg(feature = "integration-tests")]
-    #[doc(hidden)]
-    pub async fn execute_match_v1_legacy_for_live_test(
-        &self,
-        registry: &DescriptorRegistry,
-        validated: &ValidatedMatchRequest,
-    ) -> Result<ValidatedMatchResult> {
-        let registry = registry.owned_registry_snapshot()?;
-        SelectedResultExecutor::new(
-            &registry,
-            self.backend.match_capabilities(),
-            MatchExecutionLimits::default(),
-        )
-        .execute_owned(self, validated)
-        .await
     }
 
     /// Get the database name.
@@ -617,12 +654,7 @@ impl Database {
     /// `false` when the server predates 3.12 or its version is unknown. Callers
     /// with a per-row fallback should use it in both cases.
     pub fn supports_given_stage(&self) -> bool {
-        use type_bridge_core_lib::version::{Feature, check_feature_supported};
-
-        self.backend.supports_given_rows()
-            && self
-                .server_version()
-                .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
+        backend_supports_given_stage(self.backend.as_ref())
     }
 
     /// Version-gate a `given`-stage query.
@@ -716,15 +748,39 @@ impl Database {
         if tx_type == TxType::Schema {
             self.check_schema_annotation_support(typeql)?;
         }
-        let mut tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
-            .await?;
-        let result = tx.query(typeql).await?;
-        if matches!(tx_type, TxType::Write | TxType::Schema) {
-            tx.commit().await?;
-        }
-        Ok(result)
+        self.execute_staged(
+            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read),
+            tx_type,
+        )
+        .await
+    }
+
+    async fn execute_staged(
+        &self,
+        query: super::staged::StagedQuery,
+        kind: TxType,
+    ) -> Result<QueryResult> {
+        let limits = super::backend::BoundedAnswerLimits {
+            max_items: u64::MAX,
+            max_bytes: u64::MAX,
+            ..Default::default()
+        };
+        let options = super::staged::TransactionOptions::default()
+            .with_kind(kind.into())
+            .with_never_commit(kind == TxType::Read)
+            .with_answer_limits(limits);
+        let mut transaction = self.transaction(options);
+        let answer = transaction
+            .stage(query)
+            .map_err(|error| crate::error::OrmError::Transaction(error.to_string()))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| (*error.error).into_orm_error())?;
+        answer
+            .get()
+            .map(|answer| (*answer).clone())
+            .map_err(|error| crate::error::OrmError::Transaction(error.to_string()))
     }
 
     pub(crate) async fn execute_canonical(
@@ -735,32 +791,11 @@ impl Database {
         if tx_type == TxType::Schema {
             self.check_schema_annotation_support(typeql)?;
         }
-        let mut tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
-            .await?;
-        let result = tx.query_canonical(typeql).await;
-        match result {
-            Ok(value) => {
-                if matches!(tx_type, TxType::Write | TxType::Schema)
-                    && let Err(error) = tx.commit().await
-                {
-                    let _ = tx.close().await;
-                    return Err(error);
-                }
-                tx.close().await?;
-                Ok(value)
-            }
-            Err(primary) => {
-                if matches!(tx_type, TxType::Write | TxType::Schema) {
-                    let _ = tx.rollback().await;
-                    let _ = tx.close().await;
-                } else {
-                    let _ = tx.close().await;
-                }
-                Err(primary)
-            }
-        }
+        self.execute_staged(
+            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read).canonical(),
+            tx_type,
+        )
+        .await
     }
 
     /// Execute a `given`-stage TypeQL query over input rows, auto-managing
@@ -780,29 +815,22 @@ impl Database {
             self.check_schema_annotation_support(typeql)?;
         }
         self.check_given_stage_support()?;
-        let mut tx = self
-            .backend
-            .open_transaction(&self.database_name, tx_type)
-            .await?;
-        let result = match tx.query_with_rows(typeql, rows).await {
-            Ok(result) => result,
-            Err(error) => {
-                if matches!(tx_type, TxType::Write | TxType::Schema) {
-                    let _ = tx.rollback().await;
-                }
-                let _ = tx.close().await;
-                return Err(error);
-            }
-        };
-        if matches!(tx_type, TxType::Write | TxType::Schema)
-            && let Err(error) = tx.commit().await
-        {
-            let _ = tx.close().await;
-            return Err(error);
-        }
-        tx.close().await?;
-        Ok(result)
+        self.execute_staged(
+            super::staged::StagedQuery::new(typeql, tx_type != TxType::Read).with_rows(rows),
+            tx_type,
+        )
+        .await
     }
+}
+
+/// Whether the backend's transport and server both carry the `given` stage.
+pub(crate) fn backend_supports_given_stage(backend: &dyn DriverBackend) -> bool {
+    use type_bridge_core_lib::version::{Feature, check_feature_supported};
+
+    backend.supports_given_rows()
+        && backend
+            .server_version()
+            .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok())
 }
 
 #[cfg(test)]
@@ -982,6 +1010,7 @@ mod tests {
             SENTINEL,
             options,
             limits,
+            limits,
             deadline,
             cancellation,
         )
@@ -1025,6 +1054,7 @@ mod tests {
             SENTINEL,
             options,
             limits,
+            QueryExecutionResourceLimits::default(),
             deadline,
             AnswerCancellation::default(),
         )
@@ -1042,5 +1072,81 @@ mod tests {
             )
         ));
         assert!(!error.to_string().contains(SENTINEL));
+    }
+
+    struct NoopTransaction;
+
+    impl super::super::backend::TransactionOps for NoopTransaction {
+        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            Box::pin(async { Err(OrmError::QueryExecution("unused fixture query".into())) })
+        }
+
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct TransactionBackend;
+
+    impl DriverBackend for TransactionBackend {
+        fn open_transaction(
+            &self,
+            _database: &str,
+            _tx_type: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn super::super::backend::TransactionOps>>> {
+            Box::pin(async {
+                Ok(Box::new(NoopTransaction) as Box<dyn super::super::backend::TransactionOps>)
+            })
+        }
+
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn transactions_inherit_and_can_only_narrow_the_connection_answer_ceiling() {
+        let ceiling = QueryExecutionResourceLimits::tightened(9_000, 11, 101, 13, 17, 19, 23, 2);
+        let database =
+            Database::with_backend_answer_limits(Box::new(TransactionBackend), "ceiling", ceiling);
+        assert_eq!(database.answer_limits(), Some(ceiling));
+
+        let inherited = database.transaction_context(TxType::Read).await.unwrap();
+        assert_eq!(inherited.answer_limits(), Some(ceiling));
+        inherited.close().await.unwrap();
+
+        // A request wider in some dimensions and narrower in others keeps the
+        // tighter value of each.
+        let requested = QueryExecutionResourceLimits::tightened(8_000, 7, 1_000, 11, 13, 17, 19, 1);
+        let narrowed = database
+            .transaction_context_with_answer_limits(TxType::Write, requested)
+            .await
+            .unwrap();
+        assert_eq!(
+            narrowed.answer_limits(),
+            Some(requested.constrained_by(ceiling))
+        );
+        assert_eq!(narrowed.answer_limits().unwrap().bytes, ceiling.bytes);
+        narrowed.close().await.unwrap();
+
+        let unbounded = Database::with_backend(Box::new(TransactionBackend), "unbounded");
+        assert_eq!(unbounded.answer_limits(), None);
+        let plain = unbounded.transaction_context(TxType::Read).await.unwrap();
+        assert_eq!(plain.answer_limits(), None);
+        plain.close().await.unwrap();
+        let bounded = unbounded
+            .transaction_context_with_answer_limits(TxType::Read, requested)
+            .await
+            .unwrap();
+        assert_eq!(bounded.answer_limits(), Some(requested.effective()));
+        bounded.close().await.unwrap();
     }
 }

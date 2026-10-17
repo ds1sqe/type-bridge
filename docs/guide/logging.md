@@ -21,7 +21,6 @@ Useful retained namespaces include:
 type_bridge
 ├── type_bridge.session       connection and transaction facade
 ├── type_bridge.query         retained raw query facade
-├── type_bridge.typed         retained typed-query compatibility facade
 ├── type_bridge.migration     V2 CLI and read-only archive recovery
 └── type_bridge.proxy         remote proxy boundary
 ```

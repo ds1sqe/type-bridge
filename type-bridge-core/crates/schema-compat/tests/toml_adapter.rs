@@ -45,3 +45,29 @@ fn toml_transpiler_diagnostics_do_not_fabricate_source_spans() {
     );
     assert!(diagnostic.primary().is_none());
 }
+
+#[test]
+fn commented_toml_function_keeps_released_typeql_body_and_fingerprint() {
+    let body = "match\n  # retained body comment\n  let $value = $seed;\nreturn first $value;";
+    let toml = format!(
+        "[functions.keep-body]\nsignature = \"fun keep-body($seed: integer) -> integer\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
+    );
+    let from_toml = toml_to_declared(rendered_document(), &toml).unwrap();
+    let released = typeql_to_declared(
+        rendered_document(),
+        &format!("define fun keep-body($seed: integer) -> integer:\n{body}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        from_toml.declared_identity_fingerprint(),
+        released.declared_identity_fingerprint()
+    );
+    let function = from_toml
+        .facts()
+        .find_map(|fact| match fact {
+            type_bridge_contract::schema::SchemaFact::Function(function) => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(function.body().text(), body);
+}

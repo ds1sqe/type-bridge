@@ -1,0 +1,1 @@
+match $x isa person, has name $name; reduce $count = count groupby $name;

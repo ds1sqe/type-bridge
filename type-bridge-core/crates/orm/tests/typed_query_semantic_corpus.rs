@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+use type_bridge_contract::limits::QueryLimits;
+use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
@@ -26,7 +28,8 @@ use type_bridge_orm::session::backend::{
 use type_bridge_orm::{
     BindingId, BindingPair, CapabilitySet, Database, FetchShape, FetchSlot, MatchBinding,
     MatchExpr, MatchMode, MatchOperation, MatchPlan, MatchRequest, MatchResult, OrmError,
-    RoleEdgeId, RowCardinality, SlotValue, ThingKind, TxType, ValueType, Window,
+    Reduction, RoleEdgeId, RowCardinality, SessionHandle, SlotValue, ThingKind, TxType, ValueType,
+    Window,
 };
 
 const FIXTURE_JSON: &str = include_str!(concat!(
@@ -758,4 +761,143 @@ async fn exact_one_reads_past_duplicate_hidden_witnesses_before_not_unique() {
     assert_eq!(error.code().as_str(), "not_unique");
     assert_eq!(events.selected_statements.load(Ordering::SeqCst), 1);
     assert_eq!(events.closes.load(Ordering::SeqCst), 1);
+}
+
+/// Refuse one corpus case through the handle API every binding calls, and
+/// return the refusal's category and code.
+fn handle_refusal(case_id: &str) -> (String, String) {
+    let error = handle_refusal_error(case_id);
+    (
+        error.category().as_str().to_owned(),
+        error.code().as_str().to_owned(),
+    )
+}
+
+/// Refuse one corpus case through the handle API every binding calls.
+fn handle_refusal_error(case_id: &str) -> type_bridge_orm::MatchError {
+    let registry = Arc::new(registry());
+    let session_slots = |slots: usize| {
+        let mut limits = QueryLimits::CANONICAL;
+        assert!(limits.set("selected_slots", slots));
+        SessionHandle::with_limits(Arc::clone(&registry), limits.validate().unwrap())
+    };
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let person = session.exact("person").unwrap();
+    let company = session.exact("company").unwrap();
+    let query = || {
+        session
+            .query(session.positional([person.one()]).unwrap())
+            .unwrap()
+    };
+    let window = |offset, limit| {
+        query()
+            .validate_fetch_rows(&[], Window { offset, limit }, RowCardinality::BoundedMany)
+            .map(drop)
+    };
+    let reachable = |min_depth, max_depth| {
+        session
+            .reachable(
+                "employment",
+                "employee",
+                "employer",
+                &person,
+                &company,
+                min_depth,
+                max_depth,
+            )
+            .map(drop)
+    };
+    let name = person.field("name").unwrap();
+    let counts = |count: usize| vec![(Reduction::Count, None); count];
+    let outcome = match case_id {
+        "selection.seventeen-slot-rejection" => session
+            .positional((0..17).map(|_| session.exact("person").unwrap().one()))
+            .map(drop),
+        "selection.session-slot-ceiling" => {
+            let limited = session_slots(4);
+            limited
+                .positional((0..5).map(|_| limited.exact("person").unwrap().one()))
+                .map(drop)
+        }
+        "bounds.public-invalid-limit" | "bounds.canonical-zero-limit" => window(0, 0),
+        "bounds.public-invalid-offset" => window(u64::MAX, 1),
+        "bounds.window-overflow" => window(u64::MAX - 1, 2),
+        "aggregate.empty-terms" => query().validate_reduce_by(&person, None, &[]).map(drop),
+        "aggregate.seventeen-terms" => query()
+            .validate_reduce_by(&person, None, &counts(17))
+            .map(drop),
+        "aggregate.seventeen-group-keys" => query().check_group_fields(&[&name; 17]),
+        "reachability.reversed-bounds" => reachable(3, 2),
+        "reachability.depth-ceiling" => reachable(0, 65),
+        other => panic!("no handle refusal for corpus case {other}"),
+    };
+    let Err(OrmError::Match(error)) = outcome else {
+        panic!("corpus case {case_id} was not refused by the core: {outcome:?}");
+    };
+    error
+}
+
+/// The Rust half of the binding cases in `tests/contracts/diagnostic-json.json`.
+#[test]
+fn binding_refusals_have_the_golden_host_json() {
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../../tests/contracts/diagnostic-json.json"
+    ))
+    .unwrap();
+    let expected = |id: &str| {
+        golden["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == id)
+            .unwrap()["diagnostic"]
+            .clone()
+    };
+    let group_keys =
+        type_bridge_orm::lower_match_error(&handle_refusal_error("aggregate.seventeen-group-keys"));
+    assert_eq!(
+        serde_json::to_value(group_keys.host_json()).unwrap(),
+        expected("group_keys.seventeen")
+    );
+    let unknown = SdkExecutionDiagnostic::from(
+        type_bridge_orm::canonical_enum_spelling("sort_direction", "sideways").unwrap_err(),
+    );
+    assert_eq!(
+        serde_json::to_value(unknown.host_json()).unwrap(),
+        expected("unknown_enum_value.sort_direction")
+    );
+}
+
+#[test]
+fn window_cap_and_depth_cases_are_refused_by_the_core_with_corpus_codes() {
+    let corpus: Value = serde_json::from_str(CORPUS_JSON).unwrap();
+    let cases = [
+        "selection.seventeen-slot-rejection",
+        "selection.session-slot-ceiling",
+        "bounds.public-invalid-limit",
+        "bounds.public-invalid-offset",
+        "bounds.canonical-zero-limit",
+        "bounds.window-overflow",
+        "aggregate.empty-terms",
+        "aggregate.seventeen-terms",
+        "aggregate.seventeen-group-keys",
+        "reachability.reversed-bounds",
+        "reachability.depth-ceiling",
+    ];
+    for case_id in cases {
+        let case = corpus["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["id"] == case_id)
+            .unwrap_or_else(|| panic!("corpus has no case {case_id}"));
+        let expected = (
+            case["expected"]["error_category"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+            case["expected"]["error_code"].as_str().unwrap().to_owned(),
+        );
+        assert_eq!(handle_refusal(case_id), expected, "{case_id}");
+    }
 }

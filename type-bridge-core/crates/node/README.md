@@ -88,9 +88,11 @@ upstream driver's shutdown request; once dispatched, the connection admits no
 new work. The unmodified upstream 3.12.1 driver releases its final callback
 worker when the last native driver lease drops, so a retained closed handle is
 not a synchronous worker-join boundary. Close is also not an out-of-band
-cancellation channel for the released synchronous CRUD and query APIs. While
-one of those native calls occupies the JavaScript event-loop thread, JavaScript
-cannot dispatch `db.close()` concurrently to interrupt it.
+cancellation channel for the synchronous CRUD APIs. While one of those native
+calls occupies the JavaScript event-loop thread, JavaScript cannot dispatch
+`db.close()` concurrently to interrupt it. Generated query terminals return
+Promises and run off that thread; cancel them through the session's
+`QueryCancellation` and bound them with its `timeoutMilliseconds`.
 
 For V2 work that must remain cancellable, use the Promise-returning
 `queryV2ExecuteLocal(...)` surface and supply its `deadlineMs` argument. Remote
@@ -112,15 +114,17 @@ const db = RustDatabase.connect("localhost:1729", "example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 
-const page = session.query(person).pageBy(person, {
+const page = await session.query(person).pageBy(person, {
   limit: 25n,
   orderBy: [person.field(Person.name).asc()],
   includeTotal: true,
 });
 ```
 
-Variables, generated field and role tokens, predicates, orders, and queries
-retain opaque native handles. The same immutable `Query` supports exact or
+The session runs on a direct `RustDatabase` or transaction, or on a proxy
+connection, with the same queries and results. Composition is synchronous;
+every terminal returns a `Promise`. Variables, generated field and role tokens,
+predicates, orders, and queries retain opaque native handles. The same immutable `Query` supports exact or
 subtype matching, 1–16 selected models, hidden graph witnesses,
 named/collected pages, distinct-root counts, and existence checks. Constructors
 and subtype closures come only from the installed generated projection. See the
@@ -132,34 +136,34 @@ for the complete contract and transaction rules.
 The `./query-v2` subpath exposes `QueryPlanBuilder`,
 `AuthoredQueryPlan`, and `AuthoredQueryInvocation`. Every operation delegates
 to the shared Rust builder through opaque native handles; Node never assembles
-mutable plan JSON or owns a second validator. Generated query packages also
-provide `RemoteQuerySession`, whose composition is synchronous and whose
-awaited terminal performs exactly one caller-owned exchange. Its verified
-authority is embedded in the generated package:
+mutable plan JSON or owns a second validator.
+
+A generated session reaches a TypeBridge server through a proxy connection
+passed to the same `QuerySession`. Each awaited terminal performs exactly one
+exchange, and the verified authority is embedded in the generated package:
 
 ```ts
-import { Person, RemoteQuerySession } from "./generated/app-models/index.js";
+import {
+  ExchangeConnection,
+  Person,
+  QuerySession,
+  connectProxy,
+} from "./generated/app-models/index.js";
 
-const remote = new RemoteQuerySession(
-  advertisementBytes,
-  exchange,
-  {
-    maxItems: 100n,
-    maxBytes: 8_388_608n,
-    maxCollectionMembers: 1_000n,
-    maxGraphNodes: 1_000n,
-    maxAttributeValues: 1_000n,
-    maxRolePlayers: 1_000n,
-    deadlineMs: 30_000n,
-  },
-);
+// The built-in HTTP route; `headers`, `tls`, and `advertisement` are options.
+const remote = new QuerySession(await connectProxy("https://typebridge.example"));
+
+// Or a host-owned exchange: one request in, the exact reply bytes out.
+const hosted = new QuerySession(new ExchangeConnection(advertisementBytes, exchange));
+
 const person = remote.exact(Person);
 const rows = await remote.query(person).rows({ limit: 50n });
 ```
 
-Normal generated sessions accept advertisement bytes, a caller-owned exchange,
-and limits. They never read a schema-authority file or accept a low-level
-`QueryV2Authority` argument.
+Generated sessions never read a schema-authority file or accept a low-level
+`QueryV2Authority` argument. The generated package also re-exports
+`ProxyConnection`, `ProxyConnectionOptions`, and `ProxyTlsMode` from
+`@type-bridge/node/runtime-projection`.
 
 The package root retains a lower-level prepared-plan execution boundary for
 integrators that already own independently verified authority. It is not part
@@ -167,8 +171,8 @@ of the generated-model workflow and does not replace `schema generate`; see
 [Low-level Query V2 plans](https://github.com/ds1sqe/type-bridge/blob/master/docs/guide/typed-queries.md#low-level-query-v2-plans)
 for its separation rules.
 
-`maxBytes` limits the complete signed wire size of a successful typed response.
-Authenticated structured failures instead use the protocol hard ceiling, so a
+`QueryV2RemoteLimits.maxBytes` limits the complete signed wire size of a
+successful typed response. Authenticated structured failures instead use the protocol hard ceiling, so a
 zero or otherwise tiny success budget can still return the bound diagnostic
 explaining why no success could fit.
 
@@ -204,6 +208,12 @@ migration-control singleton to be free.
 Low-level callers must obtain `trustedDeclaredSchemaBytes` through an explicit
 trust boundary. Canonical JSON is an internal codec, not a user-maintained
 schema source; generated applications use the embedded authority instead.
+
+An authored plan and a generated model query travel in the same remote
+envelope (`typebridge.query-remote-request/v2`); the executor must advertise
+`query.plan.v2`, `query.remote.envelope-v2`, and
+`query.remote.structured-diagnostic`, and a remote failure carries its
+complete structured diagnostic.
 
 Each pending request accepts exactly one reply. A second `decodeReply` call is
 rejected before parsing the supplied bytes, including when the first reply was

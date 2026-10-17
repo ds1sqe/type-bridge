@@ -28,16 +28,13 @@ use super::ids::{
     BindingId, BoundFieldId, DescriptorId, RequestToken, ResultShapeId, RoleEdgeId,
     SchemaFingerprint,
 };
-use super::limits::{
-    CANONICAL_STRUCTURAL_LIMITS, MAX_ALLOWED_CROSS_JOINS, MAX_BINDINGS, MAX_BOOLEAN_TERMS,
-    MAX_COLLECTION_ORDER_TERMS, MAX_ORDER_TERMS, MAX_OUTPUT_NAME_BYTES, MAX_PREDICATE_DEPTH,
-    MAX_PREDICATE_NODES, MAX_SELECTED_SLOTS, MAX_SEMANTIC_ID_BYTES,
-};
+use super::limits::StructuralLimits;
 use super::model::{
     ComparisonOp, FetchShape, FetchSlot, MatchExpr, MatchFunctionArgument, MatchFunctionCall,
     MatchMode, MatchOperation, MatchOrder, MatchRequest, MatchRequestVersion, MatchScalarOperand,
     RowCardinality, SortDirection, ThingKind,
 };
+use type_bridge_contract::limits::QueryLimits;
 
 static NEXT_REQUEST_TOKEN: AtomicU64 = AtomicU64::new(1);
 
@@ -106,9 +103,16 @@ pub struct ValidatedMatchRequest {
     stable_order: StableOrderSpec,
     collection_orders: BTreeMap<BindingId, StableOrderSpec>,
     required_capabilities: CapabilitySet,
+    limits: QueryLimits,
 }
 
 impl ValidatedMatchRequest {
+    /// Return the limits this request was validated under.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
+    }
+
     /// Return the immutable canonical request.
     pub fn request(&self) -> &MatchRequest {
         &self.request
@@ -211,7 +215,21 @@ pub fn validate_match_request(
     registry: &DescriptorRegistry,
     request: MatchRequest,
 ) -> Result<ValidatedMatchRequest, MatchError> {
-    validate_version_and_structure(&request)?;
+    validate_match_request_with_limits(registry, request, QueryLimits::CANONICAL)
+}
+
+/// Validate one request under a session's own limits.
+///
+/// The validated request keeps `query_limits`; adaptation, encoding, and
+/// execution read them from it, so every later stage applies the limits
+/// validation ran under.
+pub fn validate_match_request_with_limits(
+    registry: &DescriptorRegistry,
+    request: MatchRequest,
+    query_limits: QueryLimits,
+) -> Result<ValidatedMatchRequest, MatchError> {
+    let limits = query_limits.structural;
+    validate_version_and_structure(limits, &request)?;
     let bindings = resolve_bindings(registry, &request)?;
     validate_expression(registry, &request, &bindings)?;
     validate_topology(&request)?;
@@ -228,10 +246,14 @@ pub fn validate_match_request(
         stable_order,
         collection_orders,
         required_capabilities,
+        limits: query_limits,
     })
 }
 
-fn validate_version_and_structure(request: &MatchRequest) -> Result<(), MatchError> {
+fn validate_version_and_structure(
+    limits: StructuralLimits,
+    request: &MatchRequest,
+) -> Result<(), MatchError> {
     if request.version != MatchRequestVersion::V1 {
         return Err(invalid(
             "unsupported_request_version",
@@ -253,13 +275,13 @@ fn validate_version_and_structure(request: &MatchRequest) -> Result<(), MatchErr
     check_limit(
         "bindings",
         binding_count,
-        MAX_BINDINGS,
+        limits.bindings,
         MatchErrorPathSegment::Plan,
     )?;
     check_limit(
         "allowed_cross_joins",
         request.plan.allowed_cross_joins.len(),
-        MAX_ALLOWED_CROSS_JOINS,
+        limits.allowed_cross_joins,
         MatchErrorPathSegment::Plan,
     )?;
 
@@ -279,7 +301,7 @@ fn validate_version_and_structure(request: &MatchRequest) -> Result<(), MatchErr
             .with_detail("expected", u64::from(expected))
             .with_detail("actual", u64::from(binding.id.get())));
         }
-        validate_semantic_id("descriptor", binding.descriptor.as_str())?;
+        validate_semantic_id(limits, "descriptor", binding.descriptor.as_str())?;
     }
 
     for pair in &request.plan.allowed_cross_joins {
@@ -296,17 +318,17 @@ fn validate_version_and_structure(request: &MatchRequest) -> Result<(), MatchErr
 
     if let Some(predicate) = &request.plan.predicate {
         let mut stats = PredicateStats::default();
-        inspect_predicate_structure(predicate, 1, true, &mut stats)?;
+        inspect_predicate_structure(limits, predicate, 1, true, &mut stats)?;
         check_limit(
             "predicate_nodes",
             stats.nodes,
-            MAX_PREDICATE_NODES,
+            limits.predicate_nodes,
             MatchErrorPathSegment::Predicate,
         )?;
         check_limit(
             "predicate_depth",
             stats.max_depth,
-            MAX_PREDICATE_DEPTH,
+            limits.predicate_depth,
             MatchErrorPathSegment::Predicate,
         )?;
         let expected: Vec<_> = (0..stats.role_edge_ids.len())
@@ -321,7 +343,7 @@ fn validate_version_and_structure(request: &MatchRequest) -> Result<(), MatchErr
         }
     }
 
-    validate_operation_structure(request)?;
+    validate_operation_structure(limits, request)?;
     Ok(())
 }
 
@@ -334,6 +356,7 @@ struct PredicateStats {
 }
 
 fn inspect_predicate_structure(
+    limits: StructuralLimits,
     expression: &MatchExpr,
     depth: usize,
     reachable_allowed: bool,
@@ -341,7 +364,7 @@ fn inspect_predicate_structure(
 ) -> Result<(), MatchError> {
     stats.nodes = stats.nodes.saturating_add(1);
     stats.max_depth = stats.max_depth.max(depth);
-    if stats.nodes > MAX_PREDICATE_NODES || depth > MAX_PREDICATE_DEPTH {
+    if stats.nodes > limits.predicate_nodes || depth > limits.predicate_depth {
         return Err(resource(
             "predicate_limit_exceeded",
             "predicate tree exceeds canonical size or depth limits",
@@ -357,15 +380,15 @@ fn inspect_predicate_structure(
                 );
             }
             stats.role_edge_ids.push(*id);
-            validate_qualified_member("role", role.owner.as_str(), &role.name)?;
+            validate_qualified_member(limits, "role", role.owner.as_str(), &role.name)?;
         }
         MatchExpr::FieldValue { field, value, .. } => {
-            validate_bound_field_id(field)?;
+            validate_bound_field_id(limits, field)?;
             validate_safe_value(value)?;
         }
         MatchExpr::FieldComparison { left, right, .. } => {
-            validate_bound_field_id(left)?;
-            validate_bound_field_id(right)?;
+            validate_bound_field_id(limits, left)?;
+            validate_bound_field_id(limits, right)?;
         }
         MatchExpr::ScalarComparison { left, right, .. } => {
             if !reachable_allowed {
@@ -375,10 +398,10 @@ fn inspect_predicate_structure(
                 )
                 .at(MatchErrorPathSegment::Predicate));
             }
-            inspect_scalar_operand_structure(left, depth, stats)?;
-            inspect_scalar_operand_structure(right, depth, stats)?;
+            inspect_scalar_operand_structure(limits, left, depth, stats)?;
+            inspect_scalar_operand_structure(limits, right, depth, stats)?;
         }
-        MatchExpr::FieldPresence { field, .. } => validate_bound_field_id(field)?,
+        MatchExpr::FieldPresence { field, .. } => validate_bound_field_id(limits, field)?,
         MatchExpr::BindingIid { iid, .. } => {
             if !is_canonical_thing_iid(iid) {
                 return Err(invalid(
@@ -403,9 +426,9 @@ fn inspect_predicate_structure(
                 )
                 .at(MatchErrorPathSegment::Predicate));
             }
-            validate_semantic_id("relation descriptor", relation.as_str())?;
-            validate_qualified_member("role", role_from.owner.as_str(), &role_from.name)?;
-            validate_qualified_member("role", role_to.owner.as_str(), &role_to.name)?;
+            validate_semantic_id(limits, "relation descriptor", relation.as_str())?;
+            validate_qualified_member(limits, "role", role_from.owner.as_str(), &role_from.name)?;
+            validate_qualified_member(limits, "role", role_to.owner.as_str(), &role_to.name)?;
             if min_depth > max_depth {
                 return Err(invalid(
                     "reachable_bounds",
@@ -413,7 +436,7 @@ fn inspect_predicate_structure(
                 )
                 .at(MatchErrorPathSegment::Predicate));
             }
-            if usize::from(*max_depth) > MAX_PREDICATE_DEPTH {
+            if usize::from(*max_depth) > limits.predicate_depth {
                 return Err(resource(
                     "reachable_depth_limit",
                     "reachability maximum depth exceeds the canonical predicate-depth ceiling",
@@ -429,7 +452,7 @@ fn inspect_predicate_structure(
             };
             let expanded = expanded_hops.saturating_add(usize::from(*min_depth == 0));
             stats.nodes = stats.nodes.saturating_add(expanded.saturating_sub(1));
-            if stats.nodes > MAX_PREDICATE_NODES {
+            if stats.nodes > limits.predicate_nodes {
                 return Err(resource(
                     "reachable_expansion_limit",
                     "reachability expansion exceeds the canonical predicate-node ceiling",
@@ -448,11 +471,11 @@ fn inspect_predicate_structure(
             check_limit(
                 "boolean_terms",
                 expressions.len(),
-                MAX_BOOLEAN_TERMS,
+                limits.boolean_terms,
                 MatchErrorPathSegment::Predicate,
             )?;
             for child in expressions {
-                inspect_predicate_structure(child, depth + 1, reachable_allowed, stats)?;
+                inspect_predicate_structure(limits, child, depth + 1, reachable_allowed, stats)?;
             }
         }
         MatchExpr::Or { expressions } => {
@@ -466,43 +489,45 @@ fn inspect_predicate_structure(
             check_limit(
                 "boolean_terms",
                 expressions.len(),
-                MAX_BOOLEAN_TERMS,
+                limits.boolean_terms,
                 MatchErrorPathSegment::Predicate,
             )?;
             for child in expressions {
-                inspect_predicate_structure(child, depth + 1, false, stats)?;
+                inspect_predicate_structure(limits, child, depth + 1, false, stats)?;
             }
         }
         MatchExpr::Not { expression } => {
-            inspect_predicate_structure(expression, depth + 1, false, stats)?
+            inspect_predicate_structure(limits, expression, depth + 1, false, stats)?
         }
     }
     Ok(())
 }
 
 fn inspect_scalar_operand_structure(
+    limits: StructuralLimits,
     operand: &MatchScalarOperand,
     depth: usize,
     stats: &mut PredicateStats,
 ) -> Result<(), MatchError> {
     match operand {
-        MatchScalarOperand::Field { field } => validate_bound_field_id(field),
+        MatchScalarOperand::Field { field } => validate_bound_field_id(limits, field),
         MatchScalarOperand::Value { .. } => Ok(()),
         MatchScalarOperand::Function { call } => {
-            inspect_function_call_structure(call, depth, stats)
+            inspect_function_call_structure(limits, call, depth, stats)
         }
     }
 }
 
 fn inspect_function_call_structure(
+    limits: StructuralLimits,
     call: &MatchFunctionCall,
     depth: usize,
     stats: &mut PredicateStats,
 ) -> Result<(), MatchError> {
-    validate_semantic_id("function", call.function.label().as_str())?;
+    validate_semantic_id(limits, "function", call.function.label().as_str())?;
     stats.nodes = stats.nodes.saturating_add(1);
     stats.max_depth = stats.max_depth.max(depth.saturating_add(1));
-    if stats.nodes > MAX_PREDICATE_NODES || depth >= MAX_PREDICATE_DEPTH {
+    if stats.nodes > limits.predicate_nodes || depth >= limits.predicate_depth {
         return Err(resource(
             "function_call_limit_exceeded",
             "schema-function call graph exceeds canonical size or depth limits",
@@ -512,7 +537,7 @@ fn inspect_function_call_structure(
     check_limit(
         "function_arguments",
         call.arguments.len(),
-        MAX_BOOLEAN_TERMS,
+        limits.boolean_terms,
         MatchErrorPathSegment::Predicate,
     )?;
     for argument in &call.arguments {
@@ -522,14 +547,17 @@ fn inspect_function_call_structure(
                 stats.nodes = stats.nodes.saturating_add(1);
             }
             MatchFunctionArgument::Call { call } => {
-                inspect_function_call_structure(call, depth.saturating_add(1), stats)?;
+                inspect_function_call_structure(limits, call, depth.saturating_add(1), stats)?;
             }
         }
     }
     Ok(())
 }
 
-fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError> {
+fn validate_operation_structure(
+    limits: StructuralLimits,
+    request: &MatchRequest,
+) -> Result<(), MatchError> {
     let (output, order, window) = match &request.operation {
         MatchOperation::FetchRows {
             output,
@@ -543,6 +571,14 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
                 return Err(invalid(
                     "invalid_exactly_one_window",
                     "exactly-one fetches require offset zero and limit one",
+                )
+                .at(MatchErrorPathSegment::Operation));
+            }
+            if *cardinality == RowCardinality::Complete && (window.offset != 0 || !order.is_empty())
+            {
+                return Err(invalid(
+                    "invalid_complete_rows",
+                    "complete fetches require offset zero and no row order",
                 )
                 .at(MatchErrorPathSegment::Operation));
             }
@@ -574,7 +610,7 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
                     .at(MatchErrorPathSegment::Operation));
                 }
             }
-            validate_reducer_structure(reducers)?;
+            validate_reducer_structure(limits, reducers)?;
             (None, None, None)
         }
         MatchOperation::ReduceByField {
@@ -583,8 +619,8 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
             reducers,
         } => {
             require_binding(request, *root)?;
-            validate_bound_field_id(group)?;
-            validate_reducer_structure(reducers)?;
+            validate_bound_field_id(limits, group)?;
+            validate_reducer_structure(limits, reducers)?;
             (None, None, None)
         }
         MatchOperation::ReduceByFields {
@@ -600,18 +636,10 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
                 )
                 .at(MatchErrorPathSegment::Operation));
             }
-            if groups.len() > MAX_SELECTED_SLOTS {
-                return Err(invalid(
-                    "field_group_tuple_cap_exceeded",
-                    "tuple-field reductions exceed the canonical sixteen-field ceiling",
-                )
-                .at(MatchErrorPathSegment::Operation)
-                .with_detail("actual", usize_detail(groups.len()))
-                .with_detail("maximum", usize_detail(MAX_SELECTED_SLOTS)));
-            }
+            validate_field_group_count(limits, groups.len())?;
             let mut unique = BTreeSet::new();
             for group in groups {
-                validate_bound_field_id(group)?;
+                validate_bound_field_id(limits, group)?;
                 if !unique.insert(group) {
                     return Err(invalid(
                         "duplicate_field_group",
@@ -620,7 +648,7 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
                     .at(MatchErrorPathSegment::Field(group.field.clone())));
                 }
             }
-            validate_reducer_structure(reducers)?;
+            validate_reducer_structure(limits, reducers)?;
             (None, None, None)
         }
     };
@@ -641,9 +669,9 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
         })?;
     }
     if let Some(order) = order {
-        validate_public_order_term_count(order.len())?;
+        validate_order_term_count(order.len(), limits)?;
         for term in order {
-            validate_bound_field_id(&term.field)?;
+            validate_bound_field_id(limits, &term.field)?;
         }
     }
     if let Some(output) = output {
@@ -655,15 +683,7 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
             )
             .at(MatchErrorPathSegment::Output));
         }
-        if count > MAX_SELECTED_SLOTS {
-            return Err(invalid(
-                "selection_cap_exceeded",
-                "fetch output exceeds the canonical sixteen-slot ceiling",
-            )
-            .at(MatchErrorPathSegment::Output)
-            .with_detail("actual", usize_detail(count))
-            .with_detail("maximum", usize_detail(MAX_SELECTED_SLOTS)));
-        }
+        validate_selection_count(limits, count)?;
         let mut selected = BTreeSet::new();
         output.for_each_slot(|slot| {
             selected.insert(slot.binding());
@@ -688,11 +708,11 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
                 check_limit(
                     "collection_order_terms",
                     order.len(),
-                    MAX_COLLECTION_ORDER_TERMS,
+                    limits.collection_order_terms,
                     MatchErrorPathSegment::OutputSlot(index),
                 )?;
                 for term in order {
-                    validate_bound_field_id(&term.field)?;
+                    validate_bound_field_id(limits, &term.field)?;
                 }
             }
         }
@@ -700,7 +720,7 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
             let mut names = BTreeSet::new();
             for (index, named) in slots.iter().enumerate() {
                 if named.name.is_empty()
-                    || named.name.len() > MAX_OUTPUT_NAME_BYTES
+                    || named.name.len() > limits.output_name_bytes
                     || named.name.chars().any(char::is_control)
                 {
                     return Err(invalid(
@@ -722,23 +742,11 @@ fn validate_operation_structure(request: &MatchRequest) -> Result<(), MatchError
     Ok(())
 }
 
-fn validate_reducer_structure(reducers: &[super::model::ReduceTerm]) -> Result<(), MatchError> {
-    if reducers.is_empty() {
-        return Err(invalid(
-            "empty_reducers",
-            "typed reductions require at least one reducer term",
-        )
-        .at(MatchErrorPathSegment::Operation));
-    }
-    if reducers.len() > MAX_SELECTED_SLOTS {
-        return Err(invalid(
-            "reducer_cap_exceeded",
-            "typed reductions exceed the canonical sixteen-slot ceiling",
-        )
-        .at(MatchErrorPathSegment::Operation)
-        .with_detail("actual", usize_detail(reducers.len()))
-        .with_detail("maximum", usize_detail(MAX_SELECTED_SLOTS)));
-    }
+fn validate_reducer_structure(
+    limits: StructuralLimits,
+    reducers: &[super::model::ReduceTerm],
+) -> Result<(), MatchError> {
+    validate_reducer_count(limits, reducers.len())?;
     for term in reducers {
         match (&term.input, term.reduction.requires_input()) {
             (Some(_), false) => {
@@ -748,7 +756,7 @@ fn validate_reducer_structure(reducers: &[super::model::ReduceTerm]) -> Result<(
                 )
                 .at(MatchErrorPathSegment::Operation));
             }
-            (Some(field), true) => validate_bound_field_id(field)?,
+            (Some(field), true) => validate_bound_field_id(limits, field)?,
             (None, true) => {
                 return Err(invalid(
                     "reduce_input_required",
@@ -888,7 +896,7 @@ fn validate_expr_node(
                 )
                 .at(MatchErrorPathSegment::Predicate));
             }
-            validate_operator(*operator, value_type_from_tag(left_type), true)
+            validate_operator(*operator, ValueType::from(left_type), true)
                 .map_err(|error| error.at(MatchErrorPathSegment::Predicate))?;
         }
         MatchExpr::FieldPresence { field, .. } => {
@@ -1087,7 +1095,7 @@ fn validate_scalar_operand(
     bindings: &BTreeMap<BindingId, TypeDescriptorRef>,
 ) -> Result<ValueTypeTag, MatchError> {
     match operand {
-        MatchScalarOperand::Field { field } => Ok(value_type_tag(
+        MatchScalarOperand::Field { field } => Ok(ValueTypeTag::from(
             resolve_bound_field(registry, field, bindings)?.value_type,
         )),
         MatchScalarOperand::Value { value } => Ok(value.value_type()),
@@ -1188,34 +1196,6 @@ fn descriptor_id_from_type(id: &TypeId) -> Option<DescriptorId> {
         TypeKind::Attribute | TypeKind::Struct => return None,
     };
     Some(DescriptorId::new(format!("{prefix}:{}", id.label())))
-}
-
-const fn value_type_tag(value: ValueType) -> ValueTypeTag {
-    match value {
-        ValueType::String => ValueTypeTag::String,
-        ValueType::Long => ValueTypeTag::Long,
-        ValueType::Double => ValueTypeTag::Double,
-        ValueType::Boolean => ValueTypeTag::Boolean,
-        ValueType::Date => ValueTypeTag::Date,
-        ValueType::DateTime => ValueTypeTag::DateTime,
-        ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
-        ValueType::Decimal => ValueTypeTag::Decimal,
-        ValueType::Duration => ValueTypeTag::Duration,
-    }
-}
-
-const fn value_type_from_tag(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
-    }
 }
 
 fn validate_or_exports(expression: &MatchExpr) -> Result<BTreeSet<BindingId>, MatchError> {
@@ -1415,13 +1395,15 @@ fn validate_operation(
             }
             let selected: BTreeSet<_> = output_slots(output).map(FetchSlot::binding).collect();
             validate_order_scope(registry, order, bindings, &selected, "selected")?;
-            if *cardinality == RowCardinality::ExactlyOne {
-                Ok((StableOrderSpec::default(), BTreeMap::new()))
-            } else {
+            // Only a window that cuts rows off needs a total order to say
+            // which rows it keeps.
+            if *cardinality == RowCardinality::BoundedMany {
                 Ok((
                     derive_stable_order(registry, order, bindings, selected.iter().copied())?,
                     BTreeMap::new(),
                 ))
+            } else {
+                Ok((StableOrderSpec::default(), BTreeMap::new()))
             }
         }
         MatchOperation::PageBy {
@@ -2027,23 +2009,32 @@ pub(super) const fn request_token_for_test(bytes: [u8; 16]) -> RequestToken {
     RequestToken::issue(bytes, RequestTokenIssuanceSeal(()))
 }
 
-fn validate_bound_field_id(field: &BoundFieldId) -> Result<(), MatchError> {
-    validate_qualified_member("field", field.field.owner.as_str(), &field.field.name)
+fn validate_bound_field_id(
+    limits: StructuralLimits,
+    field: &BoundFieldId,
+) -> Result<(), MatchError> {
+    validate_qualified_member(
+        limits,
+        "field",
+        field.field.owner.as_str(),
+        &field.field.name,
+    )
 }
 
 fn validate_qualified_member(
+    limits: StructuralLimits,
     label: &'static str,
     owner: &str,
     member: &str,
 ) -> Result<(), MatchError> {
-    validate_semantic_id("member_owner", owner)?;
-    validate_semantic_id(label, member)?;
+    validate_semantic_id(limits, "member_owner", owner)?;
+    validate_semantic_id(limits, label, member)?;
     let actual = owner
         .len()
         .checked_add(1)
         .and_then(|length| length.checked_add(member.len()))
         .unwrap_or(usize::MAX);
-    if actual > MAX_SEMANTIC_ID_BYTES {
+    if actual > limits.semantic_id_bytes {
         return Err(invalid(
             "invalid_semantic_id",
             "qualified semantic identity exceeds the canonical byte ceiling",
@@ -2054,9 +2045,13 @@ fn validate_qualified_member(
     Ok(())
 }
 
-fn validate_semantic_id(label: &'static str, value: &str) -> Result<(), MatchError> {
+fn validate_semantic_id(
+    limits: StructuralLimits,
+    label: &'static str,
+    value: &str,
+) -> Result<(), MatchError> {
     if value.is_empty()
-        || value.len() > MAX_SEMANTIC_ID_BYTES
+        || value.len() > limits.semantic_id_bytes
         || value.chars().any(char::is_control)
     {
         return Err(invalid(
@@ -2107,10 +2102,18 @@ fn canonical_edge(left: BindingId, right: BindingId) -> (BindingId, BindingId) {
 /// Request validation calls the same preflight so raw FFI callers and
 /// already-materialized requests receive one stable structured diagnostic.
 pub fn validate_public_order_term_count(actual: usize) -> Result<(), MatchError> {
+    validate_order_term_count(actual, StructuralLimits::CANONICAL)
+}
+
+/// [`validate_public_order_term_count`] under one session's limits.
+pub fn validate_order_term_count(
+    actual: usize,
+    limits: StructuralLimits,
+) -> Result<(), MatchError> {
     check_limit(
         "order_terms",
         actual,
-        MAX_ORDER_TERMS,
+        limits.order_terms,
         MatchErrorPathSegment::Operation,
     )
 }
@@ -2121,12 +2124,92 @@ pub fn validate_public_order_term_count(actual: usize) -> Result<(), MatchError>
 /// Function calls are predicate nodes, so they share the canonical boolean
 /// term ceiling across every generated binding and the neutral request form.
 pub fn validate_public_function_argument_count(actual: usize) -> Result<(), MatchError> {
+    validate_function_argument_count(actual, StructuralLimits::CANONICAL)
+}
+
+/// [`validate_public_function_argument_count`] under one session's limits.
+pub fn validate_function_argument_count(
+    actual: usize,
+    limits: StructuralLimits,
+) -> Result<(), MatchError> {
     check_limit(
         "function_arguments",
         actual,
-        MAX_BOOLEAN_TERMS,
+        limits.boolean_terms,
         MatchErrorPathSegment::Predicate,
     )
+}
+
+/// Refuse an output shape wider than the session's `selected_slots`.
+///
+/// Handle composition and request validation both call this, so a shape is
+/// refused with one diagnostic whichever stage sees it first.
+pub fn validate_selection_count(limits: StructuralLimits, count: usize) -> Result<(), MatchError> {
+    selected_slot_cap(
+        limits,
+        count,
+        "selection_cap_exceeded",
+        "fetch output exceeds the selected-slot ceiling",
+        MatchErrorPathSegment::Output,
+    )
+}
+
+/// Refuse more reduction group fields than the session's `selected_slots`.
+///
+/// The group-by composition call and request validation share this check.
+pub fn validate_field_group_count(
+    limits: StructuralLimits,
+    count: usize,
+) -> Result<(), MatchError> {
+    selected_slot_cap(
+        limits,
+        count,
+        "field_group_tuple_cap_exceeded",
+        "tuple-field reductions exceed the selected-slot ceiling",
+        MatchErrorPathSegment::Operation,
+    )
+}
+
+/// Refuse an empty reducer list or more reducer terms than the session's
+/// `selected_slots`.
+///
+/// Request validation and the C terminal descriptor share this check.
+pub fn validate_reducer_count(limits: StructuralLimits, count: usize) -> Result<(), MatchError> {
+    if count == 0 {
+        return Err(invalid(
+            "empty_reducers",
+            "typed reductions require at least one reducer term",
+        )
+        .at(MatchErrorPathSegment::Operation));
+    }
+    selected_slot_cap(
+        limits,
+        count,
+        "reducer_cap_exceeded",
+        "typed reductions exceed the selected-slot ceiling",
+        MatchErrorPathSegment::Operation,
+    )
+}
+
+fn selected_slot_cap(
+    limits: StructuralLimits,
+    count: usize,
+    code: &'static str,
+    message: &'static str,
+    path: MatchErrorPathSegment,
+) -> Result<(), MatchError> {
+    if count <= limits.selected_slots {
+        return Ok(());
+    }
+    Err(invalid(code, message)
+        .at(path)
+        .with_detail("actual", usize_detail(count))
+        .with_detail("maximum", usize_detail(limits.selected_slots))
+        .with_detail("limit", "selected_slots")
+        .with_detail(
+            "source",
+            limit_source("selected_slots", limits.selected_slots),
+        ))
 }
 
 fn check_limit(
@@ -2145,7 +2228,23 @@ fn check_limit(
     .with_path(MatchErrorPath::from_segments([path]))
     .with_detail("limit", label)
     .with_detail("actual", usize_detail(actual))
-    .with_detail("maximum", usize_detail(maximum)))
+    .with_detail("maximum", usize_detail(maximum))
+    .with_detail("source", limit_source(label, maximum)))
+}
+
+/// Report whether a refused limit still has its released default value.
+fn limit_source(label: &str, maximum: usize) -> &'static str {
+    // Schema-function arity shares the boolean-term ceiling.
+    let name = if label == "function_arguments" {
+        "boolean_terms"
+    } else {
+        label
+    };
+    if QueryLimits::CANONICAL.get(name) == Some(maximum) {
+        type_bridge_contract::limits::LIMIT_SOURCE_DEFAULT
+    } else {
+        type_bridge_contract::limits::LIMIT_SOURCE_CONFIGURED
+    }
 }
 
 fn invalid(code: &'static str, message: &'static str) -> MatchError {
@@ -2168,13 +2267,6 @@ fn usize_detail(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-#[allow(dead_code)]
-const _: () = {
-    // Keep the struct-level canonical limits auditable alongside the constants
-    // used above; a mismatch is a compile-time failure.
-    assert!(CANONICAL_STRUCTURAL_LIMITS.selected_slots == MAX_SELECTED_SLOTS);
-};
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -2192,8 +2284,9 @@ mod tests {
 
     #[test]
     fn public_order_preflight_matches_request_validation_ceiling() {
-        validate_public_order_term_count(MAX_ORDER_TERMS).expect("canonical maximum");
-        let error = validate_public_order_term_count(MAX_ORDER_TERMS + 1)
+        validate_public_order_term_count(StructuralLimits::CANONICAL.order_terms)
+            .expect("canonical maximum");
+        let error = validate_public_order_term_count(StructuralLimits::CANONICAL.order_terms + 1)
             .expect_err("first excess term must fail before FFI materialization");
         assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
         assert_eq!(error.code().as_str(), "structural_limit_exceeded");

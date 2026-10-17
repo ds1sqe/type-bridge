@@ -1,4 +1,10 @@
 import { loadNative } from "./native.js";
+import type { QueryLimits } from "./runtime-projection.js";
+import type { NativeStagedTransaction } from "./native.js";
+import {
+  StagedTransaction,
+  type StagedTransactionKind,
+} from "./staged-transaction.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
@@ -15,6 +21,7 @@ import {
 
 export { QueryV2Error } from "./query-v2-internals.js";
 export type {
+  ProviderFailure,
   QueryV2ErrorCategory,
   QueryV2ErrorDetail,
   QueryV2ErrorPathSegment,
@@ -217,6 +224,7 @@ export interface NativeRustDatabase {
   planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+  stagedTransaction(kind?: string): NativeStagedTransaction;
 }
 
 export interface NativeManagedDatabaseDeletionPlan {
@@ -722,6 +730,25 @@ export class QueryV2Authority {
     );
   }
 
+  /**
+   * Derive an authority over the same schema whose plans are authored,
+   * decoded, and validated under `queryLimits`.
+   */
+  withQueryLimits(queryLimits: QueryLimits): QueryV2Authority {
+    const native = queryV2AuthorityHandle(this);
+    if (native === undefined) {
+      throw new TypeError("query authority is not installed by this package");
+    }
+    const authority = Object.create(
+      QueryV2Authority.prototype,
+    ) as QueryV2Authority;
+    registerQueryV2AuthorityHandle(
+      authority,
+      queryV2NativeCall(() => native.withQueryLimits(queryLimits.nativeHandle())),
+    );
+    return authority;
+  }
+
   static queryOnly(
     database: RustDatabase,
     declaredSchema: Uint8Array,
@@ -930,6 +957,17 @@ export class RustDatabase {
       this.#native.transaction(transactionType),
     );
   }
+
+  /**
+   * Create a deferred staged transaction; nothing opens until commit. An
+   * omitted kind is inferred from the staged writes. Stage plans from
+   * `PlanBuilder`; TypeScript never commits implicitly.
+   */
+  stagedTransaction(kind?: StagedTransactionKind): StagedTransaction {
+    return new StagedTransaction(
+      queryV2NativeCall(() => this.#native.stagedTransaction(kind)),
+    );
+  }
 }
 
 export class ManagedDatabaseDeletionPlan {
@@ -986,13 +1024,14 @@ export class RustTransactionContext {
   }
 
   query(query: string): unknown[] {
-    return parseJson(this.#native.queryJson(query));
+    return queryV2NativeCall(() => parseJson(this.#native.queryJson(query)));
   }
 
   commit(): void {
-    this.#native.commit();
+    queryV2NativeCall(() => this.#native.commit());
   }
 
+  /** Roll back writes and keep this transaction usable. */
   rollback(): void {
     this.#native.rollback();
   }
@@ -1055,3 +1094,27 @@ function validateConnectionTransport(
     }
   }
 }
+
+export {
+  PendingPlanAnswer,
+  StagedTransaction,
+  type PlanAnswer,
+  type StagedTransactionKind,
+} from "./staged-transaction.js";
+export {
+  Plan,
+  PlanBuilder,
+  PlanCondition,
+  PlanExpr,
+  PlanInput,
+  PlanInputValue,
+  PlanNewThing,
+  PlanThing,
+  PlanValue,
+  type PlanFieldToken,
+  type PlanLiteral,
+  type PlanModelToken,
+  type PlanOperand,
+  type PlanRoleToken,
+  type PlanValueType,
+} from "./plan.js";

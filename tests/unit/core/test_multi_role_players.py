@@ -56,8 +56,8 @@ def test_schema_emits_multiple_plays_entries():
     pytest.importorskip("type_bridge_core")
     typeql = generate_define_block(_schema_info_for_models([Document, Email, Trace]))
 
-    assert "document plays trace:origin;" in typeql
-    assert "email plays trace:origin;" in typeql
+    assert "document, plays trace:origin;" in typeql
+    assert "email, plays trace:origin;" in typeql
 
 
 def test_role_multi_requires_two_player_types():

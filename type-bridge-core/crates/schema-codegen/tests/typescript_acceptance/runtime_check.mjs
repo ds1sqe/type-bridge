@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   closeSync,
   fstatSync,
@@ -10,7 +11,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { QueryV2Error } from "@type-bridge/node";
+import { Plan, QueryV2Error } from "@type-bridge/node";
 import { installRuntimeProjection } from "@type-bridge/node/runtime-projection";
 import { loadNative } from "../../crates/node/dist/native.js";
 
@@ -25,11 +26,17 @@ import {
   PROJECTION_FINGERPRINT_JSON,
   Person,
   PlayerStats,
+  GroupedQuery,
+  Query,
   QueryCancellation,
   QueryExecutionResourceLimits,
+  QueryLimits,
   QuerySession,
-  RUNTIME_PROJECTION_JSON,
+  ExchangeConnection,
+  RemoteGroupedQuery,
+  RemoteQuery,
   RemoteQuerySession,
+  RUNTIME_PROJECTION_JSON,
   Robot,
   RobotId,
   SEMANTIC_SCHEMA_FINGERPRINT_JSON,
@@ -45,6 +52,7 @@ import {
   ValDuration,
   integerInput,
   qualifyingScore,
+  schemaAuthority,
 } from "./generated_v2/dist/index.js";
 import {
   Identifier as ForeignIdentifier,
@@ -159,6 +167,29 @@ assert.equal(Person.identifier.unique, true);
 assert.equal(Person.identifier.multiplicity.cardinality.min, "1");
 assert.equal(Person.identifier.multiplicity.cardinality.max, "1");
 
+// Generated tokens and the embedded authority build staged plans: an
+// inherited field resolves to its declaring ownership, and the same program
+// gives the same bytes.
+function scorePlan() {
+  const plan = Plan.builder();
+  const person = plan.exact(Person);
+  const score = plan.field(person, Person.score);
+  const nickname = plan.field(person, Person.nickname);
+  plan.where(score.ge(1n)).where(nickname.ne("anonymous"));
+  plan.update(person, Person.score, plan.let("next_score", score.add(1n)));
+  return plan.build(schemaAuthority());
+}
+assert.equal(schemaAuthority(), schemaAuthority());
+assert.equal(scorePlan().writes(), true);
+assert.deepEqual(scorePlan().canonicalBytes(), scorePlan().canonicalBytes());
+{
+  const plan = Plan.builder();
+  const robot = plan.exact(Robot);
+  plan.update(robot, Robot.robotId, 1n);
+  // A key field is immutable; build reports it.
+  assert.throws(() => plan.build(schemaAuthority()), QueryV2Error);
+}
+
 const event = Event.create({ subject: person });
 assert.equal(event.subject, person);
 const reference = Person.reference("person-iid", { identifier });
@@ -196,7 +227,7 @@ assert.throws(
     Container.create({
       item: [eventReference, eventReference, eventReference],
     }),
-  RangeError,
+  { code: "role_cardinality_violation" },
 );
 assert.throws(() => Employment.create({ employee: event }), TypeError);
 assert.throws(
@@ -220,7 +251,7 @@ const duplicateField = captureNativeDiagnostic(() =>
     tag: [OrderedTag.create("duplicate"), OrderedTag.create("duplicate")],
   }),
 );
-assert.equal(duplicateField.sdkCategory, "invalid_input");
+assert.equal(duplicateField.sdk_category, "invalid_input");
 assert.equal(duplicateField.code, "ordered_distinct_duplicate");
 assert.deepEqual(duplicateField.details, {
   duplicate_index: { kind: "count", value: "1" },
@@ -233,7 +264,7 @@ const constrainedField = captureNativeDiagnostic(() =>
     tag: [],
   }),
 );
-assert.equal(constrainedField.sdkCategory, "invalid_input");
+assert.equal(constrainedField.sdk_category, "invalid_input");
 assert.equal(constrainedField.code, "range_constraint_violation");
 
 // Hydration remains outside this constructor-only slice; use its existing hook
@@ -252,7 +283,7 @@ const duplicateRole = captureNativeDiagnostic(() =>
     member: [identifiedOrderedPerson, identifiedOrderedPerson],
   }),
 );
-assert.equal(duplicateRole.sdkCategory, "invalid_input");
+assert.equal(duplicateRole.sdk_category, "invalid_input");
 assert.equal(duplicateRole.code, "ordered_distinct_duplicate");
 assert.equal(
   OrderedPlainActivity.create({ participant: identifiedOrderedPerson })
@@ -278,7 +309,7 @@ const foreignPackage = captureNativeDiagnostic(() =>
   OrderedMembership.create({ member: [foreignPerson] }),
 );
 assert.equal(foreignPackage.category, "integrity");
-assert.equal(foreignPackage.sdkCategory, "integrity");
+assert.equal(foreignPackage.sdk_category, "integrity");
 assert.equal(foreignPackage.code, "generated_token_package_mismatch");
 assert.equal(
   foreignPackage.message,
@@ -431,18 +462,11 @@ assert.throws(
 );
 assert.throws(
   () => new QuerySession({}),
-  /registered RustDatabase|RustTransactionContext/i,
+  /registered Rust connection/i,
 );
 assert.throws(
   () =>
-    new RemoteQuerySession({}, async () => new Uint8Array(), {
-      maxItems: 1n,
-      maxBytes: 1n,
-      maxCollectionMembers: 1n,
-      maxGraphNodes: 1n,
-      maxAttributeValues: 1n,
-      maxRolePlayers: 1n,
-    }),
+    new ExchangeConnection({}, async () => new Uint8Array()),
   /Uint8Array|advertisement/i,
 );
 
@@ -561,50 +585,56 @@ function remoteSignedReply(payload, advertisement) {
 const generatedAdvertisement = remoteAdvertisement();
 let generatedRemoteExchanges = 0;
 let generatedFailureReply;
-const generatedRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async (request) => {
-    generatedRemoteExchanges += 1;
-    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
-    assert.deepEqual(
-      Buffer.from(JSON.stringify(decoded)),
-      Buffer.from(request),
-    );
-    generatedFailureReply = remoteSignedReply(
-      {
-        category: "integrity",
-        code: "remote_application_failure",
-        details: {
-          attempt: { kind: "long", value: "-7" },
-          expected: { kind: "text_list", value: ["person", "employee"] },
-          retryable: { kind: "boolean", value: false },
-          subject: { kind: "text", value: "person" },
+const generatedRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async (request) => {
+      generatedRemoteExchanges += 1;
+      const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+      assert.deepEqual(
+        Buffer.from(JSON.stringify(decoded)),
+        Buffer.from(request),
+      );
+      generatedFailureReply = remoteSignedReply(
+        {
+          category: "integrity",
+          code: "remote_application_failure",
+          details: {
+            attempt: { kind: "long", value: "-7" },
+            expected: { kind: "text_list", value: ["person", "employee"] },
+            retryable: { kind: "boolean", value: false },
+            subject: { kind: "text", value: "person" },
+          },
+          format: "typebridge.query-remote-failure/v2",
+          message: "the remote application rejected this query",
+          nonce: decoded.nonce,
+          path: [
+            { kind: "field", value: "plan" },
+            { kind: "index", value: 2 },
+            { kind: "identifier", value: "person" },
+          ],
+          request: remoteFingerprint(
+            "typebridge.query.remote-request",
+            "typebridge.query-remote-request/v2",
+            request,
+          ),
         },
-        format: "typebridge.query-remote-failure/v2",
-        message: "the remote application rejected this query",
-        nonce: decoded.nonce,
-        path: [
-          { kind: "field", value: "plan" },
-          { kind: "index", value: 2 },
-          { kind: "identifier", value: "person" },
-        ],
-        request: remoteFingerprint(
-          "typebridge.query.remote-request",
-          "typebridge.query-remote-request/v2",
-          request,
-        ),
-      },
-      generatedAdvertisement,
-    );
-    return generatedFailureReply;
-  },
+        generatedAdvertisement,
+      );
+      return generatedFailureReply;
+    },
+  ),
   {
-    maxItems: 11n,
-    maxBytes: 1n << 20n,
-    maxCollectionMembers: 12n,
-    maxGraphNodes: 13n,
-    maxAttributeValues: 14n,
-    maxRolePlayers: 15n,
+    resources: new QueryExecutionResourceLimits({
+      items: 11n,
+      bytes: 1n << 20n,
+      collectionMembers: 12n,
+      graphNodes: 13n,
+      attributeValues: 14n,
+      rolePlayers: 15n,
+      timeoutMilliseconds: 30_000n,
+      statements: 3n,
+    }),
   },
 );
 const generatedRemotePerson = generatedRemoteSession.exact(Person);
@@ -622,7 +652,10 @@ const generatedRemoteNestedCall = qualifyingScore(
 assert.ok(generatedRemoteCall.gteCall(generatedRemoteNestedCall));
 assert.throws(
   () => generatedRemoteSession.var(Person, "subtype"),
-  /match mode must be "exact" or "subtypes"/i,
+  (error) =>
+    error.code === "unknown_enum_value" &&
+    error.details.kind.value === "match_mode" &&
+    error.details.value.value === "subtype",
 );
 const native = loadNative();
 const originalPrepareRemoteRows = native.queryV2PrepareRemoteModelRows;
@@ -701,25 +734,29 @@ remoteDiagnosticObservation.claim_consumed = true;
 
 const transportCancellation = new QueryCancellation();
 let transportAbortObserved = false;
-const cancelledRemoteSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  (_request, signal) =>
-    new Promise((_resolve, reject) => {
-      signal?.addEventListener(
-        "abort",
-        () => {
-          transportAbortObserved = true;
-          reject(
-            new Error(
-              "transport abort must lose to canonical query cancellation",
-            ),
-          );
-        },
-        { once: true },
-      );
-    }),
-  new QueryExecutionResourceLimits(),
-  transportCancellation,
+const cancelledRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    (_request, signal) =>
+      new Promise((_resolve, reject) => {
+        signal?.addEventListener(
+          "abort",
+          () => {
+            transportAbortObserved = true;
+            reject(
+              new Error(
+                "transport abort must lose to canonical query cancellation",
+              ),
+            );
+          },
+          { once: true },
+        );
+      }),
+  ),
+  {
+    resources: new QueryExecutionResourceLimits(),
+    cancellation: transportCancellation,
+  },
 );
 const cancelledRemotePerson = cancelledRemoteSession.exact(Person);
 const cancelledRemoteExecution = cancelledRemoteSession
@@ -738,14 +775,18 @@ assert.equal(transportAbortObserved, true);
 const beforeExchangeCancellation = new QueryCancellation();
 beforeExchangeCancellation.cancel();
 let beforeExchangeCount = 0;
-const beforeExchangeSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async () => {
-    beforeExchangeCount += 1;
-    throw new Error("pre-cancelled remote query reached caller transport");
+const beforeExchangeSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async () => {
+      beforeExchangeCount += 1;
+      throw new Error("pre-cancelled remote query reached caller transport");
+    },
+  ),
+  {
+    resources: new QueryExecutionResourceLimits(),
+    cancellation: beforeExchangeCancellation,
   },
-  new QueryExecutionResourceLimits(),
-  beforeExchangeCancellation,
 );
 const beforeExchangePerson = beforeExchangeSession.exact(Person);
 let beforeExchangeDiagnostic;
@@ -762,45 +803,152 @@ await assert.rejects(
 assert.equal(beforeExchangeCount, 0);
 beforeExchangeSession.close();
 
+// An exchange connection given no answer limits is a proxy connection at the
+// wire defaults: a session given no resources sends the proxy defaults, not
+// the direct defaults its own `new QueryExecutionResourceLimits()` holds.
+const defaultExchangeLimits = [];
+const defaultExchangeSession = new QuerySession(
+  new ExchangeConnection(generatedAdvertisement, async (request) => {
+    defaultExchangeLimits.push(
+      JSON.parse(Buffer.from(request).toString("utf8")).limits,
+    );
+    return new TextEncoder().encode("{}");
+  }),
+);
+await assert.rejects(
+  defaultExchangeSession.query(defaultExchangeSession.exact(Person)).rows({ limit: 1n }),
+  (error) => error instanceof QueryV2Error,
+);
+defaultExchangeSession.close();
+assert.equal(defaultExchangeLimits.length, 1);
+assert.equal(BigInt(defaultExchangeLimits[0].max_items), native.DEFAULT_PROXY_QUERY_ITEMS);
+assert.equal(BigInt(defaultExchangeLimits[0].max_bytes), native.DEFAULT_PROXY_QUERY_BYTES);
+assert.equal(
+  BigInt(defaultExchangeLimits[0].max_graph_nodes),
+  native.DEFAULT_PROXY_QUERY_GRAPH_NODES,
+);
+assert.equal(new QueryExecutionResourceLimits().items, native.DEFAULT_DIRECT_QUERY_ITEMS);
+
+// The 2.2 remote-session names are deprecated aliases: the 2.2.4 TypeScript
+// guide's remote example runs unchanged and sends the same request and gets
+// the same outcome as the 2.3 spelling.
+async function remoteExampleOutcome(legacy) {
+  const sent = [];
+  const exchange = async (request) => {
+    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+    // Drop the per-request nonce and clock readings; the rest must match.
+    assert.ok(decoded.limits.deadline_ms > 0 && decoded.limits.deadline_ms <= 30_000);
+    delete decoded.nonce;
+    delete decoded.prepared_at_unix_ms;
+    delete decoded.expires_at_unix_ms;
+    delete decoded.limits.deadline_ms;
+    sent.push(decoded);
+    return new TextEncoder().encode("{}");
+  };
+  const advertisementBytes = generatedAdvertisement;
+  try {
+    if (legacy) {
+      // Verbatim from the 2.2.4 guide (docs/guide/typescript.md).
+      const remote = new RemoteQuerySession(
+        advertisementBytes,
+        exchange,
+        {
+          maxItems: 100n,
+          maxBytes: 8_388_608n,
+          maxCollectionMembers: 1_000n,
+          maxGraphNodes: 1_000n,
+          maxAttributeValues: 1_000n,
+          maxRolePlayers: 1_000n,
+          deadlineMs: 30_000n,
+        },
+      );
+      const person = remote.exact(Person);
+      const rows = await remote.query(person).rows({ limit: 50n });
+      assert.fail(`the offline exchange cannot produce rows: ${rows}`);
+    } else {
+      const remote = new QuerySession(
+        new ExchangeConnection(advertisementBytes, exchange),
+        {
+          resources: new QueryExecutionResourceLimits({
+            timeoutMilliseconds: 30_000n,
+            items: 100n,
+            bytes: 8_388_608n,
+            collectionMembers: 1_000n,
+            graphNodes: 1_000n,
+            attributeValues: 1_000n,
+            rolePlayers: 1_000n,
+          }),
+        },
+      );
+      const person = remote.exact(Person);
+      const rows = await remote.query(person).rows({ limit: 50n });
+      assert.fail(`the offline exchange cannot produce rows: ${rows}`);
+    }
+  } catch (error) {
+    assert.ok(error instanceof QueryV2Error, error);
+    assert.equal(sent.length, 1);
+    return [sent[0], error.category, error.code];
+  }
+}
+const legacyRemoteOutcome = await remoteExampleOutcome(true);
+assert.deepEqual(legacyRemoteOutcome, await remoteExampleOutcome(false));
+assert.equal(BigInt(legacyRemoteOutcome[0].limits.max_items), 100n);
+const legacyRemoteSession = new RemoteQuerySession(
+  generatedAdvertisement,
+  async () => new TextEncoder().encode("{}"),
+  new QueryExecutionResourceLimits({ items: 7n }),
+);
+assert.ok(legacyRemoteSession instanceof QuerySession);
+assert.ok(
+  legacyRemoteSession.query(legacyRemoteSession.exact(Person)) instanceof RemoteQuery,
+);
+assert.equal(RemoteQuery, Query);
+assert.equal(RemoteGroupedQuery, GroupedQuery);
+legacyRemoteSession.close();
+
 const duringDecodeCancellation = new QueryCancellation();
 let duringDecodeExchangeCount = 0;
 let serverExchangeCancelledAfterSend = false;
-const duringDecodeSession = new RemoteQuerySession(
-  generatedAdvertisement,
-  async (request, signal) => {
-    duringDecodeExchangeCount += 1;
-    let responseConstructed = false;
-    signal?.addEventListener(
-      "abort",
-      () => {
-        serverExchangeCancelledAfterSend ||= !responseConstructed;
-      },
-      { once: true },
-    );
-    const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
-    const response = remoteSignedReply(
-      {
-        category: "integrity",
-        code: "remote_application_failure",
-        details: {},
-        format: "typebridge.query-remote-failure/v2",
-        message: "provider text must be redacted",
-        nonce: decoded.nonce,
-        path: [],
-        request: remoteFingerprint(
-          "typebridge.query.remote-request",
-          "typebridge.query-remote-request/v2",
-          request,
-        ),
-      },
-      generatedAdvertisement,
-    );
-    responseConstructed = true;
-    duringDecodeCancellation.cancel();
-    return response;
+const duringDecodeSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async (request, signal) => {
+      duringDecodeExchangeCount += 1;
+      let responseConstructed = false;
+      signal?.addEventListener(
+        "abort",
+        () => {
+          serverExchangeCancelledAfterSend ||= !responseConstructed;
+        },
+        { once: true },
+      );
+      const decoded = JSON.parse(Buffer.from(request).toString("utf8"));
+      const response = remoteSignedReply(
+        {
+          category: "integrity",
+          code: "remote_application_failure",
+          details: {},
+          format: "typebridge.query-remote-failure/v2",
+          message: "provider text must be redacted",
+          nonce: decoded.nonce,
+          path: [],
+          request: remoteFingerprint(
+            "typebridge.query.remote-request",
+            "typebridge.query-remote-request/v2",
+            request,
+          ),
+        },
+        generatedAdvertisement,
+      );
+      responseConstructed = true;
+      duringDecodeCancellation.cancel();
+      return response;
+    },
+  ),
+  {
+    resources: new QueryExecutionResourceLimits(),
+    cancellation: duringDecodeCancellation,
   },
-  new QueryExecutionResourceLimits(),
-  duringDecodeCancellation,
 );
 const duringDecodePerson = duringDecodeSession.exact(Person);
 let duringDecodeDiagnostic;
@@ -833,11 +981,11 @@ const remoteCancellationObservation = {
   server_exchange_cancelled_after_send: serverExchangeCancelledAfterSend,
 };
 
-function proofSourceIdentity(root, relative) {
+function proofSourceBytes(root, relative) {
   const path = resolve(root, relative);
   const metadata = lstatSync(path);
   if (!metadata.isFile() || metadata.isSymbolicLink()) {
-    throw new Error(`sdk-v2 proof source is not a regular file: ${relative}`);
+    throw new Error(`queries proof source is not a regular file: ${relative}`);
   }
   const descriptor = openSync(path, "r");
   try {
@@ -846,16 +994,20 @@ function proofSourceIdentity(root, relative) {
     let offset = 0;
     while (offset < size) {
       const count = readSync(descriptor, bytes, offset, size - offset, offset);
-      if (count === 0) throw new Error(`sdk-v2 proof source was truncated: ${relative}`);
+      if (count === 0) throw new Error(`queries proof source was truncated: ${relative}`);
       offset += count;
     }
-    return {
-      path: relative,
-      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
-    };
+    return bytes;
   } finally {
     closeSync(descriptor);
   }
+}
+
+function proofSourceIdentity(root, relative) {
+  return {
+    path: relative,
+    sha256: crypto.createHash("sha256").update(proofSourceBytes(root, relative)).digest("hex"),
+  };
 }
 
 function canonicalProofValue(value) {
@@ -870,30 +1022,54 @@ function canonicalProofValue(value) {
   return value;
 }
 
-function emitSdkV2RemoteProofFragment() {
-  const destination = process.env.TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT;
+/**
+ * The sdk-vN profile-matrix profile a proof fragment reports:
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+function sdkProofProfile(root, suite) {
+  const paths = JSON.parse(execFileSync(
+    "python3", [resolve(root, "scripts/ci/sdk_profile_matrix.py")], { encoding: "utf8" },
+  ))[suite];
+  const read = (relative) => JSON.parse(proofSourceBytes(root, relative).toString("utf8"));
+  const profile = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE
+    || read(paths.catalog).fixture.semantic_profile;
+  const matrix = read(paths.matrix);
+  if (
+    matrix.catalog_path !== paths.catalog
+    || typeof matrix.profiles !== "object"
+    || matrix.profiles === null
+    || !Object.hasOwn(matrix.profiles, profile)
+  ) {
+    throw new Error(`${suite} has no profile-matrix entry for ${JSON.stringify(profile)}`);
+  }
+  return profile;
+}
+
+function emitSdkQueriesRemoteProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT;
   if (destination === undefined) return;
-  const runNonce = process.env.TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE;
   if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
-    throw new Error("sdk-v2 proof run nonce must be 64 lowercase hex characters");
+    throw new Error("queries proof run nonce must be 64 lowercase hex characters");
   }
   if (!isAbsolute(destination)) {
-    throw new Error("sdk-v2 proof fragment path must be absolute");
+    throw new Error("queries proof fragment path must be absolute");
   }
   const parent = lstatSync(dirname(destination));
   if (!parent.isDirectory() || parent.isSymbolicLink()) {
-    throw new Error("sdk-v2 proof fragment parent must be a regular directory");
+    throw new Error("queries proof fragment parent must be a regular directory");
   }
   const root = process.cwd();
   if (!lstatSync(resolve(root, "type-bridge-core")).isDirectory()) {
-    throw new Error("sdk-v2 proof fragment emitter requires the repository root");
+    throw new Error("queries proof fragment emitter requires the repository root");
   }
   const contractPaths = {
     proof_schema:
-      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json",
+      "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json",
     allowlist:
-      "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json",
-    journey: "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
+      "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json",
+    journey: "tests/contracts/sdk_conformance/queries/journey.json",
   };
   const producerPaths = [
     "type-bridge-core/crates/node/src/match_runtime.rs",
@@ -904,9 +1080,9 @@ function emitSdkV2RemoteProofFragment() {
     "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/runtime_check.mjs",
   ];
   const fragment = {
-    format: "typebridge.sdk-v2-proof-fragment/v1",
+    format: "typebridge.sdk-queries-proof-fragment/v1",
     binding: "node",
-    semantic_profile: "typedb-3.12.1/v1",
+    semantic_profile: sdkProofProfile(root, "queries"),
     run_nonce: runNonce,
     contract: Object.fromEntries(
       Object.entries(contractPaths).map(([name, relative]) => [
@@ -937,7 +1113,7 @@ function emitSdkV2RemoteProofFragment() {
   };
   const payload = Buffer.from(`${JSON.stringify(canonicalProofValue(fragment))}\n`);
   if (payload.length > 64 * 1024) {
-    throw new Error("sdk-v2 proof fragment exceeds 64 KiB");
+    throw new Error("queries proof fragment exceeds 64 KiB");
   }
   const descriptor = openSync(destination, "wx", 0o600);
   try {
@@ -951,21 +1127,21 @@ function emitSdkV2RemoteProofFragment() {
   }
 }
 
-emitSdkV2RemoteProofFragment();
+emitSdkQueriesRemoteProofFragment();
 
-function emitSdkV3PackageProofFragment() {
-  const destination = process.env.TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT;
+function emitSdkModelsPackageProofFragment() {
+  const destination = process.env.TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT;
   if (destination === undefined) return;
-  const runNonce = process.env.TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE;
   if (runNonce === undefined || !/^[0-9a-f]{64}$/.test(runNonce)) {
-    throw new Error("sdk-v3 proof run nonce must be 64 lowercase hex characters");
+    throw new Error("models proof run nonce must be 64 lowercase hex characters");
   }
-  if (!isAbsolute(destination)) throw new Error("sdk-v3 proof path must be absolute");
+  if (!isAbsolute(destination)) throw new Error("models proof path must be absolute");
   const root = process.cwd();
   const contractPaths = {
-    proof_schema: "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json",
-    allowlist: "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json",
-    journey: "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+    proof_schema: "tests/contracts/sdk_conformance/models/proof-fragment-schema.json",
+    allowlist: "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json",
+    journey: "tests/contracts/sdk_conformance/models/journey.json",
   };
   const producerPaths = [
     "type-bridge-core/crates/node/src/runtime_projection.rs",
@@ -1019,12 +1195,12 @@ function emitSdkV3PackageProofFragment() {
     rejected_token_states: ["foreign", "forged", "reordered", "stale"],
     provider_text_exposed: false,
   };
-  const testId = "node.generated_package_v3_integrity";
+  const testId = "node.sdk_models_generated_package_integrity";
   const fragment = {
-    format: "typebridge.sdk-v3-proof-fragment/v1", binding: "node",
-    semantic_profile: "typedb-3.12.1/v1", run_nonce: runNonce,
+    format: "typebridge.sdk-models-proof-fragment/v1", binding: "node",
+    semantic_profile: sdkProofProfile(root, "models"), run_nonce: runNonce,
     contract: Object.fromEntries(Object.entries(contractPaths).map(([name, relative]) => [name, proofSourceIdentity(root, relative)])),
-    producer: { id: "node.generated-package-v3-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
+    producer: { id: "node.sdk-models-generated-package-proof", sources: producerPaths.map((relative) => proofSourceIdentity(root, relative)) },
     results: [
       { observation_ref: "projected_constraint_validation", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: constraint },
       { observation_ref: "projection_evidence_integrity", proof_kind: "diagnostic", test_id: testId, outcome: "passed", observation: evidence },
@@ -1035,6 +1211,234 @@ function emitSdkV3PackageProofFragment() {
   const descriptor = openSync(destination, "wx", 0o600);
   try { writeSync(descriptor, payload); fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
+
+// Query limits belong to the session. Rust admits them, and a lowered
+// boolean-term ceiling refuses a two-clause query before any exchange, naming
+// the limit it enforced and that the caller configured it.
+assert(new QueryLimits().names().includes("boolean_terms"));
+assert.equal(new QueryLimits().get("boolean_terms"), 256n);
+assert.equal(new QueryLimits({ boolean_terms: 1n }).get("boolean_terms"), 1n);
+for (const rejected of [
+  { made_up: 1n },
+  { canonical_depth: 1000n },
+  { boolean_terms: 0n },
+]) {
+  assert.throws(() => new QueryLimits(rejected));
+}
+const limitedRemoteExchangesBefore = generatedRemoteExchanges;
+const limitedRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async () => {
+      generatedRemoteExchanges += 1;
+      return new Uint8Array();
+    },
+  ),
+  {
+    resources: new QueryExecutionResourceLimits({
+      items: 11n,
+      bytes: 1n << 20n,
+      collectionMembers: 12n,
+      graphNodes: 13n,
+      attributeValues: 14n,
+      rolePlayers: 15n,
+      timeoutMilliseconds: 30_000n,
+      statements: 3n,
+    }),
+    queryLimits: new QueryLimits({ boolean_terms: 1n }),
+  },
+);
+const limitedRemotePerson = limitedRemoteSession.exact(Person);
+await assert.rejects(
+  async () =>
+    limitedRemoteSession
+      .query(limitedRemotePerson)
+      .where(
+        limitedRemotePerson.field(Person.score).gte(Score.create(1n)),
+        limitedRemotePerson.field(Person.score).gte(Score.create(2n)),
+      )
+      .one(),
+  (error) => {
+    assert.equal(error.code, "structural_limit_exceeded");
+    const limitedDetails = JSON.stringify(error.details);
+    assert.match(limitedDetails, /boolean_terms/, limitedDetails);
+    assert.match(limitedDetails, /configured/, limitedDetails);
+    return true;
+  },
+);
+assert.equal(generatedRemoteExchanges, limitedRemoteExchangesBefore);
+limitedRemoteSession.close();
+
+// Windows, selection and aggregate caps, group-by keys, and reachability
+// depth are core rules: the generated host only marshals, and every refusal
+// is the core's structured diagnostic, at the same call as before.
+let coreRuleExchanges = 0;
+function expectCoreRefusal(error, code, maximum) {
+  assert.equal(error.category, "invalid_plan", `${error.category}/${error.code}`);
+  assert.equal(error.code, code);
+  if (maximum !== undefined) {
+    assert.equal(String(error.details.maximum.value), String(maximum));
+    assert.match(JSON.stringify(error.details.limit), /selected_slots/);
+  }
+  return true;
+}
+for (const sessionSlots of [undefined, 4n]) {
+  const coreRuleSession = new QuerySession(
+    new ExchangeConnection(generatedAdvertisement, async () => {
+      coreRuleExchanges += 1;
+      return new Uint8Array();
+    }),
+    sessionSlots === undefined
+      ? {}
+      : { queryLimits: new QueryLimits({ selected_slots: sessionSlots }) },
+  );
+  const slots = sessionSlots === undefined ? 16 : Number(sessionSlots);
+  const corePerson = coreRuleSession.exact(Person);
+  const coreScore = corePerson.field(Person.score);
+  const coreQuery = coreRuleSession.query(corePerson);
+  assert.throws(
+    () =>
+      coreRuleSession.query(
+        ...Array.from({ length: slots + 1 }, () => coreRuleSession.exact(Person)),
+      ),
+    (error) => expectCoreRefusal(error, "selection_cap_exceeded", slots),
+  );
+  assert.throws(
+    () =>
+      coreQuery.groupBy(
+        corePerson,
+        ...Array.from({ length: slots + 1 }, () => coreScore),
+      ),
+    (error) => expectCoreRefusal(error, "field_group_tuple_cap_exceeded", slots),
+  );
+  await assert.rejects(
+    async () =>
+      coreQuery.aggregate(
+        corePerson,
+        Array.from({ length: slots + 1 }, () => aggregate.count()),
+      ),
+    (error) => expectCoreRefusal(error, "reducer_cap_exceeded", slots),
+  );
+  await assert.rejects(
+    async () => coreQuery.aggregate(corePerson, []),
+    (error) => expectCoreRefusal(error, "empty_reducers"),
+  );
+  await assert.rejects(
+    async () => coreQuery.rows({ limit: 0n }),
+    (error) => expectCoreRefusal(error, "zero_window_limit"),
+  );
+  await assert.rejects(
+    async () => coreQuery.pageBy(corePerson, { limit: 0n }),
+    (error) => expectCoreRefusal(error, "zero_window_limit"),
+  );
+  await assert.rejects(
+    async () => coreQuery.rows({ offset: (1n << 64n) - 2n, limit: 2n }),
+    (error) => expectCoreRefusal(error, "window_overflow"),
+  );
+  const coreOther = coreRuleSession.exact(Person);
+  for (const [minDepth, maxDepth, code] of [
+    [3, 2, "reachable_bounds"],
+    [0, 65, "reachable_depth_limit"],
+  ]) {
+    assert.throws(
+      () =>
+        coreRuleSession.reachable(
+          corePerson,
+          coreOther,
+          Event,
+          Event.subject,
+          Event.subject,
+          { minDepth, maxDepth },
+        ),
+      (error) => expectCoreRefusal(error, code),
+    );
+  }
+  // Marshalling stays a host error: a depth that is not a u8 never reaches
+  // the core.
+  for (const hostile of [-1, 256, 1.5]) {
+    assert.throws(
+      () =>
+        coreRuleSession.reachable(
+          corePerson,
+          coreOther,
+          Event,
+          Event.subject,
+          Event.subject,
+          { minDepth: 0, maxDepth: hostile },
+        ),
+      (error) => error.code !== "reachable_depth_limit",
+    );
+  }
+  coreRuleSession.close();
+}
+assert.equal(coreRuleExchanges, 0);
+
+// Repeated where clauses are one flat conjunction, so a wide query adapts
+// under the default limits. Thirty-eight clauses used to nest past the
+// canonical encoding depth and were refused as a resource limit during
+// adaptation. This fixture's advertisement omits the field-comparison
+// capability, so preparation now ends one step later, at capability
+// negotiation, which only an adapted plan reaches.
+let wideRemoteRequests = 0;
+const wideRemoteSession = new QuerySession(
+  new ExchangeConnection(
+    generatedAdvertisement,
+    async () => {
+      wideRemoteRequests += 1;
+      return new TextEncoder().encode("{}");
+    },
+  ),
+  {
+    resources: new QueryExecutionResourceLimits({
+      items: 11n,
+      bytes: 1n << 20n,
+      collectionMembers: 12n,
+      graphNodes: 13n,
+      attributeValues: 14n,
+      rolePlayers: 15n,
+      timeoutMilliseconds: 30_000n,
+      statements: 3n,
+    }),
+  },
+);
+const wideRemotePerson = wideRemoteSession.exact(Person);
+await assert.rejects(
+  async () =>
+    wideRemoteSession
+      .query(wideRemotePerson)
+      .where(
+        ...Array.from({ length: 38 }, () =>
+          wideRemotePerson.field(Person.score).gte(Score.create(1n)),
+        ),
+      )
+      .one(),
+  (error) => {
+    assert.equal(error.category, "unsupported_capability");
+    return true;
+  },
+);
+assert.equal(wideRemoteRequests, 0);
+
+// Nesting the caller actually wrote is still bounded: alternating conjunction
+// and disjunction thirty-eight deep is refused during adaptation, before
+// capability negotiation, and the refusal names the limit to raise.
+let nestedRemotePredicate = wideRemotePerson.field(Person.score).gte(Score.create(1n));
+for (let depth = 1; depth < 38; depth += 1) {
+  const term = wideRemotePerson.field(Person.score).gte(Score.create(1n));
+  nestedRemotePredicate =
+    depth % 2 === 0 ? nestedRemotePredicate.and(term) : nestedRemotePredicate.or(term);
+}
+await assert.rejects(
+  async () =>
+    wideRemoteSession.query(wideRemotePerson).where(nestedRemotePredicate).one(),
+  (error) => {
+    assert.equal(error.category, "resource_limit");
+    assert.equal(error.code, "canonical_json_too_deep");
+    return true;
+  },
+);
+assert.equal(wideRemoteRequests, 0);
+wideRemoteSession.close();
 
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);
 const remoteLifecycleClone = remoteLifecycle.clone();
@@ -1115,4 +1519,4 @@ generatedRemoteSession.close();
 assert.equal(generatedRemoteSession.isClosed, true);
 assert.equal(remoteLifecycleClone.isClosed, true);
 await rejectsClosedRemoteTerminal(() => remoteLifecycleClone.one());
-emitSdkV3PackageProofFragment();
+emitSdkModelsPackageProofFragment();

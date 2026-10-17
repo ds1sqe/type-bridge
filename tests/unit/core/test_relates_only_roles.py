@@ -108,8 +108,8 @@ def test_schema_to_typeql_mixes_relates_only_and_bound_roles() -> None:
         _schema_info_for_models([RelatesOnlyPerson, RelatesOnlyRelation])
     )
 
-    assert "    relates definition," in typeql
-    assert "    relates allowed_value," in typeql
-    assert "relates-only-person plays relates-only-rel:actor;" in typeql
+    assert "relates definition," in typeql
+    assert "relates allowed_value," in typeql
+    assert "relates-only-person, plays relates-only-rel:actor;" in typeql
     assert "plays relates-only-rel:definition" not in typeql
     assert "plays relates-only-rel:allowed_value" not in typeql

@@ -1,0 +1,73 @@
+{
+  "baselines": [
+    null,
+    null
+  ],
+  "benchmark_exe": "target/release/deps/serde_iai-0123456789abcdef",
+  "benchmark_file": "crates/orm/benches/serde_iai.rs",
+  "duration_ns": 412377201,
+  "function_name": "attribute_value",
+  "group": "serde_attribute_value",
+  "id": "string_roundtrip",
+  "kind": "LibraryBenchmark",
+  "module_path": "serde_iai::serde_attribute_value::attribute_value",
+  "output_dir": "target/gungraun/type-bridge-orm/serde_iai/serde_attribute_value/attribute_value.string_roundtrip",
+  "package_dir": "crates/orm",
+  "profiles": [
+    {
+      "data": {
+        "parts": [
+          {
+            "metrics": {
+              "Ir": {
+                "change": null,
+                "values": {
+                  "new": 2617
+                }
+              },
+              "EstimatedCycles": {
+                "change": null,
+                "values": {
+                  "new": 7968
+                }
+              }
+            },
+            "tool_run": {
+              "new": {
+                "command": "serde_iai-0123456789abcdef",
+                "part": 0,
+                "pid": 4242,
+                "thread": 1
+              }
+            }
+          }
+        ],
+        "total": {
+          "metrics": {
+            "Ir": {
+              "change": null,
+              "values": {
+                "new": 2617
+              }
+            },
+            "EstimatedCycles": {
+              "change": null,
+              "values": {
+                "new": 7968
+              }
+            }
+          },
+          "regressions": []
+        }
+      },
+      "duration_ns": 401998050,
+      "flamegraphs": [],
+      "process_ns": 398002311,
+      "started_at": "2026-10-16T03:14:07.512345678Z",
+      "tool": "Callgrind"
+    }
+  ],
+  "project_root": "/home/runner/work/type-bridge/type-bridge/type-bridge-core",
+  "started_at": "2026-10-16T03:14:07.512345678Z",
+  "version": "7"
+}

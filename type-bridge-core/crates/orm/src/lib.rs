@@ -37,6 +37,7 @@ pub mod _relation;
 #[doc(hidden)]
 #[path = "schema/mod.rs"]
 pub mod _schema;
+mod enum_spelling;
 pub mod error;
 mod execution_diagnostic;
 pub mod expr;
@@ -44,6 +45,7 @@ pub mod filter;
 pub mod hooks;
 pub mod match_request;
 pub mod migration_assertion;
+mod plan_builders;
 pub mod projected_batch;
 mod projected_batch_executor;
 pub mod projected_codec;
@@ -53,7 +55,9 @@ pub mod projected_model;
 mod projected_query;
 pub mod provider_runtime;
 pub mod query;
+mod query_connection;
 mod query_execution_limits;
+mod query_plan_exec;
 pub mod query_v2;
 mod query_v2_adapter;
 #[cfg(test)]
@@ -64,6 +68,8 @@ mod query_v2_model;
 mod query_v2_model_remote;
 pub mod query_v2_prepared;
 pub mod query_v2_remote;
+#[cfg(test)]
+mod query_v2_wide_query_tests;
 pub mod runtime_projection;
 pub mod session;
 pub mod value;
@@ -78,38 +84,26 @@ pub mod value;
 #[doc(hidden)]
 pub mod integration_test_support {
     use type_bridge_contract::diagnostic::Diagnostic;
-    use type_bridge_contract::limits::StructuralLimits;
+
     use type_bridge_contract::query_plan::QueryOperation;
     use type_bridge_query::ValidatedQuery;
 
     use crate::_registry::DescriptorRegistry;
     use crate::match_request::ValidatedMatchRequest;
-    use crate::query_v2::failure;
-    use crate::query_v2_adapter::{
-        MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
-    };
+
+    use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
 
     /// Adapt a validated V1 request through the production registry authority.
     ///
     /// Deriving the authority here keeps the live parity gate on the same
-    /// descriptor projection as public execution and proves that its V2 side
-    /// cannot silently take the retained `LegacyRequired` fallback.
+    /// descriptor projection as public execution.
     pub fn adapt_match_request_for_live_test(
         validated: &ValidatedMatchRequest,
         registry: &DescriptorRegistry,
-        limits: StructuralLimits,
     ) -> Result<(ValidatedQuery, QueryOperation), Diagnostic> {
         let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
-        match adapt_match_request(validated, registry, &authority.context(), limits)? {
-            MatchRequestAdaptation::Adapted(adapted) => {
-                Ok((adapted.validated().clone(), adapted.operation()))
-            }
-            MatchRequestAdaptation::LegacyRequired(_) => Err(failure(
-                type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit,
-                "query_v2_adapter_test_resource_envelope",
-                "the live V2 parity fixture cannot fit the canonical V2 artifact envelope",
-            )),
-        }
+        let adapted = adapt_match_request(validated, registry, &authority.context())?;
+        Ok((adapted.validated().clone(), adapted.operation()))
     }
 }
 
@@ -120,6 +114,7 @@ pub use _dynamic::{
     DynamicEntityRow, DynamicExpr, DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayer,
     DynamicRolePlayerInput, DynamicSort,
 };
+pub use enum_spelling::{EnumKind, canonical_enum_spelling};
 pub use error::{ClassifiedCommitError, CommitFailureCertainty, OrmError, Result};
 #[doc(hidden)]
 pub use execution_diagnostic::{
@@ -159,29 +154,42 @@ pub use projected_model::{
     MAX_PROJECTED_MODEL_BYTES, MAX_PROJECTED_MODEL_MEMBERS, ProjectedAttributeValue,
     ProjectedCreate, ProjectedCreateBudget, ProjectedReference, ProjectedReferenceOrigin,
     ProjectedResourceMeasure, ProjectedRolePlayer, ProjectedThing,
+    validate_projected_create_member_count, validate_projected_hydrated_member_count,
 };
 #[doc(hidden)]
 pub use projected_query::{
-    MAX_PROJECTED_QUERY_ATTRIBUTE_VALUES, MAX_PROJECTED_QUERY_BYTES, MAX_PROJECTED_QUERY_CELLS,
-    MAX_PROJECTED_QUERY_ROWS, MAX_PROJECTED_QUERY_THINGS, ProjectedQueryMaterializationLimits,
-    ProjectedQueryOrigin, ProjectedQueryResourceMeasure, ProjectedQueryResult, ProjectedQueryRow,
-    ProjectedQuerySlot, ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue,
-    ProjectedReductionGroup, ProjectedReductionRow, materialize_projected_query_result,
-    materialize_projected_query_result_with_budget,
+    ProjectedQueryMaterializationLimits, ProjectedQueryOrigin, ProjectedQueryResourceMeasure,
+    ProjectedQueryResult, ProjectedQueryRow, ProjectedQuerySlot, ProjectedQuerySlotValue,
+    ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup, ProjectedReductionRow,
+    materialize_projected_query_result, materialize_projected_query_result_with_budget,
     materialize_projected_query_result_with_cancellation,
 };
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
+pub use query_connection::{ProxyQueryConnection, QueryTarget, QueryTargetError};
+pub use query_execution_limits::{
+    AnswerTransport, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
+    DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+    DEFAULT_DIRECT_QUERY_ITEMS, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS, DEFAULT_DIRECT_QUERY_STATEMENTS,
+    DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS, DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+    DEFAULT_PROXY_QUERY_BYTES, DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+    DEFAULT_PROXY_QUERY_GRAPH_NODES, DEFAULT_PROXY_QUERY_ITEMS, DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+    DEFAULT_PROXY_QUERY_STATEMENTS, DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS, MAX_QUERY_STATEMENTS,
+    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionLimitOutOfRange,
+    QueryExecutionLimitsError, QueryExecutionResourceLimits,
+};
+#[allow(deprecated)]
 pub use query_execution_limits::{
     MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS,
 };
 pub use query_v2_model_remote::{
     ClaimedRemoteModelReplyV2, PendingRemoteModelQueryV2, RemoteModelQueryV2Error,
     prepare_remote_model_query_v2, prepare_remote_model_query_v2_with_budget,
 };
 pub use runtime_projection::InstalledRuntimeProjection;
+#[allow(deprecated)]
+pub use session::DirectTls;
 #[doc(hidden)]
 pub use session::TransactionContextState;
 pub use session::backend::AnswerCancellation;
@@ -190,23 +198,28 @@ pub use session::database::is_identity_safe_provider_address;
 #[cfg(feature = "typedb")]
 pub use session::embedded_driver_versions;
 #[cfg(feature = "typedb")]
+#[allow(deprecated)]
 pub use session::{
-    ConnectOptions, DirectConnectionPolicy, DirectTls, PreparedSecureConnectOptions,
-    SecureConnectError, SecureConnectOptions, SecureResult, TlsMode,
+    ConnectOptions, DirectConnectionPolicy, PreparedSecureConnectOptions, SecureConnectError,
+    SecureConnectOptions, SecureResult, TlsMode,
 };
+#[allow(deprecated)]
 pub use session::{
-    Database, DatabaseConnectionAuthority, GivenRowsSpec, GivenValue, Transaction,
+    Database, DatabaseConnectionAuthority, GivenColumnType, GivenRowsSpec, GivenValue,
+    OwnedTransaction, ProxyEndpoint, ProxyHttpTransport, TlsPolicy, Transaction,
     TransactionContext, TxType, require_legacy_writer_open,
     require_legacy_writer_open_in_transaction,
 };
 #[cfg(feature = "typedb")]
+#[allow(deprecated)]
 pub use session::{
     database_exists, database_exists_prepared_secure, database_exists_secure,
     delete_database_prepared_secure, delete_database_secure, ensure_database_exists,
     ensure_database_exists_prepared_secure, ensure_database_exists_secure,
 };
+pub use type_bridge_contract::enum_spelling::UnknownEnumValue;
 pub use type_bridge_contract::projection::{
-    GeneratedManagerLookup, resolve_generated_manager_lookup,
+    GeneratedManagerLookup, ManagerLookup, OwnerLookup, resolve_generated_manager_lookup,
 };
 /// Provider version type used by binding-owned recording backends.
 #[doc(hidden)]

@@ -1,0 +1,1 @@
+match $x isa person, has age $age, has name "Alice", has age > 18, has age $age + 1, has $attribute, has name[] $names, has $type $value;

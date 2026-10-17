@@ -83,9 +83,10 @@ function* walkJs(dir) {
   }
 }
 
-const testFiles = Array.from(
-  walkJs(path.join(OUTPUT_ROOT, "tests", "integration")),
-);
+// Optional paths select compiled tests relative to OUTPUT_ROOT.
+const testFiles = process.argv.length > 2
+  ? process.argv.slice(2).map((file) => path.resolve(OUTPUT_ROOT, file))
+  : Array.from(walkJs(path.join(OUTPUT_ROOT, "tests", "integration")));
 if (testFiles.length === 0) {
   console.error("[test:integration] No compiled .test.js files found");
   process.exit(1);

@@ -45,19 +45,26 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
 
     assert inventory.release_version == "2.2.6"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 22
+    assert len(inventory.packages) == 23
     assert len(inventory.public_packages) == 19
     assert len(inventory.first_party_packages) == 17
     assert len(inventory.immutable_packages) == 2
-    assert len(inventory.private_packages) == 3
+    assert len(inventory.private_packages) == 4
     assert [package.publish_order for package in inventory.public_packages] == list(range(1, 20))
-    assert {package.name for package in inventory.private_packages} == {
+    assert {package.name for package in inventory.binding_packages} == {
         "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
     }
-    for package in inventory.private_packages:
+    assert [package.name for package in inventory.tooling_packages] == ["type-bridge-perf"]
+    assert set(inventory.private_packages) == {
+        *inventory.binding_packages,
+        *inventory.tooling_packages,
+    }
+    for package in inventory.binding_packages:
         assert package.role == "binding"
+    assert inventory.tooling_packages[0].role == "perf-harness"
+    for package in inventory.private_packages:
         assert package.version_policy == "lockstep"
         assert package.version == "2.2.6"
         assert package.docs_target == "none"
@@ -161,6 +168,11 @@ def test_inventory_classifies_the_real_workspace_without_omissions() -> None:
             "private binding package set must be exact",
         ),
         (
+            'name = "type-bridge-perf"',
+            'name = "type-bridge-bench"',
+            "private tooling package set must be exact",
+        ),
+        (
             "publish-order = 19",
             "publish-order = 20",
             "publish-order must be contiguous",
@@ -187,3 +199,74 @@ def test_inventory_rejects_identity_and_order_drift(
 
     with pytest.raises(inventory_module.InventoryError, match=message):
         inventory_module.load_inventory(path)
+
+
+def _workspace_copy(tmp_path: Path, manifest: str, old: str, new: str) -> Path:
+    """Copy every inventoried manifest, mutating one of them."""
+    inventory = inventory_module.load_inventory()
+    workspace = tmp_path / "type-bridge-core"
+    for package in inventory.packages:
+        target = workspace / package.manifest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = (ROOT / "type-bridge-core" / package.manifest).read_text(encoding="utf-8")
+        if package.manifest == manifest:
+            assert old in text
+            text = text.replace(old, new)
+        target.write_text(text, encoding="utf-8")
+    return workspace
+
+
+def test_tooling_dependency_rule_accepts_the_checked_in_manifests() -> None:
+    inventory = inventory_module.load_inventory()
+    workspace = ROOT / "type-bridge-core"
+    assert inventory_module.tooling_dependency_violations(inventory, workspace) == []
+
+
+PYTHON_PERF_DEPENDENCY = (
+    'type-bridge-perf = { path = "../perf", default-features = false, optional = true }'
+)
+
+
+@pytest.mark.parametrize(
+    ("manifest", "old", "new", "message"),
+    [
+        (
+            "crates/orm/Cargo.toml",
+            "[dependencies]\n",
+            '[dependencies]\ntype-bridge-perf = { path = "../perf", optional = true }\n',
+            "only a private binding may link tooling",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            PYTHON_PERF_DEPENDENCY,
+            'type-bridge-perf = { path = "../perf", default-features = false }',
+            "must be an optional normal dependency",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            PYTHON_PERF_DEPENDENCY,
+            'type-bridge-perf = { path = "../perf", optional = true }',
+            "must be an optional normal dependency",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            "default = []",
+            'default = ["perf-stages"]',
+            "must be off by default",
+        ),
+        (
+            "crates/python/Cargo.toml",
+            "default = []",
+            'default = []\nprofiling = ["type-bridge-perf/pipelines"]',
+            "must be enabled by 'perf-stages' alone",
+        ),
+    ],
+)
+def test_tooling_dependency_rule_rejects_other_links(
+    tmp_path: Path, manifest: str, old: str, new: str, message: str
+) -> None:
+    workspace = _workspace_copy(tmp_path, manifest, old, new)
+    violations = inventory_module.tooling_dependency_violations(
+        inventory_module.load_inventory(), workspace
+    )
+    assert any(message in violation for violation in violations), violations

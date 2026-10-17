@@ -15,3 +15,11 @@ type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md -text -whitespac
 # sources their fingerprints were computed from. A CRLF checkout
 # (core.autocrlf=true on Windows runners) would corrupt both sides.
 type-bridge-core/crates/*/tests/fixtures/** -text
+
+# Vendored chart library: tests/unit/perf/test_assets.py checks these bytes
+# against docs/perf/assets/CHECKSUMS.
+docs/perf/assets/uPlot* -text -whitespace
+
+# Official TypeQL Display includes spaces before line breaks. Preserve these
+# canonical fixtures so round trips compare upstream AST source spans too.
+type-bridge-core/crates/core/tests/tql_corpus/*.tql -whitespace

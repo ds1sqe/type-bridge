@@ -60,7 +60,7 @@ working_age = adult & not_retired
 ada_or_grace = named_ada | name.eq(Name("Grace"))
 not_ada = ~named_ada
 
-rows = session.query(person).where(working_age, not_ada).rows(limit=100)
+rows = await session.query(person).where(working_age, not_ada).rows(limit=100)
 ```
 
 Each `where(...)` argument is ANDed. `and_`, `or_`, and `not_` are available
@@ -72,7 +72,7 @@ when operator syntax is inconvenient.
 employment = session.exact(Employment)
 employee = employment.role(Employment.employee).connects(person)
 
-rows = session.query(person, employment).where(employee).rows(limit=100)
+rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```
 
 The generated role token proves its relation owner, declaring role, and allowed
@@ -81,7 +81,7 @@ player types.
 ## Ordering and windows
 
 ```python
-rows = (
+rows = await (
     session.query(person)
     .where(adult)
     .rows(
@@ -94,7 +94,9 @@ rows = (
 
 Rows are bounded. Ordering uses generated bound fields and explicit missing-
 value policy where needed. `one`, `first`, `rows`, `page_by`, `count_by`, and
-`exists_by` share the same immutable query.
+`exists_by` share the same immutable query. Each terminal is awaited, on a
+direct or a proxy connection alike (see
+[Typed queries](typed-queries.md#start-a-session)).
 
 ## Raw compatibility builder
 

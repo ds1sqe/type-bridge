@@ -4,6 +4,7 @@
 //! decisions from a resolved [`TypeSchema`](crate::_schema::TypeSchema) and
 //! renders Python, TypeScript, or Rust source files from the same policy.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::{self, Write};
 use std::str::FromStr;
@@ -1127,7 +1128,11 @@ fn render_python_entities(schema: &TypeSchema, options: &BindgenOptions) -> Stri
     writeln!(out, "from . import attributes").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "if TYPE_CHECKING:").unwrap();
-    writeln!(out, "    from type_bridge.typed._descriptors import (").unwrap();
+    writeln!(
+        out,
+        "    from type_bridge.fields._generated_descriptors import ("
+    )
+    .unwrap();
     writeln!(out, "        GeneratedFieldDescriptor,").unwrap();
     writeln!(out, "        GeneratedNumericFieldDescriptor,").unwrap();
     writeln!(out, "        GeneratedOrderedFieldDescriptor,").unwrap();
@@ -1410,7 +1415,11 @@ fn render_python_relations(schema: &TypeSchema, options: &BindgenOptions) -> Str
     writeln!(out, "from . import attributes, entities").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "if TYPE_CHECKING:").unwrap();
-    writeln!(out, "    from type_bridge.typed._descriptors import (").unwrap();
+    writeln!(
+        out,
+        "    from type_bridge.fields._generated_descriptors import ("
+    )
+    .unwrap();
     writeln!(out, "        GeneratedFieldDescriptor,").unwrap();
     writeln!(out, "        GeneratedNumericFieldDescriptor,").unwrap();
     writeln!(out, "        GeneratedOrderedFieldDescriptor,").unwrap();

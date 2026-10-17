@@ -1,8 +1,9 @@
 //! Provider descriptors derived one-way from a trusted runtime projection.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::projection::{ModelProjection, ProjectedAnnotation, RuntimeProjection};
 use type_bridge_contract::schema::{
@@ -16,7 +17,7 @@ use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator,
 };
 use type_bridge_contract::value::{
-    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue, ValueTypeTag,
+    CanonicalDouble, CanonicalString, CanonicalValue, Cardinality, DecimalValue,
 };
 
 use crate::_attribute::ValueType;
@@ -25,15 +26,21 @@ use crate::_descriptor::{
 };
 use crate::_dynamic::DynamicAttributeMap;
 use crate::_entity::Annotation;
-use crate::_registry::DescriptorRegistry;
+use crate::_registry::{DescriptorRegistry, InstalledSchemaAuthority};
 use crate::error::{OrmError, Result};
+use crate::plan_builders::authority::PlanAuthority;
 use crate::value::AttributeValue;
+use type_bridge_schema::VerifiedSchemaAuthority;
 
 /// One package-scoped trusted projection and its provider-facing descriptors.
 pub struct InstalledRuntimeProjection {
     projection: Arc<RuntimeProjection>,
     declared_schema_identity: Option<DeclaredIdentityFingerprint>,
     descriptors: BTreeMap<TypeId, TypeDescriptor>,
+    schema_authority: Option<Arc<InstalledSchemaAuthority>>,
+    /// The authority helper write plans validate against, from the verified
+    /// package authority or built once from the projection.
+    plan_authority: OnceLock<Arc<PlanAuthority>>,
 }
 
 impl InstalledRuntimeProjection {
@@ -53,7 +60,9 @@ impl InstalledRuntimeProjection {
         Ok(Self {
             projection: Arc::new(projection),
             declared_schema_identity: None,
+            schema_authority: None,
             descriptors,
+            plan_authority: OnceLock::new(),
         })
     }
 
@@ -68,6 +77,25 @@ impl InstalledRuntimeProjection {
         declared_schema_identity: DeclaredIdentityFingerprint,
     ) -> Self {
         self.declared_schema_identity = Some(declared_schema_identity);
+        self
+    }
+
+    /// Bind the package's verified schema authority to this installation.
+    ///
+    /// This supplies the declared-schema identity and the schema context a
+    /// query of this package is adapted under, so direct execution uses the
+    /// same context as a proxy serving the same package.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_schema_authority(mut self, authority: &VerifiedSchemaAuthority) -> Self {
+        self.declared_schema_identity = Some(
+            authority
+                .resolved_schema()
+                .declared_identity_fingerprint()
+                .clone(),
+        );
+        self.schema_authority = Some(Arc::new(InstalledSchemaAuthority::from_verified(authority)));
+        self.plan_authority = OnceLock::from(Arc::new(PlanAuthority::from_verified(authority)));
         self
     }
 
@@ -96,6 +124,18 @@ impl InstalledRuntimeProjection {
             });
         }
         Self::try_new(runtime)
+    }
+
+    /// Return the schema authority helper write plans are validated against.
+    ///
+    /// A package's verified authority is used as is; otherwise the
+    /// declarations are rebuilt from the projection once.
+    pub(crate) fn plan_authority(&self) -> std::result::Result<Arc<PlanAuthority>, Diagnostic> {
+        if let Some(authority) = self.plan_authority.get() {
+            return Ok(Arc::clone(authority));
+        }
+        let built = Arc::new(PlanAuthority::from_projection(&self.projection)?);
+        Ok(Arc::clone(self.plan_authority.get_or_init(|| built)))
     }
 
     /// Return the trusted source projection.
@@ -150,6 +190,7 @@ impl InstalledRuntimeProjection {
             self.projection.target(),
             self.projection.projection_fingerprint().clone(),
             self.projection.functions().clone(),
+            self.schema_authority.clone(),
         );
         for descriptor in self.descriptors.values().cloned() {
             match descriptor {
@@ -769,7 +810,7 @@ fn owned_attributes(
             Ok(OwnedAttributeDescriptor {
                 field_name: field.target_name().as_str().to_owned(),
                 attr_name: field.id().attribute().label().as_str().to_owned(),
-                value_type: provider_value_type(value_type),
+                value_type: ValueType::from(value_type),
                 annotations,
                 is_optional: !field.multiplicity().required(),
                 is_ordered: !field.multiplicity().collection_mode().is_unordered(),
@@ -795,20 +836,6 @@ fn provider_cardinality(value: Cardinality) -> Result<(u32, Option<u32>)> {
                 message: "cardinality maximum exceeds the provider descriptor domain".into(),
             })?;
     Ok((min, max))
-}
-
-const fn provider_value_type(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
-    }
 }
 
 fn descriptor_error(id: &TypeId, message: &str) -> OrmError {

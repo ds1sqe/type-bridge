@@ -349,20 +349,17 @@ fn canonical_member_limit() -> SdkExecutionDiagnostic {
     SdkExecutionDiagnostic::projected_codec_member_limit()
 }
 
-fn canonical_depth_limit() -> SdkExecutionDiagnostic {
-    SdkExecutionDiagnostic::projected_codec_depth_limit()
-}
-
 fn canonical_decode_error(
     error: type_bridge_contract::diagnostic::Diagnostic,
     invalid: fn() -> SdkExecutionDiagnostic,
 ) -> SdkExecutionDiagnostic {
-    match error.code().as_str() {
-        "canonical_json_too_deep" => canonical_depth_limit(),
-        "canonical_collection_too_large" => canonical_member_limit(),
-        "canonical_json_too_large" | "canonical_string_too_large" => canonical_input_limit(),
-        _ if error.category() == DiagnosticCategory::ResourceLimit => canonical_input_limit(),
-        _ => invalid(),
+    if let Some(diagnostic) = SdkExecutionDiagnostic::from_canonical_limit(&error, true) {
+        return diagnostic;
+    }
+    if error.category() == DiagnosticCategory::ResourceLimit {
+        canonical_input_limit()
+    } else {
+        invalid()
     }
 }
 
@@ -478,12 +475,14 @@ fn encode_bytes(
     invalid: fn() -> SdkExecutionDiagnostic,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     allocation_checkpoint(site).map_err(|_| allocation_exhausted())?;
-    encode().map_err(|error| match error.code().as_str() {
-        "canonical_json_too_deep" => canonical_depth_limit(),
-        "canonical_collection_too_large" => canonical_member_limit(),
-        "canonical_json_too_large" | "canonical_string_too_large" => canonical_output_limit(),
-        _ if error.category() == DiagnosticCategory::ResourceLimit => canonical_output_limit(),
-        _ => invalid(),
+    encode().map_err(|error| {
+        if let Some(diagnostic) = SdkExecutionDiagnostic::from_canonical_limit(&error, false) {
+            diagnostic
+        } else if error.category() == DiagnosticCategory::ResourceLimit {
+            canonical_output_limit()
+        } else {
+            invalid()
+        }
     })
 }
 
@@ -772,12 +771,10 @@ fn materialize(
 fn lower_projected_codec_error(
     error: type_bridge_orm::ProjectedCodecError,
 ) -> SdkExecutionDiagnostic {
+    if let Some(diagnostic) = error.record_schema_mismatch() {
+        return diagnostic;
+    }
     match error {
-        type_bridge_orm::ProjectedCodecError::Contract(error)
-            if error.code().as_str() == "projected_codec_declared_schema_mismatch" =>
-        {
-            SdkExecutionDiagnostic::projected_record_schema_mismatch()
-        }
         type_bridge_orm::ProjectedCodecError::Contract(_) => invalid_record(),
         type_bridge_orm::ProjectedCodecError::Materialization(diagnostic) => diagnostic,
     }

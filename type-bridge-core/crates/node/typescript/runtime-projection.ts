@@ -8,9 +8,16 @@ import {
 } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
+  NativeProxyConnection,
   NativeQueryCancellation,
   NativeQueryExecutionResources,
+  NativeQueryLimits,
 } from "./native.js";
+import { ownedByteSnapshot } from "./owned-bytes.js";
+import {
+  StagedTransaction,
+  type StagedTransactionKind,
+} from "./staged-transaction.js";
 import {
   queryV2AuthorityHandle,
   queryV2NativeCall,
@@ -25,7 +32,9 @@ import {
 
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
-export type RuntimeProjectionMatchSession = ReturnType<NativeRuntimeProjection["matchSession"]>;
+export type RuntimeProjectionMatchSession = ReturnType<
+  NativeRuntimeProjection["matchSessionWithResources"]
+>;
 export type RuntimeProjectionMatchBinding = ReturnType<RuntimeProjectionMatchSession["exact"]>;
 export type RuntimeProjectionMatchFunction = ReturnType<RuntimeProjectionMatchSession["functionById"]>;
 export type RuntimeProjectionMatchFunctionValue = ReturnType<RuntimeProjectionMatchSession["functionValueJson"]>;
@@ -37,7 +46,9 @@ export type RuntimeProjectionMatchOrder = ReturnType<RuntimeProjectionMatchField
 export type RuntimeProjectionMatchSelection = ReturnType<RuntimeProjectionMatchBinding["one"]>;
 export type RuntimeProjectionMatchShape = ReturnType<RuntimeProjectionMatchSession["positional"]>;
 export type RuntimeProjectionMatchQuery = ReturnType<RuntimeProjectionMatchSession["query"]>;
-export type RuntimeProjectionMatchResult = ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>;
+export type RuntimeProjectionMatchResult = Awaited<
+  ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>
+>;
 export type RuntimeProjectionMatchThing = ReturnType<RuntimeProjectionMatchResult["slotThing"]>;
 export type RuntimeProjectionReduction =
   | "count"
@@ -78,18 +89,10 @@ export interface GeneratedSchemaAuthorityInstall {
   readonly semanticFingerprintJson: string;
 }
 
-/** Explicit immutable budgets bound into every generated remote query. */
-export interface RuntimeProjectionRemoteLimits {
-  readonly maxItems: bigint;
-  readonly maxBytes: bigint;
-  readonly maxCollectionMembers: bigint;
-  readonly maxGraphNodes: bigint;
-  readonly maxAttributeValues: bigint;
-  readonly maxRolePlayers: bigint;
-  readonly deadlineMs?: bigint | null;
-}
-
-/** Common tighten-only execution policy shared by direct and remote queries. */
+/**
+ * The answer policy shared by direct and remote queries. An omitted
+ * dimension takes the core default; a given one may tighten or raise it.
+ */
 export interface QueryExecutionResourceLimitOptions {
   readonly timeoutMilliseconds?: bigint;
   readonly items?: bigint;
@@ -101,21 +104,21 @@ export interface QueryExecutionResourceLimitOptions {
   readonly statements?: bigint;
 }
 
-/** Canonical common resource limits, clamped by the Rust semantic engine. */
+/** The answer policy, validated by the Rust semantic engine: a value past a supported maximum is refused. */
 export class QueryExecutionResourceLimits {
   readonly #native: NativeQueryExecutionResources;
 
   constructor(options: QueryExecutionResourceLimitOptions = {}) {
     const native = loadNative();
     this.#native = new native.NodeQueryExecutionResources(
-      options.timeoutMilliseconds ?? 30_000n,
-      options.items ?? 65_536n,
-      options.bytes ?? 33_554_432n,
-      options.graphNodes ?? 65_536n,
-      options.attributeValues ?? 65_536n,
-      options.collectionMembers ?? 65_536n,
-      options.rolePlayers ?? 65_536n,
-      options.statements ?? 3n,
+      options.timeoutMilliseconds,
+      options.items,
+      options.bytes,
+      options.graphNodes,
+      options.attributeValues,
+      options.collectionMembers,
+      options.rolePlayers,
+      options.statements,
     );
     Object.freeze(this);
   }
@@ -131,6 +134,58 @@ export class QueryExecutionResourceLimits {
 
   /** @internal Exact native policy owner. */
   nativeHandle(): NativeQueryExecutionResources { return this.#native; }
+}
+
+/** Stable names of the query limits a session can override. */
+export type QueryLimitName =
+  | "canonical_bytes"
+  | "canonical_depth"
+  | "canonical_collection_len"
+  | "canonical_string_bytes"
+  | "selected_slots"
+  | "bindings"
+  | "predicate_nodes"
+  | "predicate_depth"
+  | "boolean_terms"
+  | "allowed_cross_joins"
+  | "order_terms"
+  | "collection_order_terms"
+  | "input_rows"
+  | "input_bytes"
+  | "output_name_bytes"
+  | "semantic_id_bytes"
+  | "diagnostic_bytes"
+  | "remote_request_bytes";
+
+/** Overrides of the canonical query limits, keyed by stable limit name. */
+export type QueryLimitOverrides = Readonly<Partial<Record<QueryLimitName, bigint>>>;
+
+/**
+ * Query limits one generated session validates, encodes, and executes under.
+ *
+ * Rust admits the overrides: an unknown name or an unsupported value throws
+ * here, before any session exists. A limit left out keeps its default.
+ */
+export class QueryLimits {
+  readonly #native: NativeQueryLimits;
+
+  constructor(overrides: QueryLimitOverrides = {}) {
+    const entries = Object.entries(overrides) as [string, bigint][];
+    this.#native = new (loadNative().NodeQueryLimits)(
+      entries.map(([name]) => name),
+      entries.map(([, value]) => value),
+    );
+    Object.freeze(this);
+  }
+
+  /** Stable names of every query limit. */
+  names(): readonly string[] { return this.#native.names(); }
+
+  /** Effective value of one named limit. */
+  get(name: QueryLimitName): bigint { return this.#native.get(name); }
+
+  /** @internal Exact native limits owner. */
+  nativeHandle(): NativeQueryLimits { return this.#native; }
 }
 
 /** Caller-owned cooperative cancellation for one or more query sessions. */
@@ -378,15 +433,16 @@ interface NativeProjectionHandle {
   ): NativeRustDatabase;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
-  matchSession(): RuntimeProjectionMatchSession;
   matchSessionWithResources(
     resources: NativeQueryExecutionResources,
     cancellation: NativeQueryCancellation,
+    queryLimits?: NativeQueryLimits | null,
   ): RuntimeProjectionMatchSession;
   matchModelType(typeKey: string): string;
   validateAttributeValueJson(typeKey: string, valueJson: string): void;
   validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+  validateMemberCardinality(typeKey: string, memberName: string, count: number): void;
   validateCreateJson(typeKey: string, valueJson: string): void;
   encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
   decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
@@ -519,15 +575,14 @@ export class InstalledRuntimeProjection {
   matchSession(
     resources?: QueryExecutionResourceLimits,
     cancellation?: QueryCancellation,
+    queryLimits?: QueryLimits,
   ): RuntimeProjectionMatchSession {
-    if (resources === undefined && cancellation === undefined) {
-      return this.#native.matchSession();
-    }
     resources ??= new QueryExecutionResourceLimits();
     cancellation ??= new QueryCancellation();
     return this.#native.matchSessionWithResources(
       resources.nativeHandle(),
       cancellation.nativeHandle(),
+      queryLimits?.nativeHandle() ?? null,
     );
   }
 
@@ -549,6 +604,11 @@ export class InstalledRuntimeProjection {
   /** @internal Validate one generated owned-field scalar against projected constraints. */
   validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void {
     this.#native.validateFieldValueJson(typeKey, fieldName, valueJson);
+  }
+
+  /** @internal Check one generated create member's value count against its projected cardinality. */
+  validateMemberCardinality(typeKey: string, memberName: string, count: number): void {
+    this.#native.validateMemberCardinality(typeKey, memberName, count);
   }
 
   /** @internal Validate one complete generated create payload. */
@@ -724,179 +784,38 @@ export class InstalledRuntimeProjection {
     return this.#native.materializeMatchThingProjected(thing);
   }
 
-  /** @internal Execute one selected-row request through the verified projection. */
-  executeRows(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    orders: RuntimeProjectionMatchOrder[],
-    offset: bigint,
-    limit: bigint,
-    cardinality: "exactly_one" | "bounded_many",
-  ): RuntimeProjectionMatchResult {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(
-        query.fetchRowsDiagnostic(orders, offset, limit, cardinality),
-      );
-      const database = this.#database(connection);
-      if (database !== undefined) {
-        return query.executeFetchRowsOwned(database, orders, offset, limit, cardinality);
-      }
-      return query.executeFetchRowsBorrowed(
-        this.#transaction(connection),
-        orders,
-        offset,
-        limit,
-        cardinality,
-      );
-    });
+  /**
+   * @internal Bind one registered `RustDatabase` (owned) or transaction
+   * (borrowed) as a terminal executor. Terminals run on the provider runtime
+   * and resolve without blocking the event loop.
+   */
+  direct(connection: RuntimeProjectionConnection): RuntimeProjectionRemote {
+    if (!isRegisteredRustConnection(connection)) {
+      throw new TypeError("generated query requires a registered Rust connection");
+    }
+    const database = rustDatabaseHandle(connection);
+    if (database !== undefined) {
+      return new InstalledRuntimeProjectionDirect(this.#native, { kind: "owned", database });
+    }
+    const transaction = rustTransactionHandle(connection);
+    if (transaction === undefined) {
+      throw new TypeError("generated query has no registered native execution handle");
+    }
+    return new InstalledRuntimeProjectionDirect(this.#native, { kind: "borrowed", transaction });
   }
 
-  /** @internal Execute one distinct-root page through the verified projection. */
-  executePage(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    root: RuntimeProjectionMatchBinding,
-    orders: RuntimeProjectionMatchOrder[],
-    offset: bigint,
-    limit: bigint,
-    includeTotal: boolean,
-  ): RuntimeProjectionMatchResult {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(
-        query.pageByDiagnostic(root, orders, offset, limit, includeTotal),
-      );
-      const database = this.#database(connection);
-      if (database !== undefined) {
-        return query.executePageByOwned(database, root, orders, offset, limit, includeTotal);
-      }
-      return query.executePageByBorrowed(
-        this.#transaction(connection),
-        root,
-        orders,
-        offset,
-        limit,
-        includeTotal,
-      );
-    });
-  }
-
-  /** @internal Execute one distinct-root count through the verified projection. */
-  executeCount(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    root: RuntimeProjectionMatchBinding,
-  ): bigint {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(query.countByDiagnostic(root));
-      const database = this.#database(connection);
-      const result = database === undefined
-        ? query.executeCountByBorrowed(this.#transaction(connection), root)
-        : query.executeCountByOwned(database, root);
-      return result.countValue(query);
-    });
-  }
-
-  /** @internal Execute one distinct-root existence request. */
-  executeExists(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    root: RuntimeProjectionMatchBinding,
-  ): boolean {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(query.existsByDiagnostic(root));
-      const database = this.#database(connection);
-      const result = database === undefined
-        ? query.executeExistsByBorrowed(this.#transaction(connection), root)
-        : query.executeExistsByOwned(database, root);
-      return result.existsValue(query);
-    });
-  }
-
-  /** @internal Execute one typed ungrouped or grouped reduction. */
-  executeReduce(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    root: RuntimeProjectionMatchBinding,
-    group: RuntimeProjectionMatchBinding | null,
-    reducers: RuntimeProjectionReduction[],
-    inputs: (RuntimeProjectionMatchField | null)[],
-  ): RuntimeProjectionMatchResult {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(
-        query.reduceByDiagnostic(root, group, reducers, inputs),
-      );
-      const database = this.#database(connection);
-      return database === undefined
-        ? query.executeReduceByBorrowed(
-            this.#transaction(connection),
-            root,
-            group,
-            reducers,
-            inputs,
-          )
-        : query.executeReduceByOwned(database, root, group, reducers, inputs);
-    });
-  }
-
-  /** @internal Execute one typed reduction grouped by an owned field value. */
-  executeReduceByField(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    root: RuntimeProjectionMatchBinding,
-    group: RuntimeProjectionMatchField,
-    reducers: RuntimeProjectionReduction[],
-    inputs: (RuntimeProjectionMatchField | null)[],
-  ): RuntimeProjectionMatchResult {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(
-        query.reduceByFieldDiagnostic(root, group, reducers, inputs),
-      );
-      const database = this.#database(connection);
-      return database === undefined
-        ? query.executeReduceByFieldBorrowed(
-            this.#transaction(connection),
-            root,
-            group,
-            reducers,
-            inputs,
-          )
-        : query.executeReduceByFieldOwned(database, root, group, reducers, inputs);
-    });
-  }
-
-  /** @internal Execute one typed reduction grouped by an owned-field tuple. */
-  executeReduceByFields(
-    query: RuntimeProjectionMatchQuery,
-    connection: RuntimeProjectionConnection,
-    root: RuntimeProjectionMatchBinding,
-    groups: RuntimeProjectionMatchField[],
-    reducers: RuntimeProjectionReduction[],
-    inputs: (RuntimeProjectionMatchField | null)[],
-  ): RuntimeProjectionMatchResult {
-    return queryV2NativeCall(() => {
-      this.#native.revalidateMatchDiagnostic(
-        query.reduceByFieldsDiagnostic(root, groups, reducers, inputs),
-      );
-      const database = this.#database(connection);
-      return database === undefined
-        ? query.executeReduceByFieldsBorrowed(
-            this.#transaction(connection),
-            root,
-            groups,
-            reducers,
-            inputs,
-          )
-        : query.executeReduceByFieldsOwned(database, root, groups, reducers, inputs);
-    });
-  }
-
-  /** @internal Bind remote authority, executor epoch, budgets, and exchange once. */
+  /**
+   * @internal Bind remote authority, executor epoch, the session's resources
+   * and cancellation, and one host exchange. `answerLimits` is the
+   * connection's ceiling; left out, the session's resources are the ceiling.
+   */
   remote(
     authority: QueryV2Authority,
     advertisement: Uint8Array,
     exchange: RuntimeProjectionRemoteExchange,
-    limits: RuntimeProjectionRemoteLimits | QueryExecutionResourceLimits,
-    cancellation?: QueryCancellation,
+    resources: QueryExecutionResourceLimits,
+    cancellation: QueryCancellation,
+    answerLimits?: QueryExecutionResourceLimits,
   ): RuntimeProjectionRemote {
     const nativeAuthority = queryV2AuthorityHandle(authority);
     if (nativeAuthority === undefined) {
@@ -908,61 +827,151 @@ export class InstalledRuntimeProjection {
     if (typeof exchange !== "function") {
       throw new TypeError("generated remote query exchange must be callable");
     }
-    if (typeof limits !== "object" || limits === null) {
-      throw new TypeError("generated remote query limits must be an object");
+    if (!(resources instanceof QueryExecutionResourceLimits)) {
+      throw new TypeError("generated remote query resources must be QueryExecutionResourceLimits");
     }
-    const commonResources = limits instanceof QueryExecutionResourceLimits;
-    const resources = commonResources ? limits : new QueryExecutionResourceLimits({
-          timeoutMilliseconds: limits.deadlineMs ?? 30_000n,
-          items: limits.maxItems,
-          bytes: limits.maxBytes,
-          collectionMembers: limits.maxCollectionMembers,
-          graphNodes: limits.maxGraphNodes,
-          attributeValues: limits.maxAttributeValues,
-          rolePlayers: limits.maxRolePlayers,
-          statements: 3n,
-        });
+    if (answerLimits !== undefined && !(answerLimits instanceof QueryExecutionResourceLimits)) {
+      throw new TypeError("generated remote query answerLimits must be QueryExecutionResourceLimits");
+    }
     const native = loadNative();
-    const effectiveCancellation = cancellation ?? new QueryCancellation();
-    const context = !commonResources && cancellation === undefined
-      ? queryV2NativeCall(() => native.queryV2RemoteModelContext(
-          nativeAuthority,
-          advertisement,
-          limits.maxItems,
-          limits.maxBytes,
-          limits.maxCollectionMembers,
-          limits.maxGraphNodes,
-          limits.maxAttributeValues,
-          limits.maxRolePlayers,
-          limits.deadlineMs,
-        ))
-      : queryV2NativeCall(() => native.queryV2RemoteModelContextWithResources(
-          nativeAuthority,
-          advertisement,
-          resources.nativeHandle(),
-          effectiveCancellation.nativeHandle(),
-        ));
-    return new InstalledRuntimeProjectionRemote(
-      native,
-      context,
-      exchange,
-      effectiveCancellation,
+    const context = queryV2NativeCall(() => native.queryV2RemoteModelContextWithResources(
+      nativeAuthority,
+      advertisement,
+      resources.nativeHandle(),
+      cancellation.nativeHandle(),
+      answerLimits?.nativeHandle(),
+    ));
+    return new InstalledRuntimeProjectionRemote(native, context, exchange, cancellation);
+  }
+}
+
+type DirectTarget =
+  | { readonly kind: "owned"; readonly database: NativeRustDatabase }
+  | { readonly kind: "borrowed"; readonly transaction: NativeRustTransactionContext };
+
+/** Verified direct execution bound to one registered Rust database or transaction. */
+class InstalledRuntimeProjectionDirect implements RuntimeProjectionRemote {
+  readonly #native: NativeRuntimeProjection;
+  readonly #target: DirectTarget;
+
+  constructor(native: NativeRuntimeProjection, target: DirectTarget) {
+    this.#native = native;
+    this.#target = target;
+    Object.freeze(this);
+  }
+
+  rows(
+    query: RuntimeProjectionMatchQuery,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: "exactly_one" | "bounded_many",
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.fetchRowsDiagnostic(orders, offset, limit, cardinality),
+      (database) => query.executeFetchRowsOwned(database, orders, offset, limit, cardinality),
+      (transaction) =>
+        query.executeFetchRowsBorrowed(transaction, orders, offset, limit, cardinality),
     );
   }
 
-  #database(connection: RuntimeProjectionConnection): NativeRustDatabase | undefined {
-    if (!isRegisteredRustConnection(connection)) {
-      throw new TypeError("generated query requires a registered Rust connection");
-    }
-    return rustDatabaseHandle(connection);
+  page(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.pageByDiagnostic(root, orders, offset, limit, includeTotal),
+      (database) =>
+        query.executePageByOwned(database, root, orders, offset, limit, includeTotal),
+      (transaction) =>
+        query.executePageByBorrowed(transaction, root, orders, offset, limit, includeTotal),
+    );
   }
 
-  #transaction(connection: RuntimeProjectionConnection): NativeRustTransactionContext {
-    const transaction = rustTransactionHandle(connection);
-    if (transaction === undefined) {
-      throw new TypeError("generated query has no registered native execution handle");
-    }
-    return transaction;
+  count(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.countByDiagnostic(root),
+      (database) => query.executeCountByOwned(database, root),
+      (transaction) => query.executeCountByBorrowed(transaction, root),
+    );
+  }
+
+  exists(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.existsByDiagnostic(root),
+      (database) => query.executeExistsByOwned(database, root),
+      (transaction) => query.executeExistsByBorrowed(transaction, root),
+    );
+  }
+
+  reduce(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchBinding | null,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.reduceByDiagnostic(root, group, reducers, inputs),
+      (database) => query.executeReduceByOwned(database, root, group, reducers, inputs),
+      (transaction) =>
+        query.executeReduceByBorrowed(transaction, root, group, reducers, inputs),
+    );
+  }
+
+  reduceByField(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchField,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.reduceByFieldDiagnostic(root, group, reducers, inputs),
+      (database) => query.executeReduceByFieldOwned(database, root, group, reducers, inputs),
+      (transaction) =>
+        query.executeReduceByFieldBorrowed(transaction, root, group, reducers, inputs),
+    );
+  }
+
+  reduceByFields(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    groups: RuntimeProjectionMatchField[],
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(
+      () => query.reduceByFieldsDiagnostic(root, groups, reducers, inputs),
+      (database) => query.executeReduceByFieldsOwned(database, root, groups, reducers, inputs),
+      (transaction) =>
+        query.executeReduceByFieldsBorrowed(transaction, root, groups, reducers, inputs),
+    );
+  }
+
+  /** Revalidate the request, then run it on the owned or borrowed entry point. */
+  async #run(
+    diagnostic: () => string,
+    owned: (database: NativeRustDatabase) => Promise<RuntimeProjectionMatchResult>,
+    borrowed: (
+      transaction: NativeRustTransactionContext,
+    ) => Promise<RuntimeProjectionMatchResult>,
+  ): Promise<RuntimeProjectionMatchResult> {
+    const target = this.#target;
+    return queryV2NativePromise(queryV2NativeCall(() => {
+      this.#native.revalidateMatchDiagnostic(diagnostic());
+      return target.kind === "owned" ? owned(target.database) : borrowed(target.transaction);
+    }));
   }
 }
 
@@ -1130,6 +1139,205 @@ class InstalledRuntimeProjectionRemote implements RuntimeProjectionRemote {
     } finally {
       detach();
     }
+  }
+}
+
+/** TLS for a proxy endpoint; `custom_root` trusts the `tlsRootCa` bundle only. */
+export type ProxyTlsMode = "disabled" | "native_roots" | "custom_root";
+
+/** How a {@link ProxyConnection} reaches its server and the policy it holds terminals to. */
+export interface ProxyConnectionOptions {
+  /** Defaults to `custom_root` when `tlsRootCa` is given, else `disabled`. */
+  readonly tls?: ProxyTlsMode;
+  /** Path of the PEM bundle a `custom_root` connection trusts. */
+  readonly tlsRootCa?: string;
+  /** Headers sent with every request, such as `Authorization`. */
+  readonly headers?: readonly (readonly [string, string])[];
+  /** Exact advertisement bytes provisioned out of band; fetched when omitted. */
+  readonly advertisement?: Uint8Array;
+  /**
+   * Exact staged (`/v3/capabilities`) advertisement bytes provisioned out of
+   * band; fetched on the first staged transaction when omitted. Either way
+   * it must name the same executor and reply key as `advertisement`.
+   */
+  readonly stagedAdvertisement?: Uint8Array;
+  /** Bounds connecting, which fetches the advertisement. */
+  readonly connectionLimits?: QueryExecutionResourceLimits;
+  /** The ceiling every terminal on this connection is constrained by. */
+  readonly answerLimits?: QueryExecutionResourceLimits;
+  /** Cancels connecting. */
+  readonly cancellation?: QueryCancellation;
+}
+
+/**
+ * A verified connection to a TypeBridge server over the built-in HTTP route.
+ *
+ * Each terminal is one exchange, run off the JavaScript thread under the
+ * query session's policy constrained by this connection's `answerLimits`.
+ */
+export class ProxyConnection implements RuntimeProjectionRemote {
+  readonly #native: NativeProxyConnection;
+
+  private constructor(native: NativeProxyConnection) {
+    this.#native = native;
+    Object.freeze(this);
+  }
+
+  /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
+  static async connect(
+    authority: QueryV2Authority,
+    endpoint: string,
+    options: ProxyConnectionOptions = {},
+  ): Promise<ProxyConnection> {
+    const nativeAuthority = queryV2AuthorityHandle(authority);
+    if (nativeAuthority === undefined) {
+      throw new TypeError("proxy connection requires a type-bridge QueryV2Authority");
+    }
+    if (typeof endpoint !== "string") {
+      throw new TypeError("proxy endpoint must be a string");
+    }
+    const headers = options.headers ?? [];
+    if (
+      !Array.isArray(headers)
+      || !headers.every((header) =>
+        Array.isArray(header)
+        && header.length === 2
+        && typeof header[0] === "string"
+        && typeof header[1] === "string"
+      )
+    ) {
+      throw new TypeError("proxy headers must be [name, value] string pairs");
+    }
+    const advertisement = options.advertisement === undefined
+      ? undefined
+      : ownedByteSnapshot(options.advertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
+    const stagedAdvertisement = options.stagedAdvertisement === undefined
+      ? undefined
+      : ownedByteSnapshot(options.stagedAdvertisement, loadNative().MAX_REMOTE_ENVELOPE_BYTES);
+    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+      loadNative().NodeProxyConnection.connect(
+        nativeAuthority,
+        endpoint,
+        options.tls ?? (options.tlsRootCa === undefined ? "disabled" : "custom_root"),
+        options.tlsRootCa,
+        headers.map(([name]) => name),
+        headers.map(([, value]) => value),
+        advertisement,
+        options.connectionLimits?.nativeHandle(),
+        options.answerLimits?.nativeHandle(),
+        options.cancellation?.nativeHandle(),
+        stagedAdvertisement,
+      )
+    ));
+    return new ProxyConnection(native);
+  }
+
+  /**
+   * Open a staged transaction whose commit is one signed `query-remote/v3`
+   * exchange to `POST /v3/staged`. The staged advertisement is fetched from
+   * `/v3/capabilities` now; nothing else is sent until commit. An omitted
+   * kind is inferred from the staged writes.
+   */
+  async transaction(
+    kind?: StagedTransactionKind,
+    options: { readonly cancellation?: QueryCancellation } = {},
+  ): Promise<StagedTransaction> {
+    const native = await queryV2NativePromise(queryV2NativeCall(() =>
+      this.#native.transaction(kind, options.cancellation?.nativeHandle())
+    ));
+    return new StagedTransaction(native);
+  }
+
+  /** The ceiling every terminal on this connection is constrained by. */
+  get answerLimits(): QueryExecutionResourceLimits {
+    const limits = this.#native.answerLimits;
+    return new QueryExecutionResourceLimits({
+      timeoutMilliseconds: limits.timeoutMilliseconds,
+      items: limits.items,
+      bytes: limits.bytes,
+      graphNodes: limits.graphNodes,
+      attributeValues: limits.attributeValues,
+      collectionMembers: limits.collectionMembers,
+      rolePlayers: limits.rolePlayers,
+      statements: limits.statements,
+    });
+  }
+
+  rows(
+    query: RuntimeProjectionMatchQuery,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: "exactly_one" | "bounded_many",
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.rows(query, orders, offset, limit, cardinality));
+  }
+
+  page(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() =>
+      this.#native.page(query, root, orders, offset, limit, includeTotal)
+    );
+  }
+
+  count(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.count(query, root));
+  }
+
+  exists(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.exists(query, root));
+  }
+
+  reduce(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchBinding | null,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() => this.#native.reduce(query, root, group, reducers, inputs));
+  }
+
+  reduceByField(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchField,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() =>
+      this.#native.reduceByField(query, root, group, reducers, inputs)
+    );
+  }
+
+  reduceByFields(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    groups: RuntimeProjectionMatchField[],
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<RuntimeProjectionMatchResult> {
+    return this.#run(() =>
+      this.#native.reduceByFields(query, root, groups, reducers, inputs)
+    );
+  }
+
+  async #run(
+    terminal: () => Promise<RuntimeProjectionMatchResult>,
+  ): Promise<RuntimeProjectionMatchResult> {
+    return queryV2NativePromise(queryV2NativeCall(terminal));
   }
 }
 

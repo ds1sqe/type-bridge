@@ -1,5 +1,7 @@
 //! Versioned native C boundary for generated TypeBridge schema packages.
 
+// Database one-shot calls await the deeper staged::Transaction::commit future.
+#![recursion_limit = "256"]
 #![deny(missing_docs)]
 
 mod abi;
@@ -12,6 +14,8 @@ mod execution_diagnostic;
 mod generated_preflight;
 mod migration_abi;
 mod migration_runtime;
+mod perf_stages;
+mod plan_builder;
 mod policy;
 mod projected_batch;
 mod projected_create_builder;
@@ -22,6 +26,11 @@ mod query;
 mod relation_crud;
 mod runtime;
 mod schema_package;
+#[cfg(test)]
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
+mod staged;
 mod thing_crud;
 
 pub use abi::{
@@ -37,7 +46,7 @@ pub use execution_diagnostic::{
     TypeBridgeExecutionDiagnosticCategory, TypeBridgeExecutionDiagnosticDetailKind,
     TypeBridgeExecutionDiagnosticDetailViewV1, TypeBridgeExecutionDiagnosticPathKind,
     TypeBridgeExecutionDiagnosticPathViewV1, TypeBridgeExecutionDiagnosticViewV1,
-    TypeBridgeExecutionDiagnostics,
+    TypeBridgeExecutionDiagnostics, TypeBridgeExecutionFailureV1,
 };
 pub use generated_preflight::{
     GENERATED_CREATE_GRAPH_VERSION, GENERATED_CREATE_HOSTED_OBJECT_BYTES_MAX,
@@ -75,6 +84,7 @@ pub use projected_model::{
 pub use projected_token::TypeBridgeProjectedTokenV1;
 pub use projected_value::{TypeBridgeProjectedValue, TypeBridgeProjectedValueKind};
 pub use query::{
+    TypeBridgeProxyConnection, TypeBridgeProxyConnectionOptionsV1, TypeBridgeProxyHeaderV1,
     TypeBridgeQuery, TypeBridgeQueryBinding, TypeBridgeQueryDescriptorV1,
     TypeBridgeQueryExecutionLimitsV1, TypeBridgeQueryField, TypeBridgeQueryFieldReferenceV1,
     TypeBridgeQueryFunction, TypeBridgeQueryFunctionArgumentMemberV1,

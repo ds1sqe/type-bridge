@@ -32,6 +32,15 @@ pythonize = "0.29"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+# Private perf harness; only the off-by-default `perf-stages` feature links it.
+type-bridge-perf = { path = "../perf", default-features = false, optional = true }
+
+[features]
+default = []
+# The private `_perf_stages()` recorder for the perf drivers. Never enabled
+# for shipped wheels.
+perf-stages = ["dep:type-bridge-perf"]
 
 [dev-dependencies]
 sha2 = "0.10"

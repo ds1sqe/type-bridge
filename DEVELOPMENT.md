@@ -77,8 +77,9 @@ duplicated directory snapshot here.
   extending that matrix requires complete artifact and public-consumer checks.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
-- Separately retained V1 query surfaces stay available unless an exact future
-  inventory schedules their removal; they are not schema authority.
+- Generated packages are Python's only typed query API. The raw TypeQL
+  builders (`Query`, `QueryBuilder`) remain and render through the Rust core;
+  they are not schema authority.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
@@ -148,7 +149,7 @@ Python facade builds also run a network-disabled metadata check in the exact
 digest-verified publisher image before entering cross-registry publication.
 
 The separately selected C 2.2.6 path uses `c-release.yml`: read-only verification
-consumes successful same-source master CI artifacts and runs complete V1–V6
+consumes successful same-source master CI artifacts and runs all SDK suites
 and FULL-C acceptance. Protected promotion consumes that exact verification
 run, signs the unchanged bytes and adds only absent or identical assets to
 the ordinary GitHub draft. See the [C release procedure](docs/development/c-release.md)

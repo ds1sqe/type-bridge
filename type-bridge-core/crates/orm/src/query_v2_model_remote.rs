@@ -10,23 +10,24 @@ use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::limits::StructuralLimits;
+use type_bridge_contract::limits::LIMIT_SOURCE_ADVERTISED;
 use type_bridge_contract::query_plan::{QueryInvocation, query_given_rows_capability};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 
 use crate::_registry::DescriptorRegistry;
-use crate::match_request::lowering::preflight_released_match_execution;
+use crate::match_request::provider_order::check_provider_orders;
 use crate::match_request::result_validation::validated_match_result_from_v2;
+use crate::match_request::selected_result_executor::released_model_execution_error;
 use crate::match_request::{
     Capability, MatchError, MatchErrorCategory, MatchErrorPathSegment, ValidatedMatchRequest,
     ValidatedMatchResult,
 };
-use crate::query_execution_limits::QueryExecutionDeadline;
-use crate::query_v2::failure;
-use crate::query_v2_adapter::{
-    MatchRequestAdaptation, V1ResourceEnvelopeReason, adapt_match_request,
+use crate::query_execution_limits::{
+    AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
+use crate::query_v2::failure;
+use crate::query_v2_adapter::adapt_match_request;
 use crate::query_v2_prepared::{
     ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority,
     prepare_validated_remote_query_v2_with_budget,
@@ -176,12 +177,57 @@ impl ClaimedRemoteModelReplyV2 {
             registry,
             request,
         } = self;
-        let outcome = claimed.decode_outcome(response_bytes)?;
+        let (wanted, held) = claimed.answer_budgets();
+        let outcome = claimed
+            .decode_outcome(response_bytes)
+            .map_err(|refusal| answer_limit_refusal(refusal, wanted, held))?;
         check_decode_cancellation(cancellation)?;
         let result = validated_match_result_from_v2(&registry, &request, outcome)?;
         check_decode_cancellation(cancellation)?;
         Ok((request, result, registry))
     }
+}
+
+/// Report an executor's answer-limit refusal the way direct execution does.
+///
+/// The refusal names its limit, the value in force, and where that value
+/// came from: the executor's advertisement when it lowered what the caller
+/// asked for, the caller otherwise. Any other failure passes through
+/// unchanged.
+fn answer_limit_refusal(
+    refusal: Diagnostic,
+    wanted: RemoteLimitsV2,
+    held: RemoteLimitsV2,
+) -> Diagnostic {
+    if refusal.category() != DiagnosticCategory::ResourceLimit
+        || refusal.details().contains_key("limit")
+    {
+        return refusal;
+    }
+    // An executor may report its internal code or the released one.
+    let released = if refusal.code().as_str().starts_with("query_v2_model_") {
+        released_model_execution_error(&refusal)
+            .code()
+            .as_str()
+            .to_owned()
+    } else {
+        refusal.code().as_str().to_owned()
+    };
+    let held = QueryExecutionResourceLimits::from_remote(held);
+    let Some((limit, maximum, source)) = held.refusal_details(AnswerTransport::Proxy, &released)
+    else {
+        return refusal;
+    };
+    let wanted = QueryExecutionResourceLimits::from_remote(wanted);
+    let source = if wanted.get(limit).is_some_and(|wanted| maximum < wanted) {
+        LIMIT_SOURCE_ADVERTISED
+    } else {
+        source
+    };
+    refusal
+        .with_detail("limit", limit)
+        .with_detail("maximum", i64::try_from(maximum).unwrap_or(i64::MAX))
+        .with_detail("source", source)
 }
 
 fn check_decode_cancellation(
@@ -258,20 +304,12 @@ pub fn prepare_remote_model_query_v2_with_budget(
         )
     })?;
     check_prepare_budget(deadline, cancellation)?;
-    preflight_released_match_execution(&registry, &request)?;
+    check_provider_orders(&registry, &request)?;
     check_prepare_budget(deadline, cancellation)?;
 
-    let adapted = match adapt_match_request(
-        &request,
-        &registry,
-        &authority.context(),
-        StructuralLimits::CANONICAL,
-    )? {
-        MatchRequestAdaptation::Adapted(adapted) => adapted,
-        MatchRequestAdaptation::LegacyRequired(reason) => {
-            return Err(resource_envelope_failure(reason).into());
-        }
-    };
+    // A request that does not fit the session's limits is refused here,
+    // before anything is sent.
+    let adapted = adapt_match_request(&request, &registry, &authority.context())?;
     check_prepare_budget(deadline, cancellation)?;
     let invocation = QueryInvocation::new(
         adapted.validated().plan(),
@@ -323,22 +361,6 @@ fn check_prepare_budget(
     Ok(())
 }
 
-fn resource_envelope_failure(reason: V1ResourceEnvelopeReason) -> Diagnostic {
-    let message = match reason {
-        V1ResourceEnvelopeReason::LiteralExceedsCanonicalArtifact => {
-            "released model-query literal exceeds the canonical V2 remote artifact ceiling"
-        }
-        V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact => {
-            "adapted model query exceeds the canonical V2 remote artifact ceiling"
-        }
-    };
-    failure(
-        DiagnosticCategory::ResourceLimit,
-        "query_remote_v2_model_artifact_limit",
-        message,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -362,11 +384,13 @@ mod tests {
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
     use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
+    use type_bridge_contract::limits::{QueryLimits, StructuralLimits};
+
     use super::*;
     use crate::_attribute::ValueType;
     use crate::_descriptor::{EntityDescriptor, OwnedAttributeDescriptor};
     use crate::_entity::Annotation;
-    use crate::_schema::{SchemaInfo, generator::generate_define_block};
+    use crate::_schema::SchemaInfo;
     use crate::match_request::{
         BindingId, BoundFieldId, FetchShape, FetchSlot, FieldId, MatchBinding, MatchErrorCategory,
         MatchErrorPathSegment, MatchMode, MatchOperation, MatchOrder, MatchPlan, MatchRequest,
@@ -415,7 +439,7 @@ mod tests {
 
     fn matching_authority(registry: &DescriptorRegistry) -> QueryAuthority {
         let schema = SchemaInfo::from_descriptors(&registry.snapshot());
-        let source = generate_define_block(&schema);
+        let source = schema.to_typeql().expect("fixture schema");
         let declared = released_typeql_to_declared_projection(
             DocumentId::new("remote-model-nullable-order.tql").expect("document"),
             &source,
@@ -550,6 +574,266 @@ functions:
             &[MatchErrorPathSegment::Field(nullable_field)]
         );
         assert!(error.details().is_empty());
+    }
+
+    fn try_prepare_person_count(
+        limits: QueryLimits,
+        advertisement_bytes: &[u8],
+        compose: impl Fn(
+            crate::match_request::QueryHandle,
+            crate::match_request::PredicateHandle,
+            usize,
+        ) -> crate::match_request::QueryHandle,
+    ) -> Result<(PendingRemoteModelQueryV2, QueryAuthority), RemoteModelQueryV2Error> {
+        let registry = Arc::new(nullable_order_registry());
+        let authority = matching_authority(&registry);
+        let session = SessionHandle::with_limits(Arc::clone(&registry), limits);
+        let root = session.exact("person").expect("person binding");
+        let shape = session.positional([root.one()]).expect("shape");
+        let name = root.field("name").expect("name field");
+        let mut query = session.query(shape).expect("query");
+        for index in 0..38 {
+            let term = name.compare_value(
+                crate::match_request::ComparisonOp::NotEqual,
+                crate::AttributeValue::String(format!("excluded-{index}")),
+            );
+            query = compose(query, term, index);
+        }
+        let validated = match query.validate_count_by(&root) {
+            Ok(validated) => validated,
+            Err(crate::OrmError::Match(error)) => return Err(error.into()),
+            Err(error) => panic!("unexpected validation failure: {error:?}"),
+        };
+        prepare_remote_model_query_v2(
+            &authority,
+            &registry,
+            validated,
+            advertisement_bytes,
+            RemoteLimitsV2 {
+                deadline_ms: Some(1_000),
+                max_bytes: 4_096,
+                max_items: 10,
+                max_collection_members: 10,
+                max_graph_nodes: 10,
+                max_attribute_values: 10,
+                max_role_players: 10,
+                max_statements: 3,
+            },
+        )
+        .map(|pending| (pending, authority))
+    }
+
+    fn prepare_person_count(
+        limits: QueryLimits,
+        compose: impl Fn(
+            crate::match_request::QueryHandle,
+            crate::match_request::PredicateHandle,
+            usize,
+        ) -> crate::match_request::QueryHandle,
+    ) -> RemoteModelQueryV2Error {
+        match try_prepare_person_count(limits, b"not an advertisement", compose) {
+            Err(error) => error,
+            Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
+        }
+    }
+
+    fn contract_diagnostic(error: RemoteModelQueryV2Error) -> Diagnostic {
+        match error {
+            RemoteModelQueryV2Error::Diagnostic(diagnostic) => diagnostic,
+            RemoteModelQueryV2Error::Match(error) => {
+                panic!("expected a contract diagnostic, got {error:?}")
+            }
+        }
+    }
+
+    /// Alternating disjunction and conjunction is real nesting that no
+    /// flattening removes: thirty-eight terms nest thirty-seven levels deep.
+    fn nested_person_count(limits: QueryLimits) -> RemoteModelQueryV2Error {
+        match try_nested_person_count(limits, b"not an advertisement") {
+            Err(error) => error,
+            Ok(_) => panic!("an undecodable advertisement cannot prepare a request"),
+        }
+    }
+
+    fn try_nested_person_count(
+        limits: QueryLimits,
+        advertisement_bytes: &[u8],
+    ) -> Result<(PendingRemoteModelQueryV2, QueryAuthority), RemoteModelQueryV2Error> {
+        let nested = std::cell::RefCell::new(None::<crate::match_request::PredicateHandle>);
+        try_prepare_person_count(limits, advertisement_bytes, |query, term, index| {
+            let combined = match nested.borrow().as_ref() {
+                None => term,
+                Some(previous) if index % 2 == 0 => previous.and(&term).expect("and"),
+                Some(previous) => previous.or(&term).expect("or"),
+            };
+            *nested.borrow_mut() = Some(combined.clone());
+            if index == 37 {
+                query.where_predicate(combined).expect("attached predicate")
+            } else {
+                query
+            }
+        })
+    }
+
+    #[test]
+    fn remote_model_preparation_adapts_a_wide_where_conjunction() {
+        // Thirty-eight `where` calls once nested past the canonical codec
+        // depth. Adaptation now succeeds, so the only failure left is the
+        // deliberately undecodable advertisement.
+        let diagnostic = contract_diagnostic(prepare_person_count(
+            QueryLimits::CANONICAL,
+            |query, term, _| query.where_predicate(term).expect("attached predicate"),
+        ));
+        assert_ne!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+    }
+
+    #[test]
+    fn remote_model_preparation_reports_the_limit_that_refused_adaptation() {
+        let diagnostic = contract_diagnostic(nested_person_count(QueryLimits::CANONICAL));
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
+        use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+        let detail = |key: &str| diagnostic.details().get(key).cloned();
+        assert_eq!(
+            detail("maximum_depth"),
+            Some(DiagnosticDetailValue::Long(64))
+        );
+        assert_eq!(
+            detail("limit"),
+            Some(DiagnosticDetailValue::Text("canonical_depth".into()))
+        );
+        assert_eq!(detail("maximum"), Some(DiagnosticDetailValue::Long(64)));
+        assert_eq!(
+            detail("source"),
+            Some(DiagnosticDetailValue::Text("default".into()))
+        );
+    }
+
+    #[test]
+    fn a_session_with_raised_depth_prepares_the_plan_default_limits_refuse() {
+        let mut raised = QueryLimits::CANONICAL;
+        raised.codec.max_depth = type_bridge_contract::limits::MAX_SUPPORTED_CANONICAL_DEPTH;
+        let raised = raised.validate().expect("raised limits");
+        // Adaptation and encoding pass; only the advertisement is undecodable.
+        let diagnostic = contract_diagnostic(nested_person_count(raised));
+        assert_ne!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+    }
+
+    #[test]
+    fn a_session_with_lowered_limits_refuses_what_default_limits_accept() {
+        let mut lowered = QueryLimits::CANONICAL;
+        lowered.structural.boolean_terms = 8;
+        let lowered = lowered.validate().expect("lowered limits");
+        let error = prepare_person_count(lowered, |query, term, _| {
+            query.where_predicate(term).expect("attached predicate")
+        });
+        let RemoteModelQueryV2Error::Match(error) = error else {
+            panic!("a lowered structural limit refuses at request validation");
+        };
+        assert_eq!(error.category(), MatchErrorCategory::ResourceLimit);
+        assert_eq!(error.code().as_str(), "structural_limit_exceeded");
+        let detail = |key: &str| error.details().get(key).cloned();
+        assert_eq!(
+            detail("limit"),
+            Some(crate::match_request::MatchErrorDetailValue::Text(
+                "boolean_terms".into()
+            ))
+        );
+        assert_eq!(
+            detail("maximum"),
+            Some(crate::match_request::MatchErrorDetailValue::Unsigned(8))
+        );
+        assert_eq!(
+            detail("source"),
+            Some(crate::match_request::MatchErrorDetailValue::Text(
+                "configured".into()
+            ))
+        );
+    }
+
+    fn executor_advertisement(limits: QueryLimits) -> RemoteCapabilities {
+        let mut capabilities = query_plan_v2_capability_vocabulary()
+            .iter()
+            .cloned()
+            .collect::<QueryCapabilitySet>();
+        for capability in query_remote_v2_required_capabilities(false) {
+            capabilities.insert(capability);
+        }
+        RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("remote-limits-executor", "epoch-00000000001")
+                .expect("executor binding"),
+            RemoteReplySigningKey::from_secret_bytes([0x62; 32]).public_key(),
+        )
+        .with_query_limits(limits)
+        .expect("advertised limits")
+    }
+
+    fn raised_depth_limits() -> QueryLimits {
+        let mut raised = QueryLimits::CANONICAL;
+        raised.codec.max_depth = type_bridge_contract::limits::MAX_SUPPORTED_CANONICAL_DEPTH;
+        raised.validate().expect("raised limits")
+    }
+
+    #[test]
+    fn an_executor_admits_what_it_advertises_and_a_default_receiver_refuses_it() {
+        let raised = raised_depth_limits();
+        let advertisement = executor_advertisement(raised);
+        let (pending, authority) = try_nested_person_count(
+            raised,
+            &advertisement.encode().expect("advertisement bytes"),
+        )
+        .unwrap_or_else(|error| panic!("matching limits prepare the request: {error:?}"));
+
+        // The executor decodes and validates under its own advertisement.
+        crate::query_v2_remote::preflight_remote_request_v2(
+            pending.request_bytes(),
+            &authority.context(),
+            &advertisement,
+            crate::session::backend::QueryV2AnswerLimits {
+                answer: crate::session::backend::BoundedAnswerLimits {
+                    max_items: 100,
+                    max_bytes: 1 << 20,
+                    deadline: None,
+                    cancellation: AnswerCancellation::default(),
+                },
+                max_collection_members: 1 << 16,
+            },
+        )
+        .unwrap_or_else(|_| panic!("the executor admits a plan within its advertised limits"));
+
+        // The same bytes are beyond a receiver holding the default limits,
+        // whatever the sender was configured with.
+        let refused = type_bridge_contract::query_remote_v2::RemoteQueryRequestV2::decode(
+            pending.request_bytes(),
+        )
+        .expect_err("a default receiver refuses the deeper request");
+        assert_eq!(refused.code().as_str(), "canonical_json_too_deep");
+    }
+
+    #[test]
+    fn a_raised_session_is_refused_before_sending_by_a_default_advertisement() {
+        let advertisement = executor_advertisement(QueryLimits::CANONICAL);
+        let error = try_nested_person_count(
+            raised_depth_limits(),
+            &advertisement.encode().expect("advertisement bytes"),
+        )
+        .err()
+        .expect("the advertisement is stricter than the session");
+        let diagnostic = contract_diagnostic(error);
+        use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+        assert_eq!(diagnostic.category(), DiagnosticCategory::ResourceLimit);
+        assert_eq!(diagnostic.code().as_str(), "canonical_json_too_deep");
+        let detail = |key: &str| diagnostic.details().get(key).cloned();
+        assert_eq!(
+            detail("limit"),
+            Some(DiagnosticDetailValue::Text("canonical_depth".into()))
+        );
+        assert_eq!(detail("maximum"), Some(DiagnosticDetailValue::Long(64)));
+        assert_eq!(
+            detail("source"),
+            Some(DiagnosticDetailValue::Text("advertised".into()))
+        );
     }
 
     #[test]
@@ -746,7 +1030,7 @@ functions:
             )
             .expect("model-only remote lowering")
             .expect("model-only compatibility program");
-        assert!(model_only_lowered.typeql().starts_with("match\n"));
+        assert!(model_only_lowered.typeql().starts_with("match "));
         assert!(
             model_only_lowered
                 .typeql()
@@ -806,7 +1090,7 @@ functions:
         )
         .expect("remote function plan lowers through the provider compatibility compiler")
         .expect("adapted model plan has a compatibility program");
-        assert!(lowered.typeql().starts_with("given $g0: integer;\nmatch\n"));
+        assert!(lowered.typeql().starts_with("given $g0: integer; match "));
         let qualifying = lowered
             .typeql()
             .find("let $c0 = qualifying-score($b0, $g0)")
@@ -1282,5 +1566,73 @@ functions:
         };
         assert_eq!(replay.category(), DiagnosticCategory::Integrity);
         assert_eq!(replay.code().as_str(), "query_remote_v2_reply_replayed");
+    }
+}
+
+#[cfg(test)]
+mod answer_limit_refusal_tests {
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+
+    use super::*;
+
+    fn budget(items: u64) -> RemoteLimitsV2 {
+        RemoteLimitsV2 {
+            max_items: items,
+            ..QueryExecutionResourceLimits::default().remote()
+        }
+    }
+
+    fn refusal(code: &'static str) -> Diagnostic {
+        failure(DiagnosticCategory::ResourceLimit, code, "refused")
+    }
+
+    fn details(diagnostic: &Diagnostic) -> (Option<String>, Option<i64>, Option<String>) {
+        let text = |key: &str| match diagnostic.details().get(key) {
+            Some(DiagnosticDetailValue::Text(value)) => Some(value.clone()),
+            _ => None,
+        };
+        let long = match diagnostic.details().get("maximum") {
+            Some(DiagnosticDetailValue::Long(value)) => Some(*value),
+            _ => None,
+        };
+        (text("limit"), long, text("source"))
+    }
+
+    #[test]
+    fn an_executor_refusal_names_its_limit_and_where_the_ceiling_came_from() {
+        // The executor's ceiling was the stricter one.
+        let advertised = answer_limit_refusal(
+            refusal("processed_item_limit"),
+            budget(1_000_000),
+            budget(65_536),
+        );
+        assert_eq!(
+            details(&advertised),
+            (
+                Some("items".into()),
+                Some(65_536),
+                Some("advertised".into())
+            )
+        );
+        // The caller's own configured budget was.
+        let configured =
+            answer_limit_refusal(refusal("query_v2_model_item_limit"), budget(10), budget(10));
+        assert_eq!(
+            details(&configured),
+            (Some("items".into()), Some(10), Some("configured".into()))
+        );
+        // Neither side configured anything.
+        let default = answer_limit_refusal(
+            refusal("solution_scan_limit"),
+            budget(65_536),
+            budget(65_536),
+        );
+        assert_eq!(
+            details(&default),
+            (Some("items".into()), Some(65_536), Some("default".into()))
+        );
+        // A refusal that reports no answer dimension is left alone.
+        let other = answer_limit_refusal(refusal("row_window_exceeded"), budget(1), budget(1));
+        assert!(other.details().is_empty());
     }
 }

@@ -12,8 +12,7 @@ use type_bridge::{ConnectionOptions, Database as GeneratedDatabase};
 use type_bridge_orm::session::{ConnectOptions, Database as AdminDatabase, TxType};
 
 const REPORT_FORMAT: &str = "typebridge.projected-live-report/v1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
-const SERVER_VERSION: &str = "3.12.3";
+const PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_PROFILE";
 const OUTPUT_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_REPORT";
 const ADDRESS_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_DATABASE";
@@ -26,22 +25,21 @@ const MAX_REPORT_BYTES: usize = 256 * 1024;
 const MAX_ENDPOINT_BYTES: usize = 4096;
 const MAX_DATABASE_BYTES: usize = 256;
 const MAX_PATH_BYTES: usize = 4096;
-const EXPECTED_SEMANTIC_FINGERPRINT: &str = "{\"algorithm\":\"sha256\",\"canonicalization\":\"typebridge.schema-canonical-json/v1\",\"digest\":\"3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8\",\"domain\":\"typebridge.schema.semantic\",\"semantic_profile\":\"typedb-3.12.1/v1\"}";
 
 const AUTHORITY_FILES: [(&str, &str, &str); 3] = [
     (
         "schema",
-        "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+        "tests/contracts/sdk_conformance/models/schema.yaml",
         "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
     ),
     (
         "journey",
-        "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
-        "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+        "tests/contracts/sdk_conformance/models/journey.json",
+        "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f",
     ),
     (
         "provider",
-        "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+        "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
         "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
     ),
 ];
@@ -134,6 +132,35 @@ fn required_environment(name: &'static str) -> ProducerResult<String> {
         ));
     }
     Ok(value)
+}
+
+/// The models matrix entry the harness selected: the profile this report
+/// declares, its exact live server, and its expected semantic fingerprint.
+struct Profile {
+    semantic_profile: String,
+    server_version: String,
+    semantic_fingerprint: Value,
+}
+
+fn parse_profile() -> ProducerResult<Profile> {
+    let raw = required_environment(PROFILE_ENV)?;
+    let entry: Value = serde_json::from_str(&raw)
+        .map_err(|error| ProducerError::caused("invalid_profile", PROFILE_ENV, error))?;
+    let text = |field: &str| {
+        entry[field].as_str().map(str::to_owned).ok_or_else(|| {
+            ProducerError::new("invalid_profile", format!("{PROFILE_ENV} lacks {field}"))
+        })
+    };
+    Ok(Profile {
+        semantic_profile: text("semantic_profile")?,
+        server_version: text("live_server_version")?,
+        semantic_fingerprint: entry["expected_fingerprints"]["semantic"].clone(),
+    })
+}
+
+fn generated_semantic_fingerprint_matches(profile: &Profile) -> bool {
+    serde_json::from_str::<Value>(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .is_ok_and(|generated| generated == profile.semantic_fingerprint)
 }
 
 fn parse_config() -> ProducerResult<Config> {
@@ -306,7 +333,7 @@ fn load_authority(repository: &Path) -> ProducerResult<Authority> {
         if digest != expected_digest {
             return Err(ProducerError::new(
                 "authority_hash_mismatch",
-                format!("Projected {label} is not the frozen Sdk V3 authority"),
+                format!("Projected {label} is not the frozen Models authority"),
             ));
         }
         report.insert(
@@ -329,11 +356,11 @@ fn load_authority(repository: &Path) -> ProducerResult<Authority> {
     })
 }
 
-fn require_generated_package() -> ProducerResult<()> {
-    if SEMANTIC_SCHEMA_FINGERPRINT_JSON != EXPECTED_SEMANTIC_FINGERPRINT {
+fn require_generated_package(profile: &Profile) -> ProducerResult<()> {
+    if !generated_semantic_fingerprint_matches(profile) {
         return Err(ProducerError::new(
             "generated_package_mismatch",
-            "generated crate is not the exact Sdk V3 semantic projection",
+            "generated crate is not the exact Models semantic projection",
         ));
     }
     Ok(())
@@ -1039,7 +1066,11 @@ async fn run_journey(database: &GeneratedDatabase<AppSchema>) -> ProducerResult<
     }))
 }
 
-async fn execute_live(config: &Config, provider_typeql: &str) -> ProducerResult<Value> {
+async fn execute_live(
+    config: &Config,
+    server_version: &str,
+    provider_typeql: &str,
+) -> ProducerResult<Value> {
     let admin_options = ConnectOptions {
         http_port: config.http_port,
         tls: false,
@@ -1065,10 +1096,10 @@ async fn execute_live(config: &Config, provider_typeql: &str) -> ProducerResult<
                 "provider did not expose an authoritative server version",
             )
         })?;
-        if detected.to_string() != SERVER_VERSION {
+        if detected.to_string() != server_version {
             return Err(ProducerError::new(
                 "provider_version_mismatch",
-                format!("expected {SERVER_VERSION}, detected {detected}"),
+                format!("expected {server_version}, detected {detected}"),
             ));
         }
         if live(
@@ -1097,7 +1128,7 @@ async fn execute_live(config: &Config, provider_typeql: &str) -> ProducerResult<
             .await,
             "connect generated Rust database",
         )?;
-        let database = live(unbound.with_schema(SCHEMA), "bind generated Sdk V3 package")?;
+        let database = live(unbound.with_schema(SCHEMA), "bind generated Models package")?;
         let observations = run_journey(&database).await;
         drop(database);
         observations
@@ -1206,16 +1237,18 @@ fn publish_create_new(path: &Path, bytes: &[u8]) -> ProducerResult<()> {
 }
 
 async fn run() -> ProducerResult<()> {
-    require_generated_package()?;
+    let profile = parse_profile()?;
+    require_generated_package(&profile)?;
     let config = parse_config()?;
     let authority = load_authority(&config.repository)?;
-    let observations = execute_live(&config, &authority.provider_typeql).await?;
+    let observations =
+        execute_live(&config, &profile.server_version, &authority.provider_typeql).await?;
     let report = json!({
         "authority": authority.report,
         "binding": "rust",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile.semantic_profile,
     });
     let bytes = canonical_report_bytes(report)?;
     publish_create_new(&config.output, &bytes)

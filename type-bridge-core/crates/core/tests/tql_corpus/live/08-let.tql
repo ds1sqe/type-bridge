@@ -1,0 +1,1 @@
+match let $value = (2 + 3) * 2; fetch {"value": $value};

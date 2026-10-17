@@ -10,12 +10,75 @@
     "public_support_authorized": false
   },
   "abi": {
-    "decision": "no-change",
-    "version": "1.6.0",
+    "decision": "additive-1.7",
+    "version": "1.7.0",
+    "package_metadata_version": "1.6.0",
+    "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.7.0; CMake reports 1.7.0 and accepts 1.6 and 1.7 requests, EXACT included.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "28cd6cfcb848d6141b1ad4b1594bf35ac5424a05702433367e824ccda0a383fd",
+    "contract_sha256": "6d6a738ac18f7b4e4a05cde8d46d5c3312b6fd41aafac25ec65a436e4afdafff",
     "static_linkage": "unsupported",
-    "shared_linkage": "artifact"
+    "shared_linkage": "artifact",
+    "accepted_descriptor_minors": [
+      6,
+      7
+    ],
+    "added_exports": [
+      "type_bridge_database_transaction",
+      "type_bridge_execution_diagnostics_failure_get_v1",
+      "type_bridge_pending_answer",
+      "type_bridge_pending_free",
+      "type_bridge_plan_builder_build",
+      "type_bridge_plan_builder_compare",
+      "type_bridge_plan_builder_count",
+      "type_bridge_plan_builder_delete",
+      "type_bridge_plan_builder_delete_field",
+      "type_bridge_plan_builder_delete_player",
+      "type_bridge_plan_builder_exact",
+      "type_bridge_plan_builder_exists",
+      "type_bridge_plan_builder_expr_arith",
+      "type_bridge_plan_builder_expr_call",
+      "type_bridge_plan_builder_field",
+      "type_bridge_plan_builder_free",
+      "type_bridge_plan_builder_input",
+      "type_bridge_plan_builder_insert",
+      "type_bridge_plan_builder_let",
+      "type_bridge_plan_builder_links",
+      "type_bridge_plan_builder_new",
+      "type_bridge_plan_builder_owns",
+      "type_bridge_plan_builder_put",
+      "type_bridge_plan_builder_returning",
+      "type_bridge_plan_builder_role",
+      "type_bridge_plan_builder_row",
+      "type_bridge_plan_builder_subtypes",
+      "type_bridge_plan_builder_thing_field",
+      "type_bridge_plan_builder_thing_player",
+      "type_bridge_plan_builder_type",
+      "type_bridge_plan_builder_update",
+      "type_bridge_plan_builder_update_player",
+      "type_bridge_plan_builder_value_boolean",
+      "type_bridge_plan_builder_value_date",
+      "type_bridge_plan_builder_value_datetime",
+      "type_bridge_plan_builder_value_datetime_tz",
+      "type_bridge_plan_builder_value_decimal",
+      "type_bridge_plan_builder_value_double",
+      "type_bridge_plan_builder_value_duration",
+      "type_bridge_plan_builder_value_long",
+      "type_bridge_plan_builder_value_string",
+      "type_bridge_plan_free",
+      "type_bridge_plan_v3_canonical_bytes",
+      "type_bridge_plan_v3_decode",
+      "type_bridge_proxy_connection_close",
+      "type_bridge_proxy_connection_open_v1",
+      "type_bridge_proxy_connection_transaction",
+      "type_bridge_proxy_query_execute_v1",
+      "type_bridge_query_session_open_with_limits_v1",
+      "type_bridge_staged_transaction_close",
+      "type_bridge_staged_transaction_commit",
+      "type_bridge_staged_transaction_commit_retry",
+      "type_bridge_staged_transaction_rollback",
+      "type_bridge_staged_transaction_stage",
+      "type_bridge_write_transaction_rollback_keep"
+    ]
   },
   "identities": {
     "cli": {
@@ -43,7 +106,7 @@
   },
   "compatibility": {
     "runtime_abi": {
-      "exact": "1.6.0"
+      "exact": "1.7.0"
     },
     "required_pre_io_checks": [
       "product-version",
@@ -129,7 +192,7 @@
       "publication-disposition"
     ]
   },
-  "full_c_audit_contract": "tests/contracts/c-full-sdk-audit-v1.json",
+  "full_c_audit_contract": "tests/contracts/c-full-sdk-audit.json",
   "artifact_policy": {
     "regular_files_only": true,
     "absolute_paths": false,
@@ -178,35 +241,39 @@
   "source_authorities": [
     {
       "path": "type-bridge-core/crates/c/Cargo.toml",
-      "sha256": "c4faca5407cea9785d65ec793cf28ae463491cb88aa7f70f629e32124878685d"
+      "sha256": "6406ab8c4ee2a3079ebfb1fb49e52421854a3269d58ef2b33468833f4d416bda"
     },
     {
       "path": "type-bridge-core/crates/c/CMakeLists.txt",
-      "sha256": "1d49298c8d57f079b4df902c650697154a383e4085a3d8d41f18d1e3f4859b8b"
+      "sha256": "35f574c6116f63b997752a3bdd8ab9804b3fc8f81624139439067eedca331ebc"
     },
     {
       "path": "type-bridge-core/crates/c/cmake/TypeBridgeConfig.cmake.in",
-      "sha256": "4e8e9f5740b0892625f58f86cb16f849bd31453d16ff500c1fb8b40ed07ee897"
+      "sha256": "f70eb547519cea4f3baacad98d198d4127d4c63598832a3c154c92344d1c3641"
+    },
+    {
+      "path": "type-bridge-core/crates/c/cmake/TypeBridgeConfigVersion.cmake.in",
+      "sha256": "6a717c5a5a9521806cb86c81d61e1a86071072bc3095993a2616793ad888096d"
     },
     {
       "path": "type-bridge-core/crates/c/cmake/type-bridge.pc.in",
-      "sha256": "46ff15b1455eaa70bcec61510e3b3ea2c598f906a2ffac09b35e87375b2e12d4"
+      "sha256": "0eaa7c510bb003272d9a14178526a2a9585fba1331219f38970a21823e25d38d"
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
+      "sha256": "6eb11158fbb5ad8f2fe7e016e490f1c20f3952e0bec5b6d916c38c8965e4f82b"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",
-      "sha256": "08d7f47d1ec93496f1a66090daf41d1b775bfccdb1a9a864904dd7d63a7d2324"
+      "sha256": "e07854b1ba2d53656f68870827443962df4f822020aa899de2194aaf50c7de7b"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.cmake.in",
-      "sha256": "02aeb269001903341031ebc0371baa9872ee7813c8d3d5031d3b459c643f114b"
+      "sha256": "5b3a03ff97bedd3001a333a6518807921cb945ff3ace8bd910a0709a96553148"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in",
-      "sha256": "4c8856278d69889c4dea80aab7eeb2bf9b047a137056ed7222032c64eb611f38"
+      "sha256": "a496beec69861638bf8088b8a44ca1eb627e6121f4e401c1298b731f009dcf0b"
     }
   ]
 }

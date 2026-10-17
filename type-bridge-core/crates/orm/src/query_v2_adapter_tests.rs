@@ -15,7 +15,6 @@ use crate::_entity::Annotation;
 use crate::_registry::DescriptorRegistry;
 use crate::AttributeValue;
 use crate::ValueType;
-use crate::match_request::lowering::{LoweredMatchExecution, lower_match_execution};
 use crate::match_request::{
     BindingId as V1BindingId, BindingPair, BoundFieldId, ComparisonOp, DescriptorId, FetchShape,
     FetchSlot, FieldId, MatchBinding, MatchExpr, MatchMode, MatchOperation, MatchOrder, MatchPlan,
@@ -24,14 +23,14 @@ use crate::match_request::{
 };
 use crate::query_v2::lower_validated_query;
 use crate::query_v2_adapter::{
-    AdaptedMatchRequest, MatchRequestAdaptation, MatchRequestAdapterAuthority, adapt_match_request,
-    adapt_value,
+    AdaptedMatchRequest, MatchRequestAdapterAuthority, adapt_match_request, adapt_value,
 };
 use crate::query_v2_compatibility::{
     CompatibilityProviderPlan, lower_validated_compatibility_query,
 };
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
+use type_bridge_contract::diagnostic::{DiagnosticCategory, DiagnosticDetailValue};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
@@ -394,104 +393,26 @@ fn adapt(
     let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
         .expect("corpus request passes V1 validation");
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
-    match adapt_match_request(&validated, &registry, &context, StructuralLimits::CANONICAL)? {
-        MatchRequestAdaptation::Adapted(adapted) => Ok(adapted),
-        MatchRequestAdaptation::LegacyRequired(reason) => panic!(
-            "small adapter fixture unexpectedly requires the V1 resource fallback: {reason:?}"
-        ),
-    }
+    adapt_match_request(&validated, &registry, &context)
 }
 
-fn assert_provider_ast_parity(
-    registry: &DescriptorRegistry,
-    validated: &crate::match_request::ValidatedMatchRequest,
-    adapted: &AdaptedMatchRequest,
-) {
-    let direct =
-        lower_match_execution(registry, validated).expect("released typed lowering succeeds");
+/// Lower one adapted request to the provider plan the executor runs.
+fn provider_plan(adapted: &AdaptedMatchRequest) -> CompatibilityProviderPlan {
     let invocation = QueryInvocation::new(
         adapted.validated().plan(),
         adapted.operation(),
         adapted.inputs().to_vec(),
     )
     .expect("adapted invocation");
-    let compatibility =
-        lower_validated_compatibility_query(adapted.validated(), &invocation, adapted.operation())
-            .expect("compatibility lowering succeeds")
-            .expect("adapter-authored plan has one compatibility provider plan");
-    match (direct, compatibility.provider_plan()) {
-        (
-            LoweredMatchExecution::FetchRows(direct),
-            CompatibilityProviderPlan::Rows {
-                statement,
-                tuple_proof,
-            },
-        ) => {
-            assert_eq!(&direct, statement);
-            assert!(tuple_proof.is_none());
-        }
-        (
-            LoweredMatchExecution::ExactlyOneBy {
-                selection,
-                evidence,
-            },
-            CompatibilityProviderPlan::Rows {
-                statement,
-                tuple_proof,
-            },
-        ) => {
-            // V2 executes the two-row terminal selection directly. The
-            // released evidence statement differs only in window/order; its
-            // targets, fields, predicate, projection, and distinctness are the
-            // exact same cross-band typed vocabulary.
-            assert_eq!(&selection, statement);
-            assert_eq!(tuple_proof.as_ref(), Some(&selection));
-            assert_eq!(evidence.targets, statement.targets);
-            assert_eq!(evidence.fields, statement.fields);
-            assert_eq!(evidence.predicate, statement.predicate);
-            assert_eq!(evidence.projection, statement.projection);
-            assert_eq!(evidence.distinct, statement.distinct);
-        }
-        (
-            LoweredMatchExecution::CountBy { root, scan: direct },
-            CompatibilityProviderPlan::DistinctCount { scan },
-        ) => {
-            assert_eq!(root.get(), scan.root);
-            assert_eq!(&direct, scan);
-        }
-        (
-            LoweredMatchExecution::ExistsBy { root, scan: direct },
-            CompatibilityProviderPlan::DistinctExists { scan },
-        ) => {
-            assert_eq!(root.get(), scan.root);
-            assert_eq!(&direct, scan);
-        }
-        (
-            LoweredMatchExecution::PageBy {
-                root,
-                total,
-                selection,
-                rematch,
-            },
-            CompatibilityProviderPlan::Page {
-                selection: adapted_selection,
-                total: adapted_total,
-                rematch: adapted_rematch,
-            },
-        ) => {
-            assert_eq!(root.get(), adapted_selection.root);
-            assert_eq!(selection.as_ref(), adapted_selection);
-            assert_eq!(&total, adapted_total);
-            assert_eq!(&rematch, adapted_rematch);
-        }
-        (direct, adapted) => {
-            panic!("released/adapted provider plan variants diverged: {direct:?} vs {adapted:?}")
-        }
-    }
+    lower_validated_compatibility_query(adapted.validated(), &invocation, adapted.operation())
+        .expect("compatibility lowering succeeds")
+        .expect("adapter-authored plan has one compatibility provider plan")
+        .provider_plan()
+        .clone()
 }
 
 #[test]
-fn production_adapter_provider_asts_are_band_neutral_for_every_released_operation() {
+fn every_released_operation_lowers_to_its_provider_plan() {
     let registry = registry();
     let authority = MatchRequestAdapterAuthority::from_registry(&registry)
         .expect("production authority projects");
@@ -500,75 +421,135 @@ fn production_adapter_provider_asts_are_band_neutral_for_every_released_operatio
             binding: V1BindingId::new(0),
         }],
     };
-    let cases = vec![
-        (representative_plan(), fetch_rows_operation()),
-        (
+    let lower = |plan: MatchPlan, operation: MatchOperation| {
+        let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
+            .expect("released operation validates");
+        let adapted = adapt_match_request(&validated, &registry, &authority.context())
+            .expect("released operation adapts");
+        provider_plan(&adapted)
+    };
+    let rows = |window: Window, cardinality: RowCardinality| {
+        lower(
             representative_plan(),
             MatchOperation::FetchRows {
                 output: one.clone(),
                 order: Vec::new(),
-                window: Window {
-                    offset: 0,
-                    limit: 1,
-                },
-                cardinality: RowCardinality::ExactlyOne,
+                window,
+                cardinality,
             },
-        ),
-        (
+        )
+    };
+    let page = |window: Window, include_total: bool| {
+        lower(
             representative_plan(),
             MatchOperation::PageBy {
                 root: V1BindingId::new(0),
                 output: one.clone(),
                 order: Vec::new(),
-                window: Window {
-                    offset: 1,
-                    limit: 2,
-                },
-                include_total: false,
+                window,
+                include_total,
             },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::PageBy {
-                root: V1BindingId::new(0),
-                output: one,
-                order: Vec::new(),
-                window: Window {
-                    offset: 0,
-                    limit: 3,
-                },
-                include_total: true,
-            },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::CountBy {
-                root: V1BindingId::new(0),
-            },
-        ),
-        (
-            representative_plan(),
-            MatchOperation::ExistsBy {
-                root: V1BindingId::new(0),
-            },
-        ),
-        (inherited_role_plan(), fetch_rows_operation()),
-    ];
-
-    for (plan, operation) in cases {
-        let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
-            .expect("released operation validates");
-        let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-            &validated,
-            &registry,
-            &authority.context(),
-            StructuralLimits::CANONICAL,
         )
-        .expect("released operation adapts") else {
-            panic!("small released operation must not take the artifact-size fallback")
+    };
+
+    // A bounded window is sorted and cut by the provider.
+    let CompatibilityProviderPlan::Rows {
+        statement,
+        tuple_proof: None,
+    } = rows(
+        Window {
+            offset: 3,
+            limit: 7,
+        },
+        RowCardinality::BoundedMany,
+    )
+    else {
+        panic!("bounded rows lower to one row statement")
+    };
+    assert!(statement.distinct);
+    assert!(!statement.order.is_empty());
+    assert_eq!((statement.offset, statement.limit), (3, 7));
+
+    // Exactly-one asks for two rows, unordered, and proves the tuple count.
+    let CompatibilityProviderPlan::Rows {
+        statement,
+        tuple_proof: Some(proof),
+    } = rows(
+        Window {
+            offset: 0,
+            limit: 1,
+        },
+        RowCardinality::ExactlyOne,
+    )
+    else {
+        panic!("exactly-one lowers to one row statement with its proof")
+    };
+    assert!(statement.order.is_empty());
+    assert_eq!((statement.offset, statement.limit), (0, 2));
+    assert_eq!(proof, statement);
+
+    // Complete rows ask for one row past the accepted count, unordered.
+    let CompatibilityProviderPlan::Rows {
+        statement,
+        tuple_proof: None,
+    } = rows(
+        Window {
+            offset: 0,
+            limit: 7,
+        },
+        RowCardinality::Complete,
+    )
+    else {
+        panic!("complete rows lower to one row statement")
+    };
+    assert!(statement.order.is_empty());
+    assert_eq!((statement.offset, statement.limit), (0, 8));
+
+    for include_total in [false, true] {
+        let CompatibilityProviderPlan::Page {
+            selection,
+            total,
+            rematch,
+        } = page(
+            Window {
+                offset: 1,
+                limit: 2,
+            },
+            include_total,
+        )
+        else {
+            panic!("a page lowers to a root selection and a rematch")
         };
-        assert_provider_ast_parity(&registry, &validated, &adapted);
+        assert_eq!(selection.root, 0);
+        assert_eq!((selection.offset, selection.limit), (Some(1), Some(2)));
+        assert_eq!(total.is_some(), include_total);
+        assert_eq!(rematch.root, 0);
     }
+
+    let CompatibilityProviderPlan::DistinctCount { scan } = lower(
+        representative_plan(),
+        MatchOperation::CountBy {
+            root: V1BindingId::new(0),
+        },
+    ) else {
+        panic!("count lowers to a distinct root scan")
+    };
+    assert_eq!((scan.root, scan.offset, scan.limit), (0, None, None));
+
+    let CompatibilityProviderPlan::DistinctExists { scan } = lower(
+        representative_plan(),
+        MatchOperation::ExistsBy {
+            root: V1BindingId::new(0),
+        },
+    ) else {
+        panic!("exists lowers to a one-root scan")
+    };
+    assert_eq!((scan.root, scan.limit), (0, Some(1)));
+
+    assert!(matches!(
+        lower(inherited_role_plan(), fetch_rows_operation()),
+        CompatibilityProviderPlan::Rows { .. }
+    ));
 }
 
 #[test]
@@ -826,7 +807,7 @@ fn a_foreign_registry_rejects_before_plan_construction() {
     let foreign = DescriptorRegistry::new();
     let context = MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed);
 
-    let error = adapt_match_request(&validated, &foreign, &context, StructuralLimits::CANONICAL)
+    let error = adapt_match_request(&validated, &foreign, &context)
         .expect_err("foreign registry must not relabel a validated request");
     assert_eq!(error.code().as_str(), "query_v2_adapter_registry_mismatch");
 }
@@ -842,15 +823,8 @@ fn production_authority_round_trips_aliases_subtypes_and_inherited_roles() {
     ] {
         let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
             .expect("released request validates");
-        let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-            &validated,
-            &registry,
-            &authority.context(),
-            StructuralLimits::CANONICAL,
-        )
-        .expect("production authority adapts its own validated registry") else {
-            panic!("small released request must not use the resource fallback");
-        };
+        let adapted = adapt_match_request(&validated, &registry, &authority.context())
+            .expect("production authority adapts its own validated registry");
         let invocation =
             QueryInvocation::new(adapted.validated().plan(), adapted.operation(), Vec::new())
                 .expect("input-free invocation");
@@ -889,15 +863,8 @@ fn subtype_hydration_is_canonical_when_a_child_sorts_before_its_parent() {
         MatchRequest::v1(representative_plan(), fetch_rows_operation()),
     )
     .expect("subtype-inclusive released request validates");
-    let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-        &validated,
-        &registry,
-        &authority.context(),
-        StructuralLimits::CANONICAL,
-    )
-    .expect("lexical subtype order is canonicalized") else {
-        panic!("small released request must not use the resource fallback");
-    };
+    let adapted = adapt_match_request(&validated, &registry, &authority.context())
+        .expect("lexical subtype order is canonicalized");
     let Some(ModelQueryV2::Rows { hydration, .. }) = adapted
         .validated()
         .plan()
@@ -986,15 +953,8 @@ fn exact_subtype_binding_adapts_through_base_declared_role_authority() {
     let validated =
         validate_match_request(&registry, MatchRequest::v1(plan, fetch_rows_operation()))
             .expect("released V1 validation accepts an exact subtype for a base-declared role");
-    let MatchRequestAdaptation::Adapted(adapted) = adapt_match_request(
-        &validated,
-        &registry,
-        &authority.context(),
-        StructuralLimits::CANONICAL,
-    )
-    .expect("the exact subtype request adapts") else {
-        panic!("small released request must not use the resource fallback");
-    };
+    let adapted = adapt_match_request(&validated, &registry, &authority.context())
+        .expect("the exact subtype request adapts");
     let Some(ModelQueryV2::Rows { hydration, .. }) = adapted
         .validated()
         .plan()
@@ -1123,9 +1083,9 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
         })
         .expect("register specialized relation");
 
-    let generated = crate::_schema::generator::generate_define_block(
-        &crate::_schema::SchemaInfo::from_descriptors(&registry.snapshot()),
-    );
+    let generated = crate::_schema::SchemaInfo::from_descriptors(&registry.snapshot())
+        .to_typeql()
+        .expect("fixture schema");
     type_bridge_schema_compat::released_typeql_to_declared_projection(
         DocumentId::new("adapter-rich-authority").expect("document"),
         &generated,
@@ -1180,16 +1140,8 @@ fn production_authority_accepts_released_annotation_and_role_specialization_shap
     };
     let validated = validate_match_request(&registry, MatchRequest::v1(plan, operation))
         .expect("released annotated shape validates");
-    assert!(matches!(
-        adapt_match_request(
-            &validated,
-            &registry,
-            &authority.context(),
-            StructuralLimits::CANONICAL,
-        )
-        .expect("annotated shape adapts"),
-        MatchRequestAdaptation::Adapted(_)
-    ));
+    adapt_match_request(&validated, &registry, &authority.context())
+        .expect("annotated shape adapts");
 }
 
 #[test]
@@ -1661,9 +1613,7 @@ fn the_complete_released_shape_inventory_adapts() {
 }
 
 #[test]
-fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
-    use crate::query_v2_adapter::V1ResourceEnvelopeReason;
-
+fn a_request_beyond_the_artifact_envelope_is_refused_with_its_limit() {
     let fixture = schema_fixture();
     let registry = registry();
     let disposition = |literal: String| {
@@ -1688,21 +1638,91 @@ fn only_the_fixed_v2_artifact_envelope_uses_the_legacy_executor() {
             &validated,
             &registry,
             &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
-            StructuralLimits::CANONICAL,
         )
-        .expect("resource mismatch is a typed disposition, not a semantic error")
     };
 
-    assert!(matches!(
-        disposition("x".repeat(16 * 1024 * 1024 + 1)),
-        MatchRequestAdaptation::LegacyRequired(
-            V1ResourceEnvelopeReason::LiteralExceedsCanonicalArtifact
-        )
-    ));
-    assert!(matches!(
-        disposition("\\".repeat(9 * 1024 * 1024)),
-        MatchRequestAdaptation::LegacyRequired(
-            V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact
-        )
-    ));
+    let cause = |literal: String| match disposition(literal) {
+        Err(cause) => cause,
+        Ok(_) => panic!("oversized request adapted"),
+    };
+
+    let literal = cause("x".repeat(16 * 1024 * 1024 + 1));
+    assert_eq!(literal.category(), DiagnosticCategory::ResourceLimit);
+    assert_eq!(
+        literal.code().as_str(),
+        "query_v2_adapter_literal_byte_limit"
+    );
+    assert_eq!(
+        literal.details().get("actual_bytes"),
+        Some(&DiagnosticDetailValue::Long(16 * 1024 * 1024 + 1))
+    );
+    assert_eq!(
+        literal.details().get("maximum_bytes"),
+        Some(&DiagnosticDetailValue::Long(16 * 1024 * 1024))
+    );
+
+    let encoded = cause("\\".repeat(9 * 1024 * 1024));
+    assert_eq!(encoded.category(), DiagnosticCategory::ResourceLimit);
+    assert_eq!(encoded.code().as_str(), "canonical_json_too_large");
+}
+
+fn conjunction_request(
+    predicate: MatchExpr,
+) -> Result<AdaptedMatchRequest, type_bridge_contract::diagnostic::Diagnostic> {
+    let fixture = schema_fixture();
+    let registry = registry();
+    let plan = MatchPlan {
+        bindings: vec![MatchBinding {
+            id: V1BindingId::new(0),
+            descriptor: DescriptorId::new("entity:person"),
+            thing_kind: ThingKind::Entity,
+            match_mode: MatchMode::Exact,
+        }],
+        predicate: Some(predicate),
+        allowed_cross_joins: BTreeSet::new(),
+    };
+    let validated =
+        validate_match_request(&registry, MatchRequest::v1(plan, fetch_rows_operation()))
+            .expect("conjunction passes V1 validation");
+    adapt_match_request(
+        &validated,
+        &registry,
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+    )
+}
+
+fn name_at_least(index: usize) -> MatchExpr {
+    MatchExpr::FieldValue {
+        field: name_field(),
+        operator: ComparisonOp::GreaterThanOrEqual,
+        value: AttributeValue::String(format!("A{index}")),
+    }
+}
+
+#[test]
+fn a_wide_flat_conjunction_fits_the_canonical_artifact() {
+    // The width of the two-anchor automotive query that a depth-linear
+    // conjunction could not encode.
+    let flat = MatchExpr::And {
+        expressions: (0..38).map(name_at_least).collect(),
+    };
+    conjunction_request(flat).expect("a wide flat conjunction adapts");
+}
+
+#[test]
+fn a_plan_nested_past_the_codec_depth_reports_that_limit() {
+    let mut nested = name_at_least(0);
+    for index in 1..38 {
+        nested = MatchExpr::And {
+            expressions: vec![nested, name_at_least(index)],
+        };
+    }
+    let cause = conjunction_request(nested)
+        .expect_err("a plan deeper than the canonical codec cannot adapt");
+    assert_eq!(cause.category(), DiagnosticCategory::ResourceLimit);
+    assert_eq!(cause.code().as_str(), "canonical_json_too_deep");
+    assert_eq!(
+        cause.details().get("maximum_depth"),
+        Some(&DiagnosticDetailValue::Long(64))
+    );
 }

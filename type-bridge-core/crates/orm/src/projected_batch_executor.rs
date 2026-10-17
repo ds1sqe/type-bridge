@@ -12,6 +12,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticCode, SdkDiagnosticDetailValue, SdkDiagnosticMessage,
     SdkDiagnosticName, SdkDiagnosticPathSegment, SdkExecutionDiagnostic, SdkProviderOperation,
 };
+use type_bridge_contract::split::SplitLimits;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use crate::_dynamic::{
@@ -20,6 +21,7 @@ use crate::_dynamic::{
 use crate::_manager::hydration::{hydrate_dynamic_entity, hydrate_dynamic_relation};
 use crate::OrmError;
 use crate::execution_diagnostic::lower_orm_error;
+use crate::plan_builders::batch::{split_lookups, split_stage};
 use crate::projected_batch::{
     PreparedProjectedBatchInvocation, ProjectedBatch, ProjectedBatchInvocationControl,
     ProjectedBatchOperation, ProjectedBatchRow,
@@ -343,24 +345,27 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         prepared.check_control()?;
 
         let mut resolved = ResolvedPrerequisites::new(plan)?;
-        if let Some(statement) = plan.prerequisite.take() {
+        if let Some(ProviderStatement { source, rows }) = plan.prerequisite.take() {
+            let item_ceiling = plan.prerequisite_item_ceiling();
             let mut consumer = PrerequisiteConsumer::new(plan, &mut resolved);
-            let dispatched = dispatch(
-                lease,
-                false,
-                statement,
-                prepared,
-                &mut consumer,
-                plan.prerequisite_item_ceiling()
-                    .min(ledger.remaining_items()),
-                ledger.remaining_bytes(),
-            )
-            .await;
-            let stats = match dispatched {
-                Ok(stats) => stats,
-                Err(later) => return Err(consumer.take_deferred().unwrap_or(later)),
-            };
-            ledger.record_reply(stats)?;
+            for chunk in split_lookups(&source, rows, SplitLimits::CANONICAL)? {
+                let dispatched = dispatch_rows(
+                    lease,
+                    false,
+                    &source,
+                    chunk,
+                    prepared,
+                    &mut consumer,
+                    item_ceiling.min(ledger.remaining_items()),
+                    ledger.remaining_bytes(),
+                )
+                .await;
+                let stats = match dispatched {
+                    Ok(stats) => stats,
+                    Err(later) => return Err(consumer.take_deferred().unwrap_or(later)),
+                };
+                ledger.record_reply(stats)?;
+            }
             consumer.finish()?;
         }
         resolved.finish(plan)?;
@@ -387,22 +392,24 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         } else {
             Some(HydrationConsumer::new(self, plan, identity)?)
         };
-        let dispatched = dispatch_rows(
-            lease,
-            true,
-            &plan.mutation_source,
-            mutation_rows,
-            prepared,
-            &mut identities,
-            (plan.row_count as u64 + 1).min(ledger.remaining_items()),
-            ledger.remaining_bytes(),
-        )
-        .await;
-        let stats = match dispatched {
-            Ok(stats) => stats,
-            Err(later) => return Err(identities.take_deferred().unwrap_or(later)),
-        };
-        ledger.record_reply(stats)?;
+        for chunk in split_stage(&plan.mutation_source, mutation_rows, SplitLimits::CANONICAL)? {
+            let dispatched = dispatch_rows(
+                lease,
+                true,
+                &plan.mutation_source,
+                chunk,
+                prepared,
+                &mut identities,
+                (plan.row_count as u64 + 1).min(ledger.remaining_items()),
+                ledger.remaining_bytes(),
+            )
+            .await;
+            let stats = match dispatched {
+                Ok(stats) => stats,
+                Err(later) => return Err(identities.take_deferred().unwrap_or(later)),
+            };
+            ledger.record_reply(stats)?;
+        }
         identities.finish(plan, &resolved)?;
 
         if plan.operation == ProjectedBatchOperation::Delete {
@@ -422,22 +429,24 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             .attach_source
             .as_deref()
             .expect("non-delete plan has attach source");
-        let dispatched = dispatch_rows(
-            lease,
-            true,
-            attach_source,
-            attach_rows,
-            prepared,
-            hydration_consumer,
-            (plan.row_count as u64 + 1).min(ledger.remaining_items()),
-            ledger.remaining_bytes(),
-        )
-        .await;
-        let stats = match dispatched {
-            Ok(stats) => stats,
-            Err(later) => return Err(hydration_consumer.take_deferred().unwrap_or(later)),
-        };
-        ledger.record_reply(stats)?;
+        for chunk in split_stage(attach_source, attach_rows, SplitLimits::CANONICAL)? {
+            let dispatched = dispatch_rows(
+                lease,
+                true,
+                attach_source,
+                chunk,
+                prepared,
+                hydration_consumer,
+                (plan.row_count as u64 + 1).min(ledger.remaining_items()),
+                ledger.remaining_bytes(),
+            )
+            .await;
+            let stats = match dispatched {
+                Ok(stats) => stats,
+                Err(later) => return Err(hydration_consumer.take_deferred().unwrap_or(later)),
+            };
+            ledger.record_reply(stats)?;
+        }
         let things = hydrated
             .take()
             .expect("non-delete plan retained hydration consumer")
@@ -2025,41 +2034,8 @@ impl AnswerConsumer for OrdinalIdentityConsumer {
     }
 }
 
-async fn dispatch(
-    lease: &mut TransactionContextMutationLease,
-    mutation: bool,
-    statement: ProviderStatement,
-    prepared: &PreparedProjectedBatchInvocation<'_>,
-    consumer: &mut dyn AnswerConsumer,
-    max_items: u64,
-    max_bytes: u64,
-) -> std::result::Result<BoundedAnswerStats, SdkExecutionDiagnostic> {
-    let ProviderStatement { source, rows } = statement;
-    dispatch_rows_ref(
-        lease, mutation, &source, rows, prepared, consumer, max_items, max_bytes,
-    )
-    .await
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_rows(
-    lease: &mut TransactionContextMutationLease,
-    mutation: bool,
-    source: &str,
-    rows: GivenRowsSpec,
-    prepared: &PreparedProjectedBatchInvocation<'_>,
-    consumer: &mut dyn AnswerConsumer,
-    max_items: u64,
-    max_bytes: u64,
-) -> std::result::Result<BoundedAnswerStats, SdkExecutionDiagnostic> {
-    dispatch_rows_ref(
-        lease, mutation, source, rows, prepared, consumer, max_items, max_bytes,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn dispatch_rows_ref(
     lease: &mut TransactionContextMutationLease,
     mutation: bool,
     source: &str,

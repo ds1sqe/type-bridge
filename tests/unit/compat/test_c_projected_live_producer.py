@@ -34,12 +34,13 @@ def test_c_projected_live_producer_is_independent_and_exactly_authority_bound() 
     assert not any(marker in joined for marker in FORBIDDEN_MARKERS)
     for digest in (
         "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-        "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+        "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f",
         "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
     ):
         assert digest in harness
     assert 'const REPORT_FORMAT: &str = "typebridge.projected-live-report/v1"' in harness
-    assert 'const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1"' in harness
+    assert 'sdk_profile_matrix::requested("models")' in harness
+    assert '"semantic_profile": profile.semantic_profile' in harness
     assert '"binding": "c"' in harness
     assert "foreign_fingerprint" in harness
     assert "assert_ne!(" in harness
@@ -115,5 +116,10 @@ def test_c_projected_live_requires_exact_ports_database_and_provider_version() -
     assert "byte.is_ascii_digit()" in setup
     assert "*cursor < (unsigned char)'0'" in consumer
     assert "parsed > 65535ul" in consumer
-    assert "(version.major, version.minor, version.patch),\n        (3, 12, 3)" in setup
-    assert 'text_is(version, "3.12.3")' in consumer
+    assert (
+        "EXPECTED_SERVER_VERSION_ENV.to_owned(),\n            profile.live_server_version"
+        in harness
+    )
+    assert 'required("TYPE_BRIDGE_EXPECTED_SERVER_VERSION")' in setup
+    assert 'getenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION")' in consumer
+    assert "text_is(version, expected_server_version)" in consumer

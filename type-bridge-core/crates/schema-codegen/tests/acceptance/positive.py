@@ -16,6 +16,7 @@ from generated_v2 import (
     Employment,
     Event,
     EventRef,
+    ExchangeConnection,
     FieldToken,
     FooBar,
     FunctionRef,
@@ -36,10 +37,10 @@ from generated_v2 import (
     ProjectedModelFilter,
     ProjectedModelManager,
     ProjectedModelNotFoundError,
+    ProxyConnection,
     Query,
+    QueryExecutionResourceLimits,
     QuerySession,
-    RemoteQuery,
-    RemoteQuerySession,
     Robot,
     RoleToken,
     Score,
@@ -53,6 +54,7 @@ from generated_v2 import (
     ValDouble,
     ValDuration,
     aggregate,
+    connect_proxy,
     find_events,
     integer_input,
     qualifying_score,
@@ -207,167 +209,171 @@ assert_type(person_manager.add_hook(person_hook), ProjectedModelManager[Person])
 person_manager.remove_hook(person_hook)
 assert_type(ProjectedModelNotFoundError("missing"), ProjectedModelNotFoundError)
 
-query_session = Person.query(Database(address="localhost:1729", database="generated-query"))
-assert_type(query_session, QuerySession)
-person_var = query_session.exact(Person)
-other_person_var = query_session.exact(Person)
-employment_var = query_session.exact(Employment)
-membership_var = query_session.exact(Membership)
-party_var = query_session.subtypes(Party)
-actor_var = query_session.subtypes(Actor)
-interaction_var = query_session.exact(Interaction)
-assert_type(person_var, BoundVar[Person])
-assert_type(party_var, SubtypeBoundVar[Party])
-assert_type(query_session.query(party_var).rows(limit=10), list[Party])
-score_field = person_var.field(Person.score)
-minimum_score = integer_input(query_session, Score(18))
-assert_type(minimum_score, IntegerInput)
-qualifying_call = qualifying_score(query_session, person_var, minimum_score)
-assert_type(qualifying_call, IntegerCall)
-qualifying_predicate = qualifying_call.gte_field(score_field)
-nested_call = qualifying_score(query_session, person_var, qualifying_call)
-nested_predicate = qualifying_call.gte_call(nested_call)
-bool_field = person_var.field(Person.val_bool)
-adult = score_field.gte(Score(18))
-assert_type(adult, Predicate)
-assert_type(score_field.is_present(), Predicate)
-assert_type(score_field.is_missing(), Predicate)
-assert_type(person_var.iid("0x1"), Predicate)
-assert_type(person_var.iid_in(("0x1", "0x2")), Predicate)
-people_query = query_session.query(person_var).where(
-    adult,
-    qualifying_predicate,
-    nested_predicate,
-)
-assert_type(people_query, Query[Person])
-assert_type(people_query.is_closed, bool)
-assert_type(people_query.clone(), Query[Person])
-assert_type(people_query.close(), None)
-assert_type(query_session.is_closed, bool)
-assert_type(query_session.close(), None)
-assert_type(people_query.one(), Person)
-assert_type(people_query.first(), Person | None)
-assert_type(people_query.rows(limit=10), list[Person])
-assert_type(people_query.count_by(person_var), int)
-assert_type(people_query.exists_by(person_var), bool)
-assert_type(
-    people_query.aggregate(
-        person_var,
-        aggregate.count(),
-        aggregate.sum(score_field),
-        aggregate.mean(score_field),
-    ),
-    tuple[int, int, float | None],
-)
-assert_type(
-    people_query.group_by(person_var, bool_field).aggregate(aggregate.count()),
-    tuple[tuple[ValBool, tuple[int]], ...],
-)
-assert_type(
-    people_query.group_by(person_var, bool_field, score_field).aggregate(aggregate.count()),
-    tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
-)
 
-employee = employment_var.role(Employment.employee).connects(person_var)
-membership_member = membership_var.role(Membership.member).connects(person_var)
-interaction_actor = interaction_var.role(Interaction.actor).connects(actor_var)
-assert_type(
-    query_session.query(interaction_var).match(actor_var).where(interaction_actor),
-    Query[Interaction],
-)
-assert_type(membership_member, Predicate)
-reachable = query_session.reachable(
-    person_var,
-    other_person_var,
-    Event,
-    Event.subject,
-    Event.subject,
-    min_depth=0,
-    max_depth=3,
-)
-joined = (
-    query_session.query(person_var, employment_var)
-    .match(other_person_var)
-    .where(
-        employee,
-        reachable,
+async def check_direct() -> None:
+    query_session = Person.query(Database(address="localhost:1729", database="generated-query"))
+    assert_type(query_session, QuerySession)
+    person_var = query_session.exact(Person)
+    other_person_var = query_session.exact(Person)
+    employment_var = query_session.exact(Employment)
+    membership_var = query_session.exact(Membership)
+    party_var = query_session.subtypes(Party)
+    actor_var = query_session.subtypes(Actor)
+    interaction_var = query_session.exact(Interaction)
+    assert_type(person_var, BoundVar[Person])
+    assert_type(party_var, SubtypeBoundVar[Party])
+    assert_type(await query_session.query(party_var).rows(limit=10), list[Party])
+    score_field = person_var.field(Person.score)
+    minimum_score = integer_input(query_session, Score(18))
+    assert_type(minimum_score, IntegerInput)
+    qualifying_call = qualifying_score(query_session, person_var, minimum_score)
+    assert_type(qualifying_call, IntegerCall)
+    qualifying_predicate = qualifying_call.gte_field(score_field)
+    nested_call = qualifying_score(query_session, person_var, qualifying_call)
+    nested_predicate = qualifying_call.gte_call(nested_call)
+    bool_field = person_var.field(Person.val_bool)
+    adult = score_field.gte(Score(18))
+    assert_type(adult, Predicate)
+    assert_type(score_field.is_present(), Predicate)
+    assert_type(score_field.is_missing(), Predicate)
+    assert_type(person_var.iid("0x1"), Predicate)
+    assert_type(person_var.iid_in(("0x1", "0x2")), Predicate)
+    people_query = query_session.query(person_var).where(
+        adult,
+        qualifying_predicate,
+        nested_predicate,
     )
-)
-assert_type(joined.one(), tuple[Person, Employment])
-assert_type(
-    joined.group_by(person_var, employment_var).aggregate(
-        aggregate.count(),
-        aggregate.max(score_field),
-    ),
-    tuple[tuple[Employment, tuple[int, int | None]], ...],
-)
-named = query_session.query_as(
-    EmploymentRow,
-    person=person_var,
-    employment=employment_var,
-).where(employee)
-assert_type(named.one(), EmploymentRow)
-collected = query_session.query(
-    person_var,
-    employment_var.collect(),
-).where(employee)
-page = collected.page_by(
-    person_var,
-    limit=10,
-    order_by=(person_var.field(Person.identifier).asc(),),
-    include_total=True,
-)
-assert_type(page.items, tuple[tuple[Person, tuple[Employment, ...]], ...])
-assert_type(page.total, int | None)
+    assert_type(people_query, Query[Person])
+    assert_type(people_query.is_closed, bool)
+    assert_type(people_query.clone(), Query[Person])
+    assert_type(people_query.close(), None)
+    assert_type(query_session.is_closed, bool)
+    assert_type(query_session.close(), None)
+    assert_type(await people_query.one(), Person)
+    assert_type(await people_query.first(), Person | None)
+    assert_type(await people_query.rows(limit=10), list[Person])
+    assert_type(await people_query.count_by(person_var), int)
+    assert_type(await people_query.exists_by(person_var), bool)
+    assert_type(
+        await people_query.aggregate(
+            person_var,
+            aggregate.count(),
+            aggregate.sum(score_field),
+            aggregate.mean(score_field),
+        ),
+        tuple[int, int, float | None],
+    )
+    assert_type(
+        await people_query.group_by(person_var, bool_field).aggregate(aggregate.count()),
+        tuple[tuple[ValBool, tuple[int]], ...],
+    )
+    assert_type(
+        await people_query.group_by(person_var, bool_field, score_field).aggregate(
+            aggregate.count()
+        ),
+        tuple[tuple[tuple[ValBool, Score], tuple[int]], ...],
+    )
 
-sixteen = query_session.query(
-    person_var,
-    other_person_var,
-    employment_var,
-    person_var,
-    other_person_var,
-    employment_var,
-    person_var,
-    other_person_var,
-    employment_var,
-    person_var,
-    other_person_var,
-    employment_var,
-    person_var,
-    other_person_var,
-    employment_var,
-    person_var,
-)
-assert_type(
-    sixteen.one(),
-    tuple[
-        Person,
-        Person,
-        Employment,
-        Person,
-        Person,
-        Employment,
-        Person,
-        Person,
-        Employment,
-        Person,
-        Person,
-        Employment,
-        Person,
-        Person,
-        Employment,
-        Person,
-    ],
-)
+    employee = employment_var.role(Employment.employee).connects(person_var)
+    membership_member = membership_var.role(Membership.member).connects(person_var)
+    interaction_actor = interaction_var.role(Interaction.actor).connects(actor_var)
+    assert_type(
+        query_session.query(interaction_var).match(actor_var).where(interaction_actor),
+        Query[Interaction],
+    )
+    assert_type(membership_member, Predicate)
+    reachable = query_session.reachable(
+        person_var,
+        other_person_var,
+        Event,
+        Event.subject,
+        Event.subject,
+        min_depth=0,
+        max_depth=3,
+    )
+    joined = (
+        query_session.query(person_var, employment_var)
+        .match(other_person_var)
+        .where(
+            employee,
+            reachable,
+        )
+    )
+    assert_type(await joined.one(), tuple[Person, Employment])
+    assert_type(
+        await joined.group_by(person_var, employment_var).aggregate(
+            aggregate.count(),
+            aggregate.max(score_field),
+        ),
+        tuple[tuple[Employment, tuple[int, int | None]], ...],
+    )
+    named = query_session.query_as(
+        EmploymentRow,
+        person=person_var,
+        employment=employment_var,
+    ).where(employee)
+    assert_type(await named.one(), EmploymentRow)
+    collected = query_session.query(
+        person_var,
+        employment_var.collect(),
+    ).where(employee)
+    page = await collected.page_by(
+        person_var,
+        limit=10,
+        order_by=(person_var.field(Person.identifier).asc(),),
+        include_total=True,
+    )
+    assert_type(page.items, tuple[tuple[Person, tuple[Employment, ...]], ...])
+    assert_type(page.total, int | None)
 
-membership_session = Membership.query(
-    Database(address="localhost:1729", database="generated-query")
-)
-membership_var = membership_session.exact(Membership)
-assert_type(membership_session.query(membership_var).one(), Membership)
+    sixteen = query_session.query(
+        person_var,
+        other_person_var,
+        employment_var,
+        person_var,
+        other_person_var,
+        employment_var,
+        person_var,
+        other_person_var,
+        employment_var,
+        person_var,
+        other_person_var,
+        employment_var,
+        person_var,
+        other_person_var,
+        employment_var,
+        person_var,
+    )
+    assert_type(
+        await sixteen.one(),
+        tuple[
+            Person,
+            Person,
+            Employment,
+            Person,
+            Person,
+            Employment,
+            Person,
+            Person,
+            Employment,
+            Person,
+            Person,
+            Employment,
+            Person,
+            Person,
+            Employment,
+            Person,
+        ],
+    )
+
+    membership_session = Membership.query(
+        Database(address="localhost:1729", database="generated-query")
+    )
+    membership_var = membership_session.exact(Membership)
+    assert_type(await membership_session.query(membership_var).one(), Membership)
 
 
-async def check_remote(session: RemoteQuerySession) -> None:
+async def check_proxy(session: QuerySession) -> None:
     assert_type(session.is_closed, bool)
     assert_type(session.close(), None)
     remote_person = session.exact(Person)
@@ -384,9 +390,9 @@ async def check_remote(session: RemoteQuerySession) -> None:
         remote_employee,
         remote_qualifying_call.gte_call(remote_nested_call),
     )
-    assert_type(remote, RemoteQuery[Person, Employment])
+    assert_type(remote, Query[Person, Employment])
     assert_type(remote.is_closed, bool)
-    assert_type(remote.clone(), RemoteQuery[Person, Employment])
+    assert_type(remote.clone(), Query[Person, Employment])
     assert_type(remote.close(), None)
     assert_type(await remote.one(), tuple[Person, Employment])
     assert_type(await remote.first(), tuple[Person, Employment] | None)
@@ -429,6 +435,21 @@ async def check_remote(session: RemoteQuerySession) -> None:
         ).items,
         tuple[tuple[Person, tuple[Employment, ...]], ...],
     )
+
+
+async def _exchange(request: bytes) -> bytes:
+    return request
+
+
+def check_connections(advertisement: bytes) -> None:
+    exchanged = QuerySession(
+        ExchangeConnection(advertisement, _exchange),
+        resources=QueryExecutionResourceLimits(items=10),
+    )
+    assert_type(exchanged, QuerySession)
+    proxied = Person.query(connect_proxy("http://localhost:8080"))
+    assert_type(proxied, QuerySession)
+    assert_type(connect_proxy("http://localhost:8080"), ProxyConnection)
 
 
 event = Event(subject=person)

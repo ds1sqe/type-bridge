@@ -90,7 +90,7 @@ def build_entity_match_pattern(
         '$e isa person, has name "Alice"'
     """
     pattern = build_entity_match_ast(model_class, var, filters)
-    return QueryCompiler().compile(pattern)
+    return QueryCompiler()._compile(pattern)
 
 
 def build_relation_match_ast(
@@ -153,7 +153,7 @@ def build_relation_match_pattern(
         '$r isa employment, (employee: $p)'
     """
     pattern = build_relation_match_ast(model_class, var, role_players)
-    return QueryCompiler().compile(pattern)
+    return QueryCompiler()._compile(pattern)
 
 
 def normalize_role_players(

@@ -65,7 +65,7 @@ QUERY_RESULTS = [
 
 @dataclass
 class Proofs:
-    version: int
+    suite: str
     root: Path
     values: list[dict[str, Any]]
     sources: list[Path]
@@ -80,7 +80,7 @@ class Proofs:
         return paths
 
     def load(self, paths: list[Path] | None = None) -> dict[tuple[str, str], Any]:
-        return validator.CONTRACTS[self.version].load_proof_fragments(
+        return validator.CONTRACTS[self.suite].load_proof_fragments(
             self.write() if paths is None else paths,
             expected_binding="python",
             run_nonce=RUN_NONCE,
@@ -89,17 +89,15 @@ class Proofs:
         )
 
 
-@pytest.fixture(params=[2, 3], ids=["queries", "models"])
-def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
-    version = request.param
-    contract = validator.CONTRACTS[version]
+def _build_proofs(suite: str, tmp_path: Path) -> Proofs:
+    contract = validator.CONTRACTS[suite]
     for relative in (contract.proof_schema_relative, contract.journey_relative):
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / relative).read_bytes())
     groups = (
         [("provider-recording", copy.deepcopy(QUERY_RESULTS))]
-        if version == 2
+        if suite == "queries"
         else [
             (
                 kind,
@@ -167,7 +165,7 @@ def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
         for producer, (_, results) in zip(producers, groups, strict=True)
     ]
     return Proofs(
-        version,
+        suite,
         tmp_path,
         values,
         sources,
@@ -175,10 +173,20 @@ def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
     )
 
 
+@pytest.fixture(params=["queries", "models"], ids=["queries", "models"])
+def proofs(request: pytest.FixtureRequest, tmp_path: Path) -> Proofs:
+    return _build_proofs(request.param, tmp_path)
+
+
+@pytest.fixture
+def model_proofs(tmp_path: Path) -> Proofs:
+    return _build_proofs("models", tmp_path)
+
+
 def test_only_exact_measured_lanes_are_returned(proofs: Proofs) -> None:
     observed = proofs.load()
     assert set(observed) == proofs.lanes
-    if proofs.version == 2:
+    if proofs.suite == "queries":
         assert len(observed) == 3
         assert observed[("cancellation_direct", "direct_runtime")]["in_flight"] == {
             "provider_await_woken": True
@@ -193,7 +201,7 @@ def test_only_exact_measured_lanes_are_returned(proofs: Proofs) -> None:
 
 def test_committed_model_authority_has_two_producers_and_seven_lanes() -> None:
     for binding in validator.REPORT_BINDINGS:
-        authority = validator.CONTRACTS[3].proof_fragment_authority(ROOT, binding)
+        authority = validator.CONTRACTS["models"].proof_fragment_authority(ROOT, binding)
         assert len(authority) == 2
         assert {
             lane for _, lanes in authority.values() for lane in lanes
@@ -208,8 +216,8 @@ def test_cli_emits_only_validated_canonical_lanes(
     assert (
         validator.main(
             [
-                "--sdk",
-                str(proofs.version),
+                "--suite",
+                str(proofs.suite),
                 "--binding",
                 "python",
                 "--run-nonce",
@@ -268,11 +276,10 @@ def test_missing_lane_and_duplicate_producer_fail_closed(
     assert rejected.value.code == code
 
 
-@pytest.mark.parametrize("proofs", [3], indirect=True)
-def test_model_contract_requires_both_producers(proofs: Proofs) -> None:
-    paths = proofs.write()[:1]
+def test_model_contract_requires_both_producers(model_proofs: Proofs) -> None:
+    paths = model_proofs.write()[:1]
     with pytest.raises(validator.ProofFragmentError) as rejected:
-        proofs.load(paths)
+        model_proofs.load(paths)
     assert rejected.value.code == "lane_coverage_mismatch"
 
 

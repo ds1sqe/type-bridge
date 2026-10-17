@@ -66,18 +66,16 @@ class TestQuery:
         """Match followed by delete should be in correct order."""
         query = Query().match("$p isa person, has name $n").delete("$p has name $n")
         result = query.build()
-        lines = result.split("\n")
-        match_idx = next(i for i, line in enumerate(lines) if "match" in line)
-        delete_idx = next(i for i, line in enumerate(lines) if "delete" in line)
+        match_idx = result.index("match")
+        delete_idx = result.index("delete")
         assert match_idx < delete_idx
 
     def test_combined_match_insert_query(self):
         """Match followed by insert should be in correct order."""
         query = Query().match("$p isa person").insert("$p has age 30")
         result = query.build()
-        lines = result.split("\n")
-        match_idx = next(i for i, line in enumerate(lines) if "match" in line)
-        insert_idx = next(i for i, line in enumerate(lines) if "insert" in line)
+        match_idx = result.index("match")
+        insert_idx = result.index("insert")
         assert match_idx < insert_idx
 
     def test_combined_match_delete_insert_query(self):
@@ -90,10 +88,9 @@ class TestQuery:
         )
         result = query.build()
         # Find line indices
-        lines = result.split("\n")
-        match_idx = next(i for i, line in enumerate(lines) if "match" in line)
-        delete_idx = next(i for i, line in enumerate(lines) if "delete" in line)
-        insert_idx = next(i for i, line in enumerate(lines) if "insert" in line)
+        match_idx = result.index("match")
+        delete_idx = result.index("delete")
+        insert_idx = result.index("insert")
         assert match_idx < delete_idx < insert_idx
 
     def test_str_returns_build(self):

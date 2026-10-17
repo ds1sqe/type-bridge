@@ -93,7 +93,7 @@ def _ensure_driver_interpreter_supported(installed: str) -> int | None:
     Driver metadata import can succeed even when its bundled native library is
     incompatible with the running interpreter. Keep this check ahead of every
     native constructor so a manually installed 3.11 wheel cannot crash
-    CPython 3.14 before TypeBridge can report the supported 3.12 path.
+    CPython 3.14 before TypeBridge can report the supported 3.13 driver path.
     """
     import type_bridge.version as _version  # local import avoids circular dependency
 
@@ -102,7 +102,7 @@ def _ensure_driver_interpreter_supported(installed: str) -> int | None:
         raise _version.UnsupportedVersionError(
             f"Installed typedb-driver {installed!r} has no compatible native wheel "
             "for CPython 3.14. Install `type-bridge[typedb-driver]` "
-            "(driver 3.12.3) and target TypeDB 3.12."
+            "(the 3.13 driver line) and target TypeDB 3.12 or 3.13."
         )
     return driver_band
 
@@ -127,7 +127,7 @@ def create_driver_options(
     """Create TypeDB driver options for the retained driver lines.
 
     The same band map that drives the version gate drives option construction.
-    Supported 3.11 and 3.12 drivers both use the positional
+    Supported 3.11, 3.12, and 3.13 drivers all use the positional
     ``DriverOptions(tls_config)`` form.
 
     Args:
@@ -166,8 +166,8 @@ def create_driver_options(
     max_l = _version.max_supported_line()
     if sys.version_info >= (3, 14):
         remediation = (
-            "Install `type-bridge[typedb-driver]` (driver 3.12.3 on "
-            "CPython 3.14) and target TypeDB 3.12."
+            "Install `type-bridge[typedb-driver]` (the 3.13 driver line on "
+            "CPython 3.14) and target TypeDB 3.12 or 3.13."
         )
     else:
         remediation = (
@@ -209,7 +209,7 @@ def embedded_driver_versions() -> dict[int, str]:
     """Return all driver versions compiled into the Rust runtime, keyed by band.
 
     Delegates to ``type_bridge_core.embedded_driver_versions``.  The default
-    build returns ``{8: "3.11.5", 9: "3.12.3"}``; a
+    build returns ``{8: "3.11.5", 9: "3.13.6"}``; a
     single-band build returns only the one entry for its compiled band.
     """
     return _core.embedded_driver_versions()
@@ -236,7 +236,7 @@ def server_version(
             probe. The root path does not enable TLS implicitly.
 
     Returns:
-        Version string reported by the server (e.g. ``"3.12.3"``).
+        Version string reported by the server (e.g. ``"3.13.6"``).
 
     Raises:
         type_bridge_core.VersionError: When the endpoint is unreachable or the

@@ -11,13 +11,15 @@ pub mod error;
 pub mod handles;
 pub mod ids;
 pub mod limits;
-pub(crate) mod lowering;
 pub mod model;
+pub(crate) mod provider_order;
 pub mod recording;
 pub(crate) mod reducer;
 pub mod result;
 pub(crate) mod result_validation;
 pub(crate) mod selected_result_executor;
+#[cfg(test)]
+pub(crate) mod v2_outcome_fixture;
 pub mod validation;
 
 pub use capability::{Capability, CapabilitySet, derive_required_capabilities};
@@ -44,6 +46,8 @@ pub use result::*;
 pub use selected_result_executor::MatchExecutionLimits;
 pub use validation::{
     StableOrderOrigin, StableOrderSpec, StableOrderTerm, ValidatedMatchRequest,
-    validate_match_request, validate_public_function_argument_count,
-    validate_public_order_term_count,
+    validate_field_group_count, validate_function_argument_count, validate_match_request,
+    validate_match_request_with_limits, validate_order_term_count,
+    validate_public_function_argument_count, validate_public_order_term_count,
+    validate_reducer_count, validate_selection_count,
 };

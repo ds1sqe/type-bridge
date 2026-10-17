@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run SDK query, model, administration, serialization and artifact acceptance."""
+"""Run SDK query, model, administration, serialization, artifact and writes acceptance."""
 
 from __future__ import annotations
 
@@ -14,30 +14,67 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c_artifact_journey as artifact_journey
-import compare_sdk_conformance_v5 as codec_contract
-import compare_sdk_conformance_v6 as conformance
+import sdk_artifacts_compare as conformance
+import sdk_profile_matrix as profile_matrix
+import sdk_serialization_compare as codec_contract
+import sdk_writes_compare as writes_contract
 import standalone_cli_artifact as cli_artifact
 from persist_binding_reports import PublishError, publish_files
 
 ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
 NODE = CORE / "crates/node"
-V1_BINDINGS = ("python", "node", "rust")
-BINDINGS = (*V1_BINDINGS, "c")
-SUITES = ("queries", "models", "administration", "serialization", "artifacts")
-PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_generated_sdk_v5_codec.py"
+BINDINGS = ("python", "node", "rust", "c")
+SUITES = tuple(profile_matrix.SUITES)
+# Suites outside the FULL-C report fan-in: `writes` runs one staged program in
+# every binding and needs the staged surface of TypeDB 3.13.6.
+STAGED_SUITES = ("writes",)
+WRITES = ROOT / "tests/contracts/sdk_conformance/writes"
+# Each suite directory: its own schema and generated packages, one program per SDK.
+WRITES_SUITES = ("purchase", "constraints")
+WRITES_PROGRAMS = ROOT / "examples/purchase"
+WRITES_FIXTURE_TIMEOUT = 600.0
+PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
 NODE_PROVIDER = CORE / "crates/schema-codegen/tests/typescript_acceptance/codec_check.py"
-C_PROVIDER = ROOT / "tests/integration/schema/test_generated_c_sdk_v5_codec.py"
-SURFACE_CONSUMER_FORMAT = "typebridge.sdk-v6-surface-consumer/v1"
+C_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_c_codec.py"
+SURFACE_CONSUMER_FORMAT = "typebridge.sdk-artifacts-surface-consumer/v1"
 
 
 class RunnerError(RuntimeError):
     """An SDK producer, comparator, or report publication failed."""
+
+
+def _runner_error(_code: str, message: str) -> RunnerError:
+    return RunnerError(message)
+
+
+def lane(profile: str | None, environment: Mapping[str, str]) -> profile_matrix.ProfileIdentity:
+    """The matrix entry a run targets.
+
+    ``profile`` (``--semantic-profile``) wins, then
+    ``TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE``, then the catalogs' own profile.
+    Every conformance set must list it.
+    """
+
+    if profile is None:
+        profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or (
+            profile_matrix.catalog_profile("artifacts")
+        )
+    return profile_matrix.select_lane(profile, error=_runner_error)
+
+
+def typedb_version(environment: Mapping[str, str]) -> str:
+    """The exact TypeDB server version the run's profile names."""
+
+    return environment.get("TYPEDB_VERSION") or lane(None, environment).live_server_version
 
 
 def run(
@@ -97,11 +134,11 @@ def rust_live(test: str, suite: str) -> list[str]:
 
 
 def fragment_environment(
-    version: int, environment: dict[str, str], destination: Path, nonce: str
+    suite: str, environment: dict[str, str], destination: Path, nonce: str
 ) -> dict[str, str]:
     return environment | {
-        f"TYPE_BRIDGE_SDK_V{version}_PROOF_FRAGMENT": str(destination),
-        f"TYPE_BRIDGE_SDK_V{version}_PROOF_RUN_NONCE": nonce,
+        f"TYPE_BRIDGE_SDK_{suite.upper()}_PROOF_FRAGMENT": str(destination),
+        f"TYPE_BRIDGE_SDK_{suite.upper()}_PROOF_RUN_NONCE": nonce,
     }
 
 
@@ -123,7 +160,7 @@ def node_live(pattern: str, environment: dict[str, str]) -> None:
 
 
 def produce_proofs(
-    version: int,
+    suite: str,
     directory: Path,
     environment: dict[str, str],
     nonce: str,
@@ -137,13 +174,13 @@ def produce_proofs(
         for index, command in enumerate(commands[binding]):
             suffix = suffixes[index] if suffixes else str(index)
             destination = fragments / f"{binding}-{suffix}.json"
-            run(command, env=fragment_environment(version, environment, destination, nonce))
+            run(command, env=fragment_environment(suite, environment, destination, nonce))
             paths.append(destination)
         run(
             python_command(
                 "proof_fragments.py",
-                "--sdk",
-                str(version),
+                "--suite",
+                str(suite),
                 "--binding",
                 binding,
                 "--run-nonce",
@@ -179,11 +216,15 @@ def query_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
             ],
         ),
         "rust": (
-            cargo_test("type-bridge", "remote::tests::sdk_v2_rust_deterministic_proof_fragment"),
+            cargo_test(
+                "type-bridge", "remote::tests::sdk_queries_rust_deterministic_proof_fragment"
+            ),
         ),
-        "c": (cargo_test("type-bridge-c", "query::tests::sdk_v2_c_deterministic_proof_fragment"),),
+        "c": (
+            cargo_test("type-bridge-c", "query::tests::sdk_queries_c_deterministic_proof_fragment"),
+        ),
     }
-    produce_proofs(2, directory, environment, nonce, commands)
+    produce_proofs("queries", directory, environment, nonce, commands)
 
 
 def query_environment(
@@ -191,20 +232,17 @@ def query_environment(
 ) -> dict[str, str]:
     fragments = sorted((directory / "fragments").glob(f"{binding}-*.json"))
     if not fragments:
-        raise RunnerError(f"{binding} V2 proof fragments are missing")
+        raise RunnerError(f"{binding} queries proof fragments are missing")
     result = environment | {
-        "TYPE_BRIDGE_SDK_REPORT_V2": str(directory / f"v2/{binding}.json"),
-        "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS": os.pathsep.join(str(path) for path in fragments),
-        "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE": nonce,
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT": str(directory / f"reports/{binding}.json"),
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS": os.pathsep.join(str(path) for path in fragments),
+        "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE": nonce,
     }
-    if binding in V1_BINDINGS:
-        result["TYPE_BRIDGE_SDK_REPORT"] = str(directory / f"v1/{binding}.json")
     return result
 
 
 def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None:
-    (directory / "v1").mkdir()
-    (directory / "v2").mkdir()
+    (directory / "reports").mkdir()
     python_env = query_environment(environment, directory, "python", nonce) | {
         "USE_DOCKER": "false"
     }
@@ -223,12 +261,12 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
     node_env = query_environment(environment, directory, "node", nonce) | {
-        "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON": str(Path(sys.executable).resolve()),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v2_node_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON": str(Path(sys.executable).resolve()),
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_queries_node_{os.getpid()}",
     }
     node_live("generated package round-trips exact models on TypeDB", node_env)
     rust_env = query_environment(environment, directory, "rust", nonce) | {
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_v2_rust_{os.getpid()}"
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_queries_rust_{os.getpid()}"
     }
     run(
         rust_live(
@@ -236,9 +274,9 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
         ),
         env=rust_env,
     )
-    c_target = directory / "c-target"
+    c_target = Path(environment.get("CARGO_TARGET_DIR", directory / "c-target"))
     c_env = query_environment(environment, directory, "c", nonce) | {
-        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_v2_c_{os.getpid()}",
+        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_queries_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
         "ACCEPTANCE_TARGET_DIR": str(c_target),
         "CARGO_TARGET_DIR": str(c_target),
@@ -259,7 +297,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     )
     run(
         rust_live(
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
             "c_projection_live",
         ),
         env=c_env,
@@ -269,15 +307,8 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
 def compare_queries(directory: Path, environment: dict[str, str]) -> None:
     run(
         python_command(
-            "compare_sdk_conformance.py",
-            *(str(directory / f"v1/{binding}.json") for binding in V1_BINDINGS),
-        ),
-        env=environment,
-    )
-    run(
-        python_command(
-            "compare_sdk_conformance_v2.py",
-            *(str(directory / f"v2/{binding}.json") for binding in BINDINGS),
+            "sdk_queries_compare.py",
+            *(str(directory / f"reports/{binding}.json") for binding in BINDINGS),
         ),
         env=environment,
     )
@@ -315,16 +346,16 @@ def model_artifacts(directory: Path, environment: dict[str, str]) -> None:
             "type-bridge-cli",
             "schema_generation_atomicity_tests::injected_c_emitter_failure_preserves_all_four_ordered_packages",
         ),
-        env=environment | {"TYPE_BRIDGE_SDK_V3_ATOMIC_GENERATION_OUTPUT": str(atomic)},
+        env=environment | {"TYPE_BRIDGE_SDK_MODELS_ATOMIC_GENERATION_OUTPUT": str(atomic)},
     )
     field_identity = directory / "field-identity.json"
     run(
         cargo_test(
             "type-bridge-schema-codegen",
-            "exact_sdk_v3_field_name_identity_is_source_bound",
-            suite="sdk_v3_fingerprints",
+            "exact_sdk_models_field_name_identity_is_source_bound",
+            suite="sdk_models_fingerprints",
         ),
-        env=environment | {"TYPE_BRIDGE_SDK_V3_FIELD_IDENTITY_OUTPUT": str(field_identity)},
+        env=environment | {"TYPE_BRIDGE_SDK_MODELS_FIELD_IDENTITY_OUTPUT": str(field_identity)},
     )
     run(python_command("validate_generation_artifact.py", "atomic", str(atomic)), env=environment)
     run(
@@ -345,27 +376,32 @@ def model_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
         ],
         "rust": cargo_test(
             "type-bridge-schema-codegen",
-            "sdk_v3_generated_package_integrity",
+            "sdk_models_generated_package_integrity",
             suite="rust_acceptance",
         ),
         "c": cargo_test(
-            "type-bridge-schema-codegen", "sdk_v3_generated_package_integrity", suite="c_emitter"
+            "type-bridge-schema-codegen",
+            "sdk_models_generated_package_integrity",
+            suite="c_emitter",
         ),
     }
     data_tests = {
         "python": (
             "type-bridge-core",
-            "runtime_projection::tests::sdk_v3_python_data_plane_fragment",
+            "runtime_projection::tests::sdk_models_python_data_plane_fragment",
         ),
-        "node": ("type-bridge-node", "runtime_projection::tests::sdk_v3_node_data_plane_fragment"),
-        "rust": ("type-bridge", "transaction::tests::sdk_v3_rust_data_plane_fragment"),
-        "c": ("type-bridge-c", "runtime::tests::sdk_v3_c_data_plane_fragment"),
+        "node": (
+            "type-bridge-node",
+            "runtime_projection::tests::sdk_models_node_data_plane_fragment",
+        ),
+        "rust": ("type-bridge", "transaction::tests::sdk_models_rust_data_plane_fragment"),
+        "c": ("type-bridge-c", "runtime::tests::sdk_models_c_data_plane_fragment"),
     }
     commands = {
         binding: (package_commands[binding], cargo_test(*data_tests[binding]))
         for binding in BINDINGS
     }
-    produce_proofs(3, directory, environment, nonce, commands, ("package", "data"))
+    produce_proofs("models", directory, environment, nonce, commands, ("package", "data"))
 
 
 def model_live(directory: Path, environment: dict[str, str]) -> None:
@@ -373,7 +409,7 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
     supplements.mkdir()
     python_env = environment | {
         "USE_DOCKER": "false",
-        "TYPE_BRIDGE_SDK_V3_PYTHON_SUPPLEMENT": str(supplements / "python.json"),
+        "TYPE_BRIDGE_SDK_MODELS_PYTHON_SUPPLEMENT": str(supplements / "python.json"),
     }
     run(
         [
@@ -383,20 +419,20 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
             "-q",
             "-m",
             "integration",
-            "tests/integration/schema/test_generated_projection_live.py::test_generated_data_model_runtime_v3_live",
+            "tests/integration/schema/test_generated_projection_live.py::test_sdk_models_data_model_runtime_live",
         ],
         env=python_env,
     )
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
     node_env = environment | {
-        "TYPE_BRIDGE_SDK_V3_NODE_SUPPLEMENT": str(supplements / "node.json"),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v3_node_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT": str(supplements / "node.json"),
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_models_node_{os.getpid()}",
     }
-    node_live("node.generated_data_model_runtime_v3_live", node_env)
+    node_live("node.sdk_models_data_model_runtime_live", node_env)
     rust_env = environment | {
-        "TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT": str(supplements / "rust.json"),
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_v3_rust_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT": str(supplements / "rust.json"),
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_models_rust_{os.getpid()}",
     }
     run(
         rust_live(
@@ -405,11 +441,11 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
         env=rust_env,
     )
     c_env = environment | {
-        "TYPE_BRIDGE_SDK_V3_C_SUPPLEMENT": str(supplements / "c.json"),
-        "TYPE_BRIDGE_C_QUERY_INTG_DATABASE": f"type_bridge_v3_c_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_MODELS_C_SUPPLEMENT": str(supplements / "c.json"),
+        "TYPE_BRIDGE_C_QUERY_INTG_DATABASE": f"type_bridge_models_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
     }
-    run(rust_live("generated_data_model_runtime_v3_live", "c_projection_live"), env=c_env)
+    run(rust_live("sdk_models_data_model_runtime_live", "c_projection_live"), env=c_env)
 
 
 def assemble_models(directory: Path, environment: dict[str, str], nonce: str) -> tuple[Path, ...]:
@@ -418,7 +454,7 @@ def assemble_models(directory: Path, environment: dict[str, str], nonce: str) ->
     for binding in BINDINGS:
         run(
             python_command(
-                "assemble_sdk_conformance_v3.py",
+                "sdk_models_assemble.py",
                 "--projected-parity",
                 str(directory / f"projected-parity/{binding}.json"),
                 "--projected-live",
@@ -444,7 +480,7 @@ def assemble_models(directory: Path, environment: dict[str, str], nonce: str) ->
         )
     paths = tuple(reports / f"{binding}.json" for binding in BINDINGS)
     run(
-        python_command("compare_sdk_conformance_v3.py", *(str(path) for path in paths)),
+        python_command("sdk_models_compare.py", *(str(path) for path in paths)),
         env=environment,
     )
     return paths
@@ -475,7 +511,7 @@ def write_cleanup(path: Path, binding: str) -> None:
         codec_contract.canonical_json_bytes(
             {
                 "binding": binding,
-                "format": "typebridge.sdk-v5-cleanup-evidence/v1",
+                "format": "typebridge.sdk-serialization-cleanup-evidence/v1",
                 "managed_database_absent": True,
                 "partial_output_absent": True,
                 "temporary_evidence_absent": True,
@@ -486,39 +522,45 @@ def write_cleanup(path: Path, binding: str) -> None:
 
 def codec_offline(directory: Path, environment: dict[str, str]) -> None:
     python_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_PYTHON_CORPUS": str(directory / "python-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_PYTHON_OPERATIONAL_EVIDENCE": str(
+        "TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_CORPUS": str(directory / "python-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_OPERATIONAL_EVIDENCE": str(
             directory / "python-operational.json"
         ),
     }
     run(["uv", "run", "pytest", "-q", "-m", "integration", str(PYTHON_PROVIDER)], env=python_env)
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     node_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_NODE_CORPUS": str(directory / "node-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_NODE_OPERATIONAL_EVIDENCE": str(directory / "node-operational.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_CORPUS": str(directory / "node-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_OPERATIONAL_EVIDENCE": str(
+            directory / "node-operational.json"
+        ),
     }
     run([sys.executable, str(NODE_PROVIDER)], env=node_env)
     rust_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_RUST_CORPUS": str(directory / "rust-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_RUST_OPERATIONAL_EVIDENCE": str(directory / "rust-operational.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_RUST_CORPUS": str(directory / "rust-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_RUST_OPERATIONAL_EVIDENCE": str(
+            directory / "rust-operational.json"
+        ),
     }
     run(
         cargo_test(
             "type-bridge-schema-codegen",
-            "generated_rust_sdk_v5_canonical_codec",
+            "sdk_serialization_canonical_codec",
             suite="rust_acceptance",
         ),
         env=rust_env,
     )
     c_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_C_CORPUS": str(directory / "c-corpus.json"),
-        "TYPE_BRIDGE_SDK_V5_C_OPERATIONAL_EVIDENCE": str(directory / "c-operational.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_CORPUS": str(directory / "c-corpus.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_OPERATIONAL_EVIDENCE": str(
+            directory / "c-operational.json"
+        ),
     }
     run(["uv", "run", "pytest", "-q", "-m", "integration", str(C_PROVIDER)], env=c_env)
     run(
         [
             sys.executable,
-            str(ROOT / "scripts/ci/compare_sdk_v5_corpora.py"),
+            str(ROOT / "scripts/ci/sdk_serialization_corpora.py"),
             *(
                 item
                 for binding in BINDINGS
@@ -530,7 +572,7 @@ def codec_offline(directory: Path, environment: dict[str, str]) -> None:
     run(
         [
             sys.executable,
-            str(ROOT / "scripts/ci/compare_sdk_v5_operational.py"),
+            str(ROOT / "scripts/ci/sdk_serialization_operational.py"),
             *(
                 item
                 for binding in BINDINGS
@@ -544,7 +586,7 @@ def codec_offline(directory: Path, environment: dict[str, str]) -> None:
 def codec_live(directory: Path, environment: dict[str, str]) -> None:
     python_env = environment | {
         "USE_DOCKER": "false",
-        "TYPE_BRIDGE_SDK_V5_PYTHON_EVIDENCE": str(directory / "python-live.json"),
+        "TYPE_BRIDGE_SDK_SERIALIZATION_PYTHON_EVIDENCE": str(directory / "python-live.json"),
     }
     run(
         [
@@ -554,22 +596,22 @@ def codec_live(directory: Path, environment: dict[str, str]) -> None:
             "-q",
             "-m",
             "integration",
-            "tests/integration/schema/test_generated_projection_live.py::test_generated_canonical_serialization_v5_live",
+            "tests/integration/schema/test_generated_projection_live.py::test_sdk_serialization_live",
         ],
         env=python_env,
     )
     write_cleanup(directory / "python-cleanup.json", "python")
     node_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE": str(directory / "node-live.json"),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_v5_node_{os.getpid()}",
-        "TYPEDB_VERSION": "3.12.3",
+        "TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE": str(directory / "node-live.json"),
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_serialization_node_{os.getpid()}",
+        "TYPEDB_VERSION": typedb_version(environment),
     }
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=node_env)
-    node_live("node.generated_canonical_serialization_v5_live", node_env)
+    node_live("node.sdk_serialization_live", node_env)
     write_cleanup(directory / "node-cleanup.json", "node")
     rust_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE": str(directory / "rust-live.json"),
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_v5_rust_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE": str(directory / "rust-live.json"),
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_serialization_rust_{os.getpid()}",
     }
     run(
         rust_live(
@@ -579,13 +621,13 @@ def codec_live(directory: Path, environment: dict[str, str]) -> None:
     )
     write_cleanup(directory / "rust-cleanup.json", "rust")
     c_env = environment | {
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE": str(directory / "c-live.json"),
-        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_v5_c_{os.getpid()}",
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE": str(directory / "c-live.json"),
+        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_serialization_c_{os.getpid()}",
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
     }
     run(
         rust_live(
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
             "c_projection_live",
         ),
         env=c_env,
@@ -599,7 +641,7 @@ def assemble_codec(directory: Path, output: Path, environment: dict[str, str]) -
         nonce = os.urandom(32).hex()
         run(
             python_command(
-                "assemble_sdk_conformance_v5.py",
+                "sdk_serialization_assemble.py",
                 "--corpus",
                 str(directory / f"{binding}-corpus.json"),
                 "--live-evidence",
@@ -619,7 +661,7 @@ def assemble_codec(directory: Path, output: Path, environment: dict[str, str]) -
         )
     run(
         python_command(
-            "compare_sdk_conformance_v5.py",
+            "sdk_serialization_compare.py",
             *(str(output / f"{binding}.json") for binding in BINDINGS),
         ),
         env=environment,
@@ -636,15 +678,15 @@ def regular(path: Path, label: str) -> Path:
     return path.resolve()
 
 
-def predecessor_paths(root: Path, binding: str) -> tuple[tuple[int, Path], ...]:
+def predecessor_paths(root: Path, binding: str) -> tuple[tuple[str, Path], ...]:
     return tuple(
-        (version, regular(root / f"v{version}" / f"{binding}.json", f"V{version} {binding} report"))
-        for version in conformance.predecessor_versions(binding)
+        (suite, regular(root / suite / f"{binding}.json", f"{suite} {binding} report"))
+        for suite in conformance.predecessor_suites(binding)
     )
 
 
-def predecessor_arguments(paths: tuple[tuple[int, Path], ...]) -> list[str]:
-    return [item for version, path in paths for item in ("--predecessor", f"{version}={path}")]
+def predecessor_arguments(paths: tuple[tuple[str, Path], ...]) -> list[str]:
+    return [item for suite, path in paths for item in ("--predecessor", f"{suite}={path}")]
 
 
 def c_surface_consumer(acceptance: dict[str, Any], *, source_commit: str) -> dict[str, Any]:
@@ -683,16 +725,16 @@ def assemble_artifacts(
     for path in (surfaces, consumers, reports):
         path.mkdir()
     run(
-        python_command("sdk_v6_surfaces.py", "build", str(cli), "--output", str(surfaces)),
+        python_command("sdk_artifacts_surfaces.py", "build", str(cli), "--output", str(surfaces)),
         env=environment,
     )
     for binding in BINDINGS[:-1]:
-        surface = surfaces / f"type-bridge-{binding}-generated-sdk-v6.tar.gz"
+        surface = surfaces / f"type-bridge-{binding}-generated-sdk-artifacts.tar.gz"
         interpreter = ["uv", "run", "python"] if binding == "python" else [sys.executable]
         run(
             [
                 *interpreter,
-                "scripts/ci/validate_sdk_v6_surface_consumer.py",
+                "scripts/ci/sdk_artifacts_surface_consumer.py",
                 str(surface),
                 "--binding",
                 binding,
@@ -714,11 +756,11 @@ def assemble_artifacts(
         surface = (
             generated
             if binding == "c"
-            else surfaces / f"type-bridge-{binding}-generated-sdk-v6.tar.gz"
+            else surfaces / f"type-bridge-{binding}-generated-sdk-artifacts.tar.gz"
         )
         run(
             python_command(
-                "assemble_sdk_conformance_v6.py",
+                "sdk_artifacts_assemble.py",
                 "--source-commit",
                 source_commit,
                 "--surface-consumer",
@@ -749,14 +791,14 @@ def assemble_artifacts(
         )
         output.append(report)
     run(
-        python_command("compare_sdk_conformance_v6.py", *(str(path) for path in output)),
+        python_command("sdk_artifacts_compare.py", *(str(path) for path in output)),
         env=environment,
     )
     return tuple(output)
 
 
 def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, ...]:
-    project = f"tb-sdk-v4-live-{os.getpid()}"
+    project = f"tb-administration-live-{os.getpid()}"
     temporary = directory
     compose = ["docker", "compose", "-p", project, "-f", str(ROOT / "docker-compose.yml")]
     interrupted = False
@@ -770,7 +812,11 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
     try:
         env = environment.copy()
         env.update(
-            {"TYPEDB_IMAGE": "typedb/typedb:3.12.3", "TYPEDB_PORT": "0", "TYPEDB_HTTP_PORT": "0"}
+            {
+                "TYPEDB_IMAGE": f"typedb/typedb:{typedb_version(environment)}",
+                "TYPEDB_PORT": "0",
+                "TYPEDB_HTTP_PORT": "0",
+            }
         )
         run([*compose, "up", "-d", "--wait", "typedb"], env=env)
         driver_port = published_port(project, "1729")
@@ -780,9 +826,9 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
             "TYPEDB_HTTP_PORT": http_port,
             "TYPEDB_USERNAME": "admin",
             "TYPEDB_PASSWORD": "password",
-            "TYPE_BRIDGE_SDK_V4_REPORT_DIR": str(temporary),
+            "TYPE_BRIDGE_SDK_ADMINISTRATION_REPORT_DIR": str(temporary),
         }
-        for test in (f"sdk_v4_{binding}_live" for binding in BINDINGS):
+        for test in (f"sdk_administration_{binding}_live" for binding in BINDINGS):
             run(
                 [
                     "cargo",
@@ -799,7 +845,7 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
                 ],
                 env=producer_env,
             )
-        paths = [temporary / f"{binding}-sdk-v4-report.json" for binding in BINDINGS]
+        paths = [temporary / f"{binding}-administration-report.json" for binding in BINDINGS]
         missing = [path.name for path in paths if not path.is_file()]
         if missing:
             raise RunnerError(f"validated report publication is incomplete: {missing}")
@@ -807,7 +853,7 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
             run(
                 [
                     sys.executable,
-                    str(ROOT / "scripts/ci/compare_sdk_conformance_v4.py"),
+                    str(ROOT / "scripts/ci/sdk_administration_compare.py"),
                     *(str(path) for path in paths),
                 ],
                 capture=True,
@@ -821,9 +867,9 @@ def administration(directory: Path, environment: dict[str, str]) -> tuple[Path, 
         return tuple(paths)
     except (KeyboardInterrupt, RunnerError) as error:
         if interrupted:
-            print("Sdk V4 live fan-in interrupted", file=sys.stderr)
+            print("SDK administration live fan-in interrupted", file=sys.stderr)
         else:
-            print(f"Sdk V4 live fan-in failed: {error}", file=sys.stderr)
+            print(f"SDK administration live fan-in failed: {error}", file=sys.stderr)
         raise RunnerError("administration acceptance failed") from error
     finally:
         signal.signal(signal.SIGTERM, previous)
@@ -867,20 +913,324 @@ def artifact_reports(
     )
 
 
+def cargo_target(environment: Mapping[str, str]) -> Path:
+    return Path(environment.get("CARGO_TARGET_DIR", CORE / "target"))
+
+
+def writes_profile(suite: str) -> str:
+    return json.loads((WRITES / suite / "program.json").read_text(encoding="utf-8"))[
+        "semantic_profile"
+    ]
+
+
+def writes_packages(directory: Path, suite: str, environment: dict[str, str]) -> Path:
+    """Generate the four packages from a private copy of the suite workspace."""
+
+    workspace = directory / "workspace"
+    workspace.mkdir()
+    shutil.copy2(WRITES / suite / "typebridge.yaml", workspace / "typebridge.yaml")
+    shutil.copytree(WRITES / suite / "schema", workspace / "schema")
+    run(
+        [
+            "cargo",
+            "build",
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "-p",
+            "type-bridge-cli",
+        ],
+        env=environment,
+    )
+    cli = cargo_target(environment) / "debug/type-bridge"
+    run([str(cli), "schema", "generate"], cwd=workspace, env=environment)
+    return workspace / "generated"
+
+
+def writes_rust_manifest(generated: Path) -> str:
+    rust = CORE / "crates/rust"
+    return (
+        '[package]\nname = "sdk-writes-purchase"\nversion = "0.0.0"\nedition = "2024"\n'
+        "publish = false\n\n[dependencies]\n"
+        f'models = {{ package = "type-bridge-generated-schema", path = "{generated}" }}\n'
+        f'type-bridge = {{ path = "{rust}", features = ["typedb"] }}\n'
+        'serde_json = "1"\n'
+        'tokio = { version = "1", features = ["macros", "rt-multi-thread"] }\n\n'
+        f'[patch.crates-io]\ntype-bridge = {{ path = "{rust}" }}\n\n[workspace]\n'
+    )
+
+
+def writes_programs(
+    directory: Path, generated: Path, environment: dict[str, str]
+) -> dict[str, tuple[list[str], Path, dict[str, str]]]:
+    """Build each binding's program; return its command, directory and environment."""
+
+    python_path = directory / "python"
+    python_path.mkdir()
+    shutil.copytree(generated / "python", python_path / "purchase_models")
+    python = (
+        ["uv", "run", "python", str(WRITES_PROGRAMS / "python/program.py")],
+        ROOT,
+        {"PYTHONPATH": str(python_path)},
+    )
+
+    run(["npm", "run", "build"], cwd=NODE, env=environment)
+    typescript = generated / "typescript"
+    run(
+        [
+            "npm",
+            "install",
+            "--ignore-scripts",
+            "--no-package-lock",
+            "--no-audit",
+            "--no-fund",
+            str(NODE),
+        ],
+        cwd=typescript,
+        env=environment,
+    )
+    shutil.copy2(WRITES_PROGRAMS / "ts/program.ts", typescript / "src/program.ts")
+    run(
+        ["node", str(NODE / "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"],
+        cwd=typescript,
+        env=environment,
+    )
+    node = (["node", "dist/program.js"], typescript, {})
+
+    # The consumer resolves offline from the workspace lockfile's versions.
+    consumer = directory / "rust"
+    (consumer / "src").mkdir(parents=True)
+    shutil.copy2(WRITES_PROGRAMS / "rust/main.rs", consumer / "src/main.rs")
+    shutil.copy2(CORE / "Cargo.lock", consumer / "Cargo.lock")
+    (consumer / "Cargo.toml").write_text(writes_rust_manifest(generated / "rust"))
+    manifest = ["--quiet", "--offline", "--manifest-path", str(consumer / "Cargo.toml")]
+    run(["cargo", "build", *manifest], env=environment)
+    rust = (["cargo", "run", *manifest], consumer, {})
+
+    run(
+        [
+            "cargo",
+            "build",
+            "--quiet",
+            "--locked",
+            "--manifest-path",
+            str(CORE / "Cargo.toml"),
+            "-p",
+            "type-bridge-c",
+            "--lib",
+        ],
+        env=environment,
+    )
+    library = cargo_target(environment) / "debug"
+    executable = directory / "c-program"
+    run(
+        [
+            "cc",
+            "-std=c17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            str(generated / "c/include"),
+            "-I",
+            str(CORE / "crates/c/include"),
+            str(WRITES_PROGRAMS / "c/program.c"),
+            str(generated / "c/src/models.c"),
+            "-L",
+            str(library),
+            "-ltype_bridge_c",
+            f"-Wl,-rpath,{library}",
+            "-o",
+            str(executable),
+        ],
+        env=environment,
+    )
+    c = ([str(executable)], directory, {})
+    return {"python": python, "node": node, "rust": rust, "c": c}
+
+
+@contextmanager
+def writes_fixture(
+    directory: Path, suite: str, environment: dict[str, str]
+) -> Iterator[dict[str, Any]]:
+    """Serve the server crate's writes fixture until the block ends.
+
+    Yields ``fixture.json``; on exit the fixture's ``observed.json`` is in the
+    yielded mapping under ``"observed"``.
+    """
+
+    fixture_dir = directory / "fixture"
+    fixture_dir.mkdir()
+    command = [
+        "cargo",
+        "test",
+        "--quiet",
+        "--locked",
+        "--manifest-path",
+        str(CORE / "Cargo.toml"),
+        "-p",
+        "type-bridge-server",
+        "--features",
+        "v2-query",
+        "--test",
+        "v3_staged_integration_tests",
+    ]
+    run([*command, "--no-run"], env=environment)
+    fixture_env = environment | {
+        "TB_SDK_WRITES_FIXTURE_DIR": str(fixture_dir),
+        "TB_SDK_WRITES_SUITE": suite,
+    }
+    process = subprocess.Popen(
+        [*command, "sdk_writes_fixture_serves_until_stopped", "--", "--ignored", "--exact"],
+        cwd=ROOT,
+        env=fixture_env,
+    )
+    try:
+        deadline = time.monotonic() + WRITES_FIXTURE_TIMEOUT
+        while not (fixture_dir / "fixture.json").is_file():
+            if process.poll() is not None:
+                raise RunnerError("the writes fixture exited before serving")
+            if time.monotonic() > deadline:
+                raise RunnerError("the writes fixture did not start in time")
+            time.sleep(0.2)
+        fixture = json.loads((fixture_dir / "fixture.json").read_text(encoding="utf-8"))
+        yield fixture
+        (fixture_dir / "stop").touch()
+        if process.wait(timeout=WRITES_FIXTURE_TIMEOUT) != 0:
+            raise RunnerError("the writes fixture failed while stopping")
+        fixture["observed"] = json.loads(
+            (fixture_dir / "observed.json").read_text(encoding="utf-8")
+        )
+    finally:
+        (fixture_dir / "stop").touch()
+        if process.poll() is None:
+            try:
+                process.wait(timeout=WRITES_FIXTURE_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def writes_run(
+    programs: dict[str, tuple[list[str], Path, dict[str, str]]],
+    suite: str,
+    environment: dict[str, str],
+    targets: Mapping[str, Mapping[str, str]],
+) -> dict[str, Any]:
+    """Run every program once, against its binding's live target when given."""
+
+    outputs = {}
+    for binding in BINDINGS:
+        command, cwd, extra = programs[binding]
+        target = targets.get(binding, {})
+        program_env = environment | extra | {"TYPE_BRIDGE_SDK_WRITES_SUITE": suite}
+        for name in (
+            "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE",
+            "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT",
+        ):
+            program_env.pop(name, None)
+        if target:
+            program_env |= {
+                "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE": target["direct_database"],
+                "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT": target["proxy_endpoint"],
+            }
+        output = json.loads(run(command, cwd=cwd, env=program_env, capture=True))
+        if type(output) is not dict or output.get("binding") != binding:
+            raise RunnerError(f"{binding} program reported another binding")
+        outputs[binding] = output
+    return outputs
+
+
+def writes_reports(
+    directory: Path,
+    suite: str,
+    outputs: dict[str, Any],
+    profile: str,
+    observed: Mapping[str, Any] | None,
+) -> tuple[Path, ...]:
+    reports = directory / "reports"
+    reports.mkdir()
+    paths = []
+    for binding in BINDINGS:
+        output = outputs[binding]
+        report = {
+            "format": writes_contract.REPORT_FORMAT,
+            "binding": binding,
+            "program": suite,
+            "semantic_profile": profile,
+            "plans": output["plans"],
+            "results": output["results"],
+            "observed": None if observed is None else observed[binding],
+        }
+        path = reports / f"{binding}.json"
+        path.write_bytes(writes_contract.canonical_json_bytes(report))
+        paths.append(path)
+    return tuple(paths)
+
+
+def writes_suite(
+    directory: Path, suite: str, environment: dict[str, str], *, live: bool
+) -> dict[str, Path]:
+    """One suite: plan bytes offline; with ``live``, results directly and over the proxy."""
+
+    expected_profile = writes_profile(suite)
+    profile = environment[profile_matrix.SEMANTIC_PROFILE_ENV]
+    if profile != expected_profile:
+        raise RunnerError(f"the writes suite runs on {expected_profile}, not {profile}")
+    generated = writes_packages(directory, suite, environment)
+    programs = writes_programs(directory, generated, environment)
+    observed = None
+    if live:
+        with writes_fixture(directory, suite, environment) as fixture:
+            if fixture["profile"] != profile:
+                raise RunnerError(f"the writes fixture serves {fixture['profile']}")
+            outputs = writes_run(programs, suite, environment, fixture["bindings"])
+        observed = fixture["observed"]
+    else:
+        outputs = writes_run(programs, suite, environment, {})
+    paths = writes_reports(directory, suite, outputs, profile, observed)
+    summary = directory / "comparison.json"
+    summary.write_text(
+        run(
+            python_command(
+                "sdk_writes_compare.py", *(["--live"] if live else []), *map(str, paths)
+            ),
+            env=environment,
+            capture=True,
+        )
+        + "\n"
+    )
+    return {
+        **{f"{binding}.json": path for binding, path in zip(BINDINGS, paths, strict=True)},
+        "comparison.json": summary,
+    }
+
+
+def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[str, Path]:
+    """Every writes suite in its own directory, each checked by the one comparator."""
+
+    files = {}
+    for suite in WRITES_SUITES:
+        suite_directory = directory / suite
+        suite_directory.mkdir()
+        produced = writes_suite(suite_directory, suite, environment, live=live)
+        files |= {f"{suite}/{name}": path for name, path in produced.items()}
+    return files
+
+
 def execute(
     suite: str, directory: Path, environment: dict[str, str], arguments: argparse.Namespace
 ) -> dict[str, Path]:
     """Produce and independently validate a complete report set before publication."""
+    if suite == "writes":
+        return writes(directory, environment, live=not arguments.offline)
     if suite == "queries":
         nonce = secrets.token_hex(32)
         query_proofs(directory, environment, nonce)
         query_live(directory, environment, nonce)
         compare_queries(directory, environment)
-        return {
-            f"v{version}/{binding}.json": directory / f"v{version}/{binding}.json"
-            for version in (1, 2)
-            for binding in (V1_BINDINGS if version == 1 else BINDINGS)
-        }
+        return {f"{binding}.json": directory / f"reports/{binding}.json" for binding in BINDINGS}
     if suite == "models":
         nonce = secrets.token_hex(32)
         model_projections(directory, environment)
@@ -905,10 +1255,17 @@ def execute(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("suite", choices=SUITES)
+    parser.add_argument("suite", choices=(*SUITES, *STAGED_SUITES))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--address", default="127.0.0.1:1729")
     parser.add_argument("--http-port", default="8000")
+    parser.add_argument(
+        "--semantic-profile",
+        help=(
+            "semantic profile to run (default: TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, "
+            "else the catalogs' own profile); selects the exact TypeDB server"
+        ),
+    )
     artifact_inputs = (
         "predecessors",
         "acceptance",
@@ -920,7 +1277,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     for name in artifact_inputs:
         parser.add_argument(f"--{name}", type=Path)
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="writes only: compare plan bytes without a TypeDB server",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.offline and arguments.suite != "writes":
+        parser.error("--offline is only valid for the writes suite")
     if arguments.suite == "artifacts":
         missing = [f"--{name}" for name in artifact_inputs if getattr(arguments, name) is None]
         if missing:
@@ -932,7 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
         if output.exists() or output == ROOT or ROOT in output.parents:
             raise RunnerError("output must be a new directory outside the checkout")
         environment = os.environ.copy()
-        if arguments.suite in {"queries", "models", "serialization"}:
+        if arguments.suite in {"queries", "models", "serialization", "writes"}:
             environment.update(
                 {
                     "TYPEDB_ADDRESS": arguments.address,
@@ -941,10 +1305,17 @@ def main(argv: list[str] | None = None) -> int:
                     "TYPEDB_PASSWORD": "password",
                 }
             )
-        if arguments.suite in {"queries", "models"}:
-            environment["TYPEDB_VERSION"] = "3.12.3"
-        if arguments.suite == "queries":
-            environment["TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"] = "typedb-3.12.1/v1"
+        # Producers, fixtures, assemblers and comparers all read one profile and
+        # its exact server so a run cannot mix TypeDB lines.
+        profile = arguments.semantic_profile
+        if arguments.suite == "writes" and profile is None:
+            # The program has one profile; an unset lane selects it.
+            profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or writes_profile(
+                WRITES_SUITES[0]
+            )
+        identity = lane(profile, environment)
+        environment[profile_matrix.SEMANTIC_PROFILE_ENV] = identity.semantic_profile
+        environment["TYPEDB_VERSION"] = identity.live_server_version
         with tempfile.TemporaryDirectory(prefix=f"typebridge-sdk-{arguments.suite}-") as value:
             reports = execute(arguments.suite, Path(value), environment, arguments)
             publish_files(reports, output, checkout=ROOT)

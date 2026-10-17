@@ -104,7 +104,20 @@ impl WorkspaceSourceService for RejectReadableFile {
     }
 }
 
+/// Environment variable naming the semantic profile of the lane under test.
+const SEMANTIC_PROFILE_ENV: &str = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+
+/// The lane's workspace profile, else `typedb-3.12.1/v1`. These checks never
+/// reach a server, so the profile only has to be one the workspace accepts.
+fn semantic_profile() -> String {
+    std::env::var(SEMANTIC_PROFILE_ENV)
+        .ok()
+        .filter(|profile| !profile.is_empty())
+        .unwrap_or_else(|| "typedb-3.12.1/v1".to_owned())
+}
+
 fn yaml(transport: &str) -> String {
+    let profile = semantic_profile();
     format!(
         r#"format: typebridge.workspace/v1
 schema:
@@ -112,7 +125,7 @@ schema:
   ownership: exclusive
   managed-scope: example-schema
 compatibility:
-  semantic-profile: typedb-3.12.1/v1
+  semantic-profile: {profile}
 migrations:
   directory: ../migrations/v2
   app-label: example

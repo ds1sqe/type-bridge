@@ -17,16 +17,19 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 type-bridge-contract = { path = "../contract", version = "2.2.6" }
+type-bridge-core-lib = { path = "../core", version = "2.2.6" }
 type-bridge-migration = { path = "../migration", version = "2.2.6" }
-type-bridge-orm = { path = "../orm", version = "2.2.6" }
+type-bridge-orm = { path = "../orm", version = "2.2.6", features = ["internal-eager"] }
 type-bridge-query = { path = "../query", version = "2.2.6" }
 type-bridge-schema = { path = "../schema", version = "2.2.6" }
 type-bridge-schema-compat = { path = "../schema-compat", version = "2.2.6" }
 type-bridge-schema-migration = { path = "../schema-migration", version = "2.2.6" }
 
 [dev-dependencies]
-tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "time"] }
-type-bridge-core-lib = { path = "../core", version = "2.2.6" }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "sync", "time"] }
+# The live profile-upgrade test moves databases between TypeDB servers with
+# the driver's export and import; same pin as type-bridge-typedb-runtime.
+typedb-driver = "=3.13.6"
 
 [lints]
 workspace = true

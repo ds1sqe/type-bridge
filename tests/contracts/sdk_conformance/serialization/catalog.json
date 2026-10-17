@@ -1,0 +1,100 @@
+{
+  "format": "typebridge.sdk-serialization-catalog/v1",
+  "authority_state": "finalized",
+  "fixture": {
+    "id": "serialization",
+    "version": 5,
+    "semantic_profile": "typedb-3.12.1/v1",
+    "live_server_version": "3.12.3",
+    "schema_path": "tests/contracts/sdk_conformance/models/schema.yaml",
+    "journey_path": "tests/contracts/sdk_conformance/serialization/journey.json",
+    "record_contract_path": "tests/contracts/projected-record-v1.json",
+    "abi_contract_path": "tests/contracts/c-abi.json"
+  },
+  "report_schema_path": "tests/contracts/sdk_conformance/serialization/report-schema.json",
+  "observation_schema_path": "tests/contracts/sdk_conformance/serialization/observation-schema.json",
+  "operational_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/operational-evidence-schema.json",
+  "live_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/live-evidence-schema.json",
+  "cleanup_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/cleanup-evidence-schema.json",
+  "producer_evidence_schema_path": "tests/contracts/sdk_conformance/serialization/producer-evidence-schema.json",
+  "report_bindings": ["python", "node", "rust", "c"],
+  "manifest_transition_cases": ["sdk.model.serialization"],
+  "evidence_only_gap_cases": [
+    "sdk.runtime.cancellation",
+    "sdk.runtime.timeout-resource-limits",
+    "sdk.diagnostic.all-workflows",
+    "sdk.runtime.explicit-close"
+  ],
+  "report_producers": {
+    "python": {
+      "id": "python.sdk-serialization-live",
+      "test_id": "python.sdk_serialization_live"
+    },
+    "node": {
+      "id": "node.sdk-serialization-live",
+      "test_id": "node.sdk_serialization_live"
+    },
+    "rust": {
+      "id": "type-bridge-rust.sdk-serialization-live",
+      "test_id": "rust_projection_live::sdk_serialization_live"
+    },
+    "c": {
+      "id": "type-bridge-c.sdk-serialization-live",
+      "test_id": "c_projection_live::sdk_serialization_live"
+    }
+  },
+  "selected_proofs": [
+    {
+      "case_id": "sdk.model.serialization",
+      "proof_kind": "generated_package",
+      "observation_ref": "canonical_record_archive"
+    },
+    {
+      "case_id": "sdk.runtime.cancellation",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "serialization_cancellation"
+    },
+    {
+      "case_id": "sdk.runtime.timeout-resource-limits",
+      "proof_kind": "direct_runtime",
+      "observation_ref": "serialization_resource_limits"
+    },
+    {
+      "case_id": "sdk.diagnostic.all-workflows",
+      "proof_kind": "diagnostic",
+      "observation_ref": "serialization_structured_diagnostic"
+    },
+    {
+      "case_id": "sdk.runtime.explicit-close",
+      "proof_kind": "lifecycle",
+      "observation_ref": "serialization_resource_lifecycle"
+    }
+  ],
+  "cases": [
+    {
+      "id": "sdk.model.serialization",
+      "capability_id": "model.canonical-serialization",
+      "disposition": "shared_smoke"
+    },
+    {
+      "id": "sdk.runtime.cancellation",
+      "capability_id": "runtime.cancellation",
+      "disposition": "retained_gap_evidence"
+    },
+    {
+      "id": "sdk.runtime.timeout-resource-limits",
+      "capability_id": "runtime.timeout-and-resource-limits",
+      "disposition": "retained_gap_evidence"
+    },
+    {
+      "id": "sdk.diagnostic.all-workflows",
+      "capability_id": "diagnostic.all-workflows-structured",
+      "disposition": "retained_gap_evidence"
+    },
+    {
+      "id": "sdk.runtime.explicit-close",
+      "capability_id": "runtime.explicit-close",
+      "disposition": "retained_gap_evidence"
+    }
+  ]
+}

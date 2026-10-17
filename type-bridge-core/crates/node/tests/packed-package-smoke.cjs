@@ -65,8 +65,10 @@ function verifyInstalledPackage(installedRoot) {
   const runtimeProjection = requirePackage("@type-bridge/node/runtime-projection");
   assert.deepEqual(Object.keys(runtimeProjection).sort(), [
     "InstalledRuntimeProjection",
+    "ProxyConnection",
     "QueryCancellation",
     "QueryExecutionResourceLimits",
+    "QueryLimits",
     "installGeneratedSchemaAuthority",
     "installRuntimeProjection",
     "projectedManagerNativeCall",

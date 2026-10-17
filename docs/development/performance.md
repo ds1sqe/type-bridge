@@ -1,0 +1,463 @@
+# Performance tracking
+
+The `Perf` workflow (`.github/workflows/perf.yml`) measures TypeBridge on
+GitHub-hosted runners and the docs site renders the history at
+[Performance](../perf/index.md).
+
+## Results
+
+Every producer writes one `perf-result/v1` JSON file per run: a `run` block
+(commit, branch, version, trigger, runner, toolchains) and a list of
+`metrics`. `perf/schema/perf-result-v1.json` is the normative schema;
+`python -m perf.harness.validate FILE...` checks a file.
+
+A metric id is a stable dotted name that starts with its family, for
+example `micro.core.compilation.insert_entity`. Build ids with
+`perf.harness.schema.metric_id`. Keep ids stable: the history is keyed by
+id.
+
+## Run the micro benchmarks locally
+
+The micro family is the Criterion wall time and gungraun instruction count
+of the core and ORM bench targets. Instruction counts need valgrind and
+`gungraun-runner` at the version in `perf.yml`. Under `cargo test` the
+`*_iai` targets do nothing, so `cargo test --all-targets` needs neither.
+
+```bash
+cd type-bridge-core
+CRITERION_HOME=../tmp/perf/criterion/core cargo bench -p type-bridge-core-lib \
+  --bench validation --bench compilation --bench schema -- --noplot
+GUNGRAUN_SAVE_SUMMARY=json GUNGRAUN_HOME=../tmp/perf/iai/core \
+  cargo bench -p type-bridge-core-lib \
+  --bench validation_iai --bench compilation_iai --bench schema_iai
+cd ..
+uv run python -m perf.harness.micro \
+  --criterion-dir tmp/perf/criterion --iai-dir tmp/perf/iai --out tmp/perf/micro.json
+```
+
+Each directory under `--criterion-dir` and `--iai-dir` names the crate in the
+metric ids; the ORM crate (`type-bridge-orm`, benches `serde`,
+`query_building` and `staged`) goes under `orm/`. Either directory may be
+omitted.
+
+## Stage spans
+
+The core names each pipeline stage with a `tracing` span at the layer that
+owns it:
+
+| Span | Covers | Owner |
+| --- | --- | --- |
+| `tb.orm.plan` | building and staging a `query-plan/v3` plan | contract builder, ORM `stage_plan` |
+| `tb.query.compile` | lowering a plan to the TypeQL AST and rendering it | ORM plan executor |
+| `tb.runtime.execute` | a driver round trip: open, query, rollback, close | TypeDB runtime |
+| `tb.decode` | converting one provider answer to JSON | TypeDB runtime |
+| `tb.commit` | the provider commit | TypeDB runtime |
+| `tb.sdk.entry` | a Python, Node or C binding entry: plan build, stage, commit, answer, migration execute | SDK bindings |
+
+The spans carry no fields, so no query text or value is recorded. They are
+always compiled in. With no subscriber they cost a callsite check each: the
+`staged/mixed_commit` bench runs about 70 more instructions per commit with
+them than with `tracing/max_level_off` (0.02% of about 326,000). A
+subscriber at `INFO` sees them as ordinary spans.
+
+## Live pipelines
+
+The `pipeline` job times the major pipelines through the Rust, Python, Node
+and C SDKs against a TypeDB 3.13.6 service container whose data lives on
+tmpfs, and the `binding` job times the offline binding ops of every SDK
+(see [Binding overhead](#binding-overhead)). Both build their drivers with
+`python -m perf.drivers.build --out DIR` (Linux), which builds each binding
+with `perf-stages` and copies its artifact into `DIR` right after its build,
+so a later default build in the same target directory cannot replace what a
+driver loads. The /perf/ stage breakdown shows one SDK at a time, Rust
+first. Both jobs run
+on master pushes, schedule and dispatch; pull requests skip them, since a
+base-versus-head run needs two release builds and wall times on shared
+runners sit above the comparison noise threshold.
+
+| Pipeline | One iteration |
+| --- | --- |
+| `insert_one` | insert one item (one given row) |
+| `fetch_by_key` | read one item's fields by key, out of 1,000 |
+| `fetch_filtered` | read the 100 of 1,000 items with stock of at least 900 |
+| `update` | add one to one item's stock |
+| `delete` | delete one item by key |
+| `batch_given_rows_1k` | insert 1,000 items as given rows of one plan |
+| `staged_mixed` | the purchase, a touch of 10 doctors and 50 orders in one transaction |
+| `migration_apply` | apply the one-migration chain to a fresh database (in-process CLI) |
+
+Each iteration builds its plans with the SDK plan builder, stages them on a
+`Transaction`, commits and checks the answers. `type-bridge-perf` (a private
+crate, never a dependency of a shipped crate) installs a `tracing` layer that
+sums the [stage spans](#stage-spans): each span counts its wall time minus
+that of its stage children, so nested stages never count twice.
+Time inside no span is SDK-side work, for example the Rust SDK checking the
+schema package each time it builds a plan.
+
+Every pipeline gets its own database, created by applying the migration;
+after 5 warmup iterations (1 for the migration) it measures 30 (5 for the
+migration) one at a time. `python -m perf.harness.pipeline` turns the report
+into `pipeline.rust.<pipeline>` (ns: median, p90, p99, samples and the
+median of each stage) and `pipeline.rust.<pipeline>.throughput` (operations
+per second; a 1k batch is 1,000 operations). It prints each pipeline's share
+inside stages and the stage-sum gap: the distance of the stage medians plus
+the median time outside stages from the median iteration, which stays within
+5% when the medians describe a typical iteration. The `/perf/` page draws
+the latest run's stages as one bar per pipeline.
+
+```bash
+docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
+  -p 1729:1729 -p 8000:8000 typedb/typedb:3.13.6
+cargo build --release --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-perf --bin type-bridge-perf-pipelines
+TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password \
+  type-bridge-core/target/release/type-bridge-perf-pipelines \
+  --out tmp/perf/pipelines-report.json --work-dir tmp/perf/pipelines
+uv run python -m perf.harness.pipeline --report tmp/perf/pipelines-report.json \
+  --typedb 3.13.6 --out tmp/perf/pipeline.json
+docker rm -f -v perf-typedb
+```
+
+`TYPEDB_ADDRESS` and `TYPEDB_HTTP_PORT` select another server. Add
+`--pipeline NAME` (repeatable) to run a subset, and `--iterations`,
+`--warmup` or `--migration-iterations` to change the counts. The work
+directory must not exist yet; the databases are deleted when their
+pipeline ends.
+
+### Through Python, Node and C
+
+`perf/drivers/python`, `perf/drivers/node` and `perf/drivers/c` run the same
+data pipelines, seeds and plans through the Python, Node and C SDKs, on the same schema
+(`perf/drivers/workspace`, applied with the `type-bridge` CLI), and write the
+same report format. `migration_apply` is a CLI operation with no SDK entry,
+so only the Rust report has it. Each iteration is timed in the host language;
+stage times come from a private recorder in the native module, which exists
+only when the binding is built with its `perf-stages` feature
+(`type_bridge_core._perf_stages()`, Node `_perfStages()`, C
+`tb_perf_stages_json`, which no header declares). Shipped wheels and
+packages never enable it, and no shipped crate depends on `type-bridge-perf`.
+Time outside every stage is then host-language work before the native entry.
+
+```bash
+cargo build --release --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-cli --bin type-bridge
+(cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
+  --features pyo3/extension-module,perf-stages -o ../tmp/perf/wheels)
+python3 -m zipfile -e tmp/perf/wheels/type_bridge_core-*.whl tmp/perf/site
+TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password PYTHONPATH=tmp/perf/site \
+  .venv/bin/python -m perf.drivers.python.pipelines \
+  --cli type-bridge-core/target/release/type-bridge \
+  --out tmp/perf/python-report.json --work-dir tmp/perf/python
+```
+
+The Node driver takes the built package (`npm run build:types` in
+`type-bridge-core/crates/node`), a native module built with
+`cargo build --release -p type-bridge-node --features perf-stages` and copied
+to a `.node` file, and a workspace made by
+`python -m perf.drivers.workspace --root DIR --cli CLI create`; see the
+header of `perf/drivers/node/pipelines.cjs`.
+
+The C driver compiles against the C schema package that `create` generates
+into `DIR/workspace/generated/c`, links a `type-bridge-c` built with
+`--features perf-stages`, and stages each iteration's plans on one ABI 1.7
+staged transaction:
+
+```bash
+cargo build --release --manifest-path type-bridge-core/Cargo.toml \
+  -p type-bridge-c --features perf-stages
+python -m perf.drivers.workspace --root tmp/perf/c --cli CLI create
+G=tmp/perf/c/workspace/generated/c L=type-bridge-core/target/release
+cc -std=c17 -O2 -Wall -Wextra -Werror -I $G/include \
+  -I type-bridge-core/crates/c/include perf/drivers/c/pipelines.c $G/src/models.c \
+  -L $L -ltype_bridge_c -Wl,-rpath,$PWD/$L -o tmp/perf/c-pipelines
+TB_PERF_SETUP='["python","-m","perf.drivers.workspace","--root","tmp/perf/c","--cli","CLI"]' \
+  TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password tmp/perf/c-pipelines \
+  --out tmp/perf/c-report.json --workspace tmp/perf/c/workspace
+```
+
+`perf.harness.pipeline` takes
+one `--report` per SDK and, with `--sdk` (repeatable), checks that the
+reports cover exactly those SDKs; ids are `pipeline.<sdk>.<pipeline>`.
+
+## Binding overhead
+
+The same drivers, run with `--binding`, time three offline operations with
+no TypeDB: `build_purchase` (the purchase plan with one given row),
+`build_rows_1k` (the 1k-row insert, which encodes its given rows) and
+`encode_rows_1k` (that plan's canonical bytes). Staging and answer decoding
+are not measured: every SDK's database handle connects when it opens, and
+an answer exists only after a commit, so both belong to the live pipelines.
+Each driver keeps the `perf-stages` build and the stage layer installed, so
+every SDK pays the same tracing cost. C's `encode_rows_1k` copies the bytes
+its built plan already holds, where the other SDKs encode them.
+
+```bash
+type-bridge-core/target/release/type-bridge-perf-pipelines --binding \
+  --out tmp/perf/binding/rust.json --iterations 200 --warmup 20
+python -m perf.drivers.python.pipelines --binding --cli CLI \
+  --out tmp/perf/binding/python.json --iterations 200 --warmup 20
+node perf/drivers/node/pipelines.cjs --binding --workspace tmp/perf/n/workspace \
+  --out tmp/perf/binding/node.json --iterations 200 --warmup 20
+tmp/perf/c-pipelines --binding --out tmp/perf/binding/c.json \
+  --iterations 200 --warmup 20
+python -m perf.harness.binding --report tmp/perf/binding/rust.json \
+  --report tmp/perf/binding/python.json --report tmp/perf/binding/node.json \
+  --report tmp/perf/binding/c.json --sdk rust --sdk python --sdk node --sdk c \
+  --out tmp/perf/binding.json
+```
+
+The Rust report is the required baseline. Each op becomes
+`binding.<sdk>.<op>` (the median call, with percentiles and samples), and
+each host SDK also gets `binding.<sdk>.<op>.overhead`: its median minus
+Rust's. A result holds only non-negative measures, so a host path cheaper
+than Rust's records 0 overhead; the converter prints the signed difference.
+
+## Released versions
+
+`python -m perf.harness.released` runs one Python release through the same
+six CRUD ops as every other compared version: `insert_one`, `fetch_by_key`
+(one of 1,000 seeded items), `fetch_filtered` (stock of at least 900, 100
+items), `update`, `delete` and `batch_insert_1k`. The compared versions are
+2.0.2, 2.1.0, 2.2.5 and `head`, on one TypeDB 3.12.3 at semantic profile
+`typedb-3.12.1/v1`, which all of them accept. A release is installed from
+PyPI into its own venv under the run's temp directory; `head` installs this
+tree with a plain (no `perf-stages`) `type-bridge-core` wheel.
+
+The workload, `perf/released/python/workload.py`, is the model manager API
+an application uses: `Item.manager(db)` on a `type_bridge.Database`, with
+`insert`, `filter(...).first()`, `filter(stock__gte=...).all()`, `update`,
+`delete` and `insert_many`, in 2.0.2's spelling. Only the model's origin
+differs, in the workload's `SHIMS` table:
+
+| Version | `Item` model | Schema |
+| --- | --- | --- |
+| 2.0.2 | hand-written `Entity` subclass | `SchemaManager(db).register(Item)`, `sync_schema()` |
+| 2.1.0 | generated with its CLI | its `migration make` TypeQL, run in one schema transaction |
+| 2.2.5, head | generated with its CLI | its `migration make` and `migration apply` |
+
+2.1.0 removed the hand-written model classes from the public package, and
+2.0.2's generated manager has only `insert`, `all` and `get_by_iid`, so no
+one model source covers every version. 2.1.0's `migration apply` requires
+a TypeDB server of exactly 3.12.1, hence its TypeQL shim. From 2.1.0 on,
+the timed calls are the generated managers'; 2.0.2's are the hand-written
+managers' own paths. The comparison is of the API an application of each
+version calls, not of one internal code path.
+
+```bash
+docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
+  -p 1729:1729 -p 8000:8000 typedb/typedb:3.12.3
+(cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
+  -o ../tmp/perf/core-wheel)
+for version in 2.0.2 2.1.0 2.2.5 head; do
+  TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password uv run python -m perf.harness.released \
+    --version $version --typedb 3.12.3 --core-wheel tmp/perf/core-wheel/type_bridge_core-*.whl \
+    --out tmp/perf/release-python-$version.json
+done
+docker rm -f -v perf-typedb
+```
+
+Each op becomes `release.python.<op>` (family `release`, ns: the median
+call with p90, p99 and samples, after 5 warmup and 30 measured calls). The
+run block records the measured version (`head` records the project
+version), trigger `release-matrix`, `source` (`registry` for a release,
+`tree` for `head`) and the venv's Python. Only the manager call is timed;
+fetching the instance that `update` and `delete` take is not.
+`python -m perf.harness.released_node` does the same for
+`@type-bridge/node` (`release.node.<op>`, generated managers only); ops a
+version has no call for get no metric.
+
+The workflow's `released` job runs every SDK and version (Python and Node,
+2.0.2, 2.1.0, 2.2.5 and `head`) nightly, on manual runs and on release
+tags, against a TypeDB 3.12.3 service on tmpfs, and hands the results to
+the `store` job. The perf page draws one bar chart per `release.<sdk>.<op>`
+metric, a bar per version beside the head, and a gap where a version has
+no call for the op.
+
+## Run the Python binding benchmarks locally
+
+`benchmarks/` is a pytest-benchmark suite over the Python binding: native
+query compilation, clause-to-dict marshalling and validation through
+`type_bridge_core`. Build the native module in release mode first (as
+`uv sync` does), then:
+
+```bash
+uv run pytest benchmarks --benchmark-only --benchmark-json tmp/perf/pytest-benchmark.json
+uv run python -m perf.harness.micro \
+  --pytest-benchmark tmp/perf/pytest-benchmark.json --out tmp/perf/micro.json
+```
+
+A bench `test_<name>` in `benchmarks/test_<group>_bench.py` becomes the
+metric `binding.python.<group>.<name>`. The micro job passes all three inputs
+to one `perf.harness.micro` call, so they share one result file.
+
+## Where history lives
+
+Results from master pushes, the nightly schedule and manual dispatch are
+appended to the orphan branch `perf-data` by the workflow's `store` job.
+Pull requests never write history.
+
+```text
+runs/<YYYY-MM-DD>/<sha>-<trigger>.json   one result per UTC day, commit and trigger
+runs/<YYYY-MM-DD>/<sha>-release-matrix-<sdk>-<series>.json
+index.json                               per-metric series, rebuilt on store
+```
+
+A `release-matrix` result measures one package, and one workflow run
+measures eight, so its identity adds the SDK of its `release.<sdk>.` ids
+and the series: `head` when `run.source` is `tree`, otherwise
+`run.version`. The head keeps the project version as `run.version`, so it
+never merges with a release of the same number. Its index points carry
+that `series`, and release runs never become the page's latest run or add
+to its version list.
+
+Results with the same day, commit and trigger are merged into one file: an
+incoming metric replaces the stored one with its id and other metrics are
+kept, so every producer of a workflow run lands in one file and a same-day
+re-run replaces only its own metrics. Nightly runs of an unchanged master
+therefore add one point per day. Only pull request runs cancel each other;
+every master push, nightly and dispatch run has its own concurrency group, so
+none is dropped while it waits. The `store` job has no concurrency group
+(GitHub cancels all but one pending job per group): concurrent stores retry
+the push up to 10 times and the job fails if every attempt is rejected.
+
+Store into a local checkout of the branch, or any directory, with:
+
+```bash
+uv run python -m perf.harness.store --data-dir tmp/perf-data tmp/perf/micro.json
+```
+
+A manual dispatch can write to a scratch branch through its `data_branch`
+input. To preview the page with some history, point the docs build at a
+data directory:
+
+```bash
+PERF_DATA_DIR=tmp/perf-data uv run --extra docs mkdocs build --strict
+```
+
+Without `PERF_DATA_DIR` the page shows "no data yet". The MkDocs hook
+`perf/harness/render.py` publishes the index as `perf/data.json` and the
+newest run as `perf/latest.json`. After each successful Perf run on master,
+the Documentation workflow rebuilds the site from `perf-data`.
+
+## Add a metric
+
+- **A Criterion or gungraun bench** in an existing target needs no harness
+  change: its id follows from the bench id. A new bench target must be added
+  to both bench lists in `perf.yml`.
+- **A Python binding bench** is a `test_*` function in
+  `benchmarks/test_<group>_bench.py`; a new module needs only that name.
+- **A pipeline** is a name in `PIPELINES` of
+  `crates/perf/src/bin/pipelines.rs` with its seed and iteration; its ids
+  follow from the name.
+- **A new producer** writes a `perf-result/v1` file, validates it, and
+  uploads it as an artifact named `perf-<family>`; the `store` job stores
+  every `perf-*` artifact. Add its job to the `store` job's `needs`.
+- **A new family or unit** changes the result format: update the schema,
+  `perf/harness/schema.py`, and the unit formats in `docs/perf/perf.js`.
+
+The chart library is uPlot, vendored in `docs/perf/assets/` and pinned by
+`docs/perf/assets/CHECKSUMS`, which a unit test verifies.
+
+## Build times
+
+The build job measures cold release builds of the published Cargo inventory,
+Python native extension plus maturin wheel assembly, and Node native addon.
+Each group uses a fresh target directory; registry downloads may be cached,
+compiled dependencies are never reused between groups. Wall metrics are
+`build.public.wall`, `build.python.wall` and `build.node.wall` in seconds.
+Stable Cargo `--timings` HTML supplies the 20 slowest `build.unit.<crate>`
+metrics: cumulative unit durations per crate across the measured groups,
+including build scripts. Units overlap, so they do not sum to build wall time.
+The run records the Rust toolchain and the wheel builder's Python interpreter.
+
+```bash
+python -m perf.harness.build --target-dir tmp/perf-cold --out tmp/perf/build.json
+# A smaller local smoke; the target directory must still be fresh.
+python -m perf.harness.build --group public --package type-bridge-toml-transpiler \
+  --target-dir tmp/perf-smoke --out tmp/perf/build-smoke.json
+```
+
+Install maturin 1.14.1 before selecting the Python group. Existing group target
+directories are rejected, never deleted. Logs are retained beside the result;
+a failed build produces no result.
+
+## Artifact sizes
+
+The size job builds Linux x86_64 artifacts with the release workflow's wheel,
+Node, CLI and server commands, then records their actual byte lengths. It
+reports `size.wheel.bytes`, `size.npm.bytes`, `size.cli_unstripped.bytes`,
+`size.cli_stripped.bytes`, `size.server.bytes`, `size.c_runtime.bytes` and
+`size.c_runtime_lib.bytes`. The server and canonical CLI are stripped as in
+release; the unstripped CLI provides a separate baseline. Available Python, Node and C
+compiler versions are recorded for the wheel, npm and C measurements.
+
+The C metric is a perf-only archive of the current CMake install tree: ABI 1.7
+and release package metadata are reconciled separately in 2.3.0 release prep.
+It uses the release Cargo flags and normalized tar metadata; it is not a
+published C release candidate. Release helpers and policy are unchanged.
+
+Measure existing artifacts without rebuilding or modifying them:
+
+```bash
+python -m perf.harness.size --artifact wheel=dist/package.whl \
+  --artifact npm=dist/package.tgz --out tmp/perf/size.json
+```
+
+Repeat `--artifact NAME=FILE` for each input. Missing, empty or directory inputs,
+duplicate metric identities, and output paths that overwrite an artifact fail
+without publishing a result. The converter test fixture is an actual tiny
+`npm pack --ignore-scripts --json` archive (npm 12.2.0), renamed `package.npm`.
+
+## Test-suite durations
+
+The suite job runs on master pushes, schedule and dispatch; pull requests run
+build and size producers without this additional full-suite run. Prepare native
+Python/Node dependencies and fetch Cargo dependencies before measuring:
+
+```bash
+uv sync --extra dev
+npm ci --prefix type-bridge-core/crates/node
+npm run build --prefix type-bridge-core/crates/node
+cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+uv run python -m perf.harness.suite --out tmp/perf/suite.json
+# A short local smoke of the same producer:
+uv run python -m perf.harness.suite --suite python \
+  --pytest-target tests/unit/perf --out tmp/perf/suite-smoke.json
+```
+
+The existing commands are `cargo test --workspace --locked --offline`,
+`pytest tests/unit`, and `npm run test:unit`. Each complete successful command
+becomes `suite.<rust|python|node>.wall` in seconds, including compilation done by
+that test command. Native dependency preparation is outside those timings.
+No TypeDB server is configured. Failed suites retain logs and publish no result.
+
+Pytest's `--durations=0` call observations and Node's TAP `duration_ms` produce
+the ten slowest `suite.<python|node>.slow.<id>` metrics. Setup/teardown and Node
+suite totals are excluded. Node names include their parent suites. Slow ids
+retain a readable prefix plus a stable hash so parameter punctuation cannot
+merge distinct tests. Stable Rust does not support libtest `--report-time`, so
+Rust per-test metrics are omitted rather than enabling nightly-only flags.
+The test fixtures are captured pytest and Node TAP output from small real runs.
+
+The workflow shares one UTC start timestamp across every producer, so jobs
+that finish on different days still merge into the same history run.
+
+## Reading a PR comparison
+
+The PR-only comparison job runs base and head Rust micro benchmarks sequentially
+on the same runner, with separate build targets. Instruction counts are the
+primary signal; Criterion wall times are noisier. The advisory job-summary table
+lists regressions first and uploads both raw result files. It never comments on
+the PR or writes history, and uses a read-only token without checkout credentials.
+A base predating the perf harness is skipped with a notice.
+
+Markers apply only beyond these noise thresholds: instructions and bytes 1%,
+nanoseconds 10%, seconds 15%, and throughput (`ops_per_s`, higher is better) 10%.
+Changes exactly at the threshold are unchanged. New/removed ids have separate
+sections; changed units are not compared. A zero baseline is unchanged at zero,
+otherwise an infinite increase. At most 200 metric rows are shown, with an
+omitted-row count. Regressions and unavailable comparisons never fail the gate.
+
+```bash
+python -m perf.harness.compare base.json head.json --out tmp/perf/comparison.md
+```

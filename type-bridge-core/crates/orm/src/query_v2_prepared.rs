@@ -17,17 +17,15 @@ use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::limits::{
-    MAX_QUERY_INVOCATION_BYTES, MAX_REMOTE_ENVELOPE_BYTES, StructuralLimits,
-};
+use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::query_plan::{
     InputRow, QueryInvocation, QueryOperation, QueryPlan, decode_query_invocation,
-    decode_query_plan,
+    decode_query_plan_with_limits,
 };
 use type_bridge_contract::query_remote::{
-    DEFAULT_REMOTE_DEADLINE_MS, RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteLimits,
-    RemoteRequestFingerprint, RemoteSigningPublicKey,
+    DEFAULT_REMOTE_DEADLINE_MS, RemoteCapabilities, RemoteCapabilitiesFingerprint,
+    RemoteSigningPublicKey,
 };
 use type_bridge_contract::query_remote_v2::{
     RemoteLimitsV2, RemoteQueryRequestV2, RemoteReplyDecodeLimitsV2, RemoteRequestFingerprintV2,
@@ -35,19 +33,19 @@ use type_bridge_contract::query_remote_v2::{
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId, decode_declared_schema};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_contract::value::CanonicalValue;
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
-use crate::Transaction;
+use crate::OwnedTransaction as Transaction;
 use crate::query_execution_limits::QueryExecutionDeadline;
-use crate::query_v2::{QueryV2ExecutionError, failure};
+use crate::query_v2::{QueryV2ExecutionError, ast, failure};
 use crate::query_v2_builder::QueryAuthorityIdentity;
 use crate::query_v2_remote::{
-    check_advertised_capabilities, check_advertised_capabilities_v2, decode_remote_outcome,
-    decode_remote_outcome_v2, encode_remote_request_at, encode_remote_request_v2_at,
-    remote_outcome,
+    check_advertised_capabilities_v2, decode_remote_outcome_v2, encode_remote_request_v2_at,
+    remote_outcome_v2,
 };
 use crate::session::backend::{
     AnswerCancellation, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult, QueryV2AnswerLimits,
@@ -104,14 +102,24 @@ pub struct QueryAuthority {
     declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     identity: QueryAuthorityIdentity,
+    limits: QueryLimits,
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
     control_policy: QueryAuthorityControlPolicy,
 }
 
+#[derive(Clone)]
 enum QueryAuthorityControlPolicy {
     Managed,
     QueryOnly(DatabaseExecutionIdentity),
+}
+
+impl QueryAuthority {
+    /// The declared schema plans are decoded and validated against.
+    #[must_use]
+    pub fn declared(&self) -> &DeclaredSchema {
+        &self.declared
+    }
 }
 
 impl QueryAuthority {
@@ -194,10 +202,46 @@ impl QueryAuthority {
             declared,
             delta_context,
             identity: QueryAuthorityIdentity::fresh(),
+            limits: QueryLimits::CANONICAL,
             managed,
             resolved,
             control_policy,
         })
+    }
+
+    /// Author, decode, and validate every plan of this authority under
+    /// `limits` instead of the canonical defaults.
+    ///
+    /// The caller admits untrusted values with [`QueryLimits::validate`]
+    /// first.
+    #[must_use]
+    pub fn with_limits(mut self, limits: QueryLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Derive a distinct authority over the same schema that holds its plans
+    /// to `limits`.
+    ///
+    /// The result has a fresh identity: handles and plans authored under one
+    /// limits policy cannot be replayed under another.
+    #[must_use]
+    pub fn rebound_with_limits(&self, limits: QueryLimits) -> Self {
+        Self {
+            declared: self.declared.clone(),
+            delta_context: self.delta_context.clone(),
+            identity: QueryAuthorityIdentity::fresh(),
+            limits,
+            managed: self.managed.clone(),
+            resolved: self.resolved.clone(),
+            control_policy: self.control_policy.clone(),
+        }
+    }
+
+    /// Return the limits plans of this authority are held to.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
     }
 
     /// Borrow the validation context this authority represents.
@@ -213,8 +257,8 @@ impl QueryAuthority {
     }
 
     fn validate(&self, plan_bytes: &[u8]) -> Result<(QueryPlan, ValidatedQuery), Diagnostic> {
-        let plan = decode_query_plan(plan_bytes)?;
-        let validated = validate_query_plan(&plan, &self.context(), StructuralLimits::CANONICAL)?;
+        let plan = decode_query_plan_with_limits(plan_bytes, self.limits)?;
+        let validated = validate_query_plan(&plan, &self.context(), self.limits.structural)?;
         Ok((plan, validated))
     }
 }
@@ -422,8 +466,8 @@ fn parse_invocation(
     invocation_json: &str,
 ) -> Result<QueryInvocation, Diagnostic> {
     let bytes = invocation_json.as_bytes();
-    let within_legacy_limit = StructuralLimits::CANONICAL.allows_input_bytes(bytes.len());
-    if bytes.len() > MAX_QUERY_INVOCATION_BYTES {
+    let within_legacy_limit = plan.limits().structural.allows_input_bytes(bytes.len());
+    if bytes.len() > plan.limits().invocation_bytes() {
         return Err(invocation_input_byte_limit());
     }
     if within_legacy_limit
@@ -820,18 +864,9 @@ pub async fn verify_managed_query_control_scope(
     deadline: Option<std::time::Instant>,
     cancellation: &crate::session::backend::AnswerCancellation,
 ) -> Result<(), Diagnostic> {
-    let documents = managed_control_documents(
-        transaction,
-        "match $control isa typebridge-internal-v2-migration-control, \
-             has typebridge-internal-v2-control-scope $scope, \
-             has typebridge-internal-v2-lease-fence $fence, \
-             has typebridge-internal-v2-lease-state $state; \
-             limit 2; \
-             fetch { \"scope\": $scope, \"fence\": $fence, \"state\": $state };",
-        deadline,
-        cancellation,
-    )
-    .await?;
+    let control_query = managed_control_query()?;
+    let documents =
+        managed_control_documents(transaction, &control_query, deadline, cancellation).await?;
     if documents.len() != 1 {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -944,212 +979,6 @@ fn deadline_exceeded() -> Diagnostic {
     )
 }
 
-/// One remote request and its one-shot request-bound reply decoder.
-///
-/// The pending value owns the validated output contract and exact request
-/// fingerprint. Decoding consumes its reply slot before inspecting bytes, so
-/// a captured success or failure cannot be accepted twice.
-pub struct PendingRemoteQuery {
-    state: Arc<PendingRemoteQueryState>,
-}
-
-struct PendingRemoteQueryState {
-    advertisement_fingerprint: RemoteCapabilitiesFingerprint,
-    consumed: AtomicBool,
-    limits: RemoteLimits,
-    nonce: String,
-    operation: QueryOperation,
-    request: Vec<u8>,
-    request_fingerprint: RemoteRequestFingerprint,
-    reply_deadline: Instant,
-    trusted_key: RemoteSigningPublicKey,
-    validated: ValidatedQuery,
-}
-
-/// One non-clone capability reserving the only reply accepted for a request.
-pub struct ClaimedRemoteReply {
-    state: Arc<PendingRemoteQueryState>,
-}
-
-impl fmt::Debug for PendingRemoteQueryState {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PendingRemoteQueryState")
-            .field("consumed", &self.consumed.load(Ordering::Acquire))
-            .field("request_len", &self.request.len())
-            .field("sensitive_request_state", &"<redacted>")
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for PendingRemoteQuery {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PendingRemoteQuery")
-            .field("state", &self.state)
-            .finish()
-    }
-}
-
-impl fmt::Debug for ClaimedRemoteReply {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("ClaimedRemoteReply")
-            .field("state", &self.state)
-            .finish()
-    }
-}
-
-impl PendingRemoteQuery {
-    /// Borrow the exact canonical request bytes to send to the executor.
-    #[must_use]
-    pub fn request_bytes(&self) -> &[u8] {
-        &self.state.request
-    }
-
-    /// Atomically reserve the one permitted reply before copying or queueing bytes.
-    pub fn claim_reply(&self) -> Result<ClaimedRemoteReply, Diagnostic> {
-        self.state
-            .consumed
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| {
-                failure(
-                    DiagnosticCategory::Integrity,
-                    "query_remote_reply_replayed",
-                    "the pending remote request already consumed a reply",
-                )
-            })?;
-        ensure_remote_reply_live(self.state.reply_deadline)?;
-        Ok(ClaimedRemoteReply {
-            state: Arc::clone(&self.state),
-        })
-    }
-
-    /// Reserve and decode one reply through the shared one-shot path.
-    pub fn decode_reply(&self, response_bytes: &[u8]) -> Result<String, Diagnostic> {
-        self.claim_reply()?.decode(response_bytes)
-    }
-}
-
-impl ClaimedRemoteReply {
-    /// Maximum immutable response snapshot needed to preserve oversize detection.
-    ///
-    /// One byte beyond the protocol hard ceiling is sufficient to retain the
-    /// exact oversized-envelope verdict without copying the rest of an
-    /// attacker-controlled response into a binding-owned buffer. The caller's
-    /// `max_bytes` is a successful-response budget and cannot constrain this
-    /// pre-authentication snapshot: authenticated failure evidence must remain
-    /// available to the decoder even when the success budget is zero.
-    #[must_use]
-    pub fn response_snapshot_limit(&self) -> usize {
-        MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1)
-    }
-
-    /// Verify and decode the reserved reply, consuming this claim capability.
-    pub fn decode(self, response_bytes: &[u8]) -> Result<String, Diagnostic> {
-        ensure_remote_reply_live(self.state.reply_deadline)?;
-        let outcome = decode_remote_outcome(
-            response_bytes,
-            &self.state.validated,
-            self.state.operation,
-            &self.state.nonce,
-            &self.state.request_fingerprint,
-            &self.state.advertisement_fingerprint,
-            self.state.trusted_key,
-            self.state.limits,
-        )?;
-        let outcome = outcome_json(&outcome)?;
-        ensure_remote_reply_live(self.state.reply_deadline)?;
-        Ok(outcome)
-    }
-}
-
-/// Prepare one invocation and its one-shot remote reply decoder.
-///
-/// The plan validates against the caller's authority first, so a stale or
-/// invalid plan never leaves the client. The caller also supplies the
-/// executor's exact capability advertisement (the `/v2/capabilities`
-/// bytes): a plan or invocation transport the executor cannot execute is
-/// refused here, before any request bytes exist — the promised client
-/// preflight, with the executor re-checking the same sets at admission.
-pub fn prepare_remote_query(
-    authority: &QueryAuthority,
-    plan_bytes: &[u8],
-    invocation_json: &str,
-    advertisement_bytes: &[u8],
-    limits: RemoteLimits,
-) -> Result<PendingRemoteQuery, Diagnostic> {
-    if matches!(
-        &authority.control_policy,
-        QueryAuthorityControlPolicy::QueryOnly(_)
-    ) {
-        return Err(failure(
-            DiagnosticCategory::Integrity,
-            "query_remote_query_only_authority_local_only",
-            "a query-only authority is bound to local database identity and cannot prepare a remote request",
-        ));
-    }
-    let (plan, validated) = authority.validate(plan_bytes)?;
-    let invocation = parse_invocation(&plan, invocation_json)?;
-    let advertisement = RemoteCapabilities::decode(advertisement_bytes)?;
-    check_advertised_capabilities(&validated, &invocation, &advertisement)?;
-    let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let monotonic_prepared = Instant::now();
-    let prepared_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::Integrity,
-                "query_remote_clock_invalid",
-                "system clock cannot establish an absolute remote request time",
-            )
-        })?
-        .as_millis()
-        .try_into()
-        .map_err(|_| {
-            failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_remote_clock_limit",
-                "system clock exceeds the supported remote timestamp range",
-            )
-        })?;
-    let lifetime = limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS);
-    let reply_deadline = monotonic_prepared
-        .checked_add(Duration::from_millis(lifetime))
-        .ok_or_else(|| {
-            failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_remote_deadline_limit",
-                "remote deadline exceeds the maximum supported duration",
-            )
-        })?;
-    let request = encode_remote_request_at(
-        &validated,
-        &invocation,
-        &advertisement,
-        limits,
-        &nonce,
-        prepared_at_unix_ms,
-    )?;
-    let request_fingerprint = RemoteRequestFingerprint::compute(&request)?;
-    let advertisement_fingerprint = advertisement.fingerprint()?;
-    let trusted_key = advertisement.reply_key();
-    Ok(PendingRemoteQuery {
-        state: Arc::new(PendingRemoteQueryState {
-            advertisement_fingerprint,
-            consumed: AtomicBool::new(false),
-            limits,
-            nonce,
-            operation: invocation.operation(),
-            request,
-            request_fingerprint,
-            reply_deadline,
-            trusted_key,
-            validated,
-        }),
-    })
-}
-
 /// One additive V2 request and its one-shot authenticated reply decoder.
 pub struct PendingRemoteQueryV2 {
     state: Arc<PendingRemoteQueryStateV2>,
@@ -1165,6 +994,9 @@ struct PendingRemoteQueryStateV2 {
     reply_deadline: Instant,
     trusted_key: RemoteSigningPublicKey,
     validated: ValidatedQuery,
+    // The budget the caller asked for, before it was held to the executor's
+    // advertised ceilings; kept to say where a refusing ceiling came from.
+    wanted: RemoteLimitsV2,
 }
 
 const REMOTE_QUERY_PENDING: u8 = 0;
@@ -1332,6 +1164,13 @@ impl ClaimedRemoteReplyV2 {
         Ok(outcome)
     }
 
+    /// The budget the caller asked for and the one the request carried after
+    /// it was held to the executor's advertised ceilings.
+    #[must_use]
+    pub fn answer_budgets(&self) -> (RemoteLimitsV2, RemoteLimitsV2) {
+        (self.state.wanted, self.state.request_envelope.limits())
+    }
+
     /// Authenticate, correlate, and validate one reply without serializing its
     /// typed outcome through a host-language representation.
     ///
@@ -1426,6 +1265,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
 ) -> Result<PendingRemoteQueryV2, Diagnostic> {
+    let wanted = limits;
     check_remote_execution_budget(deadline, cancellation)?;
     if matches!(
         &authority.control_policy,
@@ -1449,6 +1289,19 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     check_remote_execution_budget(deadline, cancellation)?;
     check_advertised_capabilities_v2(&validated, &invocation, &advertisement)?;
     check_remote_execution_budget(deadline, cancellation)?;
+    // Ask for no more than the executor advertised: it bounds the request to
+    // that anyway, and the reply is then decoded under the same budgets the
+    // executor ran under.
+    let advertised = crate::query_v2_remote::advertised_answer_limits(&advertisement)?;
+    limits.max_bytes = limits.max_bytes.min(advertised.bytes);
+    limits.max_items = limits.max_items.min(advertised.items);
+    limits.max_collection_members = limits
+        .max_collection_members
+        .min(advertised.collection_members);
+    limits.max_graph_nodes = limits.max_graph_nodes.min(advertised.graph_nodes);
+    limits.max_attribute_values = limits.max_attribute_values.min(advertised.attribute_values);
+    limits.max_role_players = limits.max_role_players.min(advertised.role_players);
+    limits.max_statements = limits.max_statements.min(advertised.statements);
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let prepared_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1493,7 +1346,10 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
         prepared_at_unix_ms,
     )?;
     check_remote_execution_budget(deadline, cancellation)?;
-    let request_envelope = RemoteQueryRequestV2::decode(&request)?;
+    // Re-read the request under the limits it was prepared under; a
+    // canonical decode would refuse what the session legitimately built.
+    let request_envelope =
+        RemoteQueryRequestV2::decode_with_limits(&request, validated.plan().limits())?;
     let request_fingerprint = RemoteRequestFingerprintV2::compute(&request)?;
     let advertisement_fingerprint = advertisement.fingerprint()?;
     let trusted_key = advertisement.reply_key();
@@ -1515,6 +1371,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
             reply_deadline,
             trusted_key,
             validated,
+            wanted,
         }),
     })
 }
@@ -1538,17 +1395,6 @@ fn check_remote_execution_budget(
         ));
     }
     Ok(())
-}
-
-fn ensure_remote_reply_live(deadline: Instant) -> Result<(), Diagnostic> {
-    if Instant::now() < deadline {
-        return Ok(());
-    }
-    Err(failure(
-        DiagnosticCategory::ResourceLimit,
-        "query_remote_reply_expired",
-        "the pending remote reply deadline has elapsed",
-    ))
 }
 
 fn ensure_remote_reply_live_v2(deadline: Instant) -> Result<(), Diagnostic> {
@@ -1585,7 +1431,7 @@ fn schema_rejected() -> Diagnostic {
 }
 
 fn outcome_json(outcome: &crate::query_v2::QueryV2Outcome) -> Result<String, Diagnostic> {
-    serde_json::to_string(&remote_outcome(outcome)).map_err(|_| {
+    serde_json::to_string(&remote_outcome_v2(outcome)).map_err(|_| {
         failure(
             DiagnosticCategory::Integrity,
             "query_prepared_outcome_unserializable",
@@ -1600,6 +1446,26 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    /// A caller budget with the given answer dimensions and default graph
+    /// budgets.
+    fn remote_limits(
+        max_bytes: u64,
+        max_items: u64,
+        max_collection_members: u64,
+    ) -> RemoteLimitsV2 {
+        let policy = crate::QueryExecutionResourceLimits::default();
+        RemoteLimitsV2 {
+            deadline_ms: None,
+            max_bytes,
+            max_items,
+            max_collection_members,
+            max_graph_nodes: policy.graph_nodes,
+            max_attribute_values: policy.attribute_values,
+            max_role_players: policy.role_players,
+            max_statements: policy.statements,
+        }
+    }
+
     use type_bridge_contract::capability::CapabilitySet;
     use type_bridge_contract::codec::{FormatVersion, to_canonical_json};
     use type_bridge_contract::id::{TypeId, TypeKind};
@@ -1612,6 +1478,9 @@ mod tests {
         encode_declared_schema,
     };
     use type_bridge_schema_compat::MANAGED_FENCE_SCHEMA_TYPEQL;
+
+    use type_bridge_contract::limits::StructuralLimits;
+    use type_bridge_contract::query_plan::decode_query_plan;
 
     use super::*;
     use crate::error::OrmError;
@@ -2189,8 +2058,15 @@ mod tests {
     #[test]
     fn remote_reply_snapshot_is_one_byte_beyond_the_wire_ceiling_for_every_success_budget() {
         let (authority, plan) = authority_and_plan();
+        let mut capabilities = type_bridge_contract::query_plan_capability_vocabulary();
+        for capability in
+            type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities(false)
+                .iter()
+        {
+            capabilities.insert(capability.clone());
+        }
         let advertisement = RemoteCapabilities::new(
-            type_bridge_contract::query_plan_capability_vocabulary(),
+            capabilities,
             type_bridge_contract::query_remote::RemoteExecutorBinding::new(
                 "prepared-snapshot-executor",
                 "prepared-snapshot-epoch-000001",
@@ -2203,17 +2079,12 @@ mod tests {
         let wire_ceiling = u64::try_from(MAX_REMOTE_ENVELOPE_BYTES).expect("wire ceiling");
 
         for caller_budget in [0, 7, wire_ceiling, wire_ceiling + 4_096] {
-            let pending = prepare_remote_query(
+            let pending = prepare_remote_query_v2(
                 &authority,
                 &plan,
                 r#"{"operation":"rows","rows":[]}"#,
                 &advertisement,
-                RemoteLimits {
-                    deadline_ms: None,
-                    max_bytes: caller_budget,
-                    max_items: 1,
-                    max_collection_members: 1,
-                },
+                remote_limits(caller_budget, 1, 1),
             )
             .expect("remote request");
             let claimed = pending.claim_reply().expect("one reply claim");
@@ -2240,17 +2111,12 @@ mod tests {
         )
         .await
         .expect_err("local preparation rejects oversized invocation bytes");
-        let remote = prepare_remote_query(
+        let remote = prepare_remote_query_v2(
             &managed_authority,
             &plan,
             &oversized,
             b"advertisement decoding must not run",
-            RemoteLimits {
-                deadline_ms: None,
-                max_bytes: 1,
-                max_items: 1,
-                max_collection_members: 1,
-            },
+            remote_limits(1, 1, 1),
         )
         .expect_err("remote preparation rejects oversized invocation bytes");
 
@@ -2363,23 +2229,15 @@ mod tests {
         )
         .encode()
         .expect("no-given advertisement");
-        let remote = prepare_remote_query(
+        let remote = prepare_remote_query_v2(
             &managed_authority,
             &plan,
             &invocation,
             &advertisement,
-            RemoteLimits {
-                deadline_ms: None,
-                max_bytes: 1,
-                max_items: 1,
-                max_collection_members: 1,
-            },
+            remote_limits(1, 1, 1),
         )
         .expect_err("remote no-given advertisement rejects before request construction");
-        assert_eq!(
-            remote.code().as_str(),
-            "query_remote_capability_unsupported"
-        );
+        assert_eq!(remote.code().as_str(), "unsupported_required_capability");
     }
 
     #[tokio::test]
@@ -2407,17 +2265,12 @@ mod tests {
         )
         .await
         .expect_err("provider-invalid duration must fail before local provider work");
-        let remote = prepare_remote_query(
+        let remote = prepare_remote_query_v2(
             &managed_authority,
             &plan,
             &invocation,
             b"advertisement decoding must not run",
-            RemoteLimits {
-                deadline_ms: None,
-                max_bytes: 1,
-                max_items: 1,
-                max_collection_members: 1,
-            },
+            remote_limits(1, 1, 1),
         )
         .expect_err("provider-invalid duration must fail before request construction");
 
@@ -2839,27 +2692,55 @@ mod tests {
         let (database, metrics) = database(Ok(QueryResult::Rows(Vec::new())), false);
         let authority = query_only_authority(&authority, &database);
 
-        let diagnostic = prepare_remote_query(
+        let diagnostic = prepare_remote_query_v2(
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
             b"advertisement decoding must not run",
-            RemoteLimits {
-                deadline_ms: None,
-                max_bytes: 1 << 20,
-                max_items: 100,
-                max_collection_members: 1 << 16,
-            },
+            remote_limits(1 << 20, 100, 1 << 16),
         )
         .expect_err("query-only authority must remain local-only");
 
         assert_eq!(
             diagnostic.code().as_str(),
-            "query_remote_query_only_authority_local_only"
+            "query_remote_v2_query_only_authority_local_only"
         );
         assert_eq!(diagnostic.category(), DiagnosticCategory::Integrity);
         assert_eq!(metrics.schema_exports.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.opens.load(Ordering::SeqCst), 0);
         assert_eq!(metrics.queries.load(Ordering::SeqCst), 0);
     }
+}
+
+fn managed_control_query() -> Result<String, Diagnostic> {
+    let mut constraints = vec![ast(tql::isa(
+        "typebridge-internal-v2-migration-control",
+        false,
+    ))?];
+    for (attribute, variable) in [
+        ("typebridge-internal-v2-control-scope", "scope"),
+        ("typebridge-internal-v2-lease-fence", "fence"),
+        ("typebridge-internal-v2-lease-state", "state"),
+    ] {
+        constraints.push(ast(tql::has(attribute, ast(tql::var(variable))?))?);
+    }
+    let fields = ["scope", "fence", "state"]
+        .into_iter()
+        .map(|name| Ok((name, tql::fetch_expr(ast(tql::var(name))?))))
+        .collect::<Result<Vec<_>, Diagnostic>>()?;
+    ast(tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![ast(tql::thing("control", constraints))?]),
+        tql::limit(2),
+        ast(tql::fetch(fields))?,
+    ])))
+}
+
+#[test]
+fn managed_control_query_preserves_the_released_read() {
+    let old = "match $control isa typebridge-internal-v2-migration-control, has typebridge-internal-v2-control-scope $scope, has typebridge-internal-v2-lease-fence $fence, has typebridge-internal-v2-lease-state $state; limit 2; fetch { \"scope\": $scope, \"fence\": $fence, \"state\": $state };";
+    let canonical = |source: &str| typeql::parse_query(source).unwrap().to_string();
+    assert_eq!(
+        typeql::parse_query(&canonical(old)).unwrap(),
+        typeql::parse_query(&canonical(&managed_control_query().unwrap())).unwrap()
+    );
 }

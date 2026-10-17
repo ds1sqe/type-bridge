@@ -288,6 +288,18 @@ fn build_verified_migration_rollback_plan_inner(
             )
             .into());
         }
+        // Rolling back the bridge, or anything before it, would run on the
+        // older TypeDB line the history has left.
+        if manifest.is_profile_bridge()
+            || manifest.semantic_profile().id() != delta_context.semantic_profile()
+        {
+            return Err(contract_failure(
+                DiagnosticCategory::InvalidContract,
+                "migration_rollback_profile_bridge",
+                "rollback cannot cross a profile-upgrade bridge back to an older TypeDB line",
+            )
+            .into());
+        }
         if manifest.lowering_profile().id() != lowering_binding.profile_id()
             || manifest.lowering_profile().fingerprint() != lowering_binding.profile_fingerprint()
         {

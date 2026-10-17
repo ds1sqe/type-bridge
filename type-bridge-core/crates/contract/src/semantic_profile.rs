@@ -29,7 +29,7 @@ impl SemanticProfile {
     /// Resolve a supported semantic profile, rejecting unknown default tables.
     pub fn resolve(id: &SemanticProfileId) -> Result<Self, Diagnostic> {
         match id.as_str() {
-            "typedb-3.11.5/v1" | "typedb-3.12.1/v1" => {
+            "typedb-3.11.5/v1" | "typedb-3.12.1/v1" | "typedb-3.13.6/v1" => {
                 let bounded_to_one = Cardinality::new(0, Some(1))
                     .expect("the frozen zero-to-one cardinality is valid");
                 let unconstrained = Cardinality::new(0, None)

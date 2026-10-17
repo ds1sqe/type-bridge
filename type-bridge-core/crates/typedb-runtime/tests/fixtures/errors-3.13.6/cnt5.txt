@@ -1,0 +1,7 @@
+
+[CNT5] Constraint '<redacted>' has been violated: found 2 instances.
+Caused: [DVL10] Instance [<instance>] of type '<redacted>' has an attribute ownership constraint violation for attribute ownership of type '<redacted>'.
+Caused: [COW5] Concept write failed due to a data validation error.
+Caused: [DCT3] Data commit error.
+Caused: [SRV19] Data commit failed.
+Caused: [TSV5] Data transaction commit failed.

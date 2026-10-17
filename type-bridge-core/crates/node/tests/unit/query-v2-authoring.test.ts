@@ -631,6 +631,13 @@ test("public invocation rows are count and aggregate-byte bounded before materia
     (error: unknown) => {
       assert.ok(error instanceof QueryV2Error);
       assert.equal(error.code, "query_invocation_row_limit");
+      // The core bounds the host array and annotates the refusal (Python
+      // reports the same details).
+      assert.deepEqual(error.details, {
+        limit: { kind: "text", value: "input_rows" },
+        maximum: { kind: "long", value: "4096" },
+        source: { kind: "text", value: "default" },
+      });
       return true;
     },
   );

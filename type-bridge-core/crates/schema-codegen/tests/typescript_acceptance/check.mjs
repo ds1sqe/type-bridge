@@ -135,7 +135,7 @@ command("cargo", [
 ]);
 const projectedSchema = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+  "tests/contracts/sdk_conformance/models/schema.yaml",
 );
 command("cargo", [
   "run",

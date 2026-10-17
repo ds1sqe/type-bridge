@@ -91,8 +91,8 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
     [1, 3],
     rawPending,
   );
-  raw["queryV2RemoteModelContext"] = remember(
-    "queryV2RemoteModelContext",
+  raw["queryV2RemoteModelContextWithResources"] = remember(
+    "queryV2RemoteModelContextWithResources",
     [1],
     rawModelContext,
   );
@@ -168,20 +168,15 @@ test("public loadNative snapshots every V2 byte input before N-API", async (cont
   assertDetachedSnapshot(captured.get("decodeReply")![0], reply, [19, 20, 21]);
 
   const modelAdvertisement = sharedBytes([22, 23, 24]);
-  const modelContext = native["queryV2RemoteModelContext"](
+  const modelContext = native["queryV2RemoteModelContextWithResources"](
     authority,
     modelAdvertisement,
-    1n,
-    1n,
-    1n,
-    1n,
-    1n,
-    1n,
-    null,
+    {} as never,
+    {} as never,
   );
   assert.equal(modelContext, rawModelContext);
   assertDetachedSnapshot(
-    captured.get("queryV2RemoteModelContext")![0],
+    captured.get("queryV2RemoteModelContextWithResources")![0],
     modelAdvertisement,
     [22, 23, 24],
   );

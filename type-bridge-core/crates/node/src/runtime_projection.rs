@@ -26,13 +26,14 @@ use type_bridge_contract::limits::{
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projected_record::{
     MAX_PROJECTED_ARCHIVE_BYTES, MAX_PROJECTED_ARCHIVE_RECORDS, MAX_PROJECTED_DECODED_WEIGHT,
+    ProjectedRecordKind,
 };
 use type_bridge_contract::projection::{
     BindingTarget, ProjectedContainer, ProjectedModelForm, ProjectedModelUse,
     ProjectedMultiplicity, ProjectedTokenIdentity, ProjectionConfig, RuntimeProjection,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
-use type_bridge_contract::schema::{DeclaredIdentityFingerprint, OwnsFactId};
+use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::{
     MAX_SDK_DIAGNOSTIC_PATH_SEGMENTS, SdkDiagnosticCategory, SdkDiagnosticCode,
     SdkDiagnosticMessage, SdkDiagnosticName, SdkDiagnosticPathSegment, SdkExecutionDiagnostic,
@@ -53,19 +54,22 @@ use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
-    ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
+    ManagerLookup, ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCrudExecutor,
     ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
     ProjectedReference, ProjectedRolePlayer, ProjectedStructValue, ProjectedThing,
     ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext,
     TransactionContextState, ValueType, resolve_generated_manager_lookup,
+    validate_projected_create_member_count, validate_projected_hydrated_member_count,
 };
+use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
 use type_bridge_schema_codegen::{TypeScriptEmitter, verify_projection_evidence};
 
 use crate::match_runtime::{
-    NodeQueryCancellation, NodeQueryExecutionResources, napi_sdk_diagnostic, revalidate_diagnostic,
+    NodeQueryCancellation, NodeQueryExecutionResources, NodeQueryLimits, napi_sdk_diagnostic,
+    parse_enum, revalidate_diagnostic,
 };
 use crate::{
     NodeMatchSessionHandle, NodeRustDatabase, NodeRustTransactionContext, NodeValidatedThingHandle,
@@ -699,11 +703,8 @@ fn raw_projected_input_proofs(
         unsafe { sys::napi_get_array_length(env, value, &mut length) },
         "failed to inspect projected proof array length",
     )?;
-    if length as usize > MAX_CANONICAL_COLLECTION_LEN {
-        return Err(RawProjectedBindingError::Diagnostic(
-            ProjectedBatch::binding_allocation_failure(),
-        ));
-    }
+    ProjectedBatch::validate_binding_proof_count(length as usize)
+        .map_err(RawProjectedBindingError::Diagnostic)?;
     let mut proofs = reserved_projected_proof_slots(length as usize)
         .map_err(RawProjectedBindingError::Diagnostic)?;
     for index in 0..length {
@@ -1600,15 +1601,15 @@ impl InstalledPackage {
     }
 }
 
-fn direct_tls_from_node(
+pub(crate) fn direct_tls_from_node(
     tls_mode: &str,
     tls_root_ca: Option<String>,
-) -> napi::Result<type_bridge_orm::DirectTls> {
+) -> napi::Result<type_bridge_orm::TlsPolicy> {
     match (tls_mode, tls_root_ca) {
-        ("disabled", None) => Ok(type_bridge_orm::DirectTls::disabled()),
-        ("native_roots", None) => Ok(type_bridge_orm::DirectTls::native_roots()),
+        ("disabled", None) => Ok(type_bridge_orm::TlsPolicy::disabled()),
+        ("native_roots", None) => Ok(type_bridge_orm::TlsPolicy::native_roots()),
         ("custom_root", Some(path)) => {
-            type_bridge_orm::DirectTls::custom_root(path).map_err(napi_sdk_diagnostic)
+            type_bridge_orm::TlsPolicy::custom_root(path).map_err(napi_sdk_diagnostic)
         }
         ("custom_root", None) => Err(invalid_error("custom_root TLS requires tlsRootCa")),
         ("disabled" | "native_roots", Some(_)) => Err(invalid_error(
@@ -1658,7 +1659,7 @@ impl NodeRuntimeProjection {
         projected_batch_materializer: Option<Function<'_, (), ()>>,
         require_projected_batch_materializer: bool,
     ) -> napi::Result<Self> {
-        let (runtime, managed_scope_id, declared_schema_identity) = match schema_authority_json {
+        let (runtime, managed_scope_id, schema_authority_evidence) = match schema_authority_json {
             Some(schema_authority_json) => {
                 let (runtime, scope, declared) = install_authority_backed_projection(
                     &projection_json,
@@ -1792,8 +1793,8 @@ impl NodeRuntimeProjection {
             );
         }
         let mut projection = InstalledRuntimeProjection::try_new(runtime).map_err(orm_error)?;
-        if let Some(declared) = declared_schema_identity {
-            projection = projection.with_declared_schema_identity(declared);
+        if let Some(authority) = &schema_authority_evidence {
+            projection = projection.with_schema_authority(authority);
         }
         let projection = Arc::new(projection);
         Ok(Self {
@@ -1895,29 +1896,17 @@ impl NodeRuntimeProjection {
         })
     }
 
-    /// Build an opaque match session from this exact installed projection only.
-    #[napi(js_name = "matchSession")]
-    pub fn match_session(&self) -> napi::Result<NodeMatchSessionHandle> {
-        let registry = self
-            .package
-            .projection
-            .match_registry()
-            .map_err(orm_error)?;
-        Ok(NodeMatchSessionHandle::from_installed(
-            Arc::clone(&self.package.projection),
-            Arc::new(registry),
-            QueryExecutionResourceLimits::default(),
-            AnswerCancellation::default(),
-        ))
-    }
-
     /// Build an opaque match session carrying the common resource policy and
     /// caller-owned cooperative cancellation signal.
+    ///
+    /// `query_limits` replaces the canonical query limits for every query of
+    /// the session; left out, the session keeps the defaults.
     #[napi(js_name = "matchSessionWithResources")]
     pub fn match_session_with_resources(
         &self,
         resources: &NodeQueryExecutionResources,
         cancellation: &NodeQueryCancellation,
+        query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<NodeMatchSessionHandle> {
         let registry = self
             .package
@@ -1929,6 +1918,10 @@ impl NodeRuntimeProjection {
             Arc::new(registry),
             resources.inner(),
             cancellation.inner(),
+            query_limits.map_or(
+                type_bridge_contract::limits::QueryLimits::CANONICAL,
+                NodeQueryLimits::inner,
+            ),
         ))
     }
 
@@ -1965,7 +1958,7 @@ impl NodeRuntimeProjection {
             .ok_or_else(|| invalid_error("projection attribute has no scalar domain"))?;
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
-        let expected = projected_value_type(value_type);
+        let expected = ValueType::from(value_type);
         if projection_uses_ordered_collections(self.package.projection.projection()) {
             project_attribute_scalar(&self.package.projection, id, &wire, expected)
                 .map(|_| ())
@@ -2010,7 +2003,7 @@ impl NodeRuntimeProjection {
             &self.package.projection,
             id,
             &wire,
-            projected_value_type(value_type),
+            ValueType::from(value_type),
         )
         .map(|_| ())
         .map_err(napi_sdk_diagnostic)
@@ -2056,7 +2049,7 @@ impl NodeRuntimeProjection {
             .ok_or_else(|| invalid_error("projection field attribute has no scalar domain"))?;
         let wire: ScalarWire = serde_json::from_str(&value_json)
             .map_err(|error| invalid_error(format!("invalid projected scalar wire: {error}")))?;
-        let expected = projected_value_type(value_type);
+        let expected = ValueType::from(value_type);
         if projection_uses_ordered_collections(self.package.projection.projection()) {
             let projected =
                 project_attribute_scalar(&self.package.projection, attribute_id, &wire, expected)
@@ -2072,6 +2065,26 @@ impl NodeRuntimeProjection {
                 .validate_field_value(&id, &field_name, &value)
                 .map_err(|error| invalid_error(error.to_string()))
         }
+    }
+
+    /// Check how many values a generated model's create member holds against
+    /// its projected cardinality. A refusal is the core's structured
+    /// diagnostic.
+    #[napi(js_name = "validateMemberCardinality")]
+    pub fn validate_member_cardinality(
+        &self,
+        type_key: String,
+        member_name: String,
+        count: u32,
+    ) -> napi::Result<()> {
+        let id = type_id_from_key(&type_key)?;
+        validate_projected_create_member_count(
+            &self.package.projection,
+            &id,
+            &member_name,
+            count as usize,
+        )
+        .map_err(napi_sdk_diagnostic)
     }
 
     /// Encode one exact generated attribute wire through the shared canonical record contract.
@@ -2312,7 +2325,7 @@ impl NodeRuntimeProjection {
                 value
                     .as_ref()
                     .map(|wire| {
-                        scalar_to_ordered_attribute(wire, projected_value_type(field.value_type()))
+                        scalar_to_ordered_attribute(wire, ValueType::from(field.value_type()))
                             .and_then(|value| canonical_struct_scalar(&value))
                     })
                     .transpose()
@@ -2363,6 +2376,7 @@ impl NodeRuntimeProjection {
         max_depth: Option<u32>,
         max_members: Option<u32>,
     ) -> napi::Result<Buffer> {
+        let record_kind = parse_enum::<ProjectedRecordKind>(&record_kind)?;
         let control = NodeCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -2378,13 +2392,12 @@ impl NodeRuntimeProjection {
                 SdkExecutionDiagnostic::projected_codec_input_limit(),
             ));
         }
-        let bytes = match record_kind.as_str() {
-            "attribute" => self.encode_attribute_json(type_key, value_json),
-            "create" => self.encode_create_json(type_key, value_json),
-            "reference" => self.encode_reference_json(type_key, value_json),
-            "snapshot" => self.encode_snapshot_json(type_key, value_json),
-            "struct" => self.encode_struct_json(type_key, value_json),
-            _ => Err(invalid_error("unsupported canonical record kind")),
+        let bytes = match record_kind {
+            ProjectedRecordKind::Attribute => self.encode_attribute_json(type_key, value_json),
+            ProjectedRecordKind::Create => self.encode_create_json(type_key, value_json),
+            ProjectedRecordKind::Reference => self.encode_reference_json(type_key, value_json),
+            ProjectedRecordKind::Snapshot => self.encode_snapshot_json(type_key, value_json),
+            ProjectedRecordKind::Struct => self.encode_struct_json(type_key, value_json),
         }?;
         control.check()?;
         let record = type_bridge_contract::projected_record::ProjectedRecord::decode_with_limits(
@@ -2419,6 +2432,7 @@ impl NodeRuntimeProjection {
         max_depth: Option<u32>,
         max_members: Option<u32>,
     ) -> napi::Result<String> {
+        let record_kind = parse_enum::<ProjectedRecordKind>(&record_kind)?;
         let control = NodeCanonicalControl::capture(
             cancellation,
             timeout_milliseconds,
@@ -2443,13 +2457,22 @@ impl NodeRuntimeProjection {
             .encode_with_limits(control.output_limits())
             .map_err(|error| node_canonical_limit_error(error, false))?;
         control.check()?;
-        let value_json = match record_kind.as_str() {
-            "attribute" => self.decode_attribute_json(type_key, Buffer::from(canonical)),
-            "create" => self.decode_create_json(type_key, Buffer::from(canonical)),
-            "reference" => self.decode_reference_json(type_key, Buffer::from(canonical)),
-            "snapshot" => self.decode_snapshot_json(type_key, Buffer::from(canonical)),
-            "struct" => self.decode_struct_json(type_key, Buffer::from(canonical)),
-            _ => Err(invalid_error("unsupported canonical record kind")),
+        let value_json = match record_kind {
+            ProjectedRecordKind::Attribute => {
+                self.decode_attribute_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Create => {
+                self.decode_create_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Reference => {
+                self.decode_reference_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Snapshot => {
+                self.decode_snapshot_json(type_key, Buffer::from(canonical))
+            }
+            ProjectedRecordKind::Struct => {
+                self.decode_struct_json(type_key, Buffer::from(canonical))
+            }
         }?;
         if value_json.len() > control.max_output_bytes {
             return Err(napi_sdk_diagnostic(
@@ -2802,7 +2825,7 @@ impl NodeProjectedManagerFilter {
         let attribute = AttributeId::new(attribute_label).map_err(diagnostic_error)?;
         let field = OwnsFactId::new(owner.clone(), attribute).map_err(diagnostic_error)?;
         let identity = ProjectedTokenIdentity::Field { owner, field };
-        let comparison = projected_manager_comparison(&comparison)?;
+        let comparison = parse_enum::<ProjectedManagerComparison>(&comparison)?;
         let wire = parse_wire(&value_json)?;
         let value =
             project_attribute_wire(self.package.as_ref(), &wire).map_err(napi_sdk_diagnostic)?;
@@ -3163,6 +3186,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3174,6 +3198,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3205,6 +3230,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3216,6 +3242,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3248,6 +3275,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Entity(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3261,6 +3289,7 @@ impl NodeProjectedModelManager {
             TypeDescriptor::Relation(descriptor) => {
                 let attributes = lower_attributes(
                     self.package.as_ref(),
+                    &self.type_id,
                     &descriptor.owned_attributes,
                     &instance,
                 )?;
@@ -3567,7 +3596,10 @@ impl NodeProjectedModelManager {
                     .successor_batch_marker
                     .as_ref()
                     .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                let mark_successor = prior == TransactionContextState::Active;
+                let mark_successor = matches!(
+                    prior,
+                    TransactionContextState::Active | TransactionContextState::RolledBack
+                );
                 let result = self
                     .runtime
                     .block_on(executor.execute_in_transaction_mapped(
@@ -3636,6 +3668,7 @@ impl NodeProjectedModelManager {
                     .map(|instance| {
                         lower_attributes(
                             self.package.as_ref(),
+                            &self.type_id,
                             &descriptor.owned_attributes,
                             instance,
                         )
@@ -3659,6 +3692,7 @@ impl NodeProjectedModelManager {
                         Ok((
                             lower_attributes(
                                 self.package.as_ref(),
+                                &self.type_id,
                                 &descriptor.owned_attributes,
                                 instance,
                             )?,
@@ -3821,11 +3855,7 @@ fn install_authority_backed_projection(
     semantic_fingerprint_json: &str,
     projection_fingerprint_json: &str,
     schema_authority_json: &str,
-) -> napi::Result<(
-    RuntimeProjection,
-    ManagedScopeId,
-    DeclaredIdentityFingerprint,
-)> {
+) -> napi::Result<(RuntimeProjection, ManagedScopeId, VerifiedSchemaAuthority)> {
     let rejection = || projection_evidence_rejection(semantic_fingerprint_json);
     let runtime = decode_runtime_projection_verified(
         projection_json.as_bytes(),
@@ -3843,11 +3873,7 @@ fn install_authority_backed_projection(
     .map_err(|_| rejection())?;
     verify_projection_evidence(&authority, &runtime).map_err(|_| rejection())?;
     let managed_scope_id = authority.managed_scope().id().clone();
-    let declared_schema_identity = authority
-        .resolved_schema()
-        .declared_identity_fingerprint()
-        .clone();
-    Ok((runtime, managed_scope_id, declared_schema_identity))
+    Ok((runtime, managed_scope_id, authority))
 }
 
 fn projection_evidence_mismatch() -> Error {
@@ -4334,12 +4360,7 @@ fn project_hydrated_attribute_wire(
         .value
         .as_ref()
         .ok_or_else(|| malformed_projected_hydration_at(path.clone()))?;
-    project_hydrated_attribute_scalar(
-        &package.projection,
-        id,
-        scalar,
-        projected_value_type(value_type),
-    )
+    project_hydrated_attribute_scalar(&package.projection, id, scalar, ValueType::from(value_type))
 }
 
 fn project_hydrated_attribute_scalar(
@@ -4547,12 +4568,7 @@ fn project_attribute_wire(
         .value
         .as_ref()
         .ok_or_else(|| malformed_projected_create_at(path))?;
-    project_attribute_scalar(
-        &package.projection,
-        id,
-        scalar,
-        projected_value_type(value_type),
-    )
+    project_attribute_scalar(&package.projection, id, scalar, ValueType::from(value_type))
 }
 
 fn project_attribute_scalar(
@@ -4914,12 +4930,16 @@ fn ensure_wire_members(
 
 fn lower_attributes(
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     wire: &ProjectedWire,
 ) -> napi::Result<DynamicAttributeMap> {
     let mut attributes = Vec::new();
     for descriptor in descriptors {
         for value in normalized_values(
+            package,
+            id,
+            &descriptor.field_name,
             wire.values.get(&descriptor.field_name),
             descriptor_cardinality(descriptor),
         )? {
@@ -4992,7 +5012,7 @@ fn lower_filter_values(
                 .any(|descriptor| descriptor.field_name == name || descriptor.attr_name == name)
         };
         let resolved = resolve_generated_manager_lookup(&key, has_field);
-        let (field_name, lookup) = (resolved.field_name(), resolved.lookup());
+        let field_name = resolved.field_name();
         let descriptor = descriptors
             .iter()
             .find(|descriptor| {
@@ -5001,66 +5021,61 @@ fn lower_filter_values(
             .ok_or_else(|| {
                 invalid_error(format!("unknown generated manager filter {field_name:?}"))
             })?;
-        if matches!(
-            lookup,
-            "contains" | "startswith" | "endswith" | "regex" | "like"
-        ) && descriptor.value_type != ValueType::String
-        {
+        let lookup = resolved
+            .operator()
+            .map_err(|error| napi_sdk_diagnostic(error.into()))?;
+        if lookup.requires_text() && descriptor.value_type != ValueType::String {
             return Err(invalid_error(format!(
-                "unsupported generated manager lookup {lookup:?} for non-string field {field_name:?}"
+                "unsupported generated manager lookup {:?} for non-string field {field_name:?}",
+                resolved.lookup()
             )));
         }
-        if lookup == "isnull" {
-            let is_null = value.as_bool().ok_or_else(|| {
-                invalid_error("generated manager isnull lookup requires a boolean")
-            })?;
-            lowered.push(DynamicExpr::IsNull {
-                attr_name: descriptor.attr_name.clone(),
-                is_null,
-            });
-            continue;
-        }
-        if lookup == "in" {
-            let values = value
-                .as_array()
-                .ok_or_else(|| invalid_error("generated manager in lookup requires an array"))?;
-            if values.is_empty() {
-                return Err(invalid_error(
-                    "generated manager in lookup requires at least one value",
-                ));
-            }
-            lowered.push(DynamicExpr::Or {
-                exprs: values
-                    .iter()
-                    .map(|value| {
-                        Ok(DynamicExpr::Compare {
-                            attr_name: descriptor.attr_name.clone(),
-                            operator: DynamicComparisonOp::Eq,
-                            value: projected_filter_attribute_value(
-                                package, descriptor, field_name, value,
-                            )?,
-                        })
-                    })
-                    .collect::<napi::Result<Vec<_>>>()?,
-            });
-            continue;
-        }
         let operator = match lookup {
-            "eq" | "exact" => DynamicComparisonOp::Eq,
-            "ne" => DynamicComparisonOp::Neq,
-            "gt" => DynamicComparisonOp::Gt,
-            "gte" => DynamicComparisonOp::Gte,
-            "lt" => DynamicComparisonOp::Lt,
-            "lte" => DynamicComparisonOp::Lte,
-            "contains" => DynamicComparisonOp::Contains,
-            "startswith" => DynamicComparisonOp::StartsWith,
-            "endswith" => DynamicComparisonOp::EndsWith,
-            "regex" | "like" => DynamicComparisonOp::Like,
-            _ => {
-                return Err(invalid_error(format!(
-                    "unsupported generated manager lookup {lookup:?}; expected exact, eq, ne, gt, gte, lt, lte, contains, startswith, endswith, regex, in, or isnull"
-                )));
+            ManagerLookup::IsNull => {
+                let is_null = value.as_bool().ok_or_else(|| {
+                    invalid_error("generated manager isnull lookup requires a boolean")
+                })?;
+                lowered.push(DynamicExpr::IsNull {
+                    attr_name: descriptor.attr_name.clone(),
+                    is_null,
+                });
+                continue;
             }
+            ManagerLookup::In => {
+                let values = value.as_array().ok_or_else(|| {
+                    invalid_error("generated manager in lookup requires an array")
+                })?;
+                if values.is_empty() {
+                    return Err(invalid_error(
+                        "generated manager in lookup requires at least one value",
+                    ));
+                }
+                lowered.push(DynamicExpr::Or {
+                    exprs: values
+                        .iter()
+                        .map(|value| {
+                            Ok(DynamicExpr::Compare {
+                                attr_name: descriptor.attr_name.clone(),
+                                operator: DynamicComparisonOp::Eq,
+                                value: projected_filter_attribute_value(
+                                    package, descriptor, field_name, value,
+                                )?,
+                            })
+                        })
+                        .collect::<napi::Result<Vec<_>>>()?,
+                });
+                continue;
+            }
+            ManagerLookup::Eq => DynamicComparisonOp::Eq,
+            ManagerLookup::Ne => DynamicComparisonOp::Neq,
+            ManagerLookup::Gt => DynamicComparisonOp::Gt,
+            ManagerLookup::Gte => DynamicComparisonOp::Gte,
+            ManagerLookup::Lt => DynamicComparisonOp::Lt,
+            ManagerLookup::Lte => DynamicComparisonOp::Lte,
+            ManagerLookup::Contains => DynamicComparisonOp::Contains,
+            ManagerLookup::StartsWith => DynamicComparisonOp::StartsWith,
+            ManagerLookup::EndsWith => DynamicComparisonOp::EndsWith,
+            ManagerLookup::Regex => DynamicComparisonOp::Like,
         };
         lowered.push(DynamicExpr::Compare {
             attr_name: descriptor.attr_name.clone(),
@@ -5069,20 +5084,6 @@ fn lower_filter_values(
         });
     }
     Ok(lowered)
-}
-
-fn projected_manager_comparison(value: &str) -> napi::Result<ProjectedManagerComparison> {
-    match value {
-        "eq" => Ok(ProjectedManagerComparison::Eq),
-        "ne" => Ok(ProjectedManagerComparison::Ne),
-        "lt" => Ok(ProjectedManagerComparison::Lt),
-        "lte" => Ok(ProjectedManagerComparison::Lte),
-        "gt" => Ok(ProjectedManagerComparison::Gt),
-        "gte" => Ok(ProjectedManagerComparison::Gte),
-        _ => Err(invalid_error(
-            "projected manager comparison must be eq, ne, lt, lte, gt, or gte",
-        )),
-    }
 }
 
 fn projected_filter_attribute_value(
@@ -5144,6 +5145,9 @@ fn lower_roles(
             .role(create.role().label().as_str())
             .ok_or_else(|| runtime_error("projected role has no provider descriptor"))?;
         for value in normalized_values(
+            package,
+            relation_id,
+            token.target_name().as_str(),
             wire.values.get(token.target_name().as_str()),
             role_cardinality(role),
         )? {
@@ -5220,31 +5224,32 @@ fn projected_key(
     )))
 }
 
-fn normalized_values(
-    value: Option<&Value>,
+/// Unpack one create member of `id` from a projected wire for lowering into
+/// a provider row. The core checks the member count; the descriptor's
+/// maximum only picks the wire shape.
+fn normalized_values<'a>(
+    package: &InstalledPackage,
+    id: &TypeId,
+    member: &str,
+    value: Option<&'a Value>,
     cardinality: (u32, Option<u32>),
-) -> napi::Result<Vec<&Value>> {
-    let (minimum, maximum) = cardinality;
+) -> napi::Result<Vec<&'a Value>> {
+    let scalar = cardinality.1 == Some(1);
     let values = match value {
         None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(values)) if maximum != Some(1) => values.iter().collect(),
+        Some(Value::Array(values)) if !scalar => values.iter().collect(),
         Some(Value::Array(_)) => {
             return Err(invalid_error("scalar projected member received a sequence"));
         }
-        Some(value) if maximum == Some(1) => vec![value],
+        Some(value) if scalar => vec![value],
         Some(_) => {
             return Err(invalid_error(
                 "multi-value projected member requires a sequence",
             ));
         }
     };
-    let count = u32::try_from(values.len())
-        .map_err(|_| invalid_error("projected member count exceeds u32"))?;
-    if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(invalid_error(
-            "projected member violates resolved cardinality",
-        ));
-    }
+    validate_projected_create_member_count(&package.projection, id, member, values.len())
+        .map_err(napi_sdk_diagnostic)?;
     Ok(values)
 }
 
@@ -5918,7 +5923,7 @@ fn projected_struct_wire(
             let value = value.as_ref().map(|value| {
                 attribute_to_scalar(
                     &canonical_struct_attribute(value),
-                    projected_value_type(field.value_type()),
+                    ValueType::from(field.value_type()),
                 )
                 .expect("validated projected struct scalar retains its declared domain")
             });
@@ -6149,7 +6154,7 @@ fn projected_attribute_value_wire(
         iid: None,
         value: Some(attribute_to_scalar(
             &value.to_attribute_value(),
-            projected_value_type(value_type),
+            ValueType::from(value_type),
         )?),
         values: BTreeMap::new(),
     })
@@ -6159,14 +6164,9 @@ fn projected_read_member_value(
     values: Vec<ProjectedWire>,
     multiplicity: ProjectedMultiplicity,
 ) -> napi::Result<Value> {
-    let count = u64::try_from(values.len())
-        .map_err(|_| runtime_error("projected hydrated value count exceeds u64"))?;
-    let cardinality = multiplicity.cardinality();
-    if count < cardinality.min() || cardinality.max().is_some_and(|maximum| count > maximum) {
-        return Err(runtime_error(
-            "projected hydrated value violates its projected cardinality",
-        ));
-    }
+    // `ProjectedThing`, `ProjectedCreate`, and `ProjectedReference` are
+    // validated against the projection when built, cardinality included;
+    // the multiplicity only picks the host shape here.
     match multiplicity.container() {
         ProjectedContainer::Scalar => values
             .into_iter()
@@ -6194,7 +6194,7 @@ fn hydrate_entity(
         form: WireForm::Complete,
         iid: row.iid.clone(),
         value: None,
-        values: hydrate_attributes(package, &descriptor.owned_attributes, &row.attributes)?,
+        values: hydrate_attributes(package, id, &descriptor.owned_attributes, &row.attributes)?,
     })
 }
 
@@ -6208,7 +6208,8 @@ fn hydrate_relation(
         .projection
         .relation_descriptor(id)
         .map_err(orm_error)?;
-    let mut values = hydrate_attributes(package, &descriptor.owned_attributes, &row.attributes)?;
+    let mut values =
+        hydrate_attributes(package, id, &descriptor.owned_attributes, &row.attributes)?;
     let projection = package.projection.projection();
     let model = projection
         .models()
@@ -6229,9 +6230,10 @@ fn hydrate_relation(
             .filter(|player| player.role_name == read.role().label().as_str())
             .map(|player| hydrate_player(package, read.players(), player))
             .collect::<napi::Result<Vec<_>>>()?;
+        let member = token.target_name().as_str();
         values.insert(
-            token.target_name().as_str().to_owned(),
-            projected_member_value(players, role_cardinality(role))?,
+            member.to_owned(),
+            projected_member_value(package, id, member, players, role_cardinality(role))?,
         );
     }
     Ok(ProjectedWire {
@@ -6300,7 +6302,7 @@ fn hydrate_player(
                 form: WireForm::Reference,
                 iid: Some(iid.to_owned()),
                 value: None,
-                values: hydrate_attributes(package, &descriptors, &attributes)?,
+                values: hydrate_attributes(package, id, &descriptors, &attributes)?,
             })
         }
     }
@@ -6308,6 +6310,7 @@ fn hydrate_player(
 
 fn hydrate_attributes(
     package: &InstalledPackage,
+    id: &TypeId,
     descriptors: &[OwnedAttributeDescriptor],
     attributes: &DynamicAttributeMap,
 ) -> napi::Result<BTreeMap<String, Value>> {
@@ -6320,7 +6323,13 @@ fn hydrate_attributes(
             .collect::<napi::Result<Vec<_>>>()?;
         values.insert(
             descriptor.field_name.clone(),
-            projected_member_value(wrappers, descriptor_cardinality(descriptor))?,
+            projected_member_value(
+                package,
+                id,
+                &descriptor.field_name,
+                wrappers,
+                descriptor_cardinality(descriptor),
+            )?,
         );
     }
     Ok(values)
@@ -6342,16 +6351,16 @@ fn attribute_wire(
 }
 
 fn projected_member_value(
+    package: &InstalledPackage,
+    id: &TypeId,
+    member: &str,
     values: Vec<ProjectedWire>,
     cardinality: (u32, Option<u32>),
 ) -> napi::Result<Value> {
-    let (minimum, maximum) = cardinality;
-    let count = u32::try_from(values.len())
-        .map_err(|_| runtime_error("hydrated value count exceeds u32"))?;
-    if count < minimum || maximum.is_some_and(|maximum| count > maximum) {
-        return Err(runtime_error("provider row violates projected cardinality"));
-    }
-    if maximum == Some(1) {
+    validate_projected_hydrated_member_count(&package.projection, id, member, values.len())
+        .map_err(napi_sdk_diagnostic)?;
+    // The count is checked; the descriptor's maximum only picks the host shape.
+    if cardinality.1 == Some(1) {
         values
             .into_iter()
             .next()
@@ -6545,20 +6554,6 @@ const fn value_type_tag(value: ValueType) -> ValueTypeTag {
     }
 }
 
-const fn projected_value_type(value: ValueTypeTag) -> ValueType {
-    match value {
-        ValueTypeTag::String => ValueType::String,
-        ValueTypeTag::Long => ValueType::Long,
-        ValueTypeTag::Double => ValueType::Double,
-        ValueTypeTag::Boolean => ValueType::Boolean,
-        ValueTypeTag::Date => ValueType::Date,
-        ValueTypeTag::DateTime => ValueType::DateTime,
-        ValueTypeTag::DateTimeTz => ValueType::DateTimeTz,
-        ValueTypeTag::Decimal => ValueType::Decimal,
-        ValueTypeTag::Duration => ValueType::Duration,
-    }
-}
-
 const fn wire_form(value: ProjectedModelForm) -> WireForm {
     match value {
         ProjectedModelForm::Complete => WireForm::Complete,
@@ -6605,27 +6600,15 @@ fn node_canonical_limit_error(
     error: type_bridge_contract::diagnostic::Diagnostic,
     input: bool,
 ) -> Error {
-    let diagnostic = match error.code().as_str() {
-        "canonical_json_too_deep" => SdkExecutionDiagnostic::projected_codec_depth_limit(),
-        "canonical_collection_too_large" => SdkExecutionDiagnostic::projected_codec_member_limit(),
-        "canonical_json_too_large" | "canonical_string_too_large" if input => {
-            SdkExecutionDiagnostic::projected_codec_input_limit()
-        }
-        "canonical_json_too_large" | "canonical_string_too_large" => {
-            SdkExecutionDiagnostic::projected_codec_output_limit()
-        }
-        _ => return diagnostic_error(error),
-    };
-    napi_sdk_diagnostic(diagnostic)
+    match SdkExecutionDiagnostic::from_canonical_limit(&error, input) {
+        Some(diagnostic) => napi_sdk_diagnostic(diagnostic),
+        None => diagnostic_error(error),
+    }
 }
 
 fn node_canonical_codec_error(error: type_bridge_orm::ProjectedCodecError) -> Error {
-    if matches!(
-        &error,
-        type_bridge_orm::ProjectedCodecError::Contract(diagnostic)
-            if diagnostic.code().as_str() == "projected_codec_declared_schema_mismatch"
-    ) {
-        return napi_sdk_diagnostic(SdkExecutionDiagnostic::projected_record_schema_mismatch());
+    if let Some(diagnostic) = error.record_schema_mismatch() {
+        return napi_sdk_diagnostic(diagnostic);
     }
     invalid_error(error.to_string())
 }
@@ -6691,9 +6674,9 @@ mod tests {
         json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(fs::read(root.join(relative)).unwrap()))})
     }
 
-    fn publish_v3_node_fragment(results: Vec<Value>) {
-        let destination = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
-        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
+    fn publish_models_node_fragment(results: Vec<Value>) {
+        let destination = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT");
+        let nonce = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE");
         assert_eq!(destination.is_some(), nonce.is_some());
         let (Some(destination), Some(nonce)) = (destination, nonce) else {
             return;
@@ -6724,15 +6707,15 @@ mod tests {
         let fragment = json!({
             "binding": "node",
             "contract": {
-                "allowlist": v3_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-                "journey": v3_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-                "proof_schema": v3_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+                "allowlist": v3_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+                "journey": v3_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+                "proof_schema": v3_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
             },
-            "format": "typebridge.sdk-v3-proof-fragment/v1",
-            "producer": {"id": "node.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_identity(&root, path)).collect::<Vec<_>>()},
+            "format": "typebridge.sdk-models-proof-fragment/v1",
+            "producer": {"id": "node.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_identity(&root, path)).collect::<Vec<_>>()},
             "results": results,
             "run_nonce": nonce,
-            "semantic_profile": "typedb-3.12.1/v1",
+            "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,
         });
         let mut bytes = to_canonical_json(&fragment).unwrap();
         bytes.push(b'\n');
@@ -6746,40 +6729,44 @@ mod tests {
     }
 
     #[test]
-    fn sdk_v3_node_data_plane_fragment() {
+    fn sdk_models_node_data_plane_fragment() {
         use type_bridge_orm::{
-            AnswerCancellation, DirectConnectionPolicy, MAX_QUERY_ATTRIBUTE_VALUES,
-            MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS, MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS,
-            MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS, MAX_QUERY_TIMEOUT_MILLISECONDS,
-            QueryExecutionResourceLimits,
+            AnswerCancellation, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
+            DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+            DEFAULT_DIRECT_QUERY_ITEMS, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+            DEFAULT_DIRECT_QUERY_STATEMENTS, DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+            DirectConnectionPolicy, QueryExecutionResourceLimits,
         };
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
         assert!(cancellation.is_cancelled());
         let effective = QueryExecutionResourceLimits::tightened(
-            MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
-            MAX_QUERY_ITEMS + 1,
-            MAX_QUERY_BYTES + 1,
-            MAX_QUERY_GRAPH_NODES + 1,
-            MAX_QUERY_ATTRIBUTE_VALUES + 1,
-            MAX_QUERY_COLLECTION_MEMBERS + 1,
-            MAX_QUERY_ROLE_PLAYERS + 1,
-            MAX_QUERY_STATEMENTS + 1,
+            DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
+            DEFAULT_DIRECT_QUERY_ITEMS + 1,
+            DEFAULT_DIRECT_QUERY_BYTES + 1,
+            DEFAULT_DIRECT_QUERY_GRAPH_NODES + 1,
+            DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES + 1,
+            DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1,
+            DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
+            DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
         assert_eq!(effective, QueryExecutionResourceLimits::default());
         let policy = DirectConnectionPolicy::new("localhost:1729", "sdk", "admin", "secret")
             .connection_limits(effective)
             .answer_limits(effective);
         assert_eq!(format!("{policy:?}"), "DirectConnectionPolicy([REDACTED])");
+        // The frozen journey records the proxy wire policy on every binding.
+        let wire_limits =
+            QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
         let dimensions = [
-            ("timeout_milliseconds", MAX_QUERY_TIMEOUT_MILLISECONDS),
-            ("items", MAX_QUERY_ITEMS),
-            ("bytes", MAX_QUERY_BYTES),
-            ("graph_nodes", MAX_QUERY_GRAPH_NODES),
-            ("attribute_values", MAX_QUERY_ATTRIBUTE_VALUES),
-            ("collection_members", MAX_QUERY_COLLECTION_MEMBERS),
-            ("role_players", MAX_QUERY_ROLE_PLAYERS),
-            ("statements", u64::from(MAX_QUERY_STATEMENTS)),
+            ("timeout_milliseconds", wire_limits.timeout_milliseconds),
+            ("items", wire_limits.items),
+            ("bytes", wire_limits.bytes),
+            ("graph_nodes", wire_limits.graph_nodes),
+            ("attribute_values", wire_limits.attribute_values),
+            ("collection_members", wire_limits.collection_members),
+            ("role_players", wire_limits.role_players),
+            ("statements", u64::from(wire_limits.statements)),
         ]
         .into_iter()
         .map(|(dimension, hard_max)| {
@@ -6824,8 +6811,8 @@ mod tests {
                 "close": {"category": "provider", "code": "provider_operation_failed", "path": [{"kind": "argument", "value": "resource"}], "details": {"operation": {"kind": "provider_operation", "value": "close"}}, "handle_retained_for_retry": true}
             }, "provider_text_exposed": false, "secrets_exposed": false, "deterministic_field_order": true
         });
-        let id = "runtime_projection::tests::sdk_v3_node_data_plane_fragment";
-        publish_v3_node_fragment(vec![
+        let id = "runtime_projection::tests::sdk_models_node_data_plane_fragment";
+        publish_models_node_fragment(vec![
             json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": id}),
             json!({"observation": cancelled, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": id}),
             json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": id}),
@@ -6979,9 +6966,10 @@ entities:
         assert_eq!(
             diagnostic,
             serde_json::json!({
+                "version": 1,
                 "category": "integrity",
-                "sdkCategory": "integrity",
-                "queryCategory": null,
+                "sdk_category": "integrity",
+                "query_category": null,
                 "code": "projection_evidence_mismatch",
                 "message": "Generated projection evidence does not match the verified schema package",
                 "path": [{"kind": "argument", "value": "projection_evidence"}],
@@ -6995,9 +6983,10 @@ entities:
         assert_eq!(
             diagnostic,
             serde_json::json!({
+                "version": 1,
                 "category": "integrity",
-                "sdkCategory": "integrity",
-                "queryCategory": null,
+                "sdk_category": "integrity",
+                "query_category": null,
                 "code": "projection_evidence_mismatch",
                 "message": "Generated projection evidence does not match the verified schema package",
                 "path": [
@@ -7421,7 +7410,7 @@ entities:
         ];
 
         for (type_id, wire, provider_label, iid, malformed_hydration) in cases {
-            for borrowed in [false, true] {
+            for (borrowed, rollback_first) in [(false, false), (true, false), (true, true)] {
                 for hydration_failure in [false, true] {
                     let relation = type_id.kind() == TypeKind::Relation;
                     let mut responses = Vec::new();
@@ -7460,6 +7449,11 @@ entities:
                             .block_on(database.transaction_context(TxType::Write))
                             .unwrap()
                     });
+                    if rollback_first {
+                        provider_runtime
+                            .block_on(transaction.as_ref().unwrap().rollback())
+                            .unwrap();
+                    }
                     let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                     let manager = NodeProjectedModelManager {
                         package: Arc::clone(&runtime_projection.package),
@@ -7499,7 +7493,7 @@ entities:
                     assert_eq!(state.given_rows.len(), state.queries.len());
                     assert_eq!(state.commits, 0);
                     if borrowed {
-                        assert_eq!(state.rollbacks, 0);
+                        assert_eq!(state.rollbacks, usize::from(rollback_first));
                         assert_eq!(state.closes, 0);
                     } else {
                         assert_eq!(state.rollbacks, 1);
@@ -7832,7 +7826,7 @@ entities:
             .validate_attribute_value_json(score, overflow)
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "invalid_input");
+        assert_eq!(diagnostic["sdk_category"], "invalid_input");
         assert_eq!(diagnostic["code"], "wrong_scalar_domain");
 
         let double = type_key(TypeKind::Attribute, "val-double");
@@ -8511,7 +8505,7 @@ entities:
                 .unwrap_err(),
         ] {
             let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-            assert_eq!(diagnostic["sdkCategory"], "invalid_input");
+            assert_eq!(diagnostic["sdk_category"], "invalid_input");
             assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
             assert_eq!(diagnostic["details"]["first_index"]["value"], "0");
             assert_eq!(diagnostic["details"]["duplicate_index"]["value"], "1");
@@ -8535,6 +8529,202 @@ entities:
             .insert_json(serde_json::to_string(&valid).unwrap())
             .unwrap_err();
         assert_eq!(error.reason, "projected manager has no execution target");
+    }
+
+    /// Shared with the Python glue's lowering test so both hosts pin the same
+    /// diagnostics for the same forged counts.
+    const LOWERING_SCHEMA: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  aliases: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      aliases: { card: { min: 0, max: 2 } }
+relations:
+  membership:
+    relates:
+      member: { card: 1 }
+  event: {}
+  container:
+    relates:
+      item: { card: { min: 0, max: 2 } }
+plays:
+  person:
+    membership: [member]
+  event:
+    container: [item]
+"#;
+
+    /// The canonical host form of a lowering count refusal on the
+    /// `LOWERING_SCHEMA` models; the Python glue's test pins the same values.
+    fn lowering_count_refusal(
+        code: &str,
+        message: &str,
+        [owner, member]: [Value; 2],
+        [actual, minimum, maximum]: [&str; 3],
+    ) -> Value {
+        json!({
+            "version": 1,
+            "category": "invalid_input",
+            "sdk_category": "invalid_input",
+            "query_category": null,
+            "code": code,
+            "message": message,
+            "path": [{"kind": "type", "value": owner}, member],
+            "details": {
+                "actual_count": {"kind": "count", "value": actual},
+                "minimum_count": {"kind": "count", "value": minimum},
+                "maximum_count": {"kind": "count", "value": maximum},
+            },
+        })
+    }
+
+    fn lowering_refusal(error: napi::Error) -> Value {
+        assert_eq!(error.status, Status::InvalidArg);
+        serde_json::from_str(&error.reason).unwrap()
+    }
+
+    #[test]
+    fn unordered_write_lowering_refuses_forged_member_counts_with_core_diagnostics() {
+        let runtime = runtime_for_schema(LOWERING_SCHEMA, "node-lowering-cardinality.yaml");
+        let person_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let person_key = canonical_type_key(&person_id).unwrap();
+        let identifier = serde_json::to_value(attribute_wire(
+            "identifier",
+            ValueTypeTag::String,
+            Value::String("person-1".into()),
+        ))
+        .unwrap();
+        let alias = serde_json::to_value(attribute_wire(
+            "aliases",
+            ValueTypeTag::String,
+            Value::String("ada".into()),
+        ))
+        .unwrap();
+        let person_wire = |values: Vec<(&str, Value)>| {
+            serde_json::to_string(&ProjectedWire {
+                type_key: person_key.clone(),
+                form: WireForm::Complete,
+                iid: None,
+                value: None,
+                values: values
+                    .into_iter()
+                    .map(|(name, value)| (name.to_owned(), value))
+                    .collect(),
+            })
+            .unwrap()
+        };
+        let person = json!({"kind": "entity", "label": "person"});
+        let person_field = |attribute: &str| {
+            [
+                person.clone(),
+                json!({"kind": "field", "value": {"attribute": attribute, "owner": person}}),
+            ]
+        };
+        let manager = manager_without_execution_target(&runtime, person_id);
+
+        for (wire, expected) in [
+            (
+                person_wire(vec![
+                    ("identifier", identifier.clone()),
+                    ("aliases", Value::Array(vec![alias.clone(); 3])),
+                ]),
+                lowering_count_refusal(
+                    "field_cardinality_violation",
+                    "The projected ownership violates its exact cardinality",
+                    person_field("aliases"),
+                    ["3", "0", "2"],
+                ),
+            ),
+            (
+                person_wire(vec![("aliases", Value::Array(vec![alias.clone()]))]),
+                lowering_count_refusal(
+                    "missing_required_field",
+                    "A required projected ownership has no value",
+                    person_field("identifier"),
+                    ["0", "1", "1"],
+                ),
+            ),
+        ] {
+            let batch = format!("[{wire}]");
+            // Every legacy write route lowers through the same core check.
+            for error in [
+                manager.insert_json(wire.clone()).unwrap_err(),
+                manager.put_json(wire.clone()).unwrap_err(),
+                manager
+                    .update_json("0xa1".into(), wire.clone())
+                    .unwrap_err(),
+                manager.insert_many_json(batch.clone()).unwrap_err(),
+                manager.put_many_json(batch).unwrap_err(),
+            ] {
+                assert_eq!(lowering_refusal(error), expected);
+            }
+        }
+
+        let valid = person_wire(vec![
+            ("identifier", identifier),
+            ("aliases", Value::Array(vec![alias; 2])),
+        ]);
+        assert_eq!(
+            manager.insert_json(valid).unwrap_err().reason,
+            "projected manager has no execution target"
+        );
+
+        let container_id = TypeId::new(TypeKind::Relation, "container").unwrap();
+        let event = serde_json::to_value(ProjectedWire {
+            type_key: type_key(TypeKind::Relation, "event"),
+            form: WireForm::Complete,
+            iid: Some("0xe1".into()),
+            value: None,
+            values: BTreeMap::new(),
+        })
+        .unwrap();
+        let container = serde_json::to_string(&ProjectedWire {
+            type_key: canonical_type_key(&container_id).unwrap(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([("item".into(), Value::Array(vec![event; 3]))]),
+        })
+        .unwrap();
+        let manager = manager_without_execution_target(&runtime, container_id);
+        assert_eq!(
+            lowering_refusal(manager.insert_json(container).unwrap_err()),
+            lowering_count_refusal(
+                "role_cardinality_violation",
+                "The projected role violates its exact cardinality",
+                [
+                    json!({"kind": "relation", "label": "container"}),
+                    json!({"kind": "role", "value": {"declaring_relation": "container", "label": "item"}}),
+                ],
+                ["3", "0", "2"],
+            )
+        );
+
+        let membership_id = TypeId::new(TypeKind::Relation, "membership").unwrap();
+        let membership = serde_json::to_string(&ProjectedWire {
+            type_key: canonical_type_key(&membership_id).unwrap(),
+            form: WireForm::Complete,
+            iid: None,
+            value: None,
+            values: BTreeMap::from([("member".into(), Value::Null)]),
+        })
+        .unwrap();
+        let manager = manager_without_execution_target(&runtime, membership_id);
+        assert_eq!(
+            lowering_refusal(manager.insert_json(membership).unwrap_err()),
+            lowering_count_refusal(
+                "missing_required_role",
+                "A required projected role has no player",
+                [
+                    json!({"kind": "relation", "label": "membership"}),
+                    json!({"kind": "role", "value": {"declaring_relation": "membership", "label": "member"}}),
+                ],
+                ["0", "1", "1"],
+            )
+        );
     }
 
     #[test]
@@ -8579,7 +8769,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "regex_constraint_violation");
         assert_eq!(diagnostic["path"][0]["kind"], "type");
 
@@ -8614,7 +8804,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
         assert_eq!(diagnostic["path"][0]["kind"], "type");
         assert_eq!(diagnostic["path"][1]["kind"], "field");
@@ -8634,7 +8824,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "range_constraint_violation");
         assert_eq!(diagnostic["path"][0]["kind"], "type");
         assert_eq!(diagnostic["path"][1]["kind"], "field");
@@ -8655,7 +8845,7 @@ entities:
             .validate_thing_json(membership_key, serde_json::to_string(&membership).unwrap())
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
         assert_eq!(diagnostic["path"][1]["kind"], "role");
         assert_eq!(diagnostic["path"][2]["kind"], "index");
@@ -8721,7 +8911,7 @@ entities:
             )
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "noncanonical_hydrated_iid");
         assert_eq!(diagnostic["path"][1]["kind"], "argument");
     }
@@ -8742,7 +8932,7 @@ entities:
             .unwrap_err();
         let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
         assert_eq!(diagnostic["category"], "integrity");
-        assert_eq!(diagnostic["sdkCategory"], "integrity");
+        assert_eq!(diagnostic["sdk_category"], "integrity");
         assert_eq!(diagnostic["code"], "generated_token_package_mismatch");
         assert_eq!(
             diagnostic["message"],

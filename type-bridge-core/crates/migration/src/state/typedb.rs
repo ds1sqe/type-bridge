@@ -23,11 +23,12 @@ pub use type_bridge_contract::reserved::{
     LEGACY_CUTOVER_SENTINEL_MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_NAME,
     LEGACY_WRITER_CUTOVER_MESSAGE,
 };
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_orm::_schema::{SchemaError, SchemaInfo};
 use type_bridge_orm::OrmError;
 use type_bridge_orm::session::backend::{BoxFuture, QueryResult, TxType};
 use type_bridge_orm::{
-    Database, Transaction, TransactionContext,
+    Database, OwnedTransaction as Transaction, TransactionContext,
     require_legacy_writer_open as require_orm_legacy_writer_open,
     require_legacy_writer_open_in_transaction as require_orm_legacy_writer_open_in_transaction,
 };
@@ -48,7 +49,7 @@ use crate::{AppliedMigrationRecord, MigrationError, Result};
 const APPLIED_AT_FORMAT: &str = "%Y-%m-%dT%H:%M:%S.%6f";
 
 const LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG: &str =
-    "# typebridge-internal-legacy-state-schema-probe/v1\n";
+    "typebridge-internal-legacy-state-schema-probe/v1";
 
 /// Required state of the V2-only legacy-ledger sentinel while a caller reads a
 /// legacy applied projection.
@@ -105,6 +106,12 @@ pub enum LegacyCutoverSentinelError {
     },
 }
 
+impl From<tql::TqlError> for LegacyCutoverSentinelError {
+    fn from(error: tql::TqlError) -> Self {
+        Self::Storage(error.into())
+    }
+}
+
 impl LegacyCutoverSentinelError {
     /// Return whether this is durable stored drift rather than provider
     /// infrastructure failure.
@@ -137,9 +144,7 @@ impl TypeDbStateStore {
         let kind = state_type_kind(type_name).ok_or_else(|| MigrationError::State {
             message: format!("unknown migration-state schema label: {type_name}"),
         })?;
-        let check_query = format!(
-            "\n            match {kind} $t;\n            fetch {{ \"label\": label($t) }};\n        "
-        );
+        let check_query = schema_kind_query(kind, false)?;
 
         let ctx = self
             .db
@@ -172,7 +177,7 @@ impl TypeDbStateStore {
             .await
             .map_err(map_orm_error)?;
         if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-            let _ = ctx.rollback().await;
+            let _ = rollback_and_close_context(&ctx).await;
             return Err(error);
         }
         match ctx.query(define_typeql).await {
@@ -181,7 +186,7 @@ impl TypeDbStateStore {
                 Ok(())
             }
             Err(error) => {
-                if let Err(cleanup) = ctx.rollback().await {
+                if let Err(cleanup) = rollback_and_close_context(&ctx).await {
                     return Err(schema_rollback_cleanup_failure(&error, &cleanup));
                 }
                 if self.type_exists(type_name).await? {
@@ -254,7 +259,7 @@ impl TypeDbStateStore {
         if !self.archival_schema_is_complete().await? {
             return Ok(Vec::new());
         }
-        parse_applied_documents(&self.query_documents(&applied_query()).await?)
+        parse_applied_documents(&self.query_documents(&applied_query()?).await?)
     }
 
     /// Read the frozen legacy run log without any schema bootstrap or repair.
@@ -287,24 +292,35 @@ impl TypeDbStateStore {
     }
 
     async fn load_runs_documents(&self) -> Result<Vec<MigrationRunRecord>> {
-        let query = format!(
-            "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {CHECKSUM} $checksum,\n    has {DIRECTION} $direction,\n    has {STATUS} $status,\n    has {STARTED_AT} $started;\nfetch {{\n    \"run_id\": $run_id,\n    \"app\": $app,\n    \"name\": $name,\n    \"checksum\": $checksum,\n    \"direction\": $direction,\n    \"status\": $status,\n    \"started\": $started\n}};\n"
-        );
+        let query = state_read(
+            "r",
+            RUN_ENTITY,
+            &[],
+            &[
+                (RUN_ID, "run_id"),
+                (APP_LABEL, "app"),
+                (NAME, "name"),
+                (CHECKSUM, "checksum"),
+                (DIRECTION, "direction"),
+                (STATUS, "status"),
+                (STARTED_AT, "started"),
+            ],
+        )?;
         let mut runs = parse_run_documents(&self.query_documents(&query).await?)?;
 
-        let finished_query = optional_run_field_query(FINISHED_AT, "finished");
+        let finished_query = optional_run_field_query(FINISHED_AT, "finished")?;
         let finished_docs = self.query_documents(&finished_query).await?;
         merge_optional_run_field(&mut runs, &finished_docs, "finished_at", "finished");
 
-        let error_query = optional_run_field_query(ERROR, "error");
+        let error_query = optional_run_field_query(ERROR, "error")?;
         let error_docs = self.query_documents(&error_query).await?;
         merge_optional_run_field(&mut runs, &error_docs, "error", "error");
 
-        let ip_query = optional_run_field_query(EXECUTOR_IP, "executor_ip");
+        let ip_query = optional_run_field_query(EXECUTOR_IP, "executor_ip")?;
         let ip_docs = self.query_documents(&ip_query).await?;
         merge_optional_run_field(&mut runs, &ip_docs, "executor_ip", "executor_ip");
 
-        let mac_query = optional_run_field_query(EXECUTOR_MAC, "executor_mac");
+        let mac_query = optional_run_field_query(EXECUTOR_MAC, "executor_mac")?;
         let mac_docs = self.query_documents(&mac_query).await?;
         merge_optional_run_field(&mut runs, &mac_docs, "executor_mac", "executor_mac");
 
@@ -322,7 +338,7 @@ impl TypeDbStateStore {
         transaction: &mut Transaction,
     ) -> Result<Vec<AppliedMigrationRecord>> {
         let result = transaction
-            .query(&applied_query())
+            .query(&applied_query()?)
             .await
             .map_err(map_orm_error)?;
         parse_applied_documents(&query_result_values(result))
@@ -362,7 +378,7 @@ impl TypeDbStateStore {
             LegacyStateSchemaPresence::Complete => {}
         }
         let result = transaction
-            .query(&applied_query())
+            .query(&applied_query()?)
             .await
             .map_err(map_sentinel_storage_error)?;
         let mut applied = parse_applied_documents(&query_result_values(result))
@@ -370,18 +386,16 @@ impl TypeDbStateStore {
 
         let id_candidates = sentinel_query_values(
             transaction,
-            &format!(
-                "match $m isa {APPLIED_ENTITY}, has {MIGRATION_ID} {}; fetch {{ \"exists\": true }};",
-                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID),
-            ),
+            &state_exists(
+                "m",
+                APPLIED_ENTITY,
+                &[(MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)],
+            )?,
         )
         .await?;
         let name_candidates = sentinel_query_values(
             transaction,
-            &format!(
-                "match $m isa {APPLIED_ENTITY}, has {NAME} {}; fetch {{ \"exists\": true }};",
-                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_NAME),
-            ),
+            &state_exists("m", APPLIED_ENTITY, &[(NAME, LEGACY_CUTOVER_SENTINEL_NAME)])?,
         )
         .await?;
 
@@ -413,11 +427,27 @@ impl TypeDbStateStore {
 
         let details = sentinel_query_values(
             transaction,
-            &format!(
-                "match $m isa {APPLIED_ENTITY}, has {MIGRATION_ID} {}, has {APP_LABEL} $app, has {NAME} {}, has {APPLIED_AT} $applied, has {CHECKSUM} $checksum; fetch {{ \"app\": $app, \"applied\": $applied, \"checksum\": $checksum }};",
-                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID),
-                typeql_string_literal(LEGACY_CUTOVER_SENTINEL_NAME),
-            ),
+            &tql::render(&tql::pipeline(vec![
+                tql::match_stage(vec![tql::entity(
+                    "m",
+                    APPLIED_ENTITY,
+                    vec![
+                        (
+                            MIGRATION_ID,
+                            tql::string(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)?,
+                        ),
+                        (APP_LABEL, tql::var("app")?),
+                        (NAME, tql::string(LEGACY_CUTOVER_SENTINEL_NAME)?),
+                        (APPLIED_AT, tql::var("applied")?),
+                        (CHECKSUM, tql::var("checksum")?),
+                    ],
+                )?]),
+                tql::fetch(vec![
+                    ("app", tql::fetch_expr(tql::var("app")?)),
+                    ("applied", tql::fetch_expr(tql::var("applied")?)),
+                    ("checksum", tql::fetch_expr(tql::var("checksum")?)),
+                ])?,
+            ]))?,
         )
         .await?;
         if details.len() != 1 {
@@ -491,13 +521,23 @@ impl TypeDbStateStore {
                     .to_owned(),
             });
         }
-        let query = format!(
-            "insert $m isa {APPLIED_ENTITY}, has {MIGRATION_ID} {}, has {APP_LABEL} {}, has {NAME} {}, has {APPLIED_AT} {LEGACY_CUTOVER_SENTINEL_APPLIED_AT}, has {CHECKSUM} {};",
-            typeql_string_literal(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID),
-            typeql_string_literal(LEGACY_CUTOVER_SENTINEL_APP_LABEL),
-            typeql_string_literal(LEGACY_CUTOVER_SENTINEL_NAME),
-            typeql_string_literal(anchor_fingerprint),
-        );
+        let query = tql::render(&tql::pipeline(vec![tql::insert(vec![tql::entity(
+            "m",
+            APPLIED_ENTITY,
+            vec![
+                (
+                    MIGRATION_ID,
+                    tql::string(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)?,
+                ),
+                (APP_LABEL, tql::string(LEGACY_CUTOVER_SENTINEL_APP_LABEL)?),
+                (NAME, tql::string(LEGACY_CUTOVER_SENTINEL_NAME)?),
+                (
+                    APPLIED_AT,
+                    tql::literal_source(LEGACY_CUTOVER_SENTINEL_APPLIED_AT)?,
+                ),
+                (CHECKSUM, tql::string(anchor_fingerprint)?),
+            ],
+        )?])]))?;
         transaction.query(&query).await.map_err(map_orm_error)?;
         Ok(())
     }
@@ -515,7 +555,9 @@ pub async fn require_legacy_writer_open_in_transaction(
 
 #[cfg(test)]
 pub(crate) fn is_legacy_state_schema_probe_query(query: &str) -> bool {
-    query.starts_with(LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG)
+    query
+        .strip_prefix("# ")
+        .is_some_and(|query| query.starts_with(LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG))
 }
 
 /// Read-only entry guard for legacy writer surfaces whose external side
@@ -575,9 +617,7 @@ async fn legacy_state_schema_presence(
     let mut expected_labels_seen_in_any_kind = 0_usize;
     for (kind, expected) in expected_by_root {
         let result = transaction
-            .query(&format!(
-                "{LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG}match {kind} $t; fetch {{ \"label\": label($t) }};"
-            ))
+            .query(&schema_kind_query(kind, true)?)
             .await
             .map_err(map_sentinel_storage_error)?;
         let observed = schema_labels_from_result(result, "legacy state schema probe")
@@ -639,9 +679,84 @@ fn legacy_sentinel_error_into_migration_error(error: LegacyCutoverSentinelError)
     }
 }
 
-fn applied_query() -> String {
-    format!(
-        "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {APP_LABEL} $app,\n    has {NAME} $name,\n    has {APPLIED_AT} $applied,\n    has {CHECKSUM} $checksum;\nfetch {{\n    \"app\": $app,\n    \"name\": $name,\n    \"applied\": $applied,\n    \"checksum\": $checksum\n}};\n"
+fn state_pattern(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+    bound: &[(&str, &str)],
+) -> std::result::Result<tql::Pattern, tql::TqlError> {
+    let mut fields = Vec::new();
+    for &(name, value) in fixed {
+        fields.push((name, tql::string(value)?));
+    }
+    for &(name, value) in bound {
+        fields.push((name, tql::var(value)?));
+    }
+    tql::entity(variable, kind, fields)
+}
+fn state_read(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+    bound: &[(&str, &str)],
+) -> std::result::Result<String, tql::TqlError> {
+    let fetch = bound
+        .iter()
+        .map(|&(_, name)| Ok((name, tql::fetch_expr(tql::var(name)?))))
+        .collect::<std::result::Result<Vec<_>, tql::TqlError>>()?;
+    tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![state_pattern(variable, kind, fixed, bound)?]),
+        tql::fetch(fetch)?,
+    ]))
+}
+fn state_exists(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+) -> std::result::Result<String, tql::TqlError> {
+    tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![state_pattern(variable, kind, fixed, &[])?]),
+        tql::fetch(vec![(
+            "exists",
+            tql::fetch_expr(tql::literal_source("true")?),
+        )])?,
+    ]))
+}
+fn state_delete(
+    variable: &str,
+    kind: &str,
+    fixed: &[(&str, &str)],
+) -> std::result::Result<String, tql::TqlError> {
+    tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![state_pattern(variable, kind, fixed, &[])?]),
+        tql::delete(vec![tql::delete_thing(variable)?]),
+    ]))
+}
+fn schema_kind_query(kind: &str, tagged: bool) -> std::result::Result<String, tql::TqlError> {
+    let query = tql::pipeline(vec![
+        tql::match_stage(vec![tql::schema_kind_pattern("$t", kind)?]),
+        tql::fetch(vec![(
+            "label",
+            tql::fetch_expr(tql::function("label", vec![tql::var("t")?])?),
+        )])?,
+    ]);
+    if tagged {
+        tql::render_commented(&query, LEGACY_STATE_SCHEMA_PROBE_QUERY_TAG)
+    } else {
+        tql::render(&query)
+    }
+}
+fn applied_query() -> std::result::Result<String, tql::TqlError> {
+    state_read(
+        "m",
+        APPLIED_ENTITY,
+        &[],
+        &[
+            (APP_LABEL, "app"),
+            (NAME, "name"),
+            (APPLIED_AT, "applied"),
+            (CHECKSUM, "checksum"),
+        ],
     )
 }
 
@@ -693,16 +808,6 @@ fn query_result_values(result: QueryResult) -> Vec<serde_json::Value> {
         QueryResult::Rows(rows) => rows,
         QueryResult::Ok => Vec::new(),
     }
-}
-
-fn typeql_string_literal(value: &str) -> String {
-    let escaped = value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-        .replace('\t', "\\t");
-    format!("\"{escaped}\"")
 }
 
 /// Map an ORM-layer error into the migration error hierarchy.
@@ -837,9 +942,15 @@ pub fn parse_run_documents(values: &[serde_json::Value]) -> Result<Vec<Migration
     Ok(records)
 }
 
-fn optional_run_field_query(attribute: &str, alias: &str) -> String {
-    format!(
-        "\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} $run_id,\n    has {attribute} ${alias};\nfetch {{\n    \"run_id\": $run_id,\n    \"{alias}\": ${alias}\n}};\n"
+fn optional_run_field_query(
+    attribute: &str,
+    alias: &str,
+) -> std::result::Result<String, tql::TqlError> {
+    state_read(
+        "r",
+        RUN_ENTITY,
+        &[],
+        &[(RUN_ID, "run_id"), (attribute, alias)],
     )
 }
 
@@ -868,46 +979,34 @@ fn merge_optional_run_field(
     }
 }
 
-fn run_insert_query(record: &MigrationRunRecord) -> String {
-    let mut fields = vec![
-        format!("    has {RUN_ID} {}", typeql_string_literal(&record.run_id)),
-        format!(
-            "    has {APP_LABEL} {}",
-            typeql_string_literal(&record.app_label)
-        ),
-        format!("    has {NAME} {}", typeql_string_literal(&record.name)),
-        format!(
-            "    has {CHECKSUM} {}",
-            typeql_string_literal(&record.checksum)
-        ),
-        format!(
-            "    has {DIRECTION} {}",
-            typeql_string_literal(&record.direction)
-        ),
-        format!("    has {STATUS} {}", typeql_string_literal(&record.status)),
-        format!("    has {STARTED_AT} {}", record.started_at),
-    ];
-
-    if let Some(finished_at) = &record.finished_at {
-        fields.push(format!("    has {FINISHED_AT} {finished_at}"));
+fn run_insert_query(record: &MigrationRunRecord) -> std::result::Result<String, tql::TqlError> {
+    let mut fields = Vec::new();
+    for (name, value) in [
+        (RUN_ID, &record.run_id),
+        (APP_LABEL, &record.app_label),
+        (NAME, &record.name),
+        (CHECKSUM, &record.checksum),
+        (DIRECTION, &record.direction),
+        (STATUS, &record.status),
+    ] {
+        fields.push((name, tql::string(value)?));
     }
-    if let Some(error) = &record.error {
-        fields.push(format!("    has {ERROR} {}", typeql_string_literal(error)));
+    fields.push((STARTED_AT, tql::literal_source(&record.started_at)?));
+    if let Some(value) = &record.finished_at {
+        fields.push((FINISHED_AT, tql::literal_source(value)?));
     }
-    if let Some(executor_ip) = &record.executor_ip {
-        fields.push(format!(
-            "    has {EXECUTOR_IP} {}",
-            typeql_string_literal(executor_ip)
-        ));
+    for (name, value) in [
+        (ERROR, &record.error),
+        (EXECUTOR_IP, &record.executor_ip),
+        (EXECUTOR_MAC, &record.executor_mac),
+    ] {
+        if let Some(value) = value {
+            fields.push((name, tql::string(value)?));
+        }
     }
-    if let Some(executor_mac) = &record.executor_mac {
-        fields.push(format!(
-            "    has {EXECUTOR_MAC} {}",
-            typeql_string_literal(executor_mac)
-        ));
-    }
-
-    format!("\ninsert $r isa {RUN_ENTITY},\n{};\n", fields.join(",\n"))
+    tql::render(&tql::pipeline(vec![tql::insert(vec![tql::entity(
+        "r", RUN_ENTITY, fields,
+    )?])]))
 }
 
 impl MigrationStateStore for TypeDbStateStore {
@@ -956,7 +1055,7 @@ impl MigrationStateStore for TypeDbStateStore {
             self.ensure_schema_for_read().await?;
 
             // Ported verbatim from state.py:179-191.
-            let query = applied_query();
+            let query = applied_query()?;
 
             let values = self.query_documents(&query).await?;
             parse_applied_documents(&values)
@@ -982,25 +1081,19 @@ impl MigrationStateStore for TypeDbStateStore {
                 .unwrap_or_else(|| format_applied_at(Utc::now()));
 
             let migration_id = format!("{}:{}", record.app_label, record.name);
-            let migration_id = typeql_string_literal(&migration_id);
-            let app = typeql_string_literal(&record.app_label);
-            let name = typeql_string_literal(&record.name);
-            let checksum = typeql_string_literal(&record.checksum);
-
-            // Idempotent replace: delete any existing row for this migration_id
-            // (the @key) before inserting, so re-recording an already-applied
-            // migration updates in place instead of failing the @key constraint.
-            // This gives the TypeDB store the same dedup semantics the in-memory
-            // store has behind the shared seam.
-            let delete_existing = format!(
-                "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {MIGRATION_ID} {migration_id};\ndelete $m;\n"
-            );
-
-            // Field set + storage schema match state.py:253-260. `applied_at` is
-            // emitted unquoted (a TypeQL datetime literal); every other field quoted.
-            let insert = format!(
-                "\ninsert $m isa {APPLIED_ENTITY},\n    has {MIGRATION_ID} {migration_id},\n    has {APP_LABEL} {app},\n    has {NAME} {name},\n    has {APPLIED_AT} {applied_at},\n    has {CHECKSUM} {checksum};\n",
-            );
+            let delete_existing =
+                state_delete("m", APPLIED_ENTITY, &[(MIGRATION_ID, &migration_id)])?;
+            let insert = tql::render(&tql::pipeline(vec![tql::insert(vec![tql::entity(
+                "m",
+                APPLIED_ENTITY,
+                vec![
+                    (MIGRATION_ID, tql::string(&migration_id)?),
+                    (APP_LABEL, tql::string(&record.app_label)?),
+                    (NAME, tql::string(&record.name)?),
+                    (APPLIED_AT, tql::literal_source(&applied_at)?),
+                    (CHECKSUM, tql::string(&record.checksum)?),
+                ],
+            )?])]))?;
 
             let ctx = self
                 .db
@@ -1008,7 +1101,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-                let _ = ctx.rollback().await;
+                let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
             ctx.query(&delete_existing).await.map_err(map_orm_error)?;
@@ -1029,11 +1122,7 @@ impl MigrationStateStore for TypeDbStateStore {
             // Storage schema matches state.py:288-293; the delete clause uses the
             // TypeDB 3.x form `delete $m;` (the older `delete $m isa <type>;` that
             // the Python code carried is a parse error on TypeDB 3.x).
-            let app_label = typeql_string_literal(app_label);
-            let name = typeql_string_literal(name);
-            let query = format!(
-                "\nmatch\n$m isa {APPLIED_ENTITY},\n    has {APP_LABEL} {app_label},\n    has {NAME} {name};\ndelete $m;\n"
-            );
+            let query = state_delete("m", APPLIED_ENTITY, &[(APP_LABEL, app_label), (NAME, name)])?;
 
             let ctx = self
                 .db
@@ -1041,7 +1130,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-                let _ = ctx.rollback().await;
+                let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
             ctx.query(&query).await.map_err(map_orm_error)?;
@@ -1054,10 +1143,8 @@ impl MigrationStateStore for TypeDbStateStore {
         Box::pin(async move {
             self.ensure_schema().await?;
 
-            let run_id = typeql_string_literal(&record.run_id);
-            let delete_existing =
-                format!("\nmatch\n$r isa {RUN_ENTITY},\n    has {RUN_ID} {run_id};\ndelete $r;\n");
-            let insert = run_insert_query(&record);
+            let delete_existing = state_delete("r", RUN_ENTITY, &[(RUN_ID, &record.run_id)])?;
+            let insert = run_insert_query(&record)?;
 
             let ctx = self
                 .db
@@ -1065,7 +1152,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 .await
                 .map_err(map_orm_error)?;
             if let Err(error) = require_legacy_writer_open_in_transaction(&ctx).await {
-                let _ = ctx.rollback().await;
+                let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
             ctx.query(&delete_existing).await.map_err(map_orm_error)?;
@@ -1074,6 +1161,14 @@ impl MigrationStateStore for TypeDbStateStore {
             Ok(())
         })
     }
+}
+
+async fn rollback_and_close_context(
+    context: &TransactionContext,
+) -> std::result::Result<(), OrmError> {
+    let rollback = context.rollback().await;
+    let close = context.close().await;
+    rollback.and(close)
 }
 
 #[cfg(test)]
@@ -1424,7 +1519,10 @@ mod tests {
 
     #[test]
     fn typeql_string_literal_escapes_user_controlled_text() {
-        assert_eq!(typeql_string_literal("a\"b\\c\n"), "\"a\\\"b\\\\c\\n\"");
+        assert_eq!(
+            tql::render_expression(&tql::string("a\"b\\c\n").unwrap()),
+            "\"a\\\"b\\\\c\\n\""
+        );
     }
 
     #[test]
@@ -1453,7 +1551,7 @@ mod tests {
             executor_mac: Some("00:11:22:33:44:55".to_string()),
         };
 
-        let query = run_insert_query(&record);
+        let query = run_insert_query(&record).unwrap();
 
         assert!(query.contains("has migration_run_id \"run-1\""));
         assert!(query.contains("has migration_finished_at 2026-06-05T00:00:01.000000"));

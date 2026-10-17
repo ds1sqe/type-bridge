@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ds1sqe.github.io/type-bridge/perf/schema/perf-result-v1.json",
+  "title": "perf-result/v1",
+  "description": "One perf run: where it ran and what it measured. Two rules are not expressible here and are enforced by perf.harness.validate: metric ids are unique within a document, a ci95 lower bound does not exceed its upper bound, and a stage sum larger than the metric value is reported as a warning.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "run", "metrics"],
+  "properties": {
+    "format": { "const": "perf-result/v1" },
+    "run": { "$ref": "#/$defs/run" },
+    "metrics": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/metric" }
+    }
+  },
+  "$defs": {
+    "text": { "type": "string", "minLength": 1 },
+    "optionalText": {
+      "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }]
+    },
+    "measure": { "type": "number", "minimum": 0 },
+    "dottedName": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$"
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "branch",
+        "version",
+        "trigger",
+        "runner",
+        "toolchains",
+        "typedb",
+        "started_at"
+      ],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "branch": { "$ref": "#/$defs/text" },
+        "version": { "$ref": "#/$defs/text" },
+        "trigger": {
+          "enum": [
+            "push",
+            "pull_request",
+            "schedule",
+            "workflow_dispatch",
+            "release",
+            "local",
+            "release-matrix"
+          ]
+        },
+        "runner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["image", "cpu", "cores"],
+          "properties": {
+            "image": { "$ref": "#/$defs/text" },
+            "cpu": { "$ref": "#/$defs/text" },
+            "cores": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "toolchains": {
+          "description": "null means the run did not use that toolchain.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rust", "python", "node", "cc"],
+          "properties": {
+            "rust": { "$ref": "#/$defs/optionalText" },
+            "python": { "$ref": "#/$defs/optionalText" },
+            "node": { "$ref": "#/$defs/optionalText" },
+            "cc": { "$ref": "#/$defs/optionalText" }
+          }
+        },
+        "typedb": {
+          "description": "TypeDB server version, or null when the run used no TypeDB.",
+          "$ref": "#/$defs/optionalText"
+        },
+        "started_at": {
+          "description": "RFC 3339 timestamp with an explicit UTC offset.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "description": "Where the measured package came from; present exactly when trigger is release-matrix. registry: the public release named by version. tree: built from commit (the head).",
+          "enum": ["registry", "tree"]
+        }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "family", "unit", "value"],
+      "properties": {
+        "id": { "$ref": "#/$defs/dottedName" },
+        "family": {
+          "enum": ["micro", "binding", "pipeline", "release", "build", "size", "suite"]
+        },
+        "unit": { "enum": ["ns", "instructions", "bytes", "s", "ops_per_s"] },
+        "value": { "$ref": "#/$defs/measure" },
+        "n": { "type": "integer", "minimum": 1 },
+        "samples": {
+          "description": "Raw measurements, in the metric's unit.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/measure" }
+        },
+        "ci95": {
+          "description": "95% confidence interval of value as [lower, upper].",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "p50": { "$ref": "#/$defs/measure" },
+        "p90": { "$ref": "#/$defs/measure" },
+        "p99": { "$ref": "#/$defs/measure" },
+        "stages": {
+          "description": "Span name to nanoseconds.",
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/dottedName" },
+          "additionalProperties": { "$ref": "#/$defs/measure" }
+        }
+      },
+      "if": { "required": ["stages"] },
+      "then": { "properties": { "unit": { "const": "ns" } } }
+    }
+  }
+}

@@ -17,6 +17,7 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::RustEmitter;
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{Stage, base64, free_port};
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
@@ -28,36 +29,35 @@ const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
 const CONSUMER_LOCK: &[u8] = include_bytes!("rust_projection_live/consumer-Cargo.lock");
 const FIXTURE_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
 const SDK_MANIFEST: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/manifest-v1.json");
-const SDK_CATALOG: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json");
-const SDK_JOURNEY: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v1/journey-v1.json");
-const SDK_V2_JOURNEY: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v2/journey-v2.json");
-const SDK_V3_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
-const SDK_V3_PROVIDER_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
-const SDK_V3_CATALOG: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/catalog-v3.json");
-const SDK_V3_JOURNEY: &[u8] =
-    include_bytes!("../../../../tests/contracts/sdk_conformance/sdk-v3/journey-v3.json");
-const SDK_V2_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
-const SDK_PROFILE: &str = "typedb-3.12.1/v1";
-const CONSUMER_TESTS: [&str; 12] = [
+    include_bytes!("../../../../tests/contracts/sdk_conformance/manifest.json");
+const SDK_QUERIES_JOURNEY: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/queries/journey.json");
+const SDK_MODELS_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
+const SDK_MODELS_PROVIDER_SCHEMA: &str =
+    include_str!("../../../../tests/contracts/sdk_conformance/models/provider-3.12.1.tql");
+const SDK_MODELS_CATALOG: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/models/catalog.json");
+const SDK_MODELS_JOURNEY: &[u8] =
+    include_bytes!("../../../../tests/contracts/sdk_conformance/models/journey.json");
+const SDK_QUERIES_CATALOG_RELATIVE: &str = "tests/contracts/sdk_conformance/queries/catalog.json";
+/// The generated live fixture profile when `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
+/// is unset; it pairs with TypeDB 3.13.6, the default server image.
+const DEFAULT_ACCEPTANCE_PROFILE: &str = "typedb-3.13.6/v1";
+const CONSUMER_TESTS: [&str; 13] = [
     "generated_sdk_report_journeys",
     "generated_schema_handshake_and_tokens",
     "generated_entity_crud_batches_and_scalar_domains",
     "generated_inheritance_exact_and_subtype_reads",
     "generated_relation_query_and_remote_lifecycle",
+    "generated_one_program_under_direct_and_proxy_connections",
     "generated_integer_keys_and_polymorphic_role_parity",
     "generated_plain_inherited_abstract_role_parity",
     "generated_unkeyed_entity_iid_lifecycle_and_singular_query",
     "generated_lifecycle_hooks_and_atomic_mutation_batches",
     "generated_write_transaction_commit_rollback_and_drop",
-    "generated_data_model_runtime_v3_live",
-    "generated_canonical_serialization_v5_live",
+    "sdk_models_data_model_runtime_live",
+    "sdk_serialization_live",
 ];
 
 struct ServerProcess {
@@ -115,89 +115,76 @@ fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
-fn requested_sdk_report(profile_name: &str) -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_REPORT")?;
-    let raw = raw
-        .into_string()
-        .expect("TYPE_BRIDGE_SDK_REPORT must be UTF-8");
-    assert!(
-        raw.len() <= 4096,
-        "TYPE_BRIDGE_SDK_REPORT exceeds 4096 UTF-8 bytes"
-    );
-    assert_eq!(
-        profile_name, SDK_PROFILE,
-        "sdk reports are frozen to {SDK_PROFILE}"
-    );
-    let path = PathBuf::from(raw);
-    assert!(
-        path.is_absolute(),
-        "TYPE_BRIDGE_SDK_REPORT must be an absolute path"
-    );
-    let parent = path
-        .parent()
-        .expect("TYPE_BRIDGE_SDK_REPORT must have a parent directory");
-    let metadata =
-        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_REPORT parent must already exist");
-    assert!(
-        metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_SDK_REPORT parent must be a non-symlink directory"
-    );
-    match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_SDK_REPORT target must not already exist"),
-        Err(error) => panic!("TYPE_BRIDGE_SDK_REPORT target is not inspectable: {error}"),
-    }
-    Some(path)
+/// The {set} matrix entry for the generated fixture's profile; panics when
+/// the set has no entry for it.
+fn sdk_matrix_entry(suite: &str, profile_name: &str) -> SdkProfile {
+    sdk_profile_matrix::select_from(&sdk_profile_matrix::repository_root(), suite, profile_name)
 }
 
-fn requested_sdk_v2_report(profile_name: &str) -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_REPORT_V2")?;
+/// The matrix entries the consumer's SDK lanes emit, keyed by its suite name.
+fn sdk_profile_entries(profile_name: &str) -> String {
+    let entries = ["queries", "models", "serialization"]
+        .into_iter()
+        .map(|set| {
+            let entry = sdk_matrix_entry(set, profile_name);
+            (
+                set.to_string(),
+                serde_json::json!({
+                    "semantic_profile": entry.semantic_profile,
+                    "live_server_version": entry.live_server_version,
+                    "expected_fingerprints": entry.expected_fingerprints,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>();
+    serde_json::to_string(&entries).expect("sdk matrix entries serialize")
+}
+
+fn requested_sdk_queries_report(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_QUERIES_REPORT")?;
     let raw = raw
         .into_string()
-        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must be UTF-8");
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT must be UTF-8");
     assert!(
         raw.len() <= 4096,
-        "TYPE_BRIDGE_SDK_REPORT_V2 exceeds 4096 UTF-8 bytes"
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT exceeds 4096 UTF-8 bytes"
     );
-    assert_eq!(
-        profile_name, SDK_PROFILE,
-        "sdk-v2 reports are frozen to {SDK_PROFILE}"
-    );
+    sdk_matrix_entry("queries", profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
-        "TYPE_BRIDGE_SDK_REPORT_V2 must be an absolute path"
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT must be an absolute path"
     );
     let parent = path
         .parent()
-        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must have a parent directory");
-    let metadata =
-        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_REPORT_V2 parent must already exist");
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT must have a parent directory");
+    let metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT parent must already exist");
     assert!(
         metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_SDK_REPORT_V2 parent must be a non-symlink directory"
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_SDK_REPORT_V2 target must not already exist"),
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_QUERIES_REPORT target must not already exist"),
         Err(error) => {
-            panic!("TYPE_BRIDGE_SDK_REPORT_V2 target is not inspectable: {error}")
+            panic!("TYPE_BRIDGE_SDK_QUERIES_REPORT target is not inspectable: {error}")
         }
     }
     Some(path)
 }
 
-fn requested_sdk_v3_supplement(profile_name: &str) -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT")?;
-    assert_eq!(profile_name, SDK_PROFILE);
+fn requested_sdk_models_supplement(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT")?;
+    sdk_matrix_entry("models", profile_name);
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
-        "Sdk V3 supplement path must be absolute"
+        "Models supplement path must be absolute"
     );
-    let parent = path.parent().expect("Sdk V3 supplement has a parent");
+    let parent = path.parent().expect("Models supplement has a parent");
     let metadata =
-        fs::symlink_metadata(parent).expect("Sdk V3 supplement parent must already exist");
+        fs::symlink_metadata(parent).expect("Models supplement parent must already exist");
     assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
     assert!(
         matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
@@ -205,13 +192,17 @@ fn requested_sdk_v3_supplement(profile_name: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-fn requested_sdk_v5_evidence(profile_name: &str) -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE")?;
-    assert_eq!(profile_name, SDK_PROFILE);
+fn requested_sdk_serialization_evidence(profile_name: &str) -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE")?;
+    sdk_matrix_entry("serialization", profile_name);
     let path = PathBuf::from(raw);
-    assert!(path.is_absolute(), "Sdk V5 evidence path must be absolute");
-    let parent = path.parent().expect("Sdk V5 evidence has a parent");
-    let metadata = fs::symlink_metadata(parent).expect("Sdk V5 evidence parent must already exist");
+    assert!(
+        path.is_absolute(),
+        "Serialization evidence path must be absolute"
+    );
+    let parent = path.parent().expect("Serialization evidence has a parent");
+    let metadata =
+        fs::symlink_metadata(parent).expect("Serialization evidence parent must already exist");
     assert!(metadata.is_dir() && !metadata.file_type().is_symlink());
     assert!(
         matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
@@ -234,8 +225,8 @@ fn external_consumer_remains_a_focused_public_api_suite() {
     }
 
     assert!(!CONSUMER.contains("#[tokio::main]"));
-    assert!(!CONSUMER.contains("fn run_sdk_v2_journey("));
-    assert!(!CONSUMER.contains("Box::pin(run_sdk_v2_journey_inner(db))"));
+    assert!(!CONSUMER.contains("fn run_sdk_queries_journey("));
+    assert!(!CONSUMER.contains("Box::pin(run_sdk_queries_journey_inner(db))"));
     assert_eq!(
         CONSUMER.matches("#[tokio::test]").count(),
         CONSUMER_TESTS.len()
@@ -249,15 +240,13 @@ fn external_consumer_remains_a_focused_public_api_suite() {
 
     let relation = consumer_test(CONSUMER, "generated_relation_query_and_remote_lifecycle");
     assert!(relation.contains("F2C-03 public generated relation lifecycle: passed"));
-    assert!(!relation.contains("TYPE_BRIDGE_SDK_REPORT"));
+    assert!(!relation.contains("TYPE_BRIDGE_SDK_QUERIES_REPORT"));
     assert!(!relation.contains("run_sdk_journey"));
 
     let reports = consumer_test(CONSUMER, "generated_sdk_report_journeys");
     for expression in [
-        "env::var_os(\"TYPE_BRIDGE_SDK_REPORT\")",
-        "env::var_os(\"TYPE_BRIDGE_SDK_REPORT_V2\")",
-        "run_sdk_journey(&db).await",
-        "run_sdk_v2_journey_inner(&db).await",
+        "env::var_os(\"TYPE_BRIDGE_SDK_QUERIES_REPORT\")",
+        "run_sdk_queries_journey_inner(&db).await",
     ] {
         assert_eq!(
             reports.matches(expression).count(),
@@ -316,45 +305,45 @@ fn typedb_3_11_acceptance_is_the_same_application_without_3_12_docs() {
 #[ignore = "requires an isolated retained TypeDB server"]
 fn generated_rust_projection_round_trips_exact_live_models() {
     let profile_name = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
-        .unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
+        .unwrap_or_else(|_| DEFAULT_ACCEPTANCE_PROFILE.to_owned());
     let (schema, provider_schema) = match profile_name.as_str() {
         "typedb-3.11.5/v1" => (SCHEMA_3_11, PROVIDER_SCHEMA_3_11),
-        "typedb-3.12.1/v1" => (SCHEMA, PROVIDER_SCHEMA),
+        "typedb-3.12.1/v1" | "typedb-3.13.6/v1" => (SCHEMA, PROVIDER_SCHEMA),
         other => panic!("unsupported generated live semantic profile: {other}"),
     };
-    let sdk_report = requested_sdk_report(&profile_name);
-    let sdk_v2_report = requested_sdk_v2_report(&profile_name);
-    let sdk_v3_supplement = requested_sdk_v3_supplement(&profile_name);
-    let sdk_v5_evidence = requested_sdk_v5_evidence(&profile_name);
+    let sdk_queries_report = requested_sdk_queries_report(&profile_name);
+    let sdk_models_supplement = requested_sdk_models_supplement(&profile_name);
+    let sdk_serialization_evidence = requested_sdk_serialization_evidence(&profile_name);
     assert!(
-        (sdk_v3_supplement.is_none() && sdk_v5_evidence.is_none())
-            || (sdk_report.is_none() && sdk_v2_report.is_none()),
-        "Sdk V3/V5 use an isolated generated package and consumer run"
+        (sdk_models_supplement.is_none() && sdk_serialization_evidence.is_none())
+            || sdk_queries_report.is_none(),
+        "Models/Serialization use an isolated generated package and consumer run"
     );
     assert!(
-        sdk_v3_supplement.is_none() || sdk_v5_evidence.is_none(),
-        "Sdk V3 and V5 evidence use separate live runs"
+        sdk_models_supplement.is_none() || sdk_serialization_evidence.is_none(),
+        "Models and Serialization evidence use separate live runs"
     );
-    let (schema, provider_schema) = if sdk_v3_supplement.is_some() || sdk_v5_evidence.is_some() {
-        (SDK_V3_SCHEMA, SDK_V3_PROVIDER_SCHEMA)
-    } else {
-        (schema, provider_schema)
-    };
-    let sdk_v2_proof_fragments = sdk_v2_report.as_ref().map(|_| {
-        let raw = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
-            .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS is required for a V2 report");
-        support::sdk_v2_proof_paths(&raw)
-            .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS must be a valid path list")
+    let (schema, provider_schema) =
+        if sdk_models_supplement.is_some() || sdk_serialization_evidence.is_some() {
+            (SDK_MODELS_SCHEMA, SDK_MODELS_PROVIDER_SCHEMA)
+        } else {
+            (schema, provider_schema)
+        };
+    let sdk_queries_proof_fragments = sdk_queries_report.as_ref().map(|_| {
+        let raw = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS")
+            .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS is required for a V2 report");
+        support::sdk_queries_proof_paths(&raw)
+            .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS must be a valid path list")
     });
-    let sdk_v2_proof_run_nonce = sdk_v2_report.as_ref().map(|_| {
-        let nonce = env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
-            .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required for a V2 report");
+    let sdk_queries_proof_run_nonce = sdk_queries_report.as_ref().map(|_| {
+        let nonce = env::var("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
+            .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE is required for a V2 report");
         assert!(
             nonce.len() == 64
                 && nonce
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE must be 64 lowercase hexadecimal digits"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE must be 64 lowercase hexadecimal digits"
         );
         nonce
     });
@@ -364,18 +353,19 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         .and_then(Path::parent)
         .expect("schema-codegen lives beneath the repository root")
         .to_path_buf();
-    let sdk_v2_validated_observations = sdk_v2_report.as_ref().map(|_| {
-        let observations = support::validate_sdk_v2_proof_fragments(
+    let sdk_queries_validated_observations = sdk_queries_report.as_ref().map(|_| {
+        let observations = support::validate_sdk_queries_proof_fragments_on(
             &repository_root,
             "rust",
-            sdk_v2_proof_run_nonce
+            &profile_name,
+            sdk_queries_proof_run_nonce
                 .as_deref()
-                .expect("sdk-v2 proof nonce was captured"),
-            sdk_v2_proof_fragments
+                .expect("queries proof nonce was captured"),
+            sdk_queries_proof_fragments
                 .as_deref()
-                .expect("sdk-v2 proof fragments were captured"),
+                .expect("queries proof fragments were captured"),
         )
-        .expect("Rust sdk-v2 proof fragments must validate");
+        .expect("Rust queries proof fragments must validate");
         let serialized = observations
             .into_iter()
             .map(|((observation_ref, proof_kind), observation)| {
@@ -383,16 +373,14 @@ fn generated_rust_projection_round_trips_exact_live_models() {
             })
             .collect::<std::collections::BTreeMap<String, Value>>();
         let encoded =
-            serde_json::to_string(&serialized).expect("validated sdk-v2 observations serialize");
+            serde_json::to_string(&serialized).expect("validated queries observations serialize");
         assert!(
             encoded.len() <= 64 * 1024,
-            "validated sdk-v2 observations exceed 64 KiB"
+            "validated queries observations exceed 64 KiB"
         );
         encoded
     });
-    if let (Some(v1), Some(v2)) = (&sdk_report, &sdk_v2_report) {
-        assert_ne!(v1, v2, "sdk-v1 and sdk-v2 reports require distinct paths");
-    }
+
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("rust-projection-live.yaml").expect("document ID is valid"),
         schema,
@@ -422,52 +410,36 @@ fn generated_rust_projection_round_trips_exact_live_models() {
         .expect("Rust package emits");
 
     let stage = Stage::new();
-    let sdk_files = sdk_report.as_ref().map(|_| {
-        let directory = stage.path().join("sdk-v1");
-        fs::create_dir_all(&directory).expect("sdk contract stage is created");
-        let manifest = directory.join("manifest-v1.json");
-        let catalog = directory.join("catalog-v1.json");
-        let journey = directory.join("journey-v1.json");
+    let sdk_queries_files = sdk_queries_report.as_ref().map(|_| {
+        let directory = stage.path().join("queries");
+        fs::create_dir_all(&directory).expect("queries contract stage is created");
+        let manifest = directory.join("manifest.json");
+        let catalog = directory.join("catalog.json");
+        let journey = directory.join("journey.json");
         let schema = directory.join("schema.yaml");
         let provider_schema = directory.join("provider-3.12.1.tql");
-        fs::write(&manifest, SDK_MANIFEST).expect("sdk manifest is staged");
-        fs::write(&catalog, SDK_CATALOG).expect("sdk catalog is staged");
-        fs::write(&journey, SDK_JOURNEY).expect("sdk journey is staged");
-        fs::write(&schema, SCHEMA.as_bytes()).expect("sdk schema is staged");
-        fs::write(&provider_schema, PROVIDER_SCHEMA.as_bytes())
-            .expect("sdk provider schema is staged");
-        (manifest, catalog, journey, schema, provider_schema)
-    });
-    let sdk_v2_files = sdk_v2_report.as_ref().map(|_| {
-        let directory = stage.path().join("sdk-v2");
-        fs::create_dir_all(&directory).expect("sdk-v2 contract stage is created");
-        let manifest = directory.join("manifest-v1.json");
-        let catalog = directory.join("catalog-v2.json");
-        let journey = directory.join("journey-v2.json");
-        let schema = directory.join("schema.yaml");
-        let provider_schema = directory.join("provider-3.12.1.tql");
-        let catalog_source = repository_root.join(SDK_V2_CATALOG_RELATIVE);
+        let catalog_source = repository_root.join(SDK_QUERIES_CATALOG_RELATIVE);
         let catalog_bytes = fs::read(&catalog_source).unwrap_or_else(|error| {
             panic!(
-                "requested sdk-v2 report requires the frozen catalog at {}: {error}",
+                "requested queries report requires the frozen catalog at {}: {error}",
                 catalog_source.display()
             )
         });
-        fs::write(&manifest, SDK_MANIFEST).expect("sdk-v2 manifest is staged");
-        fs::write(&catalog, catalog_bytes).expect("sdk-v2 catalog is staged");
-        fs::write(&journey, SDK_V2_JOURNEY).expect("sdk-v2 journey is staged");
-        fs::write(&schema, SCHEMA.as_bytes()).expect("sdk-v2 schema is staged");
+        fs::write(&manifest, SDK_MANIFEST).expect("queries manifest is staged");
+        fs::write(&catalog, catalog_bytes).expect("queries catalog is staged");
+        fs::write(&journey, SDK_QUERIES_JOURNEY).expect("queries journey is staged");
+        fs::write(&schema, SCHEMA.as_bytes()).expect("queries schema is staged");
         fs::write(&provider_schema, PROVIDER_SCHEMA.as_bytes())
-            .expect("sdk-v2 provider schema is staged");
+            .expect("queries provider schema is staged");
         (manifest, catalog, journey, schema, provider_schema)
     });
-    let sdk_v3_files = sdk_v3_supplement.as_ref().map(|_| {
-        let directory = stage.path().join("sdk-v3");
-        fs::create_dir_all(&directory).expect("sdk-v3 contract stage is created");
-        let catalog = directory.join("catalog-v3.json");
-        let journey = directory.join("journey-v3.json");
-        fs::write(&catalog, SDK_V3_CATALOG).expect("sdk-v3 catalog is staged");
-        fs::write(&journey, SDK_V3_JOURNEY).expect("sdk-v3 journey is staged");
+    let sdk_models_files = sdk_models_supplement.as_ref().map(|_| {
+        let directory = stage.path().join("models");
+        fs::create_dir_all(&directory).expect("models contract stage is created");
+        let catalog = directory.join("catalog.json");
+        let journey = directory.join("journey.json");
+        fs::write(&catalog, SDK_MODELS_CATALOG).expect("models catalog is staged");
+        fs::write(&journey, SDK_MODELS_JOURNEY).expect("models journey is staged");
         (catalog, journey)
     });
     let generated = stage.path().join("generated");
@@ -811,50 +783,52 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             format!("http://127.0.0.1:{server_port}"),
         )
         .env("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", &profile_name)
-        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
-        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
-        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
-        .env_remove("TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS");
-    if sdk_v3_supplement.is_some() {
-        consumer_command.arg("generated_data_model_runtime_v3_live");
-    } else if sdk_v5_evidence.is_some() {
-        consumer_command.arg("generated_canonical_serialization_v5_live");
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT")
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS")
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_VALIDATED_OBSERVATIONS");
+    if sdk_queries_report.is_some()
+        || sdk_models_supplement.is_some()
+        || sdk_serialization_evidence.is_some()
+    {
+        consumer_command.env(
+            "TYPE_BRIDGE_SDK_PROFILE_ENTRIES",
+            sdk_profile_entries(&profile_name),
+        );
+    } else {
+        consumer_command.env_remove("TYPE_BRIDGE_SDK_PROFILE_ENTRIES");
     }
-    if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
-        (&sdk_report, &sdk_files)
+    if sdk_models_supplement.is_some() {
+        consumer_command.arg("sdk_models_data_model_runtime_live");
+    } else if sdk_serialization_evidence.is_some() {
+        consumer_command.arg("sdk_serialization_live");
+    }
+    if let (Some(supplement), Some((catalog, journey))) =
+        (&sdk_models_supplement, &sdk_models_files)
     {
         consumer_command
-            .env("TYPE_BRIDGE_SDK_REPORT", report)
-            .env("TYPE_BRIDGE_SDK_MANIFEST", manifest)
-            .env("TYPE_BRIDGE_SDK_CATALOG", catalog)
-            .env("TYPE_BRIDGE_SDK_JOURNEY", journey)
-            .env("TYPE_BRIDGE_SDK_SCHEMA", schema)
-            .env("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA", provider_schema);
+            .env("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT", supplement)
+            .env("TYPE_BRIDGE_SDK_MODELS_CATALOG", catalog)
+            .env("TYPE_BRIDGE_SDK_MODELS_JOURNEY", journey);
     }
-    if let (Some(supplement), Some((catalog, journey))) = (&sdk_v3_supplement, &sdk_v3_files) {
-        consumer_command
-            .env("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT", supplement)
-            .env("TYPE_BRIDGE_SDK_V3_CATALOG", catalog)
-            .env("TYPE_BRIDGE_SDK_V3_JOURNEY", journey);
-    }
-    if let Some(evidence) = &sdk_v5_evidence {
-        consumer_command.env("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE", evidence);
+    if let Some(evidence) = &sdk_serialization_evidence {
+        consumer_command.env("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE", evidence);
     }
     if let (Some(report), Some((manifest, catalog, journey, schema, provider_schema))) =
-        (&sdk_v2_report, &sdk_v2_files)
+        (&sdk_queries_report, &sdk_queries_files)
     {
         consumer_command
-            .env("TYPE_BRIDGE_SDK_REPORT_V2", report)
-            .env("TYPE_BRIDGE_SDK_MANIFEST_V2", manifest)
-            .env("TYPE_BRIDGE_SDK_CATALOG_V2", catalog)
-            .env("TYPE_BRIDGE_SDK_JOURNEY_V2", journey)
-            .env("TYPE_BRIDGE_SDK_SCHEMA_V2", schema)
-            .env("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA_V2", provider_schema)
+            .env("TYPE_BRIDGE_SDK_QUERIES_REPORT", report)
+            .env("TYPE_BRIDGE_SDK_QUERIES_MANIFEST", manifest)
+            .env("TYPE_BRIDGE_SDK_QUERIES_CATALOG", catalog)
+            .env("TYPE_BRIDGE_SDK_QUERIES_JOURNEY", journey)
+            .env("TYPE_BRIDGE_SDK_QUERIES_SCHEMA", schema)
+            .env("TYPE_BRIDGE_SDK_QUERIES_PROVIDER_SCHEMA", provider_schema)
             .env(
-                "TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS",
-                sdk_v2_validated_observations
+                "TYPE_BRIDGE_SDK_QUERIES_VALIDATED_OBSERVATIONS",
+                sdk_queries_validated_observations
                     .as_ref()
-                    .expect("sdk-v2 observations were validated"),
+                    .expect("queries observations were validated"),
             );
     }
     let consumer_output = consumer_command
@@ -868,36 +842,37 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         String::from_utf8_lossy(&consumer_output.stderr),
     );
     let consumer_stdout = String::from_utf8_lossy(&consumer_output.stdout);
-    let expected_consumer_tests = if sdk_v3_supplement.is_some() || sdk_v5_evidence.is_some() {
-        1
-    } else {
-        CONSUMER_TESTS.len()
-    };
+    let expected_consumer_tests =
+        if sdk_models_supplement.is_some() || sdk_serialization_evidence.is_some() {
+            1
+        } else {
+            CONSUMER_TESTS.len()
+        };
     assert!(consumer_stdout.contains(&format!(
         "test result: ok. {expected_consumer_tests} passed; 0 failed"
     )));
-    if sdk_v3_supplement.is_some() {
-        assert!(consumer_stdout.contains("generated Sdk V3 Rust live supplement: passed"));
+    if sdk_models_supplement.is_some() {
+        assert!(consumer_stdout.contains("generated Models Rust live supplement: passed"));
         assert!(
-            sdk_v3_supplement
+            sdk_models_supplement
                 .as_ref()
                 .is_some_and(|path| path.is_file())
         );
         return;
     }
-    if let Some(evidence_path) = &sdk_v5_evidence {
-        assert!(consumer_stdout.contains("generated Sdk V5 Rust live evidence: passed"));
+    if let Some(evidence_path) = &sdk_serialization_evidence {
+        assert!(consumer_stdout.contains("generated Serialization Rust live evidence: passed"));
         assert!(evidence_path.is_file());
         let evidence: Value = serde_json::from_slice(
             fs::read(evidence_path)
-                .expect("V5 evidence reads")
+                .expect("Serialization evidence reads")
                 .strip_suffix(b"\n")
-                .expect("V5 evidence ends in one LF"),
+                .expect("Serialization evidence ends in one LF"),
         )
-        .expect("V5 evidence parses");
+        .expect("Serialization evidence parses");
         assert_eq!(
             evidence["format"],
-            "typebridge.sdk-v5-live-codec-evidence/v1"
+            "typebridge.sdk-serialization-live-codec-evidence/v1"
         );
         assert_eq!(evidence["binding"], "rust");
         assert_eq!(evidence["direct_remote_equal"], true);
@@ -937,95 +912,33 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         consumer_stdout
             .contains("generated unkeyed entity IID lifecycle and singular query: passed")
     );
-    if let Some(report) = &sdk_report {
+    if let Some(report) = &sdk_queries_report {
         assert!(
             report.is_file(),
-            "requested generated Rust sdk report was not produced: {}",
+            "requested generated Rust queries report was not produced: {}",
             report.display()
         );
-        let report_bytes = fs::read(report).expect("generated Rust report is readable");
+        let report_bytes = fs::read(report).expect("generated Rust queries report is readable");
         assert_eq!(
             report_bytes.last(),
             Some(&b'\n'),
-            "generated Rust report must end in exactly one LF"
+            "generated Rust queries report must end in exactly one LF"
         );
         let canonical_bytes = &report_bytes[..report_bytes.len() - 1];
         assert!(
             !canonical_bytes.ends_with(b"\n"),
-            "generated Rust report must end in exactly one LF"
+            "generated Rust queries report must end in exactly one LF"
         );
         let report_json: serde_json::Value =
             type_bridge_contract::codec::from_canonical_json(canonical_bytes)
-                .expect("generated Rust report is compact canonical JSON");
+                .expect("generated Rust queries report is compact canonical JSON");
+        assert_eq!(report_json["format"], "typebridge.sdk-queries-report/v1");
         assert_eq!(report_json["binding"], "rust");
         assert_eq!(report_json["fixture"]["projection_target"], "rust");
         assert_eq!(
             report_json["results"]
                 .as_array()
-                .expect("generated Rust report results are an array")
-                .len(),
-            9
-        );
-        fn assert_no_runtime_identity(value: &serde_json::Value) {
-            match value {
-                serde_json::Value::Array(values) => {
-                    for value in values {
-                        assert_no_runtime_identity(value);
-                    }
-                }
-                serde_json::Value::Object(values) => {
-                    for (key, value) in values {
-                        assert!(
-                            !matches!(
-                                key.as_str(),
-                                "iid" | "database" | "address" | "port" | "runtime_identity"
-                            ),
-                            "generated Rust report leaked provider/runtime identity: {key}"
-                        );
-                        assert_no_runtime_identity(value);
-                    }
-                }
-                _ => {}
-            }
-        }
-        assert_no_runtime_identity(&report_json);
-        assert!(
-            fs::symlink_metadata(report)
-                .expect("generated Rust report metadata is readable")
-                .is_file(),
-            "generated Rust report is not a regular file"
-        );
-    }
-    if let Some(report) = &sdk_v2_report {
-        assert!(
-            report.is_file(),
-            "requested generated Rust sdk-v2 report was not produced: {}",
-            report.display()
-        );
-        let report_bytes = fs::read(report).expect("generated Rust sdk-v2 report is readable");
-        assert_eq!(
-            report_bytes.last(),
-            Some(&b'\n'),
-            "generated Rust sdk-v2 report must end in exactly one LF"
-        );
-        let canonical_bytes = &report_bytes[..report_bytes.len() - 1];
-        assert!(
-            !canonical_bytes.ends_with(b"\n"),
-            "generated Rust sdk-v2 report must end in exactly one LF"
-        );
-        let report_json: serde_json::Value =
-            type_bridge_contract::codec::from_canonical_json(canonical_bytes)
-                .expect("generated Rust sdk-v2 report is compact canonical JSON");
-        assert_eq!(
-            report_json["format"],
-            "typebridge.sdk-conformance-report/v2"
-        );
-        assert_eq!(report_json["binding"], "rust");
-        assert_eq!(report_json["fixture"]["projection_target"], "rust");
-        assert_eq!(
-            report_json["results"]
-                .as_array()
-                .expect("generated Rust sdk-v2 report results are an array")
+                .expect("generated Rust queries report results are an array")
                 .len(),
             34
         );
@@ -1043,7 +956,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                                 key.as_str(),
                                 "iid" | "database" | "address" | "port" | "runtime_identity"
                             ),
-                            "generated Rust sdk-v2 report leaked provider/runtime identity: {key}"
+                            "generated Rust queries report leaked provider/runtime identity: {key}"
                         );
                         assert_no_v2_runtime_identity(value);
                     }
@@ -1054,9 +967,9 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
         assert_no_v2_runtime_identity(&report_json);
         assert!(
             fs::symlink_metadata(report)
-                .expect("generated Rust sdk-v2 report metadata is readable")
+                .expect("generated Rust queries report metadata is readable")
                 .is_file(),
-            "generated Rust sdk-v2 report is not a regular file"
+            "generated Rust queries report is not a regular file"
         );
     }
     println!("generated sdk report journeys: passed");

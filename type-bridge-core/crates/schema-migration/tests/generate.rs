@@ -536,8 +536,7 @@ fn genesis_constraints_on_new_types_are_proven_data_free() {
         .expect("discover constrained genesis");
     assert_eq!(discovered.manifests().count(), 1);
 
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &discovered,
         &BTreeSet::new(),
@@ -860,7 +859,17 @@ fn attribute_type_removal_uses_the_provider_cascade_for_its_value_declaration() 
         preview.contains("owns legacy-name from person;"),
         "{preview}"
     );
-    assert!(preview.contains("undefine\nlegacy-name;"), "{preview}");
+    assert!(
+        preview
+            .trim()
+            .split("\n\n")
+            .any(|query| type_bridge_core_lib::__internal::equivalent(
+                query,
+                "undefine legacy-name;"
+            )
+            .unwrap_or(false)),
+        "{preview}"
+    );
     assert!(
         !preview.contains("value string from legacy-name;"),
         "{preview}"

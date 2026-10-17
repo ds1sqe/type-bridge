@@ -1,0 +1,1 @@
+define fun present($x: integer) -> boolean: match $x > 0; return check;

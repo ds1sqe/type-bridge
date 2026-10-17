@@ -14,25 +14,21 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::id::{
     AttributeId, FunctionId, MAX_LABEL_BYTES, RoleId, TypeId, TypeKind,
 };
-use type_bridge_contract::limits::{
-    MAX_BINDINGS, MAX_BOOLEAN_TERMS, MAX_CANONICAL_STRING_BYTES, MAX_INPUT_BYTES, MAX_INPUT_ROWS,
-    MAX_ORDER_TERMS, MAX_OUTPUT_NAME_BYTES, MAX_SELECTED_SLOTS,
-};
+use type_bridge_contract::limits::{MAX_CANONICAL_STRING_BYTES, MAX_OUTPUT_NAME_BYTES};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::{
     AuthoredQueryInvocation, AuthoredQueryPlan, QueryAuthorityIdentity, QueryBindingHandle,
-    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryLocalFunctionHandle,
-    QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle, QueryPatternHandle,
-    QueryPlanBuilder, QueryReduceAssignmentHandle, query_builder_binding_limit_error,
-    query_builder_boolean_host_type_error, query_builder_comparator, query_builder_depth,
+    QueryBuilderScalarInput, QueryDocumentFieldHandle, QueryInputHandle, QueryInvocationRowBudget,
+    QueryLocalFunctionHandle, QueryLocalReturnHandle, QueryOperandHandle, QueryOrderHandle,
+    QueryPatternHandle, QueryPlanBuilder, QueryReduceAssignmentHandle,
+    query_builder_binding_limit_error, query_builder_boolean_host_type_error,
+    query_builder_bounded_len, query_builder_comparator, query_builder_depth,
     query_builder_depth_error, query_builder_disjunction_term_limit_error,
     query_builder_document_output_limit_error, query_builder_function_argument_limit_error,
     query_builder_function_target, query_builder_host_collection_type_error,
-    query_builder_invocation_input_byte_limit_error, query_builder_invocation_row_arity_error,
-    query_builder_invocation_row_limit_error, query_builder_local_binding_limit_error,
-    query_builder_local_body_limit_error, query_builder_local_parameters,
-    query_builder_negation_term_limit_error, query_builder_order_direction,
-    query_builder_reduce_term_limit_error, query_builder_reducer,
+    query_builder_local_binding_limit_error, query_builder_local_body_limit_error,
+    query_builder_local_parameters, query_builder_negation_term_limit_error,
+    query_builder_order_direction, query_builder_reduce_term_limit_error, query_builder_reducer,
     query_builder_role_player_limit_error, query_builder_role_players,
     query_builder_root_pattern_limit_error, query_builder_row_output_limit_error,
     query_builder_scalar, query_builder_scalar_host_type_error,
@@ -84,7 +80,10 @@ define_python_host_string!(PythonVariableString, MAX_OUTPUT_NAME_BYTES);
 define_python_host_string!(PythonLabelString, MAX_LABEL_BYTES);
 define_python_host_string!(PythonVocabularyString, MAX_OUTPUT_NAME_BYTES);
 
-fn python_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult<CanonicalValue> {
+pub(crate) fn python_scalar(
+    value_type: ValueTypeTag,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<CanonicalValue> {
     let input = match value_type {
         ValueTypeTag::String
         | ValueTypeTag::Date
@@ -155,11 +154,9 @@ fn python_unsigned(value: &Bound<'_, PyAny>) -> PyResult<u64> {
     )?))
 }
 
-fn sequence_length(
-    value: &Bound<'_, PyAny>,
-    limit: usize,
-    oversized: fn() -> Diagnostic,
-) -> PyResult<usize> {
+/// Read the length of a host sequence. `None` is a length Python cannot
+/// represent; the bound itself is the core's (`query_builder_bounded_len`).
+fn host_sequence_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
     if value.is_instance_of::<PyString>()
         || value.is_instance_of::<PyBytes>()
         || value.is_instance_of::<PyByteArray>()
@@ -170,20 +167,14 @@ fn sequence_length(
         return Err(value_error(&query_builder_host_collection_type_error()));
     }
 
-    let length = match value.len() {
-        Ok(length) => length,
-        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => {
-            return Err(value_error(&oversized()));
-        }
+    match value.len() {
+        Ok(length) => Ok(Some(length)),
+        Err(error) if error.is_instance_of::<PyOverflowError>(value.py()) => Ok(None),
         Err(error) if error.is_instance_of::<PyTypeError>(value.py()) => {
-            return Err(value_error(&query_builder_host_collection_type_error()));
+            Err(value_error(&query_builder_host_collection_type_error()))
         }
-        Err(error) => return Err(error),
-    };
-    if length > limit {
-        return Err(value_error(&oversized()));
+        Err(error) => Err(error),
     }
-    Ok(length)
 }
 
 fn sequence_items_with_length<'py>(
@@ -198,7 +189,11 @@ fn sequence_items<'py>(
     limit: usize,
     oversized: fn() -> Diagnostic,
 ) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    let length = sequence_length(value, limit, oversized)?;
+    let length = diagnostic(query_builder_bounded_len(
+        host_sequence_len(value)?,
+        limit,
+        oversized,
+    ))?;
     sequence_items_with_length(value, length)
 }
 
@@ -254,74 +249,47 @@ fn pattern_handles(
 }
 
 fn pattern_branches(
+    limit: usize,
+
     py: Python<'_>,
     branches: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<Vec<QueryPatternHandle>>> {
-    sequence_items(
-        branches,
-        MAX_BOOLEAN_TERMS,
-        query_builder_disjunction_term_limit_error,
-    )?
-    .into_iter()
-    .map(|branch| {
-        pattern_handles(
-            py,
-            &branch,
-            MAX_BOOLEAN_TERMS,
-            query_builder_disjunction_term_limit_error,
-        )
-    })
-    .collect()
+    sequence_items(branches, limit, query_builder_disjunction_term_limit_error)?
+        .into_iter()
+        .map(|branch| {
+            pattern_handles(
+                py,
+                &branch,
+                limit,
+                query_builder_disjunction_term_limit_error,
+            )
+        })
+        .collect()
 }
 
 fn invocation_rows(
     plan: &AuthoredQueryPlan,
     rows: &Bound<'_, PyAny>,
 ) -> PyResult<Vec<Vec<Option<CanonicalValue>>>> {
-    let columns = plan.input_columns();
-    let row_count = sequence_length(
-        rows,
-        MAX_INPUT_ROWS,
-        query_builder_invocation_row_limit_error,
-    )?;
+    let mut budget = QueryInvocationRowBudget::new(plan);
+    let row_count = diagnostic(budget.row_count(host_sequence_len(rows)?))?;
+    let columns = budget.columns();
     if columns.is_empty() {
         return Ok(vec![Vec::new(); row_count]);
     }
     let mut converted = Vec::with_capacity(row_count);
-    let mut input_bytes = 2usize;
     for row_index in 0..row_count {
         let row = rows.get_item(row_index)?;
-        let value_count =
-            sequence_length(&row, MAX_BINDINGS, query_builder_invocation_row_arity_error)?;
-        if value_count != columns.len() {
-            return Err(value_error(&query_builder_invocation_row_arity_error()));
-        }
+        let value_count = diagnostic(budget.open_row(row_index, host_sequence_len(&row)?))?;
         let values = sequence_items_with_length(&row, value_count)?;
-        input_bytes = input_bytes
-            .saturating_add(usize::from(row_index > 0))
-            .saturating_add(2);
-        if input_bytes > MAX_INPUT_BYTES {
-            return Err(value_error(
-                &query_builder_invocation_input_byte_limit_error(),
-            ));
-        }
-        let mut converted_row = Vec::with_capacity(values.len().min(columns.len()));
+        let mut converted_row = Vec::with_capacity(columns.len());
         for (column_index, (value, column)) in values.into_iter().zip(columns).enumerate() {
             let value = if value.is_none() {
                 None
             } else {
                 Some(python_scalar(column.value_type(), &value)?)
             };
-            let encoded = serde_json::to_vec(&value)
-                .map_err(|_| value_error(&query_builder_invocation_input_byte_limit_error()))?;
-            input_bytes = input_bytes
-                .saturating_add(usize::from(column_index > 0))
-                .saturating_add(encoded.len());
-            if input_bytes > MAX_INPUT_BYTES {
-                return Err(value_error(
-                    &query_builder_invocation_input_byte_limit_error(),
-                ));
-            }
+            diagnostic(budget.add_value(column_index, &value))?;
             converted_row.push(value);
         }
         converted.push(converted_row);
@@ -643,7 +611,7 @@ impl PyQueryPlanBuilder {
         let relation_id = diagnostic(TypeId::new(TypeKind::Relation, relation_label.clone()))?;
         let roles = sequence_items(
             roles,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_role_player_limit_error,
         )?
         .into_iter()
@@ -655,7 +623,7 @@ impl PyQueryPlanBuilder {
         let players = binding_handles(
             py,
             players,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_role_player_limit_error,
         )?;
         let players = diagnostic(query_builder_role_players(&relation_label, roles, players))?;
@@ -684,7 +652,7 @@ impl PyQueryPlanBuilder {
         diagnostic(self.inner.not(pattern_handles(
             py,
             patterns,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_negation_term_limit_error,
         )?))
         .map(|inner| PyQueryV2PatternHandle { inner })
@@ -692,8 +660,12 @@ impl PyQueryPlanBuilder {
 
     fn or_(&self, py: Python<'_>, branches: &Bound<'_, PyAny>) -> PyResult<PyQueryV2PatternHandle> {
         self.ensure_owner_thread()?;
-        diagnostic(self.inner.or(pattern_branches(py, branches)?))
-            .map(|inner| PyQueryV2PatternHandle { inner })
+        diagnostic(self.inner.or(pattern_branches(
+            self.inner.limits().structural.boolean_terms,
+            py,
+            branches,
+        )?))
+        .map(|inner| PyQueryV2PatternHandle { inner })
     }
 
     fn try_(
@@ -705,7 +677,7 @@ impl PyQueryPlanBuilder {
         diagnostic(self.inner.r#try(pattern_handles(
             py,
             patterns,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_try_term_limit_error,
         )?))
         .map(|inner| PyQueryV2PatternHandle { inner })
@@ -767,7 +739,7 @@ impl PyQueryPlanBuilder {
             operand_handles(
                 py,
                 arguments,
-                MAX_BOOLEAN_TERMS,
+                self.inner.limits().structural.boolean_terms,
                 query_builder_function_argument_limit_error,
             )?,
         ))
@@ -831,18 +803,18 @@ impl PyQueryPlanBuilder {
         let bindings = binding_handles(
             py,
             bindings,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_local_binding_limit_error,
         )?;
         let parameter_bindings = binding_handles(
             py,
             parameter_bindings,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_local_binding_limit_error,
         )?;
         let parameter_labels = sequence_items(
             parameter_labels,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_local_binding_limit_error,
         )?
         .into_iter()
@@ -863,7 +835,7 @@ impl PyQueryPlanBuilder {
             pattern_handles(
                 py,
                 body,
-                MAX_BOOLEAN_TERMS,
+                self.inner.limits().structural.boolean_terms,
                 query_builder_local_body_limit_error,
             )?,
             &returns.inner,
@@ -877,7 +849,7 @@ impl PyQueryPlanBuilder {
         diagnostic(self.inner.r#match(pattern_handles(
             py,
             patterns,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_root_pattern_limit_error,
         )?))
     }
@@ -887,7 +859,7 @@ impl PyQueryPlanBuilder {
         diagnostic(self.inner.select(binding_handles(
             py,
             bindings,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_binding_limit_error,
         )?))
     }
@@ -897,7 +869,7 @@ impl PyQueryPlanBuilder {
         diagnostic(self.inner.require(binding_handles(
             py,
             bindings,
-            MAX_BINDINGS,
+            self.inner.limits().structural.bindings,
             query_builder_binding_limit_error,
         )?))
     }
@@ -916,7 +888,7 @@ impl PyQueryPlanBuilder {
         self.ensure_owner_thread()?;
         let assignments = sequence_items(
             assignments,
-            MAX_BOOLEAN_TERMS,
+            self.inner.limits().structural.boolean_terms,
             query_builder_reduce_term_limit_error,
         )?
         .into_iter()
@@ -929,20 +901,29 @@ impl PyQueryPlanBuilder {
         .collect::<PyResult<Vec<_>>>()?;
         diagnostic(self.inner.reduce(
             assignments,
-            binding_handles(py, groups, MAX_BINDINGS, query_builder_binding_limit_error)?,
+            binding_handles(
+                py,
+                groups,
+                self.inner.limits().structural.bindings,
+                query_builder_binding_limit_error,
+            )?,
         ))
     }
 
     fn sort(&mut self, py: Python<'_>, terms: &Bound<'_, PyAny>) -> PyResult<()> {
         self.ensure_owner_thread()?;
-        let terms = sequence_items(terms, MAX_ORDER_TERMS, query_builder_sort_term_limit_error)?
-            .into_iter()
-            .map(|term| {
-                term.extract::<Py<PyQueryV2OrderHandle>>()
-                    .map_err(PyErr::from)
-                    .map(|term| term.borrow(py).inner.clone())
-            })
-            .collect::<PyResult<Vec<_>>>()?;
+        let terms = sequence_items(
+            terms,
+            self.inner.limits().structural.order_terms,
+            query_builder_sort_term_limit_error,
+        )?
+        .into_iter()
+        .map(|term| {
+            term.extract::<Py<PyQueryV2OrderHandle>>()
+                .map_err(PyErr::from)
+                .map(|term| term.borrow(py).inner.clone())
+        })
+        .collect::<PyResult<Vec<_>>>()?;
         diagnostic(self.inner.sort(terms))
     }
 
@@ -993,7 +974,7 @@ impl PyQueryPlanBuilder {
         diagnostic(self.inner.finalize_rows(binding_handles(
             py,
             columns,
-            MAX_SELECTED_SLOTS,
+            self.inner.limits().structural.selected_slots,
             query_builder_row_output_limit_error,
         )?))
         .map(|inner| PyAuthoredQueryPlan { inner })
@@ -1007,7 +988,7 @@ impl PyQueryPlanBuilder {
         self.ensure_owner_thread()?;
         let fields = sequence_items(
             fields,
-            MAX_SELECTED_SLOTS,
+            self.inner.limits().structural.selected_slots,
             query_builder_document_output_limit_error,
         )?
         .into_iter()

@@ -36,7 +36,7 @@ use crate::manifest::{
     SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
     delta_diagnostic, encode_verified_manifest, verify_assertion_coverage,
 };
-use crate::profile::schema_lowering_profile_binding;
+use crate::profile::lowering_profile_binding;
 use crate::{MigrationAuthoringLock, MigrationDirectory};
 use type_bridge_contract::managed_scope::SemanticProfileBinding;
 
@@ -194,7 +194,10 @@ pub fn generate_next_migration(
     }
     let delta = diff_managed(source, request.desired, request.context).map_err(delta_diagnostic)?;
 
-    let id = MigrationId::new(request.app_label, allocate_name(graph, request.base_name))?;
+    let id = MigrationId::new(
+        request.app_label,
+        allocate_migration_name(graph, request.base_name),
+    )?;
     if graph.manifest(&id).is_some() {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -262,7 +265,10 @@ pub fn generate_backfill_migration(
         ));
     }
 
-    let id = MigrationId::new(request.app_label, allocate_name(graph, request.base_name))?;
+    let id = MigrationId::new(
+        request.app_label,
+        allocate_migration_name(graph, request.base_name),
+    )?;
     if graph.manifest(&id).is_some() {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -291,7 +297,7 @@ pub fn render_migration_preview(
     manifest: &VerifiedSchemaMigrationManifest,
     context: &ManagedDeltaContext,
 ) -> Result<String, MigrationPreviewError> {
-    let binding = SchemaLoweringBinding::current(context.available_capabilities().clone())?;
+    let binding = SchemaLoweringBinding::for_context(context)?;
     let safety_profile = SafetyDerivationProfile::new(
         manifest.semantic_profile().clone(),
         manifest.lowering_profile().clone(),
@@ -538,7 +544,8 @@ fn write_failed(operation: &'static str, error: &std::io::Error) -> Diagnostic {
 ///
 /// Ordinal prefixes are display/allocation conventions, never execution
 /// order; names without a numeric prefix simply do not participate.
-fn allocate_name(graph: &MigrationHistoryGraph, base_name: &str) -> String {
+#[must_use]
+pub fn allocate_migration_name(graph: &MigrationHistoryGraph, base_name: &str) -> String {
     let next = graph
         .manifests()
         .filter_map(|(id, _)| leading_ordinal(id.name().as_str()))
@@ -566,7 +573,7 @@ fn author_steps(
 ) -> Result<Vec<MigrationStep>, Diagnostic> {
     let safety_profile = SafetyDerivationProfile::new(
         SemanticProfileBinding::resolve(context.semantic_profile().clone())?,
-        schema_lowering_profile_binding()?,
+        lowering_profile_binding(context.semantic_profile())?,
     )?;
     let resolved = resolve(source, context.semantic_profile()).map_err(|diagnostics| {
         diagnostics

@@ -46,14 +46,12 @@ async fn main() {
     let version = database
         .server_version()
         .expect("the server exposes authoritative version evidence");
-    let expected_patch = env::var("TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH")
-        .unwrap_or_else(|_| "1".to_owned())
-        .parse::<u32>()
-        .expect("TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH is a patch number");
+    // The harness selects the exact server from the SDK profile matrix.
+    let expected = required("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
     assert_eq!(
-        (version.major, version.minor, version.patch),
-        (3, 12, expected_patch),
-        "the generated C entity journey requires the configured exact TypeDB 3.12 patch",
+        format!("{}.{}.{}", version.major, version.minor, version.patch),
+        expected,
+        "the generated C entity journey requires the profile's exact TypeDB server",
     );
 
     match mode.as_str() {

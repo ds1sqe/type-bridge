@@ -1,0 +1,1 @@
+define fun first-value($x: integer) -> integer: match let $v = $x; return first $v; fun last-value($x: integer) -> integer: match let $v = $x; return last $v;

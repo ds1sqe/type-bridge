@@ -51,9 +51,9 @@ fn v3_data_source_identity(root: &Path, relative: &str) -> Value {
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
-fn publish_v3_data_fragment(results: Vec<Value>) {
-    let destination = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT");
-    let nonce = std::env::var_os("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE");
+fn publish_models_data_fragment(results: Vec<Value>) {
+    let destination = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT");
+    let nonce = std::env::var_os("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE");
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
@@ -91,15 +91,15 @@ fn publish_v3_data_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-            "journey": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-            "proof_schema": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+            "allowlist": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": v3_data_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
-        "producer": {"id": "type-bridge-rust.generated-data-v3-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
+        "format": "typebridge.sdk-models-proof-fragment/v1",
+        "producer": {"id": "type-bridge-rust.sdk-models-generated-data-proof", "sources": sources.iter().map(|path| v3_data_source_identity(&root, path)).collect::<Vec<_>>()},
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": crate::sdk_profile_matrix::requested("models").semantic_profile,
     });
     let mut bytes = type_bridge_contract::codec::to_canonical_json(&fragment)
         .expect("V3 data fragment canonicalizes");
@@ -391,12 +391,6 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
     )
 }
 
-fn iid_doc(iid: &str) -> Response {
-    Response::Result(QueryResult::Documents(vec![serde_json::json!({
-        "iid": iid
-    })]))
-}
-
 fn worker_fetch(iid: &str, name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
@@ -539,9 +533,7 @@ async fn read_transaction_reuses_one_borrowed_context_and_closes_without_commit(
 #[tokio::test]
 async fn write_transaction_commits_multiple_operations_in_one_context() {
     let (db, state) = test_db(vec![
-        iid_doc("0x1"),
         worker_fetch("0x1", "alice"),
-        iid_doc("0x2"),
         assignment_fetch("0x2", "captain", "0x1", "alice"),
     ]);
     let tx = db.write().await.unwrap();
@@ -594,7 +586,7 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
 
 #[tokio::test]
 async fn write_transaction_explicit_rollback_discards_operations() {
-    let (db, state) = test_db(vec![iid_doc("0x1"), worker_fetch("0x1", "alice")]);
+    let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
     let tx = db.write().await.unwrap();
     tx.entities::<Worker>()
         .insert(WorkerCreate {
@@ -615,7 +607,7 @@ async fn write_transaction_explicit_rollback_discards_operations() {
 
 #[tokio::test]
 async fn write_transaction_uncommitted_drop_releases_without_commit() {
-    let (db, state) = test_db(vec![iid_doc("0x1"), worker_fetch("0x1", "alice")]);
+    let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
     let tx = db.write().await.unwrap();
     tx.entities::<Worker>()
         .insert(WorkerCreate {
@@ -712,12 +704,13 @@ async fn write_transaction_preflight_and_reads_share_the_open_context() {
 }
 
 #[tokio::test]
-async fn sdk_v3_rust_data_plane_fragment() {
+async fn sdk_models_rust_data_plane_fragment() {
     use crate::{
-        AnswerCancellation, DirectConnectionPolicy, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES,
-        MAX_QUERY_COLLECTION_MEMBERS, MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS,
-        MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS, MAX_QUERY_TIMEOUT_MILLISECONDS,
-        QueryExecutionResourceLimits,
+        AnswerCancellation, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
+        DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
+        DEFAULT_DIRECT_QUERY_ITEMS, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
+        DEFAULT_DIRECT_QUERY_STATEMENTS, DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
+        DirectConnectionPolicy, QueryExecutionResourceLimits,
     };
 
     let cancellation = AnswerCancellation::default();
@@ -731,14 +724,14 @@ async fn sdk_v3_rust_data_plane_fragment() {
     assert!(cancellation.is_cancelled());
 
     let effective = QueryExecutionResourceLimits::tightened(
-        MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
-        MAX_QUERY_ITEMS + 1,
-        MAX_QUERY_BYTES + 1,
-        MAX_QUERY_GRAPH_NODES + 1,
-        MAX_QUERY_ATTRIBUTE_VALUES + 1,
-        MAX_QUERY_COLLECTION_MEMBERS + 1,
-        MAX_QUERY_ROLE_PLAYERS + 1,
-        MAX_QUERY_STATEMENTS + 1,
+        DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,
+        DEFAULT_DIRECT_QUERY_ITEMS + 1,
+        DEFAULT_DIRECT_QUERY_BYTES + 1,
+        DEFAULT_DIRECT_QUERY_GRAPH_NODES + 1,
+        DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES + 1,
+        DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1,
+        DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
+        DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
     );
     assert_eq!(effective, QueryExecutionResourceLimits::default());
     let policy = DirectConnectionPolicy::new(
@@ -753,15 +746,18 @@ async fn sdk_v3_rust_data_plane_fragment() {
     assert_eq!(policy_debug, "DirectConnectionPolicy([REDACTED])");
     assert!(!policy_debug.contains("secret-that-must-not-appear"));
 
+    // The frozen journey records the proxy wire policy on every binding.
+    let wire_limits =
+        QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
     let dimensions = [
-        ("timeout_milliseconds", MAX_QUERY_TIMEOUT_MILLISECONDS),
-        ("items", MAX_QUERY_ITEMS),
-        ("bytes", MAX_QUERY_BYTES),
-        ("graph_nodes", MAX_QUERY_GRAPH_NODES),
-        ("attribute_values", MAX_QUERY_ATTRIBUTE_VALUES),
-        ("collection_members", MAX_QUERY_COLLECTION_MEMBERS),
-        ("role_players", MAX_QUERY_ROLE_PLAYERS),
-        ("statements", u64::from(MAX_QUERY_STATEMENTS)),
+        ("timeout_milliseconds", wire_limits.timeout_milliseconds),
+        ("items", wire_limits.items),
+        ("bytes", wire_limits.bytes),
+        ("graph_nodes", wire_limits.graph_nodes),
+        ("attribute_values", wire_limits.attribute_values),
+        ("collection_members", wire_limits.collection_members),
+        ("role_players", wire_limits.role_players),
+        ("statements", u64::from(wire_limits.statements)),
     ]
     .into_iter()
     .map(|(dimension, hard_max)| {
@@ -818,10 +814,40 @@ async fn sdk_v3_rust_data_plane_fragment() {
         "deterministic_field_order": true
     });
 
-    publish_v3_data_fragment(vec![
-        json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
-        json!({"observation": cancellation_observation, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
-        json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
-        json!({"observation": diagnostic, "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "transaction::tests::sdk_v3_rust_data_plane_fragment"}),
+    publish_models_data_fragment(vec![
+        json!({"observation": connection, "observation_ref": "complete_connection_policy", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
+        json!({"observation": cancellation_observation, "observation_ref": "data_operation_cancellation", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
+        json!({"observation": limits, "observation_ref": "data_operation_resource_limits", "outcome": "passed", "proof_kind": "direct_runtime", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
+        json!({"observation": diagnostic, "observation_ref": "data_operation_structured_diagnostic", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "transaction::tests::sdk_models_rust_data_plane_fragment"}),
     ]);
+}
+
+#[tokio::test]
+async fn rollback_keep_accepts_more_work_and_commit() {
+    let (db, state) = test_db(vec![worker_fetch("0x1", "alice")]);
+    let mut tx = db.write().await.unwrap();
+    tx.rollback_keep().await.unwrap();
+    tx.entities::<Worker>()
+        .insert(WorkerCreate {
+            name: "alice".into(),
+        })
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let events = &state.lock().unwrap().events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Open(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Event::Rollback))
+            .count(),
+        1
+    );
+    assert!(matches!(events.last(), Some(Event::Commit)));
 }

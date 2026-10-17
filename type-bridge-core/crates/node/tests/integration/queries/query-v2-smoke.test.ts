@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -52,11 +52,17 @@ const DECLARED_B64 =
   "aWJ1dGUiOiJzbW9rZS1uYW1lIiwib3duZXIiOnsia2luZCI6ImVudGl0eSIsImxhYmVsIjoic21va2Ut" +
   "cGVyc29uIn19fX1dLCJmb3JtYXRfdmVyc2lvbiI6MSwicmVxdWlyZWRfY2FwYWJpbGl0aWVzIjpbXX0=";
 const SCOPE = "binding-smoke";
-const PROFILE = "typedb-3.12.1/v1";
-const CROSS_BINDING_PLAN_FINGERPRINT =
-  "d605b3bc6e8a9c59a03d2a79d7ec497dd637109b2cbf70ebaa5ac4b951f53502";
-const CROSS_BINDING_INVOCATION_SHA256 =
-  "ca5bc9a7657a21c5cf330e99a678a4c0fc25d803828f456c8b520625f54143b7";
+const PROFILE = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? "typedb-3.12.1/v1";
+const [CROSS_BINDING_PLAN_FINGERPRINT, CROSS_BINDING_INVOCATION_SHA256] =
+  PROFILE === "typedb-3.13.6/v1"
+    ? [
+        "9aa0f2385b35cb48a625d4c9690d667fdc8f14aac0671aff4997e05dca43602a",
+        "2f3c6983c8b577d71ba875ebc94d2ed9e0c129fdeb77af0c6aff9d14d9c5893b",
+      ]
+    : [
+        "d605b3bc6e8a9c59a03d2a79d7ec497dd637109b2cbf70ebaa5ac4b951f53502",
+        "ca5bc9a7657a21c5cf330e99a678a4c0fc25d803828f456c8b520625f54143b7",
+      ];
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name];
@@ -117,6 +123,11 @@ async function serverAuthority(declared: Buffer): Promise<Buffer> {
   const workspace = path.join(temporary, "workspace");
   try {
     await cp(authorityWorkspace, workspace, { recursive: true });
+    const manifest = path.join(workspace, "typebridge.yaml");
+    await writeFile(
+      manifest,
+      (await readFile(manifest, "utf8")).replace("typedb-3.12.1/v1", PROFILE),
+    );
     const generated = spawnSync(
       "cargo",
       [
@@ -193,7 +204,7 @@ function authorPlan(authority: InstanceType<typeof queryV2.QueryV2Authority>) {
   };
 }
 
-// The prepared exchange asserts the 3.12.1 semantic profile and the native
+// The prepared exchange asserts the selected semantic profile and the native
 // given transport; legacy servers reject both before I/O, so the smoke is
 // meaningful only against a 3.12+ lane.
 const smokeServerVersion = process.env.TYPEDB_VERSION ?? "3.12.1";
@@ -405,7 +416,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
       );
       await assert.rejects(
         limited.decodeReply(limitedBody),
-        /query_remote_reply_replayed/,
+        /query_remote_v2_reply_replayed/,
       );
 
       // A failure drains and closes its request transaction; a fresh
@@ -460,7 +471,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
       assert.equal(remote, local);
       await assert.rejects(
         pending.decodeReply(body),
-        /query_remote_reply_replayed/,
+        /query_remote_v2_reply_replayed/,
       );
     } finally {
       // Wait for the server process to die before deleting the shared

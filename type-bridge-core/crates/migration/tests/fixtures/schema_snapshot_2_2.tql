@@ -1,0 +1,6 @@
+define
+
+attribute name @doc("a personal name") @meta("pii", "true"), value string;
+
+entity person @doc("an individual"),
+    owns name @key @doc("full name") @meta("column", "name");

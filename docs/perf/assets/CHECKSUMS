@@ -1,0 +1,14 @@
+# Vendored uPlot for the /perf/ dashboard. tests/unit/perf/test_assets.py
+# checks every file listed below against its sha256.
+#
+# library: uPlot 1.6.32 (MIT)
+# source:  https://registry.npmjs.org/uplot/-/uplot-1.6.32.tgz
+#          npm integrity sha512-KIMVnG68zvu5XXUbC4LQEPnhwOxBuLyW1AHtpm6IKTXImkbLgkMy+jabjLgSLMasNuGGzQm/ep3tOkyTxpiQIw==
+# files:   package/dist/uPlot.iife.min.js, package/dist/uPlot.min.css,
+#          package/LICENSE (saved as uPlot-LICENSE.txt)
+#
+# To upgrade: download the new tarball, check its npm integrity, copy the
+# same three files and replace the version, URL, integrity and hashes here.
+19c8d4c6ad88929a79f4ae49d6f7161566dfd0ba3d15cc495e974f787eb78f1f  uPlot.iife.min.js
+df630c6a8d6f8eeaff264b50f73ce5b114f646ffd9a0bb74f049b0a00135fa04  uPlot.min.css
+8f989229699b4fe2f1a0432d0e9edc338a8a911e250e2d1b01ecd770a5f5b1bd  uPlot-LICENSE.txt

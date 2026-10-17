@@ -2,7 +2,7 @@ use serde_json::{Value, json};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, TypeId, TypeKind};
-use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES};
+use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, QueryLimits};
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
@@ -380,6 +380,16 @@ fn compatibility_value_plan(
     value_type: ValueTypeTag,
     attribute: &str,
 ) -> QueryPlan {
+    compatibility_value_plan_under(value, value_type, attribute, QueryLimits::CANONICAL)
+        .expect("compatibility value plan")
+}
+
+fn compatibility_value_plan_under(
+    value: CompatibilityValueV2,
+    value_type: ValueTypeTag,
+    attribute: &str,
+    limits: QueryLimits,
+) -> Result<QueryPlan, type_bridge_contract::diagnostic::Diagnostic> {
     let person = type_id(TypeKind::Entity, "person");
     let (bindings, pipeline, output, managed) = base_parts();
     let attribute = AttributeId::new(attribute).expect("attribute");
@@ -404,7 +414,7 @@ fn compatibility_value_plan(
             Vec::new(),
         )],
     );
-    QueryPlan::new_v2_with_functions(
+    QueryPlan::new_v2_with_functions_and_limits(
         bindings,
         Vec::new(),
         Vec::new(),
@@ -431,8 +441,8 @@ fn compatibility_value_plan(
             }),
         ),
         managed,
+        limits,
     )
-    .expect("compatibility value plan")
 }
 
 fn reachable_plan(v2: bool, min_depth: u8, max_depth: u8) -> QueryPlan {
@@ -1189,6 +1199,57 @@ fn hydration_roles_bind_owner_and_declared_to_concrete_player_authority() {
             .as_str(),
         "invalid_canonical_value",
     );
+}
+
+#[test]
+fn complete_rows_need_no_order_and_admit_no_offset() {
+    let (bindings, pipeline, output, managed) = base_parts();
+    let build = |order, window| {
+        QueryPlan::new_v2_with_functions(
+            bindings.clone(),
+            Vec::new(),
+            Vec::new(),
+            pipeline.clone(),
+            output.clone(),
+            QueryPlanV2Compatibility::new(
+                None,
+                Vec::new(),
+                Some(ModelQueryV2::Rows {
+                    cardinality: QueryRowCardinalityV2::Complete,
+                    hydration: hydration(),
+                    order,
+                    output: rich_output(),
+                    window,
+                }),
+            ),
+            managed.clone(),
+        )
+    };
+
+    let plan = build(None, QueryWindowV2::new(0, 10)).expect("complete rows without an order");
+    let required = plan
+        .required_capabilities()
+        .iter()
+        .map(|capability| capability.as_str())
+        .collect::<Vec<_>>();
+    assert!(required.contains(&"query.operation.complete-rows"));
+    assert!(!required.contains(&"query.order.stable-selected"));
+
+    for (order, window) in [
+        (
+            Some(stable_order(person_name(0), 0)),
+            QueryWindowV2::new(0, 10),
+        ),
+        (None, QueryWindowV2::new(5, 10)),
+    ] {
+        assert_eq!(
+            build(order, window)
+                .expect_err("complete rows with an order or an offset")
+                .code()
+                .as_str(),
+            "query_plan_v2_complete_rows_contract",
+        );
+    }
 }
 
 #[test]
@@ -2234,9 +2295,36 @@ fn compatibility_values_preserve_released_lexicals_and_fail_closed() {
         ceiling_plan.canonical_bytes().is_err(),
         "plan framing overhead must enforce the 16 MiB artifact ceiling"
     );
+
+    // The artifact ceiling belongs to the plan's limits, not to the value.
+    let oversized = CompatibilityValueV2::released_string("x".repeat(MAX_CANONICAL_BYTES + 1))
+        .expect("a value alone has no artifact ceiling");
+    let refused = compatibility_value_plan_under(
+        oversized.clone(),
+        ValueTypeTag::String,
+        "oversized",
+        QueryLimits::CANONICAL,
+    )
+    .expect_err("a compatibility scalar cannot exceed its owning artifact ceiling");
+    assert_eq!(
+        refused.code().as_str(),
+        "query_plan_v2_compatibility_value_limit"
+    );
+
+    let mut raised = QueryLimits::CANONICAL;
+    raised.codec.max_bytes = 2 * MAX_CANONICAL_BYTES;
+    let raised = raised.validate().expect("raised limits");
+    let admitted =
+        compatibility_value_plan_under(oversized, ValueTypeTag::String, "oversized", raised)
+            .expect("raised limits admit the plan");
+    let bytes = admitted.canonical_bytes().expect("raised limits encode it");
+    assert!(bytes.len() > MAX_CANONICAL_BYTES);
+    let decoded = type_bridge_contract::query_plan::decode_query_plan_with_limits(&bytes, raised)
+        .expect("the same limits decode it");
+    assert_eq!(decoded, admitted);
     assert!(
-        CompatibilityValueV2::released_string("x".repeat(MAX_CANONICAL_BYTES + 1)).is_err(),
-        "a compatibility scalar cannot exceed its owning artifact ceiling"
+        type_bridge_contract::query_plan::decode_query_plan(&bytes).is_err(),
+        "a default receiver still refuses the oversized plan"
     );
 }
 
@@ -2272,6 +2360,7 @@ fn v2_capability_vocabulary_is_closed_and_deterministic() {
             "query.function.local",
             "query.input.columns",
             "query.input.given-rows",
+            "query.operation.complete-rows",
             "query.operation.distinct-count",
             "query.operation.distinct-exists",
             "query.operation.exactly-one",

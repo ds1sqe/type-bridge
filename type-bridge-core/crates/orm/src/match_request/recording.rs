@@ -2,20 +2,29 @@
 //!
 //! This executor performs no TypeQL lowering or I/O. It accepts only an
 //! already validated request, runs schema/capability preflight before counting
-//! a provider call, constructs invocation-bound canned evidence in Rust, and
-//! routes that evidence through the canonical result validator.
+//! a provider call, answers with the V2 outcome a live executor would return
+//! for its canned response, and routes that outcome through the one released
+//! result mapping every live query ends in.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use type_bridge_contract::migration_assertion::BindingId as ContractBindingId;
+use type_bridge_contract::query_plan::ModelQueryV2;
+use type_bridge_contract::query_remote_v2::{
+    HydrationGraphV2, RemoteOutcomeV2, RemoteReducedValueV2, RemoteReductionRowV2,
+};
+
 use crate::_registry::DescriptorRegistry;
+use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
 
 use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::BindingId;
 use super::model::{MatchOperation, Window};
-use super::result::{ProviderResultEvidence, ReducedValue, ReductionRow, ValidatedMatchResult};
-use super::result_validation::validate_provider_result;
+use super::result::{ReducedValue, ValidatedMatchResult};
+use super::result_validation::validated_match_result_from_v2;
+use super::selected_result_executor::adapter_match_error;
 use super::validation::ValidatedMatchRequest;
 
 /// One canned provider behavior for [`RecordingMatchExecutor`].
@@ -112,76 +121,124 @@ impl RecordingMatchExecutor {
             )
         })?;
 
-        let request_token = validated.request_token();
-        let shape_id = validated.shape_id().clone();
-        let evidence = match response {
-            RecordingMatchResponse::EmptyRows => {
-                ProviderResultEvidence::rows(request_token, shape_id, Vec::new())
-            }
+        let outcome = match response {
+            RecordingMatchResponse::EmptyRows => RemoteOutcomeV2::HydratedRows {
+                graph: empty_graph()?,
+                rows: Vec::new(),
+            },
             RecordingMatchResponse::EmptyPage { total } => {
                 let (root, window) = page_contract(validated);
-                ProviderResultEvidence::page(
-                    request_token,
-                    shape_id,
-                    root,
-                    Vec::new(),
-                    window,
+                RemoteOutcomeV2::HydratedPage {
+                    entries: Vec::new(),
+                    graph: empty_graph()?,
+                    limit: window.limit,
+                    offset: window.offset,
+                    root: contract_binding(root)?,
                     total,
-                )
+                }
             }
-            RecordingMatchResponse::Count(value) => ProviderResultEvidence::count(
-                request_token,
-                shape_id,
-                operation_root(validated),
+            RecordingMatchResponse::Count(value) => RemoteOutcomeV2::DistinctCount {
+                root: contract_binding(operation_root(validated))?,
                 value,
-            ),
-            RecordingMatchResponse::Exists(value) => ProviderResultEvidence::exists(
-                request_token,
-                shape_id,
-                operation_root(validated),
-                value,
-            ),
-            RecordingMatchResponse::Reduction(values) => ProviderResultEvidence::reduction(
-                request_token,
-                shape_id,
-                operation_root(validated),
-                operation_group(validated),
-                vec![ReductionRow::new(None, values)],
-            ),
-            RecordingMatchResponse::EmptyGroupedReduction => match &validated.request().operation {
-                MatchOperation::ReduceByField { root, group, .. } => {
-                    ProviderResultEvidence::field_reduction(
-                        request_token,
-                        shape_id,
-                        *root,
-                        group.clone(),
-                        Vec::new(),
-                    )
-                }
-                MatchOperation::ReduceByFields { root, groups, .. } => {
-                    ProviderResultEvidence::field_tuple_reduction(
-                        request_token,
-                        shape_id,
-                        *root,
-                        groups.clone(),
-                        Vec::new(),
-                    )
-                }
-                _ => ProviderResultEvidence::reduction(
-                    request_token,
-                    shape_id,
-                    operation_root(validated),
-                    operation_group(validated),
-                    Vec::new(),
-                ),
             },
+            RecordingMatchResponse::Exists(value) => RemoteOutcomeV2::DistinctExists {
+                root: contract_binding(operation_root(validated))?,
+                value,
+            },
+            RecordingMatchResponse::Reduction(values) => model_reduction_outcome(
+                &self.registry,
+                validated,
+                empty_graph()?,
+                vec![RemoteReductionRowV2::new(
+                    None,
+                    values.iter().map(remote_reduced_value).collect(),
+                )],
+            )?,
+            RecordingMatchResponse::EmptyGroupedReduction => {
+                model_reduction_outcome(&self.registry, validated, empty_graph()?, Vec::new())?
+            }
             RecordingMatchResponse::ProviderFailure { code, message } => {
                 return Err(MatchError::new(MatchErrorCategory::Provider, code, message)
                     .at(MatchErrorPathSegment::ProviderEvidence));
             }
         };
 
-        validate_provider_result(&self.registry, validated, evidence)
+        validated_match_result_from_v2(&self.registry, validated, outcome)
+    }
+}
+
+/// Build the model-reduction outcome a live executor returns for `validated`.
+///
+/// The outcome echoes the root, group, and reducer contract of the adapted V2
+/// plan, obtained through the same registry authority and adapter as live
+/// execution. A request that is not a reduction echoes its own root with no
+/// contract, which the released mapping refuses as an operation mismatch.
+pub(crate) fn model_reduction_outcome(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    graph: HydrationGraphV2,
+    rows: Vec<RemoteReductionRowV2>,
+) -> Result<RemoteOutcomeV2, MatchError> {
+    if !matches!(
+        validated.request().operation,
+        MatchOperation::ReduceBy { .. }
+            | MatchOperation::ReduceByField { .. }
+            | MatchOperation::ReduceByFields { .. }
+    ) {
+        return Ok(RemoteOutcomeV2::ModelReduction {
+            graph,
+            root: contract_binding(operation_root(validated))?,
+            group: None,
+            reducers: Vec::new(),
+            rows,
+        });
+    }
+    let authority =
+        MatchRequestAdapterAuthority::from_registry(registry).map_err(adapter_match_error)?;
+    let adapted = adapt_match_request(validated, registry, &authority.context())
+        .map_err(adapter_match_error)?;
+    let Some(ModelQueryV2::Reduction {
+        root,
+        group,
+        reducers,
+        ..
+    }) = adapted
+        .validated()
+        .plan()
+        .v2_compatibility()
+        .and_then(|compatibility| compatibility.model_query())
+    else {
+        return Err(MatchError::new(
+            MatchErrorCategory::ResultDecode,
+            "recording_reduction_contract_missing",
+            "adapted reduction plan lacks its model reduction contract",
+        )
+        .at(MatchErrorPathSegment::Operation));
+    };
+    Ok(RemoteOutcomeV2::ModelReduction {
+        graph,
+        root: *root,
+        group: group.clone(),
+        reducers: reducers.clone(),
+        rows,
+    })
+}
+
+fn empty_graph() -> Result<HydrationGraphV2, MatchError> {
+    HydrationGraphV2::new(Vec::new()).map_err(adapter_match_error)
+}
+
+fn contract_binding(binding: BindingId) -> Result<ContractBindingId, MatchError> {
+    ContractBindingId::new(binding.get()).map_err(adapter_match_error)
+}
+
+pub(super) fn remote_reduced_value(value: &ReducedValue) -> RemoteReducedValueV2 {
+    match value {
+        ReducedValue::Count(value) => RemoteReducedValueV2::Count { value: *value },
+        ReducedValue::Long(value) => RemoteReducedValueV2::Long { value: *value },
+        ReducedValue::Double(value) => RemoteReducedValueV2::DoubleBits {
+            value: value.map(f64::to_bits),
+        },
     }
 }
 
@@ -194,13 +251,6 @@ fn operation_root(validated: &ValidatedMatchRequest) -> BindingId {
         | MatchOperation::ReduceByField { root, .. }
         | MatchOperation::ReduceByFields { root, .. } => *root,
         MatchOperation::FetchRows { .. } => BindingId::new(0),
-    }
-}
-
-fn operation_group(validated: &ValidatedMatchRequest) -> Option<BindingId> {
-    match &validated.request().operation {
-        MatchOperation::ReduceBy { group, .. } => *group,
-        _ => None,
     }
 }
 

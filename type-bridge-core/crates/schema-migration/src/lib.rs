@@ -52,16 +52,16 @@ pub use execution::{
 };
 pub use generate::{
     BackfillMigrationGenerationRequest, GeneratedMigration, MigrationGenerationOutcome,
-    MigrationGenerationRequest, MigrationPreviewError, generate_backfill_migration,
-    generate_next_migration, render_migration_preview, try_acquire_migration_authoring_lock,
-    write_generated_migration_under_lock,
+    MigrationGenerationRequest, MigrationPreviewError, allocate_migration_name,
+    generate_backfill_migration, generate_next_migration, render_migration_preview,
+    try_acquire_migration_authoring_lock, write_generated_migration_under_lock,
 };
 pub use history::{
-    CanonicalMigrationHistoryEvidence, MigrationHistoryGraph,
+    CanonicalMigrationHistoryEvidence, MigrationHistoryGraph, MigrationProfileUpgrade,
     canonical_history_declared_legacy_bridge_count_in, canonical_history_declares_legacy_bridge_in,
-    discover_verified_migration_chain, discover_verified_migration_chain_in,
-    discover_verified_migration_chain_with_evidence_in, discover_verified_migrations,
-    discover_verified_migrations_in, require_adoption_authority_pair,
+    discover_history_for_profile_upgrade_in, discover_verified_migration_chain,
+    discover_verified_migration_chain_in, discover_verified_migration_chain_with_evidence_in,
+    discover_verified_migrations, discover_verified_migrations_in, require_adoption_authority_pair,
     require_adoption_authority_pair_state,
 };
 pub use history_bundle::{
@@ -80,8 +80,9 @@ pub use lowering::{
     StatementOperationKind, StatementUnit, TypeQlStatement, TypeQlVerb, lower_schema_delta,
 };
 pub use manifest::{
-    SchemaMigrationDraft, VerifiedSchemaMigrationManifest, build_verified_manifest,
-    decode_verified_manifest, encode_verified_manifest, verified_manifest_digest,
+    MigrationProfileBridge, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, decode_verified_manifest, encode_verified_manifest,
+    verified_manifest_digest,
 };
 pub use policy::{MigrationApplyApproval, MigrationSafetyPolicy, SafetyPolicyDecision};
 pub use rollback_plan::{
@@ -94,14 +95,15 @@ pub use verify::{MigrationDriftFinding, MigrationVerifyReport, verify_migration_
 
 pub use profile::{
     AnnotationKind, AnnotationSubjectKind, AnnotationTransition, EvidenceFlag, EvidenceRequirement,
-    FactKind, FactTransition, InterfaceDefault, InterfaceKind, LoweringMechanism, SafetyScenario,
-    SafetyScenarioRule, SchemaLoweringProfile, TransitionRule, annotation_transition_rule,
-    canonical_profile_bytes, fact_transition_rule, migration_runtime_capability_vocabulary,
-    profile_fingerprint, schema_lowering_profile_binding, typedb_3_12_1_profile,
+    FactKind, FactTransition, InterfaceDefault, InterfaceKind, LoweringMechanism, MigrationProfile,
+    SafetyScenario, SafetyScenarioRule, SchemaLoweringProfile, TransitionRule,
+    annotation_transition_rule, canonical_profile_bytes, fact_transition_rule,
+    lowering_profile_binding, migration_runtime_capability_vocabulary, profile_fingerprint,
+    schema_lowering_profile_binding, typedb_3_12_1_profile,
 };
 pub use type_bridge_contract::schema_lowering::{
     SCHEMA_LOWERING_PROFILE_CANONICALIZATION, SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN,
     SchemaLoweringProfileFingerprint, SchemaLoweringProfileId,
-    TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID,
+    TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID, TYPEDB_3_13_6_SCHEMA_LOWERING_PROFILE_ID,
 };
 pub use type_bridge_schema::{SafetyClass, SafetyClassificationError, classify_operation_safety};

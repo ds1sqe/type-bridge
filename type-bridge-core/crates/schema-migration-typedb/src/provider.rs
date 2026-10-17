@@ -12,18 +12,21 @@ use std::sync::Arc;
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::limits::StructuralLimits;
 use type_bridge_contract::migration_backfill::AttributeBackfillPlan;
 #[cfg(test)]
 use type_bridge_contract::migration_backfill::COPY_ATTRIBUTE_BACKFILL_CAPABILITY;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
+use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::migration_assertion::{
     MigrationAssertionExecutionContext, MigrationAssertionExecutionError,
     execute_migration_assertion,
 };
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
-    ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, Transaction,
+    ClassifiedCommitError, CommitFailureCertainty, Database, OrmError,
+    OwnedTransaction as Transaction,
 };
 use type_bridge_query::ValidatedMigrationAssertionPlan;
 use type_bridge_schema::ManagedDeltaContext;
@@ -31,8 +34,8 @@ use type_bridge_schema_migration::{
     BackfillCompletionEvidence, BackfillExecutionCounts, BackfillExecutionDirection,
     BackfillExecutionFuture, BackfillRecoveryObservation, ExecutionBindingToken, ExecutionFuture,
     GroupCommitCertainty, GroupCommitFailure, GroupCommitFuture, MigrationExecutionProvider,
-    MigrationLease, PreparedMigrationGroup, StatementUnit, migration_runtime_capability_vocabulary,
-    typedb_3_12_1_profile,
+    MigrationHistoryGraph, MigrationLease, MigrationProfile, PreparedMigrationGroup, StatementUnit,
+    VerifiedMigrationApplyPlan, migration_runtime_capability_vocabulary,
 };
 
 use crate::backfill::LoweredBackfill;
@@ -41,8 +44,6 @@ use crate::observation::{
 };
 use crate::runner::LegacyExecutionBinding;
 use crate::store::{require_active_managed_fence, require_migration_database_pair_identity};
-
-const SUPPORTED_SERVER: (u32, u32, u32) = (3, 12, 3);
 
 /// One validated, process-local TypeDB migration execution binding.
 ///
@@ -61,7 +62,8 @@ pub struct TypeDbExecutionBinding {
 }
 
 impl TypeDbExecutionBinding {
-    /// Validate and bind one exact TypeDB 3.12.3 database pair and context.
+    /// Validate and bind one database pair on the exact TypeDB release the
+    /// context's semantic profile requires (see [`migration_server_for_profile`]).
     ///
     /// Reuse this value (or a clone) for every provider and store that must
     /// participate in one execution. Each successful call creates a fresh
@@ -148,6 +150,7 @@ pub struct TypeDbMigrationProvider {
     binding: TypeDbExecutionBinding,
     legacy_binding: Option<(LegacyExecutionBinding, String)>,
     observation_authority: ManagedObservationAuthority,
+    profile_bridge_source: Option<ManagedDeltaContext>,
 }
 
 impl TypeDbMigrationProvider {
@@ -161,7 +164,51 @@ impl TypeDbMigrationProvider {
             binding: binding.clone(),
             legacy_binding: None,
             observation_authority: ManagedObservationAuthority::ExactPortable,
+            profile_bridge_source: None,
         })
+    }
+
+    /// Also admit managed states on the older profile a profile bridge moves
+    /// from, for a plan that replays the bridge's ancestors into a database
+    /// on the newer server.
+    ///
+    /// Callers apply this only after the store bound the plan, which admits
+    /// an older-profile manifest only as an ancestor of the catalog's single
+    /// bridge.
+    /// The server pairing still follows the binding's own profile.
+    pub(crate) fn for_replayed_profile_bridge(
+        mut self,
+        graph: &MigrationHistoryGraph,
+        plan: &VerifiedMigrationApplyPlan,
+    ) -> Self {
+        let context = &self.binding.context;
+        self.profile_bridge_source =
+            replayed_profile_bridge_source(graph, plan, context).map(|from| {
+                ManagedDeltaContext::new(
+                    context.scope_id().clone(),
+                    from,
+                    context.available_capabilities().clone(),
+                )
+            });
+        self
+    }
+
+    /// Require one state on the binding's context, or on the admitted
+    /// profile-bridge source context when it carries that older profile.
+    fn require_execution_state(
+        &self,
+        state: &ManagedSchemaState,
+        state_role: &'static str,
+    ) -> Result<(), Diagnostic> {
+        let state_profile = state
+            .managed_semantic_schema()
+            .as_fingerprint()
+            .semantic_profile();
+        let context = match &self.profile_bridge_source {
+            Some(source) if state_profile == Some(source.semantic_profile()) => source,
+            _ => &self.binding.context,
+        };
+        require_managed_state_execution_context(state, context, state_role)
     }
 
     /// Bind the runner-validated legacy pair state into every managed SCHEMA
@@ -252,8 +299,13 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
             let observed = async {
                 require_active_managed_fence(&mut transaction, lease).await?;
                 require_no_backfill_conflict(&mut transaction, &lowered).await?;
-                let incomplete =
-                    query_has_answers(&mut transaction, &lowered.incomplete_witness()).await?;
+                let incomplete = query_has_answers(
+                    &mut transaction,
+                    &lowered
+                        .incomplete_witness()
+                        .map_err(backfill_lowering_error)?,
+                )
+                .await?;
                 require_active_managed_fence(&mut transaction, lease).await?;
                 if incomplete {
                     Ok(BackfillRecoveryObservation::Incomplete)
@@ -304,8 +356,11 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
                 let mutation = async {
                     require_active_managed_fence(&mut transaction, lease).await?;
                     require_no_backfill_conflict(&mut transaction, &lowered).await?;
-                    let affected =
-                        query_answer_count(&mut transaction, &lowered.mutation_group()).await?;
+                    let affected = query_answer_count(
+                        &mut transaction,
+                        &lowered.mutation_group().map_err(backfill_lowering_error)?,
+                    )
+                    .await?;
                     if affected > u64::from(plan.partition().batch_rows()) {
                         return Err(failure(
                             DiagnosticCategory::Integrity,
@@ -400,16 +455,8 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
     ) -> ExecutionFuture<'a, ManagedSchemaState> {
         Box::pin(async move {
             self.binding.require_lease(lease)?;
-            require_managed_state_execution_context(
-                source_candidate,
-                &self.binding.context,
-                "observation_source",
-            )?;
-            require_managed_state_execution_context(
-                target_candidate,
-                &self.binding.context,
-                "observation_target",
-            )?;
+            self.require_execution_state(source_candidate, "observation_source")?;
+            self.require_execution_state(target_candidate, "observation_target")?;
             let mut transaction = self
                 .binding
                 .managed_database
@@ -432,8 +479,8 @@ impl MigrationExecutionProvider for TypeDbMigrationProvider {
     ) -> ExecutionFuture<'a, Box<dyn PreparedMigrationGroup + 'a>> {
         Box::pin(async move {
             self.binding.require_lease(lease)?;
-            require_managed_state_execution_context(source, &self.binding.context, "group_source")?;
-            require_managed_state_execution_context(target, &self.binding.context, "group_target")?;
+            self.require_execution_state(source, "group_source")?;
+            self.require_execution_state(target, "group_target")?;
             let mut transaction = self
                 .binding
                 .managed_database
@@ -564,7 +611,9 @@ impl PreparedMigrationGroup for TypeDbPreparedGroup<'_> {
     {
         Box::pin(async move {
             let mut this = *self;
-            this.transaction.rollback().await.map_err(map_orm_error)
+            rollback_and_close(&mut this.transaction)
+                .await
+                .map_err(map_orm_error)
         })
     }
 }
@@ -581,11 +630,22 @@ pub fn execution_capability_vocabulary() -> Result<CapabilitySet, Diagnostic> {
     migration_runtime_capability_vocabulary()
 }
 
+fn backfill_lowering_error(_: type_bridge_core_lib::__internal::TqlError) -> Diagnostic {
+    failure(
+        DiagnosticCategory::InvalidContract,
+        "migration_typedb_backfill_typeql_shape",
+        "validated backfill cannot be lowered to TypeQL",
+    )
+}
+
 async fn require_no_backfill_conflict(
     transaction: &mut Transaction,
     lowered: &LoweredBackfill<'_>,
 ) -> Result<(), Diagnostic> {
-    let Some(query) = lowered.conflict_witness() else {
+    let Some(query) = lowered
+        .conflict_witness()
+        .map_err(backfill_lowering_error)?
+    else {
         return Ok(());
     };
     if query_has_answers(transaction, &query).await? {
@@ -640,19 +700,85 @@ async fn finish_provider_data_guard<T>(
     finish_provider_schema_guard(transaction, primary, operation).await
 }
 
-/// Require the exact TypeDB server version supported by migration execution.
+/// Return the exact TypeDB release connected migrations require for a
+/// workspace semantic profile, or `None` when the profile cannot run them.
 ///
-/// This check reads only the version negotiated by the existing connection;
-/// it performs no database lookup, creation, transaction, or schema work.
-pub fn require_supported_migration_server(database: &Database) -> Result<(), Diagnostic> {
-    let version = database.server_version();
+/// The pairing is the generated-package release map, so a workspace's
+/// migrations and its generated packages always target the same server:
+///
+/// | Semantic profile | Required server |
+/// |------------------|-----------------|
+/// | `typedb-3.12.1/v1` | `3.12.3` |
+/// | `typedb-3.13.6/v1` | `3.13.6` |
+#[must_use]
+pub fn migration_server_for_profile(semantic_profile: &SemanticProfileId) -> Option<Version> {
+    GeneratedPackageRelease::for_profile(semantic_profile.as_str())
+        .map(GeneratedPackageRelease::server)
+}
+
+/// Require a semantic profile that connected migrations support and return
+/// the exact server release it pairs with.
+///
+/// This check is pure: it performs no credential, filesystem, or database work.
+pub fn require_supported_migration_profile(
+    semantic_profile: &SemanticProfileId,
+) -> Result<Version, Diagnostic> {
+    migration_server_for_profile(semantic_profile).ok_or_else(|| {
+        let supported = supported_migration_profiles().join(", ");
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "migration_typedb_semantic_profile_unsupported",
+            format!(
+                "semantic profile {} cannot run connected TypeDB migrations; expected one of \
+                 {supported}",
+                semantic_profile.as_str()
+            ),
+        )
+        .with_detail("semantic_profile", semantic_profile.as_str().to_owned())
+        .with_detail("expected_semantic_profiles", supported)
+    })
+}
+
+fn supported_migration_profiles() -> Vec<String> {
+    MigrationProfile::ALL
+        .into_iter()
+        .map(MigrationProfile::semantic_profile_id)
+        .filter(|profile| migration_server_for_profile(profile).is_some())
+        .map(|profile| profile.as_str().to_owned())
+        .collect()
+}
+
+/// Require the exact TypeDB server a semantic profile's migrations run on.
+///
+/// The profile is checked first. This check reads only the version
+/// negotiated by the existing connection; it performs no database lookup,
+/// creation, transaction, or schema work.
+pub fn require_supported_migration_server_for_profile(
+    database: &Database,
+    semantic_profile: &SemanticProfileId,
+) -> Result<(), Diagnostic> {
+    let expected = require_supported_migration_profile(semantic_profile)?;
     require_supported_server_version(
-        version.map(|version| (version.major, version.minor, version.patch)),
+        semantic_profile,
+        expected,
+        negotiated_server_version(database),
     )
 }
 
-/// Require the exact semantic profile and negotiated servers supported by
-/// TypeDB migration execution over one managed/journal pair.
+/// Require TypeDB 3.12.3, the server for semantic profile `typedb-3.12.1/v1`.
+#[deprecated(
+    since = "2.3.0",
+    note = "use require_supported_migration_server_for_profile; removed in 3.0"
+)]
+pub fn require_supported_migration_server(database: &Database) -> Result<(), Diagnostic> {
+    require_supported_migration_server_for_profile(
+        database,
+        &MigrationProfile::Typedb3_12_1.semantic_profile_id(),
+    )
+}
+
+/// Require a supported semantic profile and, on both members of one
+/// managed/journal pair, the exact server that profile pairs with.
 ///
 /// The profile gate runs first, followed by pair identity, managed-server
 /// identity, and journal-server identity. Every check consumes only
@@ -663,27 +789,39 @@ pub fn require_supported_migration_execution_binding(
     journal_database: &Database,
     context: &ManagedDeltaContext,
 ) -> Result<(), Diagnostic> {
-    let supported = &typedb_3_12_1_profile().semantic_profile;
-    if context.semantic_profile() != supported {
-        return Err(failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_semantic_profile_unsupported",
-            "migration execution requires exactly the typedb-3.12.1/v1 semantic profile",
-        )
-        .with_detail(
-            "semantic_profile",
-            context.semantic_profile().as_str().to_owned(),
-        )
-        .with_detail("expected_semantic_profile", supported.as_str().to_owned()));
-    }
+    let expected = require_supported_migration_profile(context.semantic_profile())?;
     require_migration_database_pair_identity(managed_database, journal_database)?;
     require_supported_pair_server_versions(
+        context.semantic_profile(),
+        expected,
         negotiated_server_version(managed_database),
         negotiated_server_version(journal_database),
     )?;
     context
         .available_capabilities()
         .ensure_supported_by(&execution_capability_vocabulary()?)
+}
+
+/// Return the older profile a plan replays below the history's profile
+/// bridge, if it plans any manifest off the execution profile.
+///
+/// The store has already bound the plan, which admits such a manifest only
+/// as an ancestor of the catalog's single bridge to the execution profile.
+pub(crate) fn replayed_profile_bridge_source(
+    graph: &MigrationHistoryGraph,
+    plan: &VerifiedMigrationApplyPlan,
+    context: &ManagedDeltaContext,
+) -> Option<SemanticProfileId> {
+    let replays_older = plan.migrations().iter().any(|migration| {
+        migration.manifest().semantic_profile().id() != context.semantic_profile()
+    });
+    if !replays_older {
+        return None;
+    }
+    graph
+        .manifests()
+        .find_map(|(_, manifest)| manifest.profile_bridge())
+        .map(|bridge| bridge.from_semantic_profile().id().clone())
 }
 
 /// Require one managed state to belong to the provider's exact execution context.
@@ -733,23 +871,27 @@ pub(crate) fn require_managed_state_execution_context(
         .map_err(|error| error.with_detail("state_role", state_role))
 }
 
-fn negotiated_server_version(database: &Database) -> Option<(u32, u32, u32)> {
-    database
-        .server_version()
-        .map(|version| (version.major, version.minor, version.patch))
+fn negotiated_server_version(database: &Database) -> Option<Version> {
+    database.server_version()
 }
 
 fn require_supported_pair_server_versions(
-    managed_version: Option<(u32, u32, u32)>,
-    journal_version: Option<(u32, u32, u32)>,
+    semantic_profile: &SemanticProfileId,
+    expected: Version,
+    managed_version: Option<Version>,
+    journal_version: Option<Version>,
 ) -> Result<(), Diagnostic> {
-    require_supported_server_version(managed_version)
+    require_supported_server_version(semantic_profile, expected, managed_version)
         .map_err(|error| error.with_detail("database_role", "managed"))?;
-    require_supported_server_version(journal_version)
+    require_supported_server_version(semantic_profile, expected, journal_version)
         .map_err(|error| error.with_detail("database_role", "journal"))
 }
 
-fn require_supported_server_version(version: Option<(u32, u32, u32)>) -> Result<(), Diagnostic> {
+fn require_supported_server_version(
+    semantic_profile: &SemanticProfileId,
+    expected: Version,
+    version: Option<Version>,
+) -> Result<(), Diagnostic> {
     let version = version.ok_or_else(|| {
         failure(
             DiagnosticCategory::InvalidContract,
@@ -757,16 +899,18 @@ fn require_supported_server_version(version: Option<(u32, u32, u32)>) -> Result<
             "migration execution requires a negotiated TypeDB server version",
         )
     })?;
-    if version != SUPPORTED_SERVER {
+    if version != expected {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_server_version_unsupported",
-            "migration execution requires exactly TypeDB 3.12.3",
+            format!(
+                "migration execution on semantic profile {} requires exactly TypeDB {expected}",
+                semantic_profile.as_str()
+            ),
         )
-        .with_detail(
-            "server_version",
-            format!("{}.{}.{}", version.0, version.1, version.2),
-        ));
+        .with_detail("server_version", version.to_string())
+        .with_detail("expected_server_version", expected.to_string())
+        .with_detail("semantic_profile", semantic_profile.as_str().to_owned()));
     }
     Ok(())
 }
@@ -801,7 +945,7 @@ async fn finish_provider_schema_guard<T>(
     primary: Result<T, Diagnostic>,
     operation: &'static str,
 ) -> Result<T, Diagnostic> {
-    match (primary, transaction.rollback().await) {
+    match (primary, rollback_and_close(transaction).await) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(cleanup)) => Err(provider_schema_cleanup_failure(cleanup, None, operation)),
@@ -833,12 +977,22 @@ fn provider_schema_cleanup_failure(
     diagnostic
 }
 
-fn failure(category: DiagnosticCategory, code: &'static str, message: &'static str) -> Diagnostic {
+fn failure(
+    category: DiagnosticCategory,
+    code: &'static str,
+    message: impl Into<String>,
+) -> Diagnostic {
     Diagnostic::new(
         category,
         DiagnosticCode::new(code).expect("static diagnostic code is valid"),
         message,
     )
+}
+
+pub(crate) async fn rollback_and_close(transaction: &mut Transaction) -> Result<(), OrmError> {
+    let rollback = transaction.rollback().await;
+    let close = transaction.close().await;
+    rollback.and(close)
 }
 
 #[cfg(test)]
@@ -901,27 +1055,117 @@ mod tests {
         }
     }
 
-    #[test]
-    fn migration_server_gate_is_exact_and_stable() {
-        let unknown = require_supported_server_version(None).expect_err("unknown must reject");
-        assert_eq!(
-            unknown.code().as_str(),
-            "migration_typedb_server_version_unknown"
-        );
+    fn profile(id: &str) -> SemanticProfileId {
+        SemanticProfileId::new(id).expect("valid semantic profile")
+    }
 
-        for version in [(3, 11, 5), (3, 12, 0), (3, 12, 2)] {
-            let error = require_supported_server_version(Some(version))
-                .expect_err("every non-exact server must reject");
+    fn version(major: u32, minor: u32, patch: u32) -> Option<Version> {
+        Some(Version::new(major, minor, patch))
+    }
+
+    #[test]
+    fn migration_profiles_pair_with_exactly_one_server() {
+        assert_eq!(
+            migration_server_for_profile(&profile("typedb-3.12.1/v1")),
+            Some(Version::new(3, 12, 3))
+        );
+        assert_eq!(
+            migration_server_for_profile(&profile("typedb-3.13.6/v1")),
+            Some(Version::new(3, 13, 6))
+        );
+        for unsupported in ["typedb-3.11.5/v1", "typedb-3.12.3/v1", "typedb-3.14.0/v1"] {
+            assert_eq!(migration_server_for_profile(&profile(unsupported)), None);
+            let error = require_supported_migration_profile(&profile(unsupported))
+                .expect_err("only paired profiles run connected migrations");
+            assert_eq!(
+                error.code().as_str(),
+                "migration_typedb_semantic_profile_unsupported"
+            );
+        }
+        // Every schema-transition registry has a connected server, and no other
+        // profile does.
+        for migration_profile in MigrationProfile::ALL {
+            assert!(
+                migration_server_for_profile(&migration_profile.semantic_profile_id()).is_some()
+            );
+        }
+        assert_eq!(
+            supported_migration_profiles(),
+            ["typedb-3.12.1/v1", "typedb-3.13.6/v1"]
+        );
+    }
+
+    #[test]
+    fn migration_server_gate_accepts_exactly_the_profile_pairs() {
+        let accepted = [
+            ("typedb-3.12.1/v1", (3, 12, 3)),
+            ("typedb-3.13.6/v1", (3, 13, 6)),
+        ];
+        for (id, (major, minor, patch)) in accepted {
+            let semantic_profile = profile(id);
+            let expected =
+                require_supported_migration_profile(&semantic_profile).expect("paired profile");
+            require_supported_server_version(
+                &semantic_profile,
+                expected,
+                version(major, minor, patch),
+            )
+            .expect("the exact pair is accepted");
+
+            let unknown = require_supported_server_version(&semantic_profile, expected, None)
+                .expect_err("unknown must reject");
+            assert_eq!(
+                unknown.code().as_str(),
+                "migration_typedb_server_version_unknown"
+            );
+        }
+
+        let refused = [
+            ("typedb-3.12.1/v1", (3, 13, 6)),
+            ("typedb-3.13.6/v1", (3, 12, 3)),
+            ("typedb-3.12.1/v1", (3, 11, 5)),
+            ("typedb-3.13.6/v1", (3, 11, 5)),
+            ("typedb-3.12.1/v1", (3, 12, 2)),
+            ("typedb-3.13.6/v1", (3, 13, 5)),
+        ];
+        for (id, (major, minor, patch)) in refused {
+            let semantic_profile = profile(id);
+            let expected =
+                require_supported_migration_profile(&semantic_profile).expect("paired profile");
+            let error = require_supported_server_version(
+                &semantic_profile,
+                expected,
+                version(major, minor, patch),
+            )
+            .expect_err("every other server must reject");
             assert_eq!(
                 error.code().as_str(),
                 "migration_typedb_server_version_unsupported"
             );
+            assert!(
+                error.message().contains(&expected.to_string()),
+                "the refusal names the profile's server: {}",
+                error.message()
+            );
+            assert_eq!(
+                error.details().get("expected_server_version"),
+                Some(
+                    &type_bridge_contract::diagnostic::DiagnosticDetailValue::Text(
+                        expected.to_string()
+                    )
+                )
+            );
         }
-        require_supported_server_version(Some((3, 12, 3)))
-            .expect("only the exact migration server is supported");
 
-        let managed = require_supported_pair_server_versions(None, Some((3, 12, 3)))
-            .expect_err("managed identity is checked first");
+        let semantic_profile = profile("typedb-3.12.1/v1");
+        let expected = Version::new(3, 12, 3);
+        let managed = require_supported_pair_server_versions(
+            &semantic_profile,
+            expected,
+            None,
+            version(3, 12, 3),
+        )
+        .expect_err("managed identity is checked first");
         assert_eq!(
             managed.details().get("database_role"),
             Some(
@@ -930,8 +1174,13 @@ mod tests {
                 )
             )
         );
-        let journal = require_supported_pair_server_versions(Some((3, 12, 3)), Some((3, 11, 5)))
-            .expect_err("journal identity is checked after the managed identity");
+        let journal = require_supported_pair_server_versions(
+            &semantic_profile,
+            expected,
+            version(3, 12, 3),
+            version(3, 11, 5),
+        )
+        .expect_err("journal identity is checked after the managed identity");
         assert_eq!(
             journal.details().get("database_role"),
             Some(
@@ -940,8 +1189,13 @@ mod tests {
                 )
             )
         );
-        require_supported_pair_server_versions(Some((3, 12, 3)), Some((3, 12, 3)))
-            .expect("both pair members carry the exact negotiated version");
+        require_supported_pair_server_versions(
+            &semantic_profile,
+            expected,
+            version(3, 12, 3),
+            version(3, 12, 3),
+        )
+        .expect("both pair members carry the exact negotiated version");
     }
 
     #[test]
@@ -953,12 +1207,21 @@ mod tests {
             }),
             "missing",
         );
-        let error = require_supported_migration_server(&database)
-            .expect_err("a backend without version identity must reject");
+        let unsupported =
+            require_supported_migration_server_for_profile(&database, &profile("typedb-3.11.5/v1"))
+                .expect_err("an unsupported profile rejects before the server");
         assert_eq!(
-            error.code().as_str(),
-            "migration_typedb_server_version_unknown"
+            unsupported.code().as_str(),
+            "migration_typedb_semantic_profile_unsupported"
         );
+        for id in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+            let error = require_supported_migration_server_for_profile(&database, &profile(id))
+                .expect_err("a backend without version identity must reject");
+            assert_eq!(
+                error.code().as_str(),
+                "migration_typedb_server_version_unknown"
+            );
+        }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -1000,18 +1263,23 @@ mod tests {
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
-        let supported_context = ManagedDeltaContext::new(
-            ManagedScopeId::new("provider-binding-gate").expect("managed scope"),
-            typedb_3_12_1_profile().semantic_profile.clone(),
-            CapabilitySet::new(),
-        );
-        let server_error =
-            require_supported_migration_execution_binding(&database, &journal, &supported_context)
-                .expect_err("an exact profile still requires negotiated server identity");
-        assert_eq!(
-            server_error.code().as_str(),
-            "migration_typedb_server_version_unknown"
-        );
+        for migration_profile in MigrationProfile::ALL {
+            let supported_context = ManagedDeltaContext::new(
+                ManagedScopeId::new("provider-binding-gate").expect("managed scope"),
+                migration_profile.semantic_profile_id(),
+                CapabilitySet::new(),
+            );
+            let server_error = require_supported_migration_execution_binding(
+                &database,
+                &journal,
+                &supported_context,
+            )
+            .expect_err("a supported profile still requires negotiated server identity");
+            assert_eq!(
+                server_error.code().as_str(),
+                "migration_typedb_server_version_unknown"
+            );
+        }
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 

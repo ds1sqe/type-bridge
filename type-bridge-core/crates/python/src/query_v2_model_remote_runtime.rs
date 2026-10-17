@@ -1,45 +1,39 @@
 //! PyO3 seam for one-exchange remote model-oriented typed queries.
 //!
-//! Python retains the caller-owned async exchange callback. This module owns
-//! only immutable context snapshots, native terminal preparation, and the
-//! one-shot authenticated response-to-result-proof transition.
+//! Python retains the caller-owned async exchange callback. The context is a
+//! proxy connection whose exchange the caller performs: terminals are
+//! prepared and their replies finished by that shared connection, so a
+//! host-owned exchange runs under the same ceiling and checks as the
+//! built-in route.
 
 use std::sync::Arc;
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyList};
-use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
-use type_bridge_contract::query_remote::{
-    RemoteCapabilities, checked_remote_deadline, checked_remote_limit,
-};
-use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::{
-    AnswerCancellation, OrderHandle, PendingRemoteModelQueryV2, ProjectedQueryOrigin,
-    QueryExecutionDeadline, QueryExecutionResourceLimits, RemoteModelQueryV2Error, Window,
-    lower_remote_query_diagnostic, prepare_remote_model_query_v2_with_budget,
-    validate_public_order_term_count,
+    AnswerCancellation, AnswerTransport, OrderHandle, PendingRemoteModelQueryV2,
+    ProjectedQueryOrigin, ProxyQueryConnection, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, QueryHandle, QueryTarget, RowCardinality, ValidatedMatchRequest,
+    validate_order_term_count,
 };
 
 use crate::match_runtime::{
     PyMatchBindingHandle, PyMatchFieldHandle, PyMatchOrderHandle, PyMatchQueryHandle,
     PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryInvocationBudget,
-    borrow_reduce_terms, order_handles, parse_cardinality, py_match_error, py_match_orm_error,
-    py_sdk_diagnostic, reduce_terms, validated_result_handle,
+    borrow_reduce_terms, order_handles, parse_enum, py_match_error, py_match_orm_error,
+    py_query_target_error, py_sdk_diagnostic, python_window, reduce_terms, validated_result_handle,
 };
-use crate::query_v2_runtime::{
-    PyQueryV2Authority, PythonBytes, python_limit, python_optional_limit,
-};
+use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
 use crate::validated_result_runtime::PyValidatedMatchResultHandle;
 
-/// Immutable native authority, advertisement, and limit snapshot.
+/// A caller-exchanged proxy connection plus the session's resources and
+/// cancellation owner.
 #[pyclass(name = "RemoteModelQueryContext", frozen)]
 pub(crate) struct PyRemoteModelQueryContext {
-    advertisement: Vec<u8>,
-    authority: Arc<type_bridge_orm::query_v2_prepared::QueryAuthority>,
-    limits: RemoteLimitsV2,
+    connection: ProxyQueryConnection,
     resources: QueryExecutionResourceLimits,
     cancellation: AnswerCancellation,
 }
@@ -49,6 +43,7 @@ pub(crate) struct PyRemoteModelQueryContext {
 pub(crate) struct PyPendingRemoteModelQuery {
     pending: PendingRemoteModelQueryV2,
     installed: Option<Arc<type_bridge_orm::InstalledRuntimeProjection>>,
+    registry: Arc<DescriptorRegistry>,
     resources: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
     cancellation: AnswerCancellation,
@@ -88,21 +83,21 @@ impl PyPendingRemoteModelQuery {
         // before the semantic one-shot claim, so FFI mistakes remain retryable.
         let snapshot_limit = MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1);
         let response = PythonBytes::extract(response, "response")?.bounded_snapshot(snapshot_limit);
-        let cancellation = self.cancellation.clone();
-        let claimed = self
-            .pending
-            .claim_reply_with_cancellation(&cancellation)
-            .map_err(remote_model_error)?;
-        let (request, result, registry) = py
-            .detach(move || claimed.decode_with_cancellation(&response, &cancellation))
-            .map_err(remote_model_error)?;
+        let pending = &self.pending;
+        let cancellation = &self.cancellation;
+        let deadline = self.deadline;
+        let (request, result) = py
+            .detach(move || {
+                ProxyQueryConnection::finish(pending, &response, cancellation, deadline)
+            })
+            .map_err(py_query_target_error)?;
         let installed = self.installed.as_ref();
         validated_result_handle(
             installed,
             installed.map(|_| ProjectedQueryOrigin::remote_unbound()),
             request,
             result,
-            registry,
+            Arc::clone(&self.registry),
             PyQueryInvocationBudget::from_parts(
                 self.resources,
                 self.deadline,
@@ -112,94 +107,61 @@ impl PyPendingRemoteModelQuery {
     }
 }
 
-/// Snapshot and validate the non-I/O context consumed by every remote
-/// model-query terminal.
-#[pyfunction]
-#[pyo3(signature = (
-    authority,
-    advertisement,
-    max_items,
-    max_bytes,
-    max_collection_members,
-    max_graph_nodes,
-    max_attribute_values,
-    max_role_players,
-    deadline_ms=None
-))]
-#[expect(clippy::too_many_arguments, reason = "flat explicit limit contract")]
-pub(crate) fn query_v2_remote_model_context(
-    py: Python<'_>,
-    authority: &PyQueryV2Authority,
-    advertisement: &Bound<'_, PyAny>,
-    max_items: &Bound<'_, PyAny>,
-    max_bytes: &Bound<'_, PyAny>,
-    max_collection_members: &Bound<'_, PyAny>,
-    max_graph_nodes: &Bound<'_, PyAny>,
-    max_attribute_values: &Bound<'_, PyAny>,
-    max_role_players: &Bound<'_, PyAny>,
-    deadline_ms: Option<&Bound<'_, PyAny>>,
-) -> PyResult<PyRemoteModelQueryContext> {
-    let advertisement = PythonBytes::extract(advertisement, "advertisement")?
-        .bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
-    let limits = remote_limits_v2(
-        max_items,
-        max_bytes,
-        max_collection_members,
-        max_graph_nodes,
-        max_attribute_values,
-        max_role_players,
-        deadline_ms,
-    )?;
-    let resources = QueryExecutionResourceLimits::tightened(
-        limits
-            .deadline_ms
-            .unwrap_or(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS),
-        limits.max_items,
-        limits.max_bytes,
-        limits.max_graph_nodes,
-        limits.max_attribute_values,
-        limits.max_collection_members,
-        limits.max_role_players,
-        limits.max_statements,
-    );
-    py.detach({
-        let advertisement = &advertisement;
-        move || RemoteCapabilities::decode(advertisement)
-    })
-    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
-    Ok(PyRemoteModelQueryContext {
-        advertisement,
-        authority: authority.authority(),
-        limits,
-        resources,
-        cancellation: AnswerCancellation::default(),
-    })
-}
-
 /// Build the same remote context from the common direct/remote resource and
-/// cancellation owners.
+/// cancellation owners. `answer_limits` is the caller-exchanged connection's
+/// ceiling; left out, the proxy (wire) defaults are the ceiling, as for a
+/// `ProxyConnection` opened without answer limits.
 #[pyfunction]
+#[pyo3(signature = (authority, advertisement, resources, cancellation, *, answer_limits=None))]
 pub(crate) fn query_v2_remote_model_context_with_resources(
     py: Python<'_>,
     authority: &PyQueryV2Authority,
     advertisement: &Bound<'_, PyAny>,
     resources: PyRef<'_, PyQueryExecutionResourceLimits>,
     cancellation: PyRef<'_, PyQueryCancellation>,
+    answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
 ) -> PyResult<PyRemoteModelQueryContext> {
-    let advertisement = PythonBytes::extract(advertisement, "advertisement")?
-        .bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1));
-    py.detach({
-        let advertisement = &advertisement;
-        move || RemoteCapabilities::decode(advertisement)
-    })
-    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?;
+    let advertisement = advertisement_snapshot(advertisement)?;
     let resources = resources.inner();
-    Ok(PyRemoteModelQueryContext {
+    remote_context(
+        py,
+        authority,
         advertisement,
-        authority: authority.authority(),
-        limits: resources.remote(),
+        answer_limits.map_or_else(
+            || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            |limits| limits.inner(),
+        ),
         resources,
-        cancellation: cancellation.inner(),
+        cancellation.inner(),
+    )
+}
+
+fn advertisement_snapshot(advertisement: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    Ok(PythonBytes::extract(advertisement, "advertisement")?
+        .bounded_snapshot(MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1)))
+}
+
+/// A caller-exchanged connection with the `answer_limits` ceiling, and the
+/// session resources constrained by it.
+fn remote_context(
+    py: Python<'_>,
+    authority: &PyQueryV2Authority,
+    advertisement: Vec<u8>,
+    answer_limits: QueryExecutionResourceLimits,
+    resources: QueryExecutionResourceLimits,
+    cancellation: AnswerCancellation,
+) -> PyResult<PyRemoteModelQueryContext> {
+    let authority = authority.authority();
+    let connection = py
+        .detach(move || {
+            ProxyQueryConnection::with_exchange(advertisement, authority, answer_limits)
+        })
+        .map_err(py_sdk_diagnostic)?;
+    let resources = QueryTarget::Proxy(&connection).constrain(resources);
+    Ok(PyRemoteModelQueryContext {
+        connection,
+        resources,
+        cancellation,
     })
 }
 
@@ -215,26 +177,14 @@ pub(crate) fn query_v2_prepare_remote_model_rows(
     limit: &Bound<'_, PyAny>,
     cardinality: &str,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let installed = query.installed_projection();
-    let offset = python_unsigned(offset)?;
-    let limit = python_unsigned(limit)?;
-    let query = query.inner().clone();
-    let registry = query.registry_arc();
-    let order = bounded_order_handles(py, order)?;
-    let cardinality = parse_cardinality(cardinality)?;
-    let request = py
-        .detach(move || query.validate_fetch_rows(&order, Window { offset, limit }, cardinality))
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        installed,
-        context,
-        registry,
-        request,
-        deadline,
-        cancellation,
-    )
+    prepare_terminal(py, query, context, |query| {
+        let window = python_window(offset, limit)?;
+        let query = query.clone();
+        let order = bounded_order_handles(py, order, query.limits())?;
+        let cardinality = parse_enum::<RowCardinality>(cardinality)?;
+        py.detach(move || query.validate_fetch_rows(&order, window, cardinality))
+            .map_err(py_match_orm_error)
+    })
 }
 
 /// Prepare one distinct-root remote page.
@@ -254,29 +204,15 @@ pub(crate) fn query_v2_prepare_remote_model_page(
     limit: &Bound<'_, PyAny>,
     include_total: &Bound<'_, PyAny>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let installed = query.installed_projection();
-    let offset = python_unsigned(offset)?;
-    let limit = python_unsigned(limit)?;
-    let include_total = python_bool(include_total, "include_total")?;
-    let query = query.inner().clone();
-    let registry = query.registry_arc();
-    let root = root.inner().clone();
-    let order = bounded_order_handles(py, order)?;
-    let request = py
-        .detach(move || {
-            query.validate_page_by(&root, &order, Window { offset, limit }, include_total)
-        })
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        installed,
-        context,
-        registry,
-        request,
-        deadline,
-        cancellation,
-    )
+    prepare_terminal(py, query, context, |query| {
+        let window = python_window(offset, limit)?;
+        let include_total = python_bool(include_total, "include_total")?;
+        let query = query.clone();
+        let root = root.inner().clone();
+        let order = bounded_order_handles(py, order, query.limits())?;
+        py.detach(move || query.validate_page_by(&root, &order, window, include_total))
+            .map_err(py_match_orm_error)
+    })
 }
 
 /// Prepare one lossless distinct-root remote count.
@@ -287,23 +223,12 @@ pub(crate) fn query_v2_prepare_remote_model_count(
     context: &PyRemoteModelQueryContext,
     root: &PyMatchBindingHandle,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let installed = query.installed_projection();
-    let query = query.inner().clone();
-    let registry = query.registry_arc();
-    let root = root.inner().clone();
-    let request = py
-        .detach(move || query.validate_count_by(&root))
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        installed,
-        context,
-        registry,
-        request,
-        deadline,
-        cancellation,
-    )
+    prepare_terminal(py, query, context, |query| {
+        let query = query.clone();
+        let root = root.inner().clone();
+        py.detach(move || query.validate_count_by(&root))
+            .map_err(py_match_orm_error)
+    })
 }
 
 /// Prepare one distinct-root remote existence query.
@@ -314,23 +239,12 @@ pub(crate) fn query_v2_prepare_remote_model_exists(
     context: &PyRemoteModelQueryContext,
     root: &PyMatchBindingHandle,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let installed = query.installed_projection();
-    let query = query.inner().clone();
-    let registry = query.registry_arc();
-    let root = root.inner().clone();
-    let request = py
-        .detach(move || query.validate_exists_by(&root))
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        installed,
-        context,
-        registry,
-        request,
-        deadline,
-        cancellation,
-    )
+    prepare_terminal(py, query, context, |query| {
+        let query = query.clone();
+        let root = root.inner().clone();
+        py.detach(move || query.validate_exists_by(&root))
+            .map_err(py_match_orm_error)
+    })
 }
 
 /// Prepare one typed ungrouped or grouped reduction over a distinct root.
@@ -345,22 +259,13 @@ pub(crate) fn query_v2_prepare_remote_model_reduce(
     reducers: Vec<String>,
     inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let terms = reduce_terms(py, &reducers, &inputs)?;
-    let terms = borrow_reduce_terms(&terms);
-    let request = query
-        .inner()
-        .validate_reduce_by(root.inner(), group.map(PyMatchBindingHandle::inner), &terms)
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        query.installed_projection(),
-        context,
-        query.inner().registry_arc(),
-        request,
-        deadline,
-        cancellation,
-    )
+    prepare_terminal(py, query, context, |query| {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        query
+            .validate_reduce_by(root.inner(), group.map(PyMatchBindingHandle::inner), &terms)
+            .map_err(py_match_orm_error)
+    })
 }
 
 /// Prepare one typed reduction grouped by a projected owned field.
@@ -375,22 +280,13 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_field(
     reducers: Vec<String>,
     inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let terms = reduce_terms(py, &reducers, &inputs)?;
-    let terms = borrow_reduce_terms(&terms);
-    let request = query
-        .inner()
-        .validate_reduce_by_field(root.inner(), group.inner(), &terms)
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        query.installed_projection(),
-        context,
-        query.inner().registry_arc(),
-        request,
-        deadline,
-        cancellation,
-    )
+    prepare_terminal(py, query, context, |query| {
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        query
+            .validate_reduce_by_field(root.inner(), group.inner(), &terms)
+            .map_err(py_match_orm_error)
+    })
 }
 
 /// Prepare one typed reduction grouped by an ordered tuple of projected owned fields.
@@ -405,115 +301,52 @@ pub(crate) fn query_v2_prepare_remote_model_reduce_by_fields(
     reducers: Vec<String>,
     inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
 ) -> PyResult<PyPendingRemoteModelQuery> {
-    let (deadline, cancellation) = begin_remote_invocation(query, context)?;
-    let groups = groups
-        .iter()
-        .map(|group| group.borrow(py).inner().clone())
-        .collect::<Vec<_>>();
-    let groups = groups.iter().collect::<Vec<_>>();
-    let terms = reduce_terms(py, &reducers, &inputs)?;
-    let terms = borrow_reduce_terms(&terms);
-    let request = query
-        .inner()
-        .validate_reduce_by_fields(root.inner(), &groups, &terms)
-        .map_err(py_match_orm_error)?;
-    prepare_pending(
-        py,
-        query.installed_projection(),
-        context,
-        query.inner().registry_arc(),
-        request,
-        deadline,
-        cancellation,
-    )
-}
-
-fn begin_remote_invocation(
-    query: &PyMatchQueryHandle,
-    context: &PyRemoteModelQueryContext,
-) -> PyResult<(QueryExecutionDeadline, AnswerCancellation)> {
-    query.ensure_open()?;
-    let deadline = QueryExecutionDeadline::for_limits(context.resources);
-    deadline
-        .check(&context.cancellation)
-        .map_err(py_sdk_diagnostic)?;
-    Ok((deadline, context.cancellation.clone()))
-}
-
-fn prepare_pending(
-    py: Python<'_>,
-    installed: Option<Arc<type_bridge_orm::InstalledRuntimeProjection>>,
-    context: &PyRemoteModelQueryContext,
-    registry: Arc<DescriptorRegistry>,
-    request: type_bridge_orm::ValidatedMatchRequest,
-    deadline: QueryExecutionDeadline,
-    cancellation: AnswerCancellation,
-) -> PyResult<PyPendingRemoteModelQuery> {
-    let authority = Arc::clone(&context.authority);
-    let advertisement = context.advertisement.clone();
-    let limits = context.limits;
-    let execution_cancellation = cancellation.clone();
-    let pending = py
-        .detach(move || {
-            prepare_remote_model_query_v2_with_budget(
-                &authority,
-                &registry,
-                request,
-                &advertisement,
-                limits,
-                deadline,
-                &execution_cancellation,
-            )
-        })
-        .map_err(remote_model_error)?;
-    Ok(PyPendingRemoteModelQuery {
-        pending,
-        installed,
-        resources: context.resources,
-        deadline,
-        cancellation,
+    prepare_terminal(py, query, context, |query| {
+        let groups = groups
+            .iter()
+            .map(|group| group.borrow(py).inner().clone())
+            .collect::<Vec<_>>();
+        let groups = groups.iter().collect::<Vec<_>>();
+        let terms = reduce_terms(py, &reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        query
+            .validate_reduce_by_fields(root.inner(), &groups, &terms)
+            .map_err(py_match_orm_error)
     })
 }
 
-fn remote_limits_v2(
-    max_items: &Bound<'_, PyAny>,
-    max_bytes: &Bound<'_, PyAny>,
-    max_collection_members: &Bound<'_, PyAny>,
-    max_graph_nodes: &Bound<'_, PyAny>,
-    max_attribute_values: &Bound<'_, PyAny>,
-    max_role_players: &Bound<'_, PyAny>,
-    deadline_ms: Option<&Bound<'_, PyAny>>,
-) -> PyResult<RemoteLimitsV2> {
-    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
-        Ok(RemoteLimitsV2 {
-            deadline_ms: checked_remote_deadline(python_optional_limit(deadline_ms)?)?,
-            max_bytes: checked_remote_limit(python_limit(max_bytes)?)?,
-            max_items: checked_remote_limit(python_limit(max_items)?)?,
-            max_collection_members: checked_remote_limit(python_limit(max_collection_members)?)?,
-            max_graph_nodes: checked_remote_limit(python_limit(max_graph_nodes)?)?,
-            max_attribute_values: checked_remote_limit(python_limit(max_attribute_values)?)?,
-            max_role_players: checked_remote_limit(python_limit(max_role_players)?)?,
-            max_statements: 3,
+/// Capture the invocation deadline, validate the terminal, and prepare it on
+/// the context's connection. A closed query or an expired session refuses
+/// before any argument is decoded.
+fn prepare_terminal(
+    py: Python<'_>,
+    query: &PyMatchQueryHandle,
+    context: &PyRemoteModelQueryContext,
+    validate: impl FnOnce(&QueryHandle) -> PyResult<ValidatedMatchRequest>,
+) -> PyResult<PyPendingRemoteModelQuery> {
+    query.ensure_open()?;
+    let resources = context.resources;
+    let cancellation = context.cancellation.clone();
+    let deadline = QueryExecutionDeadline::for_limits(resources);
+    deadline.check(&cancellation).map_err(py_sdk_diagnostic)?;
+    let request = validate(query.inner())?;
+    let registry = query.inner().registry_arc();
+    let connection = &context.connection;
+    let pending = py
+        .detach({
+            let registry = &registry;
+            let cancellation = &cancellation;
+            move || connection.prepare(registry, request, resources, cancellation, deadline)
         })
-    };
-    build().map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
-}
-
-fn remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
-    match error {
-        RemoteModelQueryV2Error::Diagnostic(diagnostic) => {
-            py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
-        }
-        RemoteModelQueryV2Error::Match(error) => py_match_error(error),
-    }
-}
-
-fn python_unsigned(value: &Bound<'_, PyAny>) -> PyResult<u64> {
-    checked_remote_limit(
-        python_limit(value)
-            .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))?,
-    )
-    .map_err(|diagnostic| py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic)))
+        .map_err(py_query_target_error)?;
+    Ok(PyPendingRemoteModelQuery {
+        pending,
+        installed: query.installed_projection(),
+        registry,
+        resources,
+        deadline,
+        cancellation,
+    })
 }
 
 fn python_bool(value: &Bound<'_, PyAny>, argument: &'static str) -> PyResult<bool> {
@@ -523,9 +356,13 @@ fn python_bool(value: &Bound<'_, PyAny>, argument: &'static str) -> PyResult<boo
         .map_err(|_| PyTypeError::new_err(format!("argument '{argument}' must be bool")))
 }
 
-fn bounded_order_handles(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Vec<OrderHandle>> {
+fn bounded_order_handles(
+    py: Python<'_>,
+    values: &Bound<'_, PyAny>,
+    limits: type_bridge_contract::limits::QueryLimits,
+) -> PyResult<Vec<OrderHandle>> {
     let values = values.cast::<PyList>()?;
-    validate_public_order_term_count(values.len()).map_err(py_match_error)?;
+    validate_order_term_count(values.len(), limits.structural).map_err(py_match_error)?;
     let handles = values
         .iter()
         .map(|value| {
@@ -541,7 +378,6 @@ fn bounded_order_handles(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyRemoteModelQueryContext>()?;
     module.add_class::<PyPendingRemoteModelQuery>()?;
-    module.add_function(wrap_pyfunction!(query_v2_remote_model_context, module)?)?;
     module.add_function(wrap_pyfunction!(
         query_v2_remote_model_context_with_resources,
         module
@@ -582,15 +418,24 @@ mod tests {
     use pyo3::ffi;
     use pyo3::prelude::*;
 
-    use super::{python_bool, python_unsigned};
+    use type_bridge_orm::Window;
+
+    use super::{python_bool, python_window};
 
     #[test]
-    fn hostile_native_windows_require_exact_non_boolean_u64_values() {
+    fn hostile_native_windows_are_host_marshalling_errors() {
         Python::initialize();
         Python::attach(|py| {
             let one = py.eval(ffi::c_str!("1"), None, None).expect("integer");
-            assert_eq!(python_unsigned(&one).expect("exact integer"), 1);
+            assert_eq!(
+                python_window(&one, &one).expect("exact integers"),
+                Window {
+                    offset: 1,
+                    limit: 1
+                }
+            );
 
+            // 2.2 raised ValueError for every malformed window.
             for expression in [
                 ffi::c_str!("True"),
                 ffi::c_str!("1.0"),
@@ -598,14 +443,8 @@ mod tests {
                 ffi::c_str!("1 << 65"),
             ] {
                 let value = py.eval(expression, None, None).expect("hostile value");
-                let error = python_unsigned(&value).expect_err("value must be rejected");
-                let code = error
-                    .value(py)
-                    .getattr("code")
-                    .expect("structured code")
-                    .extract::<String>()
-                    .expect("string code");
-                assert_eq!(code, "query_remote_limit_invalid");
+                let error = python_window(&one, &value).expect_err("value must be rejected");
+                assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
             }
         });
     }

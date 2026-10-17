@@ -212,12 +212,16 @@ def _advertisement(capabilities: list[str]) -> bytes:
     )
 
 
+# The plan's own capabilities plus the three the V2 envelope itself requires.
 PLAN_CAPABILITIES = [
     "query.output.rows",
     "query.pattern.has",
     "query.pattern.isa",
     "query.pattern.isa-subtypes",
     "query.plan",
+    "query.plan.v2",
+    "query.remote.envelope-v2",
+    "query.remote.structured-diagnostic",
     "query.stage.sort",
 ]
 
@@ -227,7 +231,7 @@ def _authority() -> core.QueryV2Authority:
 
 
 def test_shared_failure_corpus_is_bound_to_the_same_authority_fixture() -> None:
-    assert FAILURE_CORPUS["format"] == "typebridge.query-remote-binding-failure-corpus/v1"
+    assert FAILURE_CORPUS["format"] == "typebridge.query-remote-binding-failure-corpus/v2"
     assert FAILURE_CORPUS["declared_b64"] == DECLARED_B64
     assert FAILURE_CORPUS["plan_b64"] == PLAN_B64
     assert FAILURE_CORPUS["scope"] == SCOPE
@@ -257,7 +261,7 @@ def test_encode_checks_capabilities_against_the_exact_advertisement() -> None:
         1_000,
     )
     request = pending.request_bytes()
-    assert b"typebridge.query-remote-request/v1" in bytes(request)
+    assert b"typebridge.query-remote-request/v2" in bytes(request)
     parsed_request = json.loads(bytes(request))
     assert len(parsed_request["advertisement"]) == 64
     assert parsed_request["expires_at_unix_ms"] > parsed_request["prepared_at_unix_ms"]
@@ -277,7 +281,7 @@ def test_encode_checks_capabilities_against_the_exact_advertisement() -> None:
     assert first_nonce != second_nonce
 
     starved = _advertisement([c for c in PLAN_CAPABILITIES if c != "query.stage.sort"])
-    with pytest.raises(ValueError, match="query_remote_capability_unsupported"):
+    with pytest.raises(ValueError, match="unsupported_required_capability"):
         core.query_v2_prepare_remote(authority, plan, INVOCATION, starved, 10, 1 << 20, 1_000)
 
 
@@ -322,7 +326,7 @@ def test_negative_and_oversized_limits_fail_with_the_stable_diagnostic() -> None
 
 @pytest.mark.parametrize("case", FAILURE_CORPUS["cases"], ids=lambda case: case["name"])
 def test_failure_binding_corpus_is_rejected_before_diagnostics_surface(case: dict) -> None:
-    assert FAILURE_CORPUS["format"] == "typebridge.query-remote-binding-failure-corpus/v1"
+    assert FAILURE_CORPUS["format"] == "typebridge.query-remote-binding-failure-corpus/v2"
     authority = _authority()
     plan = base64.b64decode(PLAN_B64)
     advertisement = _advertisement(PLAN_CAPABILITIES)
@@ -360,7 +364,7 @@ def test_success_byte_budget_authenticates_first_and_keeps_failures_decodable() 
     forged_nonce = json.loads(forged_request)["nonce"]
     signed_success = _signed_reply(
         {
-            "format": "typebridge.query-remote-response/v1",
+            "format": "typebridge.query-remote-response/v2",
             "nonce": forged_nonce,
             "outcome": {"kind": "rows", "rows": []},
             "plan": "0" * 64,
@@ -392,7 +396,7 @@ def test_success_byte_budget_authenticates_first_and_keeps_failures_decodable() 
     )
     signed_wrong_request = _signed_reply(
         {
-            "format": "typebridge.query-remote-response/v1",
+            "format": "typebridge.query-remote-response/v2",
             "nonce": wrong_request_nonce,
             "outcome": {"kind": "rows", "rows": []},
             "plan": plan_fingerprint,
@@ -400,7 +404,7 @@ def test_success_byte_budget_authenticates_first_and_keeps_failures_decodable() 
         },
         advertisement,
     )
-    with pytest.raises(ValueError, match="query_remote_request_mismatch"):
+    with pytest.raises(ValueError, match="query_remote_v2_request_mismatch"):
         wrong_request_pending.decode_reply(signed_wrong_request)
 
     valid_pending = core.query_v2_prepare_remote(
@@ -535,7 +539,7 @@ def test_large_forged_reply_is_binding_rejected_while_the_gil_is_released() -> N
     )
     forged = _signed_reply(
         {
-            "format": "typebridge.query-remote-response/v1",
+            "format": "typebridge.query-remote-response/v2",
             "nonce": "foreign-nonce-0123456789abcdef",
             "outcome": "x" * (16 * 1024 * 1024),
             "plan": "0" * 64,
@@ -556,7 +560,7 @@ def test_large_forged_reply_is_binding_rejected_while_the_gil_is_released() -> N
     sys.setswitchinterval(60.0)
     try:
         start.set()
-        with pytest.raises(ValueError, match="query_remote_nonce_mismatch"):
+        with pytest.raises(ValueError, match="query_remote_v2_nonce_mismatch"):
             pending.decode_reply(forged)
         assert progressed.is_set(), "reply decoding held the GIL"
     finally:

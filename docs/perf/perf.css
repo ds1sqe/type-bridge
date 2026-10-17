@@ -1,0 +1,204 @@
+/* Perf dashboard (docs/perf/index.md). Colors come from Material's scheme
+ * variables, so the dashboard follows the light/dark toggle. */
+#perf-dashboard .perf-summary,
+#perf-dashboard .perf-status {
+  color: var(--md-default-fg-color--light);
+}
+
+#perf-dashboard .perf-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  align-items: center;
+  margin: 1rem 0;
+}
+
+#perf-dashboard .perf-families {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+#perf-dashboard .perf-sdks {
+  margin-bottom: 0.6rem;
+}
+
+#perf-dashboard .perf-chip {
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 1rem;
+  color: var(--md-default-fg-color--light);
+  background: transparent;
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+#perf-dashboard .perf-chip[aria-pressed="true"] {
+  border-color: var(--md-typeset-a-color);
+  color: var(--md-typeset-a-color);
+}
+
+#perf-dashboard input[type="search"] {
+  flex: 1 1 12rem;
+  max-width: 24rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 0.2rem;
+  color: var(--md-default-fg-color);
+  background: var(--md-default-bg-color);
+  font: inherit;
+  font-size: 0.7rem;
+}
+
+#perf-dashboard .perf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  gap: 1rem;
+}
+
+#perf-dashboard .perf-card {
+  min-width: 0;
+  padding: 0.6rem;
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+}
+
+#perf-dashboard .perf-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+#perf-dashboard .perf-card header span {
+  flex: none;
+  color: var(--md-default-fg-color--light);
+}
+
+/* Reserve the chart and legend height before the chart is built, so lazy
+ * loading does not shift the page. */
+#perf-dashboard .perf-plot {
+  min-height: 232px;
+}
+
+#perf-dashboard .uplot {
+  width: 100%;
+  font-family: inherit;
+}
+
+#perf-dashboard .u-legend {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.65rem;
+}
+
+#perf-dashboard .perf-table {
+  overflow-x: auto;
+}
+
+#perf-dashboard .perf-stage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1rem;
+  padding: 0;
+  font-size: 0.65rem;
+  list-style: none;
+}
+
+#perf-dashboard .perf-stage-legend li {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  margin: 0;
+}
+
+#perf-dashboard .perf-swatch {
+  display: inline-block;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 0.1rem;
+}
+
+#perf-dashboard .perf-swatch-sdk,
+#perf-dashboard .perf-stage:not([style*="background"]) {
+  background: var(--md-default-fg-color--lighter);
+}
+
+#perf-dashboard .perf-stage-row {
+  margin: 0.6rem 0;
+}
+
+#perf-dashboard .perf-stage-row header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.65rem;
+  overflow-wrap: anywhere;
+}
+
+#perf-dashboard .perf-stage-row header span {
+  flex: none;
+  color: var(--md-default-fg-color--light);
+}
+
+#perf-dashboard .perf-stage-bar {
+  display: flex;
+  height: 1.1rem;
+  overflow: hidden;
+  border-radius: 0.2rem;
+  background: var(--md-default-fg-color--lightest);
+}
+
+#perf-dashboard .perf-stage {
+  min-width: 1px;
+  height: 100%;
+}
+
+#perf-dashboard .perf-compare-group {
+  margin-top: 0.75rem;
+}
+/* .perf-grid's display would override the SDK selector's hidden. */
+#perf-dashboard .perf-compare-group[hidden] {
+  display: none;
+}
+#perf-dashboard .perf-bar-row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(3rem, 1fr) 4rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.65rem;
+}
+#perf-dashboard .perf-bar-label,
+#perf-dashboard .perf-bar-value {
+  overflow-wrap: anywhere;
+  color: var(--md-default-fg-color--light);
+}
+#perf-dashboard .perf-bar-value {
+  text-align: right;
+}
+#perf-dashboard .perf-bar-head .perf-bar-label {
+  font-weight: 700;
+  color: var(--md-default-fg-color);
+}
+#perf-dashboard .perf-bar-track {
+  display: block;
+  height: 0.8rem;
+  border-radius: 0.2rem;
+  background: var(--md-default-fg-color--lightest);
+}
+#perf-dashboard .perf-bar-fill {
+  display: block;
+  min-width: 1px;
+  height: 100%;
+  border-radius: 0.2rem;
+  background: var(--md-typeset-a-color);
+}
+#perf-dashboard .perf-bar-gap {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 0.25rem,
+    var(--md-default-fg-color--lightest) 0.25rem 0.5rem
+  );
+}

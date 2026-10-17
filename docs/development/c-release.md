@@ -46,7 +46,9 @@ Dispatch `c-release.yml` with `mode=verify` and that run's `ci_run_id` on
 the same source. Verification has read-only GitHub permissions. It checks
 every CI job and step, downloads exact Actions artifact IDs, verifies API
 archive digests and sizes, and rejects unexpected, linked or unsafe members.
-It then runs the real Sdk V1–V6 producers and independent comparators.
+It then runs the queries, models, administration, serialization and artifacts
+suite producers and independent comparators. Reports are retained under
+`reports/<suite>/<binding>.json`; artifacts binds the other four suites by name.
 The terminal FULL-C audit must accept all 44 C capabilities and every
 predecessor and current-SDK obligation.
 

@@ -173,8 +173,7 @@ fn two_step_chain() -> Chain {
     );
     let graph =
         MigrationHistoryGraph::from_verified([first.clone(), second.clone()]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     Chain {
         context,
         lowering,
@@ -203,8 +202,7 @@ fn rollback_recreates_a_removed_constrained_domain_without_backfill_approval() {
     );
     assert!(removed.reversible());
     let graph = MigrationHistoryGraph::from_verified([removed.clone()]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let plan = build_verified_migration_rollback_plan(
         &graph,
         &BTreeSet::from([removed.id().clone()]),
@@ -338,8 +336,7 @@ fn irreversible_manifests_stay_manually_reversible() {
     let applied = BTreeSet::from([irreversible.id().clone()]);
     let removals = applied.clone();
     let graph = MigrationHistoryGraph::from_verified([irreversible]).expect("history");
-    let lowering =
-        SchemaLoweringBinding::current(context.available_capabilities().clone()).expect("lowering");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering");
     let approval_free = build_verified_migration_rollback_plan(
         &graph,
         &applied,

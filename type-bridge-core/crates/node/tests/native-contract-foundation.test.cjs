@@ -27,7 +27,8 @@ function loadNative() {
 
   const source = path.resolve(
     __dirname,
-    "../../../target/debug",
+    process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.resolve(__dirname, "../../../target"),
+    "debug",
     nativeLibraryName(),
   );
   assert.ok(
@@ -107,4 +108,22 @@ test("projection recording adapter exposes real databases and exact counters", (
     closes: 0,
   });
   assert.throws(() => fixture.takeDatabase());
+});
+
+
+test("native context accepts a query after rollback", () => {
+  const native = loadNative();
+  const fixture = new native.__ProjectionRecordingFixture('[{"Rows":[]},{"Rows":[]}]', native.__newProjectionRecordingAuthority());
+  const database = fixture.takeDatabase();
+  const transaction = database.transaction("write");
+  transaction.queryJson("before");
+  transaction.rollback();
+  transaction.queryJson("after");
+  transaction.close();
+  const counters = JSON.parse(fixture.countersJson());
+  assert.deepEqual(counters.opens, ["write"]);
+  assert.equal(counters.queries.length, 2);
+  assert.equal(counters.rollbacks, 1);
+  assert.equal(counters.commits, 0);
+  assert.equal(counters.closes, 1);
 });

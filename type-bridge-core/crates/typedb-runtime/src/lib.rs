@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use tracing::Instrument;
 use type_bridge_core_lib::version as core_version;
 use type_bridge_core_lib::version::DEFAULT_HTTP_PORT;
 
@@ -46,8 +47,28 @@ use typedb_driver::{
     TransactionType as B9TransactionType, TypeDBDriver as B9Driver,
 };
 
+/// Typed provider failure classification and redaction.
+pub mod failure;
+use failure::{Failure, redact_provider_error, redacted_failure};
+
 /// Boxed future returned by async runtime methods.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+// Pipeline stage spans. A driver round trip (open, query, rollback, close)
+// is `tb.runtime.execute`, a commit `tb.commit`, and converting one answer
+// to JSON `tb.decode`. They carry no fields, so no query text or value is
+// recorded.
+fn execute_span() -> tracing::Span {
+    tracing::info_span!("tb.runtime.execute")
+}
+
+fn commit_span() -> tracing::Span {
+    tracing::info_span!("tb.commit")
+}
+
+fn decode_span() -> tracing::Span {
+    tracing::info_span!("tb.decode")
+}
 
 /// How confidently a failed commit can be classified without observing server state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,15 +129,40 @@ pub enum RuntimeCommitError {
     Driver {
         /// Whether the failed response proves that the commit was aborted.
         certainty: CommitFailureCertainty,
-        /// The original driver error text.
+        /// Value-free code and fixed provider failure description.
         message: String,
     },
 }
 
+impl RuntimeError {
+    /// Recover a typed failure from runtime-owned redacted provider descriptions.
+    #[must_use]
+    pub fn failure(&self) -> Option<Failure> {
+        match self {
+            Self::QueryExecution(message) | Self::Transaction(message) => {
+                failure::failure_from_message(message)
+            }
+            _ => None,
+        }
+    }
+}
+
 impl RuntimeCommitError {
+    /// Value-free outcome. Released string carriers have no staged operation index.
+    #[must_use]
+    pub fn failure(&self) -> Failure {
+        match self {
+            Self::Runtime(error) => error
+                .failure()
+                .unwrap_or(Failure::Indeterminate { code: None }),
+            Self::Driver { message, .. } => failure::failure_from_message(message)
+                .unwrap_or(Failure::Indeterminate { code: None }),
+        }
+    }
+
     /// Convert to the released transaction-error surface.
     ///
-    /// This discards certainty, not the original driver text. A transaction
+    /// This discards certainty while retaining the value-free description. A transaction
     /// error alone never proves that retrying the write is safe.
     #[must_use]
     pub fn into_runtime_error(self) -> RuntimeError {
@@ -165,24 +211,78 @@ fn server_commit_certainty(code: &str) -> CommitFailureCertainty {
 
 #[cfg(feature = "band8")]
 fn band8_commit_failure(error: driver_b8::Error) -> RuntimeCommitError {
-    let message = error.to_string();
-    let certainty = if matches!(&error, driver_b8::Error::Server(_)) {
-        server_commit_certainty(&error.code())
+    let failure = failure::classify_commit(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b8::Error::Server(_)),
+    );
+    let certainty = if failure.retry_safe() {
+        CommitFailureCertainty::DefinitelyAborted
     } else {
         CommitFailureCertainty::Unknown
     };
-    commit_failure(certainty, message)
+    commit_failure(
+        certainty,
+        failure::redacted_commit_failure(&failure, &error),
+    )
+}
+
+#[cfg(feature = "band8")]
+fn band8_query_error(error: driver_b8::Error) -> RuntimeError {
+    band8_query_error_with_operation(error, "Query failed")
+}
+
+#[cfg(feature = "band8")]
+fn band8_query_error_with_operation(
+    error: driver_b8::Error,
+    operation: &'static str,
+) -> RuntimeError {
+    let message = failure::classify_query(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b8::Error::Server(_)),
+    )
+    .map(|failure| format!("{operation}: {}", redacted_failure(&failure)))
+    .unwrap_or_else(|| redact_provider_error(&error, operation));
+    RuntimeError::QueryExecution(message)
 }
 
 #[cfg(feature = "band9")]
 fn band9_commit_failure(error: driver_b9::Error) -> RuntimeCommitError {
-    let message = error.to_string();
-    let certainty = if matches!(&error, driver_b9::Error::Server(_)) {
-        server_commit_certainty(&error.code())
+    let failure = failure::classify_commit(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b9::Error::Server(_)),
+    );
+    let certainty = if failure.retry_safe() {
+        CommitFailureCertainty::DefinitelyAborted
     } else {
         CommitFailureCertainty::Unknown
     };
-    commit_failure(certainty, message)
+    commit_failure(
+        certainty,
+        failure::redacted_commit_failure(&failure, &error),
+    )
+}
+
+#[cfg(feature = "band9")]
+fn band9_query_error(error: driver_b9::Error) -> RuntimeError {
+    band9_query_error_with_operation(error, "Query failed")
+}
+
+#[cfg(feature = "band9")]
+fn band9_query_error_with_operation(
+    error: driver_b9::Error,
+    operation: &'static str,
+) -> RuntimeError {
+    let message = failure::classify_query(
+        &error.code(),
+        &error.to_string(),
+        matches!(&error, driver_b9::Error::Server(_)),
+    )
+    .map(|failure| format!("{operation}: {}", redacted_failure(&failure)))
+    .unwrap_or_else(|| redact_provider_error(&error, operation));
+    RuntimeError::QueryExecution(message)
 }
 
 #[cfg(test)]
@@ -205,7 +305,7 @@ mod commit_failure_tests {
     }
 
     #[test]
-    fn live_error_fixtures_use_structural_root_codes_and_preserve_display() {
+    fn live_error_fixtures_use_structural_root_codes_and_redact_display() {
         for fixture in [
             include_str!("../tests/fixtures/commit-errors-3.12.3.json"),
             include_str!("../tests/fixtures/commit-errors-3.13.6.json"),
@@ -226,10 +326,11 @@ mod commit_failure_tests {
                                 ..
                             }
                         ));
-                        assert_eq!(
-                            failure.into_runtime_error().to_string(),
-                            format!("Transaction error: Commit failed: {}", messages[case])
-                        );
+                        assert!(failure.failure().retry_safe());
+                        let rendered = format!("{failure} {failure:?}");
+                        assert!(!rendered.contains("tb_w226"));
+                        assert!(!rendered.contains("Instance ["));
+                        assert!(failure.into_runtime_error().to_string().contains(code));
                     }};
                 }
                 #[cfg(feature = "band8")]
@@ -591,6 +692,72 @@ pub enum TxType {
     Schema,
 }
 
+/// Server-side transaction lifetime and schema-lock acquisition bounds.
+///
+/// ```
+/// use std::time::Duration;
+/// use type_bridge_typedb_runtime::TransactionOptions;
+/// let options = TransactionOptions::new()
+///     .with_transaction_timeout(Duration::from_secs(30))
+///     .with_schema_lock_acquire_timeout(Duration::from_secs(2));
+/// assert_eq!(options.transaction_timeout, Some(Duration::from_secs(30)));
+/// assert_eq!(options.schema_lock_acquire_timeout, Some(Duration::from_secs(2)));
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+pub struct TransactionOptions {
+    /// Maximum transaction lifetime enforced by TypeDB.
+    pub transaction_timeout: Option<Duration>,
+    /// Maximum wait to acquire the schema lock while opening.
+    pub schema_lock_acquire_timeout: Option<Duration>,
+}
+
+impl TransactionOptions {
+    /// Use the driver's default transaction and lock timeouts.
+    pub const fn new() -> Self {
+        Self {
+            transaction_timeout: None,
+            schema_lock_acquire_timeout: None,
+        }
+    }
+
+    /// Bound the transaction's server-side lifetime.
+    pub const fn with_transaction_timeout(mut self, timeout: Duration) -> Self {
+        self.transaction_timeout = Some(timeout);
+        self
+    }
+
+    /// Bound the wait for a schema lock when opening.
+    pub const fn with_schema_lock_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.schema_lock_acquire_timeout = Some(timeout);
+        self
+    }
+
+    #[cfg(feature = "band8")]
+    fn band8(self) -> B8TransactionOptions {
+        let mut options = B8TransactionOptions::new();
+        if let Some(timeout) = self.transaction_timeout {
+            options = options.transaction_timeout(timeout);
+        }
+        if let Some(timeout) = self.schema_lock_acquire_timeout {
+            options = options.schema_lock_acquire_timeout(timeout);
+        }
+        options
+    }
+
+    #[cfg(feature = "band9")]
+    fn band9(self) -> B9TransactionOptions {
+        let mut options = B9TransactionOptions::new();
+        if let Some(timeout) = self.transaction_timeout {
+            options = options.transaction_timeout(timeout);
+        }
+        if let Some(timeout) = self.schema_lock_acquire_timeout {
+            options = options.schema_lock_acquire_timeout(timeout);
+        }
+        options
+    }
+}
+
 /// A single value bound to a `given` variable, band-agnostic and serializable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.
@@ -668,7 +835,10 @@ pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 /// the band-9 dependency is refreshed, update this constant to match the new
 /// `Cargo.lock` entry — the `tests::cargo_lock_pin_b9` test will
 /// catch any divergence.
-pub const PINNED_DRIVER_VERSION_B9: &str = "3.12.3";
+///
+/// The upstream driver line may run ahead of the support window: driver 3.13
+/// speaks the same band-9 wire protocol that TypeDB 3.12 servers accept.
+pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.6";
 
 /// Protocol bands this build embeds a driver for, derived from the compiled-in
 /// band features.  This is the `embedded_bands` argument to
@@ -690,7 +860,7 @@ const EMBEDDED_BANDS: &[u8] = &[
 /// Each entry is `(band, version_string)` and is individually cfg-gated so only
 /// compiled-in bands appear in the slice (master-plan I6 — no hardcoded
 /// band-set literal).  The default build embeds both retained bands and returns
-/// `[(8, "3.11.5"), (9, "3.12.3")]`.
+/// `[(8, "3.11.5"), (9, "3.13.6")]`.
 ///
 /// This is the Rust-side source of truth for the Python `embedded_driver_versions()`
 /// binding — `crates/python/src/version.rs` wraps this function and exposes it
@@ -902,12 +1072,20 @@ impl SecureConnectError {
     ///
     /// TLS diagnostics are reconstructed from typed codes without retaining
     /// configured paths. Version diagnostics are retained only for variants
-    /// whose fields are closed version/band data. Probe, parse, connection,
-    /// query, and transaction failures may contain provider-controlled text
-    /// and therefore return `None`.
+    /// whose fields are closed version/band data. Exact runtime-owned
+    /// redacted transport/discovery messages are also retained. Other legacy
+    /// strings may contain provider values and therefore return `None`.
     #[must_use]
     pub fn credential_safe_diagnostic(&self) -> Option<String> {
         match self {
+            Self::Runtime(RuntimeError::Connection(message))
+                if failure::is_redacted_provider_message(message) =>
+            {
+                Some(self.to_string())
+            }
+            Self::Runtime(RuntimeError::UnsupportedVersion(core_version::VersionError::Probe(
+                message,
+            ))) if is_redacted_discovery_failure(message) => Some(self.to_string()),
             Self::TlsConfiguration(error) => Some(format!(
                 "TLS policy preparation failed [{}]; inspect the configured trust material",
                 error.code()
@@ -1102,17 +1280,22 @@ impl PreparedSecureConnectOptions {
         self
     }
 
-    /// Require the exact provider version owned by the current generated
-    /// package policy.
+    /// Require the exact provider release owned by a generated package's
+    /// semantic profile.
     ///
-    /// This is deliberately not an arbitrary version-taking lane. It clears
-    /// the released caller-version shortcut so the authoritative HTTP probe
-    /// always runs before any driver or credential construction.
+    /// This is deliberately not an arbitrary version-taking lane: the release
+    /// comes only from the closed [`core_version::GeneratedPackageRelease`]
+    /// map. It clears the released caller-version shortcut so the
+    /// authoritative HTTP probe always runs before any driver or credential
+    /// construction.
     #[doc(hidden)]
     #[must_use]
-    pub fn with_generated_3_12_3_requirement(mut self) -> Self {
+    pub fn with_generated_package_requirement(
+        mut self,
+        release: core_version::GeneratedPackageRelease,
+    ) -> Self {
         self.server_version = None;
-        self.required_server_version = Some(core_version::Version::new(3, 12, 3));
+        self.required_server_version = Some(release.server());
         self
     }
 }
@@ -1283,8 +1466,34 @@ async fn await_connection_work<T>(
     }
 }
 
+fn is_redacted_discovery_failure(message: &str) -> bool {
+    let Some(rest) = message.strip_prefix(
+        "HTTP version probe and gRPC fallback both failed: HTTP version probe failed: ",
+    ) else {
+        return false;
+    };
+    let Some((http, grpc)) = rest.split_once("; ") else {
+        return false;
+    };
+    if core_version::VersionError::Probe(http.to_owned()).redacted_probe_description() != http {
+        return false;
+    }
+    grpc.strip_prefix("band-8 gRPC attempt failed: Connection error: ")
+        .or_else(|| grpc.strip_prefix("band-8 gRPC version validation failed: "))
+        .is_some_and(failure::is_redacted_provider_message)
+        || grpc == "band-8 gRPC attempt skipped: band8 feature is not compiled in"
+}
+
 fn controlled_connection_error(error: SecureConnectError) -> SecureConnectError {
     match error {
+        SecureConnectError::Runtime(RuntimeError::Connection(ref message))
+            if failure::is_redacted_provider_message(message) =>
+        {
+            error
+        }
+        SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+            core_version::VersionError::Probe(ref message),
+        )) if is_redacted_discovery_failure(message) => error,
         SecureConnectError::TlsConfiguration(
             core_version::TlsConfigurationError::CustomRootCaNotFile { .. }
             | core_version::TlsConfigurationError::CustomRootCaUnreadable { .. }
@@ -1574,13 +1783,13 @@ impl DriverHandle {
         }
         run_driver_shutdown_locked(&self.state, || match &self.inner {
             #[cfg(feature = "band8")]
-            DriverHandleInner::B8(driver) => driver
-                .force_close()
-                .map_err(|error| RuntimeError::Connection(format!("Driver close failed: {error}"))),
+            DriverHandleInner::B8(driver) => driver.force_close().map_err(|error| {
+                RuntimeError::Connection(redact_provider_error(&error, "force close failed"))
+            }),
             #[cfg(feature = "band9")]
-            DriverHandleInner::B9(driver) => driver
-                .force_close()
-                .map_err(|error| RuntimeError::Connection(format!("Driver close failed: {error}"))),
+            DriverHandleInner::B9(driver) => driver.force_close().map_err(|error| {
+                RuntimeError::Connection(redact_provider_error(&error, "force close failed"))
+            }),
         })
     }
 }
@@ -1746,12 +1955,8 @@ where
                 tokio::task::spawn_blocking(move || probe(&address_owned, http_port, &probe_mode));
             let probe_result = await_connection_work(probe_task, meter.control())
                 .await?
-                .map_err(|error| {
-                    RuntimeError::Connection(if controlled {
-                        "Version probe task failed".to_owned()
-                    } else {
-                        format!("Version probe task panicked: {error}")
-                    })
+                .map_err(|_error| {
+                    RuntimeError::Connection("Version probe task failed".to_owned())
                 })?;
 
             match probe_result {
@@ -1883,7 +2088,7 @@ async fn connect_band8_driver(
     meter: &mut ConnectionMeter,
 ) -> SecureResult<B8Driver> {
     let addresses = Addresses::try_from_address_str(address)
-        .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
+        .map_err(|e| RuntimeError::Connection(failure::redact_address_error(&e)))?;
     meter.charge_statement()?;
     let result = await_connection_work(
         B8Driver::new(
@@ -1895,7 +2100,7 @@ async fn connect_band8_driver(
     )
     .await?;
     result.map_err(|e| {
-        RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into()
+        RuntimeError::Connection(redact_provider_error(&e, "Failed to connect")).into()
     })
 }
 
@@ -1908,7 +2113,7 @@ async fn connect_band9_driver(
     meter: &mut ConnectionMeter,
 ) -> SecureResult<B9Driver> {
     let addresses = B9Addresses::try_from_address_str(address)
-        .map_err(|e| RuntimeError::Connection(format!("Invalid TypeDB address {address}: {e}")))?;
+        .map_err(|e| RuntimeError::Connection(failure::redact_address_error(&e)))?;
     meter.charge_statement()?;
     let result = await_connection_work(
         B9Driver::new(
@@ -1920,7 +2125,7 @@ async fn connect_band9_driver(
     )
     .await?;
     result.map_err(|e| {
-        RuntimeError::Connection(format!("Failed to connect to {address}: {e}")).into()
+        RuntimeError::Connection(redact_provider_error(&e, "Failed to connect")).into()
     })
 }
 
@@ -1934,14 +2139,24 @@ async fn grpc_fallback_driver(
     required_server_version: Option<core_version::Version>,
 ) -> SecureResult<(DriverHandle, Option<core_version::Version>)> {
     #[cfg(not(feature = "band8"))]
-    let _ = (address, username, password, tls, meter);
-    let mut failures = vec![format!("HTTP version probe failed: {http_error}")];
+    let _ = (
+        address,
+        username,
+        password,
+        tls,
+        meter,
+        required_server_version,
+    );
+    let mut failures = vec![format!(
+        "HTTP version probe failed: {}",
+        http_error.redacted_probe_description()
+    )];
 
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
     // against a 3.11 server crashes the server outright (measured live on
     // 3.11.5).  The fallback therefore discovers the server through band 8 —
-    // accepted by every band-{8,9} server — and only upgrades to the native
-    // band-9 protocol once the reported version proves the server accepts it.
+    // usable for version discovery on 3.11–3.13 servers — and only upgrades
+    // to band 9 once the reported version proves the server accepts it.
     #[cfg(feature = "band8")]
     {
         match connect_band8_driver(address, username, password, tls, meter).await {
@@ -1956,7 +2171,9 @@ async fn grpc_fallback_driver(
                         await_connection_work(driver.server_version(), meter.control())
                             .await?
                             .map(|reported| reported.version().to_owned())
-                            .map_err(|error| error.to_string())
+                            .map_err(|error| {
+                                redact_provider_error(&error, "gRPC server version failed")
+                            })
                     }
                     #[cfg(feature = "band9")]
                     _ => {
@@ -2013,6 +2230,11 @@ async fn grpc_fallback_driver(
                                         return Err(close_driver_preserving(&driver, error));
                                     }
                                     trace_band9_upgrade_failed(address, server_version, &error);
+                                    if !core_version::server_accepted_bands(&server_version)
+                                        .contains(&8)
+                                    {
+                                        return Err(close_driver_preserving(&driver, error));
+                                    }
                                 }
                             }
                         }
@@ -2051,7 +2273,7 @@ enum Band8GrpcVersion {
 
 #[cfg(feature = "band8")]
 fn classify_band8_grpc_version(
-    address: &str,
+    _address: &str,
     reported: std::result::Result<String, String>,
 ) -> Result<Band8GrpcVersion> {
     let reported = match reported {
@@ -2062,7 +2284,7 @@ fn classify_band8_grpc_version(
             // that failure as fallback evidence without accepting an
             // unvalidated connection.
             return Ok(Band8GrpcVersion::RetryableFailure(format!(
-                "band-8 gRPC version validation failed after connect to {address}: {error}"
+                "band-8 gRPC version validation failed: {error}"
             )));
         }
     };
@@ -2074,14 +2296,6 @@ fn classify_band8_grpc_version(
         .parse::<core_version::Version>()
         .map_err(RuntimeError::UnsupportedVersion)?;
     validate_server_band(&server_version)?;
-    if !core_version::server_accepted_bands(&server_version).contains(&8) {
-        return Err(RuntimeError::UnsupportedVersion(
-            core_version::VersionError::Probe(format!(
-                "band-8 gRPC connection reported server version {server_version}, \
-                 which does not accept band 8"
-            )),
-        ));
-    }
 
     Ok(Band8GrpcVersion::Validated(server_version))
 }
@@ -2153,7 +2367,9 @@ impl TypeDBRuntime {
     /// Connect to a TypeDB server.
     ///
     /// Validates the supplied server version, or probes via HTTP before opening
-    /// any gRPC connection when no version is supplied.
+    /// any gRPC connection when no version is supplied. If HTTP discovery fails,
+    /// band 8 discovers the version before upgrading to band 9 when supported.
+    /// A server that requires band 9 fails closed if the upgrade fails.
     /// Returns [`RuntimeError::UnsupportedVersion`] when the server is outside the
     /// supported window or on a different protocol band than the driver.
     pub async fn connect(
@@ -2429,7 +2645,7 @@ impl TypeDBRuntime {
         database: &str,
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
-        self.open_transaction_with_optional_timeout(database, tx_type, None)
+        self.open_transaction_with_options(database, tx_type, &TransactionOptions::default())
     }
 
     /// Open a TypeDB transaction with an explicit server-side lifetime bound.
@@ -2443,18 +2659,27 @@ impl TypeDBRuntime {
         tx_type: TxType,
         timeout: Duration,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
-        self.open_transaction_with_optional_timeout(database, tx_type, Some(timeout))
+        self.open_transaction_with_options(
+            database,
+            tx_type,
+            &TransactionOptions {
+                transaction_timeout: Some(timeout),
+                schema_lock_acquire_timeout: Some(timeout),
+            },
+        )
     }
 
-    fn open_transaction_with_optional_timeout(
+    /// Open a transaction with independently configured server-side bounds.
+    pub fn open_transaction_with_options(
         &self,
         database: &str,
         tx_type: TxType,
-        timeout: Option<Duration>,
+        options: &TransactionOptions,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
         let db = database.to_string();
+        let options = *options;
         let driver_lease = Arc::clone(&self.driver);
-        Box::pin(async move {
+        let work = async move {
             driver_lease.ensure_open()?;
             match driver_lease.inner() {
                 #[cfg(feature = "band8")]
@@ -2464,17 +2689,15 @@ impl TypeDBRuntime {
                         TxType::Write => B8TransactionType::Write,
                         TxType::Schema => B8TransactionType::Schema,
                     };
-                    let mut options = B8TransactionOptions::new();
-                    if let Some(timeout) = timeout {
-                        options = options
-                            .transaction_timeout(timeout)
-                            .schema_lock_acquire_timeout(timeout);
-                    }
+                    let options = options.band8();
                     let transaction = d
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
                         .map_err(|e| {
-                            RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
+                            RuntimeError::Transaction(redact_provider_error(
+                                &e,
+                                "Failed to open transaction",
+                            ))
                         })?;
                     retain_driver_transaction(
                         &driver_lease.state,
@@ -2493,17 +2716,15 @@ impl TypeDBRuntime {
                         TxType::Write => B9TransactionType::Write,
                         TxType::Schema => B9TransactionType::Schema,
                     };
-                    let mut options = B9TransactionOptions::new();
-                    if let Some(timeout) = timeout {
-                        options = options
-                            .transaction_timeout(timeout)
-                            .schema_lock_acquire_timeout(timeout);
-                    }
+                    let options = options.band9();
                     let transaction = d
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
                         .map_err(|e| {
-                            RuntimeError::Transaction(format!("Failed to open transaction: {e}"))
+                            RuntimeError::Transaction(redact_provider_error(
+                                &e,
+                                "Failed to open transaction",
+                            ))
                         })?;
                     retain_driver_transaction(
                         &driver_lease.state,
@@ -2516,7 +2737,8 @@ impl TypeDBRuntime {
                     })
                 }
             }
-        })
+        };
+        Box::pin(work.instrument(execute_span()))
     }
 
     /// Check whether the underlying driver is open.
@@ -2539,17 +2761,13 @@ impl TypeDBRuntime {
             self.driver.ensure_open()?;
             match self.driver.inner() {
                 #[cfg(feature = "band8")]
-                DriverHandleInner::B8(d) => {
-                    d.databases().contains(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B8(d) => d.databases().contains(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database lookup failed"))
+                }),
                 #[cfg(feature = "band9")]
-                DriverHandleInner::B9(d) => {
-                    d.databases().contains(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B9(d) => d.databases().contains(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database lookup failed"))
+                }),
             }
         })
     }
@@ -2561,17 +2779,13 @@ impl TypeDBRuntime {
             self.driver.ensure_open()?;
             match self.driver.inner() {
                 #[cfg(feature = "band8")]
-                DriverHandleInner::B8(d) => {
-                    d.databases().create(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database create failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B8(d) => d.databases().create(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database create failed"))
+                }),
                 #[cfg(feature = "band9")]
-                DriverHandleInner::B9(d) => {
-                    d.databases().create(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database create failed: {e}"))
-                    })
-                }
+                DriverHandleInner::B9(d) => d.databases().create(database).await.map_err(|e| {
+                    RuntimeError::Connection(redact_provider_error(&e, "Database create failed"))
+                }),
             }
         })
     }
@@ -2585,19 +2799,31 @@ impl TypeDBRuntime {
                 #[cfg(feature = "band8")]
                 DriverHandleInner::B8(d) => {
                     let db = d.databases().get(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
                     db.delete().await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database delete failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database delete failed",
+                        ))
                     })
                 }
                 #[cfg(feature = "band9")]
                 DriverHandleInner::B9(d) => {
                     let db = d.databases().get(database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
                     db.delete().await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database delete failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database delete failed",
+                        ))
                     })
                 }
             }
@@ -2613,20 +2839,26 @@ impl TypeDBRuntime {
                 #[cfg(feature = "band8")]
                 DriverHandleInner::B8(d) => {
                     let db = d.databases().get(&database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
-                    db.schema()
-                        .await
-                        .map_err(|e| RuntimeError::Connection(format!("Schema export failed: {e}")))
+                    db.schema().await.map_err(|e| {
+                        RuntimeError::Connection(redact_provider_error(&e, "Schema export failed"))
+                    })
                 }
                 #[cfg(feature = "band9")]
                 DriverHandleInner::B9(d) => {
                     let db = d.databases().get(&database).await.map_err(|e| {
-                        RuntimeError::Connection(format!("Database lookup failed: {e}"))
+                        RuntimeError::Connection(redact_provider_error(
+                            &e,
+                            "Database lookup failed",
+                        ))
                     })?;
-                    db.schema()
-                        .await
-                        .map_err(|e| RuntimeError::Connection(format!("Schema export failed: {e}")))
+                    db.schema().await.map_err(|e| {
+                        RuntimeError::Connection(redact_provider_error(&e, "Schema export failed"))
+                    })
                 }
             }
         })
@@ -2635,7 +2867,7 @@ impl TypeDBRuntime {
 
 /// Band-tagged transaction inner state.
 ///
-/// The `Option` wrapper lets commit/close/rollback take ownership by value
+/// The `Option` wrapper lets commit/close take ownership by value
 /// (`.take()`) while the outer `&mut RuntimeTransaction` satisfies the trait's
 /// `&mut self`.  A `None` after `.take()` marks the transaction as consumed.
 enum RuntimeTransactionInner {
@@ -2912,6 +3144,53 @@ impl RuntimeTransaction {
         Ok(materialize_runtime_answer(stats, items))
     }
 
+    /// Materialize a bounded legacy or canonical answer, preserving empty kinds.
+    #[doc(hidden)]
+    pub async fn query_materialized_bounded(
+        &mut self,
+        typeql: &str,
+        rows: Option<GivenRowsSpec>,
+        limits: RuntimeAnswerLimits,
+        canonical: bool,
+    ) -> Result<QueryResult> {
+        let mut items = Vec::new();
+        let mut consumer = |item| {
+            items.push(item);
+            Ok(RuntimeAnswerControl::Continue)
+        };
+        let stats = match (rows, canonical) {
+            (None, false) => self.query_bounded(typeql, limits, &mut consumer).await?,
+            (Some(rows), false) => {
+                self.query_with_rows_bounded(typeql, rows, limits, &mut consumer)
+                    .await?
+            }
+            (None, true) => {
+                self.query_v2_bounded(
+                    typeql,
+                    QueryV2RuntimeAnswerLimits {
+                        answer: limits,
+                        max_collection_members: u64::MAX,
+                    },
+                    &mut consumer,
+                )
+                .await?
+            }
+            (Some(rows), true) => {
+                self.query_v2_with_rows_bounded(
+                    typeql,
+                    rows,
+                    QueryV2RuntimeAnswerLimits {
+                        answer: limits,
+                        max_collection_members: u64::MAX,
+                    },
+                    &mut consumer,
+                )
+                .await?
+            }
+        };
+        Ok(materialize_runtime_answer(stats, items))
+    }
+
     fn query_bounded_with_scalar_encoding<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -2924,7 +3203,7 @@ impl RuntimeTransaction {
             max_collection_members,
         } = limits;
         let tql = typeql.to_string();
-        Box::pin(async move {
+        let work = async move {
             self.ensure_driver_open()?;
             runtime_check(&limits)?;
             match &self.inner {
@@ -2943,7 +3222,7 @@ impl RuntimeTransaction {
                             };
                             tx.query_with_options(&tql, options)
                                 .await
-                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                                .map_err(band8_query_error)
                         },
                         &limits,
                     )
@@ -2955,13 +3234,14 @@ impl RuntimeTransaction {
                             while let Some(row) = runtime_await(
                                 async {
                                     stream.try_next().await.map_err(|error| {
-                                        RuntimeError::QueryExecution(format!("Row stream: {error}"))
+                                        band8_query_error_with_operation(error, "Row stream failed")
                                     })
                                 },
                                 &limits,
                             )
                             .await?
                             {
+                                let decode = decode_span().entered();
                                 let mut object = serde_json::Map::new();
                                 for (index, column) in row.get_column_names().iter().enumerate() {
                                     let value = row
@@ -2973,6 +3253,7 @@ impl RuntimeTransaction {
                                         .unwrap_or(serde_json::Value::Null);
                                     object.insert(column.clone(), value);
                                 }
+                                drop(decode);
                                 if runtime_accept(
                                     &limits,
                                     &mut stats,
@@ -2991,21 +3272,25 @@ impl RuntimeTransaction {
                             while let Some(document) = runtime_await(
                                 async {
                                     stream.try_next().await.map_err(|error| {
-                                        RuntimeError::QueryExecution(format!(
-                                            "Document stream: {error}"
-                                        ))
+                                        band8_query_error_with_operation(
+                                            error,
+                                            "Document stream failed",
+                                        )
                                     })
                                 },
                                 &limits,
                             )
                             .await?
                             {
+                                let decode = decode_span().entered();
                                 let value = document_to_json_b8(
                                     &document,
                                     &mut collection_members,
                                     max_collection_members,
                                     scalar_encoding,
-                                )?;
+                                );
+                                drop(decode);
+                                let value = value?;
                                 if runtime_accept(
                                     &limits,
                                     &mut stats,
@@ -3035,7 +3320,7 @@ impl RuntimeTransaction {
                             };
                             tx.query_with_options(&tql, options)
                                 .await
-                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                                .map_err(band9_query_error)
                         },
                         &limits,
                     )
@@ -3050,7 +3335,8 @@ impl RuntimeTransaction {
                     .await
                 }
             }
-        })
+        };
+        Box::pin(work.instrument(execute_span()))
     }
 
     /// Execute TypeQL with `given`-stage input rows within this transaction.
@@ -3143,7 +3429,7 @@ impl RuntimeTransaction {
             scalar_encoding,
             &consumer,
         );
-        Box::pin(async move {
+        let work = async move {
             self.ensure_driver_open()?;
             runtime_check(&limits)?;
             match &self.inner {
@@ -3169,7 +3455,7 @@ impl RuntimeTransaction {
                             };
                             tx.query_with_options_and_rows(&tql, options, Some(given_rows))
                                 .await
-                                .map_err(|e| RuntimeError::QueryExecution(format!("{e}")))
+                                .map_err(band9_query_error)
                         },
                         &limits,
                     )
@@ -3184,7 +3470,8 @@ impl RuntimeTransaction {
                     .await
                 }
             }
-        })
+        };
+        Box::pin(work.instrument(execute_span()))
     }
 
     /// Commit this transaction.
@@ -3204,7 +3491,7 @@ impl RuntimeTransaction {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open().map_err(RuntimeCommitError::Runtime)?;
                     }
@@ -3214,12 +3501,13 @@ impl RuntimeTransaction {
                         ))
                     })?;
                     t.commit().await.map_err(band8_commit_failure)
-                })
+                };
+                Box::pin(work.instrument(commit_span()))
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open().map_err(RuntimeCommitError::Runtime)?;
                     }
@@ -3229,22 +3517,20 @@ impl RuntimeTransaction {
                         ))
                     })?;
                     t.commit().await.map_err(band9_commit_failure)
-                })
+                };
+                Box::pin(work.instrument(commit_span()))
             }
         }
     }
 
-    /// Roll back this transaction.
+    /// Roll back pending changes, keeping this transaction open for further work.
     pub fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
-        // Both bands expose rollback(&self), so we can move the value out of
-        // the Option and call rollback on the owned T (the compiler
-        // auto-borrows through the owned value for &self methods).
         let driver_lease = self.driver_lease.clone();
         match &mut self.inner {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
-                let tx = opt.take();
-                Box::pin(async move {
+                let tx = opt.as_ref();
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open()?;
                     }
@@ -3254,15 +3540,16 @@ impl RuntimeTransaction {
                     if !t.is_open() {
                         return Ok(());
                     }
-                    t.rollback()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
-                })
+                    t.rollback().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Rollback failed"))
+                    })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
-                let tx = opt.take();
-                Box::pin(async move {
+                let tx = opt.as_ref();
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open()?;
                     }
@@ -3272,10 +3559,11 @@ impl RuntimeTransaction {
                     if !t.is_open() {
                         return Ok(());
                     }
-                    t.rollback()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Rollback failed: {e}")))
-                })
+                    t.rollback().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Rollback failed"))
+                    })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
         }
     }
@@ -3287,7 +3575,7 @@ impl RuntimeTransaction {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     let Some(t) = tx else {
                         return Ok(());
                     };
@@ -3295,15 +3583,16 @@ impl RuntimeTransaction {
                         drop(t);
                         return Ok(());
                     }
-                    t.close()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Close failed: {e}")))
-                })
+                    t.close().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Close failed"))
+                    })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     let Some(t) = tx else {
                         return Ok(());
                     };
@@ -3311,10 +3600,11 @@ impl RuntimeTransaction {
                         drop(t);
                         return Ok(());
                     }
-                    t.close()
-                        .await
-                        .map_err(|e| RuntimeError::Transaction(format!("Close failed: {e}")))
-                })
+                    t.close().await.map_err(|e| {
+                        RuntimeError::Transaction(redact_provider_error(&e, "Close failed"))
+                    })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
         }
     }
@@ -3835,8 +4125,8 @@ fn exact_given_datetime_tz_b9(
     use chrono::{FixedOffset, LocalResult, NaiveDateTime, TimeZone as _};
     use typedb_driver::concept::value::TimeZone as B9TimeZone;
 
-    let local = local.parse::<NaiveDateTime>().map_err(|error| {
-        RuntimeError::QueryExecution(format!("Invalid given exact datetime-tz local: {error}"))
+    let local = local.parse::<NaiveDateTime>().map_err(|_| {
+        RuntimeError::QueryExecution("Invalid given exact datetime-tz local".to_owned())
     })?;
     let matches_offset = |value: &chrono::DateTime<B9TimeZone>| {
         value
@@ -3968,8 +4258,9 @@ async fn consume_answer_b9(
         B9QueryAnswer::Ok(_) => Ok(RuntimeAnswerStats::new(RuntimeAnswerKind::Ok)),
         B9QueryAnswer::ConceptRowStream(_, stream) => {
             let stream = stream
-                .map_err(|error| RuntimeError::QueryExecution(format!("Row stream: {error}")))
+                .map_err(|error| band9_query_error_with_operation(error, "Row stream failed"))
                 .and_then(move |row| {
+                    let _stage = decode_span().entered();
                     let result = (|| -> Result<RuntimeAnswerItem> {
                         let mut obj = serde_json::Map::new();
                         for (i, col) in row.get_column_names().iter().enumerate() {
@@ -3991,8 +4282,9 @@ async fn consume_answer_b9(
         B9QueryAnswer::ConceptDocumentStream(_, stream) => {
             let mut collection_members = 0_u64;
             let stream = stream
-                .map_err(|error| RuntimeError::QueryExecution(format!("Document stream: {error}")))
+                .map_err(|error| band9_query_error_with_operation(error, "Document stream failed"))
                 .and_then(move |document| {
+                    let _stage = decode_span().entered();
                     let result = document_to_json_b9(
                         &document,
                         &mut collection_members,
@@ -4046,6 +4338,44 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn transaction_options_forward_independent_driver_deadlines() {
+        for options in [
+            TransactionOptions::default(),
+            TransactionOptions {
+                transaction_timeout: Some(Duration::from_secs(1)),
+                ..Default::default()
+            },
+            TransactionOptions {
+                schema_lock_acquire_timeout: Some(Duration::from_secs(2)),
+                ..Default::default()
+            },
+            TransactionOptions {
+                transaction_timeout: Some(Duration::from_secs(3)),
+                schema_lock_acquire_timeout: Some(Duration::from_secs(4)),
+            },
+        ] {
+            #[cfg(feature = "band8")]
+            {
+                let driver = options.band8();
+                assert_eq!(driver.transaction_timeout, options.transaction_timeout);
+                assert_eq!(
+                    driver.schema_lock_acquire_timeout,
+                    options.schema_lock_acquire_timeout
+                );
+            }
+            #[cfg(feature = "band9")]
+            {
+                let driver = options.band9();
+                assert_eq!(driver.transaction_timeout, options.transaction_timeout);
+                assert_eq!(
+                    driver.schema_lock_acquire_timeout,
+                    options.schema_lock_acquire_timeout
+                );
+            }
+        }
+    }
+
     static NEXT_TLS_MATERIAL_TEST_ID: AtomicUsize = AtomicUsize::new(0);
     static TRACE_CAPTURE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -4092,7 +4422,12 @@ mod tests {
             .with_max_level(tracing::Level::TRACE)
             .with_writer(capture.clone())
             .finish();
-        tracing::subscriber::with_default(subscriber, emit);
+        tracing::subscriber::with_default(subscriber, || {
+            // Another test thread may have cached a callsite as uninteresting
+            // while no subscriber was set; re-evaluate before emitting.
+            tracing::callsite::rebuild_interest_cache();
+            emit();
+        });
         let bytes = capture.bytes.lock().expect("trace capture lock").clone();
         String::from_utf8(bytes).expect("tracing formatter emits UTF-8")
     }
@@ -4219,14 +4554,14 @@ mod tests {
         let error = SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
             core_version::VersionError::Unsupported {
                 component: "server",
-                found: core_version::Version::new(3, 13, 0),
+                found: core_version::Version::new(3, 14, 0),
             },
         ));
         let diagnostic = error
             .credential_safe_diagnostic()
             .expect("closed version diagnostics remain actionable");
-        assert!(diagnostic.contains("server version 3.13.0"), "{diagnostic}");
-        assert!(diagnostic.contains("3.11.0–3.12.x"), "{diagnostic}");
+        assert!(diagnostic.contains("server version 3.14.0"), "{diagnostic}");
+        assert!(diagnostic.contains("3.11.0–3.13.x"), "{diagnostic}");
     }
 
     #[test]
@@ -5239,42 +5574,56 @@ mod tests {
 
     #[tokio::test]
     async fn generated_exact_version_rejects_after_one_probe_before_driver_construction() {
-        let probe_calls = Arc::new(AtomicUsize::new(0));
-        let observed_calls = Arc::clone(&probe_calls);
-        let result = gated_driver_prepared_with_probe(
-            "not a provider endpoint and must not reach address parsing",
-            "credential must not be used",
-            "credential must not be used",
-            prepared_controlled_probe(test_connection_control(
-                1,
-                32,
-                2,
-                RuntimeAnswerCancellation::default(),
-            ))
-            .with_generated_3_12_3_requirement(),
-            move |_address, _port, _mode| {
-                observed_calls.fetch_add(1, Ordering::AcqRel);
-                Ok(core_version::Version::new(3, 12, 0))
-            },
-        )
-        .await;
-        let error = match result {
-            Ok(_) => panic!("a generated package requires exact TypeDB 3.12.3"),
-            Err(error) => error,
-        };
+        for (profile, observed, expected) in [
+            (
+                core_version::TYPEDB_3_12_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 12, 0),
+                core_version::Version::new(3, 12, 3),
+            ),
+            (
+                core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 12, 3),
+                core_version::Version::new(3, 13, 6),
+            ),
+        ] {
+            let release = core_version::GeneratedPackageRelease::for_profile(profile)
+                .expect("generated profiles map to an exact release");
+            let probe_calls = Arc::new(AtomicUsize::new(0));
+            let observed_calls = Arc::clone(&probe_calls);
+            let result = gated_driver_prepared_with_probe(
+                "not a provider endpoint and must not reach address parsing",
+                "credential must not be used",
+                "credential must not be used",
+                prepared_controlled_probe(test_connection_control(
+                    1,
+                    32,
+                    2,
+                    RuntimeAnswerCancellation::default(),
+                ))
+                .with_generated_package_requirement(release),
+                move |_address, _port, _mode| {
+                    observed_calls.fetch_add(1, Ordering::AcqRel);
+                    Ok(observed)
+                },
+            )
+            .await;
+            let error = match result {
+                Ok(_) => panic!("a generated {profile} package requires exact TypeDB {expected}"),
+                Err(error) => error,
+            };
 
-        assert_eq!(probe_calls.load(Ordering::Acquire), 1);
-        assert!(matches!(
-            error,
-            SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
-                core_version::VersionError::FeatureUnsupported {
-                    server,
-                    required,
-                    ..
-                }
-            )) if server == core_version::Version::new(3, 12, 0)
-                && required == core_version::Version::new(3, 12, 3)
-        ));
+            assert_eq!(probe_calls.load(Ordering::Acquire), 1);
+            assert!(matches!(
+                error,
+                SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
+                    core_version::VersionError::FeatureUnsupported {
+                        server,
+                        required,
+                        ..
+                    }
+                )) if server == observed && required == expected
+            ));
+        }
     }
 
     #[tokio::test]
@@ -5843,7 +6192,7 @@ mod tests {
             },
             move |_addr, _port, _tls| {
                 Err(core_version::VersionError::Probe(
-                    "HTTP endpoint unavailable".to_string(),
+                    "HTTP version request failed: connection refused or unavailable".to_string(),
                 ))
             },
         )
@@ -5852,8 +6201,17 @@ mod tests {
         match result {
             Err(RuntimeError::UnsupportedVersion(err)) => {
                 let msg = err.to_string();
-                assert!(msg.contains("HTTP endpoint unavailable"), "{msg}");
+                assert!(
+                    msg.contains("HTTP version probe failed: HTTP version request failed: connection refused or unavailable"),
+                    "{msg}"
+                );
+                assert!(!msg.contains("HTTP endpoint unavailable"), "{msg}");
+                assert!(!msg.contains("127.0.0.1"), "{msg}");
                 assert!(msg.contains("band-8 gRPC attempt failed"), "{msg}");
+                assert!(
+                    msg.contains("TypeDB transport failed: connection refused or unavailable"),
+                    "{msg}"
+                );
                 // Band 9 must never be probed blindly: a band-9 connect
                 // attempt crashes a 3.11 server (see grpc_fallback_driver).
                 assert!(!msg.contains("band-9 gRPC attempt"), "{msg}");
@@ -5868,14 +6226,19 @@ mod tests {
     fn band8_lazy_validation_failure_is_retryable() {
         let result = classify_band8_grpc_version(
             "localhost:1729",
-            Err("protocol handshake failed".to_string()),
+            Err(redact_provider_error(
+                &driver_b8::Error::Other("protocol handshake failed SECRET_SENTINEL".to_owned()),
+                "gRPC server version failed",
+            )),
         )
         .expect("transport validation failure should remain retryable");
 
         match result {
             Band8GrpcVersion::RetryableFailure(failure) => {
-                assert!(failure.contains("localhost:1729"), "{failure}");
-                assert!(failure.contains("protocol handshake failed"), "{failure}");
+                assert_eq!(
+                    failure,
+                    "band-8 gRPC version validation failed: gRPC server version failed: [UNKNOWN] TypeDB transport failed: other transport"
+                );
             }
             Band8GrpcVersion::Validated(version) => {
                 panic!("failed lazy connection unexpectedly validated as {version}")
@@ -5943,6 +6306,35 @@ mod tests {
                 minor: 12,
                 patch: 0,
             })
+        ));
+    }
+
+    #[cfg(all(feature = "band8", feature = "band9"))]
+    #[test]
+    fn band8_discovery_negotiates_the_accepted_embedded_band() {
+        for (reported, expected_band) in [("3.11.5", 8), ("3.12.3", 9), ("3.13.6", 9)] {
+            let Band8GrpcVersion::Validated(version) =
+                classify_band8_grpc_version("localhost:1729", Ok(reported.to_owned()))
+                    .expect("supported discovery version must validate")
+            else {
+                panic!("authoritative version unexpectedly marked retryable");
+            };
+            assert_eq!(validate_server_band(&version).unwrap(), expected_band);
+        }
+        assert!(matches!(
+            classify_band8_grpc_version("localhost:1729", Ok("3.14.0".to_owned())),
+            Err(RuntimeError::UnsupportedVersion(
+                core_version::VersionError::Unsupported { .. }
+            ))
+        ));
+    }
+
+    #[cfg(all(feature = "band8", not(feature = "band9")))]
+    #[test]
+    fn band8_discovery_refuses_a_server_requiring_an_unembedded_band() {
+        assert!(matches!(
+            classify_band8_grpc_version("localhost:1729", Ok("3.13.6".to_owned())),
+            Err(RuntimeError::UnsupportedVersion(_))
         ));
     }
 
@@ -6316,12 +6708,21 @@ mod tests {
              PINNED_DRIVER_VERSION_B9 is {PINNED_DRIVER_VERSION_B9}; update the runtime constant"
         );
 
+        // The driver line may run ahead of the window (it speaks band 9 to the
+        // window's newest line) but must never fall behind it.
         let pinned: core_version::Version = PINNED_DRIVER_VERSION_B9.parse().unwrap();
+        let (top_major, top_minor) = core_version::MAX_SUPPORTED_LINE;
         assert_eq!(
-            core_version::band(&pinned),
+            core_version::band(&core_version::Version::new(top_major, top_minor, 0)),
             Some(9),
-            "pinned band-9 driver version {PINNED_DRIVER_VERSION_B9} left protocol band 9; \
-             review the gate expectations before accepting the bump"
+            "the window's newest line no longer negotiates band 9; \
+             review the band-9 driver pin"
+        );
+        assert!(
+            pinned.major == top_major && pinned.minor >= top_minor,
+            "pinned band-9 driver version {PINNED_DRIVER_VERSION_B9} is behind the \
+             window's newest line {top_major}.{top_minor}; review the gate expectations \
+             before accepting the bump"
         );
     }
 
@@ -6365,5 +6766,34 @@ mod tests {
             super::canonical_decimal_text("not-a-decimal".into()),
             Err(RuntimeError::QueryExecution(message)) if message == "provider returned an unparseable decimal"
         ));
+    }
+}
+
+#[cfg(test)]
+mod fixed_transport_control_tests {
+    use super::*;
+
+    #[test]
+    fn controlled_connections_keep_only_complete_owned_diagnoses() {
+        let message =
+            "Failed to connect: [CXN20] TypeDB transport failed: connection refused or unavailable";
+        let error = controlled_connection_error(SecureConnectError::Runtime(
+            RuntimeError::Connection(message.to_owned()),
+        ));
+        assert_eq!(error.to_string(), format!("Connection error: {message}"));
+        assert_eq!(error.credential_safe_diagnostic(), Some(error.to_string()));
+        let aggregate = format!(
+            "HTTP version probe and gRPC fallback both failed: HTTP version probe failed: HTTP version request failed: TLS/certificate failure; band-8 gRPC attempt failed: Connection error: {message}"
+        );
+        let error = controlled_connection_error(SecureConnectError::Runtime(
+            RuntimeError::UnsupportedVersion(core_version::VersionError::Probe(aggregate.clone())),
+        ));
+        assert!(error.to_string().contains(&aggregate));
+        assert_eq!(error.credential_safe_diagnostic(), Some(error.to_string()));
+        let forged = format!("{message} SECRET_SENTINEL");
+        let error = controlled_connection_error(SecureConnectError::Runtime(
+            RuntimeError::Connection(forged),
+        ));
+        assert!(!error.to_string().contains("SECRET_SENTINEL"));
     }
 }

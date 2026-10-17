@@ -1,0 +1,10 @@
+format: typebridge.workspace/v1
+schema:
+  root: schema/schema.yaml
+  ownership: exclusive
+  managed-scope: live-races
+compatibility:
+  semantic-profile: typedb-3.13.6/v1
+migrations:
+  directory: migrations/v2
+  app-label: races

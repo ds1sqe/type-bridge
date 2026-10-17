@@ -343,12 +343,12 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(contains_hex_bytes(c_source, b"distinct"));
     assert!(
         c_source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  6u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,")
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
-    assert!(c_cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
-    assert!(c_package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
-    assert!(c_pkg_config.contains("Requires: type-bridge = 1.6.0"));
+    assert!(c_cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
+    assert!(c_package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
+    assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
 }
 
 #[test]
@@ -1169,7 +1169,7 @@ const diagnostic = (error) => {
 const rejects = (operation, code, memberKind) => {
   assert.throws(operation, (error) => {
     const value = diagnostic(error);
-    assert.equal(value.sdkCategory, "integrity");
+    assert.equal(value.sdk_category, "integrity");
     assert.equal(value.code, code);
     assert.equal(value.path[0].kind, "type");
     if (memberKind !== undefined) assert.equal(value.path[1].kind, memberKind);
@@ -1292,7 +1292,7 @@ for (const fault of ["throw", "null", "primitive"]) {
       ),
       (error) => {
         const value = diagnostic(error);
-        assert.equal(value.sdkCategory, "integrity");
+        assert.equal(value.sdk_category, "integrity");
         assert.equal(value.code, "generated_model_materialization_failed");
         assert.deepEqual(value.path, [
           { kind: "argument", value: "rows" },
@@ -1413,7 +1413,6 @@ assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
 assert.deepEqual(counters(detachedTarget), zeroCounters);
 
 const sameEntity = fixture([
-  iidDocument("0xb7"),
   documents(membershipDocument("0xb7", "0xa7")),
 ], sharedAuthority);
 const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
@@ -1434,15 +1433,13 @@ const membershipSource = fixture([
 const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
 assert.equal(exactMembership.iid, "0xb8");
 const sameRelation = fixture([
-  iidDocument("0xb8"),
-  iidDocument("0xc8"),
   documents(activityLinkDocument("0xc8", "0xb8")),
 ], sharedAuthority);
 const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
 );
 assert.equal(sameLink.subject[0].iid, "0xb8");
-assert.equal(counters(sameRelation).queries.length, 3);
+assert.equal(counters(sameRelation).queries.length, 1);
 const foreignRelation = fixture([]);
 assert.throws(() => Local.ActivityLink.manager(foreignRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
@@ -1577,14 +1574,13 @@ assert.deepEqual(
 );
 for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
   const unboundTarget = fixture([
-    iidDocument("0xbe"),
     documents(membershipDocument("0xbe", "0xa7")),
   ]);
   const created = Local.Membership.manager(unboundTarget.connection).insert(
     Local.Membership.create({ participant: [unboundPlayer] }),
   );
   assert.equal(created.iid, "0xbe");
-  assert.equal(counters(unboundTarget).queries.length, 2);
+  assert.equal(counters(unboundTarget).queries.length, 1);
   assert.equal(counters(unboundTarget).commits, 1);
 }
 

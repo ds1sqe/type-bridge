@@ -244,6 +244,52 @@ pub struct V2Section {
     /// Exact authority contract; defaults to `managed`.
     #[serde(default)]
     pub authority_mode: V2AuthorityMode,
+    /// Query limits this executor advertises and enforces, by stable limit
+    /// name. A limit left out keeps its canonical default.
+    #[serde(default)]
+    pub query_limits: std::collections::BTreeMap<String, u64>,
+    /// Answer ceilings this executor advertises and enforces, by stable
+    /// name: how much one query may return. A dimension left out keeps its
+    /// default.
+    #[serde(default)]
+    pub answer_limits: std::collections::BTreeMap<String, u64>,
+    /// Admit staged `/v3/staged` write transactions without an interceptor
+    /// vouching for the caller. Defaults to `false`: writes need an
+    /// authenticating policy.
+    #[serde(default)]
+    pub allow_unauthenticated_staged_writes: bool,
+}
+
+impl V2Section {
+    /// Resolve the configured answer ceilings, refusing unknown names and
+    /// values past a dimension's supported maximum. An unnamed dimension
+    /// keeps the proxy (wire) default, so an unconfigured server advertises
+    /// no answer limit.
+    #[cfg(feature = "v2-query")]
+    pub fn resolved_answer_limits(
+        &self,
+    ) -> Result<type_bridge_orm::QueryExecutionResourceLimits, String> {
+        type_bridge_orm::QueryExecutionResourceLimits::from_overrides(
+            type_bridge_orm::AnswerTransport::Proxy,
+            self.answer_limits
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value)),
+        )
+        .map_err(|error| format!("v2.answer_limits is rejected: {error}"))
+    }
+
+    /// Resolve the configured query limits, refusing unknown names and
+    /// values the implementation does not support.
+    pub fn resolved_query_limits(
+        &self,
+    ) -> Result<type_bridge_contract::limits::QueryLimits, String> {
+        type_bridge_contract::limits::QueryLimits::from_overrides(
+            self.query_limits
+                .iter()
+                .map(|(name, value)| (name.as_str(), *value)),
+        )
+        .map_err(|error| format!("v2.query_limits is rejected: {error}"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -620,6 +666,12 @@ struct RuntimeV2SectionWire {
     schema_authority_file: String,
     #[serde(default)]
     authority_mode: V2AuthorityMode,
+    #[serde(default)]
+    query_limits: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    answer_limits: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    allow_unauthenticated_staged_writes: bool,
 }
 
 impl From<RuntimeSchemaSectionWire> for SchemaSection {
@@ -663,6 +715,9 @@ impl From<RuntimeV2SectionWire> for V2Section {
             enabled: wire.enabled,
             schema_authority_file: wire.schema_authority_file,
             authority_mode: wire.authority_mode,
+            query_limits: wire.query_limits,
+            answer_limits: wire.answer_limits,
+            allow_unauthenticated_staged_writes: wire.allow_unauthenticated_staged_writes,
         }
     }
 }
@@ -3366,6 +3421,97 @@ enabled = ["audit-log", "rate-limiter", "custom"]
             default_http_port(),
             core_version::DEFAULT_HTTP_PORT,
             "server default_http_port() must equal core DEFAULT_HTTP_PORT"
+        );
+    }
+    #[test]
+    fn v2_query_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+        use type_bridge_contract::limits::QueryLimits;
+
+        let section = |entries: &[(&str, u64)]| V2Section {
+            query_limits: entries
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+            ..V2Section::default()
+        };
+        assert_eq!(
+            section(&[]).resolved_query_limits().expect("defaults"),
+            QueryLimits::CANONICAL
+        );
+        let raised = section(&[
+            ("canonical_bytes", 64 << 20),
+            ("remote_request_bytes", 128 << 20),
+        ])
+        .resolved_query_limits()
+        .expect("raised limits");
+        assert_eq!(raised.codec.max_bytes, 64 << 20);
+        assert_eq!(raised.remote_request_bytes, 128 << 20);
+        assert_eq!(raised.structural, QueryLimits::CANONICAL.structural);
+
+        assert!(
+            section(&[("made_up", 1)])
+                .resolved_query_limits()
+                .unwrap_err()
+                .contains("not a known query limit")
+        );
+        assert!(
+            section(&[("canonical_depth", 1_000)])
+                .resolved_query_limits()
+                .unwrap_err()
+                .contains("canonical_depth")
+        );
+    }
+
+    #[cfg(feature = "v2-query")]
+    #[test]
+    fn v2_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+        use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
+
+        let section = |entries: &[(&str, u64)]| V2Section {
+            answer_limits: entries
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), *value))
+                .collect(),
+            ..V2Section::default()
+        };
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        let defaults = section(&[]).resolved_answer_limits().expect("defaults");
+        assert_eq!(defaults, proxy);
+        assert!(
+            defaults.overrides().is_empty(),
+            "a default-configured server advertises an empty answer_limits map"
+        );
+        assert!(
+            V2Section::default()
+                .resolved_answer_limits()
+                .expect("defaults")
+                .overrides()
+                .is_empty()
+        );
+        let raised = section(&[("items", 1_000_000), ("bytes", 1 << 30)])
+            .resolved_answer_limits()
+            .expect("raised ceilings");
+        assert_eq!((raised.items, raised.bytes), (1_000_000, 1 << 30));
+        assert_eq!(raised.graph_nodes, proxy.graph_nodes);
+        assert_eq!(
+            raised.overrides(),
+            std::collections::BTreeMap::from([
+                ("bytes".to_owned(), 1 << 30),
+                ("items".to_owned(), 1_000_000),
+            ])
+        );
+
+        assert!(
+            section(&[("made_up", 1)])
+                .resolved_answer_limits()
+                .unwrap_err()
+                .contains("not a known answer limit")
+        );
+        assert!(
+            section(&[("statements", 4)])
+                .resolved_answer_limits()
+                .unwrap_err()
+                .contains("statements")
         );
     }
 }

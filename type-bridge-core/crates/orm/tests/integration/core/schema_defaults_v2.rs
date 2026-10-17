@@ -2,6 +2,7 @@
 
 use crate::common::dynamic_crud::unique_schema_suffix;
 use crate::common::rust_binding::setup_db;
+use type_bridge_contract::failure::{Failure, Phase, Reason};
 use type_bridge_orm::TxType;
 use type_bridge_orm::session::backend::QueryResult;
 
@@ -24,9 +25,16 @@ async fn type_and_struct_labels_share_typedb_namespace() {
         .await
         .expect_err("TypeDB 3.12.1 must reject a struct and type with the same label");
     assert!(
-        error.to_string().contains(&label),
-        "collision diagnostic must name the shared label: {error}"
+        matches!(
+            error.failure(),
+            Some(Failure::Rejected {
+                phase: Phase::Query,
+                ..
+            })
+        ),
+        "collision must retain a typed query rejection: {error}"
     );
+    assert!(!error.to_string().contains(&label));
 }
 
 #[tokio::test]
@@ -88,13 +96,17 @@ async fn omitted_interface_cards_match_typedb_defaults() {
         )
         .await
         .expect_err("omitted owns cardinality must reject two values");
-    let owns_message = owns_error.to_string();
     assert!(
-        owns_message.contains("[CNT5]")
-            && owns_message.contains("@card(0..1)")
-            && owns_message.contains("attribute ownership"),
-        "unexpected omitted-owns violation: {owns_message}"
+        matches!(
+            owns_error.failure(),
+            Some(Failure::Rejected {
+                reason: Reason::Cardinality,
+                ..
+            })
+        ),
+        "unexpected omitted-owns violation: {owns_error}"
     );
+    assert!(!owns_error.to_string().contains("@card(0..1)"));
 
     db.execute_raw(&format!("insert $r isa {relation};"), TxType::Write)
         .await
@@ -112,13 +124,17 @@ async fn omitted_interface_cards_match_typedb_defaults() {
         )
         .await
         .expect_err("omitted relates cardinality must reject two players");
-    let relates_message = relates_error.to_string();
     assert!(
-        relates_message.contains("[CNT5]")
-            && relates_message.contains("@card(0..1)")
-            && relates_message.contains("relates constraint violation"),
-        "unexpected omitted-relates violation: {relates_message}"
+        matches!(
+            relates_error.failure(),
+            Some(Failure::Rejected {
+                reason: Reason::Cardinality,
+                ..
+            })
+        ),
+        "unexpected omitted-relates violation: {relates_error}"
     );
+    assert!(!relates_error.to_string().contains("@card(0..1)"));
 
     db.execute_raw(
         &format!(
@@ -169,13 +185,16 @@ async fn specialized_roles_require_explicit_child_role_players() {
         )
         .await
         .expect_err("parent-role players must not implicitly play the specialized child role");
-    let parent_message = parent_error.to_string();
     assert!(
-        parent_message.contains("[INF11]")
-            && parent_message.contains(&parent_player)
-            && parent_message.contains(&format!("{child_relation}:{child_role}")),
-        "unexpected specialized-role rejection: {parent_message}"
+        matches!(parent_error.failure(), Some(Failure::Rejected {
+            phase: Phase::Query,
+            reason: Reason::Other { code },
+            ..
+        }) if code.as_str() == "INF11"),
+        "unexpected specialized-role rejection: {parent_error}"
     );
+    assert!(!parent_error.to_string().contains(&parent_player));
+    assert!(!parent_error.to_string().contains(&child_role));
 
     db.execute_raw(
         &format!(
@@ -224,19 +243,18 @@ async fn key_owns_enforces_exactly_one_on_typedb_3_12_1() {
         .expect_err("@key rejects an owner with two key values");
 
     for error in [zero, two] {
-        let message = error.to_string();
         assert!(
-            message.contains("[CNT5]"),
-            "unexpected TypeDB error: {message}"
+            matches!(
+                error.failure(),
+                Some(Failure::Rejected {
+                    reason: Reason::Cardinality,
+                    ..
+                })
+            ),
+            "unexpected exact-one rejection: {error}"
         );
-        assert!(
-            message.contains("[CNT5] Constraint '@card(1..1)'"),
-            "TypeDB did not render the exact-one constraint: {message}"
-        );
-        assert!(
-            message.contains("attribute ownership"),
-            "TypeDB did not identify attribute ownership: {message}"
-        );
+        assert!(!error.to_string().contains("@card(1..1)"));
+        assert!(!error.to_string().contains(&attribute));
     }
 }
 

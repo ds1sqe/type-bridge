@@ -264,11 +264,11 @@ fn dynamic_relation_exact_delete_query_contrasts_inclusive() {
     let inclusive = query_builder::build_dynamic_relation_delete_by_iid(&d, "0x1", "$r").unwrap();
     let exact = query_builder::build_dynamic_relation_delete_by_iid_exact(&d, "0x1", "$r").unwrap();
     assert!(inclusive.contains("$r isa employment") && !inclusive.contains("isa!"));
-    assert!(inclusive.contains("iid 0x1") && inclusive.contains("delete\n$r"));
+    assert!(inclusive.contains("iid 0x1") && inclusive.contains("delete $r"));
     assert!(
         exact.contains("$r isa! employment")
             && exact.contains("iid 0x1")
-            && exact.contains("delete\n$r")
+            && exact.contains("delete $r")
     );
     assert!(!exact.contains("$r isa employment"));
 }
@@ -335,18 +335,18 @@ fn dynamic_relation_update_exact_attribute_builder_is_complete_and_strict() {
     assert_eq!(exact.matches("try { $r has note").count(), 1);
     assert_eq!(exact.matches("try { $r has tag").count(), 1);
     assert_eq!(exact.matches("of $r").count(), 3);
-    let tail = exact.split_once("insert\n").map(|(_, t)| t).unwrap_or("");
+    let tail = exact.split_once("insert ").map(|(_, t)| t).unwrap_or("");
     assert_eq!(tail.matches("$r has status").count(), 1);
     assert_eq!(tail.matches("$r has tag").count(), 2);
     assert!(!tail.contains("note") && !tail.contains("relation-id"));
     assert!(tail.find("\"a\"").unwrap() < tail.find("\"b\"").unwrap());
-    assert!(!exact.contains("relation-id") && !exact.contains("delete\n$r"));
+    assert!(!exact.contains("relation-id") && !exact.contains("delete $r"));
     assert!(!tail.contains("$r isa") && !tail.contains("delete"));
     let omitted = vec![("status".into(), AttributeValue::String("active".into()))];
     let exact_omitted =
         query_builder::build_dynamic_relation_update_exact(&d, "0x1", &omitted, "$r").unwrap();
     let omitted_tail = exact_omitted
-        .split_once("insert\n")
+        .split_once("insert ")
         .map(|(_, t)| t)
         .unwrap_or("");
     assert!(omitted_tail.contains("$r has status"));
@@ -520,7 +520,7 @@ fn dynamic_relation_update_exact_builder_guards_are_exact() {
             && !attach.contains("$r isa employment")
     );
     let tail = attach
-        .split_once("insert\n")
+        .split_once("insert ")
         .map(|(_, t)| t)
         .unwrap_or(&attach);
     assert!(tail.contains("$r links") && !tail.contains("$r isa") && !tail.contains("delete"));
@@ -1265,7 +1265,7 @@ async fn dynamic_relation_update_exact_success_replaces_complete_active_state_in
     }
     assert!(s.queries[3].contains("isa! special-employment") && s.queries[3].contains("iid 0x1"));
     let tail = s.queries[3]
-        .split_once("insert\n")
+        .split_once("insert ")
         .map(|(_, t)| t)
         .unwrap_or("");
     assert_eq!(s.queries[3].matches("try { $r has status").count(), 1);
@@ -1284,7 +1284,7 @@ async fn dynamic_relation_update_exact_success_replaces_complete_active_state_in
             && !tail.contains("$r isa")
     );
     assert!(tail.find("\"a\"").unwrap() < tail.find("\"b\"").unwrap());
-    assert!(!s.queries[3].contains("delete\n$r"));
+    assert!(!s.queries[3].contains("delete $r"));
     for (q, role) in s.queries[4..7]
         .iter()
         .zip(["observer", "assignee", "reviewer"])
@@ -1293,10 +1293,10 @@ async fn dynamic_relation_update_exact_success_replaces_complete_active_state_in
             q.contains("isa! special-employment")
                 && q.contains("iid 0x1")
                 && q.contains(&format!("$r links ({role}: $old);"))
-                && q.contains(&format!("delete\nlinks ({role}: $old) of $r;"))
+                && q.contains(&format!("delete links ({role}: $old) of $r;"))
                 && !q.contains(";;")
                 && !q.contains("participant")
-                && !q.contains("delete\n$r")
+                && !q.contains("delete $r")
         );
     }
     let attach = &s.queries[7];
@@ -1307,7 +1307,7 @@ async fn dynamic_relation_update_exact_success_replaces_complete_active_state_in
             && attach.contains("$p1 isa! contractor, iid 0x3;")
             && attach.contains("$p2 isa! person, iid 0x4;")
     );
-    let at = attach.split_once("insert\n").map(|(_, t)| t).unwrap_or("");
+    let at = attach.split_once("insert ").map(|(_, t)| t).unwrap_or("");
     assert!(
         at.contains("$r links (observer: $p0, assignee: $p1, observer: $p2);")
             && !at.contains("reviewer")
@@ -1319,7 +1319,7 @@ async fn dynamic_relation_update_exact_success_replaces_complete_active_state_in
         assert!(
             q.contains("isa! special-employment")
                 && q.contains("iid 0x1")
-                && !q.contains("delete\n$r")
+                && !q.contains("delete $r")
         );
     }
 }
@@ -1385,7 +1385,7 @@ async fn dynamic_relation_update_exact_preflight_accounts_by_descriptor_index() 
     assert!(
         s.queries[2].contains("isa! employment")
             && s.queries[2].contains("employee")
-            && s.queries[2].contains("delete\nlinks")
+            && s.queries[2].contains("delete links")
     );
     assert!(
         s.queries[3].contains("isa! employment")
@@ -1667,7 +1667,7 @@ async fn dynamic_relation_put_exact_single_miss_inserts_after_strict_resolution(
                 && s.queries[2].contains("$p1 isa! company, iid 0x3;")
                 && s.queries[2].contains("$r isa employment, links (employee: $p0, employer: $p1)")
                 && s.queries[2].contains("position")
-                && s.queries[2].ends_with("fetch {\n  \"iid\": iid($r)\n};")
+                && s.queries[2].ends_with("fetch { \"iid\": iid($r)};")
         );
         assert!(!s.queries.iter().any(|q| q.contains("put")));
     }
@@ -1799,7 +1799,7 @@ async fn dynamic_relation_put_exact_single_hit_delegates_complete_update() {
     assert_eq!(s.closes, 0);
     assert!(
         !s.queries.iter().any(|q| q.contains("put")
-            || q.contains("delete\n$r")
+            || q.contains("delete $r")
             || q.contains("$r isa employment"))
     );
 }
@@ -2265,7 +2265,7 @@ async fn dynamic_relation_put_many_exact_later_row_failures_are_atomic_and_prese
         assert_eq!(s.query_modes, vec!["legacy"; s.queries.len()]);
         assert_eq!(s.commits, 0);
         assert_eq!(s.rollbacks, 1);
-        assert_eq!(s.closes, 0);
+        assert_eq!(s.closes, usize::from(failure.contains("update")));
     }
 }
 
@@ -2621,7 +2621,7 @@ async fn dynamic_relation_update_exact_owned_rollback_failure_preserves_primary(
     assert_eq!(s.query_modes, vec!["legacy"; 6]);
     assert_eq!(s.commits, 0);
     assert_eq!(s.rollbacks, 1);
-    assert_eq!(s.closes, 0);
+    assert_eq!(s.closes, 1);
 }
 
 #[tokio::test]
@@ -2882,7 +2882,7 @@ fn dynamic_relation_exact_put_builder_resolved_insert_inventory() {
     ] {
         assert_eq!(q.matches(fragment).count(), 1);
     }
-    let prefix = q.split_once("\ninsert\n").expect("insert boundary").0;
+    let prefix = q.split_once(" insert ").expect("insert boundary").0;
     assert!(!prefix.contains("$r"));
     assert_eq!(
         q.matches("$r isa employment, links (employee: $p0, employer: $p1, employee: $p2)")
@@ -2906,7 +2906,7 @@ fn dynamic_relation_exact_put_builder_resolved_insert_inventory() {
         assert!(pos >= last);
         last = pos;
     }
-    assert!(q.ends_with("fetch {\n  \"iid\": iid($r)\n};"));
+    assert!(q.ends_with("fetch { \"iid\": iid($r)};"));
     for forbidden in ["put", ".*", "label(", "\"_type\"", "\"_iid\"", "\"_role\""] {
         assert!(!q.contains(forbidden));
     }
@@ -3142,12 +3142,12 @@ async fn dynamic_relation_update_exact_mode_and_transaction_canonical_database_s
     );
     assert!(
         s.queries[3].contains("$r links (employee: $old);")
-            && s.queries[3].contains("delete\nlinks (employee: $old) of $r;")
+            && s.queries[3].contains("delete links (employee: $old) of $r;")
             && !s.queries[3].contains(";;")
     );
     assert!(
         s.queries[4].contains("$r links (employer: $old);")
-            && s.queries[4].contains("delete\nlinks (employer: $old) of $r;")
+            && s.queries[4].contains("delete links (employer: $old) of $r;")
             && !s.queries[4].contains(";;")
     );
     assert!(
@@ -3156,7 +3156,7 @@ async fn dynamic_relation_update_exact_mode_and_transaction_canonical_database_s
             && s.queries[5].contains("$p1 isa! company, iid 0x3;")
     );
     let attach_tail = s.queries[5]
-        .split_once("insert\n")
+        .split_once("insert ")
         .map(|(_, t)| t)
         .unwrap_or("");
     assert!(
@@ -3890,7 +3890,7 @@ async fn dynamic_canonical_database_commit_error_close_failure_keeps_commit_erro
 }
 
 #[tokio::test]
-async fn dynamic_canonical_database_successful_write_close_failure_is_reported() {
+async fn dynamic_canonical_database_successful_write_close_failure_keeps_committed_iid() {
     let (backend, state) = RecordingBackend::with_failures(
         vec![RecordingResponse::Result(QueryResult::Documents(vec![
             serde_json::json!({
@@ -3902,11 +3902,11 @@ async fn dynamic_canonical_database_successful_write_close_failure_is_reported()
         true,
     );
     let db = Database::with_backend(Box::new(backend), "testdb");
-    let error = DynamicEntityManager::new_canonical(&db, Arc::new(person_descriptor()))
+    let iid = DynamicEntityManager::new_canonical(&db, Arc::new(person_descriptor()))
         .insert(&person_attrs())
         .await
-        .unwrap_err();
-    assert!(matches!(error, OrmError::Transaction(message) if message == "close failed"));
+        .unwrap();
+    assert_eq!(iid, "0x1");
     assert_canonical_mode_and_counts(&state, &[TxType::Write], 1, 0, 1);
 }
 
@@ -4202,13 +4202,13 @@ fn employment_role_players() -> Vec<DynamicRolePlayerInput> {
         DynamicRolePlayerInput {
             role_name: "employee".into(),
             player_type_name: "person".into(),
-            iid: Some("0xperson".into()),
+            iid: Some("0xa001".into()),
             key: None,
         },
         DynamicRolePlayerInput {
             role_name: "employer".into(),
             player_type_name: "company".into(),
-            iid: Some("0xcompany".into()),
+            iid: Some("0xc001".into()),
             key: None,
         },
     ]
@@ -4716,7 +4716,7 @@ fn dynamic_relation_fetch_query_binds_role_player_filter() {
         &[DynamicRolePlayerInput {
             role_name: "employee".into(),
             player_type_name: "person".into(),
-            iid: Some("0xperson".into()),
+            iid: Some("0xa001".into()),
             key: None,
         }],
         "$r",
@@ -4725,7 +4725,7 @@ fn dynamic_relation_fetch_query_binds_role_player_filter() {
 
     assert!(dynamic.contains("$r isa $t"));
     assert!(dynamic.contains("employee: $rp0"));
-    assert!(dynamic.contains("$rp0 isa person, iid 0xperson"));
+    assert!(dynamic.contains("$rp0 isa person, iid 0xa001"));
 }
 
 #[test]
@@ -4768,7 +4768,7 @@ fn dynamic_relation_insert_query_matches_typed_shape() {
         None,
         None,
         Some(("name", AttributeValue::String("Alice".into()))),
-        Some("0xcomp1"),
+        Some("0xc002"),
         None,
         Some("Engineer"),
     );
@@ -4785,7 +4785,7 @@ fn dynamic_relation_insert_query_matches_typed_shape() {
             DynamicRolePlayerInput {
                 role_name: "employer".into(),
                 player_type_name: "company".into(),
-                iid: Some("0xcomp1".into()),
+                iid: Some("0xc002".into()),
                 key: None,
             },
         ],
@@ -4809,7 +4809,7 @@ fn dynamic_relation_put_query_uses_put_clause() {
     .unwrap();
 
     assert!(dynamic.contains("match"));
-    assert!(dynamic.contains("iid 0xperson"));
+    assert!(dynamic.contains("iid 0xa001"));
     assert!(dynamic.contains("put"));
     assert!(dynamic.contains("$r isa employment, links (employee: $rp0, employer: $rp1)"));
     assert!(dynamic.contains("fetch"));
@@ -4819,7 +4819,7 @@ fn dynamic_relation_put_query_uses_put_clause() {
 fn dynamic_relation_update_query_matches_by_iid() {
     let dynamic = query_builder::build_dynamic_relation_update(
         &employment_descriptor(),
-        Some("0xrel"),
+        Some("0xb001"),
         &employment_attrs("Staff Engineer"),
         &[],
         "$r",
@@ -4827,7 +4827,7 @@ fn dynamic_relation_update_query_matches_by_iid() {
     .unwrap();
 
     assert!(dynamic.contains("match"));
-    assert!(dynamic.contains("iid 0xrel"));
+    assert!(dynamic.contains("iid 0xb001"));
     assert!(dynamic.contains("delete"));
     assert!(dynamic.contains("insert"));
     assert!(dynamic.contains("$r has position \"Staff Engineer\""));
@@ -4845,8 +4845,8 @@ fn dynamic_relation_update_query_can_match_by_role_players() {
     )
     .unwrap();
 
-    assert!(dynamic.contains("$rp0 isa person, iid 0xperson"));
-    assert!(dynamic.contains("$rp1 isa company, iid 0xcompany"));
+    assert!(dynamic.contains("$rp0 isa person, iid 0xa001"));
+    assert!(dynamic.contains("$rp1 isa company, iid 0xc001"));
     assert!(dynamic.contains("$r isa employment (employee: $rp0, employer: $rp1)"));
     assert!(dynamic.contains("$r has position \"Staff Engineer\""));
 }
@@ -4859,7 +4859,7 @@ fn dynamic_relation_update_replaces_multi_value_attributes() {
     ];
     let dynamic = query_builder::build_dynamic_relation_update(
         &tagged_employment_descriptor(),
-        Some("0xrel"),
+        Some("0xb001"),
         &attrs,
         &[],
         "$r",
@@ -4911,7 +4911,7 @@ async fn dynamic_entity_manager_insert_fetch_count_delete() {
     assert!(recorded[2].contains("reduce"));
     assert!(recorded[3].contains("delete"));
     assert!(recorded[3].contains("$e;"));
-    assert!(!recorded[3].contains("delete\n$e isa"));
+    assert!(!recorded[3].contains("delete $e isa"));
 }
 
 #[tokio::test]
@@ -5017,7 +5017,7 @@ async fn dynamic_entity_manager_fetches_by_iid() {
     assert_eq!(row.iid.as_deref(), Some("0xaaa"));
     assert_eq!(row.type_name.as_deref(), Some("person"));
     assert_eq!(row.attributes, person_attrs());
-    assert!(manager.get_by_iid("0xmissing").await.unwrap().is_none());
+    assert!(manager.get_by_iid("0xde00").await.unwrap().is_none());
 
     let recorded = queries.lock().unwrap();
     assert_eq!(recorded.len(), 2);
@@ -5663,11 +5663,11 @@ async fn dynamic_relation_manager_insert_fetch_count_delete() {
     assert!(recorded[0].contains("links (employee: $rp0, employer: $rp1)"));
     assert!(recorded[1].contains("sub employment"));
     assert!(recorded[1].contains("employee: $rp0"));
-    assert!(recorded[1].contains("\"_role_0_attributes\": { $rp0.* }"));
+    assert!(recorded[1].contains("\"_role_0_attributes\": {  $rp0.*}"));
     assert!(recorded[2].contains("reduce"));
     assert!(recorded[3].contains("delete"));
     assert!(recorded[3].contains("$r;"));
-    assert!(!recorded[3].contains("delete\n$r isa"));
+    assert!(!recorded[3].contains("delete $r isa"));
 }
 
 #[tokio::test]
@@ -5695,7 +5695,7 @@ async fn dynamic_relation_manager_put_and_update_execute_queries() {
     let recorded = queries.lock().unwrap();
     assert_eq!(recorded.len(), 2);
     assert!(recorded[0].starts_with("match"));
-    assert!(recorded[0].contains("\nput"));
+    assert!(recorded[0].contains(" put "));
     assert!(recorded[0].contains("links (employee: $rp0, employer: $rp1)"));
     assert!(recorded[1].contains("iid 0xa2"));
     assert!(recorded[1].contains("delete"));
@@ -5773,13 +5773,13 @@ async fn dynamic_relation_manager_fetches_by_iid() {
     assert_eq!(row.attributes, relation_attrs);
     assert_eq!(row.role_players.len(), 2);
     assert_eq!(row.role_players[0].player_iid.as_deref(), Some("0x101"));
-    assert!(manager.get_by_iid("0xmissing").await.unwrap().is_empty());
+    assert!(manager.get_by_iid("0xde00").await.unwrap().is_empty());
 
     let recorded = queries.lock().unwrap();
     assert_eq!(recorded.len(), 2);
     assert!(recorded[0].contains("iid 0xabc"));
     assert!(recorded[0].contains("employee: $rp0"));
-    assert!(recorded[0].contains("\"_role_0_attributes\": { $rp0.* }"));
+    assert!(recorded[0].contains("\"_role_0_attributes\": {  $rp0.*}"));
 }
 
 #[tokio::test]

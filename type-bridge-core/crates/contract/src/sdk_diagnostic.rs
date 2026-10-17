@@ -2,8 +2,11 @@
 //!
 //! This module is deliberately separate from [`crate::diagnostic`]. The
 //! existing diagnostic is part of canonical contract wires; an SDK execution
-//! diagnostic is an in-memory engine value that bindings project through their
-//! own versioned ABI. It therefore implements no serialization contract.
+//! diagnostic is an in-memory engine value. It has no wire decoder. Hosts
+//! receive it in one JSON form,
+//! [`SdkDiagnosticJson`](crate::sdk_diagnostic::SdkDiagnosticJson), which every
+//! binding that reports a diagnostic as data uses unchanged; the C ABI copies the
+//! same values into typed accessors.
 //!
 //! Dynamic provider messages, credentials, endpoint or custom-root paths,
 //! query values, and internal backtraces have no representation here. Stable
@@ -16,7 +19,11 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 
+use serde::Serialize;
+use serde::ser::{SerializeMap, Serializer};
+
 use crate::capability::CapabilityId;
+use crate::diagnostic::Diagnostic;
 use crate::fingerprint::Fingerprint;
 use crate::id::{RoleId, TypeId};
 use crate::schema::OwnsFactId;
@@ -548,6 +555,23 @@ pub enum SdkProjectionEvidenceSlotPresence {
     Present,
 }
 
+/// Schema context for a staged failure, supplied from the executing plan only.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct FailureContext {
+    /// Possible owning type; never parsed from provider text.
+    pub owner: Option<TypeId>,
+    /// Possible ownership fact; never parsed from provider text.
+    pub attribute: Option<OwnsFactId>,
+}
+impl FailureContext {
+    /// Context naming the possible owning type and ownership fact.
+    #[must_use]
+    pub const fn new(owner: Option<TypeId>, attribute: Option<OwnsFactId>) -> Self {
+        Self { owner, attribute }
+    }
+}
+
 /// One stable, binding-neutral SDK execution failure.
 ///
 /// This value is versioned but intentionally has no wire representation. A
@@ -555,6 +579,7 @@ pub enum SdkProjectionEvidenceSlotPresence {
 /// handle and must not expose this Rust layout.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SdkExecutionDiagnostic {
+    failure: Option<Box<crate::failure::Failure>>,
     version: SdkDiagnosticVersion,
     category: SdkDiagnosticCategory,
     code: SdkDiagnosticCode,
@@ -570,6 +595,7 @@ impl SdkExecutionDiagnostic {
         message: SdkDiagnosticMessage,
     ) -> Self {
         Self {
+            failure: None,
             version: SdkDiagnosticVersion::CURRENT,
             category,
             code,
@@ -738,6 +764,153 @@ impl SdkExecutionDiagnostic {
             static_name("commit_outcome"),
             SdkDiagnosticDetailValue::CommitOutcome(outcome),
         )
+    }
+
+    /// Construct the released diagnostic for a typed provider failure.
+    ///
+    /// The code stays on the released vocabulary: an indeterminate commit is
+    /// `commit_outcome_unknown`, a commit rejection `commit_definitely_aborted`
+    /// and a query rejection `provider_operation_failed` for a `write`. The
+    /// typed failure is added through [`Self::with_failure`].
+    #[must_use]
+    pub fn from_failure(failure: &crate::failure::Failure, context: FailureContext) -> Self {
+        use crate::failure::{Failure, Phase};
+        let released = match failure {
+            Failure::Indeterminate { .. } => Self::commit_failure(SdkCommitFailureOutcome::Unknown),
+            Failure::Rejected {
+                phase: Phase::Commit,
+                ..
+            } => Self::commit_failure(SdkCommitFailureOutcome::DefinitelyAborted),
+            Failure::Rejected {
+                phase: Phase::Query,
+                ..
+            } => Self::provider_failure(SdkProviderOperation::Write),
+        };
+        released.with_failure(failure, context)
+    }
+
+    /// Attach a typed provider failure to a released diagnostic.
+    ///
+    /// Code, category, message and existing details are kept. The additive
+    /// details are `retry_safe`, `phase`, `code` (provider code), `rejection`
+    /// (reason), `lock_kind` and `annotation`; the staged index and schema
+    /// context extend the path. [`Self::failure_from_host_json`] reads them
+    /// back.
+    #[must_use]
+    pub fn with_failure(
+        mut self,
+        failure: &crate::failure::Failure,
+        context: FailureContext,
+    ) -> Self {
+        use crate::failure::Failure;
+        self.failure = Some(Box::new(failure.clone()));
+        let mut diagnostic = self.with_static_detail(
+            static_name(FAILURE_RETRY_SAFE_DETAIL),
+            SdkDiagnosticDetailValue::Boolean(failure.retry_safe()),
+        );
+        let host = failure.host_json();
+        for (key, name) in FAILURE_IDENTITY_DETAILS {
+            if let Some(value) = host[key].as_str() {
+                diagnostic = diagnostic.with_static_detail(
+                    static_name(name),
+                    SdkDiagnosticDetailValue::QueryIdentity(
+                        SdkQueryDiagnosticIdentity::new(value)
+                            .expect("closed failure vocabulary is a bounded identity"),
+                    ),
+                );
+            }
+        }
+        if let Failure::Rejected {
+            op_index: Some(index),
+            ..
+        } = failure
+        {
+            diagnostic
+                .path
+                .push(SdkDiagnosticPathSegment::Index(u64::from(*index)));
+        }
+        if let Some(owner) = context.owner {
+            diagnostic.path.push(SdkDiagnosticPathSegment::Type(owner));
+        }
+        if let Some(field) = context.attribute {
+            diagnostic.path.push(SdkDiagnosticPathSegment::Field(field));
+        }
+        diagnostic
+    }
+
+    /// The typed failure a diagnostic's host form carries in the details
+    /// [`Self::with_failure`] adds, with the staged index from its path.
+    ///
+    /// This is how a signed remote reply keeps the failure the server
+    /// classified: `None` unless the details name a complete, consistent
+    /// failure ([`crate::failure::Failure::from_host_json`]).
+    #[must_use]
+    pub fn failure_from_host_json(
+        diagnostic: &serde_json::Value,
+    ) -> Option<crate::failure::Failure> {
+        let details = diagnostic.get("details")?;
+        let detail = |name: &str, kind: &str| {
+            let value = details.get(name)?;
+            (value.get("kind")?.as_str()? == kind).then(|| value.get("value").cloned())?
+        };
+        let mut host = serde_json::Map::new();
+        host.insert(
+            "retry_safe".into(),
+            detail(FAILURE_RETRY_SAFE_DETAIL, "boolean")?,
+        );
+        for (key, name) in FAILURE_IDENTITY_DETAILS {
+            if details.get(name).is_some() {
+                host.insert(key.into(), detail(name, "query_identity")?);
+            }
+        }
+        let index = diagnostic
+            .get("path")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|path| {
+                path.iter().find_map(|segment| {
+                    (segment.get("kind")?.as_str()? == "index")
+                        .then(|| segment.get("value").cloned())?
+                })
+            });
+        if let Some(index) = index {
+            host.insert("op_index".into(), index);
+        }
+        crate::failure::Failure::from_host_json(&serde_json::Value::Object(host))
+    }
+
+    /// Typed provider failure when constructed from the runtime's classification.
+    #[must_use]
+    pub fn failure(&self) -> Option<&crate::failure::Failure> {
+        self.failure.as_deref()
+    }
+
+    /// Details in lexical key order without those [`Self::with_failure`]
+    /// added: the released detail set.
+    ///
+    /// A binding whose released ABI fixes the detail set, such as C ABI 1.6,
+    /// projects these instead of [`Self::details`]; the typed failure stays
+    /// available through [`Self::failure`].
+    pub fn released_details(
+        &self,
+    ) -> impl Iterator<Item = (&SdkDiagnosticName, &SdkDiagnosticDetailValue)> {
+        let typed = self.failure.is_some();
+        self.details.iter().filter(move |(key, _)| {
+            let key = key.as_str();
+            !(typed
+                && (key == FAILURE_RETRY_SAFE_DETAIL
+                    || FAILURE_IDENTITY_DETAILS
+                        .iter()
+                        .any(|(_, name)| *name == key)))
+        })
+    }
+
+    /// Typed commit outcome, including the released umbrella constructors.
+    #[must_use]
+    pub fn commit_outcome(&self) -> Option<SdkCommitFailureOutcome> {
+        self.details.values().find_map(|value| match value {
+            SdkDiagnosticDetailValue::CommitOutcome(outcome) => Some(*outcome),
+            _ => None,
+        })
     }
 
     /// Construct a stable transaction-lifecycle diagnostic.
@@ -1021,6 +1194,229 @@ impl fmt::Display for SdkExecutionDiagnostic {
 
 impl Error for SdkExecutionDiagnostic {}
 
+impl SdkExecutionDiagnostic {
+    /// Map a canonical codec ceiling refusal to its projected-codec
+    /// resource-limit diagnostic.
+    ///
+    /// `input` says whether the refused bytes were being decoded (input) or
+    /// encoded (output). Returns `None` for any other contract diagnostic,
+    /// which the caller reports unchanged.
+    #[must_use]
+    pub fn from_canonical_limit(diagnostic: &Diagnostic, input: bool) -> Option<Self> {
+        match diagnostic.code().as_str() {
+            "canonical_json_too_deep" => Some(Self::projected_codec_depth_limit()),
+            "canonical_collection_too_large" => Some(Self::projected_codec_member_limit()),
+            "canonical_json_too_large" | "canonical_string_too_large" if input => {
+                Some(Self::projected_codec_input_limit())
+            }
+            "canonical_json_too_large" | "canonical_string_too_large" => {
+                Some(Self::projected_codec_output_limit())
+            }
+            _ => None,
+        }
+    }
+
+    /// Borrow the canonical host JSON form of this diagnostic.
+    #[must_use]
+    pub const fn host_json(&self) -> SdkDiagnosticJson<'_> {
+        SdkDiagnosticJson(self)
+    }
+}
+
+/// The one JSON form in which an [`SdkExecutionDiagnostic`] reaches a host.
+///
+/// ```json
+/// {
+///   "version": 1,
+///   "category": "invalid_plan",
+///   "sdk_category": "invalid_input",
+///   "query_category": "invalid_plan",
+///   "code": "group_key_cap_exceeded",
+///   "message": "...",
+///   "path": [{"kind": "operation"}, {"kind": "index", "value": 2}],
+///   "details": {"maximum": {"kind": "count", "value": "16"}}
+/// }
+/// ```
+///
+/// - `category` is the typed-query category when the diagnostic carries
+///   one, else the SDK category; `sdk_category` is always the SDK category;
+///   `query_category` is the typed-query category or `null`. The
+///   `query_category` detail is not repeated under `details`.
+/// - Each path segment is `{"kind", "value"}`; structural query segments
+///   (`request`, `plan`, `operation`, ...) have no `value`.
+/// - Each detail is `{"kind", "value"}`. `count`, `byte_count`, and
+///   `signed` values are decimal strings: their Rust types (`u64`, `i64`)
+///   exceed the 2^53 integers a JavaScript number holds exactly.
+/// - Path positions (`index`, `output_slot`, `binding`, `role_edge`) are
+///   JSON numbers: they index collections bounded by the canonical codec
+///   ceilings, far below 2^53.
+#[derive(Clone, Copy, Debug)]
+pub struct SdkDiagnosticJson<'a>(&'a SdkExecutionDiagnostic);
+
+impl Serialize for SdkDiagnosticJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let diagnostic = self.0;
+        let query_category = diagnostic
+            .details()
+            .values()
+            .find_map(|detail| match detail {
+                SdkDiagnosticDetailValue::QueryCategory(category) => Some(category.as_str()),
+                _ => None,
+            });
+        let sdk_category = diagnostic.category().as_str();
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry("version", &diagnostic.version().get())?;
+        map.serialize_entry("category", query_category.unwrap_or(sdk_category))?;
+        map.serialize_entry("sdk_category", sdk_category)?;
+        map.serialize_entry("query_category", &query_category)?;
+        map.serialize_entry("code", diagnostic.code().as_str())?;
+        map.serialize_entry("message", diagnostic.message().as_str())?;
+        map.serialize_entry("path", &PathJson(diagnostic.path()))?;
+        map.serialize_entry("details", &DetailsJson(diagnostic.details()))?;
+        map.end()
+    }
+}
+
+struct PathJson<'a>(&'a [SdkDiagnosticPathSegment]);
+
+impl Serialize for PathJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.0.iter().map(SegmentJson))
+    }
+}
+
+struct SegmentJson<'a>(&'a SdkDiagnosticPathSegment);
+
+#[derive(Serialize)]
+struct OwnedName<'a> {
+    owner: &'a str,
+    name: &'a str,
+}
+
+impl Serialize for SegmentJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            SdkDiagnosticPathSegment::Argument(name) => {
+                tagged(serializer, "argument", name.as_str())
+            }
+            SdkDiagnosticPathSegment::Index(index) => tagged(serializer, "index", index),
+            SdkDiagnosticPathSegment::Type(id) => tagged(serializer, "type", id),
+            SdkDiagnosticPathSegment::Field(id) => tagged(serializer, "field", id),
+            SdkDiagnosticPathSegment::Role(id) => tagged(serializer, "role", id),
+            SdkDiagnosticPathSegment::Query(kind) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("kind", kind.as_str())?;
+                map.end()
+            }
+            SdkDiagnosticPathSegment::QueryBinding(binding) => {
+                tagged(serializer, "binding", binding)
+            }
+            SdkDiagnosticPathSegment::QueryField { owner, name } => tagged(
+                serializer,
+                "field",
+                &OwnedName {
+                    owner: owner.as_str(),
+                    name: name.as_str(),
+                },
+            ),
+            SdkDiagnosticPathSegment::QueryRole { owner, name } => tagged(
+                serializer,
+                "role",
+                &OwnedName {
+                    owner: owner.as_str(),
+                    name: name.as_str(),
+                },
+            ),
+            SdkDiagnosticPathSegment::QueryRoleEdge(edge) => tagged(serializer, "role_edge", edge),
+            SdkDiagnosticPathSegment::QueryOutputSlot(slot) => {
+                tagged(serializer, "output_slot", slot)
+            }
+            SdkDiagnosticPathSegment::QueryOutputName(name) => {
+                tagged(serializer, "output_name", name.as_str())
+            }
+            SdkDiagnosticPathSegment::ContractField(name) => {
+                tagged(serializer, "contract_field", name.as_str())
+            }
+            SdkDiagnosticPathSegment::ContractIdentity(name) => {
+                tagged(serializer, "contract_identity", name.as_str())
+            }
+        }
+    }
+}
+
+struct DetailsJson<'a>(&'a BTreeMap<SdkDiagnosticName, SdkDiagnosticDetailValue>);
+
+impl Serialize for DetailsJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(
+            self.0
+                .iter()
+                .filter(|(_, value)| !matches!(value, SdkDiagnosticDetailValue::QueryCategory(_)))
+                .map(|(name, value)| (name.as_str(), DetailJson(value))),
+        )
+    }
+}
+
+struct DetailJson<'a>(&'a SdkDiagnosticDetailValue);
+
+impl Serialize for DetailJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            SdkDiagnosticDetailValue::Boolean(value) => tagged(serializer, "boolean", value),
+            SdkDiagnosticDetailValue::Count(value) => {
+                tagged(serializer, "count", &value.to_string())
+            }
+            SdkDiagnosticDetailValue::ByteCount(value) => {
+                tagged(serializer, "byte_count", &value.to_string())
+            }
+            SdkDiagnosticDetailValue::Signed(value) => {
+                tagged(serializer, "signed", &value.to_string())
+            }
+            SdkDiagnosticDetailValue::QueryIdentity(value) => {
+                tagged(serializer, "query_identity", value.as_str())
+            }
+            SdkDiagnosticDetailValue::QueryIdentityList(values) => tagged(
+                serializer,
+                "query_identity_list",
+                &values
+                    .iter()
+                    .map(SdkQueryDiagnosticIdentity::as_str)
+                    .collect::<Vec<_>>(),
+            ),
+            SdkDiagnosticDetailValue::Capability(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::ValueType(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::Type(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::Field(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::Role(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::Fingerprint(value) => tagged(serializer, "text", value),
+            SdkDiagnosticDetailValue::ProviderOperation(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::CommitOutcome(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+            SdkDiagnosticDetailValue::QueryCategory(value) => {
+                tagged(serializer, "text", value.as_str())
+            }
+        }
+    }
+}
+
+fn tagged<S: Serializer, V: Serialize + ?Sized>(
+    serializer: S,
+    kind: &str,
+    value: &V,
+) -> Result<S::Ok, S::Error> {
+    let mut map = serializer.serialize_map(Some(2))?;
+    map.serialize_entry("kind", kind)?;
+    map.serialize_entry("value", value)?;
+    map.end()
+}
+
 fn static_code(value: &'static str) -> SdkDiagnosticCode {
     SdkDiagnosticCode::new(value).expect("static SDK diagnostic code is canonical")
 }
@@ -1029,6 +1425,19 @@ fn static_message(value: &'static str) -> SdkDiagnosticMessage {
     SdkDiagnosticMessage::new(value).expect("static SDK diagnostic message is valid")
 }
 
+/// Boolean detail [`SdkExecutionDiagnostic::with_failure`] always adds.
+const FAILURE_RETRY_SAFE_DETAIL: &str = "retry_safe";
+
+/// Identity details [`SdkExecutionDiagnostic::with_failure`] adds when the
+/// failure has them, as (`Failure::host_json` key, detail name).
+const FAILURE_IDENTITY_DETAILS: [(&str, &str); 5] = [
+    ("phase", "phase"),
+    ("code", "code"),
+    ("reason", "rejection"),
+    ("lock_kind", "lock_kind"),
+    ("annotation", "annotation"),
+];
+
 fn static_name(value: &'static str) -> SdkDiagnosticName {
     SdkDiagnosticName::new(value).expect("static SDK diagnostic name is canonical")
 }
@@ -1036,6 +1445,111 @@ fn static_name(value: &'static str) -> SdkDiagnosticName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_failure_details_round_trip_every_phase_and_reason() {
+        use crate::failure::{AnnotationKind, Code, Failure, LockKind, Phase, Reason};
+        let reasons = [
+            Reason::Conflict {
+                lock: LockKind::Exclusive,
+            },
+            Reason::Conflict {
+                lock: LockKind::RequireDeletedKey,
+            },
+            Reason::Conflict {
+                lock: LockKind::DeletingRequiredKey,
+            },
+            Reason::Conflict {
+                lock: LockKind::Unknown,
+            },
+            Reason::Cardinality,
+            Reason::Unique,
+            Reason::Constraint {
+                annotation: AnnotationKind::Abstract,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Regex,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Range,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Values,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Distinct,
+            },
+            Reason::Constraint {
+                annotation: AnnotationKind::Unknown,
+            },
+            Reason::Other {
+                code: Code::new("TSV7").expect("code"),
+            },
+        ];
+        let mut failures = vec![
+            Failure::Indeterminate { code: None },
+            Failure::Indeterminate {
+                code: Code::new("SRV9"),
+            },
+        ];
+        for phase in [Phase::Query, Phase::Commit] {
+            for reason in &reasons {
+                for op_index in [None, Some(3)] {
+                    failures.push(Failure::Rejected {
+                        phase,
+                        reason: reason.clone(),
+                        op_index,
+                    });
+                }
+            }
+        }
+        for failure in failures {
+            let diagnostic =
+                SdkExecutionDiagnostic::from_failure(&failure, FailureContext::default());
+            let host = serde_json::to_value(diagnostic.host_json()).expect("host json");
+            assert_eq!(
+                SdkExecutionDiagnostic::failure_from_host_json(&host),
+                Some(failure.clone()),
+                "{host}"
+            );
+            assert_eq!(Failure::from_host_json(&failure.host_json()), Some(failure));
+            // The released detail set never shows the additive failure details.
+            assert!(
+                diagnostic
+                    .released_details()
+                    .all(|(name, _)| name.as_str() != "phase" && name.as_str() != "retry_safe")
+            );
+        }
+    }
+
+    #[test]
+    fn signed_failure_details_refuse_an_incomplete_or_inconsistent_failure() {
+        use crate::failure::Failure;
+        let unique = Failure::Rejected {
+            phase: crate::failure::Phase::Query,
+            reason: crate::failure::Reason::Unique,
+            op_index: Some(0),
+        };
+        let host = unique.host_json();
+        for (key, value) in [
+            ("phase", serde_json::Value::Null),
+            ("phase", "staging".into()),
+            ("retry_safe", serde_json::Value::Null),
+            ("code", "CNT5".into()),
+            ("lock_kind", "exclusive".into()),
+            ("reason", "duplicate".into()),
+        ] {
+            let mut changed = host.clone();
+            changed[key] = value;
+            assert_eq!(Failure::from_host_json(&changed), None, "{changed}");
+        }
+        // A diagnostic without the additive details carries no failure.
+        let plain = serde_json::to_value(
+            SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Write).host_json(),
+        )
+        .expect("host json");
+        assert_eq!(SdkExecutionDiagnostic::failure_from_host_json(&plain), None);
+    }
 
     #[test]
     fn generated_package_diagnostics_have_fixed_binding_neutral_vocabulary() {
@@ -1065,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn detached_semantic_fingerprint_classifier_matches_v3_representative() {
+    fn detached_semantic_fingerprint_classifier_matches_models_representative() {
         let missing =
             SdkExecutionDiagnostic::classify_detached_semantic_schema_fingerprint_rejection(
                 SdkProjectionEvidenceSlotPresence::Absent,
@@ -1111,7 +1625,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_codec_diagnostics_match_the_closed_v5_algebra() {
+    fn projected_codec_diagnostics_match_the_closed_serialization_algebra() {
         for (diagnostic, category, code) in [
             (
                 SdkExecutionDiagnostic::projected_codec_cancelled(),

@@ -102,7 +102,7 @@ fn render_index(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(format!(
-        "{}import {{ readFileSync as _readFileSync }} from \"node:fs\";\nimport {{ MigrationCatalog, openMigrationCatalog as _openMigrationCatalog }} from \"@type-bridge/node\";\nimport {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport {{ MigrationCatalog }};\nexport const MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\" as const;\nexport function openMigrationCatalog(): MigrationCatalog {{\n  const authority = new TextEncoder().encode(SCHEMA_AUTHORITY_JSON);\n  const history = _readFileSync(new URL(`../${{MIGRATION_HISTORY_RESOURCE}}`, import.meta.url));\n  return _openMigrationCatalog(authority, history);\n}}\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
+        "{}import {{ readFileSync as _readFileSync }} from \"node:fs\";\nimport {{ MigrationCatalog, openMigrationCatalog as _openMigrationCatalog }} from \"@type-bridge/node\";\nimport type {{ QueryV2Authority }} from \"@type-bridge/node\";\nimport {{ installGeneratedSchemaAuthority as _installGeneratedSchemaAuthority }} from \"@type-bridge/node/runtime-projection\";\nimport {{ SCHEMA_AUTHORITY_JSON }} from \"./authority.js\";\nimport {{ {install} }} from \"./runtime.js\";\nimport {{ {} }} from \"./models.js\";\nimport {{ PROJECTION_FINGERPRINT_JSON, RUNTIME_PROJECTION_JSON, SEMANTIC_SCHEMA_FINGERPRINT_JSON }} from \"./schema.js\";\n\n{install}(\n  RUNTIME_PROJECTION_JSON,\n  SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  PROJECTION_FINGERPRINT_JSON,\n  [{}],\n  SCHEMA_AUTHORITY_JSON,\n);\n\nexport {{ MigrationCatalog }};\nexport const MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\" as const;\nexport function openMigrationCatalog(): MigrationCatalog {{\n  const authority = new TextEncoder().encode(SCHEMA_AUTHORITY_JSON);\n  const history = _readFileSync(new URL(`../${{MIGRATION_HISTORY_RESOURCE}}`, import.meta.url));\n  return _openMigrationCatalog(authority, history);\n}}\n\nlet _schemaAuthority: QueryV2Authority | undefined;\n/** This package's verified schema authority. Build plans with `plan.build(schemaAuthority())`. */\nexport function schemaAuthority(): QueryV2Authority {{\n  _schemaAuthority ??= _installGeneratedSchemaAuthority({{\n    schemaAuthorityJson: SCHEMA_AUTHORITY_JSON,\n    semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n  }});\n  return _schemaAuthority;\n}}\n\nexport * from \"./runtime.js\";\nexport * from \"./models.js\";\nexport * from \"./structs.js\";\nexport * from \"./functions.js\";\nexport * from \"./schema.js\";\n",
         header(),
         names.join(", "),
         names.join(", "),
@@ -616,7 +616,7 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
-        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, QuerySession, RemoteQuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, QuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
     let mut emitted_inputs = BTreeSet::new();
     let mut emitted_calls = BTreeSet::new();
@@ -711,13 +711,13 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 let scalar = scalar_type(domain);
                 let _ = writeln!(
                     output,
-                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession | RemoteQuerySession, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
+                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
                 );
             }
         }
 
         let mut generics = Vec::new();
-        let mut parameters = vec!["session: QuerySession | RemoteQuerySession".to_owned()];
+        let mut parameters = vec!["session: QuerySession".to_owned()];
         let mut arguments_expr = Vec::new();
         for (index, parameter) in function.parameters().iter().enumerate() {
             let parameter_name = parameter.target_name().as_str();

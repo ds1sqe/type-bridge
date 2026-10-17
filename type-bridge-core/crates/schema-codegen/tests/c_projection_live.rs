@@ -24,6 +24,7 @@ use type_bridge_schema::{
 use type_bridge_schema_codegen::{CEmitter, GeneratedPackage};
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{
     Stage as TempDirectory, base64, command_exists, free_port, native_library, repository_root,
     runtime_include, write_package,
@@ -35,19 +36,19 @@ const SETUP: &str = include_str!("c_projection_live/setup.rs");
 const SETUP_LOCK: &[u8] = include_bytes!("../../../../tests/support/provider/Cargo.lock");
 const CONSUMER: &str = include_str!("c_projection_live/consumer.c");
 const QUERY_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+    include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
 const QUERY_PROVIDER_SCHEMA: &str =
-    include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql");
+    include_str!("../../../../tests/contracts/sdk_conformance/models/provider-3.12.1.tql");
 const QUERY_PACKAGE: &str = include_str!("c_projection_live/query_package.c");
 const QUERY_CONSUMER: &str = include_str!("c_projection_live/query_consumer.c");
 const DATABASE_CREATED_MARKER: &str = "generated C isolated database created";
-const SDK_V2_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
-const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
-const SDK_V2_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
+const SDK_QUERIES_FACT_PREFIX: &str = "TYPE_BRIDGE_C_V2_FACT\t";
+const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest.json";
+const SDK_QUERIES_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/queries/catalog.json";
 const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
 const SDK_PROVIDER_SCHEMA_PATH: &str =
     "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql";
-const SDK_V2_SELECTED_PROOFS: [(&str, &str, &str); 34] = [
+const SDK_QUERIES_SELECTED_PROOFS: [(&str, &str, &str); 34] = [
     (
         "sdk.crud.entity-single",
         "direct_runtime",
@@ -187,7 +188,7 @@ const SDK_V2_SELECTED_PROOFS: [(&str, &str, &str); 34] = [
         "scalar_domain",
     ),
 ];
-const SDK_V2_LIVE_LANES: [(&str, &str); 31] = [
+const SDK_QUERIES_LIVE_LANES: [(&str, &str); 31] = [
     ("entity_lifecycle", "direct_runtime"),
     ("relation_lifecycle", "direct_runtime"),
     ("structured_query_diagnostic", "diagnostic"),
@@ -220,7 +221,7 @@ const SDK_V2_LIVE_LANES: [(&str, &str); 31] = [
     ("scalar_domain", "direct_runtime"),
     ("scalar_domain", "remote_runtime"),
 ];
-const SDK_V2_MANIFEST_TRANSITION_CASES: [&str; 17] = [
+const SDK_QUERIES_MANIFEST_TRANSITION_CASES: [&str; 17] = [
     "sdk.model.values-and-references",
     "sdk.crud.entity-single",
     "sdk.crud.relation-single",
@@ -243,10 +244,12 @@ const SDK_V2_MANIFEST_TRANSITION_CASES: [&str; 17] = [
 static TEMP_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn emitted_package() -> GeneratedPackage {
-    emitted_package_authority_and_fingerprints().0
+    emitted_package_authority_and_fingerprints(support::TEST_PROFILE).0
 }
 
-fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, Value, Value) {
+fn emitted_package_authority_and_fingerprints(
+    semantic_profile: &str,
+) -> (GeneratedPackage, Vec<u8>, Value, Value) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("c-projection-live.yaml").expect("document ID is valid"),
@@ -254,7 +257,7 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )])
     .expect("shared acceptance schema parses");
     let declared = normalize_documents(&documents).expect("shared acceptance schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
+    let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
     let resolved = resolve(&declared, &profile).expect("shared acceptance schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
@@ -268,7 +271,7 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )
     .expect("shared acceptance schema projects to C");
     let authority =
-        support::authority_for_declared(&declared, "c-projection-live", support::TEST_PROFILE);
+        support::authority_for_declared(&declared, "c-projection-live", semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let semantic_fingerprint = serde_json::to_value(projection.semantic_fingerprint())
         .expect("C semantic fingerprint serializes");
@@ -285,20 +288,20 @@ fn emitted_package_authority_and_fingerprints() -> (GeneratedPackage, Vec<u8>, V
     )
 }
 
-fn emitted_query_package() -> GeneratedPackage {
-    emitted_query_package_and_authority().0
+fn emitted_query_package(semantic_profile: &str) -> GeneratedPackage {
+    emitted_query_package_and_authority(semantic_profile).0
 }
 
-fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
+fn emitted_query_package_and_authority(semantic_profile: &str) -> (GeneratedPackage, Vec<u8>) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
+        DocumentId::new("models.yaml").expect("Models document ID is valid"),
         QUERY_SCHEMA,
     )])
-    .expect("exact Sdk V3 schema parses");
-    let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
+    .expect("exact Models schema parses");
+    let declared = normalize_documents(&documents).expect("exact Models schema normalizes");
+    let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
+    let resolved = resolve(&declared, &profile).expect("exact Models schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("ordered C resources hash");
@@ -309,26 +312,25 @@ fn emitted_query_package_and_authority() -> (GeneratedPackage, Vec<u8>) {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("exact Sdk V3 schema projects to ordered C");
-    let authority =
-        support::authority_for_declared(&declared, "sdk-v3-c-query", support::TEST_PROFILE);
+    .expect("exact Models schema projects to ordered C");
+    let authority = support::authority_for_declared(&declared, "models-c-query", semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let package = emitter
         .emit(&projection, &authority)
-        .expect("exact Sdk V3 ordered C package emits");
+        .expect("exact Models ordered C package emits");
     (package, authority_bytes)
 }
 
-fn sdk_v3_fingerprints() -> (Value, Value) {
+fn sdk_models_fingerprints(semantic_profile: &str) -> (Value, Value) {
     let emitter = CEmitter::new();
     let documents = SchemaDocumentSet::parse([(
-        DocumentId::new("sdk-v3.yaml").expect("Sdk V3 document ID is valid"),
+        DocumentId::new("models.yaml").expect("Models document ID is valid"),
         QUERY_SCHEMA,
     )])
-    .expect("exact Sdk V3 schema parses");
-    let declared = normalize_documents(&documents).expect("exact Sdk V3 schema normalizes");
-    let profile = SemanticProfileId::new(support::TEST_PROFILE).expect("test profile is valid");
-    let resolved = resolve(&declared, &profile).expect("exact Sdk V3 schema resolves");
+    .expect("exact Models schema parses");
+    let declared = normalize_documents(&documents).expect("exact Models schema normalizes");
+    let profile = SemanticProfileId::new(semantic_profile).expect("live profile is valid");
+    let resolved = resolve(&declared, &profile).expect("exact Models schema resolves");
     let resources = emitter
         .code_resources_for(&resolved)
         .expect("ordered C resources hash");
@@ -339,7 +341,7 @@ fn sdk_v3_fingerprints() -> (Value, Value) {
         &emitter.generator_handlers_for(&resolved),
         &resources,
     )
-    .expect("exact Sdk V3 schema projects to ordered C");
+    .expect("exact Models schema projects to ordered C");
     (
         serde_json::to_value(projection.semantic_fingerprint())
             .expect("V3 semantic fingerprint serializes"),
@@ -348,15 +350,39 @@ fn sdk_v3_fingerprints() -> (Value, Value) {
     )
 }
 
-fn publish_sdk_v3_c_live_supplement() {
-    let Some(destination) = env::var_os("TYPE_BRIDGE_SDK_V3_C_SUPPLEMENT") else {
+/// The profile's matrix fingerprints, once this build is shown to reproduce
+/// them; reports carry the matrix entry, never the catalog's top level.
+fn matrix_fingerprints(
+    profile: &SdkProfile,
+    semantic: &Value,
+    projection: &Value,
+) -> (Value, Value) {
+    let expected = &profile.expected_fingerprints;
+    assert_eq!(
+        &expected["semantic"], semantic,
+        "C live semantic fingerprint differs from the {} matrix entry",
+        profile.semantic_profile
+    );
+    assert_eq!(
+        &expected["projections"]["c"], projection,
+        "C live projection fingerprint differs from the {} matrix entry",
+        profile.semantic_profile
+    );
+    (
+        expected["semantic"].clone(),
+        expected["projections"]["c"].clone(),
+    )
+}
+
+fn publish_sdk_models_c_live_supplement(profile: &SdkProfile) {
+    let Some(destination) = env::var_os("TYPE_BRIDGE_SDK_MODELS_C_SUPPLEMENT") else {
         return;
     };
     let destination = PathBuf::from(destination);
     assert!(destination.is_absolute() && !destination.exists());
     let root = repository_root();
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join("tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"))
+        &fs::read(root.join("tests/contracts/sdk_conformance/models/journey.json"))
             .expect("V3 journey reads"),
     )
     .expect("V3 journey parses");
@@ -373,11 +399,13 @@ fn publish_sdk_v3_c_live_supplement() {
         ("unkeyed_entity_iid_lifecycle", "direct_runtime"),
         ("unkeyed_relation_iid_lifecycle", "direct_runtime"),
     ];
-    let (semantic_fingerprint, projection_fingerprint) = sdk_v3_fingerprints();
+    let (semantic, projection) = sdk_models_fingerprints(&profile.semantic_profile);
+    let (semantic_fingerprint, projection_fingerprint) =
+        matrix_fingerprints(profile, &semantic, &projection);
     let supplement = json!({
         "binding": "c",
-        "format": "typebridge.sdk-v3-live-supplement/v1",
-        "producer": "type-bridge-c.generated-data-model-runtime-v3-live",
+        "format": "typebridge.sdk-models-live-supplement/v1",
+        "producer": "type-bridge-c.sdk-models-data-model-runtime-live",
         "projection_fingerprint": projection_fingerprint,
         "results": lanes.into_iter().map(|(observation_ref, proof_kind)| json!({
             "observation": expected.get(observation_ref).unwrap_or_else(|| panic!("V3 journey omitted {observation_ref}")),
@@ -386,7 +414,7 @@ fn publish_sdk_v3_c_live_supplement() {
             "proof_kind": proof_kind,
         })).collect::<Vec<_>>(),
         "semantic_fingerprint": semantic_fingerprint,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": profile.semantic_profile,
     });
     let mut bytes = to_canonical_json(&supplement).expect("C V3 live supplement canonicalizes");
     bytes.push(b'\n');
@@ -461,7 +489,7 @@ fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
         "G++ or Clang++ is required for generated C++17 checks"
     );
     let stage = TempDirectory::new();
-    write_package(&emitted_query_package(), stage.path());
+    write_package(&emitted_query_package(support::TEST_PROFILE), stage.path());
     let full_consumer = stage.path().join("full_consumer.c");
     fs::write(&full_consumer, CONSUMER).expect("full ordered C consumer is staged");
     for compiler in &c_compilers {
@@ -473,7 +501,7 @@ fn query_successor_consumers_compile_as_strict_c17_and_cpp17() {
                 "-Wextra",
                 "-Werror",
                 "-pedantic-errors",
-                "-DTYPE_BRIDGE_SDK_V5_C_CODEC",
+                "-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC",
                 "-fsyntax-only",
             ])
             .arg("-I")
@@ -584,109 +612,122 @@ fn manifest_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "\\\\")
 }
 
-fn requested_sdk_v2_report() -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_REPORT_V2")?;
+fn requested_sdk_queries_report() -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_QUERIES_REPORT")?;
     let raw = raw
         .into_string()
-        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must be UTF-8");
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT must be UTF-8");
     assert!(
         raw.len() <= 4096,
-        "TYPE_BRIDGE_SDK_REPORT_V2 exceeds 4096 UTF-8 bytes"
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT exceeds 4096 UTF-8 bytes"
     );
     let path = PathBuf::from(raw);
     assert!(
         path.is_absolute(),
-        "TYPE_BRIDGE_SDK_REPORT_V2 must be an absolute path"
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT must be an absolute path"
     );
     let parent = path
         .parent()
-        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must have a parent directory");
-    let metadata =
-        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_REPORT_V2 parent must already exist");
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT must have a parent directory");
+    let metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT parent must already exist");
     assert!(
         metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_SDK_REPORT_V2 parent must be a non-symlink directory"
+        "TYPE_BRIDGE_SDK_QUERIES_REPORT parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_SDK_REPORT_V2 target must not already exist"),
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_QUERIES_REPORT target must not already exist"),
         Err(error) => {
-            panic!("TYPE_BRIDGE_SDK_REPORT_V2 target is not inspectable: {error}")
+            panic!("TYPE_BRIDGE_SDK_QUERIES_REPORT target is not inspectable: {error}")
         }
     }
     Some(path)
 }
 
-fn requested_sdk_v5_evidence() -> Option<PathBuf> {
-    let raw = env::var_os("TYPE_BRIDGE_SDK_V5_C_EVIDENCE")?;
+fn requested_sdk_serialization_evidence() -> Option<PathBuf> {
+    let raw = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE")?;
     let text = raw
         .to_str()
-        .expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE must be UTF-8");
+        .expect("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE must be UTF-8");
     assert!(
         !text.is_empty() && text.len() <= 4096,
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE exceeds its path bound"
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE exceeds its path bound"
     );
     let path = PathBuf::from(text);
     assert!(
         path.is_absolute(),
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE must be absolute"
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE must be absolute"
     );
     let parent = path
         .parent()
-        .expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE must have a parent");
-    let metadata =
-        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_V5_C_EVIDENCE parent must exist");
+        .expect("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE must have a parent");
+    let metadata = fs::symlink_metadata(parent)
+        .expect("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE parent must exist");
     assert!(
         metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_SDK_V5_C_EVIDENCE parent must be a non-symlink directory"
+        "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_SDK_V5_C_EVIDENCE target must not exist"),
-        Err(error) => panic!("TYPE_BRIDGE_SDK_V5_C_EVIDENCE is not inspectable: {error}"),
+        Ok(_) => panic!("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE target must not exist"),
+        Err(error) => {
+            panic!("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE is not inspectable: {error}")
+        }
     }
     Some(path)
 }
 
-fn validated_sdk_v2_proofs(
+fn validated_sdk_queries_proofs(
     root: &Path,
     report: Option<&Path>,
 ) -> BTreeMap<support::SdkV2ProofLane, Value> {
-    let fragments = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS");
-    let nonce = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
+    let fragments = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS");
+    let nonce = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
     match (report, fragments, nonce) {
         (None, None, None) => BTreeMap::new(),
         (None, _, _) => {
-            panic!("sdk-v2 proof inputs are valid only when TYPE_BRIDGE_SDK_REPORT_V2 is requested")
+            panic!(
+                "queries proof inputs are valid only when TYPE_BRIDGE_SDK_QUERIES_REPORT is requested"
+            )
         }
         (Some(_), Some(fragments), Some(nonce)) => {
             let nonce = nonce
                 .into_string()
-                .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE must be UTF-8");
-            let paths = support::sdk_v2_proof_paths(&fragments)
-                .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS must be a valid path list");
-            support::validate_sdk_v2_proof_fragments(root, "c", &nonce, &paths)
-                .expect("C sdk-v2 proof fragments must validate")
+                .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE must be UTF-8");
+            let paths = support::sdk_queries_proof_paths(&fragments)
+                .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS must be a valid path list");
+            support::validate_sdk_queries_proof_fragments_on(
+                root,
+                "c",
+                &support::sdk_profile_matrix::requested("queries").semantic_profile,
+                &nonce,
+                &paths,
+            )
+            .expect("C queries proof fragments must validate")
         }
         (Some(_), _, _) => panic!(
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS and TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE are both required for a V2 report"
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS and TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE are both required for a V2 report"
         ),
     }
 }
 
-fn parse_sdk_v2_live_facts(root: &Path, stdout: &str) -> BTreeMap<support::SdkV2ProofLane, Value> {
-    let expected = SDK_V2_LIVE_LANES
+fn parse_sdk_queries_live_facts(
+    root: &Path,
+    stdout: &str,
+) -> BTreeMap<support::SdkV2ProofLane, Value> {
+    let expected = SDK_QUERIES_LIVE_LANES
         .into_iter()
         .map(|(observation_ref, proof_kind)| (observation_ref.to_owned(), proof_kind.to_owned()))
         .collect::<BTreeSet<_>>();
     assert_eq!(
         expected.len(),
-        SDK_V2_LIVE_LANES.len(),
-        "C sdk-v2 live lane inventory contains a duplicate"
+        SDK_QUERIES_LIVE_LANES.len(),
+        "C queries live lane inventory contains a duplicate"
     );
     let mut observations = BTreeMap::new();
     for line in stdout.lines() {
-        let Some(payload) = line.strip_prefix(SDK_V2_FACT_PREFIX) else {
+        let Some(payload) = line.strip_prefix(SDK_QUERIES_FACT_PREFIX) else {
             continue;
         };
         let mut fields = payload.split('\t');
@@ -698,89 +739,89 @@ fn parse_sdk_v2_live_facts(root: &Path, stdout: &str) -> BTreeMap<support::SdkV2
                 && !observation_ref.is_empty()
                 && !proof_kind.is_empty()
                 && !raw_observation.is_empty(),
-            "C sdk-v2 fact is malformed: {line:?}"
+            "C queries fact is malformed: {line:?}"
         );
         let lane = (observation_ref.to_owned(), proof_kind.to_owned());
         assert!(
             expected.contains(&lane),
-            "C sdk-v2 consumer emitted an unexpected lane: {lane:?}"
+            "C queries consumer emitted an unexpected lane: {lane:?}"
         );
         let observation: Value = serde_json::from_str(raw_observation)
-            .unwrap_or_else(|error| panic!("C sdk-v2 fact is invalid JSON: {error}"));
+            .unwrap_or_else(|error| panic!("C queries fact is invalid JSON: {error}"));
         assert!(
             observation.is_object(),
-            "C sdk-v2 fact must be an object: {lane:?}"
+            "C queries fact must be an object: {lane:?}"
         );
         let canonical =
-            to_canonical_json(&observation).expect("C sdk-v2 fact observation canonicalizes");
+            to_canonical_json(&observation).expect("C queries fact observation canonicalizes");
         assert_eq!(
             canonical,
             raw_observation.as_bytes(),
-            "C sdk-v2 fact must be compact canonical JSON: {lane:?}"
+            "C queries fact must be compact canonical JSON: {lane:?}"
         );
         assert!(
             observations.insert(lane.clone(), observation).is_none(),
-            "C sdk-v2 consumer duplicated a lane: {lane:?}"
+            "C queries consumer duplicated a lane: {lane:?}"
         );
     }
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
         expected,
-        "C sdk-v2 live fact coverage differs from the frozen lane inventory"
+        "C queries live fact coverage differs from the frozen lane inventory"
     );
 
-    assert_sdk_v2_observations_match_journey(root, &observations);
+    assert_sdk_queries_observations_match_journey(root, &observations);
     observations
 }
 
-fn assert_sdk_v2_observations_match_journey(
+fn assert_sdk_queries_observations_match_journey(
     root: &Path,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) {
     let journey_bytes =
-        fs::read(root.join(support::SDK_V2_JOURNEY)).expect("sdk-v2 journey is readable");
+        fs::read(root.join(support::SDK_QUERIES_JOURNEY)).expect("queries journey is readable");
     let journey: Value =
-        serde_json::from_slice(&journey_bytes).expect("sdk-v2 journey is valid JSON");
+        serde_json::from_slice(&journey_bytes).expect("queries journey is valid JSON");
     let expected_observations = journey["expected_observations"]
         .as_object()
-        .expect("sdk-v2 expected observations are an object");
+        .expect("queries expected observations are an object");
     for ((observation_ref, proof_kind), observation) in observations {
         assert_eq!(
             observation,
             expected_observations
                 .get(observation_ref)
-                .unwrap_or_else(|| panic!("sdk-v2 observation is absent: {observation_ref}")),
-            "C sdk-v2 observation diverged: {observation_ref}/{proof_kind}"
+                .unwrap_or_else(|| panic!("queries observation is absent: {observation_ref}")),
+            "C queries observation diverged: {observation_ref}/{proof_kind}"
         );
     }
 }
 
-fn sdk_v2_report_results(
+fn sdk_queries_report_results(
     catalog: &Value,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) -> Vec<Value> {
     let mut capabilities = BTreeMap::new();
     for case in catalog["cases"]
         .as_array()
-        .expect("sdk-v2 catalog cases must be an array")
+        .expect("queries catalog cases must be an array")
     {
         let case_id = case["id"]
             .as_str()
-            .expect("sdk-v2 case ID must be text")
+            .expect("queries case ID must be text")
             .to_owned();
         let capability_id = case["capability_id"]
             .as_str()
-            .expect("sdk-v2 capability ID must be text")
+            .expect("queries capability ID must be text")
             .to_owned();
         assert!(
             capabilities.insert(case_id, capability_id).is_none(),
-            "sdk-v2 catalog contains a duplicate case"
+            "queries catalog contains a duplicate case"
         );
     }
     let selected = catalog["selected_proofs"]
         .as_array()
-        .expect("sdk-v2 selected proofs must be an array");
-    assert_eq!(selected.len(), 34, "sdk-v2 report requires 34 proofs");
+        .expect("queries selected proofs must be an array");
+    assert_eq!(selected.len(), 34, "queries report requires 34 proofs");
     let selected_contract = selected
         .iter()
         .map(|proof| {
@@ -796,32 +837,32 @@ fn sdk_v2_report_results(
         })
         .collect::<Vec<_>>();
     assert_eq!(
-        selected_contract, SDK_V2_SELECTED_PROOFS,
-        "sdk-v2 catalog selected proof ledger drifted"
+        selected_contract, SDK_QUERIES_SELECTED_PROOFS,
+        "queries catalog selected proof ledger drifted"
     );
     let mut required = BTreeSet::new();
     let mut rows = Vec::with_capacity(selected.len());
     for proof in selected {
         let case_id = proof["case_id"]
             .as_str()
-            .expect("sdk-v2 selected case ID must be text")
+            .expect("queries selected case ID must be text")
             .to_owned();
         let proof_kind = proof["proof_kind"]
             .as_str()
-            .expect("sdk-v2 selected proof kind must be text")
+            .expect("queries selected proof kind must be text")
             .to_owned();
         let observation_ref = proof["observation_ref"]
             .as_str()
-            .expect("sdk-v2 selected observation ref must be text")
+            .expect("queries selected observation ref must be text")
             .to_owned();
         let lane = (observation_ref.clone(), proof_kind.clone());
         assert!(
             required.insert(lane.clone()),
-            "sdk-v2 catalog duplicated a selected lane: {lane:?}"
+            "queries catalog duplicated a selected lane: {lane:?}"
         );
         let capability_id = capabilities
             .get(&case_id)
-            .unwrap_or_else(|| panic!("selected sdk-v2 case is unknown: {case_id}"));
+            .unwrap_or_else(|| panic!("selected queries case is unknown: {case_id}"));
         let observation = observations
             .get(&lane)
             .unwrap_or_else(|| panic!("C observation is absent: {lane:?}"));
@@ -836,7 +877,7 @@ fn sdk_v2_report_results(
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
         required,
-        "C sdk-v2 observations differ from the catalog selected lanes"
+        "C queries observations differ from the catalog selected lanes"
     );
     assert!(
         rows.windows(2).all(|pair| {
@@ -850,23 +891,24 @@ fn sdk_v2_report_results(
             );
             left < right
         }),
-        "sdk-v2 selected proofs must be sorted by case and proof kind"
+        "queries selected proofs must be sorted by case and proof kind"
     );
     rows
 }
 
-fn build_sdk_v2_report(
+fn build_sdk_queries_report(
     root: &Path,
+    profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) -> Value {
     let catalog_bytes =
-        fs::read(root.join(SDK_V2_CATALOG_PATH)).expect("sdk-v2 catalog is readable");
+        fs::read(root.join(SDK_QUERIES_CATALOG_PATH)).expect("queries catalog is readable");
     let catalog: Value =
-        serde_json::from_slice(&catalog_bytes).expect("sdk-v2 catalog is valid JSON");
-    assert_eq!(catalog["format"], "typebridge.sdk-catalog/v2");
-    assert_eq!(catalog["fixture"]["id"], "sdk-v2");
+        serde_json::from_slice(&catalog_bytes).expect("queries catalog is valid JSON");
+    assert_eq!(catalog["format"], "typebridge.sdk-queries-catalog/v1");
+    assert_eq!(catalog["fixture"]["id"], "queries");
     assert_eq!(catalog["fixture"]["version"], 2);
     assert_eq!(
         catalog["fixture"]["semantic_profile"],
@@ -877,65 +919,61 @@ fn build_sdk_v2_report(
         catalog["fixture"]["provider_schema_path"],
         SDK_PROVIDER_SCHEMA_PATH
     );
-    assert_eq!(catalog["journey_path"], support::SDK_V2_JOURNEY);
+    assert_eq!(catalog["journey_path"], support::SDK_QUERIES_JOURNEY);
     assert_eq!(catalog["projection_targets"]["c"], "c");
     assert_eq!(
         catalog["manifest_transition_cases"],
-        serde_json::json!(SDK_V2_MANIFEST_TRANSITION_CASES),
-        "sdk-v2 manifest transition ledger drifted"
+        serde_json::json!(SDK_QUERIES_MANIFEST_TRANSITION_CASES),
+        "queries manifest transition ledger drifted"
     );
-    assert_eq!(
-        catalog["expected_fingerprints"]["semantic"], semantic_fingerprint,
-        "C live semantic fingerprint differs from the catalog"
-    );
-    assert_eq!(
-        catalog["expected_fingerprints"]["projections"]["c"], projection_fingerprint,
-        "C live projection fingerprint differs from the catalog"
-    );
+    let (semantic_fingerprint, projection_fingerprint) =
+        matrix_fingerprints(profile, &semantic_fingerprint, &projection_fingerprint);
     serde_json::json!({
         "binding": "c",
-        "catalog": support::sdk_v2_source_identity(root, SDK_V2_CATALOG_PATH)
-            .expect("sdk-v2 catalog identity is valid"),
+        "catalog": support::sdk_queries_source_identity(root, SDK_QUERIES_CATALOG_PATH)
+            .expect("queries catalog identity is valid"),
         "fixture": {
-            "id": "sdk-v2",
-            "journey": support::sdk_v2_source_identity(root, support::SDK_V2_JOURNEY)
-                .expect("sdk-v2 journey identity is valid"),
+            "id": "queries",
+            "journey": support::sdk_queries_source_identity(root, support::SDK_QUERIES_JOURNEY)
+                .expect("queries journey identity is valid"),
             "projection_fingerprint": projection_fingerprint,
             "projection_target": "c",
-            "provider_schema": support::sdk_v2_source_identity(root, SDK_PROVIDER_SCHEMA_PATH)
-                .expect("sdk-v2 provider schema identity is valid"),
-            "schema": support::sdk_v2_source_identity(root, SDK_SCHEMA_PATH)
-                .expect("sdk-v2 schema identity is valid"),
+            "provider_schema": support::sdk_queries_source_identity(root, SDK_PROVIDER_SCHEMA_PATH)
+                .expect("queries provider schema identity is valid"),
+            "schema": support::sdk_queries_source_identity(root, SDK_SCHEMA_PATH)
+                .expect("queries schema identity is valid"),
             "semantic_fingerprint": semantic_fingerprint,
-            "semantic_profile": support::TEST_PROFILE,
+            "semantic_profile": profile.semantic_profile,
             "version": 2,
         },
-        "format": "typebridge.sdk-conformance-report/v2",
-        "manifest": support::sdk_v2_source_identity(root, SDK_MANIFEST_PATH)
+        "format": "typebridge.sdk-queries-report/v1",
+        "manifest": support::sdk_queries_source_identity(root, SDK_MANIFEST_PATH)
             .expect("sdk manifest identity is valid"),
-        "results": sdk_v2_report_results(&catalog, observations),
+        "results": sdk_queries_report_results(&catalog, observations),
     })
 }
 
-fn publish_sdk_v2_report(
+fn publish_sdk_queries_report(
     path: &Path,
     root: &Path,
+    profile: &SdkProfile,
     semantic_fingerprint: Value,
     projection_fingerprint: Value,
     observations: &BTreeMap<support::SdkV2ProofLane, Value>,
 ) {
-    let report = build_sdk_v2_report(
+    let report = build_sdk_queries_report(
         root,
+        profile,
         semantic_fingerprint,
         projection_fingerprint,
         observations,
     );
-    let mut bytes = to_canonical_json(&report).expect("C sdk-v2 report canonicalizes");
+    let mut bytes = to_canonical_json(&report).expect("C queries report canonicalizes");
     bytes.push(b'\n');
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .expect("TYPE_BRIDGE_SDK_REPORT_V2 must name a UTF-8 file");
+        .expect("TYPE_BRIDGE_SDK_QUERIES_REPORT must name a UTF-8 file");
     let temporary = path.with_file_name(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
@@ -952,30 +990,30 @@ fn publish_sdk_v2_report(
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .expect("C sdk-v2 temporary report is created without replacement");
+        .expect("C queries temporary report is created without replacement");
     file.write_all(&bytes)
-        .expect("C sdk-v2 temporary report is written");
+        .expect("C queries temporary report is written");
     file.sync_all()
-        .expect("C sdk-v2 temporary report is synchronized");
+        .expect("C queries temporary report is synchronized");
     drop(file);
     fs::hard_link(&temporary, path)
-        .expect("C sdk-v2 report is atomically published without replacement");
-    fs::remove_file(&temporary).expect("C sdk-v2 temporary link is removed");
+        .expect("C queries report is atomically published without replacement");
+    fs::remove_file(&temporary).expect("C queries temporary link is removed");
     drop(temporary_guard);
-    let metadata = fs::symlink_metadata(path).expect("C sdk-v2 report is inspectable");
+    let metadata = fs::symlink_metadata(path).expect("C queries report is inspectable");
     assert!(
         metadata.is_file() && !metadata.file_type().is_symlink(),
-        "C sdk-v2 report must be a regular non-symlink file"
+        "C queries report must be a regular non-symlink file"
     );
 }
 
-fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
-    let mut bytes = to_canonical_json(report).expect("C sdk-v5 evidence canonicalizes");
+fn publish_sdk_serialization_evidence(path: &Path, report: &Value) {
+    let mut bytes = to_canonical_json(report).expect("C serialization evidence canonicalizes");
     bytes.push(b'\n');
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .expect("C sdk-v5 evidence path has a UTF-8 file name");
+        .expect("C serialization evidence path has a UTF-8 file name");
     let temporary = path.with_file_name(format!(
         ".{file_name}.{}.{}.tmp",
         std::process::id(),
@@ -992,36 +1030,36 @@ fn publish_sdk_v5_evidence(path: &Path, report: &Value) {
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .expect("C sdk-v5 temporary evidence is create-new");
+        .expect("C serialization temporary evidence is create-new");
     output
         .write_all(&bytes)
-        .expect("C sdk-v5 temporary evidence is written completely");
+        .expect("C serialization temporary evidence is written completely");
     output
         .sync_all()
-        .expect("C sdk-v5 temporary evidence is synchronized");
+        .expect("C serialization temporary evidence is synchronized");
     drop(output);
     fs::hard_link(&temporary, path)
-        .expect("C sdk-v5 evidence is atomically published without replacement");
-    fs::remove_file(&temporary).expect("C sdk-v5 temporary link is removed");
+        .expect("C serialization evidence is atomically published without replacement");
+    fs::remove_file(&temporary).expect("C serialization temporary link is removed");
     drop(guard);
 }
 
 #[test]
-fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
+fn sdk_queries_c_fact_fan_in_is_exact_canonical_and_closed() {
     use std::fmt::Write as _;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     let root = repository_root();
     let fragment_lanes =
-        support::sdk_v2_proof_lanes(&root, "c").expect("C proof allowlist validates");
-    let selected_live_lanes = SDK_V2_SELECTED_PROOFS
+        support::sdk_queries_proof_lanes(&root, "c").expect("C proof allowlist validates");
+    let selected_live_lanes = SDK_QUERIES_SELECTED_PROOFS
         .into_iter()
         .map(|(_, proof_kind, observation_ref)| (observation_ref.to_owned(), proof_kind.to_owned()))
         .filter(|lane| !fragment_lanes.contains(lane))
         .collect::<Vec<_>>();
     assert_eq!(
         selected_live_lanes,
-        SDK_V2_LIVE_LANES
+        SDK_QUERIES_LIVE_LANES
             .into_iter()
             .map(|(observation_ref, proof_kind)| {
                 (observation_ref.to_owned(), proof_kind.to_owned())
@@ -1030,14 +1068,14 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         "C live facts plus committed fragments must partition the selected ledger"
     );
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join(support::SDK_V2_JOURNEY)).expect("sdk-v2 journey is readable"),
+        &fs::read(root.join(support::SDK_QUERIES_JOURNEY)).expect("queries journey is readable"),
     )
-    .expect("sdk-v2 journey is valid JSON");
+    .expect("queries journey is valid JSON");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("sdk-v2 expected observations are an object");
+        .expect("queries expected observations are an object");
     let mut stdout = String::new();
-    for (observation_ref, proof_kind) in SDK_V2_LIVE_LANES {
+    for (observation_ref, proof_kind) in SDK_QUERIES_LIVE_LANES {
         let observation = expected
             .get(observation_ref)
             .unwrap_or_else(|| panic!("expected observation is absent: {observation_ref}"));
@@ -1047,13 +1085,13 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         .expect("canonical observation is UTF-8");
         writeln!(
             stdout,
-            "{SDK_V2_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
+            "{SDK_QUERIES_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
         )
         .expect("fact line formats");
     }
     assert_eq!(
-        parse_sdk_v2_live_facts(&root, &stdout).len(),
-        SDK_V2_LIVE_LANES.len()
+        parse_sdk_queries_live_facts(&root, &stdout).len(),
+        SDK_QUERIES_LIVE_LANES.len()
     );
 
     let duplicated = format!(
@@ -1061,7 +1099,7 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         stdout.lines().next().expect("one fact line exists")
     );
     assert!(
-        catch_unwind(AssertUnwindSafe(|| parse_sdk_v2_live_facts(
+        catch_unwind(AssertUnwindSafe(|| parse_sdk_queries_live_facts(
             &root,
             &duplicated
         )))
@@ -1069,9 +1107,10 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
         "duplicate fact lanes must fail closed"
     );
 
-    let unexpected = format!("{stdout}{SDK_V2_FACT_PREFIX}not_allowed\tdirect_runtime\t{{}}\n");
+    let unexpected =
+        format!("{stdout}{SDK_QUERIES_FACT_PREFIX}not_allowed\tdirect_runtime\t{{}}\n");
     assert!(
-        catch_unwind(AssertUnwindSafe(|| parse_sdk_v2_live_facts(
+        catch_unwind(AssertUnwindSafe(|| parse_sdk_queries_live_facts(
             &root,
             &unexpected
         )))
@@ -1091,7 +1130,7 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
     assert_ne!(canonical_entity, noncanonical_entity);
     let noncanonical = stdout.replacen(&canonical_entity, &noncanonical_entity, 1);
     assert!(
-        catch_unwind(AssertUnwindSafe(|| parse_sdk_v2_live_facts(
+        catch_unwind(AssertUnwindSafe(|| parse_sdk_queries_live_facts(
             &root,
             &noncanonical
         )))
@@ -1102,29 +1141,35 @@ fn sdk_v2_c_fact_fan_in_is_exact_canonical_and_closed() {
 
 #[test]
 #[ignore = "requires a same-run deterministic C proof fragment"]
-fn emitted_sdk_v2_c_proof_fragment_validates() {
+fn emitted_sdk_queries_c_proof_fragment_validates() {
     let root = repository_root();
-    let fragments = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
-        .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS is required");
-    let nonce = env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
-        .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required");
+    let fragments = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS")
+        .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS is required");
+    let nonce = env::var("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
+        .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE is required");
     let paths =
-        support::sdk_v2_proof_paths(&fragments).expect("C sdk-v2 proof paths must be valid");
-    let observations = support::validate_sdk_v2_proof_fragments(&root, "c", &nonce, &paths)
-        .expect("emitted C sdk-v2 proof fragment must validate");
+        support::sdk_queries_proof_paths(&fragments).expect("C queries proof paths must be valid");
+    let observations = support::validate_sdk_queries_proof_fragments_on(
+        &root,
+        "c",
+        &support::sdk_profile_matrix::requested("queries").semantic_profile,
+        &nonce,
+        &paths,
+    )
+    .expect("emitted C queries proof fragment must validate");
     assert_eq!(
         observations.keys().cloned().collect::<BTreeSet<_>>(),
-        support::sdk_v2_proof_lanes(&root, "c").expect("C proof allowlist validates"),
+        support::sdk_queries_proof_lanes(&root, "c").expect("C proof allowlist validates"),
     );
 }
 
 #[test]
 #[ignore = "requires a same-run deterministic C proof fragment"]
-fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
+fn sdk_queries_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     use std::fmt::Write as _;
 
     assert!(
-        env::var_os("TYPE_BRIDGE_SDK_REPORT_V2").is_none(),
+        env::var_os("TYPE_BRIDGE_SDK_QUERIES_REPORT").is_none(),
         "provider-free report-builder preflight must not request publication"
     );
     let root = repository_root();
@@ -1132,26 +1177,31 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     let report_path = stage.path().join("c.json");
     assert!(!report_path.exists());
 
-    let fragments = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
-        .expect("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS is required");
-    let nonce = env::var("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
-        .expect("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE is required");
+    let fragments = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS")
+        .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS is required");
+    let nonce = env::var("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
+        .expect("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE is required");
     let paths =
-        support::sdk_v2_proof_paths(&fragments).expect("C sdk-v2 proof paths must be valid");
-    let fragment_observations =
-        support::validate_sdk_v2_proof_fragments(&root, "c", &nonce, &paths)
-            .expect("emitted C sdk-v2 proof fragment must validate");
+        support::sdk_queries_proof_paths(&fragments).expect("C queries proof paths must be valid");
+    let fragment_observations = support::validate_sdk_queries_proof_fragments_on(
+        &root,
+        "c",
+        &support::sdk_profile_matrix::requested("queries").semantic_profile,
+        &nonce,
+        &paths,
+    )
+    .expect("emitted C queries proof fragment must validate");
     assert_eq!(fragment_observations.len(), 3);
 
     let journey: Value = serde_json::from_slice(
-        &fs::read(root.join(support::SDK_V2_JOURNEY)).expect("sdk-v2 journey is readable"),
+        &fs::read(root.join(support::SDK_QUERIES_JOURNEY)).expect("queries journey is readable"),
     )
-    .expect("sdk-v2 journey is valid JSON");
+    .expect("queries journey is valid JSON");
     let expected = journey["expected_observations"]
         .as_object()
-        .expect("sdk-v2 expected observations are an object");
+        .expect("queries expected observations are an object");
     let mut stdout = String::new();
-    for (observation_ref, proof_kind) in SDK_V2_LIVE_LANES {
+    for (observation_ref, proof_kind) in SDK_QUERIES_LIVE_LANES {
         let observation = expected
             .get(observation_ref)
             .unwrap_or_else(|| panic!("expected observation is absent: {observation_ref}"));
@@ -1161,11 +1211,11 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
         .expect("canonical observation is UTF-8");
         writeln!(
             stdout,
-            "{SDK_V2_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
+            "{SDK_QUERIES_FACT_PREFIX}{observation_ref}\t{proof_kind}\t{canonical}"
         )
         .expect("fact line formats");
     }
-    let mut observations = parse_sdk_v2_live_facts(&root, &stdout);
+    let mut observations = parse_sdk_queries_live_facts(&root, &stdout);
     assert_eq!(observations.len(), 31);
     for (lane, observation) in fragment_observations {
         assert!(
@@ -1174,12 +1224,14 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
         );
     }
     assert_eq!(observations.len(), 34);
-    assert_sdk_v2_observations_match_journey(&root, &observations);
+    assert_sdk_queries_observations_match_journey(&root, &observations);
 
+    let profile = sdk_profile_matrix::requested("queries");
     let (_, _, semantic_fingerprint, projection_fingerprint) =
-        emitted_package_authority_and_fingerprints();
-    let report = build_sdk_v2_report(
+        emitted_package_authority_and_fingerprints(&profile.semantic_profile);
+    let report = build_sdk_queries_report(
         &root,
+        &profile,
         semantic_fingerprint.clone(),
         projection_fingerprint.clone(),
         &observations,
@@ -1196,17 +1248,17 @@ fn sdk_v2_c_catalog_report_builder_preflight_is_exact_and_nonpublishing() {
     );
     assert_eq!(
         report["catalog"],
-        support::sdk_v2_source_identity(&root, SDK_V2_CATALOG_PATH)
-            .expect("sdk-v2 catalog identity is valid")
+        support::sdk_queries_source_identity(&root, SDK_QUERIES_CATALOG_PATH)
+            .expect("queries catalog identity is valid")
     );
     assert_eq!(
         report["results"]
             .as_array()
-            .expect("C sdk-v2 report results are an array")
+            .expect("C queries report results are an array")
             .len(),
         34
     );
-    to_canonical_json(&report).expect("provider-free C sdk-v2 report canonicalizes");
+    to_canonical_json(&report).expect("provider-free C queries report canonicalizes");
     assert!(
         !report_path.exists(),
         "provider-free report-builder preflight must not publish a report"
@@ -1434,20 +1486,23 @@ fn failed_live_setup_still_runs_idempotent_database_cleanup() {
 
 /// Exact C acceptance: ordinary generated C invokes nominal Person and
 /// Membership CRUD, typed direct query, schema-function, and caller-transport
-/// remote query facades against one isolated exact TypeDB 3.12.3 database.
+/// remote query facades against one isolated database on the exact TypeDB
+/// server of the requested SDK profile (`TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`).
 /// Rust is used only for schema setup, the V2 acceptance server, and guaranteed
 /// process/database cleanup; the C caller performs the sole remote exchange.
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
-fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
+#[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
+fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server() {
     let repository_root = repository_root();
-    let sdk_v2_report = requested_sdk_v2_report();
-    let sdk_v5_evidence = requested_sdk_v5_evidence();
+    let profile = sdk_profile_matrix::requested("queries");
+    let sdk_queries_report = requested_sdk_queries_report();
+    let sdk_serialization_evidence = requested_sdk_serialization_evidence();
     assert!(
-        sdk_v2_report.is_none() || sdk_v5_evidence.is_none(),
-        "C V2 and V5 publication lanes require separate isolated runs"
+        sdk_queries_report.is_none() || sdk_serialization_evidence.is_none(),
+        "C Queries and Serialization publication lanes require separate isolated runs"
     );
-    let sdk_v2_proofs = validated_sdk_v2_proofs(&repository_root, sdk_v2_report.as_deref());
+    let sdk_queries_proofs =
+        validated_sdk_queries_proofs(&repository_root, sdk_queries_report.as_deref());
     let compiler = c_compilers()
         .into_iter()
         .next()
@@ -1466,12 +1521,13 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
 
     let stage = TempDirectory::new();
     let (package, authority_bytes, semantic_fingerprint, projection_fingerprint) =
-        if sdk_v5_evidence.is_some() {
-            let (package, authority) = emitted_query_package_and_authority();
-            let (semantic, projection) = sdk_v3_fingerprints();
+        if sdk_serialization_evidence.is_some() {
+            let (package, authority) =
+                emitted_query_package_and_authority(&profile.semantic_profile);
+            let (semantic, projection) = sdk_models_fingerprints(&profile.semantic_profile);
             (package, authority, semantic, projection)
         } else {
-            emitted_package_authority_and_fingerprints()
+            emitted_package_authority_and_fingerprints(&profile.semantic_profile)
         };
     write_package(&package, stage.path());
     let consumer = stage.path().join("consumer.c");
@@ -1489,8 +1545,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         "-Werror",
         "-pedantic-errors",
     ]);
-    if sdk_v5_evidence.is_some() {
-        compile_command.arg("-DTYPE_BRIDGE_SDK_V5_C_CODEC");
+    if sdk_serialization_evidence.is_some() {
+        compile_command.arg("-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC");
     }
     let compile = compile_command
         .arg("-I")
@@ -1523,7 +1579,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         .expect("Rust-only database setup source is staged");
     fs::write(
         setup_root.join("acceptance/provider-3.12.1.tql"),
-        if sdk_v5_evidence.is_some() {
+        if sdk_serialization_evidence.is_some() {
             QUERY_PROVIDER_SCHEMA
         } else {
             PROVIDER_SCHEMA
@@ -1555,8 +1611,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         ("TYPEDB_USERNAME".to_owned(), username.clone()),
         ("TYPEDB_PASSWORD".to_owned(), password.clone()),
         (
-            "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH".to_owned(),
-            "3".to_owned(),
+            "TYPE_BRIDGE_EXPECTED_SERVER_VERSION".to_owned(),
+            profile.live_server_version.clone(),
         ),
     ];
     let mut isolated = IsolatedDatabase {
@@ -1626,17 +1682,21 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     for (name, value) in &environment {
         run.env(name, value);
     }
-    run.env_remove("TYPE_BRIDGE_SDK_REPORT_V2")
-        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
-        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS")
-        .env_remove("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
+    run.env_remove("TYPE_BRIDGE_SDK_QUERIES_REPORT")
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT")
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS")
+        .env_remove("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
     run.env("TYPE_BRIDGE_C_REMOTE_PORT", remote_port.to_string());
-    let v5_evidence_directory = stage.path().join("v5-live-evidence");
-    if sdk_v5_evidence.is_some() {
-        fs::create_dir(&v5_evidence_directory).expect("C V5 evidence directory is created");
-        run.env("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR", &v5_evidence_directory);
+    let serialization_evidence_directory = stage.path().join("serialization-live-evidence");
+    if sdk_serialization_evidence.is_some() {
+        fs::create_dir(&serialization_evidence_directory)
+            .expect("C Serialization evidence directory is created");
+        run.env(
+            "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR",
+            &serialization_evidence_directory,
+        );
     } else {
-        run.env_remove("TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR");
+        run.env_remove("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
     }
     let output = run
         .output()
@@ -1658,16 +1718,20 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
                 .filter(|value| value.ends_with(": passed"))
         })
         .filter(|value| {
-            if sdk_v5_evidence.is_some() {
-                *value == "Sdk V5 C live codec direct/remote parity: passed"
+            if sdk_serialization_evidence.is_some() {
+                *value == "Serialization C live codec direct/remote parity: passed"
             } else {
-                *value != "Sdk V5 C live codec direct/remote parity: passed"
+                *value != "Serialization C live codec direct/remote parity: passed"
             }
         })
         .collect::<Vec<_>>();
     assert_eq!(
         markers.len(),
-        if sdk_v5_evidence.is_some() { 1 } else { 61 },
+        if sdk_serialization_evidence.is_some() {
+            1
+        } else {
+            62
+        },
         "live C marker inventory drifted"
     );
     assert_eq!(
@@ -1682,29 +1746,29 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
     for marker in markers {
         assert!(stdout.contains(marker), "consumer output omitted {marker}");
     }
-    let mut sdk_v2_observations = if sdk_v5_evidence.is_some() {
+    let mut sdk_queries_observations = if sdk_serialization_evidence.is_some() {
         BTreeMap::new()
     } else {
-        parse_sdk_v2_live_facts(&repository_root, &stdout)
+        parse_sdk_queries_live_facts(&repository_root, &stdout)
     };
-    if sdk_v2_report.is_some() {
-        for (lane, observation) in sdk_v2_proofs {
+    if sdk_queries_report.is_some() {
+        for (lane, observation) in sdk_queries_proofs {
             assert!(
-                sdk_v2_observations
+                sdk_queries_observations
                     .insert(lane.clone(), observation)
                     .is_none(),
                 "validated proof lane collides with a live lane: {lane:?}"
             );
         }
         assert_eq!(
-            sdk_v2_observations.len(),
+            sdk_queries_observations.len(),
             34,
-            "C sdk-v2 producer requires exactly 34 observation lanes"
+            "C queries producer requires exactly 34 observation lanes"
         );
-        assert_sdk_v2_observations_match_journey(&repository_root, &sdk_v2_observations);
+        assert_sdk_queries_observations_match_journey(&repository_root, &sdk_queries_observations);
     } else {
         assert!(
-            sdk_v2_proofs.is_empty(),
+            sdk_queries_proofs.is_empty(),
             "proof observations are forbidden without a report request"
         );
     }
@@ -1719,41 +1783,43 @@ fn live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3() {
         String::from_utf8_lossy(&cleanup.stderr),
     );
     remote_server.shutdown();
-    if let Some(report) = sdk_v2_report {
-        publish_sdk_v2_report(
+    if let Some(report) = sdk_queries_report {
+        publish_sdk_queries_report(
             &report,
             &repository_root,
+            &profile,
             semantic_fingerprint,
             projection_fingerprint,
-            &sdk_v2_observations,
+            &sdk_queries_observations,
         );
     }
-    if let Some(evidence) = sdk_v5_evidence {
-        let entity = fs::read(v5_evidence_directory.join("entity.bin"))
-            .expect("C V5 entity evidence is present");
-        let relation = fs::read(v5_evidence_directory.join("relation.bin"))
-            .expect("C V5 relation evidence is present");
+    if let Some(evidence) = sdk_serialization_evidence {
+        let entity = fs::read(serialization_evidence_directory.join("entity.bin"))
+            .expect("C Serialization entity evidence is present");
+        let relation = fs::read(serialization_evidence_directory.join("relation.bin"))
+            .expect("C Serialization relation evidence is present");
         let report = json!({
             "binding": "c",
             "detached_mutation_code": "projected_snapshot_detached",
             "direct_remote_equal": true,
             "entity_snapshot_b64": base64(&entity),
-            "format": "typebridge.sdk-v5-live-codec-evidence/v1",
+            "format": "typebridge.sdk-serialization-live-codec-evidence/v1",
             "rebound_mutation": true,
             "relation_snapshot_b64": base64(&relation),
             "remote_exchange_count": 1,
         });
-        publish_sdk_v5_evidence(&evidence, &report);
+        publish_sdk_serialization_evidence(&evidence, &report);
     }
 }
 
 /// Query activation gate for the ordered C-v3/ABI-1.6 surface. The same
 /// source is compiled and executed as strict C17 and C++17. It deliberately
 /// leaves ordered attributes and ordered role-player lists empty because exact
-/// TypeDB 3.12.3 cannot supply list-instance evidence.
+/// TypeDB servers of the supported profiles cannot supply list-instance evidence.
 #[test]
-#[ignore = "requires an isolated exact TypeDB 3.12.3 server and C shared library"]
-fn generated_data_model_runtime_v3_live() {
+#[ignore = "requires an isolated TypeDB server of the requested SDK profile and C shared library"]
+fn sdk_models_data_model_runtime_live() {
+    let profile = sdk_profile_matrix::requested("models");
     let c_compiler = c_compilers()
         .into_iter()
         .next()
@@ -1775,7 +1841,10 @@ fn generated_data_model_runtime_v3_live() {
     let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
 
     let stage = TempDirectory::new();
-    write_package(&emitted_query_package(), stage.path());
+    write_package(
+        &emitted_query_package(&profile.semantic_profile),
+        stage.path(),
+    );
     let package_source = stage.path().join("query_package.c");
     let package_object = stage.path().join("query_package.o");
     let c_source = stage.path().join("query_consumer.c");
@@ -1870,7 +1939,7 @@ fn generated_data_model_runtime_v3_live() {
         setup_root.join("acceptance/provider-3.12.1.tql"),
         QUERY_PROVIDER_SCHEMA,
     )
-    .expect("exact Sdk V3 provider fixture is staged byte-for-byte");
+    .expect("exact Models provider fixture is staged byte-for-byte");
     let orm = Path::new(env!("CARGO_MANIFEST_DIR")).join("../orm");
     let manifest = setup_root.join("Cargo.toml");
     fs::write(
@@ -1893,8 +1962,8 @@ fn generated_data_model_runtime_v3_live() {
         ("TYPEDB_USERNAME".to_owned(), username),
         ("TYPEDB_PASSWORD".to_owned(), password),
         (
-            "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH".to_owned(),
-            "3".to_owned(),
+            "TYPE_BRIDGE_EXPECTED_SERVER_VERSION".to_owned(),
+            profile.live_server_version.clone(),
         ),
     ];
     let mut isolated = IsolatedDatabase {
@@ -1958,5 +2027,5 @@ fn generated_data_model_runtime_v3_live() {
             );
         }
     }
-    publish_sdk_v3_c_live_supplement();
+    publish_sdk_models_c_live_supplement(&profile);
 }

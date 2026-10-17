@@ -1,5 +1,9 @@
 # Generated Typed Query Contract
 
+The additive read/write [query-plan V3 wire specification](../reference/query-plan-v3.md)
+defines canonical bytes, expressions, write stages, operations and shared examples.
+V1/V2 encodings and fingerprints described here remain frozen.
+
 Status: implemented normative semantics for
 [#170](https://github.com/ds1sqe/type-bridge/issues/170) through
 [#177](https://github.com/ds1sqe/type-bridge/issues/177), consumed through
@@ -32,8 +36,9 @@ Python's package-root `Query` and `QueryBuilder` remain the mutable raw-TypeQL
 builders. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
 unscheduled mutable compatibility query. Generated model managers provide the
 concise single-type CRUD/query path; generated `QuerySession` provides immutable
-multi-binding queries. None of these retained behaviors reopens model or schema
-declaration in the base SDK.
+multi-binding queries and is Python's only typed query API; the handwritten
+`type_bridge.typed` facade was removed in 2.3.0. None of these retained
+behaviors reopens model or schema declaration in the base SDK.
 
 `QuerySession.var(Model)` returns one `BoundVar[Model]`. Two calls for the same
 model have the same static type and different opaque runtime identities. New
@@ -96,12 +101,7 @@ variables.
 <!-- typed-query-example: python-selection-arities -->
 ```python
 one_person: Query[Person] = session.query(person)
-assert_type(one_person.one(), Person)
-assert_type(one_person.rows(limit=20), list[Person])
-
 two_slots: Query[Person, Event] = session.query(person, event).where(subject)
-assert_type(two_slots.one(), tuple[Person, Event])
-assert_type(two_slots.rows(limit=20), list[tuple[Person, Event]])
 
 colleague = session.exact(Person)
 other_event = session.exact(Event)
@@ -117,10 +117,6 @@ five_slots: Query[Person, Event, Container, Event, Person] = session.query(
     other_event.role(Event.subject).connects(colleague),
     container.role(Container.item).connects(other_event),
 )
-assert_type(
-    five_slots.rows(limit=20),
-    list[tuple[Person, Event, Container, Event, Person]],
-)
 
 person_pair: Query[Person, Person] = (
     session.query(person, colleague)
@@ -132,7 +128,20 @@ person_pair: Query[Person, Person] = (
         container.role(Container.item).connects(other_event),
     )
 )
-assert_type(person_pair.rows(limit=20), list[tuple[Person, Person]])
+
+
+# Terminals are coroutines on every connection; composition is synchronous.
+async def selection_shapes() -> None:
+    assert_type(await one_person.one(), Person)
+    assert_type(await one_person.rows(limit=20), list[Person])
+    assert_type(await two_slots.one(), tuple[Person, Event])
+    assert_type(await two_slots.rows(limit=20), list[tuple[Person, Event]])
+    assert_type(
+        await five_slots.rows(limit=20),
+        list[tuple[Person, Event, Container, Event, Person]],
+    )
+    assert_type(await person_pair.rows(limit=20), list[tuple[Person, Person]])
+
 
 # Generated QuerySession.query has checked overloads through 16 selections. A
 # seventeenth selection is a static diagnostic and Rust rejects forged input.
@@ -169,15 +178,6 @@ identity. Counts and existence do not inherit row/page order or windows.
 
 <!-- typed-query-example: python-terminals-and-collections -->
 ```python
-ordered_people = one_person.rows(
-    limit=50,
-    offset=0,
-    order_by=(person.field(Person.identifier).asc(),),
-)
-
-person_count: int = two_slots.count_by(person)
-any_person: bool = two_slots.exists_by(person)
-
 @dataclass(frozen=True, slots=True)
 class PersonEvents:
     person: Person
@@ -190,15 +190,28 @@ work: Query[PersonEvents] = session.query_as(
     events=event.collect().distinct(),
 ).where(subject)
 
-page: Page[PersonEvents] = work.page_by(
-    person,
-    limit=50,
-    offset=0,
-    order_by=(person.field(Person.identifier).asc(),),
-    include_total=True,
-)
-assert_type(page.items, tuple[PersonEvents, ...])
-assert_type(page.total, int | None)
+
+async def terminals() -> None:
+    ordered_people = await one_person.rows(
+        limit=50,
+        offset=0,
+        order_by=(person.field(Person.identifier).asc(),),
+    )
+    assert_type(ordered_people, list[Person])
+
+    person_count: int = await two_slots.count_by(person)
+    any_person: bool = await two_slots.exists_by(person)
+    assert_type((person_count, any_person), tuple[int, bool])
+
+    page: Page[PersonEvents] = await work.page_by(
+        person,
+        limit=50,
+        offset=0,
+        order_by=(person.field(Person.identifier).asc(),),
+        include_total=True,
+    )
+    assert_type(page.items, tuple[PersonEvents, ...])
+    assert_type(page.total, int | None)
 ```
 
 A database-backed terminal owns its read transaction. A caller-owned read
@@ -207,17 +220,19 @@ nor closes it.
 
 <!-- typed-query-example: python-transaction-ownership -->
 ```python
-# Owned: rows() opens one read transaction and closes it on success or error.
-owned = Person.query(db)
-owned_person = owned.exact(Person)
-owned_rows = owned.query(owned_person).rows(limit=10)
+async def ownership() -> None:
+    # Owned: rows() opens one read transaction and closes it on success or error.
+    owned = Person.query(db)
+    owned_person = owned.exact(Person)
+    assert_type(await owned.query(owned_person).rows(limit=10), list[Person])
 
-# Borrowed: the surrounding context owns lifecycle and may run more work.
-with db.transaction("read") as tx:
-    borrowed = Person.query(tx)
-    borrowed_person = borrowed.exact(Person)
-    first_page = borrowed.query(borrowed_person).rows(limit=10)
-    second_page = borrowed.query(borrowed_person).rows(limit=10, offset=10)
+    # Borrowed: the surrounding context owns lifecycle and may run more work.
+    with db.transaction("read") as tx:
+        borrowed = Person.query(tx)
+        borrowed_person = borrowed.exact(Person)
+        first_page = await borrowed.query(borrowed_person).rows(limit=10)
+        second_page = await borrowed.query(borrowed_person).rows(limit=10, offset=10)
+        assert_type(first_page + second_page, list[Person])
 ```
 
 ## Complete TypeScript Example
@@ -258,13 +273,13 @@ for two or more slots.
 <!-- typed-query-example: typescript-selection-arities -->
 ```typescript
 const onePerson: Query<Person> = session.query(person);
-const scalar: Person = onePerson.one();
-const scalarRows: readonly Person[] = onePerson.rows({ limit: 20n });
+const scalar: Person = await onePerson.one();
+const scalarRows: readonly Person[] = await onePerson.rows({ limit: 20n });
 
 const twoSlots: Query<readonly [Person, Event]> = session
   .query(person, event)
   .where(subject);
-const pairRows: readonly (readonly [Person, Event])[] = twoSlots.rows({
+const pairRows: readonly (readonly [Person, Event])[] = await twoSlots.rows({
   limit: 20n,
 });
 
@@ -325,14 +340,14 @@ void independentPairs;
 
 <!-- typed-query-example: typescript-terminals-and-collections -->
 ```typescript
-const orderedPeople: readonly Person[] = onePerson.rows({
+const orderedPeople: readonly Person[] = await onePerson.rows({
   limit: 50n,
   offset: 0n,
   orderBy: [person.field(Person.identifier).asc()],
 });
 
-const personCount: bigint = twoSlots.countBy(person);
-const anyPerson: boolean = twoSlots.existsBy(person);
+const personCount: bigint = await twoSlots.countBy(person);
+const anyPerson: boolean = await twoSlots.existsBy(person);
 
 const work: Query<Readonly<{
   person: Person;
@@ -345,7 +360,7 @@ const work: Query<Readonly<{
 const page: Page<Readonly<{
   person: Person;
   events: readonly Event[];
-}>> = work.pageBy(person, {
+}>> = await work.pageBy(person, {
   limit: 50n,
   offset: 0n,
   orderBy: [person.field(Person.identifier).asc()],
@@ -363,15 +378,15 @@ void page;
 // Owned: rows() opens and closes one read transaction on every exit path.
 const ownedSession = new QuerySession(db);
 const ownedPerson = ownedSession.exact(Person);
-const ownedRows = ownedSession.query(ownedPerson).rows({ limit: 10n });
+const ownedRows = await ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
 const tx: RustTransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
   const borrowedPerson = borrowed.exact(Person);
-  const firstPage = borrowed.query(borrowedPerson).rows({ limit: 10n });
-  const secondPage = borrowed.query(borrowedPerson).rows({
+  const firstPage = await borrowed.query(borrowedPerson).rows({ limit: 10n });
+  const secondPage = await borrowed.query(borrowedPerson).rows({
     limit: 10n,
     offset: 10n,
   });
@@ -406,6 +421,14 @@ RowOf[Query<[A, B, ...]>] = readonly [A, B, ...]          # TypeScript
   They do not inherit fetch/page ordering, offset, or limit.
 - One terminal call is one logical executor invocation. It may issue a bounded
   number of statements, all in the same read transaction.
+
+The request model has a third row cardinality beside exactly-one and a bounded
+window: `complete`. A complete fetch returns every distinct selected identity
+tuple and is refused with `row_window_exceeded` when there are more than its
+limit. Nothing is cut off, so it takes no offset and no order, and the selected
+types need no unique key. Generated manager `all` and `first` run as complete
+fetches; no query-builder terminal exposes it yet. A plan that uses it requires
+the `query.operation.complete-rows` capability.
 
 The Python page contract is a frozen envelope with tuple `items`, `offset`,
 `limit`, and `total: int | None`. The TypeScript page is readonly and uses
@@ -530,6 +553,204 @@ may tighten but never raise those ceilings. Limits are enforced while
 processing, never after unbounded materialization. Any violation fails the
 whole operation; no partial row or page is exposed.
 
+## Query Limits
+
+A query is held to one set of limits from authoring to execution: the plan's
+canonical encoding, its structure, and its remote request envelope. The limits
+are a value, `QueryLimits`, not library constants. Defaults reproduce the
+ceilings every earlier release enforced, so a caller who sets nothing sees
+unchanged plan bytes, fingerprints, and refusals.
+
+| Limit | Default | Supported maximum | Bounds |
+| --- | ---: | ---: | --- |
+| `canonical_bytes` | 16 MiB | none | One plan or invocation artifact; also one predicate literal and the lowered TypeQL |
+| `canonical_depth` | 64 | 126 | Nesting of the canonical encoding |
+| `canonical_collection_len` | 65,536 | none | Members of one encoded array or object |
+| `canonical_string_bytes` | 1 MiB | none | One encoded string or key |
+| `selected_slots` | 16 | 16 | Output slots, reducers, and grouping fields |
+| `bindings` | 256 | 65,536 | Plan bindings and input columns |
+| `predicate_nodes` | 4,096 | none | Total predicate nodes |
+| `predicate_depth` | 64 | 126 | Predicate nesting |
+| `boolean_terms` | 256 | none | Children of one conjunction, disjunction, or call |
+| `allowed_cross_joins` | 1,024 | none | Explicit cross-join pairs |
+| `order_terms` | 64 | none | Row or root ordering terms |
+| `collection_order_terms` | 64 | none | Ordering terms of one collected slot |
+| `input_rows` | 4,096 | none | Rows of one invocation |
+| `input_bytes` | 4 MiB | none | Encoded bytes of one invocation's rows |
+| `output_name_bytes` | 128 | none | One output or variable name |
+| `semantic_id_bytes` | 512 | none | One semantic identity |
+| `diagnostic_bytes` | 65,536 | none | One serialized diagnostic |
+| `remote_request_bytes` | 32 MiB | none | One remote request envelope |
+
+Every limit must be at least one. The three supported maxima are properties of
+the implementation, not policy: the JSON parser decodes at most 127 nesting
+levels and a request frames the plan in one, binding identities are 16 bits
+wide, and generated tuple typing in every binding is sealed at sixteen
+positions. `selected_slots` can therefore be lowered but not raised.
+
+Rules that hold in every binding:
+
+- Rust admits limits. A binding passes named overrides through and never
+  validates, clamps, or defaults them. An unknown name or an unsupported value
+  is refused before a session exists.
+- A session's limits apply to every query it authors. Validation, V2
+  adaptation, canonical encoding, and execution all read the limits the
+  request was validated under.
+- Repeated `where` clauses and chained `and`/`or` build one flat conjunction
+  or disjunction. Nesting depth reflects only nesting the caller wrote.
+- Default `predicate_depth` and default `canonical_depth` are both 64, and
+  each predicate level costs two encoded levels, so a predicate nested past
+  about thirty real levels is refused by `canonical_depth` until the caller
+  raises it.
+- Answer ceilings are separate. How much a query may return is the answer
+  policy described under [Answer Limits](#answer-limits), not a query limit.
+
+### Remote agreement
+
+An executor states its query limits in its capability advertisement and
+enforces exactly that statement: it decodes each request and validates each
+plan under the advertised limits, whatever the client was configured with.
+The advertisement names only limits that differ from the defaults, so a
+default executor's advertisement bytes and fingerprint are unchanged. A client
+built before query limits were configurable rejects an advertisement that
+names any, which is the intended fail-closed outcome.
+
+A client holds each request to the stricter of its session's limits and the
+advertised limits and refuses before sending when the plan does not fit.
+
+### Refusals
+
+A query refused by a limit reports `resource_limit` with three details:
+
+| Detail | Meaning |
+| --- | --- |
+| `limit` | The stable limit name from the table above |
+| `maximum` | The effective value the query was held to |
+| `source` | `default`, `configured` (the caller or host set it), or `advertised` (the remote executor's value was the stricter one) |
+
+`source` tells the reader which setting to change: raising a session limit
+does not help when the advertisement is the binding side. Diagnostics that
+already carried their own details, such as `maximum_depth` or `actual_bytes`,
+keep them.
+
+
+## Answer Limits
+
+How much a query may return is one policy on every transport,
+`QueryExecutionResourceLimits`, with the same eight dimensions. What an unset
+policy defaults to depends on the transport the session runs on: a direct
+session starts from the 2.2 executor defaults, a proxy connection (and the
+server) from what one remote envelope carries.
+`QueryExecutionResourceLimits::default_for(AnswerTransport)` is the one place
+an unset policy becomes a default; `Default` is the direct policy.
+
+| Limit | Direct default | Proxy default | Supported maximum | Bounds |
+| --- | ---: | ---: | ---: | --- |
+| `timeout_milliseconds` | 30,000 | 30,000 | 86,400,000 | Duration of one terminal |
+| `items` | 100,000 | 65,536 | none | Provider items read and rows returned; the scan and hydration both draw on it |
+| `bytes` | 64 MiB | 32 MiB | none | Provider answer bytes, the reply envelope, and the projected result |
+| `graph_nodes` | 1,000,000 | 65,536 | none | Hydrated things, including nested role players |
+| `attribute_values` | 4,000,000 | 65,536 | none | Hydrated attribute values |
+| `collection_members` | 1,000,000 | 65,536 | none | Collected identities, group keys, and reducer cells |
+| `role_players` | 1,000,000 | 65,536 | none | Role-player references |
+| `statements` | 3 | 3 | 3 | Provider statements of one terminal |
+
+An answer between the two defaults is returned on a direct session and
+refused through a proxy with `limit` naming the dimension and `source`
+`default`; configure the proxy connection, and the executor, to return it.
+
+Rules that hold in every binding:
+
+- A caller may tighten any dimension and may raise one by configuring it. A
+  value past a supported maximum is refused by name, never clamped.
+- A session never widens the policy of the connection it runs on: each
+  dimension is the stricter of the two.
+- The executor, the reply codec, and projected materialization have no
+  ceilings of their own. A result the policy admits is one every stage admits.
+- A result past a ceiling is refused with `resource_limit` and the details
+  `limit`, `maximum`, and `source`, as for query limits. `source` is
+  `default` only when the value is the default of the session's transport.
+
+### Remote agreement
+
+An executor states the answer ceilings it enforces in its capability
+advertisement, naming only those that differ from the proxy defaults, so a
+default executor's advertisement bytes and fingerprint are unchanged. Each
+request
+carries the caller's budget. The client asks for no more than the executor
+advertised, and the executor runs each request under the stricter of the
+request's budget and its own ceilings, per dimension. The reply is encoded
+and decoded under those budgets, so a reply over 32 MiB or 65,536 rows is
+exchanged only between peers that both raised the limit.
+
+The proxy keeps one bound of its own: a request lives at most five minutes,
+so a longer `timeout_milliseconds` shortens to that through a proxy.
+
+## Remote Envelope
+
+A single query crosses the proxy boundary in one request format and one reply
+format, whatever the query: an authored low-level plan, a generated model
+query, or a reduction. A staged transaction crosses it in the V3 envelope
+described under [Staged transactions](#staged-transactions).
+
+| Wire value | Format |
+| --- | --- |
+| Request | `typebridge.query-remote-request/v2` |
+| Response | `typebridge.query-remote-response/v2` |
+| Failure | `typebridge.query-remote-failure/v2` |
+| Signed outer reply | `typebridge.query-remote-signed-reply/v1` |
+| Capability advertisement | `typebridge.query-remote-capabilities/v1` |
+
+The request carries the exact canonical plan bytes (either released plan
+format), the invocation, the result kind, the caller's answer budget, the
+advertisement fingerprint, a nonce, and an absolute bounded expiry. Every
+reply is signed with the executor's advertised key and binds the nonce, the
+plan fingerprint, and the fingerprint of the whole request, so a replayed or
+foreign reply is refused before any host object is built. A failure carries
+the complete structured diagnostic: category, code, message, path, and
+details.
+
+An executor advertises the envelope with three capabilities, `query.plan.v2`,
+`query.remote.envelope-v2`, and `query.remote.structured-diagnostic`; a client
+refuses to prepare a request for an advertisement that lacks one with
+`unsupported_required_capability` and the `missing` names. A request in
+another format is refused by the executor with
+`query_remote_v2_format_unsupported`, whose `supported` detail names the
+request format it accepts.
+
+### Staged transactions
+
+A transaction on a proxy connection is the same core `Transaction` as a
+direct one, with a proxy backend. Staging stays local; `commit` serializes the
+ordered stack into one `typebridge.query-remote-request/v3` envelope (exact
+canonical V3 plan bytes, given rows, kind, limits, nonce, expiry and an
+idempotency key) and sends it to `POST /v3/staged`. The server runs the stack
+on one TypeDB transaction and returns a `typebridge.query-remote-response/v3`
+reply signed with the key from `GET /v3/capabilities`. The SDK verifies the
+signature and the request binding, then resolves each answer through the same
+plan answer path as direct execution; a failed reply becomes the same typed
+failure, and `commit_outcome_unknown` stays indeterminate rather than "not
+applied". Raw TypeQL and typed match reads have no V3 plan, so the proxy
+backend refuses them at stage time.
+
+Each commit attempt draws a fresh random 16-byte idempotency key. A key is
+reused only through the explicit retry API (`commit_retry`, `commitRetry` in
+TypeScript), which resends the identical request after an indeterminate
+outcome; the server's idempotency store replays the stored signed reply for a
+completed request, so the writes apply at most once. Since every attempt is
+keyed, only a verified `commit_definitely_aborted` ends an attempt; any other
+verified refusal (`retry_later` while the first attempt is in flight, a lost
+reservation, an authorization refusal) keeps its code but stays
+indeterminate and retryable, as does a cancelled commit. The staged
+advertisement is trusted only when its executor binding and reply key equal
+the connection's advertisement (`query_remote_v3_advertisement_mismatch`
+otherwise); it is pinned or fetched once per connection. The server admits writes
+and idempotency keys only from a caller an interceptor vouches for
+(`on_v3_write_authority`); `[v2] allow_unauthenticated_staged_writes` admits
+unkeyed writes only, and SDK commits are always keyed. The wire format, failure vocabulary and
+retention bounds are in the
+[staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
+
 ## Stable Error Categories
 
 | Category | Meaning | Executor invoked? | Data statements? |
@@ -567,9 +788,9 @@ API fact, not a fabricated runtime error.
 
 ## Legacy Compatibility Baseline
 
-The #189 cutover does not schedule the existing query facades themselves for
-removal. It does remove their use as active schema/model authoring authority.
-The retained boundary is therefore narrow:
+The #189 cutover removed the query facades' use as active schema/model
+authoring authority, and 2.3.0 removed the handwritten Python typed facade.
+The retained boundary is narrow:
 
 - Python package-root raw-TypeQL `Query`/`QueryBuilder` imports, in-place
   mutation, and build output remain;
@@ -578,8 +799,6 @@ The retained boundary is therefore narrow:
 - TypeScript package-root `TypedQuery<T, Row>` retains its two-parameter query
   behavior for released compatibility artifacts;
 - low-level Python and Node Query V2 authority remains public;
-- the Python `type_bridge.typed` implementation remains isolated compatibility
-  machinery, but generated applications import their package-local facade;
 - the former Node handwritten `/typed` registration surface and root model,
   field, role, attribute, flag, registry, and descriptor declarations are not
   active application paths.
@@ -611,3 +830,50 @@ operation inventory maps those outcomes to their binding-specific evidence.
 The compiler fixtures import the emitted package, not a handwritten authoring
 barrel. Separately unscheduled query compatibility and read-only archive
 baselines remain independent gates.
+
+## Provider failures
+
+The runtime classifies provider failures once. A `Failure::Rejected` contains
+`phase` (`query` or `commit`), a value-free reason and, on staged execution, an
+operation index. Reasons are conflict (with a reported lock kind), cardinality,
+unique, another annotation constraint, or another validated provider code.
+A `Failure::Indeterminate` means a commit may have applied. Its code is optional.
+No winner identity, query value, database name or provider prose is retained.
+
+Typed failures keep the released SDK diagnostic codes, categories and
+details:
+
+| Failure | Code | Released detail |
+| --- | --- | --- |
+| Commit rejection | `commit_definitely_aborted` | `commit_outcome: definitely_aborted` |
+| Indeterminate commit | `commit_outcome_unknown` | `commit_outcome: unknown` |
+| Query rejection | `provider_operation_failed` | `operation` |
+
+Errors that already lowered to another released code, such as
+`transaction_state_invalid`, keep it and gain the same typed details.
+
+Typed diagnostics add `retry_safe` as a boolean, `code` as a validated TypeDB
+identity and `rejection` (`conflict`, `cardinality`, `unique`, `constraint` or
+`other`) for a rejection. Conflict diagnostics include `lock_kind`; annotation
+constraints include `annotation`. These use bounded identity detail values.
+The C ABI 1.6 projection omits them and keeps the released detail set
+(`SdkExecutionDiagnostic::released_details`). A staged operation index
+is an `Index` path segment; possible owner and attribute sites are `Type` and
+`Field` path segments taken only from plan metadata. They are possible sites,
+not evidence that a particular site or another transaction caused the failure.
+
+New staged errors carry this classification structurally. Additive `.failure()`
+accessors on released runtime/ORM/server error enums recover only the code and
+fixed description written by the runtime; these released string carriers have
+no operation index or plan-derived owner/attribute context. Their enum variants
+remain unchanged. Arbitrary application messages are not parsed as failures.
+
+A rejection is safe to retry only by rerunning the whole transaction against a
+fresh snapshot, including its reads and conditions. It does not promise that
+another attempt will succeed. Indeterminate commits require reconciliation
+before retrying. TypeDB-origin ordinary error messages, debug output and source
+chains contain a code plus fixed description. Runtime transport messages also
+keep the operation name and a fixed transport kind, with the driver code when
+available. Raw HTTP/TLS causes and endpoint values are discarded. Local
+validation messages and application-owned transport errors retain their
+existing contracts.

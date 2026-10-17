@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"Validate the source-bound Sdk V3 atomic-generation artifact."
+"Validate the source-bound Models atomic-generation artifact."
 
 from __future__ import annotations
 
@@ -12,11 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 
-FORMAT = "typebridge.sdk-v3-artifact-observation/v1"
+FORMAT = "typebridge.sdk-models-artifact-observation/v1"
 
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# Offline generation artifacts are produced on the models catalog profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 
 MAX_ARTIFACT_BYTES = 64 * 1024
 
@@ -89,7 +94,7 @@ class ArtifactContract:
 
 CONTRACTS = {
     "atomic": ArtifactContract(
-        "type-bridge-cli.atomic-multibinding-v3-artifact",
+        "type-bridge-cli.sdk-models-atomic-multibinding-artifact",
         "schema_generation_atomicity_tests::injected_c_emitter_failure_preserves_all_four_ordered_packages",
         tuple(("type-bridge-core/crates/cli/src/lib.rs",)),
         "atomic_multibinding_generation",
@@ -114,11 +119,11 @@ CONTRACTS = {
         },
     ),
     "field-identity": ArtifactContract(
-        "type-bridge-schema-codegen.field-name-v3-artifact",
-        "exact_sdk_v3_field_name_identity_is_source_bound",
+        "type-bridge-schema-codegen.sdk-models-field-name-artifact",
+        "exact_sdk_models_field_name_identity_is_source_bound",
         tuple(
             [
-                "type-bridge-core/crates/schema-codegen/tests/sdk_v3_fingerprints.rs",
+                "type-bridge-core/crates/schema-codegen/tests/sdk_models_fingerprints.rs",
                 "type-bridge-core/crates/contract/src/projection.rs",
             ]
         ),

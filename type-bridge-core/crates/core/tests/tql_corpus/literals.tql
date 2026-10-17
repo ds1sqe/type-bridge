@@ -1,0 +1,1 @@
+match let $single = 'single'; let $s = "quote\"slash\\"; let $b = true; let $n = +12; let $d = -1.5e10; let $decimal = 0.1000000000000000001dec; let $date = 2026-10-15; let $dt = 2026-10-15T12:30; let $tz = 2026-10-15T12:30:00+01:00; let $duration = P1DT2H3M4.125S;

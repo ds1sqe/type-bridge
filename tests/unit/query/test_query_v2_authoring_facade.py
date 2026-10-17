@@ -346,12 +346,18 @@ def test_public_collection_and_invocation_limits_preflight_before_element_access
             raise AssertionError("row access must not occur")
 
     hostile_rows = HostileRows()
-    _assert_diagnostic(
-        "query_invocation_row_limit",
-        lambda: plan.rows(
+    with pytest.raises(native.QueryV2Error) as captured:
+        plan.rows(
             hostile_rows,  # pyright: ignore[reportArgumentType]
-        ),
-    )
+        )
+    # The core bounds the host sequence and annotates the refusal (Node
+    # reports the same details).
+    assert captured.value.code == "query_invocation_row_limit"
+    assert captured.value.details == {
+        "limit": {"kind": "text", "value": "input_rows"},
+        "maximum": {"kind": "long", "value": "4096"},
+        "source": {"kind": "text", "value": "default"},
+    }
     assert not hostile_rows.accessed
     assert plan.rows(()).operation == "rows"
 

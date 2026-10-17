@@ -4,6 +4,951 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+2.3.0 runs every query, direct or through a proxy, on one Rust pipeline, and
+adds staged transactions over typed `query-plan/v3` programs in every SDK.
+See the "Upgrading to 2.3" guide for the steps from 2.2.
+
+### Breaking changes
+
+2.3.0 removes the duplicate query paths that let one query behave
+differently direct and through a proxy. Each entry says what to do instead.
+
+- Generated packages need their embedded schema authority. A package
+  installed without one is refused with `schema_authority_required`. Every
+  generator has embedded it since 2.1.0; regenerate older packages.
+- Direct queries now apply the same query limits as remote ones, because
+  every match request, direct or remote, from a generated package or a
+  dynamic registry, runs on one executor: a predicate nested past
+  `canonical_depth` is refused with `canonical_json_too_deep` instead of
+  running, and a dynamic descriptor registry no longer falls back to the old
+  executor when a request does not fit. Raise the session's `QueryLimits` to
+  run such a query.
+- `QueryExecutionResourceLimits` constructors in Python, TypeScript/Node, and
+  C no longer clamp a value above the default: they keep it, and refuse a
+  timeout past one day or more than 3 statements. Pass the values you mean.
+- Renamed Rust constants: `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`,
+  `MAX_QUERY_GRAPH_NODES`, `MAX_QUERY_ATTRIBUTE_VALUES`,
+  `MAX_QUERY_COLLECTION_MEMBERS`, and `MAX_QUERY_ROLE_PLAYERS` are
+  `DEFAULT_PROXY_QUERY_*`, with the same values, beside the new, larger
+  `DEFAULT_DIRECT_QUERY_*`; they are defaults, no longer ceilings. The
+  `MAX_QUERY_*` names remain as deprecated aliases (see Deprecated).
+  `DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS`,
+  `DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS`,
+  `DEFAULT_DIRECT_QUERY_STATEMENTS`, and `DEFAULT_PROXY_QUERY_STATEMENTS` are
+  the defaults of the two dimensions that keep a maximum
+  (`MAX_QUERY_TIMEOUT_MILLISECONDS`, `MAX_QUERY_STATEMENTS`).
+- `ProjectedQueryMaterializationLimits::tightened` is replaced by `new`, and
+  the `MAX_PROJECTED_QUERY_*` constants are removed; materialization takes
+  its bounds from the answer policy.
+- Changed refusal codes:
+  - remote model-query preparation reports the limit that refused
+    adaptation, such as `canonical_json_too_deep` with `maximum_depth` or
+    `query_v2_adapter_literal_byte_limit` with `actual_bytes` and
+    `maximum_bytes`, instead of `query_remote_v2_model_artifact_limit`;
+  - a generated manager filter with more than 256 predicates is refused
+    with `structural_limit_exceeded` instead of
+    `manager_filter_predicate_limit`;
+  - replies to authored low-level plans (`query_v2_prepare_remote`,
+    `queryV2PrepareRemote`) are refused with `query_remote_v2_*` codes, and
+    a missing executor capability with `unsupported_required_capability`.
+- The V1 remote envelope is removed (`typebridge.query-remote-request/v1`,
+  `-response/v1`, `-failure/v1`). Authored low-level plans now travel in the
+  `typebridge.query-remote-request/v2` envelope that model queries already
+  used; their binding API keeps its shape, and a failure carries the
+  complete structured diagnostic. The capability advertisement and the
+  signed outer reply are unchanged. Removed Rust API, with the `*_v2` item
+  to use instead where one exists:
+  - contract: `RemoteQueryRequest`, `RemoteQueryResponse`,
+    `RemoteQueryFailure`, `RemoteLimits`, `RemoteReplyDecodeLimits`,
+    `RemoteOutcome`, `RemoteReply`, `RemoteRequestFingerprint`,
+    `decode_remote_reply`, `decode_signed_remote_failure`, and the constants
+    `QUERY_REMOTE_REQUEST_FORMAT_V1`, `QUERY_REMOTE_RESPONSE_FORMAT_V1`,
+    `QUERY_REMOTE_FAILURE_FORMAT_V1` and
+    `QUERY_REMOTE_REQUEST_CANONICALIZATION`. `RemoteOutcomeShape` has no
+    replacement.
+  - orm: `prepare_remote_query`, `preflight_remote_request`,
+    `preflight_remote_request_at`, `execute_admitted_remote_request`,
+    `encode_remote_request`, `encode_remote_request_at`,
+    `check_advertised_capabilities`, `decode_remote_outcome`,
+    `AdmittedRemoteRequest`, `RemoteRejection`, `PendingRemoteQuery` and
+    `ClaimedRemoteReply`.
+  - orm, the V1-or-V2 dispatch: `AdmittedRemoteRequestEnvelope`,
+    `RemoteRejectionEnvelope`, `preflight_remote_request_versioned` and
+    `execute_admitted_remote_request_versioned` become
+    `AdmittedRemoteRequestV2`, `RemoteRejectionV2`,
+    `preflight_remote_request_v2` and `execute_admitted_remote_request_v2`;
+    `RemoteRequestFormat` and `remote_request_format` are removed, since
+    only V2 is accepted.
+  - orm `RemoteReplyExpectation` is a struct instead of an enum with one
+    variant per envelope version.
+- Rust connections: `SchemaPackage::connect(policy)` takes a
+  `DirectConnectionPolicy` or a `ProxyConnectionPolicy` and returns
+  `Connection<S>` (`Direct(Database<S>)` or `Proxy(ProxyDatabase<S>)`)
+  instead of `Database<S>`; match `Connection::Direct` for CRUD managers.
+  Renamed: `RemoteDatabase` to `ProxyDatabase`, `RemoteQueryTransport` to
+  `ProxyExchange`, `RemoteConnectionOptions` to `ProxyConnectionPolicy`
+  (`generated(limits, transport)` is
+  `with_exchange(transport).answer_limits(limits)`; `new(scope, profile,
+  limits, transport)` adds `.authority(scope, profile)`), and `DirectTls` to
+  `TlsPolicy`; pass `QueryExecutionResourceLimits` where 2.2 took
+  `RemoteQueryLimits`. The 2.2 names remain as deprecated aliases (see
+  Deprecated), so 2.2 `RemoteDatabase` code compiles. What breaks is the
+  `Connection<S>` return of `connect` and of `connect_with_cancellation`;
+  both take `impl Into<ConnectionPolicy>`, and `connect_with_cancellation`
+  no longer needs the `typedb` feature.
+- Two exhaustive enums gain a `Complete` variant for the new `complete` row
+  cardinality: orm `match_request::RowCardinality` and contract
+  `query_plan::QueryRowCardinalityV2`. Add an arm to a `match` over them.
+- The server's `config::V2Section` gains the public fields `query_limits`,
+  `answer_limits` and `allow_unauthenticated_staged_writes`. A struct
+  literal needs them or `..Default::default()`; TOML configuration is
+  unaffected.
+- Generated Python packages have one async session. `QuerySession`,
+  `Query`, and `GroupedQuery` run on every connection, and every terminal
+  (`one`, `first`, `rows`, `page_by`, `count_by`, `exists_by`, `aggregate`,
+  grouped `aggregate`) is a coroutine, direct included; composition stays
+  synchronous. `QuerySession(connection, *, resources, cancellation,
+  query_limits)` takes the connection first and no projection, and
+  `Model.query(connection, ...)` accepts the same options. Removed:
+  `QuerySession.remote_factory` and the native
+  `PyRuntimeProjection.match_session()` (use
+  `match_session_with_resources`); the 2.2 remote names remain as
+  deprecated aliases (see Deprecated). To migrate:
+  - `await` each terminal; a script without an event loop wraps the session
+    in `type_bridge_core.blocking(session)`, which runs each terminal to
+    completion on a private thread.
+  - `RemoteQuerySession(advertisement, exchange, limits)` becomes
+    `QuerySession(ExchangeConnection(advertisement, exchange),
+    resources=limits)`, or `QuerySession(connect_proxy(url))` for the
+    built-in HTTP route. `RemoteQueryLimits(max_items=..., ...)` becomes
+    `QueryExecutionResourceLimits(items=..., ...)`; its defaults are the
+    statement count and deadline the flat limits used.
+- The handwritten Python typed-query facade `type_bridge.typed` is removed:
+  `QuerySession`, `Query`, `RemoteQuerySession`, `RemoteQuery`,
+  `RemoteQueryExchange`, `RemoteQueryLimits`, `Page`, `BoundVar`,
+  `BoundField`, `BoundRole`, `Collected`, `Predicate`, `QueryOrder`,
+  `Selection`, `FieldRef`, `RoleRef`, `TypedQueryCapabilityError`,
+  `TypedQueryConnectionError`, `TypedQueryMaterializationError`, and
+  `TypedQueryWindowError`. Use the generated package's own `QuerySession`,
+  `Query`, and tokens (`from your_generated_package import Query,
+  QuerySession`); every terminal is awaited, and a script without an event
+  loop wraps the session in `type_bridge_core.blocking(session)`. Generated
+  model stubs import their static descriptor protocols from
+  `type_bridge.fields._generated_descriptors`; a package generated earlier
+  still runs, but a type checker reports the missing module until it is
+  regenerated. Removed with it, from
+  `type_bridge_core`: the flat-limit `query_v2_remote_model_context` (use
+  `query_v2_remote_model_context_with_resources`),
+  `revalidate_match_diagnostic`, and `validate_match_order_term_count`.
+- Rust: `ast::FetchItem` gains `Raw(String)` for raw fetch entries; an
+  exhaustive `match` on it needs that arm.
+- Generated TypeScript packages have one session. `QuerySession`, `Query`,
+  and `GroupedQuery` run on every connection, and every terminal (`one`,
+  `first`, `rows`, `pageBy`, `countBy`, `existsBy`, `aggregate`, grouped
+  `aggregate`) returns a `Promise`, direct included; composition stays
+  synchronous, and direct terminals no longer block the event loop.
+  `new QuerySession(connection, { resources, cancellation, queryLimits })`
+  takes a `RustDatabase`, a transaction, a `ProxyConnection`, or an
+  `ExchangeConnection`; the 2.2 remote names remain as deprecated aliases
+  (see Deprecated). Removed from `@type-bridge/node/runtime-projection`:
+  `RuntimeProjectionRemoteLimits`, the seven
+  `InstalledRuntimeProjection.execute*` methods (use `direct(connection)`),
+  and the natives `matchSession()` without resources and the flat-limit
+  `queryV2RemoteModelContext` (use `matchSessionWithResources` and
+  `queryV2RemoteModelContextWithResources`). To migrate:
+  - `await` each terminal.
+  - `new RemoteQuerySession(advertisement, exchange, limits)` becomes
+    `new QuerySession(new ExchangeConnection(advertisement, exchange),
+    { resources })`, or `new QuerySession(await connectProxy(url))` for the
+    built-in HTTP route. Flat limits `{ maxItems, maxBytes, ..., deadlineMs }`
+    become `new QueryExecutionResourceLimits({ items, bytes, ...,
+    timeoutMilliseconds })`.
+- Generated Python and TypeScript packages no longer check query windows,
+  selection and aggregate caps, group-by keys, or reachability depth
+  themselves; the Rust core refuses them with its structured diagnostic
+  (in Python `InvalidQueryRequestError`, still a `ValueError`; in
+  TypeScript the structured error with `category` and `code`), the same on
+  every connection. TypeScript callers catch the core codes instead of the
+  old host errors:
+  - a zero limit is `zero_window_limit` and an offset plus limit past the
+    unsigned 64-bit range is `window_overflow` (TypeScript accepted
+    `limit: 0n` and now refuses it);
+  - more selections than `selected_slots` is `selection_cap_exceeded`, no
+    or too many aggregate terms are `empty_reducers` /
+    `reducer_cap_exceeded`, and too many group-by fields are
+    `field_group_tuple_cap_exceeded`, still raised by `group_by()` /
+    `groupBy()` (TypeScript raised `RangeError`);
+  - a reachability minimum depth above its maximum is `reachable_bounds`,
+    and a maximum above the predicate-depth ceiling (64) is
+    `reachable_depth_limit`.
+
+  The caps follow the session's `QueryLimits`: a session that lowers
+  `selected_slots` is refused at its own limit, where the hosts used to
+  apply a fixed sixteen. Marshalling stays a host error with the 2.2
+  classes in Python: a malformed window (a `bool`, a non-`int`, or a value
+  outside the unsigned 64-bit range) raises `ValueError`, and a depth that
+  is not an `int` raises `TypeError` or outside 0 to 255 `ValueError`; in
+  Node a window that is not a `u64` `bigint` or a depth that is not an
+  integer from 0 to 255 is a native argument error (it was a `RangeError`).
+  These are the same on every connection: a caller-exchanged session no
+  longer reports a malformed window as `query_remote_limit_invalid`.
+
+  C query descriptors get the same codes instead of
+  `c_query_descriptor_layout_invalid` for a zero limit, no selected slots
+  (`empty_output`) or reducers, a slot, order, group-field, or reducer table
+  above the core's ceiling, and an invalid output name
+  (`invalid_output_name`); a terminal now accepts up to 64 order terms, the
+  core's limit, instead of 16.
+- Every enum the native modules accept as text (comparison operator, sort
+  direction, missing-key order, row cardinality, reducer, transaction type,
+  value type, record kind, manager lookup and comparison, owner lookup,
+  match mode, given-row column type) is parsed by the Rust core. An unknown spelling is one structured diagnostic
+  in every language: category `invalid_input`, code `unknown_enum_value`,
+  details `kind`, `accepted`, and `value` (the rejected text, left out when
+  it is not a bounded identifier). Python raises the new
+  `type_bridge_core.UnknownEnumValueError`, a subclass of both
+  `MatchRequestError` and `ValueError`, so `except ValueError` still
+  catches it; TypeScript raises the structured error with that `code`
+  instead of a plain native argument error. The old message texts are gone.
+  As in 2.2, transaction types are trimmed and ASCII case-folded (`" READ "`
+  opens a read transaction), and Node `compareValueJson` /
+  `functionValueJson` accept the TypeQL spelling `datetime-tz` as an alias
+  of the scalar domain `datetime_tz`. Accepted spellings changed:
+  - row cardinality also accepts `complete`, which the core validates;
+  - TypeScript `QuerySession.var(model, mode)` refuses a mode other than
+    `exact` or `subtypes` with the structured error (was `TypeError`); the
+    native match session's new `binding(typeName, matchMode)` parses it;
+  - Python `execute_with_rows` column types are `boolean`, `integer` (alias
+    `long`), `double`, `string`, `date`, `datetime`, and `datetime-tz`; any
+    other raises `UnknownEnumValueError` before a row is read (was a
+    `ValueError` naming the row);
+  - the manager lookup aliases `exact` (for `eq`) and `like` (for `regex`)
+    and the owner lookup alias `exact` remain, now defined by the core.
+
+  The low-level query-v2 builders (Python and Node) report an unknown
+  value type, type kind, comparator, order direction, or reducer the same
+  way, with code `unknown_enum_value` and the same details; the category
+  stays `invalid_contract`, like every builder refusal. The codes
+  `query_builder_value_type_unknown`, `query_builder_type_kind_unknown`,
+  `query_builder_comparator_unknown`, `query_builder_order_direction_unknown`,
+  and `query_builder_reducer_unknown` are gone.
+
+  Rust: `ValueType::parse` (returned `Option`) is replaced by
+  `str::parse::<ValueType>()`; the core enums gain `FromStr`, `ACCEPTED`,
+  `KIND`, and `spelling()`, and `ValueType` / `ValueTypeTag` convert with
+  `From`.
+- A structured SDK diagnostic reaches Python and Node in one JSON form,
+  defined by the Rust core (`SdkExecutionDiagnostic::host_json`): `version`,
+  `category`, `sdk_category`, `query_category`, `code`, `message`, `path`,
+  `details`. In the JSON form `count`, `byte_count`, and `signed` detail
+  values are decimal strings, because a `u64`/`i64` does not fit a
+  JavaScript number; path positions (`index`, `output_slot`, `binding`,
+  `role_edge`) stay numbers.
+  - Python: `MatchRequestError` (and `UnknownEnumValueError`) keep their
+    classes and attribute names, and `count`, `byte_count`, and `signed`
+    detail values stay `int`, as in 2.2. The exception gains a `version`
+    attribute.
+  - Node: the native error message of a structured diagnostic uses the keys
+    `sdk_category` and `query_category` (was `sdkCategory`,
+    `queryCategory`) and adds `version`. `QueryV2Error` properties are
+    unchanged. TypeScript no longer re-validates the native JSON field by
+    field; it takes the core's form as given (internal failures still stay
+    plain errors).
+  - Rust and C are unchanged: the C ABI keeps its typed accessors, and its
+    contract diagnostic JSON is the same serde form Python and Node give a
+    `QueryV2Error`.
+  The cases in `tests/contracts/diagnostic-json.json` are checked to be
+  identical in Rust, Python, Node, and C (for the cases C can produce).
+- Generated Python and TypeScript packages no longer check a model member's
+  cardinality themselves; the Rust core checks it at the same call (Python
+  field assignment and construction, TypeScript `create` and
+  `decodeCreate`) with the rule and codes encoding uses: no value for a
+  required member is `missing_required_field` / `missing_required_role`,
+  any other count outside the cardinality is `field_cardinality_violation`
+  / `role_cardinality_violation`, with `actual_count`, `minimum_count`, and
+  `maximum_count` details.
+  - Python raises the new `type_bridge_core.ProjectedCardinalityError`, a
+    subclass of both `MatchRequestError` and `ValueError`, so
+    `except ValueError` still catches it; the old message texts are gone.
+  - TypeScript raises the structured error with that `code` instead of a
+    `RangeError`. Hydrated values are no longer re-checked in TypeScript;
+    the core checked them when it hydrated them.
+  - A provider row whose member count is outside the projected cardinality
+    is refused by the core with the same codes in category `integrity`
+    (Python `MatchRequestError`, Node the structured error) instead of a
+    `RuntimeError` reading "provider row violates projected cardinality".
+  - A generated manager write (insert, put, update, and their batch forms)
+    whose model holds a member count outside the cardinality, such as a
+    hand-built Node wire, is refused by the core with the same codes in
+    category `invalid_input` (Python `ProjectedCardinalityError`, Node the
+    structured error) instead of a `ValueError` reading "projected value
+    violates resolved cardinality" or a Node error reading "projected member
+    violates resolved cardinality".
+- Mixed versions: clients and executors must both be 2.3.
+  - A 2.3 executor refuses a V1-format request with
+    `query_remote_v2_format_unsupported` and a `supported` detail naming the
+    accepted format.
+  - A 2.3 client prepares authored plans only for an executor that
+    advertises `query.plan.v2`, `query.remote.envelope-v2`, and
+    `query.remote.structured-diagnostic`.
+  - A client older than 2.3 cannot decode the advertisement of an executor
+    configured with non-default query or answer limits.
+
+### Added
+
+- TypeDB 3.13 servers are supported for queries and CRUD. The support window
+  is 3.11.0–3.13.x; 3.13 servers negotiate the band-9 driver and use the
+  semantic profile `typedb-3.13.6/v1`. Generated packages on that profile
+  connect to exactly TypeDB 3.13.6. TypeDB 3.14 and newer are refused. A
+  connection whose band-8 discovery probe finds a 3.13 server reconnects
+  on band 9 instead of refusing it.
+- Connected migrations (`migration apply`, `verify`, `adopt`, and
+  `rollback`) run on TypeDB 3.13.6 with the workspace profile
+  `typedb-3.13.6/v1`. Each profile runs on exactly one server:
+  `typedb-3.12.1/v1` on 3.12.3 and `typedb-3.13.6/v1` on 3.13.6; any other
+  pair is refused with `migration_typedb_server_version_unsupported`, which
+  names the server the profile expects, and any other profile with
+  `migration_typedb_semantic_profile_unsupported` before credentials or the
+  filesystem are touched. An existing 3.12 history moves to the new profile
+  with `migration upgrade-profile --to typedb-3.13.6/v1` (below).
+  `require_supported_migration_server_for_profile`,
+  `require_supported_migration_profile`, and `migration_server_for_profile`
+  in `type_bridge_schema_migration_typedb` expose the pairing.
+- `type-bridge migration upgrade-profile --environment <env> --to
+  typedb-3.13.6/v1` moves a migration history to a newer TypeDB line. After
+  the databases are moved to the new server and
+  `compatibility.semantic-profile` names the new profile, it writes one
+  zero-operation profile bridge manifest and records it in that
+  environment's ledger. It requires the ledger at the history head and the
+  live schema unchanged (`migration_upgrade_profile_live_drift`), is
+  idempotent, and cannot be rolled back (`migration_rollback_profile_bridge`).
+  `migration make`, `plan`, `apply`, and `verify` on a history still on the
+  older profile refuse with `migration_history_profile_upgrade_required` and
+  print the command to run. A bridged history also replays into a new,
+  empty database on the newer server: `migration apply` applies the older
+  migrations under their own profile, the bridge as a profile flip, then
+  the newer ones, all verified. Older-profile migrations are refused
+  anywhere else.
+- `typebridge.query-plan/v3`, an open canonical plan format for one typed
+  TypeQL pipeline: an optional match with comparisons and `let` values
+  (typed arithmetic and builtin expressions, checked against TypeDB numeric
+  rules), bounded `given` input rows, `insert`, `put`, `update` and
+  `delete` write stages, and a read (`Rows`, `Count`, `Exists`) or write
+  operation. A plan is validated against schema authority (write targets,
+  concrete types, ownerships, roles, key immutability, binding lifetimes).
+  Rust owns the canonical bytes and every SDK calls it, so one program has
+  the same bytes in every language; released V2 read plans lift into V3
+  without changing their representation. The format, its capabilities and
+  the staged envelope are specified in the Query-plan V3 reference.
+- `query-plan/v3` match stages accept an `iid` pattern that identifies an
+  already typed entity or relation binding by its canonical IID
+  (`query.pattern.iid`).
+- `query-plan/v3` gains a terminal `fetch` stage that answers a thing's
+  hydration document (IID, exact type, owned attributes, and the players of
+  listed roles) in the same pipeline (`query.fetch.thing`, not yet
+  advertised by proxies).
+- `query-plan/v3` gains an `attach` write stage that adds an ownership
+  value or a role player to an already bound thing, keeping the existing
+  ones (`query.write.attach`, not yet advertised by proxies).
+- `query-plan/v3` delete stages gain `DeleteItem::Players { relation, role }`,
+  which removes every player of a role, so a relation update can clear a
+  role and attach its new players in one plan. `DeleteItem`, `AttachItem`
+  and `Stage` are `non_exhaustive`.
+- Rust staged transactions run `query-plan/v3` programs and typed reads.
+  `Transaction::stage_plan` lowers a plan to one provider query when it is
+  staged and resolves to a `PlanAnswer` (`Rows`, `Count`, `Exists` or
+  `Matched`) only after the commit succeeds; plan inputs need the TypeDB
+  3.12+ `given` stage. `Transaction::stage_match` stages a validated typed
+  read, including in a `Write` transaction, where it sees the writes staged
+  before it. Staged reads honour the transaction's answer limits, deadline
+  and cancellation. A `Schema` transaction refuses both with
+  `borrowed_target_not_read_only`.
+- The Rust SDK builds typed `query-plan/v3` programs and stages them.
+  `type_bridge::plan::Plan::builder()` declares things (`exact`,
+  `subtypes`), field values (`field`), inputs and input rows (`input`,
+  `row`), comparisons (`where_`), role links (`links`) and `let` values
+  from generated model, field and role tokens, then `update`, `insert`,
+  `put` and `delete` writes; `build(&SCHEMA)` validates it against the
+  generated package. `Database::transaction(TransactionOptions)` returns
+  `type_bridge::staged::Transaction` with `stage`, `commit`,
+  `commit_retry`, `rollback` and `close`; nothing opens before `commit`.
+  `ProxyDatabase::transaction` returns the same type, and commit and
+  pending-answer errors convert into `type_bridge::Error`. The rules that
+  number handles, order terms and name variables live in the contract's
+  `query_plan::v3::PlanBuilder`, so a program has one canonical encoding.
+- Python builds the same plans with `type_bridge.plan.Plan.builder()`
+  (`where_`, `let_`, and otherwise the Rust names in snake_case) from
+  generated model, field and role tokens; `build(schema_authority())`
+  validates it, and generated Python packages export `schema_authority()`.
+  `Database.staged_transaction(kind=None, *, commit_on_exit=True)` and
+  `RustDatabase.staged_transaction` open a direct staged transaction beside
+  the released `transaction()`; it and `ProxyConnection.transaction` stage
+  built plans, report `has_unknown_outcome()`, and answer typed
+  `Rows`, `Count`, `Exists` or `Matched` values from `Pending.result()`.
+- TypeScript builds the same plans with `Plan.builder()` from
+  `@type-bridge/node` (`exact`, `subtypes`, `field`, `input`,
+  `optionalInput`, `where`, `links`, `let`, `update`, `updatePlayer`,
+  `insert`, `put`, `delete`, `deleteField`, `deletePlayer`, `row`,
+  `returning`, `count`, `exists`, then `build(authority)`) from generated
+  model, field and role tokens; a token of another model is a type error.
+  `RustDatabase.stagedTransaction(kind)` opens a direct staged transaction
+  with `stage(plan)`, `commit`, `commitRetry`, `rollback`, `close`,
+  `hasUnknownOutcome()`, and an async dispose that closes without
+  committing (`await using`). Generated packages export `schemaAuthority()`.
+  `RustDatabase.transaction(kind)` keeps its released eager context.
+- C ABI 1.7, a strict superset of 1.6: every 1.6 symbol keeps its
+  behaviour. It adds:
+  - staged transactions over `query-plan/v3` plans:
+    `type_bridge_plan_v3_decode` (canonical plan bytes under declared
+    schema bytes), `type_bridge_database_transaction`,
+    `type_bridge_proxy_connection_transaction`,
+    `type_bridge_staged_transaction_{stage,commit,commit_retry,rollback,close}`
+    and `type_bridge_pending_answer`. As in the other SDKs, the handle is a
+    reusable logical transaction: commit and rollback take it by pointer
+    and keep it usable (after an unknown proxy outcome `commit_retry`
+    resends the same request), and `close` is the only release;
+  - the plan builder (`type_bridge_plan_builder_*`), which forwards to the
+    core builder, so a C program has the same plan bytes as any other SDK;
+  - `type_bridge_execution_diagnostics_failure_get_v1`, which reads a typed
+    failure (outcome, phase, reason, lock kind, annotation, `retry_safe`,
+    staged `op_index`, provider code) into
+    `type_bridge_execution_failure_v1_t`;
+  - `type_bridge_write_transaction_rollback_keep`;
+  - the `TYPE_BRIDGE_DEPRECATED(msg)` header macro, not yet applied.
+
+  Schema package descriptors of ABI 1.6 and 1.7 are both accepted. The
+  installed CMake package reports ABI 1.7.0 and accepts 1.6 and 1.7
+  requests, `EXACT` included, so `find_package(TypeBridge 1.6.0 EXACT)`
+  keeps resolving and `find_package(TypeBridge 1.7)` requires the new
+  minor. pkg-config keeps `Version: 1.6.0` for exact pins and provides
+  `type-bridge-abi = 1.7.0` (`Requires: type-bridge-abi >= 1.7.0`).
+- Staged transactions cross the proxy. `ProxyDatabase::transaction`
+  (Rust), `ProxyConnection.transaction(kind)` (Python and TypeScript) and
+  `type_bridge_proxy_connection_transaction` (C) return the same staged
+  transaction: commit sends every staged plan in one
+  `typebridge.query-remote-request/v3` envelope to `POST /v3/staged`,
+  verifies the signed reply, and resolves the answers and typed failures
+  direct execution gives. Each commit attempt carries a fresh random
+  16-byte idempotency key. When the outcome is unknown (a lost or
+  unverifiable reply), the transaction keeps the exact request, and
+  `commit_retry` (`commitRetry`) resends the same bytes, so the server
+  replays its stored reply instead of applying the writes twice. Only
+  plans stage over the proxy; raw TypeQL and `stage_match` are refused
+  with `staged_proxy_unsupported`.
+- The TypeBridge server runs staged `query-plan/v3` transactions at
+  `POST /v3/staged` and advertises them at `GET /v3/capabilities`. Every
+  configured interceptor must declare `supports_v3`, or each V3 request is
+  refused with `query_remote_policy_rejected`. A write transaction needs an
+  interceptor to vouch for the caller through `on_v3_write_authority`,
+  unless `[v2] allow_unauthenticated_staged_writes = true` (default
+  `false`); otherwise it is refused with `staged_write_not_authorized`.
+- Keyed staged requests retain their signed reply for retries, and one
+  client holds at most `1 / IdempotencyConfig::client_share` (default 4) of
+  the retained entries and bytes; past it, a new keyed request is refused
+  with `idempotency_client_capacity`.
+- Server interceptors can authorize each staged plan with `on_v3_plan`,
+  which sees a redacted `V3PolicyPlan` (capabilities, touched types,
+  operation, writes; input rows only when `wants_v3_plan_rows` opts in) and
+  refuses the whole request before anything is reserved or opened, and can
+  observe each staged transaction's outcome with `on_v3_commit`
+  (`V3CommitOutcome`: committed, code, commit certainty, typed failure).
+  Both default to no-ops.
+- Typed provider failures. Every query and commit failure is classified
+  once, from TypeDB's error code and fixed message text, into a value-free
+  `Failure`: `Rejected` (definitely not stored, with phase `query` or
+  `commit`, a reason, and the staged `op_index`) or `Indeterminate` (the
+  commit may have applied). Reasons are a conflict with its lock kind
+  (`exclusive`, `require_deleted_key`, `deleting_required_key`,
+  `unknown`), cardinality, uniqueness, a constraint with its annotation, or
+  another code. `retry_safe` says whether rerunning the whole transaction
+  on a fresh snapshot is safe; an indeterminate commit must be reconciled
+  first. The winner of a conflict is not reported: TypeDB does not expose
+  it.
+  - Rust: `error.failure()` on `type_bridge::Error` and the ORM, runtime
+    and server errors, in the `type_bridge::failure` vocabulary.
+  - Python: an immutable `error.failure` (`phase`, `reason`, `lock_kind`,
+    `annotation`, `op_index`, `retry_safe`, `code`). Commit errors raise
+    `type_bridge.CommitRejected`, its subclass `CommitConflict`, or
+    `CommitOutcomeUnknown`, all `RuntimeError` subclasses, from released
+    and staged commits alike; staged pending answers that observe the
+    commit outcome raise the same class, while staged query-phase failures
+    keep `MatchRequestError`.
+  - TypeScript: readonly `failure` on `QueryV2Error`.
+  - C: ABI 1.6 keeps its statuses (`TYPE_BRIDGE_STATUS_EXECUTION_FAILED`,
+    `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN`), now chosen from the
+    typed outcome, and its released detail set; ABI 1.7 reads the failure
+    through its accessor.
+  - Server: HTTP `error.details` carry the failure.
+
+  Diagnostics keep their released codes and add the details `retry_safe`,
+  `code`, `rejection`, `lock_kind` and `annotation`.
+- One connection, direct or proxy, chosen by configuration, in every
+  language; the same query program runs on either and returns the same
+  results and refusals. A proxy connection uses a built-in HTTP route to a
+  TypeBridge server's `/v2/capabilities` and `/v2/query` over plaintext or
+  TLS (native roots or a custom root bundle), with optional request headers
+  such as `Authorization` and an optionally pinned advertisement; it follows
+  no redirects and ignores proxy environment variables. Every proxy
+  connection takes an answer-limit ceiling.
+  - Rust: `SchemaPackage::connect(policy)` with
+    `ProxyConnectionPolicy::new(ProxyEndpoint::new(url))` (`TlsPolicy`), or
+    `ProxyConnectionPolicy::with_exchange` for a host-owned `ProxyExchange`.
+  - Python: `connect_proxy(endpoint, ...)`, or
+    `ExchangeConnection(advertisement, exchange, *, answer_limits=None)` for a
+    host-owned exchange; pass either to `QuerySession` or `Model.query`. The
+    native `ProxyConnection` behind it has `execute_*_proxy` terminals.
+  - TypeScript: `connectProxy(endpoint, options)` resolves to a
+    `ProxyConnection`, and `new ExchangeConnection(advertisement, exchange,
+    { answerLimits })` is the host-owned exchange; pass either to
+    `QuerySession`.
+  - C: `type_bridge_proxy_connection_open_v1` opens a synchronous connection
+    from `type_bridge_proxy_connection_options_v1_t` (endpoint, TLS mode and
+    custom root, headers, pinned advertisement, connection and answer
+    limits), and `type_bridge_proxy_query_execute_v1` runs a terminal on it
+    with the same arguments and result family as
+    `type_bridge_database_query_execute_v1`. Generated C packages emit
+    `{prefix}_proxy_query_execute_{kind}`. The remote context stays as the
+    exchange extension point for hosts that own the route. These entry
+    points and types are new in ABI 1.7; the 2.2.6 (ABI 1.6) header does
+    not declare them. Generated packages that call them carry an ABI 1.7
+    descriptor, and their CMake and pkg-config files require ABI 1.7
+    (`find_package(TypeBridge 1.7.0 EXACT)`, `type-bridge-abi >= 1.7.0`),
+    so a 2.2.6 runtime is refused at build time.
+- Configurable query limits. `QueryLimits` replaces the fixed ceilings on a
+  query's encoded size, nesting depth, and structure, and a session can lower
+  or raise them, including plans larger than 16 MiB. Python, TypeScript/Node,
+  and Rust sessions accept it (`query_limits`, `queryLimits`,
+  `with_query_limits`); C ABI 1.7 adds
+  `type_bridge_query_limit_override_v1_t` and
+  `type_bridge_query_session_open_with_limits_v1`. Defaults are unchanged.
+- Remote executors advertise the query limits and answer ceilings they
+  enforce. A client holds a request to the stricter of its own and the
+  advertised limits, refuses a query limit before sending, and asks for no
+  more answer than was advertised. The standalone server reads
+  `[v2.query_limits]` and `[v2.answer_limits]`.
+- Configurable answer limits. How much a query may return is one policy,
+  `QueryExecutionResourceLimits`, on both transports. A caller may raise a
+  dimension as well as tighten it: more than its transport's default can be
+  returned when the session, and through a proxy the executor too, are
+  configured for it. Only `timeout_milliseconds` (one day) and `statements`
+  (3) have a supported maximum; a value past it is refused by name.
+- Query-limit and answer-limit refusals report `limit`, `maximum`, and
+  `source` (`default`, `configured`, or `advertised`).
+- `type_bridge_core.DEFAULT_DIRECT_QUERY_*` and
+  `type_bridge_core.DEFAULT_PROXY_QUERY_*` (`TIMEOUT_MILLISECONDS`, `ITEMS`,
+  `BYTES`, `GRAPH_NODES`, `ATTRIBUTE_VALUES`, `COLLECTION_MEMBERS`,
+  `ROLE_PLAYERS`, `STATEMENTS`), and the same names on the native Node
+  module: the answer-limit defaults of each transport, read from the Rust
+  core. The TypeScript package no longer carries its own copies of
+  these defaults or of the codec byte ceilings; an omitted
+  `QueryExecutionResourceLimits` dimension takes the core default in every
+  language.
+- `type_bridge_core.InvalidQueryRequestError`, a subclass of both
+  `MatchRequestError` and `ValueError`, for the query refusals 2.2 raised as
+  `ValueError` (codes `zero_window_limit`, `window_overflow`,
+  `selection_cap_exceeded`, `empty_reducers`, `reducer_cap_exceeded`,
+  `field_group_tuple_cap_exceeded`, `reachable_bounds`,
+  `reachable_depth_limit`), so `except ValueError` still catches them. Python
+  exception `details` keep `int` counts; only the JSON form uses strings.
+- `type_bridge_core.canonical_enum_spelling(kind, value)` and the native
+  Node `canonicalEnumSpelling(kind, value)`: check a spelling against the
+  core enum named by `kind` and return its canonical spelling (`exact`
+  becomes `eq`). Generated Python owner lookups (`has()`, `owners()`) use
+  it instead of their own list. The cases in
+  `tests/contracts/enum-spellings.json` are checked in Rust, Python, and
+  Node; C checks that its integer constants spell the same enums.
+- The core's TypeQL compiler renders any single node:
+  `QueryCompiler::compile_node` over the new `ast::QueryNode`, with
+  `compile_pattern`, `compile_statement`, `compile_constraint`, and
+  `compile_value` public, and a raw fetch entry `ast::FetchItem::Raw`.
+  Python's native `QueryCompiler.compile_node(dict)` takes the tagged node
+  form.
+- `type_bridge_core.blocking(obj)`: a blocking view of an object with
+  coroutine methods, such as a generated session, for code without an event
+  loop.
+- A `complete` row cardinality in the request model and the V2 plan: every
+  distinct selected row, or a refusal when there are more than the limit. It
+  needs no order and no unique key. Plans that use it require the new
+  `query.operation.complete-rows` capability, which an executor older than
+  this release does not advertise.
+- The pipeline stages emit field-free `tracing` spans a subscriber can
+  time: `tb.orm.plan` (plan build and staging), `tb.query.compile`
+  (lowering and rendering), `tb.runtime.execute`, `tb.commit` and
+  `tb.decode`. They record no query text or values; with no subscriber a
+  span costs one callsite check.
+
+### Changed
+
+- A successful rollback keeps the transaction usable: the writes are
+  discarded, and more work can run and be committed on the same
+  transaction until `close()`. This holds for Python and TypeScript
+  transaction contexts (a Python `with` block commits work done after an
+  explicit rollback when it exits normally) and for the staged transaction
+  in every SDK. Rust `WriteTransaction::rollback(self)` and C ABI 1.6
+  `type_bridge_write_transaction_rollback` still consume the transaction;
+  use the new `WriteTransaction::rollback_keep(&mut self)` and ABI 1.7
+  `type_bridge_write_transaction_rollback_keep` to keep it.
+- TypeDB-origin errors now expose a bracketed code and fixed description instead
+  of provider prose, including ordinary SDK errors, debug output, HTTP messages,
+  migration diagnostics and Rust source chains. Existing exception ancestry,
+  error variants, HTTP statuses and C ABI 1.6 statuses are preserved. Query values,
+  credentials and endpoint text are excluded. Locally authored validation and
+  application transport errors retain their existing messages.
+- TypeDB transport failures keep a fixed failure kind and the operation name.
+- A close failure after a successful commit is logged and no longer reported
+  as an error: the write is durable, and reporting failure invited duplicate
+  retries.
+- Schema generation, TOML conversion, migration statements, V2 read plans,
+  local functions, bounded fetch lists and prepared control reads render
+  through the official TypeQL AST. Whitespace, stage separators, block
+  indentation, capability commas, fetch objects and numeric spelling follow
+  its plain display form; plan bytes and ordered given rows are unchanged.
+  Snapshots, migration sources, carried queries, caller-owned function bodies
+  and checksums keep their original bytes; new artifacts hash their new
+  rendered bytes. Updates use the TypeQL 3 equality constraint.
+- Active schema and query parsers use the official grammar and refuse
+  unofficial syntax or constructs legacy nodes cannot hold; empty legacy input
+  still parses to an empty clause list. The deprecated archive reader keeps
+  released inputs until 3.0. Checked lowering refuses non-`Has` relation
+  attributes and ownership deletes whose attribute type it cannot retain.
+- Retained Python schema, migration, CRUD and query helpers pass typed
+  metadata to Rust for rendering; their signatures are unchanged.
+- TOML function bodies the official parser rejects report
+  `MalformedFunctionBody`.
+- Ordered ownership and role lists in live schemas are read through the
+  official AST. List drift reports `migration_typedb_observation_no_candidate_match`
+  instead of `migration_typedb_export_invalid`, while refusing the migration.
+- The published `type-bridge-orm` and `type-bridge-schema-compat` crates pin
+  `typeql =3.13.4` (was `=3.12.0`).
+- Generated manager writes that go through the projected executor run as
+  `query-plan/v3` write plans; the next entries describe them. Where they
+  go through it:
+  - Rust SDK: single insert, put, update and delete in every generated
+    package; batches (`*_many`) only in packages generated with ordered
+    collections (projection handler version 2).
+  - C SDK: every single write and batch in every package; C has no handler
+    gate.
+  - Python and TypeScript/Node: single writes and batches only in packages
+    generated with ordered collections (handler version 2). A TypeScript
+    single `delete` keeps the released path in every package.
+  - The exceptions each entry names (ordered models, relation puts) keep
+    the released path inside the executor.
+
+  Packages generated without ordered collections carry handler version 1,
+  and the handler version is the package's behaviour version. In 2.3 those
+  packages keep the released write path in Python and TypeScript (every
+  write) and for Rust batches, because routing them would change error
+  classes, rollback-only latching and batch limits without a regeneration.
+  Routing them to plans is a later opt-in (a handler bump on regeneration,
+  or 3.0).
+- A projected relation insert resolves its role-player references inside
+  the write: each reference is an exact `isa!` match, or a disjunction over
+  the concrete candidate types, in the insert's own pipeline, so no lookup
+  query runs first. A reference that matches nothing still fails with
+  `provider_identity_cardinality_invalid` and writes nothing. A polymorphic
+  reference that matches several things, and two references of one role
+  that resolve to one player (`duplicate_resolved_role_player`), are now
+  refused after the write instead of before it.
+- A projected entity `put` with a key value is one write: it puts the key
+  on exactly the declared type, clears the non-key fields the input omits
+  and updates the given ones in the same pipeline, so no key lookup runs
+  first. A multi-valued field it gives is emptied and its values attached
+  in the same plan. A put on a model with an ordered field, and every
+  relation put, still look the key up first.
+- Projected entity insert, update and delete, and relation update and
+  delete, are each one write plan; inserts and updates answer their own
+  hydration document, so no read-back follows. Updates keep the complete
+  replacement: every non-key field (and, for a relation, every role) is
+  cleared and the given values and players attached, references resolved
+  in the same plan. Inserts and updates on models with ordered fields or
+  roles, and relation updates without players, keep the released path;
+  every delete that reaches the executor runs as a plan. For the Rust SDK
+  single insert, provider answers that do not describe exactly one
+  canonical thing now report `missing_post_write_row`,
+  `provider_identity_cardinality_invalid` or `provider_identity_mismatch`
+  instead of `invalid_provider_evidence`.
+- When a projected insert, update, keyed put or delete (entity or
+  relation) fails after its write plan was dispatched (including
+  hydration), a borrowed transaction is now rollback-only. A plan that
+  could not be lowered reached no provider and latches nothing.
+- A projected relation insert or keyed entity put hydrates its result from
+  the write's own fetch, so one query does the whole call and no read-back
+  follows it. If that answer names two relations, the call fails with
+  `provider_identity_cardinality_invalid` (the write made two) instead of the
+  read-back's `provider_hydration_failed`.
+- In Python packages generated with ordered collections (handler version
+  2), a generated model's single delete goes through the projected
+  executor, as one `query-plan/v3` delete plan, like its batch deletes.
+  Packages generated without ordered collections keep the released delete
+  path. An absent thing is still a successful no-op on both paths.
+- A projected batch write (Rust, Python and TypeScript batches in packages
+  generated with ordered collections; every C batch) runs each
+  stage as one statement over all its rows and splits only past the
+  limits: contiguous, ordered chunks of at most 4,096 rows within the
+  32 MiB envelope less the plan bytes, fired on the same transaction, so a
+  split batch stays all-or-nothing. Every binding and the proxy split a
+  batch the same way. Before, a batch past those limits could not be sent;
+  a single row too large for any chunk keeps the `batch_statement_limit`
+  refusal. Batches in packages generated without ordered collections
+  (Python, TypeScript, Rust) keep the released path and its limits.
+- Migration lease acquisition is one conditional write. A concurrent
+  acquirer that commits between this acquirer's read and write now fails it
+  with `migration_execution_stale_fence` instead of letting it silently take
+  the newer fence.
+- Band 9 runs on the official Rust `typedb-driver` 3.13.6 (with
+  `typedb-protocol` 3.13.4), up from 3.12.3. It serves TypeDB 3.12 and 3.13
+  servers (band 8 does not serve 3.13) and includes upstream's fetch-kind
+  decoding fix. The release pin check now also fails when crates.io publishes
+  a stable driver on a newer minor line.
+- TypeDB 3.13.6 is the recommended server, the V2 conformance baseline, and
+  the default image in `docker-compose.yml`, `docker-compose.proxy.yml`, and
+  `test.sh`. The installation guide lists the TypeDB window of every
+  TypeBridge release and recommends the newest supported TypeDB. New
+  workspaces and the shipped examples use the semantic profile
+  `typedb-3.13.6/v1`; existing workspaces keep the profile they declare. The
+  CLI `--version` output lists `typedb-3.13.6/v1` among its semantic profiles.
+- The Python `typedb-driver` extra accepts `>=3.11,<3.14`, and
+  `>=3.12.3,<3.14` on CPython 3.14. CPython 3.14 remediation messages name
+  the 3.13 driver line.
+- Answer-limit defaults are per transport. A direct session keeps the 2.2
+  values: 100,000 items, 64 MiB, 1,000,000 graph nodes, 4,000,000 attribute
+  values, 1,000,000 collection members and role players, 30 seconds, and 3
+  statements. Proxy connections and the server use the wire limits, as in
+  2.2: 65,536 items, graph nodes, attribute values, collection members, and
+  role players, and 32 MiB. One constructor chooses between them:
+  `QueryExecutionResourceLimits::default_for(AnswerTransport)`; `Default` is
+  the direct policy. An answer between the two defaults is returned direct and
+  refused through a proxy as a wire limit (`limit` `items` or `bytes`,
+  `source` `default`).
+  - C: a direct database, transaction, call, or batch without a limits
+    descriptor now gets the direct defaults, looser than 2.2.4's 65,536
+    items; a proxy connection or remote context gets the proxy defaults. ABI
+    1.7 adds `TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*` and
+    `TYPE_BRIDGE_QUERY_PROXY_DEFAULT_*`; the released
+    `TYPE_BRIDGE_QUERY_DEFAULT_*` keep their 2.2 values.
+  - Node: `ProxyConnection.answerLimits` reports the connection's ceiling,
+    as Python's `answer_limits` does.
+- C database, read-transaction, and proxy executes run through the Rust
+  query target that the other SDKs use, and the C remote context (the
+  caller-owned exchange) prepares requests through the Rust proxy
+  connection, so a connection's answer limits bind them the same way. The
+  header no longer describes limit values as clamped: they are kept, and a
+  value above its maximum is refused.
+- A generated package runs direct queries on the executor a proxy uses. Each
+  request is adapted to a V2 plan under the package's embedded schema
+  authority, so the same query is accepted or refused the same way direct and
+  remote. The second selected-row executor is removed.
+- Generated manager `all` and `first` run as complete fetches on the same
+  executor. Results and the `manager_first_identity_not_unique` refusal are
+  unchanged.
+- A hydration graph and a row sequence in a reply are no longer capped at
+  65,536 by the container; the caller's budget bounds them.
+- `selected_slots` validation messages no longer spell the number sixteen;
+  the ceiling is reported in the `maximum` detail.
+- Python's raw builders render TypeQL through the Rust core only. Raw
+  `Query`/`QueryBuilder`, expressions, CRUD patterns, `to_insert_query`, and
+  `QueryCompiler.compile`/`compile_batch` send every node (clause, pattern,
+  statement, constraint, value, raw fetch string) to the core; the Python
+  renderer and its silent fallback are gone, and a node the core cannot
+  decode raises `ValueError`. Output is unchanged except:
+  - a `str` literal with a non-string declared value type
+    (`LiteralValue("2024-01-01", "date")`) renders unquoted in a pattern,
+    statement, constraint, or value compiled on its own, as it already did
+    inside a clause;
+  - a small double whose Python form has a negative exponent renders
+    positionally (`0.00001`, was `1e-05`) where Python rendered it;
+  - an integer outside the signed 64-bit range and a non-finite double have
+    no TypeQL literal and raise `ValueError` (they were rendered as a quoted
+    string or `nan`).
+- A generated Rust package verifies its embedded plan authority once per
+  process instead of on every plan `build` (3.4 to 9 ms per plan before).
+  A package that fails verification still fails every build.
+
+### Deprecated
+
+Each name below keeps working until it is removed in 3.0; the deprecated
+aliases build their replacement. 2.2 remote terminals were already awaited,
+so 2.2 remote-session code runs unchanged.
+
+The released transaction entry points (Python `Database.transaction()`,
+TypeScript `RustDatabase.transaction()`, Rust `ReadTransaction` and
+`WriteTransaction`, the C ABI 1.6 functions) and the generated managers'
+write paths are not deprecated in 2.3: the staged transaction does not yet
+carry managers or typed queries.
+
+- Python `update_with(func)` on filtered queries and generated managers is
+  deprecated since 2.3.0 for removal in 3.0 and emits a
+  `DeprecationWarning`. It runs a host callback over rows it read; compute
+  the new value with `let_()` in an update plan and stage it in a
+  transaction instead (see the typed-queries guide).
+- Python `type_bridge.session.Transaction`, the direct-driver transaction
+  wrapper, emits a `DeprecationWarning`; use `Database.transaction()`.
+- Rust String schema-generation and fragment helpers are deprecated since
+  2.3.0 for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
+  builders. Python schema generation propagates checked errors as `ValueError`.
+- Legacy query nodes and String-returning compiler methods are deprecated
+  since 2.3.0 for removal in 3.0: the `ast` types (`Clause`, `Pattern`,
+  `Statement`, `Constraint`, `Value`, `FetchItem`, `QueryNode`, and their
+  parts) and `QueryCompiler::compile`, `compile_node`, `compile_clause`,
+  `compile_pattern`, `compile_statement`, `compile_constraint` and
+  `compile_value`. Use generated typed query plans, or
+  `try_compile` / `try_compile_node`, which return `compiler::TqlError`, when
+  bridging legacy nodes. Python `QueryCompiler.compile`, `compile_clause_body`,
+  `compile_batch` and `parse_typeql_query` emit `DeprecationWarning`;
+  type-bridge's own helpers do not.
+- The frozen schema archive reader is deprecated since 2.3.0 for removal in
+  3.0: Python `type_bridge_core._ArchivedTypeSchema.from_typeql` emits a
+  `DeprecationWarning`, and Rust `type-bridge-core-lib`
+  `_parser::parse_typeql` and `_schema::TypeSchema::from_typeql` are
+  `#[deprecated]`. Use Split-YAML schema authority.
+- Generated Python packages (each constructor emits a
+  `DeprecationWarning`):
+  - `RemoteQuerySession(advertisement, exchange, limits, *, cancellation=None)`
+    is a `QuerySession` subclass that only builds
+    `QuerySession(ExchangeConnection(advertisement, exchange),
+    resources=limits, cancellation=cancellation)`.
+  - `RemoteQueryLimits(max_items=..., max_bytes=...,
+    max_collection_members=..., max_graph_nodes=..., max_attribute_values=...,
+    max_role_players=..., deadline_ms=None)` returns a
+    `QueryExecutionResourceLimits` (`items=`, `bytes=`, ...,
+    `timeout_milliseconds=`); `isinstance(limits, RemoteQueryLimits)` still
+    holds, but read the new field names (`limits.items`, not
+    `limits.max_items`).
+  - `RemoteQuery` is `Query`; `RemoteGroupedQuery` is `GroupedQuery`.
+- Generated TypeScript packages (`@deprecated` in the declarations):
+  - `new RemoteQuerySession(advertisement, exchange, limits, cancellation?)`
+    is a `QuerySession` subclass that only builds
+    `new QuerySession(new ExchangeConnection(advertisement, exchange),
+    { resources, cancellation })`.
+  - `RemoteQueryLimits` is the 2.2 shape `{ maxItems, maxBytes,
+    maxCollectionMembers, maxGraphNodes, maxAttributeValues, maxRolePlayers,
+    deadlineMs? }` or a `QueryExecutionResourceLimits`;
+    `RemoteQuerySession` converts the former. Use
+    `QueryExecutionResourceLimits`.
+  - `RemoteQuery` is `Query`, `RemoteGroupedQuery` is `GroupedQuery`, and
+    `RemoteQueryExchange` is the `ExchangeConnection` exchange callback type.
+- Rust (`#[deprecated]`):
+  - `SchemaLoweringProfileFingerprint::compute(bytes)` scopes the
+    fingerprint to the TypeDB 3.12.1 lowering profile, as in 2.2. Use
+    `compute_for_profile(profile_id, bytes)`.
+  - `SchemaLoweringBinding::current(capabilities)` binds the TypeDB 3.12.1
+    lowering profile, as in 2.2. Use
+    `SchemaLoweringBinding::for_semantic_profile` or `for_context`, which
+    select the registry of the profile in use.
+  - `RemoteDatabase<S>` is `ProxyDatabase<S>`.
+  - `RemoteQueryTransport` is the 2.2 trait; every implementation is a
+    `ProxyExchange`. Implement `ProxyExchange`.
+  - `RemoteConnectionOptions::generated(limits, transport)` returns
+    `ProxyConnectionPolicy::with_exchange(transport).answer_limits(limits)`,
+    and `RemoteConnectionOptions::new(scope, profile, limits, transport)`
+    adds `.authority(scope, profile)`. `RemoteConnectionOptions` itself is
+    only these constructors, because `ProxyConnectionPolicy::new` now takes
+    a `ProxyEndpoint`; name `ProxyConnectionPolicy` in type positions.
+  - `RemoteQueryLimits::new(max_items, max_bytes, max_collection_members,
+    max_graph_nodes, max_attribute_values, max_role_players)` with
+    `.deadline_ms(ms)` converts into `QueryExecutionResourceLimits` with
+    the matching fields, the proxy default statements, and the proxy
+    default timeout unless `deadline_ms` sets one. Use
+    `QueryExecutionResourceLimits`.
+  - `DirectTls` is `TlsPolicy` (`type_bridge`, `type_bridge_orm`, and
+    `type_bridge_orm::session`).
+  - `MAX_QUERY_ITEMS`, `MAX_QUERY_BYTES`, `MAX_QUERY_GRAPH_NODES`,
+    `MAX_QUERY_ATTRIBUTE_VALUES`, `MAX_QUERY_COLLECTION_MEMBERS`, and
+    `MAX_QUERY_ROLE_PLAYERS` (`type_bridge` and `type_bridge_orm`) equal the
+    matching `DEFAULT_PROXY_QUERY_*`, their 2.2 values.
+  - `type_bridge_schema_migration_typedb::require_supported_migration_server`
+    still requires exactly TypeDB 3.12.3, the `typedb-3.12.1/v1` server. Use
+    `require_supported_migration_server_for_profile`.
+  - `type_bridge_orm::Transaction` and `type_bridge_orm::session::Transaction`
+    are `OwnedTransaction`; name `OwnedTransaction`. In 3.0 the staged
+    transaction takes the session-level `Transaction` name.
+  - `DriverBackend::open_schema_fenced_read_transaction`, the custom backend
+    schema-fence hook; use the core transaction options.
+
+### Fixed
+
+- `Transaction::stage_plan` refuses a `query-plan/v3` program lifted from a
+  V2 plan that keeps its filter or model terminal as compatibility evidence
+  (`query_plan_compatibility_unsupported`), instead of running it without
+  the filter and answering unfiltered rows.
+- Legacy query compilation no longer emits TypeQL that the TypeQL 3 parser
+  rejects: attribute values render as one `isa` constraint instead of
+  `$a isa T; $a "v"`, keyed wildcards as fetch objects, zero-argument `count`
+  as a reducer, and optional blocks parse back as `try`. Decimals keep exact
+  digits and fetch keys are escaped.
+- Deprecated String compile and schema helpers return empty output for structured
+  shapes the official AST rejects, instead of invalid TypeQL. Python
+  `QueryCompiler.compile` and the server pipeline raise on non-`Has` relation
+  attributes that earlier releases silently dropped.
+- Python `compile_batch(..., "match")` terminates each pattern with a
+  semicolon, correcting batches rejected by TypeDB with TQL03.
+- Native schema migrations preserve ordered ownership and role list markers,
+  including annotations, specialisations and removals, preventing scalar drift.
+- Backfill count queries retain unrelated negative filters and accept equivalent
+  compact carried statements, correcting overstated matched/skipped totals.
+- Structured migration tuple functions emit comma-separated return types,
+  correcting headers rejected with TQL03. Ordered role specialisations emit
+  matching list markers on the parent, correcting invalid `as` clauses.
+- TOML `long`/`int` and `bool` aliases now emit TypeDB builtin `integer`
+  and `boolean` domains instead of unresolved type labels (SYR4).
+- Schema generation omits unchanged inherited plays declarations on subtypes,
+  correcting schemas rejected by TypeDB with SVL42. Introspection stores
+  scoped role labels as local role names.
+- TOML structs now use TypeQL 3 `struct name: field value type;` syntax.
+  Schema introspection binds type labels with `label`, correcting the
+  obsolete `type` constraint in ownership and role queries.
+- Python and Node generated queries on a direct connection now run under
+  the connection's answer limits (`answer_limits` / `answerLimits` given
+  when connecting). They used only the session's own limits, so a session
+  could return more, or run longer, than its connection allowed. Rust and
+  C already applied the ceiling; every binding now shares one rule.
+- Generated manager filters in every binding now stop at the connection
+  ceiling's timeout. They tightened resources to the ceiling but kept the
+  deadline captured before it.
+- Build repeated `where` clauses and chained `and`/`or` predicates as one flat
+  conjunction or disjunction in every language binding. A query with more than
+  about thirty clauses previously nested past the canonical JSON depth of 64,
+  so remote sessions refused it and direct sessions silently used the V1
+  executor.
+
+### Tests and tooling
+
+- SDK conformance test contracts are named by concern: queries, models,
+  administration, serialization and artifacts. The sdk-v1 smoke report is
+  folded into queries, and administration runs natively on each TypeDB profile.
+- The `writes` SDK conformance suite runs one staged program in Python,
+  TypeScript, Rust and C, directly and through the proxy, and checks that
+  plan bytes, answers and stored state are identical, on TypeDB 3.13.6.
+- The SDK conformance sets (`sdk-v1` to `sdk-v6`) run on TypeDB 3.12.3 and
+  3.13.6 through a per-profile matrix: each set lists the expected server and
+  fingerprints for every supported semantic profile, and a report set must
+  share one profile.
+- `./test.sh --typedb <line|all>` runs the live tier on one supported TypeDB
+  line (3.11.5, 3.12.3, or 3.13.6; default 3.13.6), or on every line followed
+  by the two-server profile-upgrade lane. Each line runs under its own
+  semantic profile.
+- Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
+  (default `typedb-3.13.6/v1`) and require the exact server their profile
+  names: 3.12.3 for `typedb-3.12.1/v1`, 3.13.6 for `typedb-3.13.6/v1`.
+- Perf tracking groundwork: the `Perf` workflow runs the core and ORM micro
+  benchmarks on pushes to master, nightly, on dispatch and on pull requests,
+  and uploads Criterion wall times and gungraun instruction counts as one
+  validated `perf-result/v1` file. Master, nightly and dispatch runs are
+  stored on the `perf-data` branch, and the docs site charts that history
+  at `/perf/`.
+- The same `Perf` run records the Python binding benchmarks in
+  `benchmarks/` (native query compilation, clause marshalling and
+  validation through `type_bridge_core`) as `binding.python.*` metrics. The
+  suite drops its pure-Python comparison benches and
+  `benchmarks/run_benchmarks.py` with its TOML reports, and the `benchmark`
+  pytest marker is gone: run `uv run pytest benchmarks --benchmark-only`.
+- The `Perf` workflow also records build times, artifact sizes and
+  test-suite durations, and compares base and head on pull requests. On
+  master, nightly and dispatch runs it times the Rust SDK pipelines
+  (insert, fetch by key and filtered, update, delete, a 1,000-row batch, a
+  staged purchase, migration apply) against TypeDB 3.13.6 and draws each
+  pipeline's stage medians on `/perf/`.
+
 ## [2.2.6] - 2026-10-16
 
 ### Fixed

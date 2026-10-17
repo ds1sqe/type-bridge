@@ -130,7 +130,7 @@
     },
     {
       "id": "selection.seventeen-slot-rejection",
-      "description": "Seventeen selected slots are rejected statically and by Rust before executor invocation.",
+      "description": "Seventeen selected slots are rejected statically and, at query composition, by the Rust session before executor invocation.",
       "features": ["slot_reject_17"],
       "operation": "construction",
       "transaction_mode": "none",
@@ -280,22 +280,22 @@
     },
     {
       "id": "bounds.public-invalid-limit",
-      "description": "The public language boundary rejects non-positive or out-of-range integer limits before unsigned native conversion.",
+      "description": "A zero limit passes the public language boundary unchanged and Rust refuses it. A negative or out-of-range integer is a host marshalling error (Python ValueError, as in 2.2; a native argument error in Node) and never becomes a request.",
       "features": ["positive_limit"],
       "operation": "fetch_rows",
       "transaction_mode": "none",
-      "input": {"boundary": "public_language", "invalid_limits": [0, -1, "u64_overflow"]},
-      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "invalid_window_limit", "zero_executor_invocations": true, "zero_data_statements": true},
+      "input": {"boundary": "public_language", "limit": 0, "marshalling_errors": [-1, "u64_overflow"]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "zero_window_limit", "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {
       "id": "bounds.public-invalid-offset",
-      "description": "The public language boundary rejects negative or out-of-range integer offsets before unsigned native conversion.",
+      "description": "The largest unsigned offset with a positive limit passes the public language boundary unchanged and Rust refuses the window. A negative or out-of-range integer offset is a host marshalling error.",
       "features": ["safe_offset"],
       "operation": "fetch_rows",
       "transaction_mode": "none",
-      "input": {"boundary": "public_language", "invalid_offsets": [-1, "u64_overflow"]},
-      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "invalid_window_offset", "zero_executor_invocations": true, "zero_data_statements": true},
+      "input": {"boundary": "public_language", "offset": "u64_max", "limit": 1, "marshalling_errors": [-1, "u64_overflow"]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "window_overflow", "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
     },
     {
@@ -317,6 +317,66 @@
       "input": {"offset": "u64_max_minus_1", "limit": 2},
       "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "window_overflow", "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "selection.session-slot-ceiling",
+      "description": "A session whose query limits lower selected_slots refuses a wider output at its own ceiling, naming the configured maximum.",
+      "features": ["slot_reject_17", "session_selected_slots"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"selection_arity": 5, "query_limits": {"selected_slots": 4}},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "selection_cap_exceeded", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-selection-arities"], "typescript": ["typescript-selection-arities"]}
+    },
+    {
+      "id": "aggregate.empty-terms",
+      "description": "An aggregate with no terms reaches Rust unchanged and is refused before executor invocation.",
+      "features": ["aggregate_term_cap"],
+      "operation": "reduce_by",
+      "transaction_mode": "none",
+      "input": {"term_count": 0},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "empty_reducers", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "aggregate.seventeen-terms",
+      "description": "Seventeen aggregate terms exceed the session's selected_slots and are refused by Rust before executor invocation.",
+      "features": ["aggregate_term_cap"],
+      "operation": "reduce_by",
+      "transaction_mode": "none",
+      "input": {"term_count": 17},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "reducer_cap_exceeded", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "aggregate.seventeen-group-keys",
+      "description": "Seventeen group-by fields are refused by Rust at the group-by call, with the code the reduction terminal produces.",
+      "features": ["group_key_cap"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"group_key_count": 17},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "field_group_tuple_cap_exceeded", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-terminals-and-collections"], "typescript": ["typescript-terminals-and-collections"]}
+    },
+    {
+      "id": "reachability.reversed-bounds",
+      "description": "A reachability minimum depth above its maximum is refused by Rust when the predicate is built.",
+      "features": ["reachability_depth"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"min_depth": 3, "max_depth": 2},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "reachable_bounds", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
+    },
+    {
+      "id": "reachability.depth-ceiling",
+      "description": "A maximum depth above the canonical predicate-depth ceiling is refused by Rust when the predicate is built. A depth outside the unsigned 8-bit range is a host marshalling error.",
+      "features": ["reachability_depth"],
+      "operation": "construction",
+      "transaction_mode": "none",
+      "input": {"min_depth": 0, "max_depth": 65, "marshalling_errors": [-1, 256]},
+      "expected": {"outcome": "error", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": "invalid_plan", "error_code": "reachable_depth_limit", "zero_executor_invocations": true, "zero_data_statements": true},
+      "examples": {"python": ["python-topology-and-strings"], "typescript": ["typescript-topology-and-strings"]}
     },
     {
       "id": "order.non-scalar-field",

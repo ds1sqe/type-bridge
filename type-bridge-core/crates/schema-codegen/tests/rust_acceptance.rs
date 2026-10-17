@@ -22,19 +22,19 @@ const NEGATIVE: &str = include_str!("rust_acceptance/negative.rs");
 const PROJECTED_PARITY: &str = include_str!("rust_acceptance/projected_parity.rs");
 const PROJECTED_FOREIGN_NEGATIVE: &str =
     include_str!("rust_acceptance/projected_foreign_negative.rs");
-const SDK_V5_CODEC: &str = include_str!("rust_acceptance/sdk_v5_codec.rs");
+const SDK_SERIALIZATION_CODEC: &str = include_str!("rust_acceptance/sdk_serialization_codec.rs");
 
-const SDK_V3_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT";
-const SDK_V3_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE";
+const SDK_MODELS_PROOF_FRAGMENT_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT";
+const SDK_MODELS_PROOF_NONCE_ENV: &str = "TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE";
 
-fn v3_source_identity(root: &Path, relative: &str) -> Value {
+fn models_source_identity(root: &Path, relative: &str) -> Value {
     let bytes = fs::read(root.join(relative)).expect("V3 proof source reads");
     json!({"path": relative, "sha256": format!("{:x}", Sha256::digest(bytes))})
 }
 
-fn publish_v3_package_fragment(results: Vec<Value>) {
-    let destination = env::var_os(SDK_V3_PROOF_FRAGMENT_ENV);
-    let nonce = env::var_os(SDK_V3_PROOF_NONCE_ENV);
+fn publish_models_package_fragment(results: Vec<Value>) {
+    let destination = env::var_os(SDK_MODELS_PROOF_FRAGMENT_ENV);
+    let nonce = env::var_os(SDK_MODELS_PROOF_NONCE_ENV);
     assert_eq!(
         destination.is_some(),
         nonce.is_some(),
@@ -62,18 +62,18 @@ fn publish_v3_package_fragment(results: Vec<Value>) {
     let fragment = json!({
         "binding": "rust",
         "contract": {
-            "allowlist": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json"),
-            "journey": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"),
-            "proof_schema": v3_source_identity(&root, "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json"),
+            "allowlist": models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json"),
+            "journey": models_source_identity(&root, "tests/contracts/sdk_conformance/models/journey.json"),
+            "proof_schema": models_source_identity(&root, "tests/contracts/sdk_conformance/models/proof-fragment-schema.json"),
         },
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
+        "format": "typebridge.sdk-models-proof-fragment/v1",
         "producer": {
-            "id": "type-bridge-rust.generated-package-v3-proof",
-            "sources": sources.iter().map(|path| v3_source_identity(&root, path)).collect::<Vec<_>>(),
+            "id": "type-bridge-rust.sdk-models-generated-package-proof",
+            "sources": sources.iter().map(|path| models_source_identity(&root, path)).collect::<Vec<_>>(),
         },
         "results": results,
         "run_nonce": nonce,
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": support::sdk_profile_matrix::requested("models").semantic_profile,
     });
     let mut bytes = to_canonical_json(&fragment).expect("V3 package fragment canonicalizes");
     bytes.push(b'\n');
@@ -113,6 +113,18 @@ fn emit_from_source(source: &str) -> GeneratedPackage {
     let authority = support::authority(source);
     RustEmitter::new()
         .emit(&project_from_source(source), &authority)
+        .unwrap()
+}
+
+/// `source` emitted on `profile`, for producers whose reports declare the
+/// requested sdk matrix profile.
+fn emit_on(source: &str, profile: &str) -> GeneratedPackage {
+    let authority = support::authority_with(source, support::TEST_SCOPE, profile);
+    RustEmitter::new()
+        .emit(
+            &support::rust_projection_on(source, "rust-acceptance.yaml", profile),
+            &authority,
+        )
         .unwrap()
 }
 
@@ -424,8 +436,8 @@ fn generated_direct_connection_policy_compiles_with_legacy_compatibility() {
 
 use generated::{AppSchema, SCHEMA};
 use type_bridge::{
-    AnswerCancellation, ConnectionOptions, Database, DirectConnectionPolicy, DirectTls,
-    QueryExecutionResourceLimits, Unbound,
+    AnswerCancellation, Connection, ConnectionOptions, Database, DirectConnectionPolicy,
+    ProxyConnectionPolicy, ProxyEndpoint, QueryExecutionResourceLimits, TlsPolicy, Unbound,
 };
 
 fn limits() -> QueryExecutionResourceLimits {
@@ -433,7 +445,7 @@ fn limits() -> QueryExecutionResourceLimits {
 }
 
 fn canonical_policy() -> DirectConnectionPolicy {
-    let trust = DirectTls::custom_root(PathBuf::from("root-ca.pem")).unwrap();
+    let trust = TlsPolicy::custom_root(PathBuf::from("root-ca.pem")).unwrap();
     DirectConnectionPolicy::new(
         "localhost:1729",
         "app",
@@ -446,15 +458,31 @@ fn canonical_policy() -> DirectConnectionPolicy {
     .answer_limits(limits())
 }
 
+fn proxy_policy() -> ProxyConnectionPolicy {
+    let endpoint = ProxyEndpoint::new("https://bridge.example:8443")
+        .tls(TlsPolicy::native_roots())
+        .header("authorization", "Bearer token");
+    ProxyConnectionPolicy::new(endpoint)
+        .connection_limits(limits())
+        .answer_limits(limits())
+}
+
 async fn canonical_connection() -> type_bridge::Result<()> {
     let cancellation = AnswerCancellation::default();
-    let database: Database<AppSchema> = SCHEMA
+    let connection: Connection<AppSchema> = SCHEMA
         .connect_with_cancellation(canonical_policy(), cancellation)
         .await?;
-    database.close()?;
+    if let Connection::Direct(database) = connection {
+        database.close()?;
+    }
 
-    let database: Database<AppSchema> = SCHEMA.connect(canonical_policy()).await?;
-    database.close()
+    for connection in [
+        SCHEMA.connect(canonical_policy()).await?,
+        SCHEMA.connect(proxy_policy()).await?,
+    ] {
+        let _session = connection.query_with_resources(limits(), AnswerCancellation::default())?;
+    }
+    Ok(())
 }
 
 async fn released_connection_compatibility() -> type_bridge::Result<()> {
@@ -468,8 +496,8 @@ async fn released_connection_compatibility() -> type_bridge::Result<()> {
 }
 
 fn main() {
-    let _ = DirectTls::disabled();
-    let _ = DirectTls::native_roots();
+    let _ = TlsPolicy::disabled();
+    let _ = TlsPolicy::native_roots();
     let _ = canonical_connection;
     let _ = released_connection_compatibility;
 }
@@ -516,7 +544,7 @@ fn main() {
         (
             "direct-connect-preserves-package-authority",
             r#"use generated::{AppSchema, SCHEMA};
-use type_bridge::{Database, DirectConnectionPolicy, Schema};
+use type_bridge::{Connection, DirectConnectionPolicy, Schema};
 
 struct ForeignSchema;
 impl type_bridge::schema::sealed::Sealed for ForeignSchema {}
@@ -526,7 +554,7 @@ async fn check() {
     let policy = DirectConnectionPolicy::new(
         "localhost:1729", "app", "admin", "password",
     );
-    let _: Database<ForeignSchema> = SCHEMA.connect(policy).await.unwrap();
+    let _: Connection<ForeignSchema> = SCHEMA.connect(policy).await.unwrap();
 }
 
 fn main() {
@@ -534,15 +562,15 @@ fn main() {
 }"#,
             &[
                 "mismatched types",
-                "Database<ForeignSchema>",
-                "Database<AppSchema>",
+                "Connection<ForeignSchema>",
+                "Connection<AppSchema>",
             ],
         ),
         (
             "direct-tls-rejects-inline-trust-bytes",
-            r#"use type_bridge::DirectTls;
+            r#"use type_bridge::TlsPolicy;
 fn main() {
-    let _ = DirectTls::custom_root(vec![b'x']);
+    let _ = TlsPolicy::custom_root(vec![b'x']);
 }"#,
             &["AsRef", "Path", "Vec<u8>"],
         ),
@@ -3630,17 +3658,18 @@ fn main() {}"#,
 }
 
 #[test]
-fn sdk_v3_generated_package_integrity() {
+fn sdk_models_generated_package_integrity() {
     let source = fs::read_to_string(
-        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+        repository_root().join("tests/contracts/sdk_conformance/models/schema.yaml"),
     )
-    .expect("Sdk V3 schema reads");
-    let projection = project_from_source(&source);
+    .expect("Models schema reads");
+    let profile = support::sdk_profile_matrix::requested("models").semantic_profile;
+    let projection = support::rust_projection_on(&source, "rust-acceptance.yaml", &profile);
     assert!(
         !projection.models().is_empty(),
         "V3 projection has generated models"
     );
-    let package = emit_from_source(&source);
+    let package = emit_on(&source, &profile);
     let emitted = package
         .files()
         .values()
@@ -3731,26 +3760,29 @@ fn sdk_v3_generated_package_integrity() {
         "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
         "provider_text_exposed": false
     });
-    publish_v3_package_fragment(vec![
-        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
-        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
-        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_v3_generated_package_integrity"}),
+    publish_models_package_fragment(vec![
+        json!({"observation": constraint, "observation_ref": "projected_constraint_validation", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_models_generated_package_integrity"}),
+        json!({"observation": evidence, "observation_ref": "projection_evidence_integrity", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_models_generated_package_integrity"}),
+        json!({"observation": fencing, "observation_ref": "token_package_fencing", "outcome": "passed", "proof_kind": "diagnostic", "test_id": "rust_acceptance::sdk_models_generated_package_integrity"}),
     ]);
 }
 
 #[test]
-fn generated_rust_sdk_v5_canonical_codec() {
+fn sdk_serialization_canonical_codec() {
     let stage = Stage::new();
     let generated = stage.path().join("generated");
     let generated_foreign = stage.path().join("generated-foreign");
-    let consumer = stage.path().join("sdk-v5-codec");
+    let consumer = stage.path().join("serialization-codec");
     let source = fs::read_to_string(
-        repository_root().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
+        repository_root().join("tests/contracts/sdk_conformance/models/schema.yaml"),
     )
-    .expect("Sdk V3 schema reads");
+    .expect("Models schema reads");
     write_package(&emit_from_source(&source), &generated);
     let foreign_source = source.replacen("max: 80", "max: 79", 1);
-    assert_ne!(foreign_source, source, "foreign V5 authority must differ");
+    assert_ne!(
+        foreign_source, source,
+        "foreign Serialization authority must differ"
+    );
     write_package(&emit_from_source(&foreign_source), &generated_foreign);
     let foreign_manifest = generated_foreign.join("Cargo.toml");
     let manifest = fs::read_to_string(&foreign_manifest).expect("foreign manifest reads");
@@ -3762,8 +3794,8 @@ fn generated_rust_sdk_v5_canonical_codec() {
     fs::write(&foreign_manifest, manifest).expect("foreign manifest is uniquely named");
     write_consumer_with_features_and_dependencies(
         &consumer,
-        "rust-sdk-v5-codec",
-        SDK_V5_CODEC,
+        "sdk-serialization-rust-codec",
+        SDK_SERIALIZATION_CODEC,
         &["test-harness"],
         "generated_foreign = { package = \"type-bridge-generated-schema-foreign\", path = \"../generated-foreign\" }\n",
     );
@@ -3771,14 +3803,18 @@ fn generated_rust_sdk_v5_canonical_codec() {
         consumer.join("Cargo.lock"),
         support::locks::Consumer::Codec.lock(),
     )
-    .expect("Sdk V5 codec lockfile is staged");
+    .expect("Serialization codec lockfile is staged");
 
-    let corpus = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_CORPUS")
+    let corpus = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_CORPUS")
         .map(PathBuf::from)
-        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-corpus.json"));
-    let operational = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_OPERATIONAL_EVIDENCE")
+        .unwrap_or_else(|| stage.path().join("rust-serialization-corpus.json"));
+    let operational = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_OPERATIONAL_EVIDENCE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| stage.path().join("rust-sdk-v5-operational-evidence.json"));
+        .unwrap_or_else(|| {
+            stage
+                .path()
+                .join("rust-serialization-operational-evidence.json")
+        });
     let output = cargo_with_env(
         &[
             "run",
@@ -3789,24 +3825,24 @@ fn generated_rust_sdk_v5_canonical_codec() {
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
         &[
-            ("TYPE_BRIDGE_SDK_V5_CORPUS", corpus.as_os_str()),
+            ("TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS", corpus.as_os_str()),
             (
-                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
+                "TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE",
                 operational.as_os_str(),
             ),
         ],
     );
     assert!(
         output.status.success(),
-        "generated Rust Sdk V5 codec consumer failed\nstdout:\n{}\nstderr:\n{}",
+        "generated Rust Serialization codec consumer failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
-    let corpus_bytes = fs::read(&corpus).expect("Rust Sdk V5 corpus was published");
+    let corpus_bytes = fs::read(&corpus).expect("Rust Serialization corpus was published");
     let corpus: Value = serde_json::from_slice(&corpus_bytes).expect("corpus JSON parses");
     assert_eq!(
         corpus["format"],
-        "typebridge.sdk-v5-provider-free-corpus/v1"
+        "typebridge.sdk-serialization-provider-free-corpus/v1"
     );
     assert_eq!(corpus["binding"], "rust");
     assert_eq!(corpus["record_b64"].as_array().unwrap().len(), 9);
@@ -3816,12 +3852,12 @@ fn generated_rust_sdk_v5_canonical_codec() {
             .is_some_and(|value| !value.is_empty())
     );
     let operational_bytes =
-        fs::read(&operational).expect("Rust Sdk V5 operational evidence was published");
+        fs::read(&operational).expect("Rust Serialization operational evidence was published");
     let operational: Value =
         serde_json::from_slice(&operational_bytes).expect("operational evidence JSON parses");
     assert_eq!(
         operational["format"],
-        "typebridge.sdk-v5-operational-evidence/v1"
+        "typebridge.sdk-serialization-operational-evidence/v1"
     );
     assert_eq!(operational["binding"], "rust");
     assert_eq!(
@@ -3834,10 +3870,10 @@ fn generated_rust_sdk_v5_canonical_codec() {
         })
     );
     assert_eq!(operational["lifecycle"]["sibling_usable"], true);
-    let repeated_corpus = stage.path().join("rust-sdk-v5-corpus-repeat.json");
+    let repeated_corpus = stage.path().join("rust-serialization-corpus-repeat.json");
     let repeated_operational = stage
         .path()
-        .join("rust-sdk-v5-operational-evidence-repeat.json");
+        .join("rust-serialization-operational-evidence-repeat.json");
     let repeated = cargo_with_env(
         &[
             "run",
@@ -3848,29 +3884,32 @@ fn generated_rust_sdk_v5_canonical_codec() {
             consumer.join("Cargo.toml").to_str().unwrap(),
         ],
         &[
-            ("TYPE_BRIDGE_SDK_V5_CORPUS", repeated_corpus.as_os_str()),
             (
-                "TYPE_BRIDGE_SDK_V5_OPERATIONAL_EVIDENCE",
+                "TYPE_BRIDGE_SDK_SERIALIZATION_CORPUS",
+                repeated_corpus.as_os_str(),
+            ),
+            (
+                "TYPE_BRIDGE_SDK_SERIALIZATION_OPERATIONAL_EVIDENCE",
                 repeated_operational.as_os_str(),
             ),
         ],
     );
     assert!(
         repeated.status.success(),
-        "repeated Rust Sdk V5 corpus run failed\nstdout:\n{}\nstderr:\n{}",
+        "repeated Rust Serialization corpus run failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&repeated.stdout),
         String::from_utf8_lossy(&repeated.stderr),
     );
     assert_eq!(
         corpus_bytes,
-        fs::read(repeated_corpus).expect("repeated Rust Sdk V5 corpus was published"),
-        "provider-free generated Rust V5 bytes must be deterministic across fresh processes",
+        fs::read(repeated_corpus).expect("repeated Rust Serialization corpus was published"),
+        "provider-free generated Rust Serialization bytes must be deterministic across fresh processes",
     );
     assert_eq!(
         operational_bytes,
         fs::read(repeated_operational)
-            .expect("repeated Rust Sdk V5 operational evidence was published"),
-        "generated Rust V5 operational evidence must be deterministic across fresh processes",
+            .expect("repeated Rust Serialization operational evidence was published"),
+        "generated Rust Serialization operational evidence must be deterministic across fresh processes",
     );
 }
 
@@ -3881,7 +3920,10 @@ fn provider_free_rust_dependency_graphs_are_frozen() {
             support::locks::Consumer::Projected.lock(),
             "rust-projected-projection-parity",
         ),
-        (support::locks::Consumer::Codec.lock(), "rust-sdk-v5-codec"),
+        (
+            support::locks::Consumer::Codec.lock(),
+            "sdk-serialization-rust-codec",
+        ),
     ] {
         assert_eq!(lock.matches(&format!("name = \"{package}\"")).count(), 1);
         assert!(lock.contains("name = \"tinyvec\"\nversion = \"1.12.0\""));
@@ -3894,6 +3936,7 @@ fn run_projected_consumer(
     target_dir: &std::ffi::OsStr,
     report: &Path,
     repository: &Path,
+    semantic_profile: &str,
 ) -> Output {
     let executable = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     Command::new(executable)
@@ -3908,6 +3951,7 @@ fn run_projected_consumer(
         .env("CARGO_TARGET_DIR", target_dir)
         .env("TYPE_BRIDGE_PROJECTED_RUST_REPORT", report)
         .env("TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT", repository)
+        .env("TYPE_BRIDGE_PROJECTED_SEMANTIC_PROFILE", semantic_profile)
         .output()
         .unwrap()
 }
@@ -3928,10 +3972,9 @@ fn generated_rust_projected_parity_producer() {
         .unwrap()
         .canonicalize()
         .unwrap();
-    let schema = fs::read_to_string(
-        repository.join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"),
-    )
-    .unwrap();
+    let schema =
+        fs::read_to_string(repository.join("tests/contracts/sdk_conformance/models/schema.yaml"))
+            .unwrap();
     let foreign_schema = schema.replacen(
         "member: { card: { min: 0, max: 2 }, doc: membership player }",
         "member: { card: { min: 0, max: 3 }, doc: membership player }",
@@ -3941,8 +3984,9 @@ fn generated_rust_projected_parity_producer() {
         schema, foreign_schema,
         "foreign projection mutation is applied"
     );
-    write_package(&emit_from_source(&schema), &generated);
-    write_package(&emit_from_source(&foreign_schema), &foreign);
+    let profile = support::sdk_profile_matrix::requested("models").semantic_profile;
+    write_package(&emit_on(&schema, &profile), &generated);
+    write_package(&emit_on(&foreign_schema, &profile), &foreign);
     rename_generated_package(&foreign, "type-bridge-generated-schema-foreign");
     write_projected_consumer(&producer, PROJECTED_PARITY);
     write_projected_consumer(&negative, PROJECTED_FOREIGN_NEGATIVE);
@@ -3993,6 +4037,7 @@ fn generated_rust_projected_parity_producer() {
         target_dir.as_os_str(),
         &report,
         &repository,
+        &profile,
     );
     assert!(
         output.status.success(),
@@ -4010,6 +4055,7 @@ fn generated_rust_projected_parity_producer() {
         target_dir.as_os_str(),
         &report,
         &repository,
+        &profile,
     );
     drop(_guard);
     assert!(

@@ -18,6 +18,7 @@ from tests.utils.handwritten import (
     String,
     TypeFlags,
 )
+from tests.utils.typeql import assert_typeql_equivalent
 from type_bridge.migration import _operations as ops
 from type_bridge.migration._archive_base import _ArchivedMigration as Migration
 from type_bridge.migration._lower import (
@@ -400,16 +401,22 @@ def test_annotation_operations_emit_stepwise_typeql() -> None:
         old_meta={"gone": "1"},
         new_meta={"added": "2"},
     )
-    assert operation.to_typeql_steps() == [
-        'undefine\n@meta("gone") from lower-person;',
-        'redefine\nlower-person @doc("new doc");',
-        'define\nlower-person @meta("added", "2");',
-    ]
-    assert operation.to_rollback_typeql_steps() == [
-        'undefine\n@meta("added") from lower-person;',
-        'redefine\nlower-person @doc("old doc");',
-        'define\nlower-person @meta("gone", "1");',
-    ]
+    assert_typeql_equivalent(
+        operation.to_typeql_steps(),
+        [
+            'undefine\n@meta("gone") from lower-person;',
+            'redefine\nlower-person @doc("new doc");',
+            'define\nlower-person @meta("added", "2");',
+        ],
+    )
+    assert_typeql_equivalent(
+        operation.to_rollback_typeql_steps(),
+        [
+            'undefine\n@meta("added") from lower-person;',
+            'redefine\nlower-person @doc("old doc");',
+            'define\nlower-person @meta("gone", "1");',
+        ],
+    )
     assert operation.reversible
 
 
@@ -417,9 +424,15 @@ def test_role_annotation_operation_uses_relates_subject() -> None:
     operation = ops.ModifyRoleAnnotations(
         LowerEmployment, "employee", new_doc="The employed party."
     )
-    assert operation.to_typeql_steps() == [
-        'define\nlower-employment relates employee @doc("The employed party.");',
-    ]
-    assert operation.to_rollback_typeql_steps() == [
-        "undefine\n@doc from lower-employment relates employee;",
-    ]
+    assert_typeql_equivalent(
+        operation.to_typeql_steps(),
+        [
+            'define\nlower-employment relates employee @doc("The employed party.");',
+        ],
+    )
+    assert_typeql_equivalent(
+        operation.to_rollback_typeql_steps(),
+        [
+            "undefine\n@doc from lower-employment relates employee;",
+        ],
+    )

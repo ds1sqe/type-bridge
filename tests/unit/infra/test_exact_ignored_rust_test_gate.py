@@ -111,11 +111,30 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 11
+    assert local.count(gate_call) == 20
+    assert local.count("live_c17_consumer_stages_and_commits_contract_v3_plans") == 1
+    assert local.count("live_c17_consumer_builds_stages_and_races_the_purchase") == 1
+    assert local.count("racing_lease_acquirers_serialize_on_the_control_row") == 1
+    assert local.count("staged_plans_race_like_the_concurrency_guide_on_3_13_6") == 1
+    assert local.count("concurrency_guide_snippets_run_on_3_13_6") == 1
+    assert (
+        local.count("lowering::tests::native_ordered_formatter_exports_and_removes_schema_live")
+        == 1
+    )
     assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 1
     assert (
         local.count("typedb::client::tests::integration_classified_commit_isolation_conflict") == 1
     )
+    upgrade_tests = {
+        "runner_upgrades_a_3_12_history_to_3_13_at_a_profile_bridge_and_replays_it",
+        "upgrade_profile_moves_a_3_12_history_to_3_13_live",
+    }
+
+    # The local harness also gates the 3.11 refusal probe and the two-server
+    # upgrade lane.
+    assert local.count("unsupported_server_apply_creates_neither_database_live") == 1
+    for test_name in upgrade_tests:
+        assert local.count(test_name) == 1
     assert "-- --ignored --exact --nocapture" not in local
     for test_name in (
         positive_tests
@@ -124,7 +143,11 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     ):
         assert workflow.count(test_name) == 1
     for test_name in positive_tests | migration_recovery_tests:
-        assert local.count(test_name) == 1
+        # Documented examples also name their profile gate in the local loop.
+        expected = (
+            2 if test_name == "documented_examples_initial_constraints_apply_and_verify_live" else 1
+        )
+        assert local.count(test_name) == expected
 
 
 def test_commit_failure_regressions_use_exact_selection_on_the_supported_server() -> None:

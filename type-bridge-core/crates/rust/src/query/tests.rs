@@ -405,11 +405,9 @@ plays:
 "#,
     )])
     .unwrap();
-    let resolved = resolve(
-        &normalize_documents(&docs).unwrap(),
-        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-    )
-    .unwrap();
+    let declared = normalize_documents(&docs).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
     let emitter = RustEmitter::new();
     let projection = project(
         &resolved,
@@ -419,7 +417,34 @@ plays:
         &emitter.code_resources().unwrap(),
     )
     .unwrap();
-    type_bridge_orm::InstalledRuntimeProjection::try_new(projection).unwrap()
+    install_with_authority(&declared, profile, projection)
+}
+
+/// Install a projection the way a generated package does: together with the
+/// schema authority the package embeds.
+fn install_with_authority(
+    declared: &type_bridge_contract::schema::DeclaredSchema,
+    profile: SemanticProfileId,
+    projection: type_bridge_contract::projection::RuntimeProjection,
+) -> type_bridge_orm::InstalledRuntimeProjection {
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_schema::{
+        ManagedDeltaContext, build_schema_authority, schema_authority_capability_vocabulary,
+    };
+
+    let authority = build_schema_authority(
+        declared,
+        declared.required_capabilities(),
+        &ManagedDeltaContext::new(
+            ManagedScopeId::new("query-test").unwrap(),
+            profile,
+            schema_authority_capability_vocabulary(),
+        ),
+    )
+    .unwrap();
+    type_bridge_orm::InstalledRuntimeProjection::try_new(projection)
+        .unwrap()
+        .with_schema_authority(&authority)
 }
 
 fn successor_fixture() -> type_bridge_orm::InstalledRuntimeProjection {
@@ -428,11 +453,9 @@ fn successor_fixture() -> type_bridge_orm::InstalledRuntimeProjection {
         SUCCESSOR_SCHEMA_SOURCE,
     )])
     .unwrap();
-    let resolved = resolve(
-        &normalize_documents(&docs).unwrap(),
-        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
-    )
-    .unwrap();
+    let declared = normalize_documents(&docs).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
     let emitter = RustEmitter::new();
     let projection = project(
         &resolved,
@@ -446,7 +469,7 @@ fn successor_fixture() -> type_bridge_orm::InstalledRuntimeProjection {
         projection.generator_handlers(),
         [type_bridge_contract::projection::ProjectionHandler::rust_v2()]
     );
-    type_bridge_orm::InstalledRuntimeProjection::try_new(projection).unwrap()
+    install_with_authority(&declared, profile, projection)
 }
 
 fn successor_package() -> crate::schema::SchemaPackage<TestSchema> {
@@ -506,7 +529,7 @@ struct RemoteOriginTransport {
     signer: type_bridge_orm::query_v2_remote::RemoteReplySigningKey,
 }
 
-impl crate::remote::RemoteQueryTransport for RemoteOriginTransport {
+impl crate::remote::ProxyExchange for RemoteOriginTransport {
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + '_>> {
         let advertisement = self.advertisement.clone();
         Box::pin(async move { Ok(advertisement) })
@@ -705,18 +728,20 @@ impl TransactionOps for SuccessorTransaction {
                     record_hydration(0, "0x01"),
                     record_hydration_with_name(0, "0x02", "Bob"),
                 ])),
+                // `name` is a key, so the only pair with equal names is one
+                // record matched by both bindings.
                 (0, SuccessorAnswer::RecordPair) => {
                     Ok(QueryResult::Rows(vec![serde_json::json!({
                         "bindings": [
                             {"binding": 0, "concept_id": "0x01"},
-                            {"binding": 1, "concept_id": "0x02"},
+                            {"binding": 1, "concept_id": "0x01"},
                         ],
                         "satisfied_role_edges": [],
                     })]))
                 }
                 (1, SuccessorAnswer::RecordPair) => Ok(QueryResult::Documents(vec![
                     record_hydration(0, "0x01"),
-                    record_hydration(1, "0x02"),
+                    record_hydration(1, "0x01"),
                 ])),
                 (0, SuccessorAnswer::RecordGraphPage) => {
                     Ok(QueryResult::Rows(vec![serde_json::json!({
@@ -965,17 +990,25 @@ async fn successor_direct_and_borrowed_queries_retain_the_database_origin() {
 
 #[tokio::test]
 async fn successor_authenticated_remote_query_is_explicitly_unbound() {
-    use crate::remote::{RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits};
+    use crate::QueryExecutionResourceLimits;
+    use crate::remote::{ProxyConnectionPolicy, ProxyDatabase};
     use type_bridge_contract::id::{RoleId, TypeId, TypeKind};
     use type_bridge_orm::{ProjectedCreate, ProjectedCrudExecutor, ProjectedReference};
 
     let (transport, exchanges) = remote_origin_transport();
-    let remote = RemoteDatabase::connect(RemoteConnectionOptions::new(
-        "query-origin-test",
-        "typedb-3.12.1/v1",
-        RemoteQueryLimits::new(8, 1 << 20, 16, 16, 64, 32),
-        transport,
-    ))
+    let remote = ProxyDatabase::connect(
+        ProxyConnectionPolicy::with_exchange(transport)
+            .authority("query-origin-test", "typedb-3.12.1/v1")
+            .answer_limits(QueryExecutionResourceLimits {
+                items: 8,
+                bytes: 1 << 20,
+                collection_members: 16,
+                graph_nodes: 16,
+                attribute_values: 64,
+                role_players: 32,
+                ..QueryExecutionResourceLimits::default()
+            }),
+    )
     .await
     .unwrap()
     .with_schema(successor_package())

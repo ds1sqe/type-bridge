@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from compare_sdk_conformance import (  # noqa: E402, F401
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+from sdk_conformance_common import (  # noqa: E402, F401
     ContractError,
     _duplicate_key_object,
     _exact_object,
@@ -22,12 +23,13 @@ from compare_sdk_conformance import (  # noqa: E402, F401
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
 SUMMARY_FORMAT = "typebridge.projected-parity-summary/v1"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# The models catalog profile; reports may carry any models matrix profile.
+SEMANTIC_PROFILE = profile_matrix.catalog_profile("models")
 REPORT_BINDINGS = ("python", "node", "rust", "c")
 OBSERVATION_REFS = (
     "canonical_scalar_values",
@@ -217,12 +219,12 @@ def load_contract() -> ProjectedParityContract:
         "Projected journey",
     )
     if (
-        journey["format"] != "typebridge.sdk-journey/v3"
-        or journey["fixture_id"] != "sdk-v3"
+        journey["format"] != "typebridge.sdk-models-journey/v1"
+        or journey["fixture_id"] != "models"
         or journey["version"] != 3
         or journey["semantic_profile"] != SEMANTIC_PROFILE
     ):
-        raise ContractError("invalid_journey_authority", "sdk-v3 journey identity drifted")
+        raise ContractError("invalid_journey_authority", "models journey identity drifted")
     expected = journey["expected_observations"]
     if type(expected) is not dict:
         raise ContractError("invalid_journey_observation", "expected observations are malformed")
@@ -252,7 +254,9 @@ def load_contract() -> ProjectedParityContract:
     )
 
 
-def expected_report(binding: str, contract: ProjectedParityContract) -> dict[str, Any]:
+def expected_report(
+    binding: str, contract: ProjectedParityContract, semantic_profile: str = SEMANTIC_PROFILE
+) -> dict[str, Any]:
     """Return the one exact report shape a binding producer must emit."""
 
     if binding not in REPORT_BINDINGS:
@@ -260,7 +264,7 @@ def expected_report(binding: str, contract: ProjectedParityContract) -> dict[str
     return {
         "format": REPORT_FORMAT,
         "binding": binding,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile,
         "authority": copy.deepcopy(contract.authority),
         "observations": copy.deepcopy(contract.observations),
     }
@@ -282,7 +286,9 @@ def _load_report(path: Path, contract: ProjectedParityContract) -> tuple[str, di
     binding = report["binding"]
     if type(binding) is not str or binding not in REPORT_BINDINGS:
         raise ContractError("unknown_binding", f"report {path} has an unknown binding")
-    expected = expected_report(binding, contract)
+    expected = expected_report(
+        binding, contract, profile_matrix.declared_profile("models", report, SEMANTIC_PROFILE)
+    )
     if report != expected:
         raise ContractError(
             "projected_observation_mismatch",
@@ -309,7 +315,11 @@ def compare_reports(paths: list[Path]) -> dict[str, Any]:
     observation_sha256 = hashlib.sha256(canonical_json_bytes(contract.observations)).hexdigest()
     return {
         "format": SUMMARY_FORMAT,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": profile_matrix.shared_value(
+            (report["semantic_profile"] for report in reports.values()),
+            "semantic profile",
+            error=ContractError,
+        ),
         "bindings": list(REPORT_BINDINGS),
         "authority": copy.deepcopy(contract.authority),
         "observation_sha256": observation_sha256,

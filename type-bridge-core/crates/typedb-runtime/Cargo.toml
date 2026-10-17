@@ -22,6 +22,7 @@ band8 = ["dep:type-bridge-typedb-driver-b8", "dep:chrono"]
 band9 = ["dep:typedb-driver", "dep:chrono", "dep:chrono-tz"]
 
 [dependencies]
+type-bridge-contract = { path = "../contract", version = "2.2.6" }
 type-bridge-core-lib = { path = "../core", version = "2.2.6" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -30,7 +31,7 @@ thiserror = "2"
 tracing = "0.1"
 futures = "0.3"
 type-bridge-typedb-driver-b8 = { path = "../../vendor/typedb-driver-b8", version = "=3.11.5", optional = true }
-typedb-driver = { version = "=3.12.3", optional = true }
+typedb-driver = { version = "=3.13.6", optional = true }
 # Driver-band temporal bridging: parse GivenValue on band 9 and preserve exact
 # datetime-tz evidence across every supported driver band.
 chrono = { version = "0.4", optional = true }

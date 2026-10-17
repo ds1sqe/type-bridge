@@ -1,0 +1,1 @@
+match $r isa friendship (friend: $x, friend: $y); $r links (friend: $z); friendship (friend: $p); ($u, $v); $s links ($role: $p, friend[]: $players); insert (friend: $x) isa friendship; $new isa friendship (friend: $y);

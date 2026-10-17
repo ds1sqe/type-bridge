@@ -6,15 +6,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sdk_profile_matrix as profile_matrix  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
-V6_CATALOG = ROOT / "tests/contracts/sdk_conformance/sdk-v6/catalog-v6.json"
-MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest-v1.json"
-FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit-v1.json"
+ARTIFACTS_CATALOG = ROOT / "tests/contracts/sdk_conformance/artifacts/catalog.json"
+MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
+FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit.json"
+# The frozen released 1.6 header; 1.7 exports beyond it are the additive set.
+ABI_1_6_HEADER = "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
+HEADER_EXPORT = re.compile(r"\b(type_bridge_[a-z0-9_]+)\s*\(")
 TRANSITION_CASES = [
     "sdk.runtime.cancellation",
     "sdk.runtime.timeout-resource-limits",
@@ -52,6 +59,24 @@ def _require(condition: bool, message: str) -> None:
         raise ContractError(message)
 
 
+def _added_exports(root: Path, contract_path: object) -> list[str]:
+    """Exports of the current ABI contract absent from the released 1.6 header."""
+    _require(isinstance(contract_path, str), "ABI contract path is missing")
+    inventory = _load(root / str(contract_path)).get("exports")
+    if not isinstance(inventory, list) or not all(isinstance(name, str) for name in inventory):
+        raise ContractError("ABI export inventory is missing")
+    exports = {str(name) for name in inventory}
+    try:
+        previous = (root / ABI_1_6_HEADER).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"cannot read the released 1.6 header: {error}") from error
+    released = set(HEADER_EXPORT.findall(previous))
+    _require(released <= exports, "ABI 1.7 removed a released 1.6 export")
+    added = sorted(exports - released)
+    _require(bool(added), "ABI 1.7 adds no exports")
+    return added
+
+
 def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[str, Any]:
     contract = _load(contract_path)
     _require(contract.get("format") == "typebridge.c-distribution/v1", "format drifted")
@@ -68,15 +93,31 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         _require(gate.get(field) is False, f"{field} must remain false")
 
     abi = contract.get("abi")
-    _require(isinstance(abi, dict) and abi.get("decision") == "no-change", "ABI decision drifted")
-    _require(abi.get("version") == "1.6.0", "distribution must retain ABI 1.6")
+    _require(
+        isinstance(abi, dict) and abi.get("decision") == "additive-1.7", "ABI decision drifted"
+    )
+    _require(abi.get("version") == "1.7.0", "distribution must retain ABI 1.7")
+    _require(
+        abi.get("package_metadata_version") == "1.6.0",
+        "installed package metadata must retain version 1.6",
+    )
+    description = abi.get("package_metadata_description")
+    _require(
+        isinstance(description, str) and bool(description.strip()) and "\n" not in description,
+        "package metadata version needs a one-line description",
+    )
+    _require(abi.get("accepted_descriptor_minors") == [6, 7], "descriptor ABI range drifted")
+    _require(
+        abi.get("added_exports") == _added_exports(root, abi.get("contract_path")),
+        "additive ABI exports drifted",
+    )
     _require(abi.get("static_linkage") == "unsupported", "static linkage was not selected")
     _require(abi.get("shared_linkage") == "artifact", "shared artifact linkage is missing")
 
     compatibility = contract.get("compatibility")
     _require(isinstance(compatibility, dict), "compatibility contract is missing")
     _require(
-        compatibility.get("runtime_abi") == {"exact": "1.6.0"},
+        compatibility.get("runtime_abi") == {"exact": "1.7.0"},
         "runtime ABI range drifted",
     )
     _require(
@@ -181,31 +222,32 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     )
     _require("project(TypeBridge VERSION 1.6.0" in cmake, "runtime CMake ABI version drifted")
     _require(
-        "find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)" in generated_cmake,
+        "find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)" in generated_cmake,
         "generated CMake range drifted",
     )
     _require(
-        "type-bridge = 1.6.0" in generated_pc,
+        "type-bridge-abi >= 1.7.0" in generated_pc,
         "generated pkg-config range drifted",
     )
 
-    catalog = _load(V6_CATALOG)
-    _require(catalog.get("authority_state") == "frozen", "V6 authority is not frozen")
+    catalog = _load(ARTIFACTS_CATALOG)
+    _require(catalog.get("authority_state") == "frozen", "Artifacts authority is not frozen")
     _require(
-        catalog.get("broad_case_ledger_path") == "tests/contracts/c-broad-case-ledger-v1.json",
-        "V6 broad-case ledger path drifted",
+        catalog.get("broad_case_ledger_path") == "tests/contracts/c-broad-case-ledger.json",
+        "Artifacts broad-case ledger path drifted",
     )
     _require(
-        catalog.get("manifest_transition_cases") == TRANSITION_CASES, "V6 transition set drifted"
+        catalog.get("manifest_transition_cases") == TRANSITION_CASES,
+        "Artifacts transition set drifted",
     )
     _require(
         catalog.get("required_non_selected_proof_count_per_binding") == 25,
-        "V6 non-selected proof count drifted",
+        "Artifacts non-selected proof count drifted",
     )
     _require(catalog.get("full_c", {}).get("capability_count") == 44, "FULL-C count drifted")
     _require(
         catalog.get("full_c", {}).get("publication_authority") is False,
-        "V6 grants publication authority",
+        "Artifacts grants publication authority",
     )
 
     manifest = _load(MANIFEST)
@@ -216,7 +258,9 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         full_c.get("capability_codes") == list(capabilities),
         "FULL-C capability inventory disagrees with the manifest",
     )
-    _require(full_c.get("report_versions") == [1, 2, 3, 4, 5, 6], "FULL-C report fan-in drifted")
+    _require(
+        full_c.get("report_suites") == list(profile_matrix.SUITES), "FULL-C report fan-in drifted"
+    )
     _require(
         full_c.get("output", {}).get("manual_override") is False, "FULL-C permits manual override"
     )
@@ -229,7 +273,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         for code in ("G05", "G06", "G08", "G12", "G13")
         for case in capabilities[code]["case_ids"]
     ]
-    _require(selected == TRANSITION_CASES, "V6 cases disagree with the manifest")
+    _require(selected == TRANSITION_CASES, "Artifacts cases disagree with the manifest")
     for code in ("G05", "G06", "G08", "G13"):
         _require(
             capabilities[code]["binding_profile"] == "terminal_broad_live_future_planned",

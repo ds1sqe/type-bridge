@@ -1,4 +1,10 @@
-//! Closed TypeDB 3.12.1 schema-transition registry.
+//! Closed per-profile TypeDB schema-transition registries.
+//!
+//! One registry definition serves every [`MigrationProfile`]. The profiles
+//! share their transition, annotation, and safety rules and differ only in
+//! identity: provider version, semantic profile, lowering profile id, and so
+//! the content fingerprint. The TypeDB 3.13.6 rules are the 3.12.1 rules;
+//! the connected migration live suites verify them against a 3.13.6 server.
 
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
@@ -6,7 +12,7 @@ use std::sync::OnceLock;
 use serde::Serialize;
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::diagnostic::Diagnostic;
+use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::{
     CanonicalizationVersion, FingerprintDomain, SemanticProfileId,
 };
@@ -29,8 +35,6 @@ use type_bridge_contract::schema_lowering::{
 use type_bridge_schema::{BUILTIN_SCHEMA_CAPABILITY_IDS, SafetyClass, SafetyClassificationError};
 
 const PROVIDER: &str = "typedb";
-const PROVIDER_VERSION: &str = "3.12.1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
 
 const CAP_TRANSACTION_ATOMIC: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[0];
 const CAP_DEFINE: &str = SCHEMA_TRANSITION_CAPABILITY_IDS[1];
@@ -395,7 +399,7 @@ pub struct InterfaceDefault {
     pub max: Option<u64>,
 }
 
-const TYPEDB_3_12_1_INTERFACE_DEFAULTS: [InterfaceDefault; 3] = [
+const INTERFACE_DEFAULTS: [InterfaceDefault; 3] = [
     InterfaceDefault {
         interface: InterfaceKind::Owns,
         min: 0,
@@ -746,7 +750,7 @@ fn default_cardinality(subject: &AnnotationSubjectId) -> Option<(u64, Option<u64
         AnnotationSubjectId::Plays(_) => InterfaceKind::Plays,
         _ => return None,
     };
-    TYPEDB_3_12_1_INTERFACE_DEFAULTS
+    INTERFACE_DEFAULTS
         .iter()
         .find(|default| default.interface == interface)
         .map(|default| (default.min, default.max))
@@ -1000,7 +1004,91 @@ fn safety_rule(scenario: SafetyScenario) -> SafetyScenarioRule {
     }
 }
 
-fn build_profile() -> SchemaLoweringProfile {
+/// A closed TypeDB line with its own schema-transition registry.
+///
+/// `Ord` is release order, oldest first (`Typedb3_12_1 < Typedb3_13_6`): a
+/// profile-upgrade bridge may only move a history to a greater profile.
+/// Declaration order defines it, so new lines are appended last.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MigrationProfile {
+    /// Semantic profile `typedb-3.12.1/v1`.
+    Typedb3_12_1,
+    /// Semantic profile `typedb-3.13.6/v1`.
+    Typedb3_13_6,
+}
+
+impl MigrationProfile {
+    /// Every registry profile, oldest first.
+    pub const ALL: [Self; 2] = [Self::Typedb3_12_1, Self::Typedb3_13_6];
+
+    /// Select the registry for a workspace or context semantic profile.
+    pub fn for_semantic_profile(semantic_profile: &SemanticProfileId) -> Option<Self> {
+        SchemaLoweringProfileId::for_semantic_profile(semantic_profile)
+            .and_then(|profile_id| Self::for_lowering_profile_id(&profile_id))
+    }
+
+    /// Select the registry that owns a lowering profile id.
+    pub fn for_lowering_profile_id(profile_id: &SchemaLoweringProfileId) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|profile| &profile.lowering_profile_id() == profile_id)
+    }
+
+    /// Return the semantic profile this registry is measured against.
+    pub fn semantic_profile_id(self) -> SemanticProfileId {
+        let id = match self {
+            Self::Typedb3_12_1 => "typedb-3.12.1/v1",
+            Self::Typedb3_13_6 => "typedb-3.13.6/v1",
+        };
+        SemanticProfileId::new(id).expect("fixed semantic profile is valid")
+    }
+
+    /// Return the exact measured provider version.
+    pub const fn provider_version(self) -> &'static str {
+        match self {
+            Self::Typedb3_12_1 => "3.12.1",
+            Self::Typedb3_13_6 => "3.13.6",
+        }
+    }
+
+    /// Return the lowering profile id bound to this registry's semantic profile.
+    pub fn lowering_profile_id(self) -> SchemaLoweringProfileId {
+        SchemaLoweringProfileId::for_semantic_profile(&self.semantic_profile_id())
+            .expect("every migration profile has a schema-lowering profile id")
+    }
+
+    /// Return the immutable lowering profile.
+    pub fn profile(self) -> &'static SchemaLoweringProfile {
+        static TYPEDB_3_12_1: OnceLock<SchemaLoweringProfile> = OnceLock::new();
+        static TYPEDB_3_13_6: OnceLock<SchemaLoweringProfile> = OnceLock::new();
+        let cell = match self {
+            Self::Typedb3_12_1 => &TYPEDB_3_12_1,
+            Self::Typedb3_13_6 => &TYPEDB_3_13_6,
+        };
+        cell.get_or_init(|| build_profile(self))
+    }
+
+    /// Encode the lowering profile as canonical JSON bytes.
+    pub fn canonical_bytes(self) -> Vec<u8> {
+        to_canonical_json(self.profile())
+            .expect("the trusted schema-lowering profile has canonical bytes")
+    }
+
+    /// Compute the canonical fingerprint of the lowering profile.
+    pub fn fingerprint(self) -> SchemaLoweringProfileFingerprint {
+        SchemaLoweringProfileFingerprint::compute_for_profile(
+            &self.lowering_profile_id(),
+            &self.canonical_bytes(),
+        )
+    }
+
+    /// Resolve the registry's exact canonical profile binding.
+    pub fn binding(self) -> Result<SchemaLoweringProfileBinding, Diagnostic> {
+        SchemaLoweringProfileBinding::from_canonical_profile_bytes(&self.canonical_bytes())
+    }
+}
+
+fn build_profile(profile: MigrationProfile) -> SchemaLoweringProfile {
     let mut fact_rules = Vec::with_capacity(FactKind::ALL.len() * FactTransition::ALL.len());
     for fact in FactKind::ALL {
         for transition in FactTransition::ALL {
@@ -1030,18 +1118,17 @@ fn build_profile() -> SchemaLoweringProfile {
     }
 
     SchemaLoweringProfile {
-        id: SchemaLoweringProfileId::typedb_3_12_1(),
+        id: profile.lowering_profile_id(),
         fingerprint_domain: FingerprintDomain::new(SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN)
             .expect("fixed fingerprint domain is valid"),
         canonicalization: CanonicalizationVersion::new(SCHEMA_LOWERING_PROFILE_CANONICALIZATION)
             .expect("fixed canonicalization is valid"),
-        semantic_profile: SemanticProfileId::new(SEMANTIC_PROFILE)
-            .expect("fixed semantic profile is valid"),
+        semantic_profile: profile.semantic_profile_id(),
         provider: PROVIDER.to_owned(),
-        provider_version: PROVIDER_VERSION.to_owned(),
+        provider_version: profile.provider_version().to_owned(),
         transactional_schema_queries: true,
         required_capabilities: schema_transition_capability_vocabulary(),
-        interface_defaults: TYPEDB_3_12_1_INTERFACE_DEFAULTS.to_vec(),
+        interface_defaults: INTERFACE_DEFAULTS.to_vec(),
         fact_rules,
         annotation_rules,
         safety_rules: SafetyScenario::ALL.into_iter().map(safety_rule).collect(),
@@ -1049,24 +1136,40 @@ fn build_profile() -> SchemaLoweringProfile {
     }
 }
 
+/// Resolve the lowering-profile binding of a semantic profile's registry.
+pub fn lowering_profile_binding(
+    semantic_profile: &SemanticProfileId,
+) -> Result<SchemaLoweringProfileBinding, Diagnostic> {
+    MigrationProfile::for_semantic_profile(semantic_profile)
+        .ok_or_else(|| {
+            Diagnostic::new(
+                DiagnosticCategory::UnsupportedCapability,
+                DiagnosticCode::new("schema_lowering_semantic_profile_unsupported")
+                    .expect("static profile diagnostic code is canonical"),
+                "no schema-transition registry exists for the semantic profile",
+            )
+        })?
+        .binding()
+}
+
 /// Return the immutable TypeDB 3.12.1 lowering profile.
 pub fn typedb_3_12_1_profile() -> &'static SchemaLoweringProfile {
-    static PROFILE: OnceLock<SchemaLoweringProfile> = OnceLock::new();
-    PROFILE.get_or_init(build_profile)
+    MigrationProfile::Typedb3_12_1.profile()
 }
 
-/// Encode the compiled lowering profile as canonical JSON bytes.
+/// Encode the TypeDB 3.12.1 lowering profile as canonical JSON bytes.
+///
+/// Workspace-driven callers select a registry with [`MigrationProfile`].
 pub fn canonical_profile_bytes() -> Vec<u8> {
-    to_canonical_json(typedb_3_12_1_profile())
-        .expect("the trusted schema-lowering profile has canonical bytes")
+    MigrationProfile::Typedb3_12_1.canonical_bytes()
 }
 
-/// Compute the canonical fingerprint of the compiled lowering profile.
+/// Compute the canonical fingerprint of the TypeDB 3.12.1 lowering profile.
 pub fn profile_fingerprint() -> SchemaLoweringProfileFingerprint {
-    SchemaLoweringProfileFingerprint::compute(&canonical_profile_bytes())
+    MigrationProfile::Typedb3_12_1.fingerprint()
 }
 
-/// Resolve the executable registry's exact canonical profile binding.
+/// Resolve the TypeDB 3.12.1 registry's exact canonical profile binding.
 pub fn schema_lowering_profile_binding() -> Result<SchemaLoweringProfileBinding, Diagnostic> {
-    SchemaLoweringProfileBinding::from_canonical_profile_bytes(&canonical_profile_bytes())
+    MigrationProfile::Typedb3_12_1.binding()
 }

@@ -105,15 +105,23 @@ fn cargo_lock_pin_b9() {
          update the constant in crates/typedb-runtime/src/lib.rs"
     );
 
-    // Assert the upstream band-9 driver remains in band 9.
+    // The upstream band-9 driver line may run ahead of the window (it speaks
+    // band 9 to the window's newest line) but must never fall behind it.
     let pinned: core_version::Version = PINNED_DRIVER_VERSION_B9
         .parse()
         .expect("PINNED_DRIVER_VERSION_B9 must be a valid version string");
+    let (top_major, top_minor) = core_version::MAX_SUPPORTED_LINE;
     assert_eq!(
-        core_version::band(&pinned),
+        core_version::band(&core_version::Version::new(top_major, top_minor, 0)),
         Some(9),
-        "pinned band-9 driver {PINNED_DRIVER_VERSION_B9} is no longer in band 9; \
+        "the window's newest line no longer negotiates band 9; \
          update PINNED_DRIVER_VERSION_B9 and review the compatibility window"
+    );
+    assert!(
+        pinned.major == top_major && pinned.minor >= top_minor,
+        "pinned band-9 driver {PINNED_DRIVER_VERSION_B9} is behind the window's newest \
+         line {top_major}.{top_minor}; update PINNED_DRIVER_VERSION_B9 and review the \
+         compatibility window"
     );
 }
 

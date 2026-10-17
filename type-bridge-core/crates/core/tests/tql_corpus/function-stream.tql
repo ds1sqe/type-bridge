@@ -1,0 +1,1 @@
+define fun values($x: integer?, $xs: integer[]) -> { integer, integer? }: match let $v in $xs[0..2]; return { $v, $x };

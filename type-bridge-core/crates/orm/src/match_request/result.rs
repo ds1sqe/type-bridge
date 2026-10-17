@@ -12,9 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::value::AttributeValue;
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
-use super::ids::{
-    BindingId, DescriptorId, FieldId, RequestToken, ResultShapeId, RoleEdgeId, RoleId,
-};
+use super::ids::{BindingId, DescriptorId, FieldId, RequestToken, ResultShapeId, RoleId};
 use super::model::{ThingKind, Window};
 use super::validation::ValidatedMatchRequest;
 
@@ -239,296 +237,24 @@ impl BoundConceptEvidence {
     }
 }
 
-/// Complete positive evidence for one provider match solution.
+/// The positive binding assignments of one provider match solution.
 ///
-/// Repeated values in a sequence of solutions preserve matching-solution and
-/// collection multiplicity. The result validator verifies that every required
-/// positive binding and active role edge is present exactly as required.
+/// The Rust-side reducer consumes these solutions; repeated values in a
+/// sequence preserve matching-solution multiplicity.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProviderSolutionEvidence {
     bindings: Vec<BoundConceptEvidence>,
-    satisfied_role_edges: Vec<RoleEdgeId>,
-}
-
-/// Invocation-bound provider output awaiting canonical result validation.
-///
-/// The envelope is deliberately non-serializable and crate-internal. A future
-/// executor may construct it, but only the result validator may turn it into a
-/// [`ValidatedMatchResult`].
-#[derive(Debug)]
-pub(crate) struct ProviderResultEvidence {
-    request_token: RequestToken,
-    shape_id: ResultShapeId,
-    payload: ProviderResultPayload,
-}
-
-impl ProviderResultEvidence {
-    /// Construct row-solution evidence for a `FetchRows` request.
-    pub(crate) fn rows(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        solutions: Vec<ProviderSolutionEvidence>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Rows {
-                solutions,
-                apply_window: false,
-            },
-        }
-    }
-
-    /// Construct an unwindowed selected-solution prefix from the streaming
-    /// executor. Canonical validation verifies order/distinctness first and
-    /// applies the validated offset/limit atomically.
-    pub(crate) fn rows_unwindowed(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        solutions: Vec<ProviderSolutionEvidence>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Rows {
-                solutions,
-                apply_window: true,
-            },
-        }
-    }
-
-    /// Construct distinct-root page evidence.
-    pub(crate) fn page(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        solutions: Vec<ProviderSolutionEvidence>,
-        window: Window,
-        total: Option<u64>,
-    ) -> Self {
-        let mut selected_roots = Vec::new();
-        for solution in &solutions {
-            let Some(concept) = solution
-                .bindings
-                .iter()
-                .find(|binding| binding.binding == root)
-            else {
-                continue;
-            };
-            if selected_roots.last() != Some(concept.thing.concept_id()) {
-                selected_roots.push(concept.thing.concept_id().clone());
-            }
-        }
-        Self::page_selected(
-            request_token,
-            shape_id,
-            root,
-            selected_roots,
-            solutions,
-            window,
-            total,
-        )
-    }
-
-    /// Construct page evidence with the exact ordered distinct-root selection
-    /// retained separately from the re-match/hydration solutions.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn page_selected(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        selected_roots: Vec<ConceptId>,
-        solutions: Vec<ProviderSolutionEvidence>,
-        window: Window,
-        total: Option<u64>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Page {
-                root,
-                selected_roots,
-                solutions,
-                window,
-                total,
-            },
-        }
-    }
-
-    /// Construct distinct-root count evidence.
-    pub(crate) fn count(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        value: u64,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Count { root, value },
-        }
-    }
-
-    /// Construct distinct-root existence evidence.
-    pub(crate) fn exists(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        value: bool,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Exists { root, value },
-        }
-    }
-
-    /// Construct typed reduction evidence.
-    pub(crate) fn reduction(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        group: Option<BindingId>,
-        rows: Vec<ReductionRow>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::Reduction { root, group, rows },
-        }
-    }
-
-    /// Construct typed field-grouped reduction evidence.
-    pub(crate) fn field_reduction(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        group: super::ids::BoundFieldId,
-        rows: Vec<ReductionRow>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::FieldReduction { root, group, rows },
-        }
-    }
-
-    /// Construct typed tuple-field-grouped reduction evidence.
-    pub(crate) fn field_tuple_reduction(
-        request_token: RequestToken,
-        shape_id: ResultShapeId,
-        root: BindingId,
-        groups: Vec<super::ids::BoundFieldId>,
-        rows: Vec<ReductionRow>,
-    ) -> Self {
-        Self {
-            request_token,
-            shape_id,
-            payload: ProviderResultPayload::FieldTupleReduction { root, groups, rows },
-        }
-    }
-
-    pub(super) const fn request_token(&self) -> RequestToken {
-        self.request_token
-    }
-
-    pub(super) fn shape_id(&self) -> &ResultShapeId {
-        &self.shape_id
-    }
-
-    pub(super) fn into_payload(self) -> ProviderResultPayload {
-        self.payload
-    }
-}
-
-/// Operation-specific provider evidence carried by [`ProviderResultEvidence`].
-#[derive(Debug)]
-pub(super) enum ProviderResultPayload {
-    /// Complete positive assignments for fetched rows.
-    Rows {
-        /// Provider solutions in claimed stable operation order.
-        solutions: Vec<ProviderSolutionEvidence>,
-        /// Whether validation must apply the request window after full-prefix
-        /// order and selected-identity validation.
-        apply_window: bool,
-    },
-    /// Complete positive assignments grouped by distinct page root.
-    Page {
-        /// Claimed page-root binding.
-        root: BindingId,
-        /// Exact ordered distinct-root selection from stage two.
-        selected_roots: Vec<ConceptId>,
-        /// Provider solutions in claimed stable root/collection order.
-        solutions: Vec<ProviderSolutionEvidence>,
-        /// Claimed page window.
-        window: Window,
-        /// Same-snapshot total when requested.
-        total: Option<u64>,
-    },
-    /// Claimed lossless distinct-root count.
-    Count {
-        /// Claimed count root.
-        root: BindingId,
-        /// Distinct-root count.
-        value: u64,
-    },
-    /// Claimed typed reduction rows.
-    Reduction {
-        /// Claimed reduced root.
-        root: BindingId,
-        /// Claimed group binding echo.
-        group: Option<BindingId>,
-        /// Claimed reduction rows.
-        rows: Vec<ReductionRow>,
-    },
-    /// Claimed typed field-grouped reduction rows.
-    FieldReduction {
-        /// Claimed reduced root.
-        root: BindingId,
-        /// Claimed descriptor-qualified group field echo.
-        group: super::ids::BoundFieldId,
-        /// Claimed reduction rows.
-        rows: Vec<ReductionRow>,
-    },
-    /// Claimed typed tuple-field-grouped reduction rows.
-    FieldTupleReduction {
-        /// Claimed reduced root.
-        root: BindingId,
-        /// Claimed ordered descriptor-qualified group fields echo.
-        groups: Vec<super::ids::BoundFieldId>,
-        /// Claimed reduction rows.
-        rows: Vec<ReductionRow>,
-    },
-    /// Claimed distinct-root existence result.
-    Exists {
-        /// Claimed existence root.
-        root: BindingId,
-        /// Whether any root exists.
-        value: bool,
-    },
 }
 
 impl ProviderSolutionEvidence {
     /// Construct one unvalidated provider solution inside the executor boundary.
-    #[allow(dead_code)] // Consumed by the typed provider executor in #176.
-    pub(crate) fn new(
-        bindings: Vec<BoundConceptEvidence>,
-        satisfied_role_edges: Vec<RoleEdgeId>,
-    ) -> Self {
-        Self {
-            bindings,
-            satisfied_role_edges,
-        }
+    pub(crate) fn new(bindings: Vec<BoundConceptEvidence>) -> Self {
+        Self { bindings }
     }
 
     /// Return all positive plan-binding assignments.
     pub(crate) fn bindings(&self) -> &[BoundConceptEvidence] {
         &self.bindings
-    }
-
-    /// Return canonical role edges satisfied by this exact assignment.
-    pub(crate) fn satisfied_role_edges(&self) -> &[RoleEdgeId] {
-        &self.satisfied_role_edges
     }
 }
 
@@ -900,18 +626,14 @@ mod tests {
     }
 
     #[test]
-    fn provider_solution_retains_complete_assignments_and_role_edges() {
-        let evidence = ProviderSolutionEvidence::new(
-            vec![BoundConceptEvidence::new(
-                BindingId::new(0),
-                person("Alice", "0x01"),
-            )],
-            vec![RoleEdgeId::new(3)],
-        );
+    fn provider_solution_retains_complete_assignments() {
+        let evidence = ProviderSolutionEvidence::new(vec![BoundConceptEvidence::new(
+            BindingId::new(0),
+            person("Alice", "0x01"),
+        )]);
 
         assert_eq!(evidence.bindings()[0].binding(), BindingId::new(0));
         assert_eq!(evidence.bindings()[0].thing().concept_id().as_str(), "0x01");
-        assert_eq!(evidence.satisfied_role_edges(), &[RoleEdgeId::new(3)]);
     }
 
     #[test]

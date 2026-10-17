@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { link, lstat, mkdtemp, mkdir, open, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
@@ -26,39 +27,144 @@ const NODE_RUNTIME_PACKAGE = process.env.TYPE_BRIDGE_NODE_PACKAGE_ROOT ?? NODE_S
 const CORE = resolve(NODE_SOURCE_PACKAGE, "../..");
 const ROOT = resolve(CORE, "..");
 const ACCEPTANCE = resolve(CORE, "crates/schema-codegen/tests/acceptance");
-const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.12.1";
+// Mirrors `GeneratedPackageRelease::for_profile` (type-bridge-core `core::version`):
+// a generated package admits exactly the server release its profile names.
+const PROFILE_SERVER_VERSIONS: Readonly<Record<string, string>> = {
+  "typedb-3.12.1/v1": "3.12.3",
+  "typedb-3.13.6/v1": "3.13.6",
+};
+// Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`;
+// new workspaces and the default TypeDB image use TypeDB 3.13.6.
+const DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1";
+const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.13.6";
 const IS_TYPEDB_3_11 = TYPEDB_VERSION.startsWith("3.11.");
 const PROVIDER_SCHEMA = resolve(
   ACCEPTANCE,
   IS_TYPEDB_3_11 ? "provider-3.11.5.tql" : "provider-3.12.1.tql",
 );
-const REMOTE_PROFILE = IS_TYPEDB_3_11 ? "typedb-3.11.5/v1" : "typedb-3.12.1/v1";
-const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest-v1.json";
-const SDK_CATALOG_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
-const SDK_JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json";
-const SDK_V2_CATALOG_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
-const SDK_V2_JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
-const SDK_V3_JOURNEY = resolve(
+const REMOTE_PROFILE = IS_TYPEDB_3_11
+  ? "typedb-3.11.5/v1"
+  : process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? DEFAULT_ACCEPTANCE_PROFILE;
+const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json";
+const SDK_QUERIES_CATALOG_RELATIVE =
+  "tests/contracts/sdk_conformance/queries/catalog.json";
+const SDK_QUERIES_JOURNEY_RELATIVE =
+  "tests/contracts/sdk_conformance/queries/journey.json";
+const SDK_MODELS_JOURNEY = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+  "tests/contracts/sdk_conformance/models/journey.json",
 );
-const SDK_V3_PROVIDER_SCHEMA = resolve(
+const SDK_MODELS_PROVIDER_SCHEMA = resolve(
   ROOT,
-  "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+  "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
 );
 const SDK_MANIFEST = resolve(ROOT, SDK_MANIFEST_RELATIVE);
-const SDK_CATALOG = resolve(ROOT, SDK_CATALOG_RELATIVE);
-const SDK_JOURNEY = resolve(ROOT, SDK_JOURNEY_RELATIVE);
-const SDK_V2_CATALOG = resolve(ROOT, SDK_V2_CATALOG_RELATIVE);
-const SDK_V2_JOURNEY = resolve(ROOT, SDK_V2_JOURNEY_RELATIVE);
-const SDK_V2_PROOF_VALIDATOR = resolve(
+const SDK_QUERIES_CATALOG = resolve(ROOT, SDK_QUERIES_CATALOG_RELATIVE);
+const SDK_QUERIES_JOURNEY = resolve(ROOT, SDK_QUERIES_JOURNEY_RELATIVE);
+const SDK_QUERIES_PROOF_VALIDATOR = resolve(
   ROOT,
   "scripts/ci/proof_fragments.py",
 );
+
+const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+
+/** One `sdk-vN/profiles-vN.json` entry: the identity a report carries on a profile. */
+interface SdkProfileIdentity {
+  readonly suite: string;
+  readonly semanticProfile: string;
+  readonly liveServerVersion: string;
+  /** Semantic and per-binding projection fingerprints; queries and models only. */
+  readonly expectedFingerprints: any;
+}
+
+const sdkPathsResult = spawnSync("python3", [resolve(ROOT, "scripts/ci/sdk_profile_matrix.py")], { encoding: "utf8" });
+assert.equal(sdkPathsResult.status, 0, sdkPathsResult.stderr);
+const SDK_CONTRACT_PATHS = JSON.parse(sdkPathsResult.stdout) as Record<string, Record<string, string>>;
+const SDK_SUITES = Object.keys(SDK_CONTRACT_PATHS);
+
+function sdkContractRelative(suite: string, name: string): string {
+  return SDK_CONTRACT_PATHS[suite][name === "profiles" ? "matrix" : name];
+}
+
+function sdkProfileMatrix(suite: string): Record<string, any> {
+  const matrix = JSON.parse(
+    readFileSync(resolve(ROOT, sdkContractRelative(suite, "profiles")), "utf8"),
+  );
+  if (
+    matrix?.format !== "typebridge.sdk-profile-matrix/v1"
+    || matrix.catalog_path !== sdkContractRelative(suite, "catalog")
+    || matrix.profiles === null
+    || typeof matrix.profiles !== "object"
+  ) {
+    throw new Error(`${suite} profile matrix is not the committed shape`);
+  }
+  return matrix.profiles;
+}
+
+/**
+ * Select the `sdk-vN` profile-matrix entry a report producer targets: the
+ * explicit `profile`, else `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the
+ * catalog's own profile (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+function sdkProfileIdentity(
+  suite: string,
+  profile?: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): SdkProfileIdentity {
+  const selected = profile
+    ?? (environment[SEMANTIC_PROFILE_ENV] || JSON.parse(
+      readFileSync(resolve(ROOT, sdkContractRelative(suite, "catalog")), "utf8"),
+    ).fixture.semantic_profile);
+  const profiles = sdkProfileMatrix(suite);
+  const entry = Object.hasOwn(profiles, selected) ? profiles[selected] : undefined;
+  if (typeof entry?.live_server_version !== "string") {
+    throw new Error(`${suite} has no profile-matrix entry for ${JSON.stringify(selected)}`);
+  }
+  const fingerprints = entry.expected_fingerprints;
+  if (
+    fingerprints !== undefined
+    && [fingerprints.semantic, ...Object.values(fingerprints.projections ?? {})]
+      .some((value: any) => value?.semantic_profile !== selected)
+  ) {
+    throw new Error(`${suite} entry ${selected} fingerprints name another profile`);
+  }
+  return {
+    suite: SDK_CONTRACT_PATHS[suite].suite,
+    semanticProfile: selected,
+    liveServerVersion: entry.live_server_version,
+    expectedFingerprints: fingerprints,
+  };
+}
+
+/** The sdk-vN identity reports carry; the generated package must target it. */
+function sdkReportIdentity(suite: string): SdkProfileIdentity {
+  const identity = sdkProfileIdentity(suite);
+  if (identity.semanticProfile !== REMOTE_PROFILE) {
+    throw new Error(
+      `${identity.suite} reports target ${identity.semanticProfile} `
+      + `but the generated package targets ${REMOTE_PROFILE}`,
+    );
+  }
+  return identity;
+}
+
+/** Require the generated package's fingerprints to be the matrix entry's. */
+function requireSdkFingerprints(
+  identity: SdkProfileIdentity,
+  semanticFingerprint: Record<string, unknown>,
+  projectionFingerprint: Record<string, unknown>,
+): void {
+  assert.deepEqual(
+    semanticFingerprint,
+    identity.expectedFingerprints.semantic,
+    `${identity.suite} semantic fingerprint differs from its ${identity.semanticProfile} entry`,
+  );
+  assert.deepEqual(
+    projectionFingerprint,
+    identity.expectedFingerprints.projections.node,
+    `${identity.suite} node projection fingerprint differs from its ${identity.semanticProfile} entry`,
+  );
+}
 
 function sourceIdentity(path: string, raw: Uint8Array): Record<string, string> {
   return { path, sha256: createHash("sha256").update(raw).digest("hex") };
@@ -100,7 +206,7 @@ function sdkResults(
   );
 }
 
-function sdkV3SupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
+function sdkModelsSupplementObservations(): ReadonlyMap<string, Record<string, unknown>> {
   const duplicateTarget = {
     category: "invalid_input",
     code: "duplicate_batch_target",
@@ -168,36 +274,36 @@ function sdkV3SupplementObservations(): ReadonlyMap<string, Record<string, unkno
       commit_visibility: { before_commit: { same_transaction_visible: true, outside_transaction_visible: false }, after_commit: { outside_transaction_visible: true, state: "committed" } },
       rollback_visibility: { before_rollback: { same_transaction_visible: true, outside_transaction_visible: false }, after_rollback: { outside_transaction_visible: false, state: "rolled_back" } },
       poison: { state: "rollback_only", first_cause: { category: "provider", code: "provider_operation_failed" }, later_cause: { category: "resource_limit", code: "batch_item_limit" }, retained_cause: { category: "provider", code: "provider_operation_failed" }, commit_rejection: { category: "transaction", code: "transaction_rollback_only", provider_commit_calls: 0 } },
-      post_rollback: { state: "rolled_back", rollback_idempotent: true, commit_rejected: true, mutation_rejected: true, close_state: "closed", close_idempotent: true },
+      post_rollback: { state: "rolled_back", rollback_idempotent: true, commit_rejected: false, mutation_rejected: false, close_state: "committed", close_idempotent: true },
     }],
   ]);
 }
 
-function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
-  const rawPaths = process.env.TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS;
-  const runNonce = process.env.TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE;
-  const python = process.env.TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON;
+function loadSdkQueriesProofObservations(): ReadonlyMap<string, Record<string, unknown>> {
+  const rawPaths = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS;
+  const runNonce = process.env.TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE;
+  const python = process.env.TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON;
   if (rawPaths === undefined || runNonce === undefined || python === undefined) {
     throw new Error(
-      "sdk-v2 reports require proof fragment paths, the same-run nonce, "
+      "queries reports require proof fragment paths, the same-run nonce, "
       + "and an explicit validator Python executable",
     );
   }
   if (!isAbsolute(python)) {
     throw new TypeError(
-      "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON must be an absolute path",
+      "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON must be an absolute path",
     );
   }
   const paths = rawPaths.split(delimiter);
   if (paths.length === 0 || paths.some((value) => value.length === 0)) {
-    throw new Error("sdk-v2 proof fragment paths must be a nonempty path list");
+    throw new Error("queries proof fragment paths must be a nonempty path list");
   }
   const validation = spawnSync(
     python,
     [
-      SDK_V2_PROOF_VALIDATOR,
-      "--sdk",
-      "2",
+      SDK_QUERIES_PROOF_VALIDATOR,
+      "--suite",
+      "queries",
       "--binding",
       "node",
       "--run-nonce",
@@ -215,16 +321,16 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
   if (validation.error !== undefined) throw validation.error;
   if (validation.status !== 0) {
     throw new Error(
-      `sdk-v2 proof fragments were rejected (${validation.status ?? "unknown"}): `
+      `queries proof fragments were rejected (${validation.status ?? "unknown"}): `
       + validation.stderr,
     );
   }
   if (validation.stderr !== "") {
-    throw new Error(`sdk-v2 proof validator wrote stderr: ${validation.stderr}`);
+    throw new Error(`queries proof validator wrote stderr: ${validation.stderr}`);
   }
   const rows: unknown = JSON.parse(validation.stdout);
   if (!Array.isArray(rows)) {
-    throw new TypeError("sdk-v2 proof validator returned a non-array payload");
+    throw new TypeError("queries proof validator returned a non-array payload");
   }
   const observations = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
@@ -234,7 +340,7 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
       || Array.isArray(row)
       || Object.keys(row).sort().join("\0") !== "observation\0observation_ref\0proof_kind"
     ) {
-      throw new TypeError("sdk-v2 proof validator returned a malformed row");
+      throw new TypeError("queries proof validator returned a malformed row");
     }
     const value = row as Record<string, unknown>;
     if (
@@ -244,7 +350,7 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
       || typeof value.observation !== "object"
       || Array.isArray(value.observation)
     ) {
-      throw new TypeError("sdk-v2 proof validator returned an invalid observation");
+      throw new TypeError("queries proof validator returned an invalid observation");
     }
     const key = observationKey(value.observation_ref, value.proof_kind);
     assert.equal(observations.has(key), false);
@@ -254,7 +360,8 @@ function loadSdkV2ProofObservations(): ReadonlyMap<string, Record<string, unknow
   return observations;
 }
 
-async function sdkReport(
+async function sdkQueriesReport(
+  identity: SdkProfileIdentity,
   catalogRaw: Buffer,
   catalog: any,
   journeyRaw: Buffer,
@@ -262,59 +369,27 @@ async function sdkReport(
   projectionFingerprint: Record<string, unknown>,
   results: readonly Record<string, unknown>[],
 ): Promise<Record<string, unknown>> {
+  requireSdkFingerprints(identity, semanticFingerprint, projectionFingerprint);
   const fixture = catalog.fixture;
   const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
   const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
   const manifestRaw = await readFile(SDK_MANIFEST);
-  assert.equal(catalog.journey_path, SDK_JOURNEY_RELATIVE);
+  assert.equal(catalog.journey_path, SDK_QUERIES_JOURNEY_RELATIVE);
   return {
-    format: "typebridge.sdk-conformance-report/v1",
+    format: "typebridge.sdk-queries-report/v1",
     binding: "node",
     manifest: sourceIdentity(SDK_MANIFEST_RELATIVE, manifestRaw),
-    catalog: sourceIdentity(SDK_CATALOG_RELATIVE, catalogRaw),
+    catalog: sourceIdentity(SDK_QUERIES_CATALOG_RELATIVE, catalogRaw),
     fixture: {
       id: fixture.id,
       version: fixture.version,
-      semantic_profile: fixture.semantic_profile,
+      semantic_profile: identity.semanticProfile,
       schema: sourceIdentity(fixture.schema_path, schemaRaw),
       provider_schema: sourceIdentity(fixture.provider_schema_path, providerSchemaRaw),
       journey: sourceIdentity(catalog.journey_path, journeyRaw),
-      semantic_fingerprint: semanticFingerprint,
+      semantic_fingerprint: identity.expectedFingerprints.semantic,
       projection_target: catalog.projection_targets.node,
-      projection_fingerprint: projectionFingerprint,
-    },
-    results,
-  };
-}
-
-async function sdkV2Report(
-  catalogRaw: Buffer,
-  catalog: any,
-  journeyRaw: Buffer,
-  semanticFingerprint: Record<string, unknown>,
-  projectionFingerprint: Record<string, unknown>,
-  results: readonly Record<string, unknown>[],
-): Promise<Record<string, unknown>> {
-  const fixture = catalog.fixture;
-  const schemaRaw = await readFile(resolve(ROOT, fixture.schema_path));
-  const providerSchemaRaw = await readFile(resolve(ROOT, fixture.provider_schema_path));
-  const manifestRaw = await readFile(SDK_MANIFEST);
-  assert.equal(catalog.journey_path, SDK_V2_JOURNEY_RELATIVE);
-  return {
-    format: "typebridge.sdk-conformance-report/v2",
-    binding: "node",
-    manifest: sourceIdentity(SDK_MANIFEST_RELATIVE, manifestRaw),
-    catalog: sourceIdentity(SDK_V2_CATALOG_RELATIVE, catalogRaw),
-    fixture: {
-      id: fixture.id,
-      version: fixture.version,
-      semantic_profile: fixture.semantic_profile,
-      schema: sourceIdentity(fixture.schema_path, schemaRaw),
-      provider_schema: sourceIdentity(fixture.provider_schema_path, providerSchemaRaw),
-      journey: sourceIdentity(catalog.journey_path, journeyRaw),
-      semantic_fingerprint: semanticFingerprint,
-      projection_target: catalog.projection_targets.node,
-      projection_fingerprint: projectionFingerprint,
+      projection_fingerprint: identity.expectedFingerprints.projections.node,
     },
     results,
   };
@@ -344,13 +419,13 @@ async function metadataIfPresent(path: string): Promise<Awaited<ReturnType<typeo
 async function validateSdkReportPath(rawPath: string): Promise<string> {
   const encodedPath = Buffer.from(rawPath, "utf8");
   if (encodedPath.toString("utf8") !== rawPath) {
-    throw new TypeError("TYPE_BRIDGE_SDK_REPORT must be a UTF-8 path");
+    throw new TypeError("SDK report must be a UTF-8 path");
   }
   if (encodedPath.length === 0 || encodedPath.length > 4096) {
-    throw new RangeError("TYPE_BRIDGE_SDK_REPORT must contain 1 to 4096 UTF-8 bytes");
+    throw new RangeError("SDK report must contain 1 to 4096 UTF-8 bytes");
   }
   if (!isAbsolute(rawPath)) {
-    throw new TypeError("TYPE_BRIDGE_SDK_REPORT must be an absolute path");
+    throw new TypeError("SDK report must be an absolute path");
   }
   const parent = dirname(rawPath);
   const parentMetadata = await metadataIfPresent(parent);
@@ -360,20 +435,33 @@ async function validateSdkReportPath(rawPath: string): Promise<string> {
     || !parentMetadata.isDirectory()
   ) {
     throw new TypeError(
-      "TYPE_BRIDGE_SDK_REPORT parent must be an existing non-symlink directory",
+      "SDK report parent must be an existing non-symlink directory",
     );
   }
   if (await metadataIfPresent(rawPath) !== undefined) {
-    throw new Error("TYPE_BRIDGE_SDK_REPORT destination must not exist");
+    throw new Error("SDK report destination must not exist");
   }
   return parent;
 }
 
-function requireSdkServerVersion(detected: string | null): void {
-  if (detected !== "3.12.3") {
+function requireProfileServerVersion(profile: string, detected: string | null): void {
+  const expected = PROFILE_SERVER_VERSIONS[profile];
+  if (expected === undefined) {
+    throw new Error(`${profile} names no exact TypeDB server release`);
+  }
+  if (detected !== expected) {
     throw new Error(
-      "sdk reports require the actual detected TypeDB server version 3.12.3; "
+      `${profile} packages require the actual detected TypeDB server version ${expected}; `
       + `detected ${JSON.stringify(detected)}`,
+    );
+  }
+}
+
+function requireSdkServerVersion(identity: SdkProfileIdentity, detected: string | null): void {
+  if (detected !== identity.liveServerVersion) {
+    throw new Error(
+      `${identity.suite} reports on ${identity.semanticProfile} require the actual detected `
+      + `TypeDB server version ${identity.liveServerVersion}; detected ${JSON.stringify(detected)}`,
     );
   }
 }
@@ -485,7 +573,7 @@ async function publishSdkReport(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "EEXIST") {
         throw new Error(
-          "TYPE_BRIDGE_SDK_REPORT destination appeared during publication",
+          "SDK report destination appeared during publication",
           { cause: error },
         );
       }
@@ -497,283 +585,12 @@ async function publishSdkReport(
   assert.equal(published, true);
 }
 
-async function runSdkJourney(
-  generated: any,
-  personManager: any,
-  membershipManager: any,
-  querySession: any,
-  remoteSession: any,
-  requests: Buffer[],
-  catalog: any,
-  journey: any,
-): Promise<Record<string, unknown>[]> {
-  const {
-    Aliases,
-    FooBar,
-    Identifier,
-    Membership,
-    Nickname,
-    Person,
-    Score,
-    ScoreGte,
-    ValBool,
-    ValConstrained,
-    ValDate,
-    ValDatetime,
-    ValDatetimeTz,
-    ValDecimal,
-    ValDouble,
-    ValDuration,
-  } = generated;
-  const personRecord = journey.records.person;
-  const membershipRecord = journey.records.membership;
-  const fields = personRecord.fields;
-  const update = personRecord.update;
-  const doubleBytes = Buffer.from(fields.val_double.bits, "hex");
-  assert.equal(doubleBytes.length, 8);
-  const doubleValue = doubleBytes.readDoubleBE(0);
-  const person = (nicknameValue: string) => Person.create({
-    identifier: Identifier.create(fields.identifier.value),
-    nickname: Nickname.create(nicknameValue),
-    aliases: fields.aliases.map((alias: any) => Aliases.create(alias.value)),
-    score: Score.create(BigInt(fields.score.value)),
-    fooBar: FooBar.create(BigInt(fields.foo__bar.value)),
-    scoreGte: ScoreGte.create(BigInt(fields.score__gte.value)),
-    valBool: ValBool.create(fields.val_bool.value),
-    valConstrained: ValConstrained.create(BigInt(fields.val_constrained.value)),
-    valDate: ValDate.create(new Date(`${fields.val_date.value}T00:00:00Z`)),
-    valDatetime: ValDatetime.create(new Date(`${fields.val_datetime.value}Z`)),
-    valDatetimeTz: ValDatetimeTz.create(new Date(fields.val_datetime_tz.value)),
-    valDecimal: ValDecimal.create(fields.val_decimal.value),
-    valDouble: ValDouble.create(doubleValue),
-    valDuration: ValDuration.create(fields.val_duration.value),
-  });
-  const normalizePerson = (candidate: any, nicknameField: any): Record<string, unknown> => {
-    assert.equal(candidate.__typebridgeModel, Person.typeKey);
-    assert.equal(candidate.identifier.__typebridgeModel, Identifier.typeKey);
-    assert.equal(candidate.identifier.value, fields.identifier.value);
-    assert.equal(candidate.nickname.__typebridgeModel, Nickname.typeKey);
-    assert.equal(candidate.nickname.value, nicknameField.value);
-    const aliases = candidate.aliases.map((alias: any) => {
-      assert.equal(alias.__typebridgeModel, Aliases.typeKey);
-      return alias.value;
-    }).sort(compareText);
-    assert.deepEqual(
-      aliases,
-      fields.aliases.map((alias: any) => alias.value).sort(compareText),
-    );
-    assert.equal(candidate.score.__typebridgeModel, Score.typeKey);
-    assert.equal(candidate.score.value, BigInt(fields.score.value));
-    assert.equal(candidate.fooBar.__typebridgeModel, FooBar.typeKey);
-    assert.equal(candidate.fooBar.value, BigInt(fields.foo__bar.value));
-    assert.equal(candidate.scoreGte.__typebridgeModel, ScoreGte.typeKey);
-    assert.equal(candidate.scoreGte.value, BigInt(fields.score__gte.value));
-    assert.equal(candidate.valBool.__typebridgeModel, ValBool.typeKey);
-    assert.equal(candidate.valBool.value, fields.val_bool.value);
-    assert.equal(candidate.valConstrained.__typebridgeModel, ValConstrained.typeKey);
-    assert.equal(candidate.valConstrained.value, BigInt(fields.val_constrained.value));
-    assert.equal(candidate.valDate.__typebridgeModel, ValDate.typeKey);
-    assert.equal(candidate.valDate.value.toISOString().slice(0, 10), fields.val_date.value);
-    assert.equal(candidate.valDatetime.__typebridgeModel, ValDatetime.typeKey);
-    assert.equal(
-      candidate.valDatetime.value.toISOString().replace(".000Z", "Z").slice(0, -1),
-      fields.val_datetime.value,
-    );
-    assert.equal(candidate.valDatetimeTz.__typebridgeModel, ValDatetimeTz.typeKey);
-    assert.equal(
-      candidate.valDatetimeTz.value.toISOString().replace(".000Z", "Z"),
-      fields.val_datetime_tz.value,
-    );
-    assert.equal(candidate.valDecimal.__typebridgeModel, ValDecimal.typeKey);
-    assert.equal(candidate.valDecimal.value, fields.val_decimal.value);
-    assert.equal(candidate.valDouble.__typebridgeModel, ValDouble.typeKey);
-    const candidateDouble = Buffer.alloc(8);
-    candidateDouble.writeDoubleBE(candidate.valDouble.value);
-    assert.equal(candidateDouble.toString("hex"), fields.val_double.bits);
-    assert.equal(candidate.valDuration.__typebridgeModel, ValDuration.typeKey);
-    assert.equal(candidate.valDuration.value, fields.val_duration.value);
-    const scalarDomains = [...new Set<string>(
-      Object.values(fields).flatMap((field: any) =>
-        (Array.isArray(field) ? field : [field]).map((member: any) => member.kind)
-      ),
-    )].sort(compareText);
-    return {
-      aliases,
-      key: fields.identifier.value,
-      model: personRecord.model,
-      nickname: nicknameField.value,
-      scalar_domains: scalarDomains,
-    };
-  };
-  const normalizeRole = (relation: any, player: any) => {
-    assert.equal(relation.__typebridgeModel, Membership.typeKey);
-    assert.equal(player.__typebridgeModel, Person.typeKey);
-    assert.equal(relation.member.__typebridgeModel, Person.typeKey);
-    assert.equal(relation.member.identifier.value, membershipRecord.player.key);
-    assert.equal(player.identifier.value, membershipRecord.player.key);
-    assertIid(player.iid);
-    const reference = Person.reference(player.iid, { identifier: player.identifier });
-    assert.equal(reference.__typebridgeModel, Person.typeKey);
-    assert.equal(reference.__typebridgeForm, "reference");
-    assert.equal(reference.iid, player.iid);
-    assert.equal(reference.identifier.__typebridgeModel, Identifier.typeKey);
-    assert.equal(reference.identifier.value, membershipRecord.player.key);
-    const playerIdentity = {
-      key: reference.identifier.value,
-      model: membershipRecord.player.model,
-    };
-    return {
-      hydrated: {
-        relation: { model: membershipRecord.model },
-        role: membershipRecord.role,
-        player: playerIdentity,
-      },
-      traversal: {
-        relation: membershipRecord.model,
-        role: membershipRecord.role,
-        player: playerIdentity,
-      },
-      reference: playerIdentity,
-    };
-  };
-
-  const observed = new Map<string, Record<string, unknown>>();
-  let insertedPerson: any;
-  let insertedMembership: any;
-  let personIid: string | undefined;
-  let membershipIid: string | undefined;
-  let personCreated = false;
-  let membershipCreated = false;
-  let personDeleted = false;
-  let membershipDeleted = false;
-  let readAfterUpdate = false;
-  try {
-    insertedPerson = personManager.insert(person(fields.nickname.value));
-    assertIid(insertedPerson.iid);
-    personIid = insertedPerson.iid;
-    personCreated = true;
-    const readPerson = personManager.getByIid(personIid);
-    assert.notEqual(readPerson, null);
-    normalizePerson(readPerson, fields.nickname);
-
-    const updatedPerson = personManager.update(personIid, person(update.nickname.value));
-    const storedUpdatedPerson = personManager.getByIid(personIid);
-    assert.notEqual(storedUpdatedPerson, null);
-    normalizePerson(storedUpdatedPerson, update.nickname);
-    readAfterUpdate = true;
-
-    insertedMembership = membershipManager.insert(Membership.create({ member: updatedPerson }));
-    assertIid(insertedMembership.iid);
-    membershipIid = insertedMembership.iid;
-    membershipCreated = true;
-    const storedMembership = membershipManager.getByIid(membershipIid);
-    assert.notEqual(storedMembership, null);
-    assert.equal(storedMembership.member.identifier.value, membershipRecord.player.key);
-
-    const directRelationVariable = querySession.exact(Membership);
-    const directPersonVariable = querySession.exact(Person);
-    const [directRelation, directPerson] = querySession
-      .query(directRelationVariable, directPersonVariable)
-      .where(
-        directRelationVariable.role(Membership.member).connects(directPersonVariable),
-        directPersonVariable
-          .field(Person.identifier)
-          .eq(Identifier.create(fields.identifier.value)),
-      )
-      .one();
-    const directRole = normalizeRole(directRelation, directPerson);
-    const directPersonObservation = normalizePerson(directPerson, update.nickname);
-    observed.set(
-      observationKey("model_values_and_references", "direct_runtime"),
-      { ...directPersonObservation, reference: directRole.reference },
-    );
-    observed.set(
-      observationKey("hydrated_role_result", "direct_runtime"),
-      directRole.hydrated,
-    );
-    observed.set(observationKey("role_traversal", "direct_runtime"), directRole.traversal);
-
-    const remoteRelationVariable = remoteSession.exact(Membership);
-    const remotePersonVariable = remoteSession.exact(Person);
-    const requestsBefore = requests.length;
-    const [remoteRelation, remotePerson] = await remoteSession
-      .query(remoteRelationVariable, remotePersonVariable)
-      .where(
-        remoteRelationVariable.role(Membership.member).connects(remotePersonVariable),
-        remotePersonVariable
-          .field(Person.identifier)
-          .eq(Identifier.create(fields.identifier.value)),
-      )
-      .one();
-    const exchangeCount = requests.length - requestsBefore;
-    assert.equal(exchangeCount, 1);
-    assert.ok(requests.slice(requestsBefore).every((request) => request.length > 0));
-    const remoteRole = normalizeRole(remoteRelation, remotePerson);
-    const remotePersonObservation = normalizePerson(remotePerson, update.nickname);
-    observed.set(
-      observationKey("model_values_and_references", "remote_runtime"),
-      { ...remotePersonObservation, reference: remoteRole.reference },
-    );
-    observed.set(
-      observationKey("hydrated_role_result", "remote_runtime"),
-      remoteRole.hydrated,
-    );
-    observed.set(observationKey("role_traversal", "remote_runtime"), remoteRole.traversal);
-    observed.set(
-      observationKey("remote_one_exchange", "remote_runtime"),
-      { exchange_count: exchangeCount, terminal: "one" },
-    );
-  } finally {
-    const cleanupFailures: unknown[] = [];
-    if (insertedMembership !== undefined && membershipIid !== undefined) {
-      try {
-        membershipManager.delete(insertedMembership);
-        membershipDeleted = membershipManager.getByIid(membershipIid) === null;
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
-    }
-    if (insertedPerson !== undefined && personIid !== undefined) {
-      try {
-        personManager.delete(insertedPerson);
-        personDeleted = personManager.getByIid(personIid) === null;
-      } catch (error) {
-        cleanupFailures.push(error);
-      }
-    }
-    if (cleanupFailures.length > 0) throw cleanupFailures[0];
-  }
-
-  observed.set(
-    observationKey("entity_lifecycle", "direct_runtime"),
-    {
-      created: personCreated,
-      deleted: personDeleted,
-      key: fields.identifier.value,
-      model: personRecord.model,
-      nickname_after_update: update.nickname.value,
-      read_after_update: readAfterUpdate,
-    },
-  );
-  observed.set(
-    observationKey("relation_lifecycle", "direct_runtime"),
-    {
-      created: membershipCreated,
-      deleted: membershipDeleted,
-      model: membershipRecord.model,
-      player_key: membershipRecord.player.key,
-      role: membershipRecord.role,
-    },
-  );
-  return sdkResults(catalog, journey, observed);
-}
-
-function sdkV2Key(value: any): string {
+function sdkQueriesKey(value: any): string {
   assert.equal(typeof value.identifier?.value, "string");
   return value.identifier.value;
 }
 
-function sdkV2Model(generated: any, value: any): string {
+function sdkQueriesModel(generated: any, value: any): string {
   for (const [model, name] of [
     [generated.Person, "person"],
     [generated.Employee, "employee"],
@@ -783,21 +600,21 @@ function sdkV2Model(generated: any, value: any): string {
   ] as const) {
     if (value.__typebridgeModel === model.typeKey) return name;
   }
-  throw new TypeError(`unexpected sdk-v2 projected model ${value.__typebridgeModel}`);
+  throw new TypeError(`unexpected queries projected model ${value.__typebridgeModel}`);
 }
 
-function sdkV2ModelKey(
+function sdkQueriesModelKey(
   generated: any,
   value: any,
 ): Record<string, string> {
-  return { model: sdkV2Model(generated, value), key: sdkV2Key(value) };
+  return { model: sdkQueriesModel(generated, value), key: sdkQueriesKey(value) };
 }
 
-function sdkV2Keys(values: readonly any[]): string[] {
-  return values.map(sdkV2Key);
+function sdkQueriesKeys(values: readonly any[]): string[] {
+  return values.map(sdkQueriesKey);
 }
 
-function sdkV2PersonValues(
+function sdkQueriesPersonValues(
   generated: any,
   person: any,
   membership: any,
@@ -816,47 +633,60 @@ function sdkV2PersonValues(
   assert.ok(scalarFields.every(([, field]) => field.value !== undefined));
   return {
     aliases: person.aliases.map((alias: any) => alias.value),
-    key: sdkV2Key(person),
-    model: sdkV2Model(generated, person),
+    key: sdkQueriesKey(person),
+    model: sdkQueriesModel(generated, person),
     nickname: person.nickname.value,
-    reference: sdkV2ModelKey(generated, membership.member),
+    reference: sdkQueriesModelKey(generated, membership.member),
     scalar_domains: scalarFields.map(([domain]) => domain),
   };
 }
 
-function sdkV2RoleObservation(
+function sdkQueriesRoleObservation(
   generated: any,
   membership: any,
   network: any,
 ): Record<string, unknown> {
   return {
     membership: {
-      relation: sdkV2Model(generated, membership),
+      relation: sdkQueriesModel(generated, membership),
       role: "member",
-      players: [sdkV2ModelKey(generated, membership.member)],
+      players: [sdkQueriesModelKey(generated, membership.member)],
     },
     network_link: {
-      relation: sdkV2Model(generated, network),
-      origin: sdkV2Key(network.origin),
-      destination: sdkV2Key(network.destination),
-      participants: sdkV2Keys(network.participant).sort(compareText),
+      relation: sdkQueriesModel(generated, network),
+      origin: sdkQueriesKey(network.origin),
+      destination: sdkQueriesKey(network.destination),
+      participants: sdkQueriesKeys(network.participant).sort(compareText),
     },
   };
 }
 
-function sdkV2HydratedResult(
+function sdkQueriesHydratedResult(
   generated: any,
   membership: any,
 ): Record<string, unknown> {
   return {
     rows: [{
-      model: sdkV2Model(generated, membership),
-      roles: { member: [sdkV2ModelKey(generated, membership.member)] },
+      model: sdkQueriesModel(generated, membership),
+      roles: { member: [sdkQueriesModelKey(generated, membership.member)] },
     }],
   };
 }
 
-function sdkV2CardinalityDiagnostic(error: any): Record<string, unknown> {
+/** The core's one enum parser refuses `operation` with `unknown_enum_value`. */
+function assertUnknownEnumValue(operation: () => unknown, kind: string): void {
+  assert.throws(operation, (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.name, "QueryV2Error");
+    const diagnostic = error as QueryV2Error;
+    assert.equal(diagnostic.category, "invalid_input");
+    assert.equal(diagnostic.code, "unknown_enum_value");
+    assert.deepEqual(diagnostic.details.kind, { kind: "query_identity", value: kind });
+    return true;
+  });
+}
+
+function sdkQueriesCardinalityDiagnostic(error: any): Record<string, unknown> {
   assert.ok(error instanceof Error);
   assert.equal(error.name, "QueryV2Error");
   const diagnostic = error as QueryV2Error;
@@ -886,14 +716,14 @@ function sdkV2CardinalityDiagnostic(error: any): Record<string, unknown> {
   };
 }
 
-async function sdkV2ResourceLimits(
+async function sdkQueriesResourceLimits(
   generated: any,
   database: any,
   advertisement: Uint8Array,
   exchange: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>,
   membershipIid: string,
 ): Promise<Record<string, unknown>> {
-  const maxima = {
+  const defaults = {
     timeout_milliseconds: 30_000,
     items: 65_536,
     bytes: 33_554_432,
@@ -903,17 +733,31 @@ async function sdkV2ResourceLimits(
     role_players: 65_536,
     statements: 3,
   };
-  const toOptions = (offset: number): Record<string, bigint> => ({
-    timeoutMilliseconds: BigInt(maxima.timeout_milliseconds + offset),
-    items: BigInt(maxima.items + offset),
-    bytes: BigInt(maxima.bytes + offset),
-    graphNodes: BigInt(maxima.graph_nodes + offset),
-    attributeValues: BigInt(maxima.attribute_values + offset),
-    collectionMembers: BigInt(maxima.collection_members + offset),
-    rolePlayers: BigInt(maxima.role_players + offset),
-    statements: BigInt(maxima.statements + offset),
+  // Every dimension but the statement count may be raised past its default
+  // and is kept as given.
+  const raised = (offset: number): Record<string, bigint> => ({
+    timeoutMilliseconds: BigInt(defaults.timeout_milliseconds + offset),
+    items: BigInt(defaults.items + offset),
+    bytes: BigInt(defaults.bytes + offset),
+    graphNodes: BigInt(defaults.graph_nodes + offset),
+    attributeValues: BigInt(defaults.attribute_values + offset),
+    collectionMembers: BigInt(defaults.collection_members + offset),
+    rolePlayers: BigInt(defaults.role_players + offset),
+    statements: BigInt(defaults.statements),
   });
-  const plus = new generated.QueryExecutionResourceLimits(toOptions(1));
+  const plus = new generated.QueryExecutionResourceLimits(raised(1));
+  // Past a supported maximum a value is refused by name, never clamped.
+  const refusedByName = (options: Record<string, bigint>, name: string): boolean => {
+    try {
+      new generated.QueryExecutionResourceLimits(options);
+      return false;
+    } catch (error) {
+      return String((error as Error).message).includes(name);
+    }
+  };
+  const pastMaximumRefused =
+    refusedByName({ statements: 4n }, "statements") &&
+    refusedByName({ timeoutMilliseconds: 86_400_001n }, "timeout_milliseconds");
   const zero = new generated.QueryExecutionResourceLimits({
     timeoutMilliseconds: 0n,
     items: 0n,
@@ -934,20 +778,20 @@ async function sdkV2ResourceLimits(
     Number(limits.rolePlayers),
     Number(limits.statements),
   ];
-  const maximaValues = Object.values(maxima);
-  const plusOneClampedAll = values(plus).every((value, index) => value === maximaValues[index]);
+  const expectedPlus = Object.values(defaults).map((value, index) => (index === 7 ? value : value + 1));
+  const plusOneKeptAll = values(plus).every((value, index) => value === expectedPlus[index]);
   const zeroTighteningAll = values(zero).every((value) => value === 0);
   const errors: readonly [string, string][] = await Promise.all(
     [false, true].map(async (remote) => {
       const limits = new generated.QueryExecutionResourceLimits({ rolePlayers: 0n });
-      const session = remote
-        ? new generated.RemoteQuerySession(advertisement, exchange, limits)
-        : new generated.QuerySession(database, { resources: limits });
+      const connection = remote
+        ? new generated.ExchangeConnection(advertisement, exchange)
+        : database;
+      const session = new generated.QuerySession(connection, { resources: limits });
       const relation = session.exact(generated.Membership);
       const query = session.query(relation).where(relation.iid(membershipIid));
       try {
-        if (remote) await query.one();
-        else query.one();
+        await query.one();
       } catch (error) {
         const diagnostic = error as any;
         return [diagnostic.sdkCategory, diagnostic.code] as const;
@@ -958,9 +802,41 @@ async function sdkV2ResourceLimits(
     }),
   );
   assert.deepEqual(errors[1], errors[0]);
+  // A session asking for more than its connection's answer ceiling runs
+  // under the ceiling: the same zero role-player budget, set only on the
+  // connection, refuses the hydrated relation the same way.
+  const ceilinged = generated.connect(
+    new generated.DirectConnectionPolicy(TYPEDB_ADDRESS, INTG_DATABASE, {
+      username: TYPEDB_USERNAME,
+      password: TYPEDB_PASSWORD,
+      httpPort: TYPEDB_HTTP_PORT,
+      ...(process.env.TYPEDB_TLS_ROOT_CA === undefined
+        ? {}
+        : { tls: "custom_root", tlsRootCa: process.env.TYPEDB_TLS_ROOT_CA }),
+      answerLimits: new generated.QueryExecutionResourceLimits({ rolePlayers: 0n }),
+    }),
+  );
+  try {
+    const ceilingedExchange = new generated.ExchangeConnection(advertisement, exchange, {
+      answerLimits: new generated.QueryExecutionResourceLimits({ rolePlayers: 0n }),
+    });
+    for (const connection of [ceilinged, ceilingedExchange]) {
+      const session = new generated.QuerySession(connection, { resources: plus });
+      const relation = session.exact(generated.Membership);
+      await assert.rejects(
+        session.query(relation).where(relation.iid(membershipIid)).one(),
+        (error: any) => error.sdkCategory === errors[0][0] && error.code === errors[0][1],
+        "a session must not exceed its connection's answer ceiling",
+      );
+      session.close();
+    }
+  } finally {
+    ceilinged.close();
+  }
   return {
-    hard_maxima: maxima,
-    plus_one_clamped_all: plusOneClampedAll,
+    defaults,
+    plus_one_kept_all: plusOneKeptAll,
+    past_maximum_refused: pastMaximumRefused,
     zero_tightening_all: zeroTighteningAll,
     enforced: {
       dimension: "role_players",
@@ -971,109 +847,482 @@ async function sdkV2ResourceLimits(
   };
 }
 
-async function sdkV2Lifecycle(
+async function sdkQueriesLifecycle(
   generated: any,
   database: any,
   advertisement: Uint8Array,
   exchange: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>,
   requests: readonly Uint8Array[],
 ): Promise<Record<string, unknown>> {
-  const directSession = new generated.QuerySession(database);
-  const directPerson = directSession.exact(generated.Person);
-  const directIdentifier = directPerson.field(generated.Person.identifier);
-  const directScope = directIdentifier.eq(generated.Identifier.create("query-ada"));
-  const directAncestor = directSession.query(directPerson).where(directScope);
-  const directSibling = directAncestor.clone();
-  const directClosedDescendant = directAncestor.where(
-    directPerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  directClosedDescendant.close();
-  directClosedDescendant.close();
-  const directAncestorUsable = sdkV2Key(directAncestor.one()) === "query-ada";
-  const directDescendant = directAncestor.where(
-    directPerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  const directResult = directDescendant.one();
-  directAncestor.close();
-  directAncestor.close();
-  let directRejected = false;
-  try {
-    directAncestor.one();
-  } catch (error) {
-    directRejected = (error as any).code === "query_resource_closed";
-  }
-  const direct = {
-    ancestor_usable_after_descendant_close: directAncestorUsable,
-    close_idempotent: directAncestor.isClosed && directClosedDescendant.isClosed,
-    descendant_usable_after_ancestor_close:
-      sdkV2Key(directDescendant.one()) === "query-ada",
-    handle_invalidated: directAncestor.isClosed,
-    post_close_io_count: 0,
-    post_close_rejected: directRejected,
-    session_usable_after_query_close:
-      sdkV2Key(directSession.query(directPerson).where(directScope).one()) === "query-ada",
-    sibling_usable: sdkV2Key(directSibling.one()) === "query-ada",
+  // One lifecycle program, run on a direct and an exchange connection.
+  const lane = async (session: any): Promise<[Record<string, unknown>, any]> => {
+    const person = session.exact(generated.Person);
+    const identifier = person.field(generated.Person.identifier);
+    const scope = identifier.eq(generated.Identifier.create("query-ada"));
+    const ancestor = session.query(person).where(scope);
+    const sibling = ancestor.clone();
+    const closedDescendant = ancestor.where(
+      person.field(generated.Person.score).gte(generated.Score.create(1n)),
+    );
+    closedDescendant.close();
+    closedDescendant.close();
+    const ancestorUsable = sdkQueriesKey(await ancestor.one()) === "query-ada";
+    const descendant = ancestor.where(
+      person.field(generated.Person.score).gte(generated.Score.create(1n)),
+    );
+    const result = await descendant.one();
+    ancestor.close();
+    ancestor.close();
+    const requestsBeforeRejection = requests.length;
+    let rejected = false;
+    try {
+      await ancestor.one();
+    } catch (error) {
+      rejected = (error as any).code === "query_resource_closed";
+    }
+    const postCloseIoCount = requests.length - requestsBeforeRejection;
+    const observation = {
+      ancestor_usable_after_descendant_close: ancestorUsable,
+      close_idempotent: ancestor.isClosed && closedDescendant.isClosed,
+      descendant_usable_after_ancestor_close:
+        sdkQueriesKey(await descendant.one()) === "query-ada",
+      handle_invalidated: ancestor.isClosed,
+      post_close_io_count: postCloseIoCount,
+      post_close_rejected: rejected,
+      session_usable_after_query_close:
+        sdkQueriesKey(await session.query(person).where(scope).one()) === "query-ada",
+      sibling_usable: sdkQueriesKey(await sibling.one()) === "query-ada",
+    };
+    descendant.close();
+    sibling.close();
+    session.close();
+    return [observation, result];
   };
-  directDescendant.close();
-  directSibling.close();
-  directSession.close();
-
-  const remoteSession = new generated.RemoteQuerySession(
-    advertisement,
-    exchange,
-    new generated.QueryExecutionResourceLimits(),
+  const [direct, directResult] = await lane(new generated.QuerySession(database));
+  const [remote, remoteResult] = await lane(
+    new generated.QuerySession(new generated.ExchangeConnection(advertisement, exchange)),
   );
-  const remotePerson = remoteSession.exact(generated.Person);
-  const remoteIdentifier = remotePerson.field(generated.Person.identifier);
-  const remoteScope = remoteIdentifier.eq(generated.Identifier.create("query-ada"));
-  const remoteAncestor = remoteSession.query(remotePerson).where(remoteScope);
-  const remoteSibling = remoteAncestor.clone();
-  const remoteClosedDescendant = remoteAncestor.where(
-    remotePerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  remoteClosedDescendant.close();
-  remoteClosedDescendant.close();
-  const remoteAncestorUsable = sdkV2Key(await remoteAncestor.one()) === "query-ada";
-  const remoteDescendant = remoteAncestor.where(
-    remotePerson.field(generated.Person.score).gte(generated.Score.create(1n)),
-  );
-  const remoteResult = await remoteDescendant.one();
-  remoteAncestor.close();
-  remoteAncestor.close();
-  const requestsBeforeRejection = requests.length;
-  let remoteRejected = false;
-  try {
-    await remoteAncestor.one();
-  } catch (error) {
-    remoteRejected = (error as any).code === "query_resource_closed";
-  }
-  const postCloseIoCount = requests.length - requestsBeforeRejection;
-  const remote = {
-    ancestor_usable_after_descendant_close: remoteAncestorUsable,
-    close_idempotent: remoteAncestor.isClosed && remoteClosedDescendant.isClosed,
-    descendant_usable_after_ancestor_close:
-      sdkV2Key(await remoteDescendant.one()) === "query-ada",
-    handle_invalidated: remoteAncestor.isClosed,
-    post_close_io_count: postCloseIoCount,
-    post_close_rejected: remoteRejected,
-    session_usable_after_query_close:
-      sdkV2Key(await remoteSession.query(remotePerson).where(remoteScope).one()) === "query-ada",
-    sibling_usable: sdkV2Key(await remoteSibling.one()) === "query-ada",
-  };
-  remoteDescendant.close();
-  remoteSibling.close();
-  remoteSession.close();
   assert.deepEqual(remote, direct);
   return {
     lanes: ["direct", "remote"],
     query: direct,
     result_usable_after_query_close:
-      sdkV2Key(directResult) === "query-ada"
-      && sdkV2Key(remoteResult) === "query-ada",
+      sdkQueriesKey(directResult) === "query-ada"
+      && sdkQueriesKey(remoteResult) === "query-ada",
   };
 }
 
-async function runSdkV2Journey(
+function sdkQueriesReducers(
+    values: readonly unknown[],
+    binding: readonly any[],
+    field: readonly any[],
+    tuple: readonly any[],
+  ): Record<string, unknown> {
+    const bits = (value: unknown): string => {
+      assert.equal(typeof value, "number");
+      const bytes = Buffer.alloc(8);
+      bytes.writeDoubleBE(value as number);
+      return bytes.toString("hex");
+    };
+    return {
+      reducers: {
+        count: Number(values[0]),
+        sum: Number(values[1]),
+        min: Number(values[2]),
+        max: Number(values[3]),
+        mean_bits: bits(values[4]),
+        median_bits: bits(values[5]),
+        std_bits: bits(values[6]),
+      },
+      groups: {
+        binding: binding.map(([group, result]) => ({
+          model: "person",
+          key: group.identifier.value,
+          count: Number(result[0]),
+        })),
+        field: field.map(([group, result]) => ({
+          key: Number(group.value),
+          count: Number(result[0]),
+        })),
+        field_tuple: tuple.map(([[score, scoreGte], result]) => ({
+          key: [Number(score.value), Number(scoreGte.value)],
+          count: Number(result[0]),
+        })),
+      },
+    };
+}
+
+/**
+ * The queries query program, run once per connection. Every lane observation
+ * comes from this one program, so the direct and remote lanes differ only in
+ * the connection the session was opened on.
+ */
+async function sdkQueriesQueryLane(
+  generated: any,
+  session: any,
+  requests: readonly Uint8Array[],
+  personIids: readonly string[],
+  membershipIid: string,
+  networkIid: string,
+): Promise<{
+  observations: Record<string, Record<string, unknown>>;
+  oneExchange: number;
+}> {
+  const {
+    Employee,
+    Identifier,
+    Membership,
+    NetworkLink,
+    Person,
+    Score,
+    ValBool,
+    aggregate,
+    integerInput,
+    qualifyingScore,
+  } = generated;
+  const person = session.exact(Person);
+  const identifier = person.field(Person.identifier);
+  const scope = identifier.eq(Identifier.create("query-ada"))
+    .or(identifier.eq(Identifier.create("query-dana")));
+  const query = session.query(person).where(scope);
+  assertUnknownEnumValue(() => identifier.asc("none" as never), "missing_order");
+  assertUnknownEnumValue(() => session.var(Person, "subtype" as never), "match_mode");
+  // The core checks a create member's count at construction, with its code.
+  assert.throws(
+    () => Person.create({ identifier: Identifier.create("query-cardinality") }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.name, "QueryV2Error");
+      const diagnostic = error as QueryV2Error;
+      assert.equal(diagnostic.category, "invalid_input");
+      assert.equal(diagnostic.code, "missing_required_field");
+      return true;
+    },
+  );
+  const keys = (await query.rows({
+    limit: 2n,
+    orderBy: [identifier.asc()],
+  })).map((person: any) => person.identifier.value);
+  const ada = await session
+    .query(person)
+    .where(identifier.eq(Identifier.create("query-ada")))
+    .one();
+  const membershipVar = session.exact(Membership);
+  const member = session.exact(Person);
+  const membership = await session
+    .query(membershipVar)
+    .match(member)
+    .where(
+      membershipVar.iid(membershipIid),
+      membershipVar.role(Membership.member).connects(member),
+      member.field(Person.identifier).eq(Identifier.create("query-ada")),
+    )
+    .one();
+  const networkVar = session.exact(NetworkLink);
+  const origin = session.exact(Person);
+  const destination = session.exact(Person);
+  const network = await session
+    .query(networkVar)
+    .match(origin, destination)
+    .where(
+      networkVar.iid(networkIid),
+      networkVar.role(NetworkLink.origin).connects(origin),
+      networkVar.role(NetworkLink.destination).connects(destination),
+      origin.field(Person.identifier).eq(Identifier.create("query-ada")),
+      destination.field(Person.identifier).eq(Identifier.create("query-dana")),
+    )
+    .one();
+
+  const ownerKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(person.field(Person.score).isPresent(), scope)
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const optionalKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(person.field(Person.nickname).isPresent(), scope)
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const iidKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(person.iidIn(personIids))
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+
+  const employeeExact = session.exact(Employee);
+  const employeeExactId = employeeExact.field(Employee.identifier);
+  const exactValues = await session
+    .query(employeeExact)
+    .where(
+      employeeExactId.eq(Identifier.create("query-employee"))
+        .or(employeeExactId.eq(Identifier.create("query-manager"))),
+    )
+    .rows({ limit: 2n, orderBy: [employeeExactId.asc()] });
+  const employeeSubtypes = session.subtypes(Employee);
+  const employeeSubtypesId = employeeSubtypes.field(Employee.identifier);
+  const subtypeValues = await session
+    .query(employeeSubtypes)
+    .where(
+      employeeSubtypesId.eq(Identifier.create("query-employee"))
+        .or(employeeSubtypesId.eq(Identifier.create("query-manager"))),
+    )
+    .rows({ limit: 2n, orderBy: [employeeSubtypesId.asc()] });
+
+  const score = person.field(Person.score);
+  const scoreGte = person.field(Person.scoreGte);
+  const boolean = person.field(Person.valBool);
+  const andKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(
+        scope,
+        score.gte(Score.create(40n)).and(boolean.eq(ValBool.create(true))),
+      )
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const orKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(scope)
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const notKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(scope, boolean.eq(ValBool.create(true)).not())
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const fieldComparisonKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(scope, score.gteField(scoreGte))
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+
+  const source = session.exact(Person);
+  const target = session.exact(Person);
+  const reachable = session.reachable(
+    source,
+    target,
+    NetworkLink,
+    NetworkLink.origin,
+    NetworkLink.destination,
+    { minDepth: 1, maxDepth: 1 },
+  );
+  const reachablePair = await session
+    .query(source, target)
+    .where(
+      reachable,
+      source.field(Person.identifier).eq(Identifier.create("query-ada")),
+      target.field(Person.identifier).eq(Identifier.create("query-dana")),
+    )
+    .one();
+  const crossLeft = session.exact(Person);
+  const crossRight = session.exact(Person);
+  const crossLeftId = crossLeft.field(Person.identifier);
+  const crossRightId = crossRight.field(Person.identifier);
+  const crossScope = crossLeftId.eq(Identifier.create("query-ada"))
+    .or(crossLeftId.eq(Identifier.create("query-dana")))
+    .and(
+      crossRightId.eq(Identifier.create("query-ada"))
+        .or(crossRightId.eq(Identifier.create("query-dana"))),
+    );
+  const crossPairs = (await session
+    .query(crossLeft, crossRight)
+    .allowCrossJoin(crossLeft, crossRight)
+    .where(crossScope)
+    .rows({
+      limit: 4n,
+      orderBy: [crossLeftId.asc(), crossRightId.asc()],
+    }))
+    .map(([left, right]: readonly any[]) => [sdkQueriesKey(left), sdkQueriesKey(right)]);
+
+  const selectionLink = session.exact(NetworkLink);
+  const selectionOrigin = session.exact(Person);
+  const selectionParticipant = session.exact(Person);
+  const selectionPredicates = [
+    selectionLink.iid(networkIid),
+    selectionLink.role(NetworkLink.origin).connects(selectionOrigin),
+    selectionLink.role(NetworkLink.participant).connects(selectionParticipant),
+  ] as const;
+  const selectionParticipants = selectionParticipant
+    .collect()
+    .distinct()
+    .orderBy(selectionParticipant.field(Person.identifier).asc());
+  const positionalPage = await session
+    .query(selectionOrigin, selectionParticipants)
+    .match(selectionLink)
+    .where(...selectionPredicates)
+    .pageBy(selectionOrigin, {
+      limit: 1n,
+      orderBy: [selectionOrigin.field(Person.identifier).asc()],
+      includeTotal: true,
+    });
+  assert.equal(Number(positionalPage.total), 1);
+  assert.equal(positionalPage.items.length, 1);
+  const [positionalOrigin, positionalParticipants] =
+    positionalPage.items[0];
+  const namedPage = await session
+    .queryNamed({ origin: selectionOrigin, participants: selectionParticipants })
+    .match(selectionLink)
+    .where(...selectionPredicates)
+    .pageBy(selectionOrigin, {
+      limit: 1n,
+      orderBy: [selectionOrigin.field(Person.identifier).asc()],
+      includeTotal: true,
+    });
+  assert.equal(Number(namedPage.total), 1);
+  assert.equal(namedPage.items.length, 1);
+  const named = namedPage.items[0];
+  const selection = {
+    positional: [
+      sdkQueriesKey(positionalOrigin),
+      sdkQueriesKeys(positionalParticipants),
+    ],
+    named: {
+      origin: sdkQueriesKey(named.origin),
+      participants: sdkQueriesKeys(named.participants),
+    },
+    collected_distinct:
+      new Set(positionalParticipants.map((value: any) => value.iid)).size
+      === positionalParticipants.length,
+    collection_order: "identifier_asc",
+  };
+
+  const requestsBeforeOne = requests.length;
+  const dana = await session
+    .query(person)
+    .where(identifier.eq(Identifier.create("query-dana")))
+    .one();
+  const oneExchange = requests.length - requestsBeforeOne;
+  const first = await query.first({ orderBy: [identifier.asc()] });
+  const page = await query.pageBy(person, {
+    limit: 1n,
+    orderBy: [identifier.asc()],
+    includeTotal: true,
+  });
+  const terminals = {
+    one: sdkQueriesKey(dana),
+    first: sdkQueriesKey(first),
+    rows: keys,
+    page: {
+      items: sdkQueriesKeys(page.items),
+      offset: Number(page.offset),
+      limit: Number(page.limit),
+      total: Number(page.total),
+    },
+    count: Number(await query.countBy(person)),
+    exists: await query.existsBy(person),
+  };
+  const scalarDomainKeys = sdkQueriesKeys(
+    await session
+      .query(person)
+      .where(scope, score.gte(Score.create(40n)))
+      .rows({ limit: 2n, orderBy: [identifier.asc()] }),
+  );
+  const values = await query.aggregate(person, [
+    aggregate.count(),
+    aggregate.sum(score),
+    aggregate.min(score),
+    aggregate.max(score),
+    aggregate.mean(score),
+    aggregate.median(score),
+    aggregate.std(score),
+  ] as const);
+  const groupPerson = session.exact(Person);
+  const groupIdentifier = groupPerson.field(Person.identifier);
+  const binding = await query
+    .match(groupPerson)
+    .where(identifier.eqField(groupIdentifier))
+    .groupBy(person, groupPerson)
+    .aggregate([aggregate.count()] as const);
+  const field = await query
+    .groupBy(person, score)
+    .aggregate([aggregate.count()] as const);
+  const tuple = await query
+    .groupBy(person, score, person.field(Person.scoreGte))
+    .aggregate([aggregate.count()] as const);
+  const reducers = sdkQueriesReducers(
+    values,
+    binding,
+    field,
+    tuple,
+  );
+
+  const minimum = integerInput(session, Score.create(30n));
+  const call = qualifyingScore(session, person, minimum);
+  const functionValues = (await query
+    .where(call.gteField(score))
+    .rows({ limit: 2n, orderBy: [identifier.asc()] }))
+    .map((person: any) => Number(person.score.value));
+  const nested = qualifyingScore(session, person, call);
+  const nestedFunctionValues = (await query
+    .where(nested.gteField(score))
+    .rows({ limit: 2n, orderBy: [identifier.asc()] }))
+    .map((person: any) => Number(person.score.value));
+  let diagnostic: Record<string, unknown> | undefined;
+  try {
+    await query.one();
+  } catch (error) {
+    diagnostic = sdkQueriesCardinalityDiagnostic(error);
+  }
+  assert.notEqual(diagnostic, undefined, "one() over two rows must fail");
+  return {
+    oneExchange,
+    observations: {
+      model_values_and_references: sdkQueriesPersonValues(generated, ada, membership),
+      owner_iid_set: {
+        owner_field: "score",
+        owner_keys: ownerKeys,
+        optional_field: "nickname",
+        optional_present_keys: optionalKeys,
+        iid_set_keys: iidKeys,
+      },
+      exact_subtypes: {
+        declared_model: "employee",
+        exact: exactValues.map((value: any) => sdkQueriesModelKey(generated, value)),
+        subtypes: subtypeValues.map((value: any) => sdkQueriesModelKey(generated, value)),
+      },
+      scalar_boolean: {
+        and_keys: andKeys,
+        or_keys: orKeys,
+        not_keys: notKeys,
+        field_comparison_keys: fieldComparisonKeys,
+      },
+      roles: sdkQueriesRoleObservation(generated, membership, network),
+      topology: {
+        reachable: [{
+          from: sdkQueriesKey(reachablePair[0]),
+          to: sdkQueriesKey(reachablePair[1]),
+          max_hops: 1,
+        }],
+        cross_join_pairs: crossPairs,
+      },
+      selection_shapes: selection,
+      terminals,
+      grouped_reducer: reducers,
+      hydrated_result: sdkQueriesHydratedResult(generated, membership),
+      scalar_domain: {
+        domain: "long",
+        operator: "gte",
+        operand: 40,
+        keys: scalarDomainKeys,
+      },
+      schema_function: {
+        minimum: 30,
+        values: functionValues,
+        nested_values: nestedFunctionValues,
+      },
+      structured_query_diagnostic: diagnostic as Record<string, unknown>,
+    },
+  };
+}
+
+
+async function runSdkQueriesJourney(
   generated: any,
   database: any,
   remoteSession: any,
@@ -1164,18 +1413,18 @@ async function runSdkV2Journey(
     people = personManager.insertMany(personInputs);
     assert.equal(people.length, personInputs.length);
     for (let index = 0; index < people.length; index += 1) {
-      assert.equal(sdkV2Key(people[index]), sdkV2Key(personInputs[index]));
+      assert.equal(sdkQueriesKey(people[index]), sdkQueriesKey(personInputs[index]));
       inserted.push([personManager, people[index]]);
     }
     insertedCount = inserted.length;
 
     employee = employeeManager.insert(employeeInput);
-    assert.equal(sdkV2Key(employee), sdkV2Key(employeeInput));
+    assert.equal(sdkQueriesKey(employee), sdkQueriesKey(employeeInput));
     inserted.push([employeeManager, employee]);
     insertedCount = inserted.length;
 
     manager = managerManager.insert(managerInput);
-    assert.equal(sdkV2Key(manager), sdkV2Key(managerInput));
+    assert.equal(sdkQueriesKey(manager), sdkQueriesKey(managerInput));
     inserted.push([managerManager, manager]);
     insertedCount = inserted.length;
 
@@ -1190,7 +1439,7 @@ async function runSdkV2Journey(
       origin: people[0],
       participant: people,
     }));
-    assert.equal(sdkV2Key(network), networkFields.identifier.value);
+    assert.equal(sdkQueriesKey(network), networkFields.identifier.value);
     inserted.push([networkManager, network]);
     insertedCount = inserted.length;
 
@@ -1201,692 +1450,39 @@ async function runSdkV2Journey(
     const entityReadAfterCreate = personManager.getByIid(personIids[0]) !== null;
     const relationReadAfterCreate = membershipManager.getByIid(membershipIid) !== null;
 
+    const lane = (session: any) => sdkQueriesQueryLane(
+      generated,
+      session,
+      requests,
+      personIids,
+      membershipIid,
+      networkIid,
+    );
     const directSession = new generated.QuerySession(database);
-    const directPerson = directSession.exact(Person);
-    const directIdentifier = directPerson.field(Person.identifier);
-    const directScope = directIdentifier.eq(Identifier.create("query-ada"))
-      .or(directIdentifier.eq(Identifier.create("query-dana")));
-    const directQuery = directSession.query(directPerson).where(directScope);
-    const directKeys = directQuery
-      .rows({ limit: 2n, orderBy: [directIdentifier.asc()] })
-      .map((person: any) => person.identifier.value);
-    assert.deepEqual(directKeys, ["query-ada", "query-dana"]);
-    const directAda = directSession
-      .query(directPerson)
-      .where(directIdentifier.eq(Identifier.create("query-ada")))
-      .one();
-
-    const directMembershipVar = directSession.exact(Membership);
-    const directMember = directSession.exact(Person);
-    const directMembership = directSession
-      .query(directMembershipVar)
-      .match(directMember)
-      .where(
-        directMembershipVar.iid(membershipIid),
-        directMembershipVar.role(Membership.member).connects(directMember),
-        directMember.field(Person.identifier).eq(Identifier.create("query-ada")),
-      )
-      .one();
-    const directNetworkVar = directSession.exact(NetworkLink);
-    const directOrigin = directSession.exact(Person);
-    const directDestination = directSession.exact(Person);
-    const directNetwork = directSession
-      .query(directNetworkVar)
-      .match(directOrigin, directDestination)
-      .where(
-        directNetworkVar.iid(networkIid),
-        directNetworkVar.role(NetworkLink.origin).connects(directOrigin),
-        directNetworkVar.role(NetworkLink.destination).connects(directDestination),
-        directOrigin.field(Person.identifier).eq(Identifier.create("query-ada")),
-        directDestination.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-
-    const directOwnerKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directPerson.field(Person.score).isPresent(), directScope)
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directOptionalKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directPerson.field(Person.nickname).isPresent(), directScope)
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directIidKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directPerson.iidIn(personIids))
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-
-    const directEmployeeExact = directSession.exact(Employee);
-    const directEmployeeExactId = directEmployeeExact.field(Employee.identifier);
-    const directExactValues = directSession
-      .query(directEmployeeExact)
-      .where(
-        directEmployeeExactId.eq(Identifier.create("query-employee"))
-          .or(directEmployeeExactId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [directEmployeeExactId.asc()] });
-    const directEmployeeSubtypes = directSession.subtypes(Employee);
-    const directEmployeeSubtypesId = directEmployeeSubtypes.field(Employee.identifier);
-    const directSubtypeValues = directSession
-      .query(directEmployeeSubtypes)
-      .where(
-        directEmployeeSubtypesId.eq(Identifier.create("query-employee"))
-          .or(directEmployeeSubtypesId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [directEmployeeSubtypesId.asc()] });
-
-    const directScore = directPerson.field(Person.score);
-    const directScoreGte = directPerson.field(Person.scoreGte);
-    const directBoolean = directPerson.field(Person.valBool);
-    const directAndKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(
-          directScope,
-          directScore.gte(Score.create(40n)).and(directBoolean.eq(ValBool.create(true))),
-        )
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directOrKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope)
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directNotKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope, directBoolean.eq(ValBool.create(true)).not())
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-    const directFieldComparisonKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope, directScore.gteField(directScoreGte))
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-
-    const directSource = directSession.exact(Person);
-    const directTarget = directSession.exact(Person);
-    const directReachable = directSession.reachable(
-      directSource,
-      directTarget,
-      NetworkLink,
-      NetworkLink.origin,
-      NetworkLink.destination,
-      { minDepth: 1, maxDepth: 1 },
-    );
-    const directReachablePair = directSession
-      .query(directSource, directTarget)
-      .where(
-        directReachable,
-        directSource.field(Person.identifier).eq(Identifier.create("query-ada")),
-        directTarget.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-    const directCrossLeft = directSession.exact(Person);
-    const directCrossRight = directSession.exact(Person);
-    const directCrossLeftId = directCrossLeft.field(Person.identifier);
-    const directCrossRightId = directCrossRight.field(Person.identifier);
-    const directCrossScope = directCrossLeftId.eq(Identifier.create("query-ada"))
-      .or(directCrossLeftId.eq(Identifier.create("query-dana")))
-      .and(
-        directCrossRightId.eq(Identifier.create("query-ada"))
-          .or(directCrossRightId.eq(Identifier.create("query-dana"))),
-      );
-    const directCrossPairs = directSession
-      .query(directCrossLeft, directCrossRight)
-      .allowCrossJoin(directCrossLeft, directCrossRight)
-      .where(directCrossScope)
-      .rows({
-        limit: 4n,
-        orderBy: [directCrossLeftId.asc(), directCrossRightId.asc()],
-      })
-      .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
-
-    const selectionLink = directSession.exact(NetworkLink);
-    const selectionOrigin = directSession.exact(Person);
-    const selectionParticipant = directSession.exact(Person);
-    const selectionPredicates = [
-      selectionLink.iid(networkIid),
-      selectionLink.role(NetworkLink.origin).connects(selectionOrigin),
-      selectionLink.role(NetworkLink.participant).connects(selectionParticipant),
-    ] as const;
-    const selectionParticipants = selectionParticipant
-      .collect()
-      .distinct()
-      .orderBy(selectionParticipant.field(Person.identifier).asc());
-    const directPositionalPage = directSession
-      .query(selectionOrigin, selectionParticipants)
-      .match(selectionLink)
-      .where(...selectionPredicates)
-      .pageBy(selectionOrigin, {
-        limit: 1n,
-        orderBy: [selectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(directPositionalPage.total), 1);
-    assert.equal(directPositionalPage.items.length, 1);
-    const [positionalOrigin, positionalParticipants] = directPositionalPage.items[0];
-    const directNamedPage = directSession
-      .queryNamed({ origin: selectionOrigin, participants: selectionParticipants })
-      .match(selectionLink)
-      .where(...selectionPredicates)
-      .pageBy(selectionOrigin, {
-        limit: 1n,
-        orderBy: [selectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(directNamedPage.total), 1);
-    assert.equal(directNamedPage.items.length, 1);
-    const directNamed = directNamedPage.items[0];
-    const directSelection = {
-      positional: [sdkV2Key(positionalOrigin), sdkV2Keys(positionalParticipants)],
-      named: {
-        origin: sdkV2Key(directNamed.origin),
-        participants: sdkV2Keys(directNamed.participants),
-      },
-      collected_distinct:
-        new Set(positionalParticipants.map((value: any) => value.iid)).size
-        === positionalParticipants.length,
-      collection_order: "identifier_asc",
-    };
-
-    const directDana = directSession
-      .query(directPerson)
-      .where(directIdentifier.eq(Identifier.create("query-dana")))
-      .one();
-    const directFirst = directQuery.first({ orderBy: [directIdentifier.asc()] });
-    const directPage = directQuery.pageBy(directPerson, {
-      limit: 1n,
-      orderBy: [directIdentifier.asc()],
-      includeTotal: true,
-    });
-    const directTerminals = {
-      one: sdkV2Key(directDana),
-      first: sdkV2Key(directFirst),
-      rows: directKeys,
-      page: {
-        items: sdkV2Keys(directPage.items),
-        offset: Number(directPage.offset),
-        limit: Number(directPage.limit),
-        total: Number(directPage.total),
-      },
-      count: Number(directQuery.countBy(directPerson)),
-      exists: directQuery.existsBy(directPerson),
-    };
-    let structuredQueryDiagnostic: Record<string, unknown> | undefined;
-    try {
-      directQuery.one();
-    } catch (error) {
-      structuredQueryDiagnostic = sdkV2CardinalityDiagnostic(error);
-    }
-    assert.notEqual(structuredQueryDiagnostic, undefined);
-    const directScalarDomainKeys = sdkV2Keys(
-      directSession
-        .query(directPerson)
-        .where(directScope, directScore.gte(Score.create(40n)))
-        .rows({ limit: 2n, orderBy: [directIdentifier.asc()] }),
-    );
-
-    const normalizeReducers = (
-      values: readonly unknown[],
-      binding: readonly any[],
-      field: readonly any[],
-      tuple: readonly any[],
-    ): Record<string, unknown> => {
-      const bits = (value: unknown): string => {
-        assert.equal(typeof value, "number");
-        const bytes = Buffer.alloc(8);
-        bytes.writeDoubleBE(value as number);
-        return bytes.toString("hex");
-      };
-      return {
-        reducers: {
-          count: Number(values[0]),
-          sum: Number(values[1]),
-          min: Number(values[2]),
-          max: Number(values[3]),
-          mean_bits: bits(values[4]),
-          median_bits: bits(values[5]),
-          std_bits: bits(values[6]),
-        },
-        groups: {
-          binding: binding.map(([group, result]) => ({
-            model: "person",
-            key: group.identifier.value,
-            count: Number(result[0]),
-          })),
-          field: field.map(([group, result]) => ({
-            key: Number(group.value),
-            count: Number(result[0]),
-          })),
-          field_tuple: tuple.map(([[score, scoreGte], result]) => ({
-            key: [Number(score.value), Number(scoreGte.value)],
-            count: Number(result[0]),
-          })),
-        },
-      };
-    };
-    const directValues = directQuery.aggregate(directPerson, [
-      aggregate.count(),
-      aggregate.sum(directScore),
-      aggregate.min(directScore),
-      aggregate.max(directScore),
-      aggregate.mean(directScore),
-      aggregate.median(directScore),
-      aggregate.std(directScore),
-    ] as const);
-    const directGroupPerson = directSession.exact(Person);
-    const directGroupIdentifier = directGroupPerson.field(Person.identifier);
-    const directBinding = directQuery
-      .match(directGroupPerson)
-      .where(directIdentifier.eqField(directGroupIdentifier))
-      .groupBy(directPerson, directGroupPerson)
-      .aggregate([aggregate.count()] as const);
-    const directField = directQuery
-      .groupBy(directPerson, directScore)
-      .aggregate([aggregate.count()] as const);
-    const directTuple = directQuery
-      .groupBy(directPerson, directScore, directPerson.field(Person.scoreGte))
-      .aggregate([aggregate.count()] as const);
-    const directReducers = normalizeReducers(
-      directValues,
-      directBinding,
-      directField,
-      directTuple,
-    );
-    assert.deepEqual(directReducers, expected.grouped_reducer);
-
-    const directMinimum = integerInput(directSession, Score.create(30n));
-    const directCall = qualifyingScore(directSession, directPerson, directMinimum);
-    const directFunctionValues = directQuery
-      .where(directCall.gteField(directScore))
-      .rows({ limit: 2n, orderBy: [directIdentifier.asc()] })
-      .map((person: any) => Number(person.score.value));
-    assert.deepEqual(directFunctionValues, expected.schema_function.values);
-    const directNested = qualifyingScore(directSession, directPerson, directCall);
-    const directNestedFunctionValues = directQuery
-      .where(directNested.gteField(directScore))
-      .rows({ limit: 2n, orderBy: [directIdentifier.asc()] })
-      .map((person: any) => Number(person.score.value));
+    const direct = await lane(directSession).finally(() => directSession.close());
+    const remote = await lane(remoteSession);
+    // One program, two connections: the lanes must agree observation for
+    // observation before either is reported.
+    assert.deepEqual(remote.observations, direct.observations);
+    assert.deepEqual(direct.observations.grouped_reducer, expected.grouped_reducer);
     assert.deepEqual(
-      directNestedFunctionValues,
-      expected.schema_function.nested_values,
-    );
-
-    const remotePerson = remoteSession.exact(Person);
-    const remoteIdentifier = remotePerson.field(Person.identifier);
-    const remoteScope = remoteIdentifier.eq(Identifier.create("query-ada"))
-      .or(remoteIdentifier.eq(Identifier.create("query-dana")));
-    const remoteQuery = remoteSession.query(remotePerson).where(remoteScope);
-    const remoteKeys = (await remoteQuery.rows({
-      limit: 2n,
-      orderBy: [remoteIdentifier.asc()],
-    })).map((person: any) => person.identifier.value);
-    assert.deepEqual(remoteKeys, directKeys);
-    const remoteAda = await remoteSession
-      .query(remotePerson)
-      .where(remoteIdentifier.eq(Identifier.create("query-ada")))
-      .one();
-    const remoteMembershipVar = remoteSession.exact(Membership);
-    const remoteMember = remoteSession.exact(Person);
-    const remoteMembership = await remoteSession
-      .query(remoteMembershipVar)
-      .match(remoteMember)
-      .where(
-        remoteMembershipVar.iid(membershipIid),
-        remoteMembershipVar.role(Membership.member).connects(remoteMember),
-        remoteMember.field(Person.identifier).eq(Identifier.create("query-ada")),
-      )
-      .one();
-    const remoteNetworkVar = remoteSession.exact(NetworkLink);
-    const remoteOrigin = remoteSession.exact(Person);
-    const remoteDestination = remoteSession.exact(Person);
-    const remoteNetwork = await remoteSession
-      .query(remoteNetworkVar)
-      .match(remoteOrigin, remoteDestination)
-      .where(
-        remoteNetworkVar.iid(networkIid),
-        remoteNetworkVar.role(NetworkLink.origin).connects(remoteOrigin),
-        remoteNetworkVar.role(NetworkLink.destination).connects(remoteDestination),
-        remoteOrigin.field(Person.identifier).eq(Identifier.create("query-ada")),
-        remoteDestination.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-
-    const remoteOwnerKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remotePerson.field(Person.score).isPresent(), remoteScope)
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteOptionalKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remotePerson.field(Person.nickname).isPresent(), remoteScope)
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteIidKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remotePerson.iidIn(personIids))
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-
-    const remoteEmployeeExact = remoteSession.exact(Employee);
-    const remoteEmployeeExactId = remoteEmployeeExact.field(Employee.identifier);
-    const remoteExactValues = await remoteSession
-      .query(remoteEmployeeExact)
-      .where(
-        remoteEmployeeExactId.eq(Identifier.create("query-employee"))
-          .or(remoteEmployeeExactId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [remoteEmployeeExactId.asc()] });
-    const remoteEmployeeSubtypes = remoteSession.subtypes(Employee);
-    const remoteEmployeeSubtypesId = remoteEmployeeSubtypes.field(Employee.identifier);
-    const remoteSubtypeValues = await remoteSession
-      .query(remoteEmployeeSubtypes)
-      .where(
-        remoteEmployeeSubtypesId.eq(Identifier.create("query-employee"))
-          .or(remoteEmployeeSubtypesId.eq(Identifier.create("query-manager"))),
-      )
-      .rows({ limit: 2n, orderBy: [remoteEmployeeSubtypesId.asc()] });
-
-    const remoteScore = remotePerson.field(Person.score);
-    const remoteScoreGte = remotePerson.field(Person.scoreGte);
-    const remoteBoolean = remotePerson.field(Person.valBool);
-    const remoteAndKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(
-          remoteScope,
-          remoteScore.gte(Score.create(40n)).and(remoteBoolean.eq(ValBool.create(true))),
-        )
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteOrKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope)
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteNotKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope, remoteBoolean.eq(ValBool.create(true)).not())
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-    const remoteFieldComparisonKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope, remoteScore.gteField(remoteScoreGte))
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
-    );
-
-    const remoteSource = remoteSession.exact(Person);
-    const remoteTarget = remoteSession.exact(Person);
-    const remoteReachable = remoteSession.reachable(
-      remoteSource,
-      remoteTarget,
-      NetworkLink,
-      NetworkLink.origin,
-      NetworkLink.destination,
-      { minDepth: 1, maxDepth: 1 },
-    );
-    const remoteReachablePair = await remoteSession
-      .query(remoteSource, remoteTarget)
-      .where(
-        remoteReachable,
-        remoteSource.field(Person.identifier).eq(Identifier.create("query-ada")),
-        remoteTarget.field(Person.identifier).eq(Identifier.create("query-dana")),
-      )
-      .one();
-    const remoteCrossLeft = remoteSession.exact(Person);
-    const remoteCrossRight = remoteSession.exact(Person);
-    const remoteCrossLeftId = remoteCrossLeft.field(Person.identifier);
-    const remoteCrossRightId = remoteCrossRight.field(Person.identifier);
-    const remoteCrossScope = remoteCrossLeftId.eq(Identifier.create("query-ada"))
-      .or(remoteCrossLeftId.eq(Identifier.create("query-dana")))
-      .and(
-        remoteCrossRightId.eq(Identifier.create("query-ada"))
-          .or(remoteCrossRightId.eq(Identifier.create("query-dana"))),
-      );
-    const remoteCrossPairs = (await remoteSession
-      .query(remoteCrossLeft, remoteCrossRight)
-      .allowCrossJoin(remoteCrossLeft, remoteCrossRight)
-      .where(remoteCrossScope)
-      .rows({
-        limit: 4n,
-        orderBy: [remoteCrossLeftId.asc(), remoteCrossRightId.asc()],
-      }))
-      .map(([left, right]: readonly any[]) => [sdkV2Key(left), sdkV2Key(right)]);
-
-    const remoteSelectionLink = remoteSession.exact(NetworkLink);
-    const remoteSelectionOrigin = remoteSession.exact(Person);
-    const remoteSelectionParticipant = remoteSession.exact(Person);
-    const remoteSelectionPredicates = [
-      remoteSelectionLink.iid(networkIid),
-      remoteSelectionLink.role(NetworkLink.origin).connects(remoteSelectionOrigin),
-      remoteSelectionLink.role(NetworkLink.participant).connects(remoteSelectionParticipant),
-    ] as const;
-    const remoteSelectionParticipants = remoteSelectionParticipant
-      .collect()
-      .distinct()
-      .orderBy(remoteSelectionParticipant.field(Person.identifier).asc());
-    const remotePositionalPage = await remoteSession
-      .query(remoteSelectionOrigin, remoteSelectionParticipants)
-      .match(remoteSelectionLink)
-      .where(...remoteSelectionPredicates)
-      .pageBy(remoteSelectionOrigin, {
-        limit: 1n,
-        orderBy: [remoteSelectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(remotePositionalPage.total), 1);
-    assert.equal(remotePositionalPage.items.length, 1);
-    const [remotePositionalOrigin, remotePositionalParticipants] =
-      remotePositionalPage.items[0];
-    const remoteNamedPage = await remoteSession
-      .queryNamed({ origin: remoteSelectionOrigin, participants: remoteSelectionParticipants })
-      .match(remoteSelectionLink)
-      .where(...remoteSelectionPredicates)
-      .pageBy(remoteSelectionOrigin, {
-        limit: 1n,
-        orderBy: [remoteSelectionOrigin.field(Person.identifier).asc()],
-        includeTotal: true,
-      });
-    assert.equal(Number(remoteNamedPage.total), 1);
-    assert.equal(remoteNamedPage.items.length, 1);
-    const remoteNamed = remoteNamedPage.items[0];
-    const remoteSelection = {
-      positional: [
-        sdkV2Key(remotePositionalOrigin),
-        sdkV2Keys(remotePositionalParticipants),
-      ],
-      named: {
-        origin: sdkV2Key(remoteNamed.origin),
-        participants: sdkV2Keys(remoteNamed.participants),
+      direct.observations.schema_function,
+      {
+        minimum: 30,
+        values: expected.schema_function.values,
+        nested_values: expected.schema_function.nested_values,
       },
-      collected_distinct:
-        new Set(remotePositionalParticipants.map((value: any) => value.iid)).size
-        === remotePositionalParticipants.length,
-      collection_order: "identifier_asc",
-    };
-
-    const requestsBeforeOne = requests.length;
-    const remoteDana = await remoteSession
-      .query(remotePerson)
-      .where(remoteIdentifier.eq(Identifier.create("query-dana")))
-      .one();
-    const remoteOneExchange = requests.length - requestsBeforeOne;
-    const remoteFirst = await remoteQuery.first({ orderBy: [remoteIdentifier.asc()] });
-    const remotePage = await remoteQuery.pageBy(remotePerson, {
-      limit: 1n,
-      orderBy: [remoteIdentifier.asc()],
-      includeTotal: true,
-    });
-    const remoteTerminals = {
-      one: sdkV2Key(remoteDana),
-      first: sdkV2Key(remoteFirst),
-      rows: remoteKeys,
-      page: {
-        items: sdkV2Keys(remotePage.items),
-        offset: Number(remotePage.offset),
-        limit: Number(remotePage.limit),
-        total: Number(remotePage.total),
-      },
-      count: Number(await remoteQuery.countBy(remotePerson)),
-      exists: await remoteQuery.existsBy(remotePerson),
-    };
-    const remoteScalarDomainKeys = sdkV2Keys(
-      await remoteSession
-        .query(remotePerson)
-        .where(remoteScope, remoteScore.gte(Score.create(40n)))
-        .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }),
     );
-    const remoteValues = await remoteQuery.aggregate(remotePerson, [
-      aggregate.count(),
-      aggregate.sum(remoteScore),
-      aggregate.min(remoteScore),
-      aggregate.max(remoteScore),
-      aggregate.mean(remoteScore),
-      aggregate.median(remoteScore),
-      aggregate.std(remoteScore),
-    ] as const);
-    const remoteGroupPerson = remoteSession.exact(Person);
-    const remoteGroupIdentifier = remoteGroupPerson.field(Person.identifier);
-    const remoteBinding = await remoteQuery
-      .match(remoteGroupPerson)
-      .where(remoteIdentifier.eqField(remoteGroupIdentifier))
-      .groupBy(remotePerson, remoteGroupPerson)
-      .aggregate([aggregate.count()] as const);
-    const remoteField = await remoteQuery
-      .groupBy(remotePerson, remoteScore)
-      .aggregate([aggregate.count()] as const);
-    const remoteTuple = await remoteQuery
-      .groupBy(remotePerson, remoteScore, remotePerson.field(Person.scoreGte))
-      .aggregate([aggregate.count()] as const);
-    const remoteReducers = normalizeReducers(
-      remoteValues,
-      remoteBinding,
-      remoteField,
-      remoteTuple,
-    );
-    assert.deepEqual(remoteReducers, directReducers);
-
-    const remoteMinimum = integerInput(remoteSession, Score.create(30n));
-    const remoteCall = qualifyingScore(remoteSession, remotePerson, remoteMinimum);
-    const remoteFunctionValues = (await remoteQuery
-      .where(remoteCall.gteField(remoteScore))
-      .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }))
-      .map((person: any) => Number(person.score.value));
-    assert.deepEqual(remoteFunctionValues, directFunctionValues);
-    const remoteNested = qualifyingScore(remoteSession, remotePerson, remoteCall);
-    const remoteNestedFunctionValues = (await remoteQuery
-      .where(remoteNested.gteField(remoteScore))
-      .rows({ limit: 2n, orderBy: [remoteIdentifier.asc()] }))
-      .map((person: any) => Number(person.score.value));
-    assert.deepEqual(remoteNestedFunctionValues, directNestedFunctionValues);
-
-    const directModelValues = sdkV2PersonValues(generated, directAda, directMembership);
-    const remoteModelValues = sdkV2PersonValues(generated, remoteAda, remoteMembership);
-    assert.deepEqual(remoteModelValues, directModelValues);
-    const ownerIidSetDirect = {
-      owner_field: "score",
-      owner_keys: directOwnerKeys,
-      optional_field: "nickname",
-      optional_present_keys: directOptionalKeys,
-      iid_set_keys: directIidKeys,
-    };
-    const ownerIidSetRemote = {
-      owner_field: "score",
-      owner_keys: remoteOwnerKeys,
-      optional_field: "nickname",
-      optional_present_keys: remoteOptionalKeys,
-      iid_set_keys: remoteIidKeys,
-    };
-    assert.deepEqual(ownerIidSetRemote, ownerIidSetDirect);
-    const exactSubtypesDirect = {
-      declared_model: "employee",
-      exact: directExactValues.map((value: any) => sdkV2ModelKey(generated, value)),
-      subtypes: directSubtypeValues.map(
-        (value: any) => sdkV2ModelKey(generated, value),
-      ),
-    };
-    const exactSubtypesRemote = {
-      declared_model: "employee",
-      exact: remoteExactValues.map((value: any) => sdkV2ModelKey(generated, value)),
-      subtypes: remoteSubtypeValues.map(
-        (value: any) => sdkV2ModelKey(generated, value),
-      ),
-    };
-    assert.deepEqual(exactSubtypesRemote, exactSubtypesDirect);
-    const scalarBooleanDirect = {
-      and_keys: directAndKeys,
-      or_keys: directOrKeys,
-      not_keys: directNotKeys,
-      field_comparison_keys: directFieldComparisonKeys,
-    };
-    const scalarBooleanRemote = {
-      and_keys: remoteAndKeys,
-      or_keys: remoteOrKeys,
-      not_keys: remoteNotKeys,
-      field_comparison_keys: remoteFieldComparisonKeys,
-    };
-    assert.deepEqual(scalarBooleanRemote, scalarBooleanDirect);
-    const directRoles = sdkV2RoleObservation(generated, directMembership, directNetwork);
-    const remoteRoles = sdkV2RoleObservation(generated, remoteMembership, remoteNetwork);
-    assert.deepEqual(remoteRoles, directRoles);
-    const topologyDirect = {
-      reachable: [{
-        from: sdkV2Key(directReachablePair[0]),
-        to: sdkV2Key(directReachablePair[1]),
-        max_hops: 1,
-      }],
-      cross_join_pairs: directCrossPairs,
-    };
-    const topologyRemote = {
-      reachable: [{
-        from: sdkV2Key(remoteReachablePair[0]),
-        to: sdkV2Key(remoteReachablePair[1]),
-        max_hops: 1,
-      }],
-      cross_join_pairs: remoteCrossPairs,
-    };
-    assert.deepEqual(topologyRemote, topologyDirect);
-    assert.deepEqual(remoteSelection, directSelection);
-    assert.deepEqual(remoteTerminals, directTerminals);
-    const directHydrated = sdkV2HydratedResult(generated, directMembership);
-    const remoteHydrated = sdkV2HydratedResult(generated, remoteMembership);
-    assert.deepEqual(remoteHydrated, directHydrated);
-    const scalarDomainDirect = {
-      domain: "long",
-      operator: "gte",
-      operand: 40,
-      keys: directScalarDomainKeys,
-    };
-    const scalarDomainRemote = {
-      domain: "long",
-      operator: "gte",
-      operand: 40,
-      keys: remoteScalarDomainKeys,
-    };
-    assert.deepEqual(scalarDomainRemote, scalarDomainDirect);
-    assert.equal(remoteOneExchange, 1);
-    const resourceLimits = await sdkV2ResourceLimits(
+    assert.equal(direct.oneExchange, 0);
+    assert.equal(remote.oneExchange, 1);
+    const resourceLimits = await sdkQueriesResourceLimits(
       generated,
       database,
       advertisement,
       exchange,
       membershipIid,
     );
-    const queryResourceLifecycle = await sdkV2Lifecycle(
+    const queryResourceLifecycle = await sdkQueriesLifecycle(
       generated,
       database,
       advertisement,
@@ -1895,59 +1491,27 @@ async function runSdkV2Journey(
     );
 
     const observed = new Map<string, Record<string, unknown>>();
-    observed.set(
-      observationKey("model_values_and_references", "direct_runtime"),
-      directModelValues,
-    );
-    observed.set(
-      observationKey("model_values_and_references", "remote_runtime"),
-      remoteModelValues,
-    );
-    observed.set(observationKey("owner_iid_set", "direct_runtime"), ownerIidSetDirect);
-    observed.set(observationKey("owner_iid_set", "remote_runtime"), ownerIidSetRemote);
-    observed.set(observationKey("exact_subtypes", "direct_runtime"), exactSubtypesDirect);
-    observed.set(observationKey("exact_subtypes", "remote_runtime"), exactSubtypesRemote);
-    observed.set(observationKey("scalar_boolean", "direct_runtime"), scalarBooleanDirect);
-    observed.set(observationKey("scalar_boolean", "remote_runtime"), scalarBooleanRemote);
-    observed.set(observationKey("roles", "direct_runtime"), directRoles);
-    observed.set(observationKey("roles", "remote_runtime"), remoteRoles);
-    observed.set(observationKey("topology", "direct_runtime"), topologyDirect);
-    observed.set(observationKey("topology", "remote_runtime"), topologyRemote);
-    observed.set(observationKey("selection_shapes", "direct_runtime"), directSelection);
-    observed.set(observationKey("selection_shapes", "remote_runtime"), remoteSelection);
-    observed.set(observationKey("terminals", "direct_runtime"), directTerminals);
-    observed.set(observationKey("terminals", "remote_runtime"), remoteTerminals);
-    observed.set(observationKey("grouped_reducer", "direct_runtime"), directReducers);
-    observed.set(observationKey("grouped_reducer", "remote_runtime"), remoteReducers);
+    const { structured_query_diagnostic: diagnostic, ...laneObservations } =
+      direct.observations;
+    for (const [name, observation] of Object.entries(laneObservations)) {
+      observed.set(observationKey(name, "direct_runtime"), observation);
+      observed.set(
+        observationKey(name, "remote_runtime"),
+        remote.observations[name] as Record<string, unknown>,
+      );
+    }
     observed.set(observationKey("remote_one_exchange", "remote_runtime"), {
-      exchange_count: remoteOneExchange,
+      exchange_count: remote.oneExchange,
       terminal: "one",
     });
-    observed.set(observationKey("hydrated_result", "direct_runtime"), directHydrated);
-    observed.set(observationKey("hydrated_result", "remote_runtime"), remoteHydrated);
-    observed.set(observationKey("scalar_domain", "direct_runtime"), scalarDomainDirect);
-    observed.set(observationKey("scalar_domain", "remote_runtime"), scalarDomainRemote);
-    observed.set(observationKey("schema_function", "direct_runtime"), {
-      minimum: 30,
-      values: directFunctionValues,
-      nested_values: directNestedFunctionValues,
-    });
-    observed.set(observationKey("schema_function", "remote_runtime"), {
-      minimum: 30,
-      values: remoteFunctionValues,
-      nested_values: remoteNestedFunctionValues,
-    });
-    observed.set(
-      observationKey("structured_query_diagnostic", "diagnostic"),
-      structuredQueryDiagnostic as Record<string, unknown>,
-    );
+    observed.set(observationKey("structured_query_diagnostic", "diagnostic"), diagnostic);
     observed.set(observationKey("resource_limits", "direct_runtime"), resourceLimits);
     observed.set(observationKey("resource_limits", "remote_runtime"), resourceLimits);
     observed.set(
       observationKey("query_resource_lifecycle", "lifecycle"),
       queryResourceLifecycle,
     );
-    assert.equal(observed.size, 29, "sdk-v2 must measure 29 pre-cleanup live lanes");
+    assert.equal(observed.size, 29, "queries must measure 29 pre-cleanup live lanes");
     assert.equal(proofObservations.size, 3);
     for (const [key, observation] of proofObservations) {
       assert.equal(observed.has(key), false, `proof fragment duplicated live lane ${key}`);
@@ -1965,18 +1529,18 @@ async function runSdkV2Journey(
     observed.set(observationKey("entity_lifecycle", "direct_runtime"), {
       created: true,
       deleted: entityDeleted,
-      key: sdkV2Key(people[0]),
-      model: sdkV2Model(generated, people[0]),
+      key: sdkQueriesKey(people[0]),
+      model: sdkQueriesModel(generated, people[0]),
       read_after_create: entityReadAfterCreate,
     });
     observed.set(observationKey("relation_lifecycle", "direct_runtime"), {
       created: true,
       deleted: relationDeleted,
-      model: sdkV2Model(generated, membership),
-      player_key: sdkV2Key(people[0]),
+      model: sdkQueriesModel(generated, membership),
+      player_key: sdkQueriesKey(people[0]),
       role: "member",
     });
-    assert.equal(observed.size, 34, "sdk-v2 requires 31 live and 3 proof lanes");
+    assert.equal(observed.size, 34, "queries requires 31 live and 3 proof lanes");
     assert.equal(relationReadAfterCreate, true);
     return sdkResults(catalog, journey, observed);
   } finally {
@@ -2049,14 +1613,50 @@ async function waitForPort(port: number, child: ChildProcess, timeoutMs: number)
   throw new Error("timed out waiting for generated remote query server");
 }
 
-test("sdk report server-version gate is exact", () => {
-  assert.doesNotThrow(() => requireSdkServerVersion("3.12.3"));
-  for (const detected of [null, "3.11.5", "3.12.0", "3.12.2", "3.13.0"] as const) {
+test("sdk report identity follows the profile matrix", () => {
+  for (const suite of SDK_SUITES) {
+    const profiles = Object.keys(sdkProfileMatrix(suite));
+    const catalogProfile = JSON.parse(
+      readFileSync(resolve(ROOT, sdkContractRelative(suite, "catalog")), "utf8"),
+    ).fixture.semantic_profile;
+    assert.ok(profiles.includes(catalogProfile));
+    assert.equal(sdkProfileIdentity(suite, undefined, {}).semanticProfile, catalogProfile);
+    assert.equal(
+      sdkProfileIdentity(suite, undefined, { [SEMANTIC_PROFILE_ENV]: "" }).semanticProfile,
+      catalogProfile,
+    );
+    const servers = profiles.map((profile) => sdkProfileIdentity(suite, profile).liveServerVersion);
+    for (const profile of profiles) {
+      const identity = sdkProfileIdentity(suite, undefined, { [SEMANTIC_PROFILE_ENV]: profile });
+      assert.equal(identity.semanticProfile, profile);
+      assert.equal(identity.expectedFingerprints === undefined, !["queries", "models"].includes(suite));
+      assert.doesNotThrow(() => requireSdkServerVersion(identity, identity.liveServerVersion));
+      for (const detected of [null, ...servers.filter((server) => server !== identity.liveServerVersion)]) {
+        assert.throws(
+          () => requireSdkServerVersion(identity, detected),
+          /actual detected TypeDB server version/,
+        );
+      }
+    }
     assert.throws(
-      () => requireSdkServerVersion(detected),
-    /actual detected TypeDB server version 3\.12\.3/,
+      () => sdkProfileIdentity(suite, "typedb-0.0.0/v1"),
+      /has no profile-matrix entry/,
     );
   }
+});
+
+test("generated profile server gate follows the package profile", () => {
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6"));
+  for (const detected of [null, "3.12.3", "3.13.5", "3.14.0"] as const) {
+    assert.throws(
+      () => requireProfileServerVersion("typedb-3.13.6/v1", detected),
+      /actual detected TypeDB server version 3\.13\.6/,
+    );
+  }
+  assert.throws(
+    () => requireProfileServerVersion("typedb-3.11.5/v1", "3.11.5"),
+    /names no exact TypeDB server release/,
+  );
 });
 
 test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, { timeout: 360_000 }, async () => {
@@ -2069,17 +1669,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   const foreignDirectory = resolve(stage, "generated_foreign");
   let database;
   let failure: unknown;
-  let preparedSdkReport: Record<string, unknown> | undefined;
-  let preparedSdkV2Report: Record<string, unknown> | undefined;
-  const sdkReportPath = process.env.TYPE_BRIDGE_SDK_REPORT;
-  const sdkV2ReportPath = process.env.TYPE_BRIDGE_SDK_REPORT_V2;
-  if (
-    sdkReportPath !== undefined
-    && sdkV2ReportPath !== undefined
-    && sdkReportPath === sdkV2ReportPath
-  ) {
-    throw new Error("sdk-v1 and sdk-v2 reports require distinct paths");
-  }
+  let preparedSdkQueriesReport: Record<string, unknown> | undefined;
+  let sdkQueriesIdentity: SdkProfileIdentity | undefined;
+  const sdkQueriesReportPath = process.env.TYPE_BRIDGE_SDK_QUERIES_REPORT;
 
   try {
     if (ownsStage) {
@@ -2138,7 +1730,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       Person,
       PlainActivity,
       QuerySession,
-      RemoteQuerySession,
+      ExchangeConnection,
+      QueryExecutionResourceLimits,
+      QueryLimits,
+      connectProxy,
       PROJECTION_FINGERPRINT_JSON,
       Rank,
       Robot,
@@ -2164,50 +1759,34 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(semanticFingerprint.semantic_profile, REMOTE_PROFILE);
     assert.deepEqual(runtimeProjection.semantic_fingerprint, semanticFingerprint);
     assert.deepEqual(runtimeProjection.projection_fingerprint, projectionFingerprint);
-
-    let sdkCatalogRaw: Buffer | undefined;
-    let sdkCatalog: any;
-    let sdkJourneyRaw: Buffer | undefined;
-    let sdkJourney: any;
-    let sdkV2CatalogRaw: Buffer | undefined;
-    let sdkV2Catalog: any;
-    let sdkV2JourneyRaw: Buffer | undefined;
-    let sdkV2Journey: any;
-    let sdkV2ProofObservations:
+    let sdkQueriesCatalogRaw: Buffer | undefined;
+    let sdkQueriesCatalog: any;
+    let sdkQueriesJourneyRaw: Buffer | undefined;
+    let sdkQueriesJourney: any;
+    let sdkQueriesProofObservations:
       | ReadonlyMap<string, Record<string, unknown>>
       | undefined;
-    if (sdkReportPath !== undefined) {
-      if (REMOTE_PROFILE !== "typedb-3.12.1/v1") {
-        throw new Error("sdk reports may only be emitted for typedb-3.12.1/v1");
-      }
-      await validateSdkReportPath(sdkReportPath);
-      requireSdkServerVersion(
+    if (!IS_TYPEDB_3_11) {
+      requireProfileServerVersion(
+        REMOTE_PROFILE,
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      sdkCatalogRaw = await readFile(SDK_CATALOG);
-      sdkCatalog = JSON.parse(sdkCatalogRaw.toString("utf8"));
-      sdkJourneyRaw = await readFile(SDK_JOURNEY);
-      sdkJourney = JSON.parse(sdkJourneyRaw.toString("utf8"));
-      assert.equal(sdkJourney.format, "typebridge.sdk-journey/v1");
-      assert.equal(sdkJourney.fixture_id, sdkCatalog.fixture.id);
-      assert.equal(sdkJourney.version, sdkCatalog.fixture.version);
     }
-    if (sdkV2ReportPath !== undefined) {
-      if (REMOTE_PROFILE !== "typedb-3.12.1/v1") {
-        throw new Error("sdk-v2 reports may only be emitted for typedb-3.12.1/v1");
-      }
-      await validateSdkReportPath(sdkV2ReportPath);
+    if (sdkQueriesReportPath !== undefined) {
+      sdkQueriesIdentity = sdkReportIdentity("queries");
+      await validateSdkReportPath(sdkQueriesReportPath);
       requireSdkServerVersion(
+        sdkQueriesIdentity,
         await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
       );
-      sdkV2CatalogRaw = await readFile(SDK_V2_CATALOG);
-      sdkV2Catalog = JSON.parse(sdkV2CatalogRaw.toString("utf8"));
-      sdkV2JourneyRaw = await readFile(SDK_V2_JOURNEY);
-      sdkV2Journey = JSON.parse(sdkV2JourneyRaw.toString("utf8"));
-      sdkV2ProofObservations = loadSdkV2ProofObservations();
-      assert.equal(sdkV2Journey.format, "typebridge.sdk-journey/v2");
-      assert.equal(sdkV2Journey.fixture_id, sdkV2Catalog.fixture.id);
-      assert.equal(sdkV2Journey.version, sdkV2Catalog.fixture.version);
+      sdkQueriesCatalogRaw = await readFile(SDK_QUERIES_CATALOG);
+      sdkQueriesCatalog = JSON.parse(sdkQueriesCatalogRaw.toString("utf8"));
+      sdkQueriesJourneyRaw = await readFile(SDK_QUERIES_JOURNEY);
+      sdkQueriesJourney = JSON.parse(sdkQueriesJourneyRaw.toString("utf8"));
+      sdkQueriesProofObservations = loadSdkQueriesProofObservations();
+      assert.equal(sdkQueriesJourney.format, "typebridge.sdk-queries-journey/v1");
+      assert.equal(sdkQueriesJourney.fixture_id, sdkQueriesCatalog.fixture.id);
+      assert.equal(sdkQueriesJourney.version, sdkQueriesCatalog.fixture.version);
     }
     database = connectIntegration();
     database.resetDatabase();
@@ -2323,6 +1902,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.deepEqual(
       personManager.filter({ scoreGte__eq: ScoreGte.create(8n) }).all().map((candidate) => candidate.iid),
       [insertedPerson.iid],
+    );
+    assertUnknownEnumValue(
+      () => personManager.filter({ score__iexact: Score.create(3n) } as never),
+      "manager_lookup",
     );
     assert.deepEqual(
       personManager.filter({ fooBar: FooBar.create(7n) }).all().map((candidate) => candidate.iid),
@@ -2443,6 +2026,12 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       false,
     );
 
+    const reusedAfterRollback = rollbackManager.insert(generatedPerson("person-rollback-reuse", 12n));
+    rollbackTransaction.commit();
+    assert.notEqual(personManager.getByIid(reusedAfterRollback.iid), null);
+    personManager.delete(reusedAfterRollback.iid);
+    rollbackTransaction.close();
+
     const readTransaction = database.transaction("read");
     try {
       const transactionSession = new QuerySession(readTransaction);
@@ -2452,8 +2041,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         .where(
           transactionPersonVar.field(Person.identifier).eq(Identifier.create("person-4")),
       );
-      assert.equal(transactionQuery.countBy(transactionPersonVar), 1n);
-      assert.equal(transactionQuery.first()?.iid, transactionPersonIid);
+      assert.equal(await transactionQuery.countBy(transactionPersonVar), 1n);
+      assert.equal((await transactionQuery.first())?.iid, transactionPersonIid);
     } finally {
       readTransaction.close();
     }
@@ -2547,7 +2136,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     );
 
     const scalarDomainVariable = querySession.exact(Person);
-    const scalarDomainPerson = querySession
+    const scalarDomainPerson = await querySession
       .query(scalarDomainVariable)
       .where(
         scalarDomainVariable.field(Person.identifier).eq(Identifier.create("person-1")),
@@ -2598,9 +2187,9 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     const counterQuery = querySession
       .query(counterVariable)
       .where(counterVariable.field(Counter.counterValue).eq(CounterValue.create(42n)));
-    assert.equal(counterQuery.one().iid, insertedCounter.iid);
-    assert.throws(
-      () => counterQuery.rows({ limit: 2n }),
+    assert.equal((await counterQuery.one()).iid, insertedCounter.iid);
+    await assert.rejects(
+      counterQuery.rows({ limit: 2n }),
       (boundedCounterError: any) => {
         assert.match(
           String(boundedCounterError),
@@ -2627,7 +2216,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(storedPlainActivity.participant.iid, insertedPerson.iid);
     const plainActivityVariable = querySession.exact(PlainActivity);
     const plainParticipantVariable = querySession.exact(Person);
-    const [queriedPlainActivity, queriedPlainParticipant] = querySession
+    const [queriedPlainActivity, queriedPlainParticipant] = await querySession
       .query(plainActivityVariable, plainParticipantVariable)
       .where(
         plainActivityVariable.role(PlainActivity.participant).connects(plainParticipantVariable),
@@ -2700,7 +2289,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
     const actorVariable = querySession.subtypes(Actor);
     const interactionVariable = querySession.exact(Interaction);
-    const polymorphicActorRows = querySession
+    const polymorphicActorRows = await querySession
       .query(interactionVariable)
       .match(actorVariable)
       .where(
@@ -2722,7 +2311,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
     const robotVariable = querySession.exact(Robot);
     const targetVariable = querySession.exact(Person);
-    const [queriedRobotInteraction, queriedRobot, queriedTarget] = querySession
+    const [queriedRobotInteraction, queriedRobot, queriedTarget] = await querySession
       .query(interactionVariable, robotVariable, targetVariable)
       .where(
         interactionVariable.role(Interaction.actor).connects(robotVariable),
@@ -2739,7 +2328,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     assert.equal(queriedTarget.iid, insertedPerson.iid);
 
     const personActorVariable = querySession.exact(Person);
-    const [queriedPersonInteraction, queriedPersonActor] = querySession
+    const [queriedPersonInteraction, queriedPersonActor] = await querySession
       .query(interactionVariable, personActorVariable)
       .where(
         interactionVariable.role(Interaction.actor).connects(personActorVariable),
@@ -2768,233 +2357,244 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     }
     assert.equal(robotManager.count(), 0n);
 
-    const personVariable = querySession.var(Person);
-    const collectedPersonVariable = querySession.var(Person);
-    const eventVariable = querySession.var(Event);
-    const identifierOrder = personVariable.field(Person.identifier).asc();
-    const personPredicate = personVariable
-      .field(Person.identifier)
-      .eq(Identifier.create("person-1"));
-    const eventPredicate = eventVariable.role(Event.subject).connects(personVariable);
-    const sameIdentifierPredicate = collectedPersonVariable
-      .field(Person.identifier)
-      .eqField(personVariable.field(Person.identifier));
-    const directQuery = querySession
-      .query(personVariable, eventVariable)
-      .where(personPredicate, eventPredicate);
-    const directOne = directQuery.one();
-    assert.equal(directOne[0].iid, insertedPerson.iid);
-    assert.equal(directOne[1].iid, insertedEvent.iid);
-    assert.equal(directOne[1].subject.iid, insertedPerson.iid);
-    const directRows = querySession
-      .query(personVariable)
-      .where(personPredicate)
-      .rows({ limit: 10n, orderBy: [identifierOrder] });
-    assert.equal(directRows.length, 1);
-    assert.equal(directRows[0].iid, insertedPerson.iid);
-    assert.equal(directRows[0].identifier.value, "person-1");
-    assert.deepEqual(
-      querySession
+    // One query program, run on a direct, an exchange, and a proxy
+    // connection. `terminal` wraps every terminal call so the exchange lane
+    // can prove each terminal is exactly one exchange.
+    const iids = (values: readonly { readonly iid: string | null }[]): (string | null)[] =>
+      values.map((value) => value.iid);
+    const queryProgram = async (
+      session: any,
+      terminal: (run: () => Promise<any>) => Promise<any>,
+    ): Promise<Record<string, unknown>> => {
+      const personVariable = session.var(Person);
+      const collectedPersonVariable = session.var(Person);
+      const eventVariable = session.var(Event);
+      const identifierOrder = personVariable.field(Person.identifier).asc();
+      const personPredicate = personVariable
+        .field(Person.identifier)
+        .eq(Identifier.create("person-1"));
+      const eventPredicate = eventVariable.role(Event.subject).connects(personVariable);
+      const sameIdentifierPredicate = collectedPersonVariable
+        .field(Person.identifier)
+        .eqField(personVariable.field(Person.identifier));
+      const pairQuery = session
+        .query(personVariable, eventVariable)
+        .where(personPredicate, eventPredicate);
+      const personQuery = session.query(personVariable).where(personPredicate);
+      const ordered = { limit: 10n, orderBy: [identifierOrder] };
+
+      const [onePerson, oneEvent] = await terminal(() => pairQuery.one());
+      const rows = await terminal(() => personQuery.rows(ordered));
+      const first = await terminal(() => personQuery.first({ orderBy: [identifierOrder] }));
+      const aliasesPresent = await terminal(() => session
         .query(personVariable)
         .where(personVariable.field(Person.aliases).isPresent())
-        .rows({ limit: 10n, orderBy: [identifierOrder] })
-        .map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid],
-    );
-    assert.deepEqual(
-      querySession
+        .rows(ordered));
+      const aliasesMissing = await terminal(() => session
         .query(personVariable)
         .where(personVariable.field(Person.aliases).isMissing())
-        .rows({ limit: 10n, orderBy: [identifierOrder] })
-        .map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [...batchIids, transactionPersonIid],
-    );
-    assert.equal(
-      querySession.query(personVariable).where(personVariable.iid(insertedPerson.iid)).one().iid,
-      insertedPerson.iid,
-    );
-    assert.deepEqual(
-      querySession
+        .rows(ordered));
+      const byIid = await terminal(() => session
+        .query(personVariable)
+        .where(personVariable.iid(insertedPerson.iid))
+        .one());
+      const byIidSet = await terminal(() => session
         .query(personVariable)
         .where(personVariable.iidIn([insertedPerson.iid, insertedBatch[0].iid]))
-        .rows({ limit: 10n, orderBy: [identifierOrder] })
-        .map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid, insertedBatch[0].iid],
-    );
-    assert.deepEqual(
-      querySession.query(personVariable).rows({
-        limit: 2n,
-        offset: 1n,
-        orderBy: [identifierOrder],
-      }).map((candidate: { readonly identifier: { readonly value: string } }) => candidate.identifier.value),
-      ["person-2", "person-3"],
-    );
-    const identifierField = personVariable.field(Person.identifier);
-    const identifierValue = Identifier.create("person-1");
-    const generatedExpression = identifierField.startsWith(Identifier.create("person-"))
-      .and(identifierField.contains(Identifier.create("son-")))
-      .and(identifierField.endsWith(Identifier.create("-1")))
-      .and(identifierField.regex(Identifier.create("^person-1$")))
-      .and(identifierField.ne(identifierValue).not())
-      .and(
-        identifierField.eq(identifierValue)
-          .or(identifierField.eq(Identifier.create("does-not-exist"))),
+        .rows(ordered));
+      const offsetRows = await terminal(() => session
+        .query(personVariable)
+        .rows({ limit: 2n, offset: 1n, orderBy: [identifierOrder] }));
+      const identifierField = personVariable.field(Person.identifier);
+      const identifierValue = Identifier.create("person-1");
+      const generatedExpression = identifierField.startsWith(Identifier.create("person-"))
+        .and(identifierField.contains(Identifier.create("son-")))
+        .and(identifierField.endsWith(Identifier.create("-1")))
+        .and(identifierField.regex(Identifier.create("^person-1$")))
+        .and(identifierField.ne(identifierValue).not())
+        .and(
+          identifierField.eq(identifierValue)
+            .or(identifierField.eq(Identifier.create("does-not-exist"))),
+        );
+      const byExpression = await terminal(() =>
+        session.query(personVariable).where(generatedExpression).one());
+      const crossLeft = session.exact(Person);
+      const crossRight = session.exact(Person);
+      const crossPair = await terminal(() => session
+        .query(crossLeft, crossRight)
+        .allowCrossJoin(crossLeft, crossRight)
+        .where(
+          crossLeft.field(Person.identifier).eq(Identifier.create("person-1")),
+          crossRight.field(Person.identifier).eq(Identifier.create("person-2")),
+        )
+        .one());
+
+      const partyVariable = session.subtypes(Party);
+      const partyRows = await terminal(() => session.query(partyVariable).rows({
+        limit: 10n,
+        orderBy: [partyVariable.field(Party.identifier).asc()],
+      }));
+      const membershipSubtypeVariable = session.subtypes(Membership);
+      const membershipFamily = session.query(membershipSubtypeVariable);
+      const membershipCount = await terminal(() =>
+        membershipFamily.countBy(membershipSubtypeVariable));
+      const baseRelation = await terminal(() => membershipFamily
+        .where(membershipSubtypeVariable.iid(insertedMembership.iid))
+        .one());
+      const subtypeRelation = await terminal(() => membershipFamily
+        .where(membershipSubtypeVariable.iid(insertedEmployment.iid))
+        .one());
+
+      const reachableSource = session.exact(Person);
+      const reachableTarget = session.exact(Person);
+      const reachable = session.reachable(
+        reachableSource,
+        reachableTarget,
+        NetworkLink,
+        NetworkLink.origin,
+        NetworkLink.destination,
+        { minDepth: 1, maxDepth: 1 },
       );
-    assert.equal(
-      querySession.query(personVariable).where(generatedExpression).one().iid,
-      insertedPerson.iid,
-    );
-    const crossLeft = querySession.exact(Person);
-    const crossRight = querySession.exact(Person);
-    const crossPair = querySession
-      .query(crossLeft, crossRight)
-      .allowCrossJoin(crossLeft, crossRight)
-      .where(
-        crossLeft.field(Person.identifier).eq(Identifier.create("person-1")),
-        crossRight.field(Person.identifier).eq(Identifier.create("person-2")),
-      )
-      .one();
-    assert.deepEqual(
-      crossPair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid, insertedBatch[0].iid],
-    );
+      const reachablePair = await terminal(() => session
+        .query(reachableSource, reachableTarget)
+        .where(
+          reachable,
+          reachableSource.field(Person.identifier).eq(Identifier.create("person-1")),
+          reachableTarget.field(Person.identifier).eq(Identifier.create("person-2")),
+        )
+        .one());
+      const networkVariable = session.exact(NetworkLink);
+      const network = await terminal(() => session
+        .query(networkVariable)
+        .where(
+          networkVariable.iid(insertedNetwork.iid),
+          networkVariable.field(NetworkLink.nickname).isPresent(),
+        )
+        .one());
 
-    const partyVariable = querySession.subtypes(Party);
-    const partyRows = querySession.query(partyVariable).rows({
-      limit: 10n,
-      orderBy: [partyVariable.field(Party.identifier).asc()],
-    });
-    assert.deepEqual(
-      partyRows.map((candidate: { readonly __typebridgeModel: string }) => candidate.__typebridgeModel),
-      [Employee.typeKey, Manager.typeKey],
-    );
-    assert.deepEqual(
-      partyRows.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedEmployee.iid, insertedManager.iid],
-    );
+      const allPeopleQuery = session.query(personVariable);
+      const allFirst = await terminal(() =>
+        allPeopleQuery.first({ orderBy: [identifierOrder] }));
+      const scoreField = personVariable.field(Person.score);
+      const reducers = await terminal(() => allPeopleQuery.aggregate(personVariable, [
+        aggregate.count(),
+        aggregate.sum(scoreField),
+        aggregate.min(scoreField),
+        aggregate.max(scoreField),
+        aggregate.mean(scoreField),
+        aggregate.median(scoreField),
+        aggregate.std(scoreField),
+      ] as const));
+      const fieldGrouped = await terminal(() => allPeopleQuery
+        .groupBy(personVariable, personVariable.field(Person.valBool))
+        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+      const tupleGrouped = await terminal(() => allPeopleQuery
+        .groupBy(personVariable, personVariable.field(Person.valBool), scoreField)
+        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+      await assert.rejects(
+        async () => allPeopleQuery.aggregate(personVariable, [
+          aggregate.sum(personVariable.field(Person.identifier)),
+        ] as const),
+        /long|double|numeric|reduc/i,
+      );
+      const eventGrouped = await terminal(() => pairQuery
+        .groupBy(personVariable, eventVariable)
+        .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const));
+      const named = await terminal(() => session
+        .queryNamed({ person: personVariable })
+        .where(personPredicate)
+        .one());
+      const count = await terminal(() => pairQuery.countBy(personVariable));
+      const exists = await terminal(() => pairQuery.existsBy(personVariable));
+      const page = await terminal(() => session
+        .query(personVariable, collectedPersonVariable.collect().distinct())
+        .where(personPredicate, sameIdentifierPredicate)
+        .pageBy(personVariable, { limit: 10n, includeTotal: true }));
 
-    const membershipSubtypeVariable = querySession.subtypes(Membership);
-    const membershipFamily = querySession.query(membershipSubtypeVariable);
-    assert.equal(membershipFamily.countBy(membershipSubtypeVariable), 2n);
-    const queriedBaseRelation = membershipFamily
-      .where(membershipSubtypeVariable.iid(insertedMembership.iid))
-      .one();
-    assert.equal(queriedBaseRelation.__typebridgeModel, Membership.typeKey);
-    assert.equal(queriedBaseRelation.member.iid, insertedPerson.iid);
-    const queriedSubtypeRelation = membershipFamily
-      .where(membershipSubtypeVariable.iid(insertedEmployment.iid))
-      .one() as unknown as {
-        readonly __typebridgeModel: string;
-        readonly employee: { readonly iid: string | null };
-        readonly member?: unknown;
+      return {
+        one: [onePerson.iid, oneEvent.iid, oneEvent.subject.iid],
+        rows: rows.map((row: any) => [row.iid, row.identifier.value]),
+        first: first?.iid,
+        aliases_present: iids(aliasesPresent),
+        aliases_missing: iids(aliasesMissing),
+        by_iid: byIid.iid,
+        by_iid_set: iids(byIidSet),
+        offset_identifiers: offsetRows.map((row: any) => row.identifier.value),
+        by_expression: byExpression.iid,
+        cross_pair: iids(crossPair),
+        parties: partyRows.map((row: any) => [row.__typebridgeModel, row.iid]),
+        membership_count: membershipCount,
+        base_relation: [baseRelation.__typebridgeModel, baseRelation.member.iid],
+        subtype_relation: [
+          subtypeRelation.__typebridgeModel,
+          subtypeRelation.employee.iid,
+          Object.hasOwn(subtypeRelation, "member"),
+        ],
+        reachable: iids(reachablePair),
+        network: network.iid,
+        all_first: allFirst?.iid,
+        reducers: reducers.slice(0, 6),
+        std_type: typeof reducers[6],
+        field_grouped: fieldGrouped.map(([group, values]: any) => [group.value, values]),
+        tuple_grouped: tupleGrouped.map(([[boolGroup, scoreGroup], values]: any) => [
+          boolGroup.value,
+          scoreGroup.value,
+          values,
+        ]),
+        event_grouped: eventGrouped.map(([event, values]: any) => [event.iid, values]),
+        named: named.person.iid,
+        count,
+        exists,
+        page: {
+          items: page.items.map(([person, collected]: any) => [person.iid, iids(collected)]),
+          limit: page.limit,
+          offset: page.offset,
+          total: page.total,
+        },
       };
-    assert.equal(queriedSubtypeRelation.__typebridgeModel, Employment.typeKey);
-    assert.equal(queriedSubtypeRelation.employee.iid, insertedPerson.iid);
-    assert.equal(Object.hasOwn(queriedSubtypeRelation, "member"), false);
-
-    const reachableSource = querySession.exact(Person);
-    const reachableTarget = querySession.exact(Person);
-    const reachable = querySession.reachable(
-      reachableSource,
-      reachableTarget,
-      NetworkLink,
-      NetworkLink.origin,
-      NetworkLink.destination,
-      { minDepth: 1, maxDepth: 1 },
-    );
-    const reachablePair = querySession
-      .query(reachableSource, reachableTarget)
-      .where(
-        reachable,
-        reachableSource.field(Person.identifier).eq(Identifier.create("person-1")),
-        reachableTarget.field(Person.identifier).eq(Identifier.create("person-2")),
-      )
-      .one();
-    assert.deepEqual(
-      reachablePair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      [insertedPerson.iid, insertedBatch[0].iid],
-    );
-    const networkVariable = querySession.exact(NetworkLink);
-    const queriedNetwork = querySession
-      .query(networkVariable)
-      .where(
-        networkVariable.iid(insertedNetwork.iid),
-        networkVariable.field(NetworkLink.nickname).isPresent(),
-      )
-      .one();
-    assert.equal(queriedNetwork.iid, insertedNetwork.iid);
-
-    const allPeopleQuery = querySession.query(personVariable);
-    assert.equal(allPeopleQuery.first({ orderBy: [identifierOrder] })?.iid, insertedPerson.iid);
-    const scoreField = personVariable.field(Person.score);
-    const directAggregate = allPeopleQuery.aggregate(personVariable, [
-      aggregate.count(),
-      aggregate.sum(scoreField),
-      aggregate.min(scoreField),
-      aggregate.max(scoreField),
-      aggregate.mean(scoreField),
-      aggregate.median(scoreField),
-      aggregate.std(scoreField),
-    ] as const);
-    assert.deepEqual(directAggregate.slice(0, 6), [4n, 24n, 3n, 9n, 6, 6]);
-    assert.equal(typeof directAggregate[6], "number");
-    const directFieldGroupedAggregate = allPeopleQuery
-      .groupBy(personVariable, personVariable.field(Person.valBool))
-      .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
-    assert.equal(directFieldGroupedAggregate.length, 1);
-    assert.equal(directFieldGroupedAggregate[0][0].value, true);
-    assert.deepEqual(directFieldGroupedAggregate[0][1], [4n, 24n]);
-    const directTupleFieldGroupedAggregate = allPeopleQuery
-      .groupBy(personVariable, personVariable.field(Person.valBool), scoreField)
-      .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
-    assert.deepEqual(
-      directTupleFieldGroupedAggregate.map(([[boolGroup, scoreGroup], values]) => [
-        boolGroup.value,
-        scoreGroup.value,
-        values,
-      ]),
-      [
+    };
+    const direct = await queryProgram(querySession, (run) => run());
+    assert.deepEqual(direct, {
+      one: [insertedPerson.iid, insertedEvent.iid, insertedPerson.iid],
+      rows: [[insertedPerson.iid, "person-1"]],
+      first: insertedPerson.iid,
+      aliases_present: [insertedPerson.iid],
+      aliases_missing: [...batchIids, transactionPersonIid],
+      by_iid: insertedPerson.iid,
+      by_iid_set: [insertedPerson.iid, insertedBatch[0].iid],
+      offset_identifiers: ["person-2", "person-3"],
+      by_expression: insertedPerson.iid,
+      cross_pair: [insertedPerson.iid, insertedBatch[0].iid],
+      parties: [
+        [Employee.typeKey, insertedEmployee.iid],
+        [Manager.typeKey, insertedManager.iid],
+      ],
+      membership_count: 2n,
+      base_relation: [Membership.typeKey, insertedPerson.iid],
+      subtype_relation: [Employment.typeKey, insertedPerson.iid, false],
+      reachable: [insertedPerson.iid, insertedBatch[0].iid],
+      network: insertedNetwork.iid,
+      all_first: insertedPerson.iid,
+      reducers: [4n, 24n, 3n, 9n, 6, 6],
+      std_type: "number",
+      field_grouped: [[true, [4n, 24n]]],
+      tuple_grouped: [
         [true, 3n, [1n, 3n]],
         [true, 5n, [1n, 5n]],
         [true, 7n, [1n, 7n]],
         [true, 9n, [1n, 9n]],
       ],
-    );
-    assert.throws(
-      () => allPeopleQuery.aggregate(personVariable, [
-        aggregate.sum(personVariable.field(Person.identifier)),
-      ] as const),
-      /long|double|numeric|reduc/i,
-    );
-
-    const directGroupedAggregate = directQuery
-      .groupBy(personVariable, eventVariable)
-      .aggregate([aggregate.count(), aggregate.sum(scoreField)] as const);
-    assert.equal(directGroupedAggregate.length, 1);
-    assert.equal(directGroupedAggregate[0][0].iid, insertedEvent.iid);
-    assert.deepEqual(directGroupedAggregate[0][1], [1n, 3n]);
-
-    const named = querySession
-      .queryNamed({ person: personVariable })
-      .where(personPredicate)
-      .one();
-    assert.equal(named.person.iid, insertedPerson.iid);
-    assert.equal(directQuery.countBy(personVariable), 1n);
-    assert.equal(directQuery.existsBy(personVariable), true);
-
-    const collectedPage = querySession
-      .query(personVariable, collectedPersonVariable.collect().distinct())
-      .where(personPredicate, sameIdentifierPredicate)
-      .pageBy(personVariable, { limit: 10n, includeTotal: true });
-    assert.equal(collectedPage.offset, 0n);
-    assert.equal(collectedPage.limit, 10n);
-    assert.equal(collectedPage.total, 1n);
-    assert.equal(collectedPage.items.length, 1);
-    assert.equal(collectedPage.items[0][0].iid, insertedPerson.iid);
-    assert.deepEqual(
-      collectedPage.items[0][1].map((item: { readonly iid: string }) => item.iid),
-      [insertedPerson.iid],
-    );
+      event_grouped: [[insertedEvent.iid, [1n, 3n]]],
+      named: insertedPerson.iid,
+      count: 1n,
+      exists: true,
+      page: {
+        items: [[insertedPerson.iid, [insertedPerson.iid]]],
+        limit: 10n,
+        offset: 0n,
+        total: 1n,
+      },
+    });
 
     const authority = await readFile(resolve(stage, "schema-authority.json"));
     const port = await freePort();
@@ -3021,13 +2621,24 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           SMOKE_TYPEDB_USERNAME: TYPEDB_USERNAME,
           SMOKE_TYPEDB_PASSWORD: TYPEDB_PASSWORD,
           SMOKE_TYPEDB_HTTP_PORT: String(TYPEDB_HTTP_PORT),
+          ...(process.env.TYPEDB_TLS_ROOT_CA === undefined
+            ? {}
+            : {
+                SMOKE_TYPEDB_TLS: "true",
+                SMOKE_TYPEDB_TLS_ROOT_CA: process.env.TYPEDB_TLS_ROOT_CA,
+              }),
+          // The remote query client below uses HTTP, independently of TypeDB TLS.
+          SMOKE_TLS_CERT: undefined,
+          SMOKE_TLS_KEY: undefined,
           SMOKE_DATABASE: INTG_DATABASE,
           SMOKE_AUTHORITY_B64: authority.toString("base64"),
           SMOKE_PORT: String(port),
         },
-        stdio: "ignore",
+        stdio: ["ignore", "ignore", "pipe"],
       },
     );
+    let serverStderr = "";
+    server.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
     try {
       await waitForPort(port, server, 300_000);
       const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v2/capabilities`);
@@ -3054,286 +2665,209 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       }
 
       // docs: remote-query-node:start
-      const remoteSession = new RemoteQuerySession(
-        advertisement,
-        exchange,
+      const remoteSession = new QuerySession(
+        new ExchangeConnection(advertisement, exchange),
         {
-          maxItems: 100n,
-          maxBytes: 1n << 20n,
-          maxCollectionMembers: 100n,
-          maxGraphNodes: 1_000n,
-          maxAttributeValues: 1_000n,
-          maxRolePlayers: 1_000n,
-          deadlineMs: 30_000n,
+          resources: new QueryExecutionResourceLimits({
+            timeoutMilliseconds: 30_000n,
+            items: 100n,
+            bytes: 1n << 20n,
+            collectionMembers: 100n,
+            graphNodes: 1_000n,
+            attributeValues: 1_000n,
+            rolePlayers: 1_000n,
+          }),
         },
-      );
-      const remotePerson = remoteSession.var(Person);
-      const remoteCollectedPerson = remoteSession.var(Person);
-      const remoteEvent = remoteSession.var(Event);
-      const remotePersonPredicate = remotePerson
-        .field(Person.identifier)
-        .eq(Identifier.create("person-1"));
-      const remoteEventPredicate = remoteEvent.role(Event.subject).connects(remotePerson);
-      const remoteDirectQuery = remoteSession
-        .query(remotePerson, remoteEvent)
-        .where(remotePersonPredicate, remoteEventPredicate);
-      const remoteOne = await oneRemoteExchange(() => remoteDirectQuery.one());
-      assert.deepEqual(
-        [remoteOne[0].iid, remoteOne[1].iid],
-        [directOne[0].iid, directOne[1].iid],
-      );
-      const remotePersonOnly = remoteSession
-        .query(remotePerson)
-        .where(remotePersonPredicate);
-      const remoteRows = await oneRemoteExchange(() => remotePersonOnly.rows({
-          limit: 10n,
-          orderBy: [remotePerson.field(Person.identifier).asc()],
-        }));
-      assert.deepEqual(remoteRows.map((item: { readonly iid: string }) => item.iid), [insertedPerson.iid]);
-      const remoteFirst = await oneRemoteExchange(() => remotePersonOnly.first({
-          orderBy: [remotePerson.field(Person.identifier).asc()],
-        }));
-      assert.equal(remoteFirst?.iid, insertedPerson.iid);
-      assert.deepEqual(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remotePerson)
-          .where(remotePerson.field(Person.aliases).isPresent())
-          .rows({ limit: 10n, orderBy: [remotePerson.field(Person.identifier).asc()] })))
-          .map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [insertedPerson.iid],
-      );
-      assert.deepEqual(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remotePerson)
-          .where(remotePerson.field(Person.aliases).isMissing())
-          .rows({ limit: 10n, orderBy: [remotePerson.field(Person.identifier).asc()] })))
-          .map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [...batchIids, transactionPersonIid],
-      );
-      assert.equal(
-        (await oneRemoteExchange(() =>
-          remoteSession.query(remotePerson).where(remotePerson.iid(insertedPerson.iid)).one()
-        )).iid,
-        insertedPerson.iid,
-      );
-      assert.deepEqual(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remotePerson)
-          .where(remotePerson.iidIn([insertedPerson.iid, insertedBatch[0].iid]))
-          .rows({ limit: 10n, orderBy: [remotePerson.field(Person.identifier).asc()] })))
-          .map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [insertedPerson.iid, insertedBatch[0].iid],
-      );
-      const remoteNetwork = remoteSession.exact(NetworkLink);
-      assert.equal(
-        (await oneRemoteExchange(() => remoteSession
-          .query(remoteNetwork)
-          .where(
-            remoteNetwork.iid(insertedNetwork.iid),
-            remoteNetwork.field(NetworkLink.nickname).isPresent(),
-          )
-          .one())).iid,
-        insertedNetwork.iid,
-      );
-
-      const remoteParty = remoteSession.subtypes(Party);
-      const remotePartyRows = await oneRemoteExchange(() =>
-        remoteSession.query(remoteParty).rows({
-          limit: 10n,
-          orderBy: [remoteParty.field(Party.identifier).asc()],
-        })
-      );
-      assert.deepEqual(
-        remotePartyRows.map((candidate: { readonly __typebridgeModel: string }) => candidate.__typebridgeModel),
-        [Employee.typeKey, Manager.typeKey],
-      );
-      assert.deepEqual(
-        remotePartyRows.map((candidate: { readonly iid: string | null }) => candidate.iid),
-        [insertedEmployee.iid, insertedManager.iid],
       );
       // docs: remote-query-node:end
-      const remoteNamed = await oneRemoteExchange(() => remoteSession
-          .queryNamed({ person: remotePerson })
-          .where(remotePersonPredicate)
-          .one());
-      assert.equal(remoteNamed.person.iid, named.person.iid);
-      assert.equal(
-        await oneRemoteExchange(() => remoteDirectQuery.countBy(remotePerson)),
-        directQuery.countBy(personVariable),
-      );
-      assert.equal(
-        await oneRemoteExchange(() => remoteDirectQuery.existsBy(remotePerson)),
-        directQuery.existsBy(personVariable),
-      );
-
-      const remoteScoreField = remotePerson.field(Person.score);
-      const remoteAggregate = await oneRemoteExchange(() =>
-        remoteSession.query(remotePerson).aggregate(remotePerson, [
-          aggregate.count(),
-          aggregate.sum(remoteScoreField),
-          aggregate.min(remoteScoreField),
-          aggregate.max(remoteScoreField),
-          aggregate.mean(remoteScoreField),
-          aggregate.median(remoteScoreField),
-          aggregate.std(remoteScoreField),
-        ] as const)
-      );
-      assert.deepEqual(remoteAggregate.slice(0, 6), directAggregate.slice(0, 6));
-      assert.equal(typeof remoteAggregate[6], "number");
-
-      const remoteFieldGroupedAggregate = await oneRemoteExchange(() =>
-        remoteSession
-          .query(remotePerson)
-          .groupBy(remotePerson, remotePerson.field(Person.valBool))
-          .aggregate([aggregate.count(), aggregate.sum(remoteScoreField)] as const)
-      );
-      assert.equal(remoteFieldGroupedAggregate.length, 1);
-      assert.equal(remoteFieldGroupedAggregate[0][0].value, true);
-      assert.deepEqual(remoteFieldGroupedAggregate[0][1], [4n, 24n]);
-
-      const remoteTupleFieldGroupedAggregate = await oneRemoteExchange(() =>
-        remoteSession
-          .query(remotePerson)
-          .groupBy(remotePerson, remotePerson.field(Person.valBool), remoteScoreField)
-          .aggregate([aggregate.count(), aggregate.sum(remoteScoreField)] as const)
-      );
-      assert.deepEqual(
-        remoteTupleFieldGroupedAggregate.map(([[boolGroup, scoreGroup], values]) => [
-          boolGroup.value,
-          scoreGroup.value,
-          values,
-        ]),
-        directTupleFieldGroupedAggregate.map(([[boolGroup, scoreGroup], values]) => [
-          boolGroup.value,
-          scoreGroup.value,
-          values,
-        ]),
-      );
-
-      const remoteGroupedAggregate = await oneRemoteExchange(() => remoteDirectQuery
-          .groupBy(remotePerson, remoteEvent)
-          .aggregate([aggregate.count(), aggregate.sum(remoteScoreField)] as const));
-      assert.equal(remoteGroupedAggregate.length, 1);
-      assert.equal(remoteGroupedAggregate[0][0].iid, insertedEvent.iid);
-      assert.deepEqual(remoteGroupedAggregate[0][1], directGroupedAggregate[0][1]);
-
-      const remoteSameIdentifier = remoteCollectedPerson
-        .field(Person.identifier)
-        .eqField(remotePerson.field(Person.identifier));
-      const remotePage = await oneRemoteExchange(() => remoteSession
-          .query(remotePerson, remoteCollectedPerson.collect().distinct())
-          .where(remotePersonPredicate, remoteSameIdentifier)
-          .pageBy(remotePerson, { limit: 10n, includeTotal: true }));
-      assert.deepEqual(
-        {
-          items: remotePage.items.map((item: readonly [
-            { readonly iid: string },
-            readonly { readonly iid: string }[],
-          ]) => [item[0].iid, item[1].map((member) => member.iid)]),
-          limit: remotePage.limit,
-          offset: remotePage.offset,
-          total: remotePage.total,
-        },
-        {
-          items: collectedPage.items.map((item: readonly [
-            { readonly iid: string },
-            readonly { readonly iid: string }[],
-          ]) => [item[0].iid, item[1].map((member) => member.iid)]),
-          limit: collectedPage.limit,
-          offset: collectedPage.offset,
-          total: collectedPage.total,
-        },
-      );
-
-      const remoteReachableSource = remoteSession.exact(Person);
-      const remoteReachableTarget = remoteSession.exact(Person);
-      const remoteReachable = remoteSession.reachable(
-        remoteReachableSource,
-        remoteReachableTarget,
-        NetworkLink,
-        NetworkLink.origin,
-        NetworkLink.destination,
-        { minDepth: 1, maxDepth: 1 },
-      );
-      const remoteReachablePair = await oneRemoteExchange(() => remoteSession
-          .query(remoteReachableSource, remoteReachableTarget)
-          .where(
-            remoteReachable,
-            remoteReachableSource.field(Person.identifier).eq(Identifier.create("person-1")),
-            remoteReachableTarget.field(Person.identifier).eq(Identifier.create("person-2")),
-          )
-          .one());
-      assert.deepEqual(
-        remoteReachablePair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-        reachablePair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      );
-      const remoteCrossLeft = remoteSession.exact(Person);
-      const remoteCrossRight = remoteSession.exact(Person);
-      const remoteCrossPair = await oneRemoteExchange(() => remoteSession
-          .query(remoteCrossLeft, remoteCrossRight)
-          .allowCrossJoin(remoteCrossLeft, remoteCrossRight)
-          .where(
-            remoteCrossLeft.field(Person.identifier).eq(Identifier.create("person-1")),
-            remoteCrossRight.field(Person.identifier).eq(Identifier.create("person-2")),
-          )
-          .one());
-      assert.deepEqual(
-        remoteCrossPair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-        crossPair.map((candidate: { readonly iid: string | null }) => candidate.iid),
-      );
-      assert.ok(requests.every((request) => request.length > 0));
-
-      if (sdkReportPath !== undefined) {
-        if (sdkCatalogRaw === undefined || sdkJourneyRaw === undefined) {
-          throw new Error("sdk contracts were not loaded after report preflight");
-        }
-        const results = await runSdkJourney(
-          generated,
-          personManager,
-          membershipManager,
-          querySession,
-          remoteSession,
-          requests,
-          sdkCatalog,
-          sdkJourney,
-        );
-        preparedSdkReport = await sdkReport(
-          sdkCatalogRaw,
-          sdkCatalog,
-          sdkJourneyRaw,
-          semanticFingerprint,
-          projectionFingerprint,
-          results,
-        );
+      assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct);
+      const proxy = await connectProxy(`http://127.0.0.1:${port}`);
+      const proxySession = new QuerySession(proxy);
+      try {
+        assert.deepEqual(await queryProgram(proxySession, (run) => run()), direct);
+      } finally {
+        proxySession.close();
       }
-      if (sdkV2ReportPath !== undefined) {
-        if (
-          sdkV2CatalogRaw === undefined
-          || sdkV2JourneyRaw === undefined
-          || sdkV2ProofObservations === undefined
-        ) {
-          throw new Error("sdk-v2 contracts were not loaded after report preflight");
+
+      // A limit refusal is the same on every connection: category, code,
+      // path, and details.
+      const limitRefusal = async (connection: any): Promise<Record<string, unknown>> => {
+        const session = new QuerySession(connection, {
+          resources: new QueryExecutionResourceLimits({ rolePlayers: 0n }),
+        });
+        const membership = session.exact(Membership);
+        try {
+          await session.query(membership).where(membership.iid(insertedMembership.iid)).one();
+        } catch (error: any) {
+          return {
+            category: error.sdkCategory,
+            queryCategory: error.queryCategory,
+            code: error.code,
+            path: error.path,
+            details: error.details,
+          };
+        } finally {
+          session.close();
         }
-        const results = await runSdkV2Journey(
+        throw new Error("a zero role-player budget accepted a hydrated relation");
+      };
+      const directRefusal = await limitRefusal(database);
+      assert.equal(directRefusal.category, "resource_limit");
+      assert.deepEqual(
+        await limitRefusal(new ExchangeConnection(advertisement, exchange)),
+        directRefusal,
+      );
+      assert.deepEqual(await limitRefusal(proxy), directRefusal);
+
+      // Windows, caps, group-by keys, and reachability depth are core rules:
+      // each corpus case is refused with the corpus code on every
+      // connection, and a session with fewer selected slots refuses at its
+      // own limit.
+      const corpusCases = JSON.parse(
+        await readFile(resolve(ROOT, "tests/contracts/typed_query/corpus-v1.json"), "utf8"),
+      ).cases as { id: string; expected: { error_category: string; error_code: string } }[];
+      const corpusCode = (id: string): [string, string] => {
+        const found = corpusCases.find((entry) => entry.id === id);
+        assert.ok(found !== undefined, `missing corpus case ${id}`);
+        return [found.expected.error_category, found.expected.error_code];
+      };
+      const coreRefusal = async (
+        id: string,
+        action: () => unknown,
+      ): Promise<Record<string, unknown>> => {
+        try {
+          await action();
+        } catch (error: any) {
+          assert.deepEqual([error.category, error.code], corpusCode(id), id);
+          return { code: error.code, path: error.path, details: error.details };
+        }
+        throw new Error(`${id} was not refused`);
+      };
+      const coreRules = async (connection: any, slots: bigint | undefined) => {
+        const session = new QuerySession(
+          connection,
+          slots === undefined ? {} : { queryLimits: new QueryLimits({ selected_slots: slots }) },
+        );
+        const width = slots === undefined ? 16 : Number(slots);
+        try {
+          const person = session.exact(Person);
+          const score = person.field(Person.score);
+          const query = session.query(person);
+          const other = session.exact(Person);
+          const reachable = (minDepth: number, maxDepth: number) => () =>
+            session.reachable(
+              person,
+              other,
+              NetworkLink,
+              NetworkLink.origin,
+              NetworkLink.destination,
+              { minDepth, maxDepth },
+            );
+          return {
+            selection: await coreRefusal(
+              slots === undefined
+                ? "selection.seventeen-slot-rejection"
+                : "selection.session-slot-ceiling",
+              () =>
+                session.query(
+                  ...(Array.from({ length: width + 1 }, () => session.exact(Person)) as [any]),
+                ),
+            ),
+            groupKeys: await coreRefusal("aggregate.seventeen-group-keys", () =>
+              (query.groupBy as any)(
+                person,
+                ...Array.from({ length: width + 1 }, () => score),
+              ),
+            ),
+            terms: await coreRefusal("aggregate.seventeen-terms", () =>
+              query.aggregate(
+                person,
+                Array.from({ length: width + 1 }, () => aggregate.count()) as any,
+              ),
+            ),
+            emptyTerms: await coreRefusal("aggregate.empty-terms", () =>
+              query.aggregate(person, [] as any),
+            ),
+            zeroLimit: await coreRefusal("bounds.public-invalid-limit", () =>
+              query.rows({ limit: 0n }),
+            ),
+            zeroPage: await coreRefusal("bounds.public-invalid-limit", () =>
+              query.pageBy(person, { limit: 0n }),
+            ),
+            offset: await coreRefusal("bounds.public-invalid-offset", () =>
+              query.rows({ offset: (1n << 64n) - 1n, limit: 1n }),
+            ),
+            overflow: await coreRefusal("bounds.window-overflow", () =>
+              query.rows({ offset: (1n << 64n) - 2n, limit: 2n }),
+            ),
+            reversed: await coreRefusal("reachability.reversed-bounds", reachable(3, 2)),
+            deep: await coreRefusal("reachability.depth-ceiling", reachable(0, 65)),
+          };
+        } finally {
+          session.close();
+        }
+      };
+      for (const slots of [undefined, 4n]) {
+        const directRules = await coreRules(database, slots);
+        if (slots === undefined) {
+          // tests/contracts/diagnostic-json.json, group_keys.seventeen.
+          const golden = JSON.parse(
+            await readFile(resolve(ROOT, "tests/contracts/diagnostic-json.json"), "utf8"),
+          ).cases.find((entry: any) => entry.id === "group_keys.seventeen").diagnostic;
+          assert.deepEqual(directRules.groupKeys, {
+            code: golden.code,
+            path: golden.path,
+            details: golden.details,
+          });
+        }
+        const width = slots === undefined ? 16 : Number(slots);
+        assert.equal(String((directRules.selection.details as any).maximum.value), String(width));
+        assert.equal(String((directRules.groupKeys.details as any).maximum.value), String(width));
+        assert.equal(String((directRules.terms.details as any).maximum.value), String(width));
+        const requestsBefore = requests.length;
+        assert.deepEqual(
+          await coreRules(new ExchangeConnection(advertisement, exchange), slots),
+          directRules,
+        );
+        assert.deepEqual(await coreRules(proxy, slots), directRules);
+        assert.equal(requests.length, requestsBefore);
+      }
+      assert.ok(requests.every((request) => request.length > 0));
+      if (sdkQueriesReportPath !== undefined) {
+        if (
+          sdkQueriesCatalogRaw === undefined
+          || sdkQueriesJourneyRaw === undefined
+          || sdkQueriesProofObservations === undefined
+        ) {
+          throw new Error("queries contracts were not loaded after report preflight");
+        }
+        const results = await runSdkQueriesJourney(
           generated,
           database,
           remoteSession,
           requests,
           advertisement,
           exchange,
-          sdkV2Catalog,
-          sdkV2Journey,
-          sdkV2ProofObservations,
+          sdkQueriesCatalog,
+          sdkQueriesJourney,
+          sdkQueriesProofObservations,
         );
-        preparedSdkV2Report = await sdkV2Report(
-          sdkV2CatalogRaw,
-          sdkV2Catalog,
-          sdkV2JourneyRaw,
+        if (sdkQueriesIdentity === undefined) {
+          throw new Error("queries profile was not selected after report preflight");
+        }
+        preparedSdkQueriesReport = await sdkQueriesReport(
+          sdkQueriesIdentity,
+          sdkQueriesCatalogRaw,
+          sdkQueriesCatalog,
+          sdkQueriesJourneyRaw,
           semanticFingerprint,
           projectionFingerprint,
           results,
         );
       }
+    } catch (error) {
+      process.stderr.write(serverStderr);
+      throw error;
     } finally {
       if (server.exitCode === null) {
         const exited = new Promise((resolveExit) => server.once("exit", resolveExit));
@@ -3393,33 +2927,18 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
   if (failure !== undefined) {
     throw failure;
   }
-  if (sdkReportPath !== undefined) {
-    assert.equal(
-      REMOTE_PROFILE,
-      "typedb-3.12.1/v1",
-      "sdk reports may only be emitted for typedb-3.12.1/v1",
-    );
-    if (preparedSdkReport === undefined) {
-      throw new Error("sdk report was not prepared after the successful journey");
+  if (sdkQueriesReportPath !== undefined) {
+    assert.equal(sdkQueriesIdentity?.semanticProfile, REMOTE_PROFILE);
+    if (preparedSdkQueriesReport === undefined) {
+      throw new Error("queries report was not prepared after the successful journey");
     }
-    await publishSdkReport(sdkReportPath, preparedSdkReport);
-  }
-  if (sdkV2ReportPath !== undefined) {
-    assert.equal(
-      REMOTE_PROFILE,
-      "typedb-3.12.1/v1",
-      "sdk-v2 reports may only be emitted for typedb-3.12.1/v1",
-    );
-    if (preparedSdkV2Report === undefined) {
-      throw new Error("sdk-v2 report was not prepared after the successful journey");
-    }
-    await publishSdkReport(sdkV2ReportPath, preparedSdkV2Report);
+    await publishSdkReport(sdkQueriesReportPath, preparedSdkQueriesReport);
   }
 });
 
 test(
-  "node.generated_data_model_runtime_v3_live",
-  { skip: IS_TYPEDB_3_11, timeout: 360_000 },
+  "node.sdk_models_data_model_runtime_live",
+  { skip: IS_TYPEDB_3_11 || !Object.hasOwn(sdkProfileMatrix("models"), REMOTE_PROFILE), timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
@@ -3478,7 +2997,7 @@ test(
 
       database = connectIntegration();
       database.resetDatabase();
-      defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
+      defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
 
       const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({
         identifier: Identifier.create(identifierValue),
@@ -3742,10 +3261,20 @@ test(
       assert.equal(networkManager.count(), 0n);
       assert.equal(personManager.count(), 0n);
 
-      const supplementPath = process.env.TYPE_BRIDGE_SDK_V3_NODE_SUPPLEMENT;
+      const supplementPath = process.env.TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT;
       if (supplementPath !== undefined) {
-        const observations = sdkV3SupplementObservations();
-        const journey = JSON.parse(await readFile(SDK_V3_JOURNEY, "utf8"));
+        const identity = sdkReportIdentity("models");
+        requireSdkServerVersion(
+          identity,
+          await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
+        );
+        requireSdkFingerprints(
+          identity,
+          JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
+          JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
+        );
+        const observations = sdkModelsSupplementObservations();
+        const journey = JSON.parse(await readFile(SDK_MODELS_JOURNEY, "utf8"));
         const results = [...observations.entries()].map(([key, observation]) => {
           const [observationRef, proofKind] = key.split("\u0000");
           assert.deepEqual(observation, journey.expected_observations[observationRef]);
@@ -3761,12 +3290,12 @@ test(
         );
         assert.equal(results.length, 8);
         await publishSdkReport(supplementPath, {
-          format: "typebridge.sdk-v3-live-supplement/v1",
+          format: "typebridge.sdk-models-live-supplement/v1",
           binding: "node",
-          semantic_profile: "typedb-3.12.1/v1",
-          producer: "node.generated-data-model-runtime-v3-live",
-          semantic_fingerprint: JSON.parse(generated.SEMANTIC_SCHEMA_FINGERPRINT_JSON),
-          projection_fingerprint: JSON.parse(generated.PROJECTION_FINGERPRINT_JSON),
+          semantic_profile: identity.semanticProfile,
+          producer: "node.sdk-models-data-model-runtime-live",
+          semantic_fingerprint: identity.expectedFingerprints.semantic,
+          projection_fingerprint: identity.expectedFingerprints.projections.node,
           results,
         });
       }
@@ -3792,17 +3321,19 @@ test(
 );
 
 test(
-  "node.generated_canonical_serialization_v5_live",
+  "node.sdk_serialization_live",
   {
-    skip: IS_TYPEDB_3_11 || process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE === undefined,
+    skip: IS_TYPEDB_3_11
+      || !Object.hasOwn(sdkProfileMatrix("serialization"), REMOTE_PROFILE)
+      || process.env.TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },
   async () => {
-    const evidencePath = process.env.TYPE_BRIDGE_SDK_V5_NODE_EVIDENCE;
+    const evidencePath = process.env.TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE;
     assert.notEqual(evidencePath, undefined);
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
-      ? await mkdtemp(join(tmpdir(), "type-bridge-node-v5-live-"))
+      ? await mkdtemp(join(tmpdir(), "type-bridge-node-serialization-live-"))
       : resolve(suppliedStage);
     const ownsStage = suppliedStage === undefined;
     const generatedDirectory = resolve(stage, "generated_ordered");
@@ -3833,15 +3364,21 @@ test(
         pathToFileURL(resolve(generatedDirectory, "dist/index.js")).href
       );
       const {
-        Employment, Identifier, Person, QuerySession, RemoteQuerySession, Score,
+        Employment, ExchangeConnection, Identifier, Person, QueryExecutionResourceLimits,
+        QuerySession, Score,
         ValBool, ValConstrained, ValDate, ValDatetime, ValDatetimeTz, ValDecimal,
         ValDouble, ValDuration,
       } = generated;
 
       database = connectIntegration();
       database.resetDatabase();
-      requireSdkServerVersion(await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT));
-      defineSchema(database, await readFile(SDK_V3_PROVIDER_SCHEMA, "utf8"));
+      // The v5 assembler stamps the lane's `server_version`; this gate keeps the
+      // evidence on that exact server.
+      requireSdkServerVersion(
+        sdkReportIdentity("serialization"),
+        await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
+      );
+      defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
       const personManager = Person.manager(database);
       const employmentManager = Employment.manager(database);
       const person = personManager.insert(Person.create({
@@ -3859,16 +3396,23 @@ test(
       }));
       const employment = employmentManager.insert(Employment.create({ employee: person }));
 
-      const directSession = new QuerySession(database);
-      const directEmploymentVar = directSession.var(Employment);
-      const directPersonVar = directSession.var(Person);
-      const [directEmployment, directPerson] = directSession
-        .query(directEmploymentVar, directPersonVar)
-        .where(
-          directEmploymentVar.role(Employment.employee).connects(directPersonVar),
-          directPersonVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
-        )
-        .one();
+      // One employment query, run on the direct and the exchange connection.
+      const employmentPair = async (session: any): Promise<[any, any]> => {
+        const employmentVar = session.var(Employment);
+        const personVar = session.var(Person);
+        try {
+          return await session
+            .query(employmentVar, personVar)
+            .where(
+              employmentVar.role(Employment.employee).connects(personVar),
+              personVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
+            )
+            .one();
+        } finally {
+          session.close();
+        }
+      };
+      const [directEmployment, directPerson] = await employmentPair(new QuerySession(database));
       const entitySnapshot = Person.encodeSnapshot(directPerson);
       const relationSnapshot = Employment.encodeSnapshot(directEmployment);
 
@@ -3900,7 +3444,7 @@ test(
       assert.equal(advertisementResponse.status, 200);
       const advertisement = Buffer.from(await advertisementResponse.arrayBuffer());
       const requests: Buffer[] = [];
-      const remoteSession = new RemoteQuerySession(
+      const exchange = new ExchangeConnection(
         advertisement,
         async (request: Uint8Array): Promise<Buffer> => {
           requests.push(Buffer.from(request));
@@ -3912,22 +3456,18 @@ test(
           assert.equal(response.status, 200);
           return Buffer.from(await response.arrayBuffer());
         },
-        {
-          maxItems: 10n, maxBytes: 1n << 20n, maxCollectionMembers: 100n,
-          maxGraphNodes: 30n, maxAttributeValues: 1_000n, maxRolePlayers: 30n,
-          deadlineMs: 30_000n,
-        },
       );
-      const remoteEmploymentVar = remoteSession.var(Employment);
-      const remotePersonVar = remoteSession.var(Person);
-      const [remoteEmployment, remotePerson] = await remoteSession
-        .query(remoteEmploymentVar, remotePersonVar)
-        .where(
-          remoteEmploymentVar.role(Employment.employee).connects(remotePersonVar),
-          remotePersonVar.field(Person.identifier).eq(Identifier.create("v5-live-person")),
-        )
-        .one();
-      remoteSession.close();
+      const [remoteEmployment, remotePerson] = await employmentPair(new QuerySession(exchange, {
+        resources: new QueryExecutionResourceLimits({
+          timeoutMilliseconds: 30_000n,
+          items: 10n,
+          bytes: 1n << 20n,
+          collectionMembers: 100n,
+          graphNodes: 30n,
+          attributeValues: 1_000n,
+          rolePlayers: 30n,
+        }),
+      }));
       assert.equal(requests.length, 1);
       assert.deepEqual(Person.encodeSnapshot(remotePerson), entitySnapshot);
       assert.deepEqual(Employment.encodeSnapshot(remoteEmployment), relationSnapshot);
@@ -3955,7 +3495,7 @@ test(
         detached_mutation_code: detachedCode,
         direct_remote_equal: true,
         entity_snapshot_b64: Buffer.from(entitySnapshot).toString("base64"),
-        format: "typebridge.sdk-v5-live-codec-evidence/v1",
+        format: "typebridge.sdk-serialization-live-codec-evidence/v1",
         rebound_mutation: true,
         relation_snapshot_b64: Buffer.from(relationSnapshot).toString("base64"),
         remote_exchange_count: requests.length,

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy self-references remain until 11.30 / 3.0.
 use serde::{Deserialize, Serialize};
 use type_bridge_contract::value::CanonicalValue;
 
@@ -8,6 +9,10 @@ use type_bridge_contract::value::CanonicalValue;
 /// Uses tagged JSON serialization (`"type"` + `"data"`) for portable interchange.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub enum Value {
     /// A typed literal value (e.g. `"Alice"`, `30`, `true`).
     Literal(LiteralValue),
@@ -25,6 +30,10 @@ pub enum Value {
 /// value type name (e.g. `"string"`, `"long"`, `"double"`, `"boolean"`,
 /// `"datetime"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct LiteralValue {
     /// The literal value as a JSON-compatible representation.
     pub value: serde_json::Value,
@@ -37,6 +46,10 @@ pub struct LiteralValue {
 /// Represents calling a built-in or user-defined function with a list of
 /// argument expressions, such as `count($x)` or `max($salary)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct FunctionCallValue {
     /// The name of the function being called (e.g. `"count"`, `"max"`, `"min"`).
     pub function: String,
@@ -50,6 +63,10 @@ pub struct FunctionCallValue {
 /// `$price * $quantity`. The operands are boxed `Value` nodes to allow
 /// arbitrary nesting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct ArithmeticValue {
     /// The left-hand operand of the arithmetic expression.
     pub left: Box<Value>,
@@ -64,6 +81,10 @@ pub struct ArithmeticValue {
 /// Binds a role name to a player variable, representing one side of a
 /// relation pattern such as `friendship:friend($alice)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct RolePlayer {
     /// The role name within the relation (e.g. `"friend"`, `"employee"`).
     pub role: String,
@@ -78,6 +99,10 @@ pub struct RolePlayer {
 /// Uses tagged JSON serialization (`"type"` + `"data"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub enum Constraint {
     /// An internal identifier (IID) lookup constraint.
     Iid(String),
@@ -106,6 +131,10 @@ pub enum Constraint {
 /// Uses tagged JSON serialization (`"type"` + `"data"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub enum Pattern {
     /// An entity pattern matching a typed entity with optional constraints.
     Entity {
@@ -191,6 +220,10 @@ pub enum Pattern {
 /// Uses tagged JSON serialization (`"type"` + `"data"`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub enum Statement {
     /// A has-attribute statement assigning an attribute value to a subject.
     Has {
@@ -233,6 +266,10 @@ pub enum Statement {
 /// composed of one or more clauses chained together (e.g. match then fetch,
 /// match then insert, match then delete).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub enum Clause {
     /// A match clause containing patterns to match against the database.
     Match(Vec<Pattern>),
@@ -271,6 +308,10 @@ pub enum Clause {
 /// Assigns the result of an expression to one or more variables during
 /// the match phase, optionally as a stream of values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct LetAssignment {
     /// The variable names to bind the expression result to.
     pub variables: Vec<String>,
@@ -285,6 +326,10 @@ pub struct LetAssignment {
 /// Fetch items describe the shape of the query response, selecting specific
 /// attributes, variables, attribute lists, function results, or wildcards.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub enum FetchItem {
     /// Fetch a single attribute value from a variable, keyed in the response.
     Attribute {
@@ -334,12 +379,41 @@ pub enum FetchItem {
         /// The variable whose attributes and nested things are fetched.
         var: String,
     },
+    /// A raw TypeQL fetch entry (e.g. `"name": $p.name`), passed through
+    /// without further processing, like [`Pattern::Raw`].
+    Raw(String),
+}
+
+/// Any node the compiler renders on its own.
+///
+/// Bindings send one node at a time, tagged with its kind
+/// (`{"Pattern": {...}}`), to [`QueryCompiler::compile_node`](crate::compiler::QueryCompiler::compile_node).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
+pub enum QueryNode {
+    /// A top-level clause.
+    Clause(Clause),
+    /// A match pattern.
+    Pattern(Pattern),
+    /// A write statement.
+    Statement(Statement),
+    /// A pattern constraint.
+    Constraint(Constraint),
+    /// A value expression.
+    Value(Value),
 }
 
 /// A sort field specifying a variable and sort direction.
 ///
 /// Used within [`Clause::Sort`] to define the ordering of query results.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct SortField {
     /// The variable to sort by (e.g. `"$age"`, `"$name"`).
     pub variable: String,
@@ -352,6 +426,10 @@ pub struct SortField {
 /// Binds the result of an aggregation expression to a variable name,
 /// such as `$total = count($x)` or `$avg_salary = mean($s)`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[deprecated(
+    since = "2.3.0",
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+)]
 pub struct ReduceAssignment {
     /// The variable name to bind the aggregation result to.
     pub variable: String,

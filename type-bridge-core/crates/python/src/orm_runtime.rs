@@ -28,8 +28,9 @@ use type_bridge_orm::_schema::{SchemaInfo, SchemaManager};
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::{
     AttributeValue, DynamicAggregate, DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow,
-    DynamicExpr, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, Filter, GivenRowsSpec,
-    GivenValue, OrmError, ProviderRuntimeOwner, SortDir, TransactionContext, TxType, ValueType,
+    DynamicExpr, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort, Filter, GivenColumnType,
+    GivenRowsSpec, GivenValue, OrmError, ProviderRuntimeOwner, SortDir, TransactionContext, TxType,
+    ValueType,
 };
 
 fn drive_provider_future<F>(runtime: &ProviderRuntimeOwner, future: F) -> F::Output
@@ -305,7 +306,7 @@ impl PyDynamicValue {
 
 /// Python-facing typed dynamic sort direction.
 #[pyclass(name = "DynamicSortDir", from_py_object)]
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct PyDynamicSortDir {
     direction: SortDir,
 }
@@ -821,7 +822,7 @@ impl PyRustDatabase {
         column_types: Vec<String>,
         rows: Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        let tx_type = parse_tx_type(transaction_type)?;
+        let tx_type = crate::match_runtime::parse_enum::<TxType>(transaction_type)?;
         let spec = given_rows_from_py(variables, &column_types, &rows)?;
         let query = query.to_owned();
         let result = provider_block_on(
@@ -1028,7 +1029,7 @@ impl PyRustDatabase {
         py: Python<'_>,
         transaction_type: &str,
     ) -> PyResult<PyRustTransactionContext> {
-        let tx_type = parse_tx_type(transaction_type)?;
+        let tx_type = crate::match_runtime::parse_enum::<TxType>(transaction_type)?;
         let context = provider_block_on(
             py,
             self.runtime.as_ref(),
@@ -1040,6 +1041,27 @@ impl PyRustDatabase {
             runtime: Arc::clone(&self.runtime),
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Create a deferred staged transaction; nothing opens until commit.
+    /// An omitted kind is inferred from the staged writes. The released
+    /// `transaction()` keeps its eager context.
+    #[pyo3(signature = (kind=None, *, commit_on_exit=true))]
+    fn staged_transaction(
+        &self,
+        kind: Option<&str>,
+        commit_on_exit: bool,
+    ) -> PyResult<crate::staged_transaction_runtime::PyStagedTransaction> {
+        let mut options = type_bridge_orm::session::staged::TransactionOptions::default();
+        if let Some(kind) = kind {
+            options = options.with_kind(crate::staged_transaction_runtime::parse_kind(kind)?);
+        }
+        Ok(crate::staged_transaction_runtime::PyStagedTransaction::new(
+            self.db.transaction(options),
+            Arc::clone(&self.runtime),
+            None,
+            commit_on_exit,
+        ))
     }
 }
 
@@ -1117,7 +1139,7 @@ impl PyRustTransactionContext {
         }
     }
 
-    /// Roll back this Rust transaction.
+    /// Roll back writes and retain this context for more work.
     fn rollback(&self, py: Python<'_>) -> PyResult<()> {
         provider_block_on(py, self.runtime.as_ref(), self.context.rollback()).map_err(py_orm_error)
     }
@@ -1129,7 +1151,7 @@ impl PyRustTransactionContext {
 
     /// Return this transaction's type name.
     fn transaction_type(&self) -> &'static str {
-        tx_type_name(self.context.tx_type())
+        self.context.tx_type().spelling()
     }
 }
 
@@ -1975,10 +1997,8 @@ fn role_players_from_json(
                 let value_type = obj
                     .get("key_value_type")
                     .and_then(Value::as_str)
-                    .and_then(ValueType::parse)
-                    .ok_or_else(|| {
-                        py_value_error("key_value_type must be one of the TypeDB value types")
-                    })?;
+                    .ok_or_else(|| py_value_error("key_value_type must be a string"))
+                    .and_then(crate::match_runtime::parse_enum::<ValueType>)?;
                 Some((
                     key_attr.to_string(),
                     attribute_value_from_json(key_value, value_type)?,
@@ -2146,17 +2166,6 @@ fn py_to_json(value: Bound<'_, PyAny>) -> PyResult<Value> {
         .map_err(|error| py_value_error(format!("Expected JSON-compatible value: {error}")))
 }
 
-fn parse_tx_type(value: &str) -> PyResult<TxType> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read" => Ok(TxType::Read),
-        "write" => Ok(TxType::Write),
-        "schema" => Ok(TxType::Schema),
-        other => Err(py_value_error(format!(
-            "transaction_type must be 'read', 'write', or 'schema', got {other:?}"
-        ))),
-    }
-}
-
 /// Marshal Python given rows into the ORM's [`GivenRowsSpec`].
 ///
 /// `column_types` drives exact per-cell extraction so Python's numeric subtype
@@ -2173,6 +2182,12 @@ fn given_rows_from_py(
             column_types.len()
         )));
     }
+    // Parsed once, before any cell, so an unknown spelling surfaces as the
+    // core's `UnknownEnumValueError` rather than a per-row marshalling error.
+    let column_types = column_types
+        .iter()
+        .map(|column_type| crate::match_runtime::parse_enum::<GivenColumnType>(column_type))
+        .collect::<PyResult<Vec<_>>>()?;
     let rows: Vec<Vec<Bound<'_, PyAny>>> = rows
         .extract()
         .map_err(|error| py_value_error(format!("rows must be a sequence of rows: {error}")))?;
@@ -2186,8 +2201,8 @@ fn given_rows_from_py(
             )));
         }
         let mut cells = Vec::with_capacity(row.len());
-        for (cell, column_type) in row.iter().zip(column_types) {
-            cells.push(given_value_from_py(cell, column_type).map_err(|error| {
+        for (cell, column_type) in row.iter().zip(&column_types) {
+            cells.push(given_value_from_py(cell, *column_type).map_err(|error| {
                 let message = format!("row {row_index}: {error}");
                 if error.is_instance_of::<pyo3::exceptions::PyTypeError>(cell.py()) {
                     py_type_error(message)
@@ -2204,34 +2219,32 @@ fn given_rows_from_py(
     })
 }
 
-/// Extract one given cell according to its declared TypeQL column type.
-fn given_value_from_py(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<GivenValue> {
+/// Extract one given cell as the exact Python type of its column.
+fn given_value_from_py(
+    cell: &Bound<'_, PyAny>,
+    column_type: GivenColumnType,
+) -> PyResult<GivenValue> {
     Ok(match column_type {
-        "boolean" => GivenValue::Boolean(
+        GivenColumnType::Boolean => GivenValue::Boolean(
             cell.cast_exact::<PyBool>()
                 .map_err(|_| py_type_error("given boolean cells require an exact Python bool"))?
                 .extract()?,
         ),
-        // "long" is the ORM-internal name for the TypeQL "integer" type.
-        "integer" | "long" => GivenValue::Integer(
+        GivenColumnType::Integer => GivenValue::Integer(
             cell.cast_exact::<PyInt>()
                 .map_err(|_| py_type_error("given integer cells require an exact Python int"))?
                 .extract()?,
         ),
-        "double" => GivenValue::Double(
+        GivenColumnType::Double => GivenValue::Double(
             cell.cast_exact::<PyFloat>()
                 .map_err(|_| py_type_error("given double cells require an exact Python float"))?
                 .extract()?,
         ),
-        "string" => GivenValue::String(exact_given_string(cell, "string")?),
-        "date" => GivenValue::Date(exact_given_string(cell, "date")?),
-        "datetime" => GivenValue::Datetime(exact_given_string(cell, "datetime")?),
-        "datetime-tz" => GivenValue::DatetimeTz(exact_given_string(cell, "datetime-tz")?),
-        other => {
-            return Err(py_value_error(format!(
-                "Unsupported given column type {other:?}; expected one of string, \
-                 integer, double, boolean, date, datetime, datetime-tz"
-            )));
+        GivenColumnType::String => GivenValue::String(exact_given_string(cell, "string")?),
+        GivenColumnType::Date => GivenValue::Date(exact_given_string(cell, "date")?),
+        GivenColumnType::Datetime => GivenValue::Datetime(exact_given_string(cell, "datetime")?),
+        GivenColumnType::DatetimeTz => {
+            GivenValue::DatetimeTz(exact_given_string(cell, "datetime-tz")?)
         }
     })
 }
@@ -2246,14 +2259,6 @@ fn exact_given_string(cell: &Bound<'_, PyAny>, column_type: &str) -> PyResult<St
         .extract()
 }
 
-fn tx_type_name(tx_type: TxType) -> &'static str {
-    match tx_type {
-        TxType::Read => "read",
-        TxType::Write => "write",
-        TxType::Schema => "schema",
-    }
-}
-
 fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {
     obj.get(key)
         .and_then(Value::as_str)
@@ -2262,6 +2267,12 @@ fn required_string(obj: &Map<String, Value>, key: &str) -> PyResult<String> {
 }
 
 pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
+    if error.failure().is_some() {
+        return py_provider_diagnostic(type_bridge_orm::lower_execution_error(
+            error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+        ));
+    }
     match error {
         OrmError::UnsupportedVersion(error) => VersionError::new_err(error.to_string()),
         OrmError::DescriptorValidation { .. } | OrmError::DescriptorConflict { .. } => {
@@ -2275,6 +2286,45 @@ pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
         }
         _ => py_runtime_error(error.to_string()),
     }
+}
+
+/// The `type_bridge.failure` class a commit-phase failure raises, or `None`
+/// for a failure before commit.
+pub(crate) fn commit_outcome_class(
+    failure: &type_bridge_contract::failure::Failure,
+) -> Option<&'static str> {
+    use type_bridge_contract::failure::{Failure, Phase, Reason};
+    match failure {
+        Failure::Indeterminate { .. } => Some("CommitOutcomeUnknown"),
+        Failure::Rejected {
+            phase: Phase::Commit,
+            reason,
+            ..
+        } => Some(match reason {
+            Reason::Conflict { .. } => "CommitConflict",
+            _ => "CommitRejected",
+        }),
+        _ => None,
+    }
+}
+
+pub(crate) fn py_provider_diagnostic(
+    diagnostic: type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+) -> PyErr {
+    Python::attach(|py| {
+        let error = match diagnostic.failure().and_then(commit_outcome_class) {
+            Some(class) => match py
+                .import("type_bridge.failure")
+                .and_then(|module| module.getattr(class))
+                .and_then(|class| class.call1((diagnostic.message().as_str(),)))
+            {
+                Ok(value) => PyErr::from_value(value),
+                Err(error) => return error,
+            },
+            None => py_runtime_error(diagnostic.message().as_str()),
+        };
+        crate::match_runtime::structured_py_error(py, error, &diagnostic)
+    })
 }
 
 fn py_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> PyErr {
@@ -2680,6 +2730,7 @@ mod given_rows_tests {
             for (source, column_type, expected) in valid {
                 let source = std::ffi::CString::new(source).unwrap();
                 let value = py.eval(source.as_c_str(), None, None).unwrap();
+                let column_type = column_type.parse().unwrap();
                 assert_eq!(given_value_from_py(&value, column_type).unwrap(), expected);
             }
 
@@ -2694,17 +2745,22 @@ mod given_rows_tests {
                 let source = std::ffi::CString::new(source).unwrap();
                 let value = py.eval(source.as_c_str(), None, None).unwrap();
                 assert!(
-                    given_value_from_py(&value, column_type).is_err(),
+                    given_value_from_py(&value, column_type.parse().unwrap()).is_err(),
                     "{source:?} must not coerce into {column_type}"
                 );
             }
 
-            let unsupported = py.eval(ffi::c_str!("'value'"), None, None).unwrap();
+            let rows = py.eval(ffi::c_str!("[['value']]"), None, None).unwrap();
+            let unsupported =
+                given_rows_from_py(vec!["value".into()], &["decimal".into()], &rows).unwrap_err();
             assert!(
-                given_value_from_py(&unsupported, "decimal")
-                    .unwrap_err()
+                unsupported
+                    .get_type(py)
+                    .name()
+                    .unwrap()
                     .to_string()
-                    .contains("Unsupported given column type")
+                    .contains("UnknownEnumValueError"),
+                "{unsupported}"
             );
         });
     }
@@ -2759,5 +2815,44 @@ mod given_rows_tests {
             assert!(type_error.to_string().contains("row 0"));
             assert!(type_error.to_string().contains("exact Python int"));
         });
+    }
+}
+
+#[cfg(test)]
+mod commit_outcome_tests {
+    use type_bridge_contract::failure::{Failure, LockKind, Phase, Reason};
+
+    use super::commit_outcome_class;
+
+    fn rejected(phase: Phase, reason: Reason) -> Failure {
+        Failure::Rejected {
+            phase,
+            reason,
+            op_index: Some(1),
+        }
+    }
+
+    #[test]
+    fn commit_failures_pick_the_shared_commit_classes() {
+        let conflict = Reason::Conflict {
+            lock: LockKind::Exclusive,
+        };
+        assert_eq!(
+            commit_outcome_class(&rejected(Phase::Commit, conflict)),
+            Some("CommitConflict")
+        );
+        assert_eq!(
+            commit_outcome_class(&rejected(Phase::Commit, Reason::Cardinality)),
+            Some("CommitRejected")
+        );
+        assert_eq!(
+            commit_outcome_class(&Failure::Indeterminate { code: None }),
+            Some("CommitOutcomeUnknown")
+        );
+        // A rejected query is not a commit outcome; it keeps its own class.
+        assert_eq!(
+            commit_outcome_class(&rejected(Phase::Query, Reason::Unique)),
+            None
+        );
     }
 }

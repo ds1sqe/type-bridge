@@ -1,9 +1,13 @@
 import asyncio
 import hashlib
+import importlib.util
 import json
 import os
 import struct
+import sys
+import warnings
 import weakref
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -12,6 +16,7 @@ from pathlib import Path
 import generated_identical as identical
 import generated_v2._query as generated_query_module
 import generated_variant as variant
+import type_bridge_core
 from generated_ordered import CrudHook as OrderedCrudHook
 from generated_ordered import DirectConnectionPolicy as OrderedDirectConnectionPolicy
 from generated_ordered import Membership as OrderedMembership
@@ -32,8 +37,10 @@ from generated_v2 import (
     Employment,
     Event,
     EventRef,
+    ExchangeConnection,
     FieldToken,
     FooBar,
+    GroupedQuery,
     Identifier,
     Interaction,
     Membership,
@@ -44,8 +51,13 @@ from generated_v2 import (
     ProjectedManagerComparison,
     ProjectedModelFilter,
     ProjectedModelManager,
+    Query,
     QueryCancellation,
     QueryExecutionResourceLimits,
+    QueryLimits,
+    QuerySession,
+    RemoteGroupedQuery,
+    RemoteQuery,
     RemoteQueryLimits,
     RemoteQuerySession,
     Robot,
@@ -65,7 +77,7 @@ from generated_v2 import (
     qualifying_score,
 )
 from generated_variant import Person as VariantPerson
-from type_bridge_core import MatchRequestError
+from type_bridge_core import MatchRequestError, blocking
 
 from type_bridge.query import QueryBuilder
 from type_bridge.session import Database
@@ -349,8 +361,11 @@ try:
             EventRef("event-3"),
         ]
     )
-except ValueError:
-    pass
+except ValueError as error:
+    # The core's refusal: ProjectedCardinalityError is a ValueError.
+    assert type(error).__name__ == "ProjectedCardinalityError"
+    assert getattr(error, "code", None) == "role_cardinality_violation"
+    assert getattr(error, "details", {}).get("actual_count") == {"kind": "count", "value": 3}
 else:
     raise AssertionError("role maximum cardinality was not enforced")
 
@@ -595,7 +610,9 @@ projection = json.loads(RUNTIME_PROJECTION_JSON)
 assert json.loads(SEMANTIC_SCHEMA_FINGERPRINT_JSON) == projection["semantic_fingerprint"]
 assert json.loads(PROJECTION_FINGERPRINT_JSON) == projection["projection_fingerprint"]
 
-match_session = Person.__runtime_projection__.match_session()
+match_session = Person.__runtime_projection__.match_session_with_resources(
+    QueryExecutionResourceLimits(), QueryCancellation()
+)
 assert match_session.exact("person")
 assert match_session.subtypes("party")
 try:
@@ -689,7 +706,6 @@ for rejected_same_package_query in (
         .role(Employment.employee)
         .connects(query_session.exact(Event))
     ),
-    lambda: query_session.query(*(query_session.exact(Person) for _ in range(17))),
     lambda: query_session.query_as(MutableRow, person=person_var),
     lambda: query_session.query_as(
         EmploymentRow,
@@ -936,24 +952,21 @@ async def generated_failure_exchange(request: bytes) -> bytes:
     return generated_failure_reply
 
 
-generated_remote_session = RemoteQuerySession(
-    generated_advertisement,
-    generated_failure_exchange,
-    RemoteQueryLimits(
-        max_items=11,
-        max_bytes=1 << 20,
-        max_collection_members=12,
-        max_graph_nodes=13,
-        max_attribute_values=14,
-        max_role_players=15,
+generated_remote_session = QuerySession(
+    ExchangeConnection(generated_advertisement, generated_failure_exchange),
+    resources=QueryExecutionResourceLimits(
+        items=11,
+        bytes=1 << 20,
+        collection_members=12,
+        graph_nodes=13,
+        attribute_values=14,
+        role_players=15,
     ),
 )
 generated_remote_person = generated_remote_session.exact(Person)
 captured_failure_pending: list[object] = []
-original_prepare_remote_rows = getattr(
-    generated_query_module,
-    "query_v2_prepare_remote_model_rows",
-)
+fetch_rows_terminal = getattr(generated_query_module, "_FETCH_ROWS")
+original_prepare_remote_rows = fetch_rows_terminal.prepare
 
 
 def capture_failure_pending(*args: object, **kwargs: object) -> object:
@@ -962,11 +975,7 @@ def capture_failure_pending(*args: object, **kwargs: object) -> object:
     return pending
 
 
-setattr(
-    generated_query_module,
-    "query_v2_prepare_remote_model_rows",
-    capture_failure_pending,
-)
+fetch_rows_terminal.prepare = capture_failure_pending
 remote_diagnostic_observation: dict[str, object]
 try:
     asyncio.run(generated_remote_session.query(generated_remote_person).one())
@@ -990,7 +999,7 @@ except MatchRequestError as error:
     attempt_detail = error.details["attempt"]
     assert isinstance(attempt_detail, dict)
     attempt_value = attempt_detail["value"]
-    assert isinstance(attempt_value, int)
+    assert type(attempt_value) is int
     diagnostic_serialized = json.dumps(
         {"message": error.message, "path": error.path, "details": error.details},
         sort_keys=True,
@@ -1019,13 +1028,216 @@ except MatchRequestError as error:
 else:
     raise AssertionError("generated remote query accepted an authenticated application failure")
 finally:
-    setattr(
-        generated_query_module,
-        "query_v2_prepare_remote_model_rows",
-        original_prepare_remote_rows,
-    )
+    fetch_rows_terminal.prepare = original_prepare_remote_rows
 assert generated_remote_exchanges == 1
 assert len(captured_failure_pending) == 1
+
+# Query limits belong to the session. Rust admits them, and a lowered
+# boolean-term ceiling refuses a two-clause query before any exchange, naming
+# the limit it enforced and that the caller configured it.
+assert "boolean_terms" in QueryLimits.names()
+assert QueryLimits().get("boolean_terms") == 256
+assert QueryLimits(boolean_terms=1).get("boolean_terms") == 1
+for rejected_query_limits in ({"made_up": 1}, {"canonical_depth": 1000}, {"boolean_terms": 0}):
+    try:
+        QueryLimits(**rejected_query_limits)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown or unsupported query limits must be refused")
+limited_remote_session = QuerySession(
+    ExchangeConnection(generated_advertisement, generated_failure_exchange),
+    resources=QueryExecutionResourceLimits(
+        items=11,
+        bytes=1 << 20,
+        collection_members=12,
+        graph_nodes=13,
+        attribute_values=14,
+        role_players=15,
+    ),
+    query_limits=QueryLimits(boolean_terms=1),
+)
+limited_remote_person = limited_remote_session.exact(Person)
+try:
+    asyncio.run(
+        limited_remote_session.query(limited_remote_person)
+        .where(
+            limited_remote_person.field(Person.score).gte(Score(1)),
+            limited_remote_person.field(Person.score).gte(Score(2)),
+        )
+        .rows(limit=1)
+    )
+except MatchRequestError as error:
+    assert error.category == "resource_limit"
+    assert error.code == "structural_limit_exceeded"
+    assert "boolean_terms" in repr(error.details["limit"])
+    assert "configured" in repr(error.details["source"])
+else:
+    raise AssertionError("a lowered session limit must refuse the wider query")
+assert generated_remote_exchanges == 1
+limited_remote_session.close()
+
+
+# Windows, selection and aggregate caps, group-by keys, and reachability
+# depth are core rules: the generated host only marshals, and every refusal
+# is the core's structured diagnostic, at the same call as before.
+core_rule_exchanges: list[bytes] = []
+
+
+async def core_rule_exchange(request: bytes) -> bytes:
+    core_rule_exchanges.append(request)
+    return b"{}"
+
+
+def expect_core_refusal(
+    action: Callable[[], object], code: str, maximum: int | None = None
+) -> None:
+    try:
+        outcome = action()
+        if asyncio.iscoroutine(outcome):
+            asyncio.run(outcome)
+    except MatchRequestError as error:
+        assert (error.category, error.code) == ("invalid_plan", code), (error.category, error.code)
+        # 2.2 raised ValueError for these refusals; the core's class keeps it.
+        assert isinstance(error, ValueError), type(error)
+        assert type(error).__name__ == "InvalidQueryRequestError", type(error)
+        if maximum is not None:
+            assert error.details["maximum"] == {"kind": "count", "value": maximum}, error.details
+            assert error.details["limit"] == {
+                "kind": "query_identity",
+                "value": "selected_slots",
+            }, error.details
+    else:
+        raise AssertionError(f"expected the core refusal {code}")
+
+
+for session_slots in (None, 4):
+    core_rule_session = QuerySession(
+        ExchangeConnection(generated_advertisement, core_rule_exchange),
+        query_limits=None if session_slots is None else QueryLimits(selected_slots=session_slots),
+    )
+    slots = 16 if session_slots is None else session_slots
+    core_person = core_rule_session.exact(Person)
+    core_score = core_person.field(Person.score)
+    core_query = core_rule_session.query(core_person)
+    expect_core_refusal(
+        lambda: core_rule_session.query(
+            *(core_rule_session.exact(Person) for _ in range(slots + 1))
+        ),
+        "selection_cap_exceeded",
+        slots,
+    )
+    expect_core_refusal(
+        lambda: core_query.group_by(core_person, *(core_score for _ in range(slots + 1))),
+        "field_group_tuple_cap_exceeded",
+        slots,
+    )
+    expect_core_refusal(
+        lambda: core_query.aggregate(core_person, *(aggregate.count() for _ in range(slots + 1))),
+        "reducer_cap_exceeded",
+        slots,
+    )
+    expect_core_refusal(lambda: core_query.aggregate(core_person), "empty_reducers")
+    expect_core_refusal(lambda: core_query.rows(limit=0), "zero_window_limit")
+    expect_core_refusal(lambda: core_query.page_by(core_person, limit=0), "zero_window_limit")
+    expect_core_refusal(lambda: core_query.rows(offset=2**64 - 2, limit=2), "window_overflow")
+    core_other = core_rule_session.exact(Person)
+    for min_depth, max_depth, code in (
+        (3, 2, "reachable_bounds"),
+        (0, 65, "reachable_depth_limit"),
+    ):
+        expect_core_refusal(
+            lambda: core_rule_session.reachable(
+                core_person,
+                core_other,
+                Event,
+                Event.subject,
+                Event.subject,
+                min_depth=min_depth,
+                max_depth=max_depth,
+            ),
+            code,
+        )
+    # Marshalling stays a host error with the 2.2 classes: a bool is not an
+    # int (TypeError), and a depth outside 0..255 is a ValueError.
+    for hostile, error_type in ((True, TypeError), (-1, ValueError), (256, ValueError)):
+        try:
+            core_rule_session.reachable(
+                core_person,
+                core_other,
+                Event,
+                Event.subject,
+                Event.subject,
+                min_depth=0,
+                max_depth=hostile,
+            )
+        except error_type:
+            pass
+        else:
+            raise AssertionError(f"reachable depth {hostile!r} must raise {error_type.__name__}")
+    core_rule_session.close()
+assert core_rule_exchanges == []
+
+# Repeated where clauses are one flat conjunction, so a wide query adapts
+# under the default limits. Thirty-eight clauses used to nest past the
+# canonical encoding depth and were refused as a resource limit during
+# adaptation. This fixture's advertisement omits the field-comparison
+# capability, so preparation now ends one step later, at capability
+# negotiation, which only an adapted plan reaches.
+wide_remote_requests: list[int] = []
+
+
+async def wide_remote_exchange(request: bytes) -> bytes:
+    wide_remote_requests.append(len(request))
+    return b"{}"
+
+
+wide_remote_session = QuerySession(
+    ExchangeConnection(generated_advertisement, wide_remote_exchange),
+    resources=QueryExecutionResourceLimits(
+        items=11,
+        bytes=1 << 20,
+        collection_members=12,
+        graph_nodes=13,
+        attribute_values=14,
+        role_players=15,
+    ),
+)
+wide_remote_person = wide_remote_session.exact(Person)
+try:
+    asyncio.run(
+        wide_remote_session.query(wide_remote_person)
+        .where(*(wide_remote_person.field(Person.score).gte(Score(1)) for _ in range(38)))
+        .rows(limit=1)
+    )
+except MatchRequestError as error:
+    assert error.category == "unsupported_capability", (error.category, error.code)
+else:
+    raise AssertionError("the fixture advertisement cannot execute a field comparison")
+assert wide_remote_requests == []
+
+# Nesting the caller actually wrote is still bounded: alternating conjunction
+# and disjunction thirty-eight deep is refused during adaptation, before
+# capability negotiation, and the refusal names the limit to raise.
+nested_remote_predicate = wide_remote_person.field(Person.score).gte(Score(1))
+for depth in range(1, 38):
+    nested_remote_term = wide_remote_person.field(Person.score).gte(Score(1))
+    nested_remote_predicate = (
+        nested_remote_predicate.and_(nested_remote_term)
+        if depth % 2 == 0
+        else nested_remote_predicate.or_(nested_remote_term)
+    )
+try:
+    asyncio.run(
+        wide_remote_session.query(wide_remote_person).where(nested_remote_predicate).rows(limit=1)
+    )
+except MatchRequestError as error:
+    assert error.category == "resource_limit", (error.category, error.code)
+    assert error.code == "canonical_json_too_deep"
+else:
+    raise AssertionError("a predicate nested past the encoding depth must be refused")
+assert wide_remote_requests == []
+wide_remote_session.close()
 assert generated_failure_reply is not None
 try:
     getattr(captured_failure_pending[0], "decode_reply")(generated_failure_reply)
@@ -1046,10 +1258,8 @@ async def _cancelled_before_remote_exchange() -> tuple[int, str, str]:
         exchanges += 1
         raise AssertionError("pre-cancelled remote query reached caller transport")
 
-    session = RemoteQuerySession(
-        generated_advertisement,
-        unexpected_exchange,
-        QueryExecutionResourceLimits(),
+    session = QuerySession(
+        ExchangeConnection(generated_advertisement, unexpected_exchange),
         cancellation=cancellation,
     )
     person = session.exact(Person)
@@ -1090,10 +1300,8 @@ async def _cancelled_after_remote_exchange() -> tuple[int, bool, str, str]:
         asyncio.get_running_loop().call_soon(cancellation.cancel)
         return reply
 
-    session = RemoteQuerySession(
-        generated_advertisement,
-        completed_exchange,
-        QueryExecutionResourceLimits(),
+    session = QuerySession(
+        ExchangeConnection(generated_advertisement, completed_exchange),
         cancellation=cancellation,
     )
     person = session.exact(Person)
@@ -1119,10 +1327,8 @@ async def _cancelled_remote_transport() -> tuple[bool, str, str]:
             exchange_cancelled = True
             raise
 
-    session = RemoteQuerySession(
-        generated_advertisement,
-        blocked_exchange,
-        QueryExecutionResourceLimits(),
+    session = QuerySession(
+        ExchangeConnection(generated_advertisement, blocked_exchange),
         cancellation=cancellation,
     )
     person = session.exact(Person)
@@ -1158,6 +1364,136 @@ assert after_exchange_count == 1
 assert not exchange_cancelled_after_send
 assert after_exchange_category == "cancelled"
 assert after_exchange_code == "provider_cancelled"
+
+
+# An exchange connection given no answer limits is a proxy connection at the
+# wire defaults: a session given no resources sends the proxy defaults, not
+# the direct defaults its own `QueryExecutionResourceLimits()` holds.
+async def _default_exchange_request_limits() -> dict[str, int]:
+    sent: list[dict[str, int]] = []
+
+    async def capturing_exchange(request: bytes) -> bytes:
+        sent.append(json.loads(request)["limits"])
+        return b"{}"
+
+    session = QuerySession(ExchangeConnection(generated_advertisement, capturing_exchange))
+    try:
+        await session.query(session.exact(Person)).rows(limit=1)
+    except MatchRequestError:
+        pass
+    session.close()
+    assert len(sent) == 1, sent
+    return sent[0]
+
+
+default_exchange_limits = asyncio.run(_default_exchange_request_limits())
+assert default_exchange_limits["max_items"] == type_bridge_core.DEFAULT_PROXY_QUERY_ITEMS, (
+    default_exchange_limits
+)
+assert default_exchange_limits["max_bytes"] == type_bridge_core.DEFAULT_PROXY_QUERY_BYTES
+assert (
+    default_exchange_limits["max_graph_nodes"] == type_bridge_core.DEFAULT_PROXY_QUERY_GRAPH_NODES
+)
+assert QueryExecutionResourceLimits().items == type_bridge_core.DEFAULT_DIRECT_QUERY_ITEMS
+
+
+# The 2.2 remote-session names are deprecated aliases: the 2.2.4 typed-query
+# guide's remote example runs unchanged, warns, and sends the same request and
+# gets the same outcome as the 2.3 spelling.
+async def _remote_example_outcome(legacy: bool) -> tuple[dict[str, object], str, str]:
+    sent: list[dict[str, object]] = []
+
+    async def exchange(request: bytes) -> bytes:
+        decoded = json.loads(request)
+        # Drop the per-request nonce and clock readings; the rest must match.
+        assert 0 < decoded["limits"]["deadline_ms"] <= 30_000, decoded["limits"]
+        for clock in ("nonce", "prepared_at_unix_ms", "expires_at_unix_ms"):
+            del decoded[clock]
+        del decoded["limits"]["deadline_ms"]
+        sent.append(decoded)
+        return b"{}"
+
+    advertisement_bytes = generated_advertisement
+    try:
+        if legacy:
+            # Verbatim from the 2.2.4 guide (docs/guide/typed-queries.md).
+            remote = RemoteQuerySession(
+                advertisement_bytes,
+                exchange,
+                RemoteQueryLimits(
+                    max_items=100,
+                    max_bytes=8_388_608,
+                    max_collection_members=1_000,
+                    max_graph_nodes=1_000,
+                    max_attribute_values=1_000,
+                    max_role_players=1_000,
+                    deadline_ms=30_000,
+                ),
+            )
+            person = remote.exact(Person)
+            rows = await remote.query(person).rows(limit=50)
+        else:
+            remote = QuerySession(
+                ExchangeConnection(advertisement_bytes, exchange),
+                resources=QueryExecutionResourceLimits(
+                    timeout_milliseconds=30_000,
+                    items=100,
+                    bytes=8_388_608,
+                    collection_members=1_000,
+                    graph_nodes=1_000,
+                    attribute_values=1_000,
+                    role_players=1_000,
+                ),
+            )
+            person = remote.exact(Person)
+            rows = await remote.query(person).rows(limit=50)
+    except MatchRequestError as error:
+        assert len(sent) == 1, sent
+        return sent[0], error.category, error.code
+    raise AssertionError(f"the offline exchange cannot produce rows: {rows!r}")
+
+
+with warnings.catch_warnings(record=True) as legacy_remote_warnings:
+    warnings.simplefilter("always")
+    legacy_remote_outcome = asyncio.run(_remote_example_outcome(legacy=True))
+assert sorted(
+    str(warning.message).split(" ", 1)[0]
+    for warning in legacy_remote_warnings
+    if warning.category is DeprecationWarning
+) == ["RemoteQueryLimits", "RemoteQuerySession"], [
+    str(warning.message) for warning in legacy_remote_warnings
+]
+assert all(warning.filename == __file__ for warning in legacy_remote_warnings), [
+    warning.filename for warning in legacy_remote_warnings
+]
+with warnings.catch_warnings():
+    warnings.simplefilter("error", DeprecationWarning)
+    current_remote_outcome = asyncio.run(_remote_example_outcome(legacy=False))
+assert legacy_remote_outcome == current_remote_outcome, (
+    legacy_remote_outcome,
+    current_remote_outcome,
+)
+assert legacy_remote_outcome[0]["limits"]["max_items"] == 100, legacy_remote_outcome
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    legacy_limits = RemoteQueryLimits(
+        max_items=1,
+        max_bytes=2,
+        max_collection_members=3,
+        max_graph_nodes=4,
+        max_attribute_values=5,
+        max_role_players=6,
+    )
+    legacy_session = RemoteQuerySession(
+        generated_advertisement, wide_remote_exchange, legacy_limits
+    )
+assert type(legacy_limits) is QueryExecutionResourceLimits
+assert isinstance(legacy_limits, RemoteQueryLimits)
+assert legacy_limits.timeout_milliseconds == QueryExecutionResourceLimits().timeout_milliseconds
+assert isinstance(legacy_session, QuerySession)
+assert isinstance(legacy_session.query(legacy_session.exact(Person)), RemoteQuery)
+assert RemoteQuery is Query and RemoteGroupedQuery is GroupedQuery
+legacy_session.close()
 remote_cancellation_observation = {
     "before_exchange": {
         "category": before_exchange_category,
@@ -1179,35 +1515,63 @@ remote_cancellation_observation = {
 def _proof_source_identity(root: Path, relative: str) -> dict[str, str]:
     source = root / relative
     if source.is_symlink() or not source.is_file():
-        raise AssertionError(f"sdk-v2 proof source is not a regular file: {relative}")
+        raise AssertionError(f"queries proof source is not a regular file: {relative}")
     with source.open("rb") as source_file:
         digest = hashlib.sha256(source_file.read()).hexdigest()
     return {"path": relative, "sha256": digest}
 
 
-def _emit_sdk_v2_remote_proof_fragment() -> None:
-    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT")
+def _proof_semantic_profile(root: Path, suite: str) -> str:
+    """Return the {suite} matrix profile a proof fragment declares.
+
+    The profile is TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the catalog's
+    own; the generated packages under proof must be on it.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_typebridge_sdk_profile_matrix", root / "scripts/ci/sdk_profile_matrix.py"
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("sdk profile matrix is not importable")
+    matrix = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = matrix
+    spec.loader.exec_module(matrix)
+    profile = matrix.requested(
+        suite,
+        root=root,
+        error=lambda code, message: AssertionError(f"{code}: {message}"),
+    ).semantic_profile
+    generated_profile = json.loads(SEMANTIC_SCHEMA_FINGERPRINT_JSON)["semantic_profile"]
+    if generated_profile != profile:
+        raise AssertionError(
+            f"{suite} proof fragments target {profile}; "
+            f"the generated package uses {generated_profile}"
+        )
+    return profile
+
+
+def _emit_sdk_queries_remote_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT")
     if raw_destination is None:
         return
-    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE")
     if (
         run_nonce is None
         or len(run_nonce) != 64
         or any(character not in "0123456789abcdef" for character in run_nonce)
     ):
-        raise AssertionError("sdk-v2 proof run nonce must be 64 lowercase hex characters")
+        raise AssertionError("queries proof run nonce must be 64 lowercase hex characters")
     destination = Path(raw_destination)
     if not destination.is_absolute():
-        raise AssertionError("sdk-v2 proof fragment path must be absolute")
+        raise AssertionError("queries proof fragment path must be absolute")
     if destination.parent.is_symlink() or not destination.parent.is_dir():
-        raise AssertionError("sdk-v2 proof fragment parent must be a regular directory")
+        raise AssertionError("queries proof fragment parent must be a regular directory")
     root = Path.cwd()
     if not (root / "type-bridge-core").is_dir():
-        raise AssertionError("sdk-v2 proof fragment emitter requires the repository root")
+        raise AssertionError("queries proof fragment emitter requires the repository root")
     contract_paths = {
-        "proof_schema": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json"),
-        "allowlist": ("tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json"),
-        "journey": "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json",
+        "proof_schema": ("tests/contracts/sdk_conformance/queries/proof-fragment-schema.json"),
+        "allowlist": ("tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json"),
+        "journey": "tests/contracts/sdk_conformance/queries/journey.json",
     }
     producer_paths = sorted(
         (
@@ -1218,9 +1582,9 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
         )
     )
     fragment = {
-        "format": "typebridge.sdk-v2-proof-fragment/v1",
+        "format": "typebridge.sdk-queries-proof-fragment/v1",
         "binding": "python",
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": _proof_semantic_profile(root, "queries"),
         "run_nonce": run_nonce,
         "contract": {
             name: _proof_source_identity(root, relative)
@@ -1251,35 +1615,35 @@ def _emit_sdk_v2_remote_proof_fragment() -> None:
         json.dumps(fragment, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
     ).encode()
     if len(payload) > 64 * 1024:
-        raise AssertionError("sdk-v2 proof fragment exceeds 64 KiB")
+        raise AssertionError("queries proof fragment exceeds 64 KiB")
     with destination.open("xb") as output:
         output.write(payload)
         output.flush()
         os.fsync(output.fileno())
 
 
-_emit_sdk_v2_remote_proof_fragment()
+_emit_sdk_queries_remote_proof_fragment()
 
 
-def _emit_sdk_v3_package_proof_fragment() -> None:
-    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_V3_PROOF_FRAGMENT")
+def _emit_sdk_models_package_proof_fragment() -> None:
+    raw_destination = os.environ.get("TYPE_BRIDGE_SDK_MODELS_PROOF_FRAGMENT")
     if raw_destination is None:
         return
-    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_V3_PROOF_RUN_NONCE")
+    run_nonce = os.environ.get("TYPE_BRIDGE_SDK_MODELS_PROOF_RUN_NONCE")
     if (
         run_nonce is None
         or len(run_nonce) != 64
         or any(character not in "0123456789abcdef" for character in run_nonce)
     ):
-        raise AssertionError("sdk-v3 proof run nonce must be 64 lowercase hex characters")
+        raise AssertionError("models proof run nonce must be 64 lowercase hex characters")
     destination = Path(raw_destination)
     if not destination.is_absolute() or destination.exists():
-        raise AssertionError("sdk-v3 proof destination must be absent and absolute")
+        raise AssertionError("models proof destination must be absent and absolute")
     root = Path.cwd()
     contract_paths = {
-        "proof_schema": "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-schema-v1.json",
-        "allowlist": "tests/contracts/sdk_conformance/sdk-v3/proof-fragment-allowlist-v1.json",
-        "journey": "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+        "proof_schema": "tests/contracts/sdk_conformance/models/proof-fragment-schema.json",
+        "allowlist": "tests/contracts/sdk_conformance/models/proof-fragment-allowlist.json",
+        "journey": "tests/contracts/sdk_conformance/models/journey.json",
     }
     producer_paths = sorted(
         (
@@ -1401,17 +1765,17 @@ def _emit_sdk_v3_package_proof_fragment() -> None:
         "rejected_token_states": ["foreign", "forged", "reordered", "stale"],
         "provider_text_exposed": False,
     }
-    test_id = "python.generated_package_v3_integrity"
+    test_id = "python.sdk_models_generated_package_integrity"
     fragment = {
-        "format": "typebridge.sdk-v3-proof-fragment/v1",
+        "format": "typebridge.sdk-models-proof-fragment/v1",
         "binding": "python",
-        "semantic_profile": "typedb-3.12.1/v1",
+        "semantic_profile": _proof_semantic_profile(root, "models"),
         "run_nonce": run_nonce,
         "contract": {
             name: _proof_source_identity(root, path) for name, path in contract_paths.items()
         },
         "producer": {
-            "id": "python.generated-package-v3-proof",
+            "id": "python.sdk-models-generated-package-proof",
             "sources": [_proof_source_identity(root, path) for path in producer_paths],
         },
         "results": [
@@ -1528,26 +1892,42 @@ async def fake_exchange(request: bytes) -> bytes:
     return b"generated-remote-response"
 
 
-remote_names = (
-    "query_v2_remote_model_context",
-    "query_v2_prepare_remote_model_rows",
-    "query_v2_prepare_remote_model_page",
-    "query_v2_prepare_remote_model_count",
-    "query_v2_prepare_remote_model_exists",
-    "query_v2_prepare_remote_model_reduce",
-)
-saved_remote = {name: getattr(generated_query_module, name) for name in remote_names}
+for rejected_connection in (object(), "localhost:1729", None):
+    try:
+        QuerySession(rejected_connection)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("generated QuerySession accepted an unknown connection kind")
+for rejected_exchange in (
+    lambda: ExchangeConnection(bytearray(b"advertisement"), fake_exchange),
+    lambda: ExchangeConnection(b"advertisement", object()),
+):
+    try:
+        rejected_exchange()
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("generated ExchangeConnection accepted an invalid argument")
+
+
+remote_terminals = {
+    name: getattr(generated_query_module, name)
+    for name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY", "_REDUCE_BY")
+}
+saved_prepare = {name: terminal.prepare for name, terminal in remote_terminals.items()}
+saved_context = generated_query_module.query_v2_remote_model_context_with_resources
 saved_row_materializer = generated_query_module.Query.materialize_row
 saved_page_materializer = generated_query_module.Query.materialize_page
 saved_reduction_materializer = generated_query_module.Query.materialize_reduction
 reduce_calls: list[tuple[object, ...]] = []
 try:
-    generated_query_module.query_v2_remote_model_context = lambda *arguments: object()
-    generated_query_module.query_v2_prepare_remote_model_rows = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_page = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_count = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_exists = lambda *arguments: FakePending()
-    generated_query_module.query_v2_prepare_remote_model_reduce = lambda *arguments: (
+    generated_query_module.query_v2_remote_model_context_with_resources = (
+        lambda *arguments, **keywords: object()
+    )
+    for terminal_name in ("_FETCH_ROWS", "_PAGE_BY", "_COUNT_BY", "_EXISTS_BY"):
+        remote_terminals[terminal_name].prepare = lambda *arguments: FakePending()
+    remote_terminals["_REDUCE_BY"].prepare = lambda *arguments: (
         reduce_calls.append(arguments),
         FakePending(),
     )[1]
@@ -1565,16 +1945,15 @@ try:
         if group is not None
         else tuple(range(1, term_count + 1))
     )
-    remote_session = RemoteQuerySession(
-        b"generated-advertisement",
-        fake_exchange,
-        RemoteQueryLimits(
-            max_items=10,
-            max_bytes=1 << 20,
-            max_collection_members=10,
-            max_graph_nodes=10,
-            max_attribute_values=10,
-            max_role_players=10,
+    remote_session = QuerySession(
+        ExchangeConnection(b"generated-advertisement", fake_exchange),
+        resources=QueryExecutionResourceLimits(
+            items=10,
+            bytes=1 << 20,
+            collection_members=10,
+            graph_nodes=10,
+            attribute_values=10,
+            role_players=10,
         ),
     )
     remote_person = remote_session.exact(Person)
@@ -1605,18 +1984,44 @@ try:
     assert reduce_calls[0][3] is None
     assert reduce_calls[0][4] == ["count", "sum"]
     assert reduce_calls[1][3] is not None
+    # The host forwards any term count; the core refuses it (checked with a
+    # real native prepare above).
     for invalid_terms in ((), tuple(aggregate.count() for _ in range(17))):
-        try:
-            asyncio.run(remote_query.aggregate(remote_person, *invalid_terms))
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("generated remote aggregate accepted invalid term cardinality")
+        asyncio.run(remote_query.aggregate(remote_person, *invalid_terms))
+        assert len(reduce_calls[-1][4]) == len(invalid_terms)
+    # The blocking facade runs the same coroutine terminals to completion.
+    blocking_query = blocking(remote_session).query(remote_person)
+    assert blocking_query.one() is person
+    assert blocking_query.rows(limit=1) == [person]
+    assert blocking_query.count_by(remote_person) == 1
+    assert blocking_query.group_by(remote_person, remote_person).aggregate(aggregate.count()) == (
+        (person, (1,)),
+    )
 finally:
-    for name, value in saved_remote.items():
-        setattr(generated_query_module, name, value)
+    for name, prepare in saved_prepare.items():
+        remote_terminals[name].prepare = prepare
+    generated_query_module.query_v2_remote_model_context_with_resources = saved_context
     generated_query_module.Query.materialize_row = saved_row_materializer
     generated_query_module.Query.materialize_page = saved_page_materializer
     generated_query_module.Query.materialize_reduction = saved_reduction_materializer
 
-_emit_sdk_v3_package_proof_fragment()
+
+# A generated package exposes its embedded authority for the plan builder,
+# in both runtime resource variants; the package's own tokens build a plan.
+from generated_ordered import schema_authority as ordered_schema_authority  # noqa: E402
+from generated_v2 import Person as PlanPerson  # noqa: E402
+from generated_v2 import schema_authority  # noqa: E402
+
+from type_bridge.plan import Plan  # noqa: E402
+
+assert schema_authority() is schema_authority()
+assert ordered_schema_authority() is ordered_schema_authority()
+_plan = Plan.builder()
+_planned = _plan.exact(PlanPerson)
+_score = _plan.field(_planned, PlanPerson.score)
+_plan.where_(_score.ge(20)).update(_planned, PlanPerson.score, _plan.let_("next_score", _score + 1))
+_built = _plan.build(schema_authority())
+assert _built.writes()
+assert json.loads(_built.canonical_bytes())["bindings"][0]["variable"] == "person"
+
+_emit_sdk_models_package_proof_fragment()

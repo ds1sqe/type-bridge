@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib.util
 import inspect
 import json
 import os
@@ -18,14 +19,16 @@ from pathlib import Path
 from typing import Any
 
 REPORT_FORMAT = "typebridge.projected-parity-report/v1"
-SEMANTIC_PROFILE = "typedb-3.12.1/v1"
+# The models TypeDB version matrix: the report's profile and the semantic
+# fingerprint the local package must carry.
+PROFILE_MATRIX_RELATIVE = "scripts/ci/sdk_profile_matrix.py"
 OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT"
 PACKAGE_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_PYTHON_PACKAGE_ROOT"
 REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT"
 MAX_REPORT_BYTES = 256 * 1024
 MAX_AUTHORITY_BYTES = 1024 * 1024
-SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
-JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json"
+SCHEMA_RELATIVE = "tests/contracts/sdk_conformance/models/schema.yaml"
+JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/models/journey.json"
 
 
 class ProducerError(RuntimeError):
@@ -645,16 +648,15 @@ async def _hydrate_exact(
             root_node,
         )
 
-    session = package.RemoteQuerySession(
-        advertisement,
-        exchange,
-        package.RemoteQueryLimits(
-            max_items=8,
-            max_bytes=1 << 20,
-            max_collection_members=16,
-            max_graph_nodes=16,
-            max_attribute_values=128,
-            max_role_players=64,
+    session = package.QuerySession(
+        package.ExchangeConnection(advertisement, exchange),
+        resources=package.QueryExecutionResourceLimits(
+            items=8,
+            bytes=1 << 20,
+            collection_members=16,
+            graph_nodes=16,
+            attribute_values=128,
+            role_players=64,
         ),
     )
     original_materializer = package.Query.materialize_row
@@ -1034,7 +1036,9 @@ def _constraint_observation(
     rejected(
         "maximum_cardinality",
         lambda: _make_person(package, aliases=("one", "two", "three", "four")),
-        exception_names=("ValueError",),
+        exception_names=("ProjectedCardinalityError",),
+        category="invalid_input",
+        code="field_cardinality_violation",
     )
     player_duplicate = rejected(
         "ordered_distinct_player",
@@ -1096,7 +1100,9 @@ def _constraint_observation(
                 package.EventRef("0x03"),
             )
         ),
-        exception_names=("ValueError",),
+        exception_names=("ProjectedCardinalityError",),
+        category="invalid_input",
+        code="role_cardinality_violation",
     )
     if "member" in inspect.signature(package.Employment).parameters:
         raise AssertionError("employment exposed its specialized-away role")
@@ -1244,12 +1250,16 @@ def _duplicate_observation(error: Exception) -> tuple[int, int]:
         raise AssertionError("ordered duplicate diagnostic changed its index domains")
     first_value = first.get("value")
     duplicate_value = duplicate.get("value")
-    if type(first_value) is not int or type(duplicate_value) is not int:
-        raise AssertionError("ordered duplicate diagnostic indices are not exact integers")
+    # Count details are Python ints on the exception (decimal strings only in
+    # the JSON form).
+    if not all(type(value) is int and value >= 0 for value in (first_value, duplicate_value)):
+        raise AssertionError("ordered duplicate diagnostic indices are not counts")
     return first_value, duplicate_value
 
 
-def _build_report(root: Path, package: Any, foreign: Any) -> dict[str, object]:
+def _build_report(
+    root: Path, package: Any, foreign: Any, semantic_profile: str
+) -> dict[str, object]:
     constructed = _constructed_observations(package)
     hydrated = asyncio.run(_hydrated_observations(package))
     constraints, scalar_duplicate, player_duplicate = _constraint_observation(package, constructed)
@@ -1533,7 +1543,7 @@ def _build_report(root: Path, package: Any, foreign: Any) -> dict[str, object]:
         "binding": "python",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile,
     }
 
 
@@ -1581,12 +1591,42 @@ def _repository_root(environment: Mapping[str, str] = os.environ) -> Path:
     return root
 
 
+def _profile_identity(root: Path, package: Any, environment: Mapping[str, str]) -> Any:
+    """Select the models matrix entry; the local package must be its projection.
+
+    The profile is TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE, else the models
+    catalog's own profile.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_typebridge_sdk_profile_matrix", root / PROFILE_MATRIX_RELATIVE
+    )
+    if spec is None or spec.loader is None:
+        raise ProducerError("invalid_profile_matrix", "sdk profile matrix is not importable")
+    matrix = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = matrix
+    spec.loader.exec_module(matrix)
+    identity = matrix.requested("models", environment=environment, root=root, error=ProducerError)
+    try:
+        semantic = json.loads(package.SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+    except (AttributeError, json.JSONDecodeError, TypeError) as error:
+        raise ProducerError(
+            "generated_package_identity", "generated package has no semantic identity"
+        ) from error
+    if semantic != identity.expected_fingerprints["semantic"]:
+        raise ProducerError(
+            "generated_package_identity",
+            f"generated package is not the Models projection for {identity.semantic_profile}",
+        )
+    return identity
+
+
 def main() -> int:
     try:
         output = _output_path()
         package, foreign = _load_packages()
         root = _repository_root()
-        report = _build_report(root, package, foreign)
+        identity = _profile_identity(root, package, os.environ)
+        report = _build_report(root, package, foreign, identity.semantic_profile)
         _publish_report(output, report)
     except (AssertionError, ProducerError) as error:
         print(f"Python Projected parity producer rejected: {error}", file=sys.stderr)

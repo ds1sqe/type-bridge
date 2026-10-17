@@ -192,12 +192,28 @@ authorization for database recreation and data loss.
   operation, and retain parameterization and version gates.
 
 Treat query construction as local and synchronous. Direct terminals perform
-provider work. A remote terminal performs exactly one caller-owned exchange;
-the client owns transport, authentication, retry policy, and capability trust.
-Generated Python and TypeScript `RemoteQuerySession` constructors derive
-authority from private package evidence. Supply advertisement bytes, the
-one-exchange callback, and limits; never read an authority file or construct a
-low-level `QueryV2Authority` for this normal path.
+provider work. A proxy terminal performs exactly one `/v2/query` exchange,
+over the built-in HTTP route or a caller-owned exchange; with the latter the
+client owns transport, authentication, retry policy, and capability trust.
+Generated Python and TypeScript sessions take the connection: a direct
+database or transaction, `connect_proxy(url)` (`await connectProxy(url)` in
+TypeScript), or `ExchangeConnection(advertisement, exchange)`; every terminal
+is awaited, and the program is the same on each. Both proxy connections derive
+authority from private package evidence; never read an authority file or
+construct a low-level `QueryV2Authority` for this normal path.
+
+Write over the proxy with a staged transaction: `transaction(kind)` on a
+proxy connection returns the core staged transaction, and `commit()` sends the
+stack as one `/v3/staged` envelope with a fresh random idempotency key and
+verifies the signed reply. Answers and typed failures match direct execution.
+After an unknown outcome (`commit_outcome_unknown`, a dropped reply), call
+`commit_retry()` (`commitRetry()` in TypeScript) to resend under the same key;
+never re-stage the work as a new commit. Any refusal other than
+`commit_definitely_aborted` is also unknown and retryable, and so is a
+cancelled commit; check `has_unknown_outcome()` before abandoning one. Raw TypeQL and typed match reads are
+not staged over the proxy. Writes need a caller the server's interceptor vouches for
+(`on_v3_write_authority`); SDK commits always carry an idempotency key, which
+the server accepts only from such a caller.
 
 ## TypeScript and Node workflow
 
@@ -292,7 +308,7 @@ forms.
 Classify Rust SDK failures through `Error::category()`, `code()`, `path()`,
 and `model_validation_phase()`; do not parse display messages. Preserve those
 fields across direct and remote execution. In a caller-owned
-`RemoteQueryTransport`, wrap transport failures with `Error::remote` and a
+`ProxyExchange`, wrap transport failures with `Error::remote` and a
 stable lowercase snake-case code.
 
 Use the server container only with the configuration, TLS, generated

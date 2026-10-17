@@ -1,0 +1,1 @@
+match $r isa friendship, links (friend: $x); delete links (friend: $x) of $r;

@@ -1,0 +1,1 @@
+match $x isa person; $y isa! person; $t sub person; $z isa $t; $a isa name "Alice"; $b isa age == 21;

@@ -16,7 +16,7 @@ The backend supports the exact operation set recorded in
 - concise filters and immutable multi-model direct/remote queries;
 - rows, pages, count/existence, reducers, and grouping;
 - caller-owned transactions and exact generated hydration;
-- TypeDB 3.11/3.12 provider selection and fail-closed version checks.
+- TypeDB 3.11–3.13 provider selection and fail-closed version checks.
 
 Private dynamic managers and descriptors are execution machinery for verified
 generated projections. They are not a public target-language declaration API.
@@ -35,3 +35,26 @@ cd ..
 Python `Database` and `TransactionContext` objects wrap Rust-owned handles. Raw
 Python-driver transactions are separate and cannot be shared with generated
 manager operations.
+
+The ORM also provides deferred raw execution through
+`Database::transaction(session::staged::TransactionOptions)`. Stage TypeQL
+with `session::staged::StagedQuery`, then call `commit()` to execute the
+ordered statements in one provider transaction. Pending answers become
+readable only after the entire execution succeeds. Rollback discards queued
+work; successful commits leave an empty queue ready for reuse. Close ends
+the logical transaction. Dropping it never commits.
+
+The released eager `session::Transaction` and `session::transaction::Transaction`
+names remain deprecated aliases of `OwnedTransaction` until 3.0, when the
+staged type takes the session-level name. Internal eager execution supports
+migration assertions and legacy prerequisite reads. Its `internal-eager`
+feature is restricted to the ORM and schema migration provider by
+`scripts/ci/check_internal_eager.py`. The export is doc-hidden, not isolated
+from Cargo feature unification: linking the migration provider can expose
+`session::eager` elsewhere in the graph. The probe also rejects references
+to that module outside the allowlist.
+
+Owned ORM transactions and shared contexts retain their provider after a
+successful rollback. A context reports `RolledBack` until new work resumes;
+new work is permitted and can commit. Call close to release it explicitly.
+Rollback failures and cancelled rollback futures still make it terminal.

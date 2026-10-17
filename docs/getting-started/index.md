@@ -15,12 +15,12 @@ remote server later without changing semantic systems.
 
 ## Before connecting
 
-You need a supported TypeDB 3.x server for database operations. TypeBridge 2.2
-supports generated CRUD/query operations on TypeDB 3.11–3.12; connected V2
-migration apply/verify/adopt requires exactly 3.12.3. The selected C release
-matrix is verified against TypeDB 3.12.3. The exact interpreter,
-native-target, provider-band, and server matrix is
-maintained in [TypeDB compatibility](../development/typedb.md#server-and-driver-compatibility).
+You need a supported TypeDB 3.x server for database operations. TypeBridge
+supports generated CRUD/query operations on TypeDB 3.11–3.13; run the newest
+supported release, 3.13.6. Connected V2 migration apply/verify/adopt requires
+exactly 3.12.3 or 3.13.6, matching the workspace semantic profile. The
+selected C release matrix is verified against TypeDB 3.12.3. The exact
+interpreter, native-target, provider-band, and server matrix is maintained in [TypeDB compatibility](../development/typedb.md#server-and-driver-compatibility).
 
 Schema parsing, validation, comparison, migration planning, and code generation
 can run offline.

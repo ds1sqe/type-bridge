@@ -161,6 +161,13 @@ class NotPattern(Pattern):
 
 
 @dataclass
+class TryPattern(Pattern):
+    """Legacy optional pattern (try { ... }); use generated query plans."""
+
+    patterns: list[Pattern]
+
+
+@dataclass
 class OrPattern(Pattern):
     """Pattern for disjunction ({ ... } or { ... })."""
 
@@ -409,3 +416,17 @@ class ReduceClause(Clause):
 
     assignments: list[ReduceAssignment]
     group_by: str | None = None  # Variable to group by
+
+
+@dataclass
+class _NativePattern(Pattern):
+    """A first-party clause payload lowered by the native projection."""
+
+    data: dict[str, Any]
+
+
+@dataclass
+class _NativeStatement(Statement):
+    """A first-party statement payload lowered by the native projection."""
+
+    data: dict[str, Any]

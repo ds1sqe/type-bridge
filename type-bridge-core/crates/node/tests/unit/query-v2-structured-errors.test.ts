@@ -4,9 +4,10 @@ import test = require("node:test");
 type NativeCall = (...args: unknown[]) => unknown;
 
 const validDiagnostic = Object.freeze({
+  version: 1,
   category: "invalid_contract",
-  sdkCategory: "invalid_input",
-  queryCategory: "invalid_contract",
+  sdk_category: "invalid_input",
+  query_category: "invalid_contract",
   code: "query_v2_fixture",
   message: "fixture diagnostic",
   path: [
@@ -22,7 +23,7 @@ const validDiagnostic = Object.freeze({
   },
 });
 
-test("QueryV2Error accepts only the complete canonical Rust diagnostic shape", async (context) => {
+test("QueryV2Error takes the Rust diagnostic JSON forms as given", async (context) => {
   const nativePath = process.env["TYPE_BRIDGE_NODE_NATIVE_PATH"];
   assert.ok(nativePath, "native test path");
 
@@ -48,8 +49,8 @@ test("QueryV2Error accepts only the complete canonical Rust diagnostic shape", a
   assert.throws(invoke, (error: unknown) => {
     assert.ok(error instanceof QueryV2Error);
     assert.equal(error.category, validDiagnostic.category);
-    assert.equal(error.sdkCategory, validDiagnostic.sdkCategory);
-    assert.equal(error.queryCategory, validDiagnostic.queryCategory);
+    assert.equal(error.sdkCategory, validDiagnostic.sdk_category);
+    assert.equal(error.queryCategory, validDiagnostic.query_category);
     assert.equal(error.code, validDiagnostic.code);
     assert.equal(error.diagnosticMessage, validDiagnostic.message);
     assert.deepEqual(error.path, validDiagnostic.path);
@@ -57,35 +58,25 @@ test("QueryV2Error accepts only the complete canonical Rust diagnostic shape", a
     return true;
   });
 
-  const malformed = [
-    { ...validDiagnostic, category: "internal" },
-    { ...validDiagnostic, code: "Not_Canonical" },
-    { ...validDiagnostic, extra: true },
-    { ...validDiagnostic, path: [{ kind: "index", value: -1 }] },
-    {
-      ...validDiagnostic,
-      path: [{ kind: "index", value: Number.MAX_SAFE_INTEGER + 1 }],
-    },
-    { ...validDiagnostic, path: [{ kind: "field", value: "x", extra: true }] },
-    {
-      ...validDiagnostic,
-      details: { value: { kind: "long", value: "-0" } },
-    },
-    {
-      ...validDiagnostic,
-      details: { value: { kind: "long", value: "9223372036854775808" } },
-    },
-    {
-      ...validDiagnostic,
-      details: { value: { kind: "text_list", value: ["ok", 1] } },
-    },
-    {
-      ...validDiagnostic,
-      details: { value: { kind: "text", value: "ok", extra: true } },
-    },
-  ];
+  // The contract `Diagnostic` serde form has no SDK or query category.
+  const { version: _version, sdk_category: _sdk, query_category: _query, ...contract } =
+    validDiagnostic;
+  diagnostic = contract;
+  assert.throws(invoke, (error: unknown) => {
+    assert.ok(error instanceof QueryV2Error);
+    assert.equal(error.category, contract.category);
+    assert.equal(error.sdkCategory, contract.category);
+    assert.equal(error.queryCategory, contract.category);
+    assert.deepEqual(error.details, contract.details);
+    return true;
+  });
 
-  for (const payload of malformed) {
+  // Internal failures and messages that are not diagnostics stay plain.
+  for (const payload of [
+    { ...validDiagnostic, category: "internal", sdk_category: "internal" },
+    { message: "not a diagnostic" },
+    ["category", "code"],
+  ]) {
     diagnostic = payload;
     assert.throws(invoke, (error: unknown) => {
       assert.ok(error instanceof Error);

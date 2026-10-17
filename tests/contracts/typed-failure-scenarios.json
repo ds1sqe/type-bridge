@@ -1,0 +1,9 @@
+{
+  "schema": "define attribute id, value string; attribute score, value integer; entity item, owns id @key, owns score @card(0..1), plays purchase:item, plays participation:member @card(0..1); entity buyer, owns id @key, owns score @card(0..1), plays purchase:buyer; relation purchase, relates buyer, relates item; relation participation, relates member;",
+  "seed": "insert $x isa item, has id \"SECRET_SENTINEL\", has score 1; $b isa buyer, has id \"BUYER\", has score 100;",
+  "purchase": "match $x isa item, has score $s; $b isa buyer, has score $v; $s > 0; $v >= 10; let $ns = $s - 1; let $nv = $v - 10; update $x has score == $ns; $b has score == $nv; insert $p isa purchase, links (buyer: $b, item: $x);",
+  "cnt5": "match $x isa item; insert $r1 isa participation, links (member: $x); $r2 isa participation, links (member: $x);",
+  "cnt9": "match $seed isa item, has id \"SECRET_SENTINEL\"; insert $x isa item, has id \"SECRET_SENTINEL\";",
+  "paused": "match $seed isa item, has id \"SECRET_SENTINEL\"; insert $x isa item, has id \"PAUSED\";",
+  "stock_read": "match $x isa item, has score $s; fetch {\"stock\":$s};"
+}

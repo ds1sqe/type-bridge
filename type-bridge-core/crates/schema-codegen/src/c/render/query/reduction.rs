@@ -157,6 +157,9 @@ pub(super) fn function_names(
         "read_transaction_query_execute_reduction",
         "read_transaction_query_execute_field_reduction",
         "read_transaction_query_execute_field_tuple_reduction",
+        "proxy_query_execute_reduction",
+        "proxy_query_execute_field_reduction",
+        "proxy_query_execute_field_tuple_reduction",
         "query_reduction_result_ref",
         "query_field_reduction_result_ref",
         "query_field_tuple_reduction_result_ref",
@@ -386,6 +389,7 @@ fn render_common_declarations(
         for (scope, owner) in [
             ("database", "type_bridge_database_t"),
             ("read_transaction", "type_bridge_read_transaction_t"),
+            ("proxy", "type_bridge_proxy_connection_t"),
         ] {
             let _ = write!(
                 output,
@@ -702,6 +706,11 @@ fn render_result_definitions(
                 "read_transaction",
                 "type_bridge_read_transaction_t",
                 "type_bridge_read_transaction_query_execute_v1",
+            ),
+            (
+                "proxy",
+                "type_bridge_proxy_connection_t",
+                "type_bridge_proxy_query_execute_v1",
             ),
         ] {
             let _ = write!(

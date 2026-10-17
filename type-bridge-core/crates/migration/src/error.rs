@@ -109,3 +109,11 @@ pub enum MigrationError {
         message: String,
     },
 }
+
+impl From<type_bridge_core_lib::__internal::TqlError> for MigrationError {
+    fn from(error: type_bridge_core_lib::__internal::TqlError) -> Self {
+        Self::AuthoringInput {
+            message: error.to_string(),
+        }
+    }
+}

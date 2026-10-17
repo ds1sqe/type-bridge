@@ -1,5 +1,6 @@
 #![deny(missing_docs)]
-//! Authenticated one-exchange remote execution for generated queries.
+//! Proxy connections: generated queries executed by a TypeBridge server, one
+//! authenticated exchange per terminal.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -9,22 +10,34 @@ use std::sync::Arc;
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::session::StagedExchangeFn;
+use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{
-    AnswerCancellation, InstalledRuntimeProjection, QueryExecutionDeadline,
-    QueryExecutionResourceLimits, RemoteModelQueryV2Error, ValidatedMatchRequest,
-    ValidatedMatchResult, lower_remote_query_diagnostic, prepare_remote_model_query_v2_with_budget,
+    AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
+    ProxyHttpTransport, ProxyQueryConnection, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    QueryTarget, QueryTargetError, RemoteModelQueryV2Error, ValidatedMatchRequest,
+    ValidatedMatchResult, lower_remote_query_diagnostic,
 };
 
 use crate::Result;
 use crate::error::Error;
 use crate::query::QuerySession;
 use crate::schema::{Schema, SchemaPackage, Unbound};
+use crate::staged::Transaction;
 
-/// One caller-owned asynchronous transport for the authenticated V2 routes.
+mod deprecated;
+#[allow(deprecated)]
+pub use deprecated::{
+    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
+};
+
+/// A caller-owned exchange with a TypeBridge server, for hosts that route or
+/// authenticate requests themselves. [`ProxyConnectionPolicy::new`] uses the
+/// built-in HTTP transport instead.
 ///
-/// Implementations fetch the exact `/v2/capabilities` bytes once at connect
-/// time and perform exactly one `/v2/query` exchange per terminal.
-pub trait RemoteQueryTransport: Send + Sync + 'static {
+/// Implementations return the exact `/v2/capabilities` bytes and perform
+/// exactly one `/v2/query` exchange per terminal.
+pub trait ProxyExchange: Send + Sync + 'static {
     /// Fetch the executor's exact signed capability advertisement.
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>>;
 
@@ -33,140 +46,185 @@ pub trait RemoteQueryTransport: Send + Sync + 'static {
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
+
+    /// Fetch the executor's staged (`GET /v3/capabilities`) advertisement.
+    /// The default refuses: an exchange that predates staged transactions
+    /// cannot open one.
+    fn staged_capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+        Box::pin(async { Err(staged_unsupported()) })
+    }
+
+    /// Exchange one exact staged request (`POST /v3/staged`) for its exact
+    /// signed reply. The default refuses.
+    fn exchange_staged<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        Box::pin(async { Err(staged_unsupported()) })
+    }
 }
 
-/// Explicit immutable budgets for one remote generated-query terminal.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RemoteQueryLimits {
-    resources: QueryExecutionResourceLimits,
+fn staged_unsupported() -> Error {
+    connect_error(
+        type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect,
+        ),
+    )
 }
 
-impl RemoteQueryLimits {
-    /// Construct one explicit remote response and hydration budget.
+enum ProxyRoute {
+    Endpoint(ProxyEndpoint),
+    Http(ProxyHttpTransport),
+    Exchange(Arc<dyn ProxyExchange>),
+}
+
+/// Configuration of a proxy connection: where requests go, the answer-limit
+/// ceiling every session inherits, and optionally a pinned advertisement.
+///
+/// Both limits start at the proxy defaults
+/// ([`QueryExecutionResourceLimits::default_for`] on
+/// [`AnswerTransport::Proxy`]), the wire ceilings a default server enforces.
+pub struct ProxyConnectionPolicy {
+    scope: Option<String>,
+    semantic_profile: Option<String>,
+    connection_limits: QueryExecutionResourceLimits,
+    answer_limits: QueryExecutionResourceLimits,
+    route: ProxyRoute,
+    advertisement: Option<Vec<u8>>,
+    staged_advertisement: Option<Vec<u8>>,
+}
+
+impl std::fmt::Debug for ProxyConnectionPolicy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProxyConnectionPolicy([REDACTED])")
+    }
+}
+
+impl ProxyConnectionPolicy {
+    /// Reach the server at `endpoint` with the built-in HTTP transport.
     #[must_use]
-    pub const fn new(
-        max_items: u64,
-        max_bytes: u64,
-        max_collection_members: u64,
-        max_graph_nodes: u64,
-        max_attribute_values: u64,
-        max_role_players: u64,
-    ) -> Self {
+    pub fn new(endpoint: ProxyEndpoint) -> Self {
+        Self::with_route(ProxyRoute::Endpoint(endpoint))
+    }
+
+    /// Reach the server through a caller-owned exchange.
+    #[must_use]
+    pub fn with_exchange(exchange: impl ProxyExchange) -> Self {
+        Self::with_route(ProxyRoute::Exchange(Arc::new(exchange)))
+    }
+
+    fn with_route(route: ProxyRoute) -> Self {
         Self {
-            resources: QueryExecutionResourceLimits::tightened(
-                type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS,
-                max_items,
-                max_bytes,
-                max_graph_nodes,
-                max_attribute_values,
-                max_collection_members,
-                max_role_players,
-                type_bridge_orm::MAX_QUERY_STATEMENTS,
-            ),
+            scope: None,
+            semantic_profile: None,
+            connection_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            answer_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            route,
+            advertisement: None,
+            staged_advertisement: None,
         }
     }
 
-    /// Attach an optional executor deadline in milliseconds.
+    /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
+    /// out of band. It must name the same executor and reply key as the
+    /// connection's advertisement; staged transactions then never fetch it.
     #[must_use]
-    pub const fn deadline_ms(mut self, deadline_ms: u64) -> Self {
-        self.resources.timeout_milliseconds =
-            if deadline_ms < type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS {
-                deadline_ms
-            } else {
-                type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS
-            };
+    pub fn staged_advertisement(mut self, staged_advertisement: Vec<u8>) -> Self {
+        self.staged_advertisement = Some(staged_advertisement);
+        self
+    }
+
+    /// Set the deadline for connecting, which fetches the advertisement.
+    #[must_use]
+    pub const fn connection_limits(mut self, limits: QueryExecutionResourceLimits) -> Self {
+        self.connection_limits = limits.effective();
+        self
+    }
+
+    /// Set the ceiling every session of this connection is constrained by.
+    #[must_use]
+    pub const fn answer_limits(mut self, limits: QueryExecutionResourceLimits) -> Self {
+        self.answer_limits = limits.effective();
+        self
+    }
+
+    /// Use these exact advertisement bytes, provisioned out of band, instead
+    /// of fetching them when connecting.
+    #[must_use]
+    pub fn advertisement(mut self, advertisement: Vec<u8>) -> Self {
+        self.advertisement = Some(advertisement);
+        self
+    }
+
+    /// Name the managed scope and semantic profile for a schema package that
+    /// does not embed its authority. A package that embeds them must agree.
+    #[must_use]
+    pub fn authority(
+        mut self,
+        scope: impl Into<String>,
+        semantic_profile: impl Into<String>,
+    ) -> Self {
+        self.scope = Some(scope.into());
+        self.semantic_profile = Some(semantic_profile.into());
         self
     }
 }
 
-impl From<RemoteQueryLimits> for QueryExecutionResourceLimits {
-    fn from(limits: RemoteQueryLimits) -> Self {
-        limits.resources
-    }
-}
-
-impl From<QueryExecutionResourceLimits> for RemoteQueryLimits {
-    fn from(resources: QueryExecutionResourceLimits) -> Self {
-        Self {
-            resources: resources.effective(),
-        }
-    }
-}
-
-/// Connection-time authority, transport, and limit configuration.
-pub struct RemoteConnectionOptions {
-    scope: Option<String>,
-    semantic_profile: Option<String>,
-    resources: QueryExecutionResourceLimits,
-    transport: Arc<dyn RemoteQueryTransport>,
-    advertisement: Option<Vec<u8>>,
-}
-
-impl RemoteConnectionOptions {
-    /// Construct remote options for one managed schema scope and semantic
-    /// profile.
-    #[must_use]
-    pub fn new(
-        scope: impl Into<String>,
-        semantic_profile: impl Into<String>,
-        limits: impl Into<QueryExecutionResourceLimits>,
-        transport: impl RemoteQueryTransport,
-    ) -> Self {
-        Self {
-            scope: Some(scope.into()),
-            semantic_profile: Some(semantic_profile.into()),
-            resources: limits.into().effective(),
-            transport: Arc::new(transport),
-            advertisement: None,
-        }
-    }
-
-    /// Construct normal generated-package options; schema scope and semantic
-    /// profile are derived from [`SchemaPackage`] during binding.
-    #[must_use]
-    pub fn generated(
-        limits: impl Into<QueryExecutionResourceLimits>,
-        transport: impl RemoteQueryTransport,
-    ) -> Self {
-        Self {
-            scope: None,
-            semantic_profile: None,
-            resources: limits.into().effective(),
-            transport: Arc::new(transport),
-            advertisement: None,
-        }
-    }
-}
-
 struct RemoteRuntime {
-    advertisement: Vec<u8>,
-    authority: Arc<QueryAuthority>,
-    resources: QueryExecutionResourceLimits,
-    transport: Arc<dyn RemoteQueryTransport>,
+    connection: ProxyQueryConnection,
+    // `None` when the built-in route performs the exchange.
+    exchange: Option<Arc<dyn ProxyExchange>>,
 }
 
-/// A client-owned remote generated-query database branded by schema `S`.
-pub struct RemoteDatabase<S: Schema = Unbound> {
-    options: Option<RemoteConnectionOptions>,
+/// A proxy connection branded by schema `S`. Each generated query terminal
+/// is one exchange with the server; a staged [`ProxyDatabase::transaction`]
+/// sends its whole stack as one signed `query-remote/v3` exchange at commit.
+pub struct ProxyDatabase<S: Schema = Unbound> {
+    options: Option<ProxyConnectionPolicy>,
     runtime: Option<Arc<RemoteRuntime>>,
     installed: Option<Arc<InstalledRuntimeProjection>>,
     registry: Option<Arc<DescriptorRegistry>>,
     marker: PhantomData<fn() -> S>,
 }
 
-impl<S: Schema> std::fmt::Debug for RemoteDatabase<S> {
+impl<S: Schema> std::fmt::Debug for ProxyDatabase<S> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("RemoteDatabase")
+            .debug_struct("ProxyDatabase")
             .field("schema_bound", &self.installed.is_some())
             .finish_non_exhaustive()
     }
 }
 
-impl RemoteDatabase<Unbound> {
-    /// Fetch and validate one immutable executor advertisement.
-    pub async fn connect(mut options: RemoteConnectionOptions) -> Result<Self> {
-        let advertisement = options.transport.capabilities().await?;
+impl ProxyDatabase<Unbound> {
+    /// Open the route and fetch the executor's advertisement, unless one is
+    /// pinned, then validate it.
+    pub async fn connect(options: ProxyConnectionPolicy) -> Result<Self> {
+        Self::connect_with_cancellation(options, AnswerCancellation::default()).await
+    }
+
+    /// [`Self::connect`] with a cancellation owner for the advertisement
+    /// fetch.
+    pub async fn connect_with_cancellation(
+        mut options: ProxyConnectionPolicy,
+        cancellation: AnswerCancellation,
+    ) -> Result<Self> {
+        let deadline = QueryExecutionDeadline::for_limits(options.connection_limits);
+        if let ProxyRoute::Endpoint(endpoint) = &options.route {
+            options.route =
+                ProxyRoute::Http(ProxyHttpTransport::open(endpoint).map_err(connect_error)?);
+        }
+        let advertisement = match (options.advertisement.take(), &options.route) {
+            (Some(pinned), _) => pinned,
+            (None, ProxyRoute::Http(http)) => http
+                .capabilities(deadline, &cancellation)
+                .await
+                .map_err(connect_error)?,
+            (None, ProxyRoute::Exchange(exchange)) => {
+                await_proxy(exchange.capabilities(), &cancellation, deadline).await?
+            }
+            (None, ProxyRoute::Endpoint(_)) => unreachable!("the endpoint was opened above"),
+        };
         RemoteCapabilities::decode(&advertisement).map_err(remote_diagnostic)?;
         options.advertisement = Some(advertisement);
         Ok(Self {
@@ -179,11 +237,11 @@ impl RemoteDatabase<Unbound> {
     }
 
     /// Verify and bind one generated schema package and its remote authority.
-    pub fn with_schema<S: Schema>(mut self, schema: SchemaPackage<S>) -> Result<RemoteDatabase<S>> {
+    pub fn with_schema<S: Schema>(mut self, schema: SchemaPackage<S>) -> Result<ProxyDatabase<S>> {
         let (installed, embedded_authority) = schema.verify_and_install_with_authority()?;
         let registry = Arc::new(installed.match_registry().map_err(Error::from_orm)?);
         let options = self.options.take().ok_or_else(|| Error::Other {
-            message: "remote connection options are unavailable".into(),
+            message: "proxy connection policy is unavailable".into(),
             source: None,
         })?;
         let authority = if let Some(embedded) = embedded_authority {
@@ -199,7 +257,8 @@ impl RemoteDatabase<Unbound> {
                     .is_some_and(|profile| profile != embedded_profile)
             {
                 return Err(Error::SchemaVerification {
-                    message: "remote options disagree with generated schema authority".into(),
+                    message: "proxy policy authority disagrees with the generated schema authority"
+                        .into(),
                     source: None,
                 });
             }
@@ -246,16 +305,33 @@ impl RemoteDatabase<Unbound> {
                 source: None,
             });
         }
+        let advertisement = options.advertisement.ok_or_else(|| Error::Other {
+            message: "remote capability advertisement is unavailable".into(),
+            source: None,
+        })?;
+        let (http, exchange) = match options.route {
+            ProxyRoute::Http(http) => (Some(http), None),
+            ProxyRoute::Exchange(exchange) => (None, Some(exchange)),
+            ProxyRoute::Endpoint(_) => unreachable!("the endpoint is opened when connecting"),
+        };
+        let connection = ProxyQueryConnection::new(
+            http,
+            advertisement,
+            Arc::new(authority),
+            options.answer_limits,
+        )
+        .map_err(connect_error)?;
+        let connection = match options.staged_advertisement {
+            Some(staged) => connection
+                .with_staged_advertisement(staged)
+                .map_err(connect_error)?,
+            None => connection,
+        };
         let runtime = Arc::new(RemoteRuntime {
-            advertisement: options.advertisement.ok_or_else(|| Error::Other {
-                message: "remote capability advertisement is unavailable".into(),
-                source: None,
-            })?,
-            authority: Arc::new(authority),
-            resources: options.resources,
-            transport: options.transport,
+            connection,
+            exchange,
         });
-        Ok(RemoteDatabase {
+        Ok(ProxyDatabase {
             options: None,
             runtime: Some(runtime),
             installed: Some(installed),
@@ -265,15 +341,76 @@ impl RemoteDatabase<Unbound> {
     }
 }
 
-impl<S: Schema> RemoteDatabase<S> {
-    /// Start one owner-branded query session over this remote executor.
-    pub fn query(&self) -> Result<QuerySession<'_, S>> {
+impl<S: Schema> ProxyDatabase<S> {
+    /// Open a staged transaction over this proxy.
+    ///
+    /// It has the same API as a direct
+    /// [`Database::transaction`](crate::Database::transaction): `stage`
+    /// queues [`Plan`](crate::plan::Plan)s, and `commit` sends them as one
+    /// signed `query-remote/v3` envelope with a fresh random 16-byte
+    /// idempotency key and verifies the signed reply. After an unknown outcome (`commit_outcome_unknown`,
+    /// such as a lost reply), `commit_retry` resends the same envelope and
+    /// key, so the stack applies at most once. The staged advertisement is
+    /// pinned on the policy, or fetched on first use and verified against
+    /// the connection's executor and reply key, then reused; nothing else is
+    /// sent until commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before [`ProxyDatabase::with_schema`], or when the
+    /// staged advertisement cannot be fetched or decoded.
+    pub async fn transaction(&self, options: TransactionOptions) -> Result<Transaction<S>> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
-        self.query_with_resources(runtime.resources, AnswerCancellation::default())
+        let cancellation = AnswerCancellation::default();
+        let Some(exchange) = &runtime.exchange else {
+            return runtime
+                .connection
+                .staged_transaction(options, &cancellation)
+                .await
+                .map(Transaction::new)
+                .map_err(connect_error);
+        };
+        // A fetched staged advertisement is checked against the connection's
+        // executor and reply key before it is trusted, then reused.
+        let advertisement = match runtime.connection.staged_advertisement() {
+            Some(advertisement) => advertisement.to_vec(),
+            None => {
+                let deadline =
+                    QueryExecutionDeadline::for_limits(runtime.connection.answer_limits());
+                await_proxy(exchange.staged_capabilities(), &cancellation, deadline).await?
+            }
+        };
+        let exchange = Arc::clone(exchange);
+        let send: StagedExchangeFn = Arc::new(move |bytes| {
+            let exchange = Arc::clone(&exchange);
+            Box::pin(async move {
+                // Any exchange error leaves the outcome unknown.
+                exchange.exchange_staged(&bytes).await.map_err(|_| {
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                    )
+                })
+            })
+        });
+        runtime
+            .connection
+            .staged_transaction_with_exchange(&advertisement, send, options)
+            .map(Transaction::new)
+            .map_err(connect_error)
     }
 
-    /// Start one remote query session with one common tighten-only resource
-    /// policy and caller-owned cooperative cancellation signal.
+    /// Start one owner-branded query session over this proxy connection.
+    pub fn query(&self) -> Result<QuerySession<'_, S>> {
+        let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
+        self.query_with_resources(
+            runtime.connection.answer_limits(),
+            AnswerCancellation::default(),
+        )
+    }
+
+    /// Start one query session whose resources are `resources` constrained
+    /// by this connection's answer-limit ceiling, with a caller-owned
+    /// cancellation signal.
     pub fn query_with_resources(
         &self,
         resources: QueryExecutionResourceLimits,
@@ -286,7 +423,7 @@ impl<S: Schema> RemoteDatabase<S> {
             installed,
             Arc::clone(registry),
             self,
-            resources.constrained_by(runtime.resources),
+            resources.constrained_by(runtime.connection.answer_limits()),
             cancellation,
         ))
     }
@@ -300,56 +437,33 @@ impl<S: Schema> RemoteDatabase<S> {
         deadline: QueryExecutionDeadline,
     ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult)> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        let pending = prepare_remote_model_query_v2_with_budget(
-            &runtime.authority,
-            registry,
-            validated,
-            &runtime.advertisement,
-            resources.remote(),
-            deadline,
-            &cancellation,
-        )
-        .map_err(remote_model_input_error)?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        let request = pending.request_bytes().to_vec();
-        let response = await_remote_exchange(
-            runtime.transport.as_ref(),
-            &request,
+        let Some(exchange) = &runtime.exchange else {
+            return QueryTarget::Proxy(&runtime.connection)
+                .execute(registry, validated, resources, &cancellation, deadline)
+                .await
+                .map_err(target_error);
+        };
+        let pending = runtime
+            .connection
+            .prepare(registry, validated, resources, &cancellation, deadline)
+            .map_err(target_error)?;
+        let response = await_proxy(
+            exchange.exchange(pending.request_bytes()),
             &cancellation,
             deadline,
         )
         .await?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        let claimed = pending
-            .claim_reply_with_cancellation(&cancellation)
-            .map_err(remote_model_hydration_error)?;
-        if response.len() > claimed.response_snapshot_limit() {
-            return Err(Error::classified(
-                crate::ErrorCategory::ResourceLimit,
-                None,
-                "remote_response_limit",
-                Vec::new(),
-                "remote query reply exceeds the authenticated response ceiling",
-                None,
-            ));
-        }
-        let (request, result, _registry) = claimed
-            .decode_with_cancellation(&response, &cancellation)
-            .map_err(remote_model_hydration_error)?;
-        check_remote_execution_budget(&cancellation, deadline)?;
-        Ok((request, result))
+        ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
+            .map_err(target_error)
     }
 }
 
-async fn await_remote_exchange(
-    transport: &dyn RemoteQueryTransport,
-    request: &[u8],
+async fn await_proxy(
+    exchange: impl Future<Output = Result<Vec<u8>>>,
     cancellation: &AnswerCancellation,
     deadline: QueryExecutionDeadline,
 ) -> Result<Vec<u8>> {
     check_remote_execution_budget(cancellation, deadline)?;
-    let exchange = transport.exchange(request);
     tokio::pin!(exchange);
     let cancellation_wait = cancellation.cancelled();
     tokio::pin!(cancellation_wait);
@@ -406,6 +520,22 @@ fn remote_not_bound() -> Error {
     }
 }
 
+/// Lower a terminal failure, keeping the phase it happened in.
+pub(crate) fn target_error(error: QueryTargetError) -> Error {
+    match error {
+        QueryTargetError::Direct(error) => Error::from_orm_hydration(error),
+        QueryTargetError::Prepare(error) => remote_model_input_error(error),
+        QueryTargetError::Reply(error) => remote_model_hydration_error(error),
+        QueryTargetError::Interrupted(error) => {
+            Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
+        }
+    }
+}
+
+fn connect_error(error: type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic) -> Error {
+    Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
+}
+
 fn remote_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Error {
     Error::from_sdk_execution(
         lower_remote_query_diagnostic(error),
@@ -439,6 +569,23 @@ fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_default_proxy_policy_carries_the_proxy_defaults() {
+        use super::{
+            AnswerTransport, ProxyConnectionPolicy, ProxyEndpoint, QueryExecutionResourceLimits,
+        };
+
+        let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
+        let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+        assert_eq!(policy.answer_limits, proxy);
+        assert_eq!(policy.connection_limits, proxy);
+        assert_ne!(
+            proxy,
+            QueryExecutionResourceLimits::default(),
+            "a proxy connection does not inherit the looser direct defaults"
+        );
+    }
+
     use std::env;
     use std::fs::{self, OpenOptions};
     use std::io::Write as _;
@@ -596,22 +743,22 @@ mod tests {
         state: Arc<DirectCancellationState>,
     ) -> crate::session::Database<TestSchema> {
         let generated = package();
-        let installed = InstalledRuntimeProjection::from_verified_rust_json(
-            generated.runtime_projection_json().as_bytes(),
-            generated.semantic_fingerprint_json().as_bytes(),
-            generated.projection_fingerprint_json().as_bytes(),
+        let installed = Arc::into_inner(
+            generated
+                .verify_and_install()
+                .expect("Rust cancellation proof installs the generated package"),
         )
-        .expect("Rust cancellation proof installs the generated projection");
+        .expect("a fresh installation has one owner");
         crate::session::Database::from_test_parts(
             type_bridge_orm::Database::with_backend(
                 Box::new(DirectCancellationBackend { state }),
-                "rust-sdk-v2-proof",
+                "rust-queries-proof",
             ),
             installed,
         )
     }
 
-    async fn observe_sdk_v2_direct_cancellation() -> serde_json::Value {
+    async fn observe_sdk_queries_direct_cancellation() -> serde_json::Value {
         let pre_state = Arc::new(DirectCancellationState::default());
         let pre_database = direct_cancellation_database(Arc::clone(&pre_state));
         let pre_signal = AnswerCancellation::default();
@@ -822,7 +969,7 @@ mod tests {
 
     struct UnusedTransport;
 
-    impl RemoteQueryTransport for UnusedTransport {
+    impl ProxyExchange for UnusedTransport {
         fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
             Box::pin(async { panic!("compatibility test performs no transport I/O") })
         }
@@ -835,9 +982,22 @@ mod tests {
         }
     }
 
-    fn unconnected_remote(mut options: RemoteConnectionOptions) -> RemoteDatabase<Unbound> {
-        options.advertisement = Some(Vec::new());
-        RemoteDatabase {
+    /// The answer-limit ceiling these tests connect with.
+    fn small_limits() -> QueryExecutionResourceLimits {
+        QueryExecutionResourceLimits {
+            items: 10,
+            bytes: 1 << 20,
+            collection_members: 10,
+            graph_nodes: 100,
+            attribute_values: 100,
+            role_players: 100,
+            ..QueryExecutionResourceLimits::default()
+        }
+    }
+
+    fn unconnected_remote(mut options: ProxyConnectionPolicy) -> ProxyDatabase<Unbound> {
+        options.advertisement = Some(sdk_queries_transport(0x70).0.advertisement);
+        ProxyDatabase {
             options: Some(options),
             runtime: None,
             installed: None,
@@ -848,30 +1008,21 @@ mod tests {
 
     #[test]
     fn generated_authority_accepts_matching_legacy_options_and_rejects_overrides() {
-        let limits = || RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100);
-        let matching = RemoteConnectionOptions::new(
-            "rust-client-test",
-            "typedb-3.12.1/v1",
-            limits(),
-            UnusedTransport,
-        );
+        let limits = small_limits;
+        let matching = ProxyConnectionPolicy::with_exchange(UnusedTransport)
+            .authority("rust-client-test", "typedb-3.12.1/v1")
+            .answer_limits(limits());
         unconnected_remote(matching)
             .with_schema(package())
             .expect("matching 2.0.1-style options remain compatible");
 
         for mismatched in [
-            RemoteConnectionOptions::new(
-                "other-scope",
-                "typedb-3.12.1/v1",
-                limits(),
-                UnusedTransport,
-            ),
-            RemoteConnectionOptions::new(
-                "rust-client-test",
-                "typedb-3.11.5/v1",
-                limits(),
-                UnusedTransport,
-            ),
+            ProxyConnectionPolicy::with_exchange(UnusedTransport)
+                .authority("other-scope", "typedb-3.12.1/v1")
+                .answer_limits(limits()),
+            ProxyConnectionPolicy::with_exchange(UnusedTransport)
+                .authority("rust-client-test", "typedb-3.11.5/v1")
+                .answer_limits(limits()),
         ] {
             let error = unconnected_remote(mismatched)
                 .with_schema(package())
@@ -879,7 +1030,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("disagree with generated schema authority"),
+                    .contains("disagrees with the generated schema authority"),
                 "{error}"
             );
         }
@@ -887,18 +1038,16 @@ mod tests {
 
     #[test]
     fn released_declared_package_retains_explicit_remote_options_compatibility() {
-        let limits = || RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100);
-        let options = RemoteConnectionOptions::new(
-            "rust-client-test",
-            "typedb-3.12.1/v1",
-            limits(),
-            UnusedTransport,
-        );
+        let limits = small_limits;
+        let options = ProxyConnectionPolicy::with_exchange(UnusedTransport)
+            .authority("rust-client-test", "typedb-3.12.1/v1")
+            .answer_limits(limits());
         unconnected_remote(options)
             .with_schema(released_declared_package())
             .expect("2.0.1 generated package and explicit options remain compatible");
 
-        let generated_options = RemoteConnectionOptions::generated(limits(), UnusedTransport);
+        let generated_options =
+            ProxyConnectionPolicy::with_exchange(UnusedTransport).answer_limits(limits());
         let error = unconnected_remote(generated_options)
             .with_schema(released_declared_package())
             .expect_err("detached 2.0.1 package cannot invent embedded deployment authority");
@@ -914,7 +1063,7 @@ mod tests {
         signer: RemoteReplySigningKey,
     }
 
-    impl RemoteQueryTransport for Transport {
+    impl ProxyExchange for Transport {
         fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
             *self.capabilities.lock().unwrap() += 1;
             let bytes = self.advertisement.clone();
@@ -1022,7 +1171,7 @@ mod tests {
         response_completed: Arc<AtomicBool>,
     }
 
-    impl RemoteQueryTransport for CancelBeforeDecodeTransport {
+    impl ProxyExchange for CancelBeforeDecodeTransport {
         fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
             self.inner.capabilities()
         }
@@ -1055,7 +1204,7 @@ mod tests {
         exchange_dropped: Arc<AtomicBool>,
     }
 
-    impl RemoteQueryTransport for CallerAbortTransport {
+    impl ProxyExchange for CallerAbortTransport {
         fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
             let advertisement = self.advertisement.clone();
             Box::pin(async move { Ok(advertisement) })
@@ -1075,7 +1224,7 @@ mod tests {
         }
     }
 
-    fn sdk_v2_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
+    fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
         let mut capabilities = query_plan_v2_capability_vocabulary();
         for capability in query_remote_v2_required_capabilities(true) {
@@ -1102,12 +1251,12 @@ mod tests {
         )
     }
 
-    async fn observe_sdk_v2_remote_cancellation() -> serde_json::Value {
-        let (pre_transport, pre_exchanges) = sdk_v2_transport(0x71);
-        let remote = RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
-            pre_transport,
-        ))
+    async fn observe_sdk_queries_remote_cancellation() -> serde_json::Value {
+        let (pre_transport, pre_exchanges) = sdk_queries_transport(0x71);
+        let remote = ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(pre_transport)
+                .answer_limits(QueryExecutionResourceLimits::default()),
+        )
         .await
         .expect("Rust remote cancellation proof connects")
         .with_schema(package())
@@ -1135,9 +1284,8 @@ mod tests {
 
         let decode_signal = AnswerCancellation::default();
         let response_completed = Arc::new(AtomicBool::new(false));
-        let (decode_inner, decode_exchanges) = sdk_v2_transport(0x72);
-        let decode_remote = RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
+        let (decode_inner, decode_exchanges) = sdk_queries_transport(0x72);
+        let decode_remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
             CancelBeforeDecodeTransport {
                 inner: decode_inner,
                 cancellation: decode_signal.clone(),
@@ -1167,7 +1315,7 @@ mod tests {
         assert_eq!(decode_exchange_count, 1);
         assert!(!decode_partial_result);
 
-        let (abort_contract_transport, _) = sdk_v2_transport(0x73);
+        let (abort_contract_transport, _) = sdk_queries_transport(0x73);
         let abort_exchanges = Arc::new(AtomicUsize::new(0));
         let abort_entered = Arc::new(Notify::new());
         let abort_dropped = Arc::new(AtomicBool::new(false));
@@ -1177,10 +1325,10 @@ mod tests {
             entered: Arc::clone(&abort_entered),
             exchange_dropped: Arc::clone(&abort_dropped),
         };
-        let abort_remote = RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
-            abort_transport,
-        ))
+        let abort_remote = ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(abort_transport)
+                .answer_limits(QueryExecutionResourceLimits::default()),
+        )
         .await
         .expect("Rust caller-abort remote connects")
         .with_schema(package())
@@ -1241,7 +1389,7 @@ mod tests {
         })
     }
 
-    fn sdk_v2_query_category(error: &crate::Error) -> &'static str {
+    fn sdk_queries_query_category(error: &crate::Error) -> &'static str {
         error
             .details()
             .and_then(|details| {
@@ -1255,7 +1403,7 @@ mod tests {
             .expect("authenticated remote diagnostic carries result_decode")
     }
 
-    fn sdk_v2_remote_diagnostic_observation(
+    fn sdk_queries_remote_diagnostic_observation(
         error: &crate::Error,
         claim_consumed: bool,
     ) -> serde_json::Value {
@@ -1302,11 +1450,11 @@ mod tests {
         let visible = format!("{}{:?}{:?}", error.message(), path, details);
         let redacted = !visible.contains("provider-secret") && !visible.contains("must-not-cross");
         serde_json::json!({
-            "category": match (error.category(), sdk_v2_query_category(error)) {
+            "category": match (error.category(), sdk_queries_query_category(error)) {
                 (crate::ErrorCategory::ModelValidation, "result_decode") => "integrity",
                 (category, _) => category.as_str(),
             },
-            "query_category": sdk_v2_query_category(error),
+            "query_category": sdk_queries_query_category(error),
             "code": error.code().expect("authenticated remote diagnostic carries a stable code"),
             "message": error.message(),
             "path": path,
@@ -1316,7 +1464,7 @@ mod tests {
         })
     }
 
-    async fn observe_sdk_v2_remote_structured_diagnostic() -> serde_json::Value {
+    async fn observe_sdk_queries_remote_structured_diagnostic() -> serde_json::Value {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
         let mut capabilities = query_plan_v2_capability_vocabulary();
         for capability in query_remote_v2_required_capabilities(true) {
@@ -1352,10 +1500,9 @@ mod tests {
             failure: Some(failure),
             signer,
         };
-        let remote = RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100),
-            transport,
-        ))
+        let remote = ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(transport).answer_limits(small_limits()),
+        )
         .await
         .expect("Rust structured-diagnostic proof connects")
         .with_schema(package())
@@ -1379,12 +1526,12 @@ mod tests {
             && error.details().is_some();
         assert_eq!(exchange_count, 1);
         assert!(claim_consumed);
-        let observation = sdk_v2_remote_diagnostic_observation(&error, claim_consumed);
+        let observation = sdk_queries_remote_diagnostic_observation(&error, claim_consumed);
         assert_eq!(observation["redacted"], true);
         observation
     }
 
-    fn sdk_v2_proof_source(root: &Path, relative: &str) -> serde_json::Value {
+    fn sdk_queries_proof_source(root: &Path, relative: &str) -> serde_json::Value {
         let path = root.join(relative);
         let bytes = fs::read(&path)
             .unwrap_or_else(|error| panic!("proof source {} is readable: {error}", path.display()));
@@ -1394,9 +1541,9 @@ mod tests {
         })
     }
 
-    fn requested_sdk_v2_proof_fragment() -> Option<(PathBuf, String)> {
-        let destination = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT");
-        let run_nonce = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
+    fn requested_sdk_queries_proof_fragment() -> Option<(PathBuf, String)> {
+        let destination = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT");
+        let run_nonce = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
         assert_eq!(
             destination.is_some(),
             run_nonce.is_some(),
@@ -1434,7 +1581,7 @@ mod tests {
         Some((destination, run_nonce))
     }
 
-    fn publish_sdk_v2_rust_proof_fragment(
+    fn publish_sdk_queries_rust_proof_fragment(
         destination: &Path,
         run_nonce: &str,
         results: Vec<serde_json::Value>,
@@ -1448,39 +1595,39 @@ mod tests {
             .expect("type-bridge-core has a repository parent");
         let sources = ["type-bridge-core/crates/rust/src/remote.rs"];
         let fragment = serde_json::json!({
-            "format": "typebridge.sdk-v2-proof-fragment/v1",
+            "format": "typebridge.sdk-queries-proof-fragment/v1",
             "binding": "rust",
-            "semantic_profile": "typedb-3.12.1/v1",
+            "semantic_profile": crate::sdk_profile_matrix::requested("queries").semantic_profile,
             "run_nonce": run_nonce,
             "contract": {
-                "allowlist": sdk_v2_proof_source(repository, "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json"),
-                "journey": sdk_v2_proof_source(repository, "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json"),
-                "proof_schema": sdk_v2_proof_source(repository, "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json"),
+                "allowlist": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json"),
+                "journey": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/journey.json"),
+                "proof_schema": sdk_queries_proof_source(repository, "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json"),
             },
             "producer": {
                 "id": "type-bridge-rust.generated-query-proof",
                 "sources": sources
                     .iter()
-                    .map(|source| sdk_v2_proof_source(repository, source))
+                    .map(|source| sdk_queries_proof_source(repository, source))
                     .collect::<Vec<_>>(),
             },
             "results": results,
         });
         let mut bytes =
-            to_canonical_json(&fragment).expect("Rust sdk-v2 proof fragment canonicalizes");
+            to_canonical_json(&fragment).expect("Rust queries proof fragment canonicalizes");
         bytes.push(b'\n');
         assert!(bytes.len() <= 64 * 1024);
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(destination)
-            .expect("Rust sdk-v2 proof fragment is created once");
+            .expect("Rust queries proof fragment is created once");
         output
             .write_all(&bytes)
-            .expect("Rust sdk-v2 proof fragment is written completely");
+            .expect("Rust queries proof fragment is written completely");
         output
             .sync_all()
-            .expect("Rust sdk-v2 proof fragment is durable");
+            .expect("Rust queries proof fragment is durable");
     }
 
     #[tokio::test]
@@ -1509,8 +1656,9 @@ mod tests {
         };
         let connection_resources =
             QueryExecutionResourceLimits::tightened(20_000, 10, 1_000_000, 90, 80, 70, 60, 2);
-        let options = RemoteConnectionOptions::generated(connection_resources, transport);
-        let remote = RemoteDatabase::connect(options)
+        let options =
+            ProxyConnectionPolicy::with_exchange(transport).answer_limits(connection_resources);
+        let remote = ProxyDatabase::connect(options)
             .await
             .unwrap()
             .with_schema(package())
@@ -1572,6 +1720,36 @@ mod tests {
             .expect_err("pre-cancellation must reject before caller transport");
         assert_eq!(cancelled_error.category(), crate::ErrorCategory::Cancelled);
         assert_eq!(cancelled_error.code(), Some("provider_cancelled"));
+
+        // A session's own query limits bound what it may prepare: a plan
+        // ceiling of one byte refuses before the caller's transport.
+        let mut limited_session = remote
+            .query_with_resources(
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+            .unwrap()
+            .with_query_limits(
+                crate::QueryLimits::from_overrides([("canonical_bytes", 1)]).unwrap(),
+            )
+            .unwrap();
+        let limited_person = limited_session.exact::<Person>().unwrap();
+        let limited_error = limited_session
+            .query(limited_person)
+            .unwrap()
+            .count()
+            .await
+            .expect_err("a lowered plan ceiling must reject before caller transport");
+        assert_eq!(
+            limited_error.category(),
+            crate::ErrorCategory::ResourceLimit
+        );
+        assert_eq!(limited_error.code(), Some("canonical_json_too_large"));
+        let Err(after_binding) = limited_session.with_query_limits(crate::QueryLimits::CANONICAL)
+        else {
+            panic!("limits cannot change once a binding exists");
+        };
+        assert_eq!(after_binding.code(), Some("query_limits_after_binding"));
 
         let terminal_resources =
             QueryExecutionResourceLimits::tightened(10_000, 20, 900_000, 100, 70, 80, 50, 1);
@@ -1650,11 +1828,8 @@ mod tests {
             failure: Some(diagnostic),
             signer,
         };
-        let options = RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(10, 1 << 20, 10, 100, 100, 100),
-            transport,
-        );
-        let remote = RemoteDatabase::connect(options)
+        let options = ProxyConnectionPolicy::with_exchange(transport).answer_limits(small_limits());
+        let remote = ProxyDatabase::connect(options)
             .await
             .unwrap()
             .with_schema(package())
@@ -1716,33 +1891,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sdk_v2_rust_deterministic_proof_fragment() {
-        let test_id = "remote::tests::sdk_v2_rust_deterministic_proof_fragment";
+    async fn sdk_queries_rust_deterministic_proof_fragment() {
+        let test_id = "remote::tests::sdk_queries_rust_deterministic_proof_fragment";
         let results = vec![
             serde_json::json!({
                 "observation_ref": "cancellation_direct",
                 "proof_kind": "direct_runtime",
                 "test_id": test_id,
                 "outcome": "passed",
-                "observation": observe_sdk_v2_direct_cancellation().await,
+                "observation": observe_sdk_queries_direct_cancellation().await,
             }),
             serde_json::json!({
                 "observation_ref": "cancellation_remote",
                 "proof_kind": "remote_runtime",
                 "test_id": test_id,
                 "outcome": "passed",
-                "observation": observe_sdk_v2_remote_cancellation().await,
+                "observation": observe_sdk_queries_remote_cancellation().await,
             }),
             serde_json::json!({
                 "observation_ref": "remote_structured_diagnostic",
                 "proof_kind": "diagnostic",
                 "test_id": test_id,
                 "outcome": "passed",
-                "observation": observe_sdk_v2_remote_structured_diagnostic().await,
+                "observation": observe_sdk_queries_remote_structured_diagnostic().await,
             }),
         ];
-        if let Some((destination, run_nonce)) = requested_sdk_v2_proof_fragment() {
-            publish_sdk_v2_rust_proof_fragment(&destination, &run_nonce, results);
+        if let Some((destination, run_nonce)) = requested_sdk_queries_proof_fragment() {
+            publish_sdk_queries_rust_proof_fragment(&destination, &run_nonce, results);
         }
     }
 }

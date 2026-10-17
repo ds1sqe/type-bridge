@@ -66,7 +66,7 @@ person = session.exact(Person)
 employment = session.exact(Employment)
 
 employee = employment.role(Employment.employee).connects(person)
-rows = session.query(person, employment).where(employee).rows(limit=100)
+rows = await session.query(person, employment).where(employee).rows(limit=100)
 ```
 
 Role tokens are owner-aware: `Employment.employee` cannot be applied to a
