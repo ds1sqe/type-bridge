@@ -85,7 +85,7 @@ const NEW: &str = concat!("define ", "entity company;");"""
     assert rust_violations(source, {"FROZEN"}) == [2]
 
 
-def test_legacy_waivers_have_the_requested_removal_minor() -> None:
+def test_legacy_waivers_have_the_requested_removal_release() -> None:
     root = Path(__file__).resolve().parents[3]
     allowlist = json.loads((root / "scripts/ci/typeql_text_allowlist.json").read_text())
     assert set(allowlist["legacy_emitters"]) == {
@@ -99,7 +99,7 @@ def test_legacy_waivers_have_the_requested_removal_minor() -> None:
         )
     }
     assert all(
-        entry["remove_in"] == "11.30" and entry["reason"]
+        entry["remove_in"] == "3.0" and entry["reason"]
         for entry in allowlist["legacy_emitters"].values()
     )
     assert "python scripts/ci/check_typeql_text.py" in (root / "scripts/check.sh").read_text()

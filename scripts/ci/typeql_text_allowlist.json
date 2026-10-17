@@ -9,24 +9,24 @@
   },
   "legacy_emitters": {
     "type-bridge-core/crates/orm/src/manager/dynamic.rs": {
-      "remove_in": "11.30",
-      "reason": "Retained V1 dynamic writer; removed with the legacy writer lane."
+      "remove_in": "3.0",
+      "reason": "Released dynamic writer; the fallback for models without plan authority, ordered models and filter deletes."
     },
     "type-bridge-core/crates/orm/src/manager/query_builder.rs": {
-      "remove_in": "11.30",
-      "reason": "Retained V1 dynamic writer; removed with the legacy writer lane."
+      "remove_in": "3.0",
+      "reason": "Released dynamic query builder; serves the dynamic writer fallback and filter reads."
     },
     "type-bridge-core/crates/orm/src/dynamic.rs": {
-      "remove_in": "11.30",
-      "reason": "Retained V1 dynamic writer; removed with the legacy writer lane."
+      "remove_in": "3.0",
+      "reason": "Released dynamic models; the fallback for handwritten models."
     },
     "type-bridge-core/crates/orm/src/projected_batch_executor.rs": {
-      "remove_in": "11.30",
-      "reason": "Retained V1 dynamic writer; removed with the legacy writer lane."
+      "remove_in": "3.0",
+      "reason": "Batch statement compiler for given-row batches and their released fallback."
     },
     "type-bridge-core/crates/orm/src/session/legacy_writer.rs": {
-      "remove_in": "11.30",
-      "reason": "Retained V1 dynamic writer; removed with the legacy writer lane."
+      "remove_in": "3.0",
+      "reason": "Released legacy writer lane; still reached by the dynamic fallbacks."
     }
   }
 }

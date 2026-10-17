@@ -228,7 +228,7 @@ def rust_violations(source: str, constants: set[str] | None = None) -> list[int]
 def main() -> int:
     allowlist = json.loads((ROOT / "scripts/ci/typeql_text_allowlist.json").read_text())
     legacy = allowlist["legacy_emitters"]
-    assert all(entry["remove_in"] == "11.30" and entry["reason"] for entry in legacy.values())
+    assert all(entry["remove_in"] == "3.0" and entry["reason"] for entry in legacy.values())
     files = subprocess.check_output(
         [
             "git",
