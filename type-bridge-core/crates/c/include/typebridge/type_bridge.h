@@ -182,6 +182,7 @@ typedef struct type_bridge_query_remote_claim type_bridge_query_remote_claim_t;
 #define TYPE_BRIDGE_QUERY_DEFAULT_COLLECTION_MEMBERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_ROLE_PLAYERS UINT64_C(65536)
 #define TYPE_BRIDGE_QUERY_DEFAULT_STATEMENTS 3u
+/* ABI 1.7: the per-transport defaults. */
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_TIMEOUT_MILLISECONDS UINT64_C(30000)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_ITEMS UINT64_C(100000)
 #define TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_BYTES UINT64_C(67108864)
@@ -460,10 +461,10 @@ typedef struct type_bridge_query_terminal_descriptor_v1 {
 } type_bridge_query_terminal_descriptor_v1_t;
 
 /*
- * One named override of a canonical query limit. `name` is `name_length`
- * bytes of UTF-8, not NUL-terminated, spelling one stable limit name such as
- * "canonical_bytes" or "boolean_terms". A limit that is not named keeps its
- * canonical default.
+ * ABI 1.7: one named override of a canonical query limit. `name` is
+ * `name_length` bytes of UTF-8, not NUL-terminated, spelling one stable limit
+ * name such as "canonical_bytes" or "boolean_terms". A limit that is not named
+ * keeps its canonical default.
  */
 typedef struct type_bridge_query_limit_override_v1 {
   const uint8_t *name;
@@ -1521,9 +1522,9 @@ type_bridge_query_session_open(const type_bridge_schema_package_t *package,
     type_bridge_query_session_t **out_session,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 /*
- * Open a session whose queries are validated, encoded, and executed under
- * caller-supplied query limits. NULL overrides with a zero count select the
- * canonical defaults. An unknown name, a repeated name, or an unsupported
+ * ABI 1.7: open a session whose queries are validated, encoded, and executed
+ * under caller-supplied query limits. NULL overrides with a zero count select
+ * the canonical defaults. An unknown name, a repeated name, or an unsupported
  * value returns TYPE_BRIDGE_STATUS_INVALID_ARGUMENT and opens nothing.
  */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1741,22 +1742,22 @@ type_bridge_read_transaction_query_execute_v1(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 
 /*
- * Built-in proxy connection to a TypeBridge server. A terminal runs on any
- * connection type through that type's one *_query_execute_v1 call: database,
- * read transaction, or proxy, with the same result family and diagnostics.
- * Open and execute are synchronous and block the calling thread; the
- * connection owns its I/O and needs no runtime handle. Every byte view is
- * copied during open and need not be NUL terminated. `endpoint` is the
- * server base URL (https:// for TLS). `tls_mode` is one of
- * TYPE_BRIDGE_TLS_DISABLED, TYPE_BRIDGE_TLS_NATIVE_ROOTS, or
- * TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA; `custom_root_ca_path` names a PEM bundle in
- * custom-root mode and is empty otherwise. `headers` (such as Authorization)
- * is sent with every request and may be NULL when `header_count` is 0. An
- * empty `pinned_advertisement` fetches the server's capability advertisement
- * during open; a nonempty one is used instead. `connection_limits` bounds
- * the open; `answer_limits` is the ceiling every terminal on the connection
- * is constrained by. NULL limits select the defaults. Reserved words must be
- * zero. Manager terminals run only on a database or read transaction.
+ * ABI 1.7: the built-in proxy connection to a TypeBridge server. A terminal
+ * runs on any connection type through that type's one *_query_execute_v1 call:
+ * database, read transaction, or proxy, with the same result family and
+ * diagnostics. Open and execute are synchronous and block the calling thread;
+ * the connection owns its I/O and needs no runtime handle. Every byte view is
+ * copied during open and need not be NUL terminated. `endpoint` is the server
+ * base URL (https:// for TLS). `tls_mode` is one of TYPE_BRIDGE_TLS_DISABLED,
+ * TYPE_BRIDGE_TLS_NATIVE_ROOTS, or TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;
+ * `custom_root_ca_path` names a PEM bundle in custom-root mode and is empty
+ * otherwise. `headers` (such as Authorization) is sent with every request and
+ * may be NULL when `header_count` is 0. An empty `pinned_advertisement`
+ * fetches the server's capability advertisement during open; a nonempty one is
+ * used instead. `connection_limits` bounds the open; `answer_limits` is the
+ * ceiling every terminal on the connection is constrained by. NULL limits
+ * select the defaults. Reserved words must be zero. Manager terminals run only
+ * on a database or read transaction.
  */
 #define TYPE_BRIDGE_PROXY_CONNECTION_OPTIONS_VERSION 1u
 #define TYPE_BRIDGE_PROXY_ENDPOINT_BYTES_MAX 4096u

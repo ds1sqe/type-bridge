@@ -478,12 +478,14 @@ differently direct and through a proxy. Each entry says what to do instead.
     `type_bridge_database_query_execute_v1`. Generated C packages emit
     `{prefix}_proxy_query_execute_{kind}`. The remote context stays as the
     exchange extension point for hosts that own the route. These entry
-    points belong to the ABI 1.6 surface and need no ABI 1.7 request.
+    points and types are new in ABI 1.7; the 2.2.6 (ABI 1.6) header does
+    not declare them, and generated packages that call them carry an
+    ABI 1.7 descriptor.
 - Configurable query limits. `QueryLimits` replaces the fixed ceilings on a
   query's encoded size, nesting depth, and structure, and a session can lower
   or raise them, including plans larger than 16 MiB. Python, TypeScript/Node,
   and Rust sessions accept it (`query_limits`, `queryLimits`,
-  `with_query_limits`); the C runtime header adds
+  `with_query_limits`); C ABI 1.7 adds
   `type_bridge_query_limit_override_v1_t` and
   `type_bridge_query_session_open_with_limits_v1`. Defaults are unchanged.
 - Remote executors advertise the query limits and answer ceilings they
@@ -660,8 +662,8 @@ differently direct and through a proxy. Each entry says what to do instead.
   `source` `default`).
   - C: a direct database, transaction, call, or batch without a limits
     descriptor now gets the direct defaults, looser than 2.2.4's 65,536
-    items; a proxy connection or remote context gets the proxy defaults. The
-    header adds `TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*` and
+    items; a proxy connection or remote context gets the proxy defaults. ABI
+    1.7 adds `TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*` and
     `TYPE_BRIDGE_QUERY_PROXY_DEFAULT_*`; the released
     `TYPE_BRIDGE_QUERY_DEFAULT_*` keep their 2.2 values.
   - Node: `ProxyConnection.answerLimits` reports the connection's ceiling,

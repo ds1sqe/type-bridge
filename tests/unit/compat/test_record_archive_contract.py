@@ -89,11 +89,12 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     assert len(exports) == 395
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
-        "4cdc5195b1da40333406ae162d05bd932ed90e3e8d4d30bcebda21c2bea38f2d"
+        "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
     )
     previous_exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text()))
     # ABI 1.7 is additive: keep-open rollback, the staged transaction surface,
-    # the plan builder and the typed failure accessor.
+    # the plan builder, the typed failure accessor, the proxy connection and
+    # the limits session open.
     builder = {
         f"type_bridge_plan_builder_{name}"
         for name in (
@@ -119,6 +120,10 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "type_bridge_pending_answer",
         "type_bridge_pending_free",
         "type_bridge_execution_diagnostics_failure_get_v1",
+        "type_bridge_proxy_connection_open_v1",
+        "type_bridge_proxy_connection_close",
+        "type_bridge_proxy_query_execute_v1",
+        "type_bridge_query_session_open_with_limits_v1",
     }
     assert contract["options"]["size_64_bit"] == 72
     assert contract["options"]["alignment_64_bit"] == 8

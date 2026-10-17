@@ -3512,18 +3512,16 @@ fn abi_1_6_header_consumer_links_and_opens_its_package_on_1_7() {
     let fixture = emitted_fixture();
     let stage = TempDirectory::new("abi_1_6_consumer");
     write_package(&fixture.package, stage.path());
-    let source = stage.path().join("src/models.c");
-    let text = fs::read_to_string(&source).expect("generated source exists");
-    let previous = text.replace("  1u,\n  7u,\n  0u,", "  1u,\n  6u,\n  0u,");
-    assert_ne!(
-        text, previous,
-        "fixture must carry a literal ABI descriptor"
-    );
-    fs::write(&source, previous).expect("1.6 descriptor source is staged");
+    let generated =
+        fs::read_to_string(stage.path().join("src/models.c")).expect("generated source exists");
+    let source = stage.path().join("old-package.c");
+    fs::write(&source, abi_1_6_package_source(&generated)).expect("1.6 package source is staged");
     let consumer = stage.path().join("old-consumer.c");
     fs::write(&consumer, r#"#include <typebridge/type_bridge.h>
-#include <fixture/models.h>
 _Static_assert(TYPE_BRIDGE_C_ABI_MINOR == 6u, "must use the frozen old header");
+type_bridge_status_t TYPE_BRIDGE_CALL fixture_schema_package_open(
+    type_bridge_schema_package_t **out_package,
+    type_bridge_diagnostics_t **out_diagnostics);
 int main(void) {
   type_bridge_schema_package_t *package = NULL;
   type_bridge_diagnostics_t *diagnostics = NULL;
@@ -3556,8 +3554,6 @@ int main(void) {
             ])
             .arg("-I")
             .arg(&old_include)
-            .arg("-I")
-            .arg(stage.path().join("include"))
             .arg(&source)
             .arg(&consumer)
             .arg("-L")
@@ -3584,6 +3580,44 @@ int main(void) {
         );
     }
     assert!(invocations > 0);
+}
+
+/// The package descriptor and open function a 2.2.6 (ABI 1.6) generator
+/// emits, cut from today's generated source with the descriptor minor set to
+/// 6. Today's models.h and the rest of models.c use ABI 1.7 declarations the
+/// frozen 1.6 header lacks, so the old consumer cannot include them.
+fn abi_1_6_package_source(generated: &str) -> String {
+    const DESCRIPTOR: &str = "static const type_bridge_schema_package_chunked_descriptor_v1_t\n";
+    const OPEN_END: &str = "&fixture_schema_package_chunks_v1, out_package, out_diagnostics);\n}\n";
+    let descriptor = generated.find(DESCRIPTOR).expect("generated descriptor");
+    let end = generated[descriptor..]
+        .find(OPEN_END)
+        .expect("generated package open")
+        + descriptor
+        + OPEN_END.len();
+    let start = generated[descriptor..end]
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter_map(|word| word.strip_suffix("_chunks"))
+        .map(|name| {
+            generated
+                .find(&format!("static const uint8_t {name}_chunk_0[]"))
+                .expect("descriptor chunk data")
+        })
+        .min()
+        .expect("descriptor names its chunks");
+    let body = &generated[start..end];
+    let previous = body.replace("  1u,\n  7u,\n  0u,", "  1u,\n  6u,\n  0u,");
+    assert_ne!(
+        body, previous,
+        "fixture must carry a literal ABI descriptor"
+    );
+    format!(
+        "#include <typebridge/type_bridge.h>\n\
+         #define FIXTURE_HOSTED_OBJECT_BYTES_MIN 65535u\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL fixture_schema_package_open(\n\
+             type_bridge_schema_package_t **out_package,\n\
+             type_bridge_diagnostics_t **out_diagnostics);\n\n{previous}"
+    )
 }
 
 #[cfg(unix)]

@@ -100,7 +100,9 @@ diagnostics:
 | `type_bridge_proxy_connection_t` | `type_bridge_proxy_query_execute_v1` |
 
 So one program runs unchanged against TypeDB directly or through a
-TypeBridge server; only the connection it opens differs. The proxy connection
+TypeBridge server; only the connection it opens differs. The proxy
+connection, `type_bridge_query_session_open_with_limits_v1`, and their types
+are ABI 1.7; the ABI 1.6 header of 2.2.6 does not declare them. The proxy connection
 is synchronous and blocks the calling thread:
 
 ```c
