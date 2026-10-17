@@ -36,8 +36,28 @@ uv run python -m perf.harness.micro \
 ```
 
 Each directory under `--criterion-dir` and `--iai-dir` names the crate in the
-metric ids; the ORM crate (`type-bridge-orm`, benches `serde` and
-`query_building`) goes under `orm/`. Either directory may be omitted.
+metric ids; the ORM crate (`type-bridge-orm`, benches `serde`,
+`query_building` and `staged`) goes under `orm/`. Either directory may be
+omitted.
+
+## Stage spans
+
+The core names each pipeline stage with a `tracing` span at the layer that
+owns it:
+
+| Span | Covers | Owner |
+| --- | --- | --- |
+| `tb.orm.plan` | building and staging a `query-plan/v3` plan | contract builder, ORM `stage_plan` |
+| `tb.query.compile` | lowering a plan to the TypeQL AST and rendering it | ORM plan executor |
+| `tb.runtime.execute` | a driver round trip: open, query, rollback, close | TypeDB runtime |
+| `tb.decode` | converting one provider answer to JSON | TypeDB runtime |
+| `tb.commit` | the provider commit | TypeDB runtime |
+
+The spans carry no fields, so no query text or value is recorded. They are
+always compiled in. With no subscriber they cost a callsite check each: the
+`staged/mixed_commit` bench runs about 70 more instructions per commit with
+them than with `tracing/max_level_off` (0.02% of about 326,000). A
+subscriber at `INFO` sees them as ordinary spans.
 
 ## Run the Python binding benchmarks locally
 

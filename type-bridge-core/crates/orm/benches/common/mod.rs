@@ -320,3 +320,103 @@ pub fn medium_codegen_schema() -> String {
     }
     medium_tql
 }
+
+// ---------------------------------------------------------------------------
+// Staged commit
+// ---------------------------------------------------------------------------
+
+#[path = "../../tests/support/plan_v3_race.rs"]
+mod race;
+
+use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_orm::OrmError;
+use type_bridge_orm::session::GivenRowsSpec;
+use type_bridge_orm::session::backend::{
+    BoxFuture, DriverBackend, QueryResult, TransactionOps, TxType,
+};
+use type_bridge_orm::session::staged::TransactionOptions;
+
+/// A provider that answers every query with one row, so a staged commit
+/// runs the whole ORM path (stage, lower, render, execute, resolve) with
+/// no I/O.
+struct OneRow;
+
+impl DriverBackend for OneRow {
+    fn open_transaction(
+        &self,
+        _: &str,
+        _: TxType,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+        Box::pin(async { Ok(Box::new(OneRow) as Box<dyn TransactionOps>) })
+    }
+    fn is_open(&self) -> bool {
+        true
+    }
+    fn supports_given_rows(&self) -> bool {
+        true
+    }
+    fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+        "3.13.6".parse().ok()
+    }
+}
+
+impl TransactionOps for OneRow {
+    fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        Box::pin(async { Ok(QueryResult::Rows(vec![serde_json::json!({})])) })
+    }
+    fn query_with_rows(
+        &mut self,
+        _: &str,
+        _: GivenRowsSpec,
+    ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        Box::pin(async { Ok(QueryResult::Rows(vec![serde_json::json!({})])) })
+    }
+    fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
+    fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Everything one staged commit needs, built outside the measurement.
+pub struct StagedCommit {
+    runtime: tokio::runtime::Runtime,
+    database: type_bridge_orm::Database,
+    plans: Vec<QueryPlanV3>,
+}
+
+/// The staged program of mixed plans: the one-query purchase (given row),
+/// the touch returning rows, and a count read.
+pub fn staged_commit() -> StagedCommit {
+    StagedCommit {
+        runtime: tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap(),
+        database: type_bridge_orm::Database::with_backend(Box::new(OneRow), "bench"),
+        plans: vec![
+            race::purchase("O1", "I1", "A1"),
+            race::touch_rows(),
+            race::stock_read(Operation::Count),
+        ],
+    }
+}
+
+impl StagedCommit {
+    /// Stage every plan in one transaction and commit; return the answers.
+    pub fn run(&self) -> usize {
+        self.runtime.block_on(async {
+            let mut transaction = self.database.transaction(TransactionOptions::default());
+            let pending = self
+                .plans
+                .iter()
+                .map(|plan| transaction.stage_plan(plan).unwrap())
+                .collect::<Vec<_>>();
+            transaction.commit().await.unwrap();
+            pending.iter().filter(|answer| answer.get().is_ok()).count()
+        })
+    }
+}

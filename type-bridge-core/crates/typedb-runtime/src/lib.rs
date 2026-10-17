@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+use tracing::Instrument;
 use type_bridge_core_lib::version as core_version;
 use type_bridge_core_lib::version::DEFAULT_HTTP_PORT;
 
@@ -52,6 +53,22 @@ use failure::{Failure, redact_provider_error, redacted_failure};
 
 /// Boxed future returned by async runtime methods.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+// Pipeline stage spans. A driver round trip (open, query, rollback, close)
+// is `tb.runtime.execute`, a commit `tb.commit`, and converting one answer
+// to JSON `tb.decode`. They carry no fields, so no query text or value is
+// recorded.
+fn execute_span() -> tracing::Span {
+    tracing::info_span!("tb.runtime.execute")
+}
+
+fn commit_span() -> tracing::Span {
+    tracing::info_span!("tb.commit")
+}
+
+fn decode_span() -> tracing::Span {
+    tracing::info_span!("tb.decode")
+}
 
 /// How confidently a failed commit can be classified without observing server state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2662,7 +2679,7 @@ impl TypeDBRuntime {
         let db = database.to_string();
         let options = *options;
         let driver_lease = Arc::clone(&self.driver);
-        Box::pin(async move {
+        let work = async move {
             driver_lease.ensure_open()?;
             match driver_lease.inner() {
                 #[cfg(feature = "band8")]
@@ -2720,7 +2737,8 @@ impl TypeDBRuntime {
                     })
                 }
             }
-        })
+        };
+        Box::pin(work.instrument(execute_span()))
     }
 
     /// Check whether the underlying driver is open.
@@ -3185,7 +3203,7 @@ impl RuntimeTransaction {
             max_collection_members,
         } = limits;
         let tql = typeql.to_string();
-        Box::pin(async move {
+        let work = async move {
             self.ensure_driver_open()?;
             runtime_check(&limits)?;
             match &self.inner {
@@ -3223,6 +3241,7 @@ impl RuntimeTransaction {
                             )
                             .await?
                             {
+                                let decode = decode_span().entered();
                                 let mut object = serde_json::Map::new();
                                 for (index, column) in row.get_column_names().iter().enumerate() {
                                     let value = row
@@ -3234,6 +3253,7 @@ impl RuntimeTransaction {
                                         .unwrap_or(serde_json::Value::Null);
                                     object.insert(column.clone(), value);
                                 }
+                                drop(decode);
                                 if runtime_accept(
                                     &limits,
                                     &mut stats,
@@ -3262,12 +3282,15 @@ impl RuntimeTransaction {
                             )
                             .await?
                             {
+                                let decode = decode_span().entered();
                                 let value = document_to_json_b8(
                                     &document,
                                     &mut collection_members,
                                     max_collection_members,
                                     scalar_encoding,
-                                )?;
+                                );
+                                drop(decode);
+                                let value = value?;
                                 if runtime_accept(
                                     &limits,
                                     &mut stats,
@@ -3312,7 +3335,8 @@ impl RuntimeTransaction {
                     .await
                 }
             }
-        })
+        };
+        Box::pin(work.instrument(execute_span()))
     }
 
     /// Execute TypeQL with `given`-stage input rows within this transaction.
@@ -3405,7 +3429,7 @@ impl RuntimeTransaction {
             scalar_encoding,
             &consumer,
         );
-        Box::pin(async move {
+        let work = async move {
             self.ensure_driver_open()?;
             runtime_check(&limits)?;
             match &self.inner {
@@ -3446,7 +3470,8 @@ impl RuntimeTransaction {
                     .await
                 }
             }
-        })
+        };
+        Box::pin(work.instrument(execute_span()))
     }
 
     /// Commit this transaction.
@@ -3466,7 +3491,7 @@ impl RuntimeTransaction {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open().map_err(RuntimeCommitError::Runtime)?;
                     }
@@ -3476,12 +3501,13 @@ impl RuntimeTransaction {
                         ))
                     })?;
                     t.commit().await.map_err(band8_commit_failure)
-                })
+                };
+                Box::pin(work.instrument(commit_span()))
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open().map_err(RuntimeCommitError::Runtime)?;
                     }
@@ -3491,7 +3517,8 @@ impl RuntimeTransaction {
                         ))
                     })?;
                     t.commit().await.map_err(band9_commit_failure)
-                })
+                };
+                Box::pin(work.instrument(commit_span()))
             }
         }
     }
@@ -3503,7 +3530,7 @@ impl RuntimeTransaction {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
                 let tx = opt.as_ref();
-                Box::pin(async move {
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open()?;
                     }
@@ -3516,12 +3543,13 @@ impl RuntimeTransaction {
                     t.rollback().await.map_err(|e| {
                         RuntimeError::Transaction(redact_provider_error(&e, "Rollback failed"))
                     })
-                })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.as_ref();
-                Box::pin(async move {
+                let work = async move {
                     if let Some(driver) = &driver_lease {
                         driver.ensure_open()?;
                     }
@@ -3534,7 +3562,8 @@ impl RuntimeTransaction {
                     t.rollback().await.map_err(|e| {
                         RuntimeError::Transaction(redact_provider_error(&e, "Rollback failed"))
                     })
-                })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
         }
     }
@@ -3546,7 +3575,7 @@ impl RuntimeTransaction {
             #[cfg(feature = "band8")]
             RuntimeTransactionInner::B8(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     let Some(t) = tx else {
                         return Ok(());
                     };
@@ -3557,12 +3586,13 @@ impl RuntimeTransaction {
                     t.close().await.map_err(|e| {
                         RuntimeError::Transaction(redact_provider_error(&e, "Close failed"))
                     })
-                })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
             #[cfg(feature = "band9")]
             RuntimeTransactionInner::B9(opt) => {
                 let tx = opt.take();
-                Box::pin(async move {
+                let work = async move {
                     let Some(t) = tx else {
                         return Ok(());
                     };
@@ -3573,7 +3603,8 @@ impl RuntimeTransaction {
                     t.close().await.map_err(|e| {
                         RuntimeError::Transaction(redact_provider_error(&e, "Close failed"))
                     })
-                })
+                };
+                Box::pin(work.instrument(execute_span()))
             }
         }
     }
@@ -4229,6 +4260,7 @@ async fn consume_answer_b9(
             let stream = stream
                 .map_err(|error| band9_query_error_with_operation(error, "Row stream failed"))
                 .and_then(move |row| {
+                    let _stage = decode_span().entered();
                     let result = (|| -> Result<RuntimeAnswerItem> {
                         let mut obj = serde_json::Map::new();
                         for (i, col) in row.get_column_names().iter().enumerate() {
@@ -4252,6 +4284,7 @@ async fn consume_answer_b9(
             let stream = stream
                 .map_err(|error| band9_query_error_with_operation(error, "Document stream failed"))
                 .and_then(move |document| {
+                    let _stage = decode_span().entered();
                     let result = document_to_json_b9(
                         &document,
                         &mut collection_members,

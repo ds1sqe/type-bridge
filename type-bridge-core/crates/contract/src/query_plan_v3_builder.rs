@@ -434,6 +434,8 @@ impl PlanBuilder {
         schema: &DeclaredSchema,
         semantics: ManagedSemanticSchemaFingerprint,
     ) -> Result<QueryPlanV3, Diagnostic> {
+        // The plan stage; spans carry no fields, so no user value leaves.
+        let _stage = tracing::info_span!("tb.orm.plan").entered();
         if let Some(error) = &self.error {
             return Err(error.clone());
         }

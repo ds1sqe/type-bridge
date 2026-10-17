@@ -719,6 +719,7 @@ impl Transaction {
     /// A `Schema` transaction refuses plans; the schema transaction stays
     /// in eager mode.
     pub fn stage_plan(&mut self, plan: &QueryPlanV3) -> Result<Pending<PlanAnswer>, PendingError> {
+        let _stage = tracing::info_span!("tb.orm.plan").entered();
         self.admit(plan.writes())?;
         self.admit_typed()?;
         let invalid = |diagnostic| PendingError::InvalidPlan(Box::new(diagnostic));

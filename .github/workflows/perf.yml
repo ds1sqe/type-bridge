@@ -106,7 +106,7 @@ jobs:
           CRITERION_HOME="$PERF_DIR/criterion/core" cargo bench --locked -p type-bridge-core-lib \
             --bench validation --bench compilation --bench schema -- --noplot
           CRITERION_HOME="$PERF_DIR/criterion/orm" cargo bench --locked -p type-bridge-orm \
-            --bench serde --bench query_building -- --noplot
+            --bench serde --bench query_building --bench staged -- --noplot
 
       - name: Instruction counts
         working-directory: type-bridge-core
@@ -116,7 +116,7 @@ jobs:
           GUNGRAUN_HOME="$PERF_DIR/iai/core" cargo bench --locked -p type-bridge-core-lib \
             --bench validation_iai --bench compilation_iai --bench schema_iai
           GUNGRAUN_HOME="$PERF_DIR/iai/orm" cargo bench --locked -p type-bridge-orm \
-            --bench serde_iai --bench query_building_iai
+            --bench serde_iai --bench query_building_iai --bench staged_iai
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -411,11 +411,15 @@ jobs:
               export GITHUB_SHA
               GITHUB_SHA=$(git rev-parse HEAD)
               export GITHUB_HEAD_REF="$side"
-              for spec in 'core:type-bridge-core-lib:validation compilation schema' 'orm:type-bridge-orm:serde query_building'; do
+              for spec in 'core:type-bridge-core-lib:validation compilation schema' 'orm:type-bridge-orm:serde query_building staged'; do
                 IFS=: read -r group package benches <<< "$spec"
                 wall=()
                 instructions=()
                 for bench in $benches; do
+                  # A bench newer than the base is compared once both have it.
+                  if [ ! -f "type-bridge-core/crates/$group/benches/$bench.rs" ]; then
+                    continue
+                  fi
                   wall+=(--bench "$bench")
                   instructions+=(--bench "${bench}_iai")
                 done

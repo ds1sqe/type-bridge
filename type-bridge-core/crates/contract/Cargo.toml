@@ -24,6 +24,8 @@ serde-backend-conformance = ["serde_json/arbitrary_precision", "serde_json/prese
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.10"
+# Stage spans only; without the default proc-macro feature.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 unicode-ident = "1.0"
 
 [lints]

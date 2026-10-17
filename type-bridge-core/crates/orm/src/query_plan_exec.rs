@@ -325,6 +325,7 @@ pub(crate) fn staged_query(
     plan: &QueryPlanV3,
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
+    let _stage = tracing::info_span!("tb.query.compile").entered();
     let (query, given) = lower(plan)?;
     if given.is_some() && !supports_given_rows {
         return Err(failure(

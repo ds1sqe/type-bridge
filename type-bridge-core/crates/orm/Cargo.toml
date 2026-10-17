@@ -48,6 +48,7 @@ base64 = "0.22"
 tokio = { version = "1", features = ["full", "test-util"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 typeql.workspace = true
+tracing-subscriber = "0.3"
 # Instruction-count benches; the CI runner installs gungraun-runner at the
 # same exact version.
 gungraun = "=0.20.0"
@@ -66,6 +67,14 @@ harness = false
 
 [[bench]]
 name = "query_building_iai"
+harness = false
+
+[[bench]]
+name = "staged"
+harness = false
+
+[[bench]]
+name = "staged_iai"
 harness = false
 
 [lints]
