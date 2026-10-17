@@ -214,16 +214,25 @@ them.
   separators and number spelling change. Plan bytes, recorded migrations and
   their checksums keep their bytes. Do not compare rendered TypeQL byte for
   byte.
+- **Generated writes run as plans where the package allows it.** Rust single
+  writes and every C write run as `query-plan/v3` write plans. Python and
+  TypeScript writes (except a TypeScript single `delete`), and Rust
+  batches, do so only in packages generated with ordered collections
+  (projection handler version 2); a package without them keeps its
+  released write path in 2.3, because the handler version pins its
+  behaviour. Relation puts, and single inserts, updates and puts on models
+  with ordered fields or roles, keep the released path everywhere. The
+  next two changes apply only to writes that run as plans.
 - **Relation references resolve inside the write.** A polymorphic reference
   that matches several things, or two references of one role that resolve to
   one player, are now refused after the write instead of before it; a
   borrowed transaction becomes rollback-only.
+- **Large batches split** into chunks of up to 4,096 rows on the same
+  transaction instead of failing; the batch is still all-or-nothing.
 - **C direct answer defaults are looser.** A C database, transaction, call
   or batch without a limits descriptor now gets the direct defaults the
   other SDKs use (100,000 items, 64 MiB) instead of 65,536 items. A proxy
   connection gets the wire limits (65,536 items, 32 MiB).
-- **Large batches split** into chunks of up to 4,096 rows on the same
-  transaction instead of failing; the batch is still all-or-nothing.
 
 ## New in 2.3
 

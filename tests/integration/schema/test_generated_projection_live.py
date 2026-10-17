@@ -3279,7 +3279,13 @@ def test_generated_single_delete_by_iid_live(
     clean_db: Database,
     generated_package: ModuleType,
 ) -> None:
-    """Single deletes run as delete plans; an absent IID stays a released no-op."""
+    """Single deletes by IID or instance remove the thing; an absent IID is a no-op.
+
+    The fixture package has no ordered collections (handler version 1), so these
+    deletes run on the released dynamic path, not as delete plans. A delete in a
+    borrowed transaction is visible inside it, undone by its rollback, and stored
+    by its commit.
+    """
     generated = generated_package
     _, provider_schema, _ = _acceptance_contract(clean_db)
     clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")

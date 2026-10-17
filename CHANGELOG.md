@@ -620,6 +620,27 @@ differently direct and through a proxy. Each entry says what to do instead.
   instead of `migration_typedb_export_invalid`, while refusing the migration.
 - The published `type-bridge-orm` and `type-bridge-schema-compat` crates pin
   `typeql =3.13.4` (was `=3.12.0`).
+- Generated manager writes that go through the projected executor run as
+  `query-plan/v3` write plans; the next entries describe them. Where they
+  go through it:
+  - Rust SDK: single insert, put, update and delete in every generated
+    package; batches (`*_many`) only in packages generated with ordered
+    collections (projection handler version 2).
+  - C SDK: every single write and batch in every package; C has no handler
+    gate.
+  - Python and TypeScript/Node: single writes and batches only in packages
+    generated with ordered collections (handler version 2). A TypeScript
+    single `delete` keeps the released path in every package.
+  - The exceptions each entry names (ordered models, relation puts) keep
+    the released path inside the executor.
+
+  Packages generated without ordered collections carry handler version 1,
+  and the handler version is the package's behaviour version. In 2.3 those
+  packages keep the released write path in Python and TypeScript (every
+  write) and for Rust batches, because routing them would change error
+  classes, rollback-only latching and batch limits without a regeneration.
+  Routing them to plans is a later opt-in (a handler bump on regeneration,
+  or 3.0).
 - A projected relation insert resolves its role-player references inside
   the write: each reference is an exact `isa!` match, or a disjunction over
   the concrete candidate types, in the insert's own pipeline, so no lookup
@@ -641,8 +662,9 @@ differently direct and through a proxy. Each entry says what to do instead.
   cleared and the given values and players attached, references resolved
   in the same plan. Inserts and updates on models with ordered fields or
   roles, and relation updates without players, keep the released path;
-  deletes always run as a plan. For the Rust SDK single insert, provider answers that do not
-  describe exactly one canonical thing now report `missing_post_write_row`,
+  every delete that reaches the executor runs as a plan. For the Rust SDK
+  single insert, provider answers that do not describe exactly one
+  canonical thing now report `missing_post_write_row`,
   `provider_identity_cardinality_invalid` or `provider_identity_mismatch`
   instead of `invalid_provider_evidence`.
 - When a projected insert, update, keyed put or delete (entity or
@@ -654,16 +676,21 @@ differently direct and through a proxy. Each entry says what to do instead.
   follows it. If that answer names two relations, the call fails with
   `provider_identity_cardinality_invalid` (the write made two) instead of the
   read-back's `provider_hydration_failed`.
-- Python generated models delete one thing through the projected executor,
-  as one `query-plan/v3` delete plan, like their batch deletes; an absent
-  thing is still a successful no-op.
-- A projected batch write runs each stage as one statement over all its
-  rows and splits only past the limits: contiguous, ordered chunks of at
-  most 4,096 rows within the 32 MiB envelope less the plan bytes, fired on
-  the same transaction, so a split batch stays all-or-nothing. Every
-  binding and the proxy split a batch the same way. Before, a batch past
-  those limits could not be sent; a single row too large for any chunk
-  keeps the `batch_statement_limit` refusal.
+- In Python packages generated with ordered collections (handler version
+  2), a generated model's single delete goes through the projected
+  executor, as one `query-plan/v3` delete plan, like its batch deletes.
+  Packages generated without ordered collections keep the released delete
+  path. An absent thing is still a successful no-op on both paths.
+- A projected batch write (Rust, Python and TypeScript batches in packages
+  generated with ordered collections; every C batch) runs each
+  stage as one statement over all its rows and splits only past the
+  limits: contiguous, ordered chunks of at most 4,096 rows within the
+  32 MiB envelope less the plan bytes, fired on the same transaction, so a
+  split batch stays all-or-nothing. Every binding and the proxy split a
+  batch the same way. Before, a batch past those limits could not be sent;
+  a single row too large for any chunk keeps the `batch_statement_limit`
+  refusal. Batches in packages generated without ordered collections
+  (Python, TypeScript, Rust) keep the released path and its limits.
 - Migration lease acquisition is one conditional write. A concurrent
   acquirer that commits between this acquirer's read and write now fails it
   with `migration_execution_stale_fence` instead of letting it silently take
