@@ -6,6 +6,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Python generated models delete one thing through the projected executor,
+  as one `query-plan/v3` delete plan, like their batch deletes; an absent
+  thing is still a successful no-op.
 - A close failure after a successful commit is logged and no longer reported
   as an error: the write is durable, and reporting failure invited duplicate
   retries.

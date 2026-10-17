@@ -669,6 +669,30 @@ async fn helper_single_writes_are_one_plan_each() {
     crud.delete_entity_by_iid(&db, &person_type, inserted.iid())
         .await
         .unwrap();
+    // In a transaction the delete lands at commit; absent is not an error.
+    let staged = crud
+        .insert_entity(&db, &person_with(&installed, "bob", None, &[]))
+        .await
+        .unwrap();
+    let tx = db.transaction_context(TxType::Write).await.unwrap();
+    for _ in 0..2 {
+        crud.delete_entity_by_iid_in_transaction(&tx, &person_type, staged.iid())
+            .await
+            .unwrap();
+    }
+    assert!(
+        crud.get_entity_by_iid(&db, &person_type, staged.iid())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    tx.commit_classified().await.unwrap();
+    assert!(
+        crud.get_entity_by_iid(&db, &person_type, staged.iid())
+            .await
+            .unwrap()
+            .is_none()
+    );
     db.delete_database().await.unwrap();
 
     let Some(db) = live_database("tb_w11f_single_rel").await else {
@@ -724,9 +748,11 @@ async fn helper_single_writes_are_one_plan_each() {
         .unwrap();
     assert_eq!(read.fields(), moved.fields());
     assert_eq!(read.roles(), moved.roles());
-    crud.delete_relation_by_iid(&db, &membership_type, relation.iid())
-        .await
-        .unwrap();
+    for _ in 0..2 {
+        crud.delete_relation_by_iid(&db, &membership_type, relation.iid())
+            .await
+            .unwrap();
+    }
     assert_eq!(
         crud.count_relations(&db, &membership_type).await.unwrap(),
         0

@@ -3275,6 +3275,52 @@ def test_generated_package_preserves_application_operation_outcomes_live(
         assert person_manager.get_by_iid(value.iid) is None
 
 
+def test_generated_single_delete_by_iid_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    """Single deletes run as delete plans; an absent IID stays a released no-op."""
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    person_manager = generated.Person.manager(clean_db)
+    membership_manager = generated.Membership.manager(clean_db)
+
+    owner = _make_generated_person(generated, "single-delete-owner", 1)
+    person_manager.insert(owner)
+    membership = generated.Membership(member=owner)
+    membership_manager.insert(membership)
+    assert membership_manager.delete(membership.iid) is None
+    assert membership_manager.get_by_iid(membership.iid) is None
+    assert membership_manager.delete(membership.iid) is None
+    assert person_manager.delete(owner) is owner
+    assert person_manager.get_by_iid(owner.iid) is None
+    assert person_manager.delete(owner.iid) is None
+
+    staged = _make_generated_person(generated, "single-delete-staged", 2)
+    person_manager.insert(staged)
+    staged_membership = generated.Membership(member=staged)
+    membership_manager.insert(staged_membership)
+    with pytest.raises(RuntimeError, match="single delete rollback sentinel"):
+        with clean_db.transaction("write") as transaction:
+            generated.Person.manager(transaction).delete(staged.iid)
+            assert generated.Person.manager(transaction).get_by_iid(staged.iid) is None
+            raise RuntimeError("single delete rollback sentinel")
+    assert person_manager.get_by_iid(staged.iid) is not None
+
+    with clean_db.transaction("write") as transaction:
+        transaction_people = generated.Person.manager(transaction)
+        transaction_memberships = generated.Membership.manager(transaction)
+        assert transaction_memberships.delete(staged_membership) is staged_membership
+        assert transaction_memberships.delete(staged_membership.iid) is None
+        assert transaction_people.delete(staged.iid) is None
+        assert transaction_people.delete(staged.iid) is None
+        assert transaction_people.delete(owner.iid) is None
+        assert person_manager.get_by_iid(staged.iid) is not None
+    assert person_manager.get_by_iid(staged.iid) is None
+    assert membership_manager.get_by_iid(staged_membership.iid) is None
+
+
 def test_generated_projection_round_trips_live_models(
     clean_db: Database,
     generated_package: ModuleType,

@@ -2935,6 +2935,9 @@ impl PyProjectedModelManager {
             self.ensure_instance(py, &instance_or_iid)?;
             required_projected_iid(&instance_or_iid)?
         };
+        if self.uses_successor_runtime() {
+            return self.delete_projected(py, &iid);
+        }
         match self.descriptor()? {
             TypeDescriptor::Entity(descriptor) => {
                 let manager = self.entity_manager(Arc::new(descriptor))?;
@@ -3314,6 +3317,41 @@ impl PyProjectedModelManager {
                 py,
                 self.runtime.as_ref(),
                 executor.update_relation_in_transaction(transaction, iid, input),
+            ),
+            _ => {
+                return Err(py_runtime_error(
+                    "projected manager has no execution target",
+                ));
+            }
+        };
+        result.map_err(py_sdk_diagnostic)
+    }
+
+    /// Delete one thing through the projected executor, which runs it as a
+    /// delete plan when the projection carries plan authority.
+    fn delete_projected(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
+        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
+        let type_id = &self.type_id;
+        let result = match (type_id.kind(), &self.database, &self.transaction) {
+            (TypeKind::Entity, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.delete_entity_by_iid(database.as_ref(), type_id, iid),
+            ),
+            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.delete_entity_by_iid_in_transaction(transaction, type_id, iid),
+            ),
+            (TypeKind::Relation, Some(database), None) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.delete_relation_by_iid(database.as_ref(), type_id, iid),
+            ),
+            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
+                py,
+                self.runtime.as_ref(),
+                executor.delete_relation_by_iid_in_transaction(transaction, type_id, iid),
             ),
             _ => {
                 return Err(py_runtime_error(
