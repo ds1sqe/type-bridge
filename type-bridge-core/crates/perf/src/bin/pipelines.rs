@@ -4,6 +4,7 @@
 //! ```text
 //! type-bridge-perf-pipelines --out FILE [--iterations N] [--warmup N]
 //!     [--migration-iterations N] [--pipeline NAME]... [--work-dir DIR]
+//! type-bridge-perf-pipelines --binding --out FILE [--iterations N] [--warmup N]
 //! ```
 //!
 //! TypeDB comes from `TYPEDB_ADDRESS` (default `localhost:1729`) and
@@ -17,6 +18,10 @@
 //! exclusive time of every stage span inside it (see
 //! `type_bridge_perf::stages`); `python -m perf.harness.pipeline` derives
 //! the percentiles. Databases are deleted when their pipeline ends.
+//!
+//! `--binding` instead times the offline binding ops (`BINDING_OPS`) with
+//! no TypeDB and writes a `type-bridge-perf-binding/v1` report, the Rust
+//! baseline `python -m perf.harness.binding` subtracts from the bindings.
 
 #[path = "../../../rust/tests/support/purchase_models.rs"]
 mod purchase_models;
@@ -38,6 +43,11 @@ use type_bridge_perf::stages::{self, StageTimes};
 
 /// The report format `perf.harness.pipeline` reads.
 const FORMAT: &str = "type-bridge-perf-pipelines/v1";
+const BINDING_FORMAT: &str = "type-bridge-perf-binding/v1";
+/// The offline `--binding` ops, in report order: build the purchase plan,
+/// build the 1k-row insert (encoding its given rows), and encode that plan's
+/// canonical bytes. None opens a database: staging needs a connected one.
+const BINDING_OPS: [&str; 3] = ["build_purchase", "build_rows_1k", "encode_rows_1k"];
 /// Items seeded for the key, filter, update pipelines.
 const SEEDED_ITEMS: i64 = 1_000;
 /// Seeded items with stock at or above this match the filtered fetch.
@@ -121,6 +131,7 @@ struct Config {
     warmup: usize,
     migration_iterations: usize,
     only: Vec<String>,
+    binding: bool,
     address: String,
     http_port: u16,
     username: String,
@@ -130,9 +141,6 @@ struct Config {
 impl Config {
     fn parse(mut arguments: impl Iterator<Item = String>) -> Result<Self> {
         let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
-        let required = |name: &str| {
-            env(name).ok_or_else(|| Failure::Usage(format!("set {name} for the TypeDB login")))
-        };
         let mut config = Self {
             out: PathBuf::new(),
             work_dir: std::env::temp_dir().join(format!("type-bridge-perf-{}", std::process::id())),
@@ -140,13 +148,14 @@ impl Config {
             warmup: 5,
             migration_iterations: 5,
             only: Vec::new(),
+            binding: false,
             address: env("TYPEDB_ADDRESS").unwrap_or_else(|| "localhost:1729".into()),
             http_port: env("TYPEDB_HTTP_PORT")
                 .unwrap_or_else(|| "8000".into())
                 .parse()
                 .map_err(|_| Failure::Usage("TYPEDB_HTTP_PORT must be a port".into()))?,
-            username: required("TYPEDB_USERNAME")?,
-            password: required("TYPEDB_PASSWORD")?,
+            username: env("TYPEDB_USERNAME").unwrap_or_default(),
+            password: env("TYPEDB_PASSWORD").unwrap_or_default(),
         };
         let count = |value: Option<String>, flag: &str| {
             value
@@ -162,6 +171,7 @@ impl Config {
                 }
                 "--iterations" => config.iterations = count(arguments.next(), &flag)?,
                 "--warmup" => config.warmup = count(arguments.next(), &flag)?,
+                "--binding" => config.binding = true,
                 "--migration-iterations" => {
                     config.migration_iterations = count(arguments.next(), &flag)?;
                 }
@@ -177,6 +187,11 @@ impl Config {
         }
         if config.out.as_os_str().is_empty() {
             return Err(Failure::Usage("--out FILE is required".into()));
+        }
+        if !config.binding && (config.username.is_empty() || config.password.is_empty()) {
+            return Err(Failure::Usage(
+                "set TYPEDB_USERNAME and TYPEDB_PASSWORD for the TypeDB login".into(),
+            ));
         }
         Ok(config)
     }
@@ -741,6 +756,49 @@ fn run(config: &Config) -> Result<()> {
     write_report(&config.out, &report(config, results))
 }
 
+/// One offline op; `rows` is the prebuilt 1k-row plan `encode_rows_1k` encodes.
+fn binding_op(name: &str, package: &SchemaPackage<Shop>, rows: &Built) -> Result<()> {
+    match name {
+        "build_purchase" => drop(std::hint::black_box(purchase(package, "O0".into())?)),
+        "build_rows_1k" => drop(std::hint::black_box(insert_items(
+            package,
+            "batch-",
+            0..BATCH_ROWS as i64,
+        )?)),
+        _ => drop(std::hint::black_box(rows.canonical_bytes()?)),
+    }
+    Ok(())
+}
+
+/// Time the offline ops with the stage layer installed, as in the bindings'
+/// `perf-stages` builds, so every SDK carries the same tracing cost.
+fn binding(config: &Config) -> Result<()> {
+    let _times = stages::install()
+        .map_err(|error| Failure::Usage(format!("cannot install the stage layer: {error}")))?;
+    let package = purchase_models::package();
+    let rows = insert_items(&package, "batch-", 0..BATCH_ROWS as i64)?;
+    let mut ops = Vec::new();
+    for name in BINDING_OPS {
+        let mut samples = Vec::with_capacity(config.iterations);
+        for number in 0..config.warmup + config.iterations {
+            let started = Instant::now();
+            binding_op(name, &package, &rows)?;
+            let elapsed = nanos(started);
+            if number >= config.warmup {
+                samples.push(elapsed);
+            }
+        }
+        ops.push(json!({"name": name, "samples_ns": samples}));
+    }
+    let report = json!({
+        "format": BINDING_FORMAT,
+        "binding": "rust",
+        "warmup": config.warmup,
+        "ops": ops,
+    });
+    write_report(&config.out, &report)
+}
+
 fn write_report(out: &Path, report: &Json) -> Result<()> {
     if let Some(parent) = out.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)?;
@@ -753,7 +811,13 @@ fn write_report(out: &Path, report: &Json) -> Result<()> {
 }
 
 fn main() -> ExitCode {
-    let outcome = Config::parse(std::env::args().skip(1)).and_then(|config| run(&config));
+    let outcome = Config::parse(std::env::args().skip(1)).and_then(|config| {
+        if config.binding {
+            binding(&config)
+        } else {
+            run(&config)
+        }
+    });
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

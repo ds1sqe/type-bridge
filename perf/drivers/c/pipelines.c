@@ -3,6 +3,10 @@
  *
  *   pipelines --out FILE --workspace DIR [--iterations N] [--warmup N]
  *       [--pipeline NAME]...
+ *   pipelines --binding --out FILE [--iterations N] [--warmup N]
+ *
+ * `--binding` times the offline ops of perf/harness/binding.py with no
+ * TypeDB and writes a `type-bridge-perf-binding/v1` report.
  *
  * The same data pipelines, seeds and plans as the Rust driver
  * (type-bridge-core/crates/perf/src/bin/pipelines.rs), written as the
@@ -551,6 +555,7 @@ typedef struct config {
   unsigned iterations, warmup;
   const char *only[PIPELINE_COUNT];
   size_t only_count;
+  int binding;
 } config_t;
 
 static unsigned count_of(const char *text) {
@@ -578,6 +583,11 @@ static config_t parse(int argc, char **argv) {
   config.warmup = 5u;
   for (index = 1; index < argc; index += 2) {
     const char *flag = argv[index], *value = index + 1 < argc ? argv[index + 1] : NULL;
+    if (!strcmp(flag, "--binding")) {
+      config.binding = 1;
+      index -= 1;
+      continue;
+    }
     if (value == NULL) fail("every flag takes a value");
     if (!strcmp(flag, "--out")) config.out = value;
     else if (!strcmp(flag, "--workspace")) config.workspace = value;
@@ -587,6 +597,10 @@ static config_t parse(int argc, char **argv) {
       if (!known(value)) fail("unknown pipeline");
       if (config.only_count < PIPELINE_COUNT) config.only[config.only_count++] = value;
     } else fail("unknown argument");
+  }
+  if (config.binding) {
+    if (config.out == NULL) fail("--out FILE is required");
+    return config;
   }
   if (config.out == NULL || config.workspace == NULL)
     fail("--out FILE and --workspace DIR are required");
@@ -757,6 +771,83 @@ static void make_parent(const char *path) {
   free(copy);
 }
 
+/* ------------------------------------------------------- binding overhead */
+
+/* The offline `--binding` ops, in report order. None opens a database:
+ * staging needs a connected one. */
+static const char *const BINDING_OPS[] = {"build_purchase", "build_rows_1k", "encode_rows_1k"};
+#define BINDING_OP_COUNT (sizeof(BINDING_OPS) / sizeof(BINDING_OPS[0]))
+
+/* One op; `rows` is the prebuilt 1k-row plan `encode_rows_1k` encodes into
+ * `buffer`, sized for it. */
+static type_bridge_status_t binding_op(size_t op, const type_bridge_schema_package_t *package,
+                                       const type_bridge_plan_t *rows, uint8_t *buffer,
+                                       size_t capacity) {
+  type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
+  type_bridge_plan_t *plan = NULL;
+  size_t length = 0u;
+  if (op == 0u) {
+    plan_args_t args = {NULL, "O0", 0u, 0u};
+    CHECK(build(package, purchase, &args, &plan));
+  } else if (op == 1u) {
+    plan_args_t args = {"batch-", NULL, 0u, BATCH_ROWS};
+    CHECK(build(package, insert_items, &args, &plan));
+  } else {
+    CHECK(type_bridge_plan_v3_canonical_bytes(rows, buffer, capacity, &length));
+  }
+done:
+  type_bridge_plan_free(&plan);
+  return status;
+}
+
+static type_bridge_status_t run_binding(const config_t *config,
+                                        const type_bridge_schema_package_t *package) {
+  type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
+  type_bridge_plan_t *rows = NULL;
+  plan_args_t args = {"batch-", NULL, 0u, BATCH_ROWS};
+  uint64_t *samples = calloc((size_t)config->iterations * BINDING_OP_COUNT, sizeof(uint64_t));
+  uint8_t *buffer = NULL;
+  size_t capacity = 0u, op;
+  unsigned number;
+  FILE *out;
+  if (samples == NULL) fail("out of memory");
+  CHECK(build(package, insert_items, &args, &rows));
+  /* A null buffer only reports the canonical length. */
+  status = type_bridge_plan_v3_canonical_bytes(rows, NULL, 0u, &capacity);
+  if (status != TYPE_BRIDGE_STATUS_RESOURCE_LIMIT && status != TYPE_BRIDGE_STATUS_OK) goto done;
+  buffer = malloc(capacity);
+  if (buffer == NULL) fail("out of memory");
+  for (op = 0u; op < BINDING_OP_COUNT; ++op) {
+    for (number = 0u; number < config->warmup + config->iterations; ++number) {
+      uint64_t started = now_ns();
+      CHECK(binding_op(op, package, rows, buffer, capacity));
+      if (number >= config->warmup)
+        samples[op * config->iterations + number - config->warmup] = now_ns() - started;
+    }
+  }
+  make_parent(config->out);
+  out = fopen(config->out, "w");
+  if (out == NULL) fail("cannot write the report");
+  fprintf(out, "{\"format\":\"type-bridge-perf-binding/v1\",\"binding\":\"c\",\"warmup\":%u,"
+               "\"ops\":[",
+          config->warmup);
+  for (op = 0u; op < BINDING_OP_COUNT; ++op) {
+    fprintf(out, "%s{\"name\":\"%s\",\"samples_ns\":[", op ? "," : "", BINDING_OPS[op]);
+    for (number = 0u; number < config->iterations; ++number)
+      fprintf(out, "%s%llu", number ? "," : "",
+              (unsigned long long)samples[op * config->iterations + number]);
+    fprintf(out, "]}");
+  }
+  fprintf(out, "]}\n");
+  if (fclose(out) != 0) fail("cannot write the report");
+  status = TYPE_BRIDGE_STATUS_OK;
+done:
+  type_bridge_plan_free(&rows);
+  free(buffer);
+  free(samples);
+  return status;
+}
+
 int main(int argc, char **argv) {
   config_t config = parse(argc, argv);
   type_bridge_status_t status = TYPE_BRIDGE_STATUS_OK;
@@ -772,6 +863,10 @@ int main(int argc, char **argv) {
   size_t index, written = 0u, only;
   unsigned number;
   CHECK(tb_perf_schema_package_open(&package, &package_diagnostics));
+  if (config.binding) {
+    status = run_binding(&config, package);
+    goto done;
+  }
   CHECK(type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics));
   for (index = 0u; index < PIPELINE_COUNT; ++index) {
     int wanted = config.only_count == 0u;

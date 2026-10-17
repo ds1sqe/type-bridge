@@ -172,6 +172,39 @@ TB_PERF_SETUP='["python","-m","perf.drivers.workspace","--root","tmp/perf/c","--
 one `--report` per SDK and, with `--sdk` (repeatable), checks that the
 reports cover exactly those SDKs; ids are `pipeline.<sdk>.<pipeline>`.
 
+## Binding overhead
+
+The same drivers, run with `--binding`, time three offline operations with
+no TypeDB: `build_purchase` (the purchase plan with one given row),
+`build_rows_1k` (the 1k-row insert, which encodes its given rows) and
+`encode_rows_1k` (that plan's canonical bytes). Staging and answer decoding
+are not measured: every SDK's database handle connects when it opens, and
+an answer exists only after a commit, so both belong to the live pipelines.
+Each driver keeps the `perf-stages` build and the stage layer installed, so
+every SDK pays the same tracing cost. C's `encode_rows_1k` copies the bytes
+its built plan already holds, where the other SDKs encode them.
+
+```bash
+type-bridge-core/target/release/type-bridge-perf-pipelines --binding \
+  --out tmp/perf/binding/rust.json --iterations 200 --warmup 20
+python -m perf.drivers.python.pipelines --binding --cli CLI \
+  --out tmp/perf/binding/python.json --iterations 200 --warmup 20
+node perf/drivers/node/pipelines.cjs --binding --workspace tmp/perf/n/workspace \
+  --out tmp/perf/binding/node.json --iterations 200 --warmup 20
+tmp/perf/c-pipelines --binding --out tmp/perf/binding/c.json \
+  --iterations 200 --warmup 20
+python -m perf.harness.binding --report tmp/perf/binding/rust.json \
+  --report tmp/perf/binding/python.json --report tmp/perf/binding/node.json \
+  --report tmp/perf/binding/c.json --sdk rust --sdk python --sdk node --sdk c \
+  --out tmp/perf/binding.json
+```
+
+The Rust report is the required baseline. Each op becomes
+`binding.<sdk>.<op>` (the median call, with percentiles and samples), and
+each host SDK also gets `binding.<sdk>.<op>.overhead`: its median minus
+Rust's. A result holds only non-negative measures, so a host path cheaper
+than Rust's records 0 overhead; the converter prints the signed difference.
+
 ## Run the Python binding benchmarks locally
 
 `benchmarks/` is a pytest-benchmark suite over the Python binding: native

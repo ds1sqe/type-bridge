@@ -3,7 +3,7 @@
  * The major TypeBridge pipelines through the Node SDK, against a live TypeDB.
  *
  *   node perf/drivers/node/pipelines.cjs --out FILE --workspace DIR
- *       [--iterations N] [--warmup N] [--pipeline NAME]...
+ *       [--iterations N] [--warmup N] [--pipeline NAME]... [--binding]
  *
  * The same data pipelines, seeds and plans as the Rust driver
  * (type-bridge-core/crates/perf/src/bin/pipelines.rs), written as the
@@ -18,6 +18,10 @@
  * TB_PERF_SETUP, a command line that takes `apply|drop DATABASE`.
  * TypeDB comes from TYPEDB_ADDRESS, TYPEDB_HTTP_PORT, TYPEDB_USERNAME and
  * TYPEDB_PASSWORD.
+ *
+ * `--binding` instead times the offline ops of perf/harness/binding.py with
+ * no TypeDB (only the workspace's declared schema) and writes a
+ * `type-bridge-perf-binding/v1` report.
  */
 
 "use strict";
@@ -27,6 +31,7 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
 const FORMAT = "type-bridge-perf-pipelines/v1";
+const BINDING_FORMAT = "type-bridge-perf-binding/v1";
 const SCOPE = "rust-plan-purchase";
 const PROFILE = "typedb-3.13.6/v1";
 const SEEDED_ITEMS = 1000;
@@ -43,6 +48,8 @@ const PIPELINES = [
   ["batch_given_rows_1k", BATCH_ROWS],
   ["staged_mixed", 1],
 ];
+// The offline `--binding` ops, in report order (perf/harness/binding.py).
+const BINDING_OPS = ["build_purchase", "build_rows_1k", "encode_rows_1k"];
 
 const packageRoot = process.env.TYPE_BRIDGE_NODE_PACKAGE_ROOT;
 if (!packageRoot) {
@@ -263,9 +270,13 @@ async function iteration(name, db, authority, number) {
 // ---------------------------------------------------------------- driver
 
 function parse(argv) {
-  const config = { iterations: 30, warmup: 5, only: [] };
+  const config = { iterations: 30, warmup: 5, only: [], binding: false };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (flag === "--binding") {
+      config.binding = true;
+      continue;
+    }
     const value = argv[++index];
     if (flag === "--out") config.out = value;
     else if (flag === "--workspace") config.workspace = value;
@@ -281,7 +292,7 @@ function parse(argv) {
     if (!Number.isInteger(count) || count < 1) throw new Error("counts must be positive integers");
   }
   for (const name of ["TYPEDB_USERNAME", "TYPEDB_PASSWORD", "TB_PERF_SETUP"]) {
-    if (!process.env[name]) throw new Error(`set ${name}`);
+    if (!config.binding && !process.env[name]) throw new Error(`set ${name}`);
   }
   return config;
 }
@@ -333,18 +344,42 @@ async function runPipeline(name, config, declared) {
   }
 }
 
+/** Time the offline ops: no database opens, since staging needs a connected one. */
+function binding(config, declared) {
+  const authority = new QueryV2Authority(declared, SCOPE, PROFILE);
+  const rows = insertItems(authority, "batch-", 0, BATCH_ROWS);
+  const calls = {
+    build_purchase: () => purchase(authority, "O0"),
+    build_rows_1k: () => insertItems(authority, "batch-", 0, BATCH_ROWS),
+    encode_rows_1k: () => rows.canonicalBytes(),
+  };
+  const ops = BINDING_OPS.map((name) => {
+    const samples = [];
+    for (let number = 0; number < config.warmup + config.iterations; number += 1) {
+      const started = process.hrtime.bigint();
+      calls[name]();
+      const elapsed = nanos(started);
+      if (number >= config.warmup) samples.push(elapsed);
+    }
+    return { name, samples_ns: samples };
+  });
+  return { format: BINDING_FORMAT, binding: "node", warmup: config.warmup, ops };
+}
+function write(out, report) {
+  fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+  fs.writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`);
+}
 async function main() {
   const config = parse(process.argv.slice(2));
   const declared = fs.readFileSync(path.join(config.workspace, "declared-schema.json"));
+  if (config.binding) return write(config.out, binding(config, declared));
   const pipelines = [];
   for (const [name, operations] of PIPELINES) {
     if (config.only.length && !config.only.includes(name)) continue;
     process.stderr.write(`pipeline ${name}\n`);
     pipelines.push({ name, operations, samples: await runPipeline(name, config, declared) });
   }
-  const report = { format: FORMAT, binding: "node", warmup: config.warmup, pipelines };
-  fs.mkdirSync(path.dirname(path.resolve(config.out)), { recursive: true });
-  fs.writeFileSync(config.out, `${JSON.stringify(report, null, 2)}\n`);
+  write(config.out, { format: FORMAT, binding: "node", warmup: config.warmup, pipelines });
 }
 
 main().catch((error) => {

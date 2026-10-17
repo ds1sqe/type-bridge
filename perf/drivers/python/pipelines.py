@@ -15,6 +15,10 @@ to the last decoded answer. Stage times come from the private recorder
 ``type_bridge_core._perf_stages()``, which exists only in a binding built
 with ``--features perf-stages``. TypeDB comes from ``TYPEDB_ADDRESS``,
 ``TYPEDB_HTTP_PORT``, ``TYPEDB_USERNAME`` and ``TYPEDB_PASSWORD``.
+
+``--binding`` instead times the offline ops of ``perf.harness.binding``
+with no TypeDB (the CLI still sets up the workspace for the declared
+schema) and writes a ``type-bridge-perf-binding/v1`` report.
 """
 
 from __future__ import annotations
@@ -31,12 +35,18 @@ from pathlib import Path
 from typing import Any, Literal
 
 import type_bridge_core
-from type_bridge_core import PyRustDatabase, QueryV2Authority, query_v2_query_only_authority
+from type_bridge_core import (
+    PyRustDatabase,
+    QueryV2Authority,
+    query_v2_authority,
+    query_v2_query_only_authority,
+)
 
 from perf.drivers.workspace import PROFILE, SCOPE, Workspace, drop
 from type_bridge.plan import Count, Matched, Plan, Rows
 
 FORMAT = "type-bridge-perf-pipelines/v1"
+BINDING_FORMAT = "type-bridge-perf-binding/v1"
 SEEDED_ITEMS = 1_000
 FILTER_STOCK = 900
 BATCH_ROWS = 1_000
@@ -52,6 +62,8 @@ PIPELINES: dict[str, int] = {
     "batch_given_rows_1k": BATCH_ROWS,
     "staged_mixed": 1,
 }
+# The offline ``--binding`` ops, in report order (perf/harness/binding.py).
+BINDING_OPS = ("build_purchase", "build_rows_1k", "encode_rows_1k")
 
 
 # ------------------------------------------------------------------ tokens
@@ -276,6 +288,7 @@ class Config:
     iterations: int
     warmup: int
     only: list[str]
+    binding: bool
     address: str
     http_port: int
     username: str
@@ -340,9 +353,10 @@ def parse(argv: Sequence[str] | None, env: dict[str, str]) -> Config:
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--pipeline", action="append", default=[], choices=sorted(PIPELINES))
+    parser.add_argument("--binding", action="store_true", help="time the offline binding ops")
     arguments = parser.parse_args(argv)
     for name in ("TYPEDB_USERNAME", "TYPEDB_PASSWORD"):
-        if not env.get(name):
+        if not arguments.binding and not env.get(name):
             parser.error(f"set {name} for the TypeDB login")
     if arguments.iterations < 1 or arguments.warmup < 1:
         parser.error("--iterations and --warmup take positive counts")
@@ -353,11 +367,35 @@ def parse(argv: Sequence[str] | None, env: dict[str, str]) -> Config:
         iterations=arguments.iterations,
         warmup=arguments.warmup,
         only=arguments.pipeline,
+        binding=arguments.binding,
         address=env.get("TYPEDB_ADDRESS") or "localhost:1729",
         http_port=int(env.get("TYPEDB_HTTP_PORT") or "8000"),
-        username=env["TYPEDB_USERNAME"],
-        password=env["TYPEDB_PASSWORD"],
+        username=env.get("TYPEDB_USERNAME", ""),
+        password=env.get("TYPEDB_PASSWORD", ""),
     )
+
+
+def binding(config: Config, declared: bytes) -> dict[str, object]:
+    """Time the offline ops: no database opens, since staging needs a connected one."""
+    authority = query_v2_authority(declared, SCOPE, PROFILE)
+    rows = insert_items(authority, "batch-", range(BATCH_ROWS))
+    calls: dict[str, Callable[[], object]] = {
+        "build_purchase": lambda: purchase(authority, "O0"),
+        "build_rows_1k": lambda: insert_items(authority, "batch-", range(BATCH_ROWS)),
+        "encode_rows_1k": rows.canonical_bytes,
+    }
+    ops = []
+    for name in BINDING_OPS:
+        call = calls[name]
+        samples = []
+        for number in range(config.warmup + config.iterations):
+            started = time.perf_counter_ns()
+            call()
+            elapsed = time.perf_counter_ns() - started
+            if number >= config.warmup:
+                samples.append(elapsed)
+        ops.append({"name": name, "samples_ns": samples})
+    return {"format": BINDING_FORMAT, "binding": "python", "warmup": config.warmup, "ops": ops}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -365,6 +403,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     stages = _stage_reader()
     workspace = Workspace.create(config.work_dir, config.cli, config.address, config.http_port)
     declared = workspace.declared()
+    if config.binding:
+        config.out.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(binding(config, declared), indent=2) + "\n"
+        config.out.write_text(text, encoding="utf-8")
+        return 0
     pipelines = []
     for name, operations in PIPELINES.items():
         if config.only and name not in config.only:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from perf.drivers import workspace
 from perf.drivers.python import pipelines as python_driver
+from perf.harness import binding
 
 ROOT = Path(__file__).resolve().parents[3]
 RUST_DRIVER = ROOT / "type-bridge-core/crates/perf/src/bin/pipelines.rs"
@@ -72,3 +73,20 @@ def test_the_drivers_keep_the_rust_seed_sizes() -> None:
         assert getattr(python_driver, name) == value, name
         assert f"const {name} = {value};" in node, name
         assert f"#define {name} {value}\n" in c_driver, name
+
+
+def test_every_driver_times_the_harness_binding_ops_in_order() -> None:
+    expected = list(binding.OPS)
+    rust = RUST_DRIVER.read_text(encoding="utf-8")
+    found = re.search(r"const BINDING_OPS: \[&str; \d+\] = \[([^\]]*)\];", rust)
+    assert found is not None
+    assert re.findall(r'"([a-z0-9_]+)"', found.group(1)) == expected
+    assert list(python_driver.BINDING_OPS) == expected
+    node = NODE_DRIVER.read_text(encoding="utf-8")
+    found = re.search(r"const BINDING_OPS = \[([^\]]*)\];", node)
+    assert found is not None
+    assert re.findall(r'"([a-z0-9_]+)"', found.group(1)) == expected
+    c = C_DRIVER.read_text(encoding="utf-8")
+    found = re.search(r"BINDING_OPS\[\] = \{([^}]*)\};", c)
+    assert found is not None
+    assert re.findall(r'"([a-z0-9_]+)"', found.group(1)) == expected
