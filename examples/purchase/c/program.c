@@ -19,7 +19,7 @@
 #include <typebridge/type_bridge.h>
 #include <tb_writes/models.h>
 
-#define PLAN_COUNT 15u
+#define PLAN_COUNT 17u
 #define BATCH_ORDERS 50u
 
 #define CHECK(call)                                                            \
@@ -397,23 +397,53 @@ done:
   return status;
 }
 
+/* Insert one doctor: D3 on call is staged and rolled back, D4 off call is
+ * staged after the rollback and committed. */
+static type_bridge_status_t insert_doctor(type_bridge_plan_builder_t *plan, const identities_t *id,
+                                          const char *key, uint8_t on_call) {
+  type_bridge_status_t status;
+  uint32_t doctor, name, value;
+  CHECK(type_bridge_plan_builder_insert(plan, id->doctor, &doctor));
+  CHECK(type_bridge_plan_builder_value_string(plan, view(key), &name));
+  CHECK(set_value(plan, doctor, id->name, name));
+  CHECK(type_bridge_plan_builder_value_boolean(plan, on_call, &value));
+  CHECK(set_value(plan, doctor, id->on_call, value));
+done:
+  return status;
+}
+
+static type_bridge_status_t ghost(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  return insert_doctor(plan, id, "D3", 1u);
+}
+
+static type_bridge_status_t kept(type_bridge_plan_builder_t *plan, const identities_t *id) {
+  return insert_doctor(plan, id, "D4", 0u);
+}
+
 typedef type_bridge_status_t (*plan_fn)(type_bridge_plan_builder_t *, const identities_t *);
 
 static const char *const NAMES[PLAN_COUNT] = {
     "seed",       "purchase", "touch", "batch",  "sold_out",        "charged",  "orders", "on_call",
-    "put_doctor", "returns",  "refer", "remove", "doctors_on_call", "referred", "removed"};
+    "put_doctor", "returns",  "refer", "remove", "doctors_on_call", "referred", "removed",
+    "ghost",      "kept"};
 static const plan_fn BUILDERS[PLAN_COUNT] = {
     seed,       purchase, touch, batch,        sold_out,        charged,  orders, on_call,
-    put_doctor, returns,  refer, remove_order, doctors_on_call, referred, removed};
+    put_doctor, returns,  refer, remove_order, doctors_on_call, referred, removed,
+    ghost,      kept};
 
 /* The program: seed, then purchase, touch and batch in one transaction, then
  * the reads in one read transaction; then the journeys in one transaction and
- * a second read. Each step names a range of plans. */
-#define STEP_TOTAL 5u
-static const char *const STEPS[STEP_TOTAL] = {"seed", "program", "read", "journeys", "after"};
-static const size_t STEP_FIRST[STEP_TOTAL] = {0u, 1u, 4u, 8u, 12u};
-static const size_t STEP_COUNT[STEP_TOTAL] = {1u, 3u, 4u, 4u, 3u};
-static const int STEP_READ[STEP_TOTAL] = {0, 0, 1, 0, 1};
+ * a second read; last, one transaction stages a plan, rolls it back, and
+ * stages and commits another. Each step names a range of plans, and a range
+ * it stages and rolls back first. */
+#define STEP_TOTAL 6u
+static const char *const STEPS[STEP_TOTAL] = {"seed",     "program", "read",
+                                              "journeys", "after",   "rollback"};
+static const size_t STEP_FIRST[STEP_TOTAL] = {0u, 1u, 4u, 8u, 12u, 16u};
+static const size_t STEP_COUNT[STEP_TOTAL] = {1u, 3u, 4u, 4u, 3u, 1u};
+static const int STEP_READ[STEP_TOTAL] = {0, 0, 1, 0, 1, 0};
+static const size_t DISCARD_FIRST[STEP_TOTAL] = {0u, 0u, 0u, 0u, 0u, 15u};
+static const size_t DISCARD_COUNT[STEP_TOTAL] = {0u, 0u, 0u, 0u, 0u, 1u};
 
 static type_bridge_status_t build_all(const type_bridge_schema_package_t *package,
                                       type_bridge_plan_t **plans) {
@@ -489,8 +519,17 @@ static type_bridge_status_t run_program(const target_t *target, type_bridge_plan
   for (step = 0u; step < STEP_TOTAL; ++step) {
     type_bridge_staged_transaction_t *transaction = NULL;
     type_bridge_pending_t *pending[4] = {NULL, NULL, NULL, NULL};
+    type_bridge_pending_t *discarded = NULL;
     uint32_t kind = STEP_READ[step] ? TYPE_BRIDGE_TRANSACTION_READ : TYPE_BRIDGE_TRANSACTION_WRITE;
     status = open_transaction(target, kind, &transaction, &diagnostics);
+    /* Rollback discards the staged plans and keeps the transaction usable. */
+    for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < DISCARD_COUNT[step]; ++index) {
+      type_bridge_pending_free(&discarded);
+      status = type_bridge_staged_transaction_stage(transaction, plans[DISCARD_FIRST[step] + index],
+                                                    &discarded, &diagnostics);
+    }
+    if (status == TYPE_BRIDGE_STATUS_OK && DISCARD_COUNT[step] != 0u)
+      status = type_bridge_staged_transaction_rollback(transaction);
     for (index = 0u; status == TYPE_BRIDGE_STATUS_OK && index < STEP_COUNT[step]; ++index)
       status = type_bridge_staged_transaction_stage(transaction, plans[STEP_FIRST[step] + index],
                                                     &pending[index], &diagnostics);
@@ -510,6 +549,7 @@ static type_bridge_status_t run_program(const target_t *target, type_bridge_plan
       fprintf(stderr, "step %s failed: status %d\n", STEPS[step], (int)status);
     }
     type_bridge_staged_transaction_close(&transaction);
+    type_bridge_pending_free(&discarded);
     for (index = 0u; index < 4u; ++index) type_bridge_pending_free(&pending[index]);
     (void)type_bridge_execution_diagnostics_close(&diagnostics);
     if (status != TYPE_BRIDGE_STATUS_OK) break;

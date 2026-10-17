@@ -48,6 +48,16 @@
         "referred",
         "removed"
       ]
+    },
+    {
+      "name": "rollback",
+      "kind": "write",
+      "rolled_back": [
+        "ghost"
+      ],
+      "plans": [
+        "kept"
+      ]
     }
   ],
   "plans": {
@@ -273,6 +283,14 @@
     },
     "removed": {
       "exists": "purchase O1"
+    },
+    "ghost": {
+      "note": "insert doctor D3 on call, staged and rolled back: it leaves no state (on_call stays 2)",
+      "insert": "doctor"
+    },
+    "kept": {
+      "note": "insert doctor D4 off call in the same transaction after the rollback, and commit",
+      "insert": "doctor"
     }
   }
 }

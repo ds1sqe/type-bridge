@@ -43,7 +43,12 @@ def load_program(name: str = "purchase", *, root: Path = ROOT) -> tuple[Any, Any
     if program.get("program") != name or expected.get("program") != name:
         raise ContractError("invalid_program", f"{name} contract names another program")
     steps = {step["name"]: step["plans"] for step in program["steps"]}
-    if set(expected["plans"]) != {plan for plans in steps.values() for plan in plans}:
+    # A step's `rolled_back` plans are staged and rolled back before its
+    # `plans`: they have bytes but no answers.
+    built = {
+        plan for step in program["steps"] for plan in (*step.get("rolled_back", ()), *step["plans"])
+    }
+    if set(expected["plans"]) != built:
         raise ContractError("invalid_program", f"{name} expected plans differ from its steps")
     if {step: set(answers) for step, answers in expected["results"].items()} != {
         step: set(plans) for step, plans in steps.items()

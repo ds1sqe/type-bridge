@@ -240,13 +240,40 @@ fn removed() -> Result<Built> {
     plan.build(&models::SCHEMA)
 }
 
-const STEPS: [(&str, &[&str]); 5] = [
+/// A third doctor, on call: staged, then rolled back.
+fn ghost() -> Result<Built> {
+    let mut plan = Plan::builder();
+    plan.insert::<Doctor>()
+        .field(DoctorType::name, "D3".to_owned())
+        .field(DoctorType::on_call, true);
+    plan.build(&models::SCHEMA)
+}
+
+/// A fourth doctor, off call: staged after the rollback and committed.
+fn kept() -> Result<Built> {
+    let mut plan = Plan::builder();
+    plan.insert::<Doctor>()
+        .field(DoctorType::name, "D4".to_owned())
+        .field(DoctorType::on_call, false);
+    plan.build(&models::SCHEMA)
+}
+
+const STEPS: [(&str, &[&str]); 6] = [
     ("seed", &["seed"]),
     ("program", &["purchase", "touch", "batch"]),
     ("read", &["sold_out", "charged", "orders", "on_call"]),
     ("journeys", &["put_doctor", "returns", "refer", "remove"]),
     ("after", &["doctors_on_call", "referred", "removed"]),
+    ("rollback", &["kept"]),
 ];
+
+/// Plans a step stages and rolls back before staging its own.
+fn rolled_back(step: &str) -> &'static [&'static str] {
+    match step {
+        "rollback" => &["ghost"],
+        _ => &[],
+    }
+}
 
 /// One answer as [kind, value]; rows report their count, exists 0 or 1.
 fn answer(value: &PlanAnswer) -> Json {
@@ -268,18 +295,30 @@ fn kind(step: &str) -> TransactionOptions {
 }
 
 /// Stage `names` in one transaction, commit, and read their answers.
+/// `discarded` plans are staged first and rolled back; the transaction stays
+/// usable for `names`.
 async fn run(
     mut tx: Transaction<AppSchema>,
     plans: &[(&str, Built)],
     names: &[&str],
+    discarded: &[&str],
 ) -> Result<Json> {
+    let built = |name: &str| {
+        plans
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, plan)| plan)
+            .expect("every step names a built plan")
+    };
+    for name in discarded {
+        tx.stage(built(name))?;
+    }
+    if !discarded.is_empty() {
+        tx.rollback()?;
+    }
     let mut pending = Vec::new();
     for name in names {
-        let (_, plan) = plans
-            .iter()
-            .find(|(candidate, _)| candidate == name)
-            .expect("every step names a built plan");
-        pending.push((*name, tx.stage(plan)?));
+        pending.push((*name, tx.stage(built(name))?));
     }
     tx.commit().await?;
     let mut answers = Map::new();
@@ -307,6 +346,8 @@ async fn main() -> Result<()> {
         ("doctors_on_call", doctors_on_call()?),
         ("referred", referred()?),
         ("removed", removed()?),
+        ("ghost", ghost()?),
+        ("kept", kept()?),
     ];
     let mut encoded = Map::new();
     for (name, plan) in &plans {
@@ -337,7 +378,10 @@ async fn main() -> Result<()> {
         let mut steps = Map::new();
         for (step, names) in STEPS {
             let tx = db.transaction(kind(step));
-            steps.insert(step.to_owned(), run(tx, &plans, names).await?);
+            steps.insert(
+                step.to_owned(),
+                run(tx, &plans, names, rolled_back(step)).await?,
+            );
         }
         results.insert("direct".to_owned(), Json::Object(steps));
     }
@@ -352,7 +396,10 @@ async fn main() -> Result<()> {
         let mut steps = Map::new();
         for (step, names) in STEPS {
             let tx = proxy.transaction(kind(step)).await?;
-            steps.insert(step.to_owned(), run(tx, &plans, names).await?);
+            steps.insert(
+                step.to_owned(),
+                run(tx, &plans, names, rolled_back(step)).await?,
+            );
         }
         results.insert("proxy".to_owned(), Json::Object(steps));
     }

@@ -66,7 +66,13 @@ def test_the_program_contract_names_every_step_plan_and_answer() -> None:
         "read": ["sold_out", "charged", "orders", "on_call"],
         "journeys": ["put_doctor", "returns", "refer", "remove"],
         "after": ["doctors_on_call", "referred", "removed"],
+        "rollback": ["kept"],
     }
+    # The rollback step stages ghost, rolls it back, then stages kept.
+    rolled_back = {step["name"]: step.get("rolled_back", []) for step in PROGRAM["steps"]}
+    assert {step: plans for step, plans in rolled_back.items() if plans} == {"rollback": ["ghost"]}
+    assert {"ghost", "kept"} <= set(EXPECTED["plans"])
+    assert EXPECTED["results"]["rollback"] == {"kept": ["matched", 1]}
     assert EXPECTED["results"]["program"] == {
         "purchase": ["matched", 1],
         "touch": ["matched", 1],
@@ -87,8 +93,11 @@ def test_the_program_contract_names_every_step_plan_and_answer() -> None:
     assert len(PROGRAM["plans"]["batch"]["rows"]) == 50
     # 1 purchase + 50 batch orders + R1 - O1.
     assert EXPECTED["state"]["orders"] == 51
-    # Seed, program, read, journeys and after: one signed commit each.
-    assert EXPECTED["proxy_commits"] == ["true:ok"] * 5
+    # The rolled-back ghost (D3, on call) left no state.
+    assert EXPECTED["state"]["on_call"] == 2
+    # Seed, program, read, journeys, after and rollback: one signed commit
+    # each; the rollback itself sends nothing.
+    assert EXPECTED["proxy_commits"] == ["true:ok"] * 6
 
 
 @pytest.mark.parametrize("live", [False, True])

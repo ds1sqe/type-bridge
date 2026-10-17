@@ -5,7 +5,9 @@ then, when a live target is configured, runs the same program directly and
 over the proxy: seed, stage the purchase, a touch and a batch of 50 orders in
 one transaction, commit, and read the state back; then the journeys (a put,
 an update answering rows, an insert whose players it inserts, a delete) in
-one transaction, and a second read. It prints one JSON report.
+one transaction, and a second read; last, a plan staged and rolled back
+before another is staged and committed in the same transaction. It prints
+one JSON report.
 
 The generated package (see `tests/contracts/sdk_conformance/writes/purchase`)
 is imported by name, `purchase_models` unless TYPE_BRIDGE_SDK_WRITES_PYTHON_PACKAGE
@@ -215,13 +217,30 @@ def removed(authority: Any) -> Plan:
     return plan.exists().build(authority)
 
 
+def ghost(authority: Any) -> Plan:
+    """A third doctor, on call: staged, then rolled back."""
+    plan = Plan.builder()
+    plan.insert(Doctor).field(Doctor.name, "D3").field(Doctor.on_call, True)
+    return plan.build(authority)
+
+
+def kept(authority: Any) -> Plan:
+    """A fourth doctor, off call: staged after the rollback and committed."""
+    plan = Plan.builder()
+    plan.insert(Doctor).field(Doctor.name, "D4").field(Doctor.on_call, False)
+    return plan.build(authority)
+
+
 STEPS = {
     "seed": ("seed",),
     "program": ("purchase", "touch", "batch"),
     "read": ("sold_out", "charged", "orders", "on_call"),
     "journeys": ("put_doctor", "returns", "refer", "remove"),
     "after": ("doctors_on_call", "referred", "removed"),
+    "rollback": ("kept",),
 }
+# Plans a step stages and rolls back before staging its own.
+ROLLED_BACK = {"rollback": ("ghost",)}
 READS = {"read", "after"}
 BUILDERS = {
     "seed": seed,
@@ -239,6 +258,8 @@ BUILDERS = {
     "doctors_on_call": doctors_on_call,
     "referred": referred,
     "removed": removed,
+    "ghost": ghost,
+    "kept": kept,
 }
 
 
@@ -256,9 +277,19 @@ def answer(value: PlanAnswer) -> list[Any]:
     raise TypeError(f"unknown answer {value!r}")
 
 
-def run(transaction: Any, plans: dict[str, Plan], names: tuple[str, ...]) -> dict[str, Any]:
-    """Stage `names` in one transaction, commit, and read their answers."""
+def run(
+    transaction: Any, plans: dict[str, Plan], names: tuple[str, ...], discarded: tuple[str, ...]
+) -> dict[str, Any]:
+    """Stage `names` in one transaction, commit, and read their answers.
+
+    `discarded` plans are staged first and rolled back; the transaction stays
+    usable for `names`.
+    """
     with transaction as tx:
+        for name in discarded:
+            tx.stage(plans[name])
+        if discarded:
+            tx.rollback()
         pending = {name: tx.stage(plans[name]) for name in names}
     return {name: answer(item.result()) for name, item in pending.items()}
 
@@ -284,7 +315,12 @@ def main() -> int:
         db.connect()
         try:
             report["results"]["direct"] = {
-                step: run(db.staged_transaction("read" if step in READS else "write"), plans, names)
+                step: run(
+                    db.staged_transaction("read" if step in READS else "write"),
+                    plans,
+                    names,
+                    ROLLED_BACK.get(step, ()),
+                )
                 for step, names in STEPS.items()
             }
         finally:
@@ -292,7 +328,12 @@ def main() -> int:
     if endpoint:
         proxy = ProxyConnection.connect(authority, endpoint)
         report["results"]["proxy"] = {
-            step: run(proxy.transaction("read" if step in READS else "write"), plans, names)
+            step: run(
+                proxy.transaction("read" if step in READS else "write"),
+                plans,
+                names,
+                ROLLED_BACK.get(step, ()),
+            )
             for step, names in STEPS.items()
         }
     json.dump(report, sys.stdout, sort_keys=True)

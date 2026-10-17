@@ -208,6 +208,20 @@ function removed(authority: QueryV2Authority): Built {
   return plan.exists().build(authority);
 }
 
+/** A third doctor, on call: staged, then rolled back. */
+function ghost(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  plan.insert(Doctor).field(Doctor.fields.name_, "D3").field(Doctor.fields.onCall, true);
+  return plan.build(authority);
+}
+
+/** A fourth doctor, off call: staged after the rollback and committed. */
+function kept(authority: QueryV2Authority): Built {
+  const plan = Plan.builder();
+  plan.insert(Doctor).field(Doctor.fields.name_, "D4").field(Doctor.fields.onCall, false);
+  return plan.build(authority);
+}
+
 const BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
   seed,
   purchase,
@@ -224,6 +238,8 @@ const BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
   doctors_on_call: doctorsOnCall,
   referred,
   removed,
+  ghost,
+  kept,
 };
 const STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["seed", ["seed"]],
@@ -231,7 +247,10 @@ const STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["read", ["sold_out", "charged", "orders", "on_call"]],
   ["journeys", ["put_doctor", "returns", "refer", "remove"]],
   ["after", ["doctors_on_call", "referred", "removed"]],
+  ["rollback", ["kept"]],
 ];
+/** Plans a step stages and rolls back before staging its own. */
+const ROLLED_BACK: ReadonlyMap<string, readonly string[]> = new Map([["rollback", ["ghost"]]]);
 const READS: ReadonlySet<string> = new Set(["read", "after"]);
 
 type Answer = readonly [string, number];
@@ -249,13 +268,24 @@ function answer(pending: PendingPlanAnswer): Answer {
   }
 }
 
-/** Stage `names` in one transaction, commit, and read their answers. */
+/**
+ * Stage `names` in one transaction, commit, and read their answers.
+ * `discarded` plans are staged first and rolled back; the transaction stays
+ * usable for `names`.
+ */
 async function run(
   tx: StagedTransaction,
   plans: ReadonlyMap<string, Built>,
   names: readonly string[],
+  discarded: readonly string[],
 ): Promise<Record<string, Answer>> {
   try {
+    for (const name of discarded) {
+      tx.stage(plans.get(name) as Built);
+    }
+    if (discarded.length > 0) {
+      tx.rollback();
+    }
     const pending = names.map((name) => [name, tx.stage(plans.get(name) as Built)] as const);
     await tx.commit();
     return Object.fromEntries(pending.map(([name, item]) => [name, answer(item)]));
@@ -270,7 +300,8 @@ async function program(
 ): Promise<Record<string, Record<string, Answer>>> {
   const results: Record<string, Record<string, Answer>> = {};
   for (const [step, names] of STEPS) {
-    results[step] = await run(await open(READS.has(step) ? "read" : "write"), plans, names);
+    const kind = READS.has(step) ? "read" : "write";
+    results[step] = await run(await open(kind), plans, names, ROLLED_BACK.get(step) ?? []);
   }
   return results;
 }
