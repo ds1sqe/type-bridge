@@ -479,8 +479,10 @@ differently direct and through a proxy. Each entry says what to do instead.
     `{prefix}_proxy_query_execute_{kind}`. The remote context stays as the
     exchange extension point for hosts that own the route. These entry
     points and types are new in ABI 1.7; the 2.2.6 (ABI 1.6) header does
-    not declare them, and generated packages that call them carry an
-    ABI 1.7 descriptor.
+    not declare them. Generated packages that call them carry an ABI 1.7
+    descriptor, and their CMake and pkg-config files require ABI 1.7
+    (`find_package(TypeBridge 1.7.0 EXACT)`, `type-bridge-abi >= 1.7.0`),
+    so a 2.2.6 runtime is refused at build time.
 - Configurable query limits. `QueryLimits` replaces the fixed ceilings on a
   query's encoded size, nesting depth, and structure, and a session can lower
   or raise them, including plans larger than 16 MiB. Python, TypeScript/Node,

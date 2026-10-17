@@ -451,9 +451,9 @@ fn ordered_package_emits_admission_crud_batch_and_runtime_metadata() {
     assert!(header.contains("acme_v3_schema_package_open("));
     assert!(header.contains("acme_v3_schema_package_open_v2("));
     assert!(header.contains("type_bridge_execution_diagnostics_t **out_diagnostics"));
-    assert!(cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
-    assert!(package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
-    assert!(pkg_config.contains("Requires: type-bridge = 1.6.0"));
+    assert!(cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
+    assert!(pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
     assert!(!cmake.contains("TypeBridge 1.3"));
     assert!(!package_config.contains("TypeBridge 1.3"));
     assert!(!pkg_config.contains("type-bridge >= 1.3.0"));
@@ -930,19 +930,19 @@ fn emits_one_deterministic_package_with_exact_canonical_evidence_and_nominal_nam
     );
 
     let cmake = std::str::from_utf8(first.get("CMakeLists.txt").unwrap()).unwrap();
-    assert!(cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
+    assert!(cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
     assert!(cmake.contains("RELATIVE_PATH TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR"));
     assert!(cmake.contains("CMAKE_INSTALL_LIBDIR must be a non-empty relative path"));
     assert!(cmake.contains("PROPERTIES EXPORT_NAME schema POSITION_INDEPENDENT_CODE ON"));
     assert!(cmake.contains("configure_package_config_file("));
     assert!(cmake.contains("install(\n  EXPORT acmeTargets"));
     let package_config = std::str::from_utf8(first.get("acmeConfig.cmake.in").unwrap()).unwrap();
-    assert!(package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
+    assert!(package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
     assert!(package_config.contains("acmeTargets.cmake"));
     let pkg_config = std::str::from_utf8(first.get("acme.pc.in").unwrap()).unwrap();
     assert!(pkg_config.contains("prefix=${pcfiledir}/@TYPE_BRIDGE_PC_PREFIX_FROM_PCDIR@"));
     assert!(pkg_config.contains("includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@"));
-    assert!(pkg_config.contains("Requires: type-bridge = 1.6.0"));
+    assert!(pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
     assert!(pkg_config.contains("Libs: -L${libdir} -lacme_schema"));
 
     let source = std::str::from_utf8(first.get("src/models.c").expect("C source is emitted"))
@@ -3033,7 +3033,7 @@ fn generated_cmake_requires_the_current_abi() {
         .expect("C package emits");
     assert_generated_cmake_runtime_floor(
         &package,
-        &[("1.5.0", false), ("1.6.0", true), ("1.7.0", false)],
+        &[("1.6.0", false), ("1.7.0", true), ("1.8.0", false)],
     );
 }
 
@@ -3051,7 +3051,7 @@ fn ordered_generated_cmake_requires_the_current_abi() {
         .expect("ordered C-v3 package emits");
     assert_generated_cmake_runtime_floor(
         &package,
-        &[("1.5.0", false), ("1.6.0", true), ("1.9.0", false)],
+        &[("1.6.0", false), ("1.7.0", true), ("1.9.0", false)],
     );
 }
 

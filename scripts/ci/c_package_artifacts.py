@@ -407,7 +407,7 @@ def build_runtime(output: Path, build_root: Path, *, commit: str, tree: str) -> 
 def generated_config() -> bytes:
     return f'''# Generated TypeBridge C schema source-package config.
 include(CMakeFindDependencyMacro)
-find_dependency(TypeBridge 1.6.0 EXACT CONFIG)
+find_dependency(TypeBridge 1.7.0 EXACT CONFIG)
 get_filename_component(_tb_package_prefix "${{CMAKE_CURRENT_LIST_DIR}}/../../.." ABSOLUTE)
 if(NOT TARGET {PACKAGE_NAME}::schema)
   add_library({PACKAGE_NAME}_schema STATIC "${{_tb_package_prefix}}/src/{PACKAGE_NAME}.c")
@@ -440,7 +440,7 @@ generated_source=${{prefix}}/src/{PACKAGE_NAME}.c
 Name: {PACKAGE_NAME} schema
 Description: Generated TypeBridge C schema source package
 Version: {PACKAGE_VERSION}
-Requires: type-bridge = 1.6.0
+Requires: type-bridge-abi >= 1.7.0
 Cflags: -I${{includedir}}
 """.encode()
 
@@ -646,9 +646,9 @@ def validate_generated(archive: Path) -> dict[str, Any]:
         raise ArtifactError("generated license template drifted")
     config = files[PACKAGE_MEMBERS[2]].decode("utf-8")
     pc = files[PACKAGE_MEMBERS[4]].decode("utf-8")
-    if "find_dependency(TypeBridge 1.6.0 EXACT CONFIG)" not in config:
+    if "find_dependency(TypeBridge 1.7.0 EXACT CONFIG)" not in config:
         raise ArtifactError("generated CMake runtime ABI fence drifted")
-    if "type-bridge = 1.6.0" not in pc:
+    if "type-bridge-abi >= 1.7.0" not in pc:
         raise ArtifactError("generated pkg-config runtime ABI fence drifted")
     if manifest.get("publication-disposition") != PUBLICATION_DISPOSITION:
         raise ArtifactError("generated publication disposition widened")
@@ -658,7 +658,7 @@ def validate_generated(archive: Path) -> dict[str, Any]:
 def cmake_consumer_source() -> tuple[bytes, bytes, bytes]:
     cmake = f"""cmake_minimum_required(VERSION 3.20)
 project(type_bridge_artifact_consumer LANGUAGES C CXX)
-find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)
 find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(consumer main.c)
 add_library(cpp_header OBJECT header.cpp)

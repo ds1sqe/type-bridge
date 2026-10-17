@@ -346,9 +346,9 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
             .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  7u,")
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
-    assert!(c_cmake.contains("find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)"));
-    assert!(c_package_config.contains("find_dependency(TypeBridge 1.6.0 EXACT CONFIG)"));
-    assert!(c_pkg_config.contains("Requires: type-bridge = 1.6.0"));
+    assert!(c_cmake.contains("find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)"));
+    assert!(c_package_config.contains("find_dependency(TypeBridge 1.7.0 EXACT CONFIG)"));
+    assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 1.7.0"));
 }
 
 #[test]

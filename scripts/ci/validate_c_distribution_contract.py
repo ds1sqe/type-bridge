@@ -222,11 +222,11 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     )
     _require("project(TypeBridge VERSION 1.6.0" in cmake, "runtime CMake ABI version drifted")
     _require(
-        "find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)" in generated_cmake,
+        "find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)" in generated_cmake,
         "generated CMake range drifted",
     )
     _require(
-        "type-bridge = 1.6.0" in generated_pc,
+        "type-bridge-abi >= 1.7.0" in generated_pc,
         "generated pkg-config range drifted",
     )
 

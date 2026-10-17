@@ -265,15 +265,15 @@
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",
-      "sha256": "08d7f47d1ec93496f1a66090daf41d1b775bfccdb1a9a864904dd7d63a7d2324"
+      "sha256": "e07854b1ba2d53656f68870827443962df4f822020aa899de2194aaf50c7de7b"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.cmake.in",
-      "sha256": "02aeb269001903341031ebc0371baa9872ee7813c8d3d5031d3b459c643f114b"
+      "sha256": "5b3a03ff97bedd3001a333a6518807921cb945ff3ace8bd910a0709a96553148"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in",
-      "sha256": "4c8856278d69889c4dea80aab7eeb2bf9b047a137056ed7222032c64eb611f38"
+      "sha256": "a496beec69861638bf8088b8a44ca1eb627e6121f4e401c1298b731f009dcf0b"
     }
   ]
 }
