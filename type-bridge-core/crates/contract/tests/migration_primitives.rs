@@ -393,3 +393,16 @@ fn assertion_step_derives_closed_contract_and_heterogeneous_plan_identity() {
         MigrationPlanFingerprint::compute(&[schema, assertion]).unwrap(),
     );
 }
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_fingerprint_compute_scopes_to_the_3_12_1_profile() {
+    let profile = SchemaLoweringProfileId::new(
+        type_bridge_contract::schema_lowering::TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID,
+    )
+    .unwrap();
+    assert_eq!(
+        SchemaLoweringProfileFingerprint::compute(b"profile"),
+        SchemaLoweringProfileFingerprint::compute_for_profile(&profile, b"profile")
+    );
+}

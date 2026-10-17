@@ -133,9 +133,24 @@ impl<'de> Deserialize<'de> for SchemaLoweringProfileId {
 pub struct SchemaLoweringProfileFingerprint(Fingerprint);
 
 impl SchemaLoweringProfileFingerprint {
+    /// Fingerprints canonical schema-lowering profile bytes under the
+    /// TypeDB 3.12.1 lowering profile, the only profile 2.2 compiled.
+    #[deprecated(
+        since = "2.3.0",
+        note = "scopes the fingerprint to the 3.12.1 profile only; use compute_for_profile; removed in 3.0"
+    )]
+    pub fn compute(canonical_bytes: &[u8]) -> Self {
+        let profile_id = SchemaLoweringProfileId::new(TYPEDB_3_12_1_SCHEMA_LOWERING_PROFILE_ID)
+            .expect("the fixed 3.12.1 schema-lowering profile id is valid");
+        Self::compute_for_profile(&profile_id, canonical_bytes)
+    }
+
     /// Fingerprints canonical schema-lowering profile bytes with the fixed
     /// metadata; the lowering profile id is the fingerprint's profile scope.
-    pub fn compute(profile_id: &SchemaLoweringProfileId, canonical_bytes: &[u8]) -> Self {
+    pub fn compute_for_profile(
+        profile_id: &SchemaLoweringProfileId,
+        canonical_bytes: &[u8],
+    ) -> Self {
         let domain = FingerprintDomain::new(SCHEMA_LOWERING_PROFILE_FINGERPRINT_DOMAIN)
             .expect("the fixed schema-lowering fingerprint domain is valid");
         let canonicalization =
@@ -236,7 +251,10 @@ impl SchemaLoweringProfileBinding {
             ));
         };
         Ok(Self {
-            fingerprint: SchemaLoweringProfileFingerprint::compute(&id, canonical_profile_bytes),
+            fingerprint: SchemaLoweringProfileFingerprint::compute_for_profile(
+                &id,
+                canonical_profile_bytes,
+            ),
             id,
         })
     }

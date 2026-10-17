@@ -1595,7 +1595,7 @@ mod tests {
         output.push('\n');
         let profile_error = SchemaLoweringBinding::new(
             SchemaLoweringProfileId::typedb_3_12_1(),
-            SchemaLoweringProfileFingerprint::compute(
+            SchemaLoweringProfileFingerprint::compute_for_profile(
                 &SchemaLoweringProfileId::typedb_3_12_1(),
                 b"wrong profile bytes",
             ),

@@ -1076,7 +1076,7 @@ impl MigrationProfile {
 
     /// Compute the canonical fingerprint of the lowering profile.
     pub fn fingerprint(self) -> SchemaLoweringProfileFingerprint {
-        SchemaLoweringProfileFingerprint::compute(
+        SchemaLoweringProfileFingerprint::compute_for_profile(
             &self.lowering_profile_id(),
             &self.canonical_bytes(),
         )

@@ -92,8 +92,17 @@ differently direct and through a proxy. Each entry says what to do instead.
   limits, transport)` adds `.authority(scope, profile)`), and `DirectTls` to
   `TlsPolicy`; pass `QueryExecutionResourceLimits` where 2.2 took
   `RemoteQueryLimits`. The 2.2 names remain as deprecated aliases (see
-  Deprecated), so 2.2 `RemoteDatabase` code compiles; only the
-  `Connection<S>` return of `connect` breaks.
+  Deprecated), so 2.2 `RemoteDatabase` code compiles. What breaks is the
+  `Connection<S>` return of `connect` and of `connect_with_cancellation`;
+  both take `impl Into<ConnectionPolicy>`, and `connect_with_cancellation`
+  no longer needs the `typedb` feature.
+- Two exhaustive enums gain a `Complete` variant for the new `complete` row
+  cardinality: orm `match_request::RowCardinality` and contract
+  `query_plan::QueryRowCardinalityV2`. Add an arm to a `match` over them.
+- The server's `config::V2Section` gains the public fields `query_limits`,
+  `answer_limits` and `allow_unauthenticated_staged_writes`. A struct
+  literal needs them or `..Default::default()`; TOML configuration is
+  unaffected.
 - Generated Python packages have one async session. `QuerySession`,
   `Query`, and `GroupedQuery` run on every connection, and every terminal
   (`one`, `first`, `rows`, `page_by`, `count_by`, `exists_by`, `aggregate`,
@@ -790,6 +799,9 @@ carry managers or typed queries.
   - `RemoteQuery` is `Query`, `RemoteGroupedQuery` is `GroupedQuery`, and
     `RemoteQueryExchange` is the `ExchangeConnection` exchange callback type.
 - Rust (`#[deprecated]`):
+  - `SchemaLoweringProfileFingerprint::compute(bytes)` scopes the
+    fingerprint to the TypeDB 3.12.1 lowering profile, as in 2.2. Use
+    `compute_for_profile(profile_id, bytes)`.
   - `SchemaLoweringBinding::current(capabilities)` binds the TypeDB 3.12.1
     lowering profile, as in 2.2. Use
     `SchemaLoweringBinding::for_semantic_profile` or `for_context`, which
