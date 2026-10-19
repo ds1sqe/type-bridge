@@ -794,9 +794,11 @@ impl<'db> DynamicEntityManager<'db> {
         // Given-stage fast path (TypeDB 3.12+): one compiled insert pipeline
         // over all rows, values passed through the driver API instead of
         // being interpolated per row. Requires a homogeneous batch; anything
-        // else falls through to the per-row path below.
+        // else falls through to the per-row path below. The answer is only
+        // IIDs and row indexes, so canonical targets take it too.
         if matches!(operation, DynamicWriteOperation::Insert)
-            && let DynamicExecutionTarget::Database(db) = &self.target
+            && let DynamicExecutionTarget::Database(db)
+            | DynamicExecutionTarget::CanonicalDatabase(db) = &self.target
             && db.supports_given_stage()
             && let Some((typeql, rows)) = given_entity_insert(&self.descriptor, items, "$e")
         {
