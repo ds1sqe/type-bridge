@@ -55,12 +55,14 @@ def test_the_node_workload_runs_the_python_ops_in_order() -> None:
     assert tuple(re.findall(r'\["(\w+)"', block)) == released_node.OPS == tuple(workload.OPS)
 
 
-def test_gaps_name_only_known_ops_and_versions() -> None:
-    for version, ops in released_node.MISSING.items():
-        assert version in released_node.VERSIONS
+def test_gaps_name_only_known_ops_and_lines() -> None:
+    for line, ops in released_node.MISSING.items():
+        assert re.fullmatch(r"\d+\.\d+", line)
         assert set(ops) <= set(released_node.OPS)
     assert released_node.present("2.0.2") == ("insert_one",)
-    assert released_node.present("2.2.6") == released_node.OPS
+    # Later lines, including ones not yet released, have every op.
+    for version in ("2.1.0", "2.2.6", "2.3.0", "head"):
+        assert released_node.present(version) == released_node.OPS
     with pytest.raises(ValueError, match="unknown version"):
         released_node.present("1.9.0")
 

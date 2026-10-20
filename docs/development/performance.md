@@ -218,8 +218,10 @@ than Rust's records 0 overhead; the converter prints the signed difference.
 six CRUD ops as every other compared version: `insert_one`, `fetch_by_key`
 (one of 1,000 seeded items), `fetch_filtered` (stock of at least 900, 100
 items), `update`, `delete` and `batch_insert_1k`. The compared versions are
-2.0.2, 2.1.0, 2.2.6 and `head`, on one TypeDB 3.12.3 at semantic profile
-`typedb-3.12.1/v1`, which all of them accept. A release is installed from
+the newest patch of every line from 2.0 that PyPI and npm both serve (today
+2.0.2, 2.1.0 and 2.2.6) and `head`, on one TypeDB 3.12.3 at semantic profile
+`typedb-3.12.1/v1`, which all of them accept. `python -m perf.harness.versions`
+prints that list. A release is installed from
 PyPI into its own venv under the run's temp directory; `head` installs this
 tree with a plain (no `perf-stages`) `type-bridge-core` wheel.
 
@@ -227,13 +229,14 @@ The workload, `perf/released/python/workload.py`, is the model manager API
 an application uses: `Item.manager(db)` on a `type_bridge.Database`, with
 `insert`, `filter(...).first()`, `filter(stock__gte=...).all()`, `update`,
 `delete` and `insert_many`, in 2.0.2's spelling. Only the model's origin
-differs, in the workload's `SHIMS` table:
+differs, in the workload's `SHIMS` table, keyed by line; a line it does not
+name takes the current shim, so a new release needs no entry:
 
 | Version | `Item` model | Schema |
 | --- | --- | --- |
 | 2.0.2 | hand-written `Entity` subclass | `SchemaManager(db).register(Item)`, `sync_schema()` |
 | 2.1.0 | generated with its CLI | its `migration make` TypeQL, run in one schema transaction |
-| 2.2.6, head | generated with its CLI | its `migration make` and `migration apply` |
+| 2.2 and later lines, head | generated with its CLI | its `migration make` and `migration apply` |
 
 2.1.0 removed the hand-written model classes from the public package, and
 2.0.2's generated manager has only `insert`, `all` and `get_by_iid`, so no
@@ -266,12 +269,15 @@ fetching the instance that `update` and `delete` take is not.
 `@type-bridge/node` (`release.node.<op>`, generated managers only); ops a
 version has no call for get no metric.
 
-The workflow's `released` job runs every SDK and version (Python and Node,
-2.0.2, 2.1.0, 2.2.6 and `head`) nightly, on manual runs and on release
-tags, against a TypeDB 3.12.3 service on tmpfs, and hands the results to
-the `store` job. The perf page draws one bar chart per `release.<sdk>.<op>`
-metric, a bar per version beside the head, and a gap where a version has
-no call for the op.
+The workflow's `versions` job picks the compared versions from the
+registries and the `released` job runs each with both SDKs, against a TypeDB
+3.12.3 service on tmpfs, nightly, on manual runs and when a GitHub release is
+published. A release run passes its tag to `--require`, which polls PyPI and
+npm until both serve that version, so the new release joins the comparison
+with no edit. The `store` job appends the results, and the docs site
+redeploys after the run. The perf page draws one bar chart per
+`release.<sdk>.<op>` metric, a bar per version beside the head, and a gap
+where a version has no call for the op.
 
 ## Run the Python binding benchmarks locally
 
@@ -292,8 +298,8 @@ to one `perf.harness.micro` call, so they share one result file.
 
 ## Where history lives
 
-Results from master pushes, the nightly schedule and manual dispatch are
-appended to the orphan branch `perf-data` by the workflow's `store` job.
+Results from master pushes, published releases, the nightly schedule and
+manual dispatch are appended to the orphan branch `perf-data` by the workflow's `store` job.
 Pull requests never write history.
 
 ```text

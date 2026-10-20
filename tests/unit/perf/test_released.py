@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from perf.harness import micro, released, released_node
+from perf.harness import micro, released
 from perf.harness.validate import check_file
 from perf.released.python import workload
 
@@ -52,15 +52,25 @@ def write(tmp_path: Path, document: dict[str, object]) -> Path:
     return path
 
 
-def test_every_compared_version_has_a_shim() -> None:
-    assert released.VERSIONS == ("2.0.2", "2.1.0", "2.2.6", "head")
+def test_every_version_line_has_a_shim() -> None:
     assert workload.shim("2.0.2") == workload.Shim(models="handwritten", schema="schema-manager")
     # 2.1.0's ``migration apply`` needs a 3.12.1 server; the run uses 3.12.3.
     assert workload.shim("2.1.0") == workload.Shim(models="generated", schema="migration-typeql")
-    for version in ("2.2.6", "head"):
-        assert workload.shim(version) == workload.Shim(models="generated", schema="migration-apply")
-    with pytest.raises(ValueError, match="no shim for version '2.2.0'"):
-        workload.shim("2.2.0")
+    # Every later line, including ones not yet released, takes the current shim.
+    for version in ("2.2.6", "2.3.0", "2.4.1", "3.0.0", "head"):
+        assert workload.shim(version) == workload.CURRENT
+    with pytest.raises(ValueError, match="starts at 2.0"):
+        workload.shim("1.5.11")
+    with pytest.raises(ValueError, match="not a stable version"):
+        workload.shim("2.3.0rc1")
+
+
+def test_the_harness_takes_any_stable_2x_release_or_head() -> None:
+    for version in ("2.0.2", "2.3.0", "2.10.4", "head"):
+        released.check_version(version)
+    for version in ("1.5.11", "2.3.0rc1", "latest", "2.3"):
+        with pytest.raises(ValueError, match="unknown version"):
+            released.check_version(version)
 
 
 def test_workload_imports_only_the_standard_library_at_import_time() -> None:
@@ -211,13 +221,20 @@ def test_the_released_job_runs_every_sdk_and_version_into_the_store() -> None:
     workflow = yaml.safe_load((micro.REPO_ROOT / ".github/workflows/perf.yml").read_text())
     job = workflow["jobs"]["released"]
 
+    # The version list comes from the registries, so a release joins on its own.
     assert job["strategy"]["matrix"] == {
         "sdk": ["python", "node"],
-        "version": list(released.VERSIONS),
+        "version": "${{ fromJSON(needs.versions.outputs.versions) }}",
     }
-    assert list(released_node.VERSIONS) == list(released.VERSIONS)
-    for event in ("schedule", "workflow_dispatch", "refs/tags/v"):
-        assert event in job["if"]
+    assert job["needs"] == ["metadata", "versions"]
+    versions = workflow["jobs"]["versions"]
+    for event in ("schedule", "workflow_dispatch", "release"):
+        assert event in versions["if"]
+    pick = "\n".join(step.get("run", "") for step in versions["steps"])
+    assert "python -m perf.harness.versions" in pick
+    assert "--require" in pick
+    assert workflow[True]["release"] == {"types": ["published"]}
+    assert "tags" not in workflow[True]["push"]
     service = job["services"]["typedb"]
     assert service["image"] == "typedb/typedb:3.12.3"
     assert service["options"] == "--tmpfs /var/lib/typedb/data:rw"
@@ -228,6 +245,7 @@ def test_the_released_job_runs_every_sdk_and_version_into_the_store() -> None:
     assert "npm pack" in commands
     assert "perf.harness.released_node" in commands
     store = workflow["jobs"]["store"]
-    assert "released" in store["needs"]
+    assert "released" in store["needs"] and "versions" in store["needs"]
+    assert "github.event_name == 'release'" in store["if"]
     # A skipped released job (master pushes) must not skip the store.
     assert store["if"].startswith("!cancelled()")

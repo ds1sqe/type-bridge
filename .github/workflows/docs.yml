@@ -17,11 +17,12 @@ on:
       - "mkdocs.yml"
       - "scripts/gen_ref_pages.py"
       - "perf/harness/render.py"
-  # Redeploy after Perf stores a run, so /perf/ shows the new history.
+  # Redeploy after Perf stores a run, so /perf/ shows the new history. A
+  # published release's run has the tag as its branch, so no branch filter;
+  # pull request runs store nothing and are skipped below.
   workflow_run:
     workflows: [Perf]
     types: [completed]
-    branches: [master]
   workflow_dispatch:
 
 # Allow only one concurrent deployment
@@ -43,7 +44,10 @@ env:
 jobs:
   build:
     name: Build docs
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    if: >-
+      github.event_name != 'workflow_run'
+      || (github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event != 'pull_request')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

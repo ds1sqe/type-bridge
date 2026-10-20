@@ -21,9 +21,9 @@ Each op is timed around the manager call alone; fetching the instance an
 1,000 items first and deleted, with its migration journal, at the end.
 
 Only the ``Item`` model differs between versions, so ``SHIMS`` is the one
-place that names a version (see ``Shim``). The module imports nothing but
+place that names a version line (see ``Shim``). The module imports nothing but
 the standard library at import time, so the harness and its tests read
-``SHIMS`` and ``OPS`` without a ``type-bridge`` install; it never imports
+``shim`` and ``OPS`` without a ``type-bridge`` install; it never imports
 ``perf``. TypeDB comes from ``TYPEDB_ADDRESS``, ``TYPEDB_HTTP_PORT``,
 ``TYPEDB_USERNAME`` and ``TYPEDB_PASSWORD``.
 """
@@ -90,20 +90,26 @@ class Shim:
     schema: Literal["schema-manager", "migration-apply", "migration-typeql"]
 
 
+# Shims by ``major.minor`` line. Every line from 2.2 on, and the head, takes
+# ``CURRENT``, so a new release needs no entry here.
 SHIMS: dict[str, Shim] = {
-    "2.0.2": Shim(models="handwritten", schema="schema-manager"),
-    "2.1.0": Shim(models="generated", schema="migration-typeql"),
-    "2.2.6": Shim(models="generated", schema="migration-apply"),
-    "head": Shim(models="generated", schema="migration-apply"),
+    "2.0": Shim(models="handwritten", schema="schema-manager"),
+    "2.1": Shim(models="generated", schema="migration-typeql"),
 }
+CURRENT = Shim(models="generated", schema="migration-apply")
 
 
 def shim(version: str) -> Shim:
     """The shim of a compared version (``head`` for the source tree)."""
-    try:
-        return SHIMS[version]
-    except KeyError:
-        raise ValueError(f"no shim for version {version!r}; known: {', '.join(SHIMS)}") from None
+    if version == "head":
+        return CURRENT
+    parts = version.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"not a stable version: {version!r}")
+    major, minor = int(parts[0]), int(parts[1])
+    if (major, minor) < (2, 0):
+        raise ValueError(f"no shim for version {version!r}; the comparison starts at 2.0")
+    return SHIMS.get(f"{major}.{minor}", CURRENT)
 
 
 @dataclass(frozen=True)

@@ -84,7 +84,7 @@ def test_workflow_producers_are_read_only_and_store_waits_for_all() -> None:
     assert workflow["permissions"] == {"contents": "read"}
     jobs = workflow["jobs"]
     assert set(jobs["store"]["needs"]) == {
-        "micro", "build", "size", "suite", "pipeline", "binding", "released",
+        "micro", "build", "size", "suite", "pipeline", "binding", "versions", "released",
     }  # fmt: skip
     assert jobs["suite"]["if"] == "github.event_name != 'pull_request'"
     for family in ["micro", "build", "size", "suite", "pipeline", "binding"]:
@@ -98,6 +98,6 @@ def test_workflow_producers_are_read_only_and_store_waits_for_all() -> None:
         ]
         assert [step["with"]["name"] for step in uploads] == [f"perf-{family}"]
     released = jobs["released"]
-    assert released["needs"] == "metadata"
+    assert released["needs"] == ["metadata", "versions"]
     assert released["env"]["PERF_STARTED_AT"] == "${{ needs.metadata.outputs.started_at }}"
     assert released.get("permissions", workflow["permissions"]) == {"contents": "read"}

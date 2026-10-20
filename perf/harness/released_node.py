@@ -6,7 +6,7 @@ Usage::
         [--core-wheel FILE] [--node-package FILE] [--work-dir DIR]
         [--iterations N] [--warmup N]
 
-``VERSION`` is one of ``VERSIONS``. A release installs ``@type-bridge/node``
+``VERSION`` is a stable 2.x release or ``head``. A release installs ``@type-bridge/node``
 of that version from npm into its own npm prefix under the work directory
 (never a global install), with ``typescript`` to compile the generated
 package. ``head`` installs ``--node-package``, an ``npm pack`` tarball of
@@ -17,7 +17,7 @@ Node has no hand-written models, so the workload
 The package is generated from ``perf/released/workspace`` by the matching
 PyPI ``type-bridge`` CLI in a venv, as ``perf.harness.released`` installs it
 (``head`` from the source tree and ``--core-wheel``), at semantic profile
-``typedb-3.12.1/v1``. ``MISSING`` names the ops a version's generated
+``typedb-3.12.1/v1``. ``MISSING`` names the ops a version line's generated
 manager does not have; those ops are skipped and have no metric, so the
 page shows a gap, never a value.
 
@@ -41,7 +41,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from perf.harness import released
+from perf.harness import released, versions
 from perf.harness.micro import REPO_ROOT, collect_run
 from perf.harness.pipeline import percentile
 from perf.harness.producer import write_result
@@ -50,13 +50,20 @@ from perf.released.python import workload
 
 SDK = "node"
 HEAD = released.HEAD
-VERSIONS = ("2.0.2", "2.1.0", "2.2.6", HEAD)
 OPS = tuple(workload.OPS)
-# Ops the version's generated ``ProjectedModelManager`` has no call for.
-# 2.0.2 has only ``insert``, ``getByIid`` and ``all``.
+# Ops a version line's generated ``ProjectedModelManager`` has no call for.
+# 2.0 has only ``insert``, ``getByIid`` and ``all``; later lines have all six.
 MISSING: dict[str, tuple[str, ...]] = {
-    "2.0.2": ("fetch_by_key", "fetch_filtered", "update", "delete", "batch_insert_1k"),
+    "2.0": ("fetch_by_key", "fetch_filtered", "update", "delete", "batch_insert_1k"),
 }
+
+
+def missing(version: str) -> tuple[str, ...]:
+    """The ops ``version`` has no generated call for."""
+    released.check_version(version)
+    return () if version == HEAD else MISSING.get(versions.line(version), ())
+
+
 WORKLOAD = REPO_ROOT / "perf" / "released" / "node" / "workload.mjs"
 TYPESCRIPT = "typescript@5"
 MANIFEST = released.MANIFEST.replace(
@@ -71,9 +78,8 @@ def database_name(version: str) -> str:
 
 def present(version: str) -> tuple[str, ...]:
     """The ops ``version`` runs, in run order."""
-    if version not in VERSIONS:
-        raise ValueError(f"unknown version {version!r}; compared: {', '.join(VERSIONS)}")
-    return tuple(op for op in OPS if op not in MISSING.get(version, ()))
+    gaps = missing(version)
+    return tuple(op for op in OPS if op not in gaps)
 
 
 def npm_install_command(version: str, prefix: Path, node_package: Path | None) -> list[str]:
@@ -200,7 +206,7 @@ def measure(
 
     report = work / "report.json"
     command = ["node", str(WORKLOAD), "--database", database, "--models", str(models)]
-    for op in MISSING.get(version, ()):
+    for op in missing(version):
         command += ["--skip", op]
     command += ["--out", str(report), "--iterations", str(iterations), "--warmup", str(warmup)]
     subprocess.run(command, check=True, env=dict(env))
@@ -212,7 +218,9 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ)
         prog="python -m perf.harness.released_node",
         description="Run one released @type-bridge/node through the release workload.",
     )
-    parser.add_argument("--version", required=True, choices=VERSIONS, help="version to measure")
+    parser.add_argument(
+        "--version", required=True, type=released._version_argument, help="stable release or head"
+    )
     parser.add_argument("--typedb", required=True, help="TypeDB server version measured")
     parser.add_argument("--out", type=Path, required=True, help="result file to write")
     parser.add_argument("--core-wheel", type=Path, help="type-bridge-core wheel for head")
@@ -253,7 +261,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ)
             shutil.rmtree(work, ignore_errors=True)
     for metric in metrics:
         print(f"{metric.id} [{run.version}]: p50 {metric.value / 1e6:.3f} ms")
-    for op in MISSING.get(arguments.version, ()):
+    for op in missing(arguments.version):
         print(f"{metric_id('release', SDK, op)} [{run.version}]: gap (no generated call)")
     print(f"{arguments.out}: {len(metrics)} metric(s)")
     return 0

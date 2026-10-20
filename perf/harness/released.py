@@ -5,7 +5,7 @@ Usage::
     python -m perf.harness.released --version VERSION --typedb VERSION --out FILE
         [--core-wheel FILE] [--work-dir DIR] [--iterations N] [--warmup N]
 
-``VERSION`` is one of ``VERSIONS``: a release, installed from PyPI with
+``VERSION`` is a stable release from 2.0 on, installed from PyPI with
 ``uv pip install type-bridge==VERSION``, or ``head``, installed from this
 source tree with the ``type-bridge-core`` wheel ``--core-wheel`` names (a
 plain ``maturin build --release`` of ``type-bridge-core``, without
@@ -13,7 +13,7 @@ plain ``maturin build --release`` of ``type-bridge-core``, without
 so nothing is installed anywhere else.
 
 The workload is ``perf/released/python/workload.py``, run with that venv's
-interpreter; its ``SHIMS`` say where each version's ``Item`` model and
+interpreter; its ``shim`` says where each version's ``Item`` model and
 schema come from. For a generated-model version this harness first makes
 the migration and generates ``release_models`` from
 ``perf/released/workspace`` with the version's own ``type-bridge`` CLI, at
@@ -45,6 +45,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TypeGuard
 
+from perf.harness import versions
 from perf.harness.micro import REPO_ROOT, collect_run
 from perf.harness.pipeline import percentile
 from perf.harness.producer import write_result
@@ -53,8 +54,7 @@ from perf.released.python import workload
 
 SDK = "python"
 TRIGGER = "release-matrix"
-VERSIONS = tuple(workload.SHIMS)
-HEAD = "head"
+HEAD = versions.HEAD
 PROFILE = "typedb-3.12.1/v1"
 WORKLOAD = Path(workload.__file__).resolve()
 SCHEMA = REPO_ROOT / "perf" / "released" / "workspace" / "schema"
@@ -91,12 +91,26 @@ def database_name(version: str) -> str:
     return metric_id("release", SDK, *version.split(".")).replace(".", "_")
 
 
+def check_version(version: str) -> None:
+    """Refuse anything but ``head`` or a stable release from the 2.0 line on."""
+    parsed = versions.parse(version)
+    if version != HEAD and (parsed is None or parsed[:2] < versions.FIRST_LINE):
+        raise ValueError(f"unknown version {version!r}; compare head or a stable 2.x release")
+
+
+def _version_argument(version: str) -> str:
+    try:
+        check_version(version)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+    return version
+
+
 def install_command(
     version: str, python: Path, core_wheel: Path | None, root: Path = REPO_ROOT
 ) -> list[str]:
     """The ``uv pip install`` of one version into the venv of ``python``."""
-    if version not in VERSIONS:
-        raise ValueError(f"unknown version {version!r}; compared: {', '.join(VERSIONS)}")
+    check_version(version)
     if version != HEAD:
         return ["uv", "pip", "install", "-q", "-p", str(python), f"type-bridge=={version}"]
     if core_wheel is None:
@@ -246,7 +260,9 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] = os.environ)
         prog="python -m perf.harness.released",
         description="Run one released type-bridge through the release workload.",
     )
-    parser.add_argument("--version", required=True, choices=VERSIONS, help="version to measure")
+    parser.add_argument(
+        "--version", required=True, type=_version_argument, help="stable release or head"
+    )
     parser.add_argument("--typedb", required=True, help="TypeDB server version measured")
     parser.add_argument("--out", type=Path, required=True, help="result file to write")
     parser.add_argument("--core-wheel", type=Path, help="type-bridge-core wheel for head")
