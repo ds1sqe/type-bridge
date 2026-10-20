@@ -7,7 +7,7 @@ models through [`type-bridge`](https://crates.io/crates/type-bridge) instead.
 
 ```toml
 [dependencies]
-type-bridge-core-lib = "2.2.6"
+type-bridge-core-lib = "2.3.0"
 ```
 
 ## Modules
@@ -58,11 +58,11 @@ cargo test -p type-bridge-core-lib
 
 ## Compatibility
 
-This crate is released in lockstep with TypeBridge 2.2.6 and requires Rust
+This crate is released in lockstep with TypeBridge 2.3.0 and requires Rust
 1.88+. Database-facing TypeBridge components support TypeDB
 3.11.x–3.13.x, with 3.13.6 as the V2 semantic baseline.
 
-[API documentation](https://docs.rs/type-bridge-core-lib/2.2.6) ·
+[API documentation](https://docs.rs/type-bridge-core-lib/2.3.0) ·
 [Repository](https://github.com/ds1sqe/type-bridge)
 
 ## License

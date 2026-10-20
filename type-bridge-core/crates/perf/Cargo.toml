@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-perf"
-version = "2.2.6"
+version = "2.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Private perf harness: stage-span timing and the live Rust pipelines"
