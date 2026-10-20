@@ -95,8 +95,17 @@ def test_workflow_producers_are_read_only_and_store_waits_for_all() -> None:
             step
             for step in jobs[family]["steps"]
             if step.get("uses", "").startswith("actions/upload-artifact@")
+            and step.get("if") != "failure()"
         ]
         assert [step["with"]["name"] for step in uploads] == [f"perf-{family}"]
+    # The suite job keeps its harness logs when it fails.
+    logs = [step for step in jobs["suite"]["steps"] if step.get("if") == "failure()"]
+    assert [step["with"]["name"] for step in logs] == ["perf-suite-logs"]
+    assert "clippy" in next(
+        step["with"]["components"]
+        for step in jobs["suite"]["steps"]
+        if step.get("uses", "").startswith("dtolnay/rust-toolchain@")
+    )
     released = jobs["released"]
     assert released["needs"] == ["metadata", "versions"]
     assert released["env"]["PERF_STARTED_AT"] == "${{ needs.metadata.outputs.started_at }}"
