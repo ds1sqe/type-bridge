@@ -79,10 +79,7 @@ jobs:
       - name: Cache cargo registry and build
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
+          path: type-bridge-core/target
           key: ${{ runner.os }}-cargo-docs-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Install uv

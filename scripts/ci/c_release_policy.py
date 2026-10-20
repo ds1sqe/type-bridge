@@ -59,6 +59,10 @@ def expand(value: str, matrix: dict[str, str]) -> str:
     return re.sub(r"\$\{\{ matrix\.([\w-]+) \}\}", lambda m: matrix[m[1]], value)
 
 
+# The accepted CI run is a push to master; event and ref terms evaluate as such.
+ACCEPTED_RUN = {"github.event_name": "push", "github.ref": "refs/heads/master"}
+
+
 def step_enabled(expression: str, matrix: dict[str, str], runner: str) -> bool:
     """Evaluate only the closed comparison grammar used by this CI workflow."""
     if expression in {"always()", "success()"}:
@@ -67,10 +71,18 @@ def step_enabled(expression: str, matrix: dict[str, str], runner: str) -> bool:
         return False
     results = []
     for term in expression.split("&&"):
-        match = re.fullmatch(r"(matrix\.[\w-]+|runner\.os)\s*(==|!=)\s*'([^']*)'", term.strip())
+        match = re.fullmatch(
+            r"(matrix\.[\w-]+|runner\.os|github\.event_name|github\.ref)\s*(==|!=)\s*'([^']*)'",
+            term.strip(),
+        )
         if match is None:
             raise ValueError(f"Unreviewed CI condition: {expression}")
-        actual = runner if match[1] == "runner.os" else matrix[match[1].removeprefix("matrix.")]
+        if match[1] in ACCEPTED_RUN:
+            actual = ACCEPTED_RUN[match[1]]
+        elif match[1] == "runner.os":
+            actual = runner
+        else:
+            actual = matrix[match[1].removeprefix("matrix.")]
         results.append((actual == match[3]) == (match[2] == "=="))
     return all(results)
 

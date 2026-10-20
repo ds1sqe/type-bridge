@@ -61,7 +61,7 @@ def run_snapshot() -> dict[str, Any]:
 def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     selected = policy.selected_policy()
     assert json.loads(policy.POLICY.read_text()) == selected
-    assert len(selected["ci_jobs"]) == 52
+    assert len(selected["ci_jobs"]) == 59
     assert (
         selected["ci_jobs"]["Staged plans live (typedb/typedb:3.13.6)"][
             "Run staged writes races across processes"
@@ -69,9 +69,23 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         == "success"
     )
     assert (
-        selected["ci_jobs"]["Rust windows-latest"]["Check C foundation on MSRV 1.88"] == "skipped"
+        selected["ci_jobs"]["Rust docs and MSRV 1.88"]["Check C foundation on MSRV 1.88"]
+        == "success"
     )
-    assert selected["ci_jobs"]["Rust ubuntu-latest"]["Check C foundation on MSRV 1.88"] == "success"
+    # The accepted run is a master push, so master-only cache saves run.
+    assert selected["ci_jobs"]["Rust windows-latest"]["Save cargo build cache"] == "success"
+    assert (
+        selected["ci_jobs"]["Rust schema-codegen acceptance windows-latest"][
+            "Initialize MSVC and require clang-cl for Windows C tests"
+        ]
+        == "success"
+    )
+    assert (
+        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-latest"][
+            "Initialize MSVC and require clang-cl for Windows C tests"
+        ]
+        == "skipped"
+    )
     assert (
         selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.12.3)"][
             "Upload Python queries report"

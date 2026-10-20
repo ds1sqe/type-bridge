@@ -309,7 +309,7 @@ def test_official_action_steps_are_commit_pinned() -> None:
 
     assert "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5" in rust_integration
     assert "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4" in tls_matrix
-    assert "actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4" in tls_matrix
+    assert "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4" in tls_matrix
     assert "actions/checkout@v4" not in tls_matrix
     assert "actions/cache@v4" not in tls_matrix
 

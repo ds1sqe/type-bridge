@@ -7,8 +7,18 @@ on:
     branches: [master, develop]
   workflow_dispatch:
 
+# A newer push to the same pull request or branch cancels the older run;
+# master runs always finish (C release verification consumes them).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 env:
   CARGO_HOME: ${{ github.workspace }}/../.cargo-home
+  # CI builds keep line tables for backtraces but no full debuginfo, and no
+  # incremental state: smaller targets, faster links, smaller caches.
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
@@ -37,14 +47,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache Cargo inputs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            tmp/standalone-cli-artifact/build
-          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: tmp/standalone-cli-artifact/build
+          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            linux-cli-artifact-v1-
 
       - name: Require native archive and binary inspectors
         run: |
@@ -120,6 +130,14 @@ jobs:
         if: failure()
         run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
 
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tmp/standalone-cli-artifact/build
+          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+
   c-package-artifacts:
     name: C runtime and generated package artifacts (Linux x86_64 GNU)
     runs-on: ubuntu-24.04
@@ -138,14 +156,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache Cargo inputs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            tmp/c-package-artifacts/build/cargo
-          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: tmp/c-package-artifacts/build/cargo
+          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            linux-c-package-artifacts-v1-
 
       - name: Require native packaging and consumer tools
         run: |
@@ -177,6 +195,14 @@ jobs:
             tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
           if-no-files-found: error
           retention-days: 7
+
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tmp/c-package-artifacts/build/cargo
+          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
 
   c-distribution-security:
     name: C distribution supply-chain artifact gate
@@ -324,14 +350,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache isolated fixture processes
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            ${{ runner.temp }}/typebridge-c-artifact-infra
-          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: ${{ runner.temp }}/typebridge-c-artifact-infra
+          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            linux-c-artifact-live-v1-
 
       - name: Download immutable standalone CLI artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -438,6 +464,15 @@ jobs:
           down --volumes --remove-orphans
 
   # Rust crate: compile, test, lint (parallel with Python jobs)
+
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/typebridge-c-artifact-infra
+          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+
   rust-check:
     name: Rust ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -522,26 +557,23 @@ jobs:
         if: runner.os == 'Linux'
         run: bash scripts/ci/check_dependency_security.sh
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: cargo check
         working-directory: type-bridge-core
         run: cargo check --all-targets
 
-      - name: Validate first-party public Cargo docs
-        if: runner.os == 'Linux'
-        run: python scripts/ci/validate_cargo_rustdoc.py
-
+      # schema-codegen's tests run in parallel in rust-codegen-tests.
       - name: cargo test
         working-directory: type-bridge-core
-        run: cargo test --all-targets --no-fail-fast
+        run: cargo test --all-targets --no-fail-fast --workspace --exclude type-bridge-schema-codegen
 
       - name: Check alternate serde_json backends
         working-directory: type-bridge-core
@@ -554,10 +586,6 @@ jobs:
         run: >-
           cargo test --locked
           --manifest-path crates/core/tests/fixtures/rule-wire-standalone/Cargo.toml
-
-      - name: Check generated Rust projection package
-        working-directory: type-bridge-core
-        run: cargo test -p type-bridge-schema-codegen --test rust_acceptance
 
       - name: Require GCC and Clang for the Linux C gate
         if: runner.os == 'Linux'
@@ -660,30 +688,132 @@ jobs:
           if errorlevel 1 exit /b 1
           cargo test --locked -p type-bridge-c --test schema_package_abi
 
+      - name: cargo clippy
+        working-directory: type-bridge-core
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+
+  # schema-codegen holds most of the Rust test time (rust_acceptance compiles
+  # generated packages with a nested cargo), so it runs in two parallel shards.
+  rust-codegen-tests:
+    name: Rust schema-codegen ${{ matrix.shard }} ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        shard: [acceptance, rest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Initialize MSVC and require clang-cl for Windows C tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'Visual Studio C++ tools were not found' }
+          $devcmd = Join-Path $installation.Trim() 'Common7\Tools\VsDevCmd.bat'
+          $environment = & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
+          foreach ($line in $environment) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && where cl && where clang-cl && clang-cl --version"
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC cl or clang-cl is unavailable after VsDevCmd' }
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: cargo test (schema-codegen ${{ matrix.shard }})
+        working-directory: type-bridge-core
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if [ "$SHARD" = acceptance ]; then
+            cargo test --no-fail-fast -p type-bridge-schema-codegen --test rust_acceptance
+          else
+            targets=(--lib --examples)
+            for file in crates/schema-codegen/tests/*.rs; do
+              name="$(basename "$file" .rs)"
+              [ "$name" = rust_acceptance ] || targets+=(--test "$name")
+            done
+            cargo test --no-fail-fast -p type-bridge-schema-codegen "${targets[@]}"
+          fi
+
+  # Rustdoc validation and the MSRV checks, beside the Linux tests.
+  rust-docs-msrv:
+    name: Rust docs and MSRV 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Validate first-party public Cargo docs
+        run: python scripts/ci/validate_cargo_rustdoc.py
+
       - name: Install generated Rust MSRV
-        if: runner.os == 'Linux'
         run: rustup toolchain install 1.88.0 --profile minimal
 
       - name: Check C foundation on MSRV 1.88
-        if: runner.os == 'Linux'
         working-directory: type-bridge-core
         run: cargo +1.88.0 check --locked -p type-bridge-c --all-targets
 
       - name: Validate first-party public Cargo docs on MSRV 1.88
-        if: runner.os == 'Linux'
         run: python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
 
       - name: Check generated Rust projection on MSRV 1.88
-        if: runner.os == 'Linux'
         working-directory: type-bridge-core
         run: >-
           cargo +1.88.0 test --locked
           -p type-bridge-schema-codegen --test rust_acceptance
           generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
-
-      - name: cargo clippy
-        working-directory: type-bridge-core
-        run: cargo clippy --all-targets -- -D warnings
 
   projected-parity:
     name: Provider-free Projected value parity
@@ -707,14 +837,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-projected-parity-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -766,14 +896,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-projected-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -845,14 +975,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-band-v3-${{ matrix.band }}-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: cargo check (${{ matrix.band }})
         working-directory: type-bridge-core
@@ -896,15 +1026,6 @@ jobs:
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
         with:
           tool: cargo-llvm-cov
-
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-nightly-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
 
       - name: Generate LCOV report
         run: ./scripts/coverage.sh branch --lcov
@@ -1002,14 +1123,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-node-v3-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -1079,14 +1200,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-node-packed-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -1554,14 +1675,14 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-rust-integration-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       # The generated Rust live test stages a clean consumer crate and checks
       # it offline. Populate every package in the locked workspace graph first
@@ -1921,14 +2042,14 @@ jobs:
           cache: npm
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-live-3-13-6-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       # The writes suite's Rust program resolves `--offline` from a copy of
       # the workspace lockfile, so the whole locked graph must be present.
@@ -2141,14 +2262,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-tls-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Start isolated TypeDB and TLS terminator
         env:
@@ -2290,14 +2411,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-generated-parity-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -2362,14 +2483,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-node-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -2608,14 +2729,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
 
-      - name: Cache cargo registry and build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
-            type-bridge-core/target
-          key: ${{ runner.os }}-cargo-gate-v2-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
