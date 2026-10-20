@@ -3586,6 +3586,7 @@ int main(void) {
 /// emits, cut from today's generated source with the descriptor minor set to
 /// 6. Today's models.h and the rest of models.c use ABI 1.7 declarations the
 /// frozen 1.6 header lacks, so the old consumer cannot include them.
+#[cfg(unix)]
 fn abi_1_6_package_source(generated: &str) -> String {
     const DESCRIPTOR: &str = "static const type_bridge_schema_package_chunked_descriptor_v1_t\n";
     const OPEN_END: &str = "&fixture_schema_package_chunks_v1, out_package, out_diagnostics);\n}\n";

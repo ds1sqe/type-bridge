@@ -7,13 +7,16 @@ use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 use std::ptr;
 
 use type_bridge_c::TypeBridgeStatus;
 
+#[cfg(unix)]
 #[path = "support/temp.rs"]
 mod temp;
+#[cfg(unix)]
 use temp::TempDirectory;
 
 unsafe extern "C" {
@@ -94,6 +97,7 @@ fn every_contract_plan_fixture_round_trips_through_the_c_abi() {
 
 /// A C17 program reads the schema and every fixture and checks each
 /// decoded plan's canonical bytes.
+#[cfg(unix)]
 const ROUND_TRIP: &str = r#"#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -158,6 +162,7 @@ int main(int argc, char **argv) {
 }
 "#;
 
+#[cfg(unix)]
 fn native_library() -> Option<PathBuf> {
     match std::env::var("TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER").as_deref() {
         Ok("1") => {}

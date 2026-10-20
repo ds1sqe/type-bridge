@@ -3,9 +3,11 @@
 //! pointer contract holds.
 
 use std::ffi::c_void;
+#[cfg(unix)]
 use std::fs;
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Command;
 use std::ptr;
 
@@ -16,10 +18,12 @@ use type_bridge_c::{
 
 #[path = "support/purchase_package.rs"]
 mod purchase_package;
+#[cfg(not(windows))]
 #[path = "support/temp.rs"]
 mod temp;
 
 use purchase_package::{PREFIX, PurchasePackage, purchase_package};
+#[cfg(not(windows))]
 use temp::TempDirectory;
 
 type Builder = c_void;
@@ -676,13 +680,13 @@ fn pointer_contract_rejects_before_any_write() {
 }
 
 /// Strict C17/C++17 compile of the shared C purchase program.
+#[cfg(not(windows))]
 #[test]
 fn c_purchase_builder_compiles_under_strict_c17_and_cpp17() {
     let stage = TempDirectory::new("plan_builder");
     let include = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
     let support = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support");
     let source = support.join("purchase_builder.c");
-    #[cfg(not(windows))]
     for (compiler, standard, language) in [
         ("gcc", "c17", "c"),
         ("clang", "c17", "c"),
@@ -714,6 +718,7 @@ fn c_purchase_builder_compiles_under_strict_c17_and_cpp17() {
     }
 }
 
+#[cfg(unix)]
 fn native_library() -> Option<PathBuf> {
     match std::env::var("TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER").as_deref() {
         Ok("1") => {}
