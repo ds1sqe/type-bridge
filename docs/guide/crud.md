@@ -175,6 +175,27 @@ can be shared with `Person.query(transaction)` for multiple terminal calls.
 Canonical manager filters can borrow that same read transaction; each terminal
 leaves it active for sibling filters and typed queries.
 
+## Atomic conditional writes
+
+Generated managers write without a condition. When a write must happen only
+if a condition holds (enough stock, enough balance), build it as one typed
+plan and run it in a staged transaction: the check and the writes run in one
+TypeDB transaction, and a plan that matches no row writes nothing.
+
+```python
+from type_bridge.plan import Matched
+
+with db.staged_transaction("write") as tx:
+    bought = tx.stage(plan)  # one plan: match, let, update, insert
+# Committed on exit. Matched(0): the condition did not hold, nothing written.
+ok = bought.result() == Matched(1)
+```
+
+A lost race fails the commit with `CommitConflict`; run the whole transaction
+again. Reading a value does not protect it from a concurrent change, so write
+what the rule depends on. [Concurrency and conditional writes](concurrency.md)
+has the purchase plan in every SDK, the lock rules, retries and typed failures.
+
 ## Language differences
 
 - Generated Python values are mutable; `update(value)` replaces the attached

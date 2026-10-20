@@ -224,7 +224,8 @@ A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
 `let` values, then updates, inserts, puts and deletes. A staged transaction
 queues plans and runs them all at commit, in order, as one TypeDB
 transaction. Nothing opens before `commit`, and a plan that matches no row
-writes nothing, so one plan is a complete conditional write.
+writes nothing, so one plan is a complete conditional write. Which writes
+make it race-safe is in [Concurrency and conditional writes](concurrency.md).
 
 The one-query purchase checks the stock and the balance, takes the item and
 the price, and records the purchase:
