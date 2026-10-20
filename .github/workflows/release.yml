@@ -1304,6 +1304,8 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: release_rust_projection_live
+          # The service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/release-rust-projection-target
         run: >-
           timeout --foreground 15m
@@ -1552,6 +1554,8 @@ jobs:
       - name: Run exact-wheel generated Python application
         env:
           TYPE_BRIDGE_GENERATED_PARITY_REPORT: ${{ runner.temp }}/release-generated-parity.xml
+          # The service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
         run: |
           cd "$RUNNER_TEMP"
           PATH="$RUNNER_TEMP/release-generated-parity/bin:$PATH" \
