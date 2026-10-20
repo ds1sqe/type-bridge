@@ -723,6 +723,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
 
       - name: Initialize MSVC and require clang-cl for Windows C tests
         if: runner.os == 'Windows'
@@ -750,6 +751,12 @@ jobs:
           restore-keys: |
             rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
             rust-${{ runner.os }}-main-
+
+      # Generated consumers build with --offline against the workspace lock,
+      # so every locked crate must be downloaded first.
+      - name: Fetch every locked crate
+        working-directory: type-bridge-core
+        run: cargo fetch --locked
 
       - name: cargo test (schema-codegen ${{ matrix.shard }})
         working-directory: type-bridge-core
@@ -785,6 +792,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
 
       - name: Restore cargo build cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -794,6 +802,12 @@ jobs:
           restore-keys: |
             rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
             rust-${{ runner.os }}-main-
+
+      # Generated consumers build with --offline against the workspace lock,
+      # so every locked crate must be downloaded first.
+      - name: Fetch every locked crate
+        working-directory: type-bridge-core
+        run: cargo fetch --locked
 
       - name: Validate first-party public Cargo docs
         run: python scripts/ci/validate_cargo_rustdoc.py

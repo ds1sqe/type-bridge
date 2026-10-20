@@ -467,6 +467,7 @@
       "Check C foundation on MSRV 1.88": "success",
       "Check generated Rust projection on MSRV 1.88": "success",
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Install Rust toolchain": "success",
       "Install generated Rust MSRV": "success",
       "Restore cargo build cache": "success",
@@ -572,6 +573,7 @@
     },
     "Rust schema-codegen acceptance macos-latest": {
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
       "Restore cargo build cache": "success",
@@ -580,6 +582,7 @@
     },
     "Rust schema-codegen acceptance ubuntu-latest": {
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
       "Restore cargo build cache": "success",
@@ -588,6 +591,7 @@
     },
     "Rust schema-codegen acceptance windows-latest": {
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "success",
       "Install Rust toolchain": "success",
       "Restore cargo build cache": "success",
@@ -596,6 +600,7 @@
     },
     "Rust schema-codegen rest macos-latest": {
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
       "Restore cargo build cache": "success",
@@ -604,6 +609,7 @@
     },
     "Rust schema-codegen rest ubuntu-latest": {
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
       "Restore cargo build cache": "success",
@@ -612,6 +618,7 @@
     },
     "Rust schema-codegen rest windows-latest": {
       "Checkout code": "success",
+      "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "success",
       "Install Rust toolchain": "success",
       "Restore cargo build cache": "success",
@@ -805,7 +812,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "5e5249b4986ea1070b1d251f609b5bf8909bd3b2bcfaa8562f5054219873019e",
+  "ci_workflow_sha256": "9a08e603183f611f30bcae88407b3f8afe30958a05907d3a8e672e799f0e8f07",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",
