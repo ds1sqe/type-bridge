@@ -867,6 +867,9 @@ carry managers or typed queries.
 
 ### Fixed
 
+- Generated entity models' `insert_many` (Python, Node) sends one batched
+  insert again on TypeDB 3.12+, instead of one query per row (regression
+  since 2.1.0).
 - `Transaction::stage_plan` refuses a `query-plan/v3` program lifted from a
   V2 plan that keeps its filter or model terminal as compatibility evidence
   (`query_plan_compatibility_unsupported`), instead of running it without
