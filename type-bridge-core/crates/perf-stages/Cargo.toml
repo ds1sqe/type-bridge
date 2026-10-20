@@ -1,0 +1,23 @@
+[package]
+name = "type-bridge-perf-stages"
+version = "2.3.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Private perf harness: exclusive wall time per TypeBridge stage span"
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+# The SDK bindings' off-by-default perf-stages feature links this leaf crate;
+# it has no path dependencies, so a binding's source archive stays loadable.
+publish = false
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "time"] }
+
+[lints]
+workspace = true

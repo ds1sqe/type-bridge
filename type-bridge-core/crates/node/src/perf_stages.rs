@@ -19,7 +19,7 @@ pub(crate) fn entry() -> tracing::Span {
 #[cfg(feature = "perf-stages")]
 #[napi_derive::napi(js_name = "_perfStages")]
 pub fn perf_stages() -> napi::Result<std::collections::HashMap<String, i64>> {
-    let times = type_bridge_perf::stages::recorder()
+    let times = type_bridge_perf_stages::recorder()
         .map_err(|error| napi::Error::new(napi::Status::GenericFailure, error.to_string()))?;
     Ok(times
         .take()

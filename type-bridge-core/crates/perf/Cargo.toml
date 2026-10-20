@@ -23,8 +23,8 @@ required-features = ["pipelines"]
 
 [features]
 default = ["pipelines"]
-# The Rust pipeline driver. The SDK bindings link only the stage layer
-# (`default-features = false`), so they never pull the SDK or the CLI.
+# The Rust pipeline driver. The SDK bindings link only
+# type-bridge-perf-stages, so they never pull the SDK or the CLI.
 pipelines = [
     "dep:serde_json",
     "dep:tokio",
@@ -37,8 +37,7 @@ pipelines = [
 ]
 
 [dependencies]
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+type-bridge-perf-stages = { path = "../perf-stages" }
 serde_json = { version = "1", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 type-bridge = { path = "../rust", optional = true }

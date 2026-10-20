@@ -30,7 +30,7 @@ pub(crate) fn entry() -> tracing::Span {
 #[cfg(feature = "perf-stages")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tb_perf_stages_json(buffer: *mut u8, capacity: usize) -> usize {
-    let Ok(times) = type_bridge_perf::stages::recorder() else {
+    let Ok(times) = type_bridge_perf_stages::recorder() else {
         return usize::MAX;
     };
     let stages = times.take();

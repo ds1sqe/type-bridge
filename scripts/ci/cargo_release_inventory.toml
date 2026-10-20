@@ -215,3 +215,11 @@ classification = "private-tooling"
 role = "perf-harness"
 version-policy = "lockstep"
 docs-target = "none"
+
+[[packages]]
+name = "type-bridge-perf-stages"
+manifest = "crates/perf-stages/Cargo.toml"
+classification = "private-tooling"
+role = "perf-harness"
+version-policy = "lockstep"
+docs-target = "none"

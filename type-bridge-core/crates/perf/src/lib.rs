@@ -10,4 +10,4 @@
 //!
 //! The crate is never published and no shipped crate depends on it.
 
-pub mod stages;
+pub use type_bridge_perf_stages as stages;

@@ -87,12 +87,12 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "vendor/typedb-protocol-b8",
     "vendor/typedb-driver-b8",
 )
-# Maturin 1.14.1 does not discover the optional orm-derive path dependency
+# Maturin 1.14.1 does not discover the optional orm-derive and perf-stages path dependencies
 # while constructing the Python sdist. pyproject.toml therefore includes this
 # source root explicitly. Unlike Cargo-packaged workspace members, the explicit
 # include is copied byte-for-byte: its manifest keeps workspace inheritance,
 # and Cargo resolves license-file to the archive's canonical root LICENSE.
-CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS = ("crates/orm-derive",)
+CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS = ("crates/orm-derive", "crates/perf-stages")
 CORE_SDIST_SOURCE_ROOTS = (
     CORE_SDIST_WORKSPACE_MEMBERS
     + CORE_SDIST_EXPLICIT_RAW_SOURCE_ROOTS

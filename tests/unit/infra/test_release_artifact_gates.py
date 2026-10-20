@@ -80,6 +80,7 @@ def test_core_sdist_includes_optional_rust_path_dependency() -> None:
         "path": "crates/orm-derive/**/*",
         "format": "sdist",
     } in included
+    assert {"path": "crates/perf-stages/**/*", "format": "sdist"} in included
     assert {"path": "LICENSE", "format": "sdist"} in included
 
 

@@ -88,9 +88,12 @@ runners sit above the comparison noise threshold.
 
 Each iteration builds its plans with the SDK plan builder, stages them on a
 `Transaction`, commits and checks the answers. `type-bridge-perf` (a private
-crate, never a dependency of a shipped crate) installs a `tracing` layer that
-sums the [stage spans](#stage-spans): each span counts its wall time minus
-that of its stage children, so nested stages never count twice.
+crate, never a dependency of a shipped crate) installs the `tracing` layer of
+`type-bridge-perf-stages`, which sums the [stage spans](#stage-spans): each
+span counts its wall time minus that of its stage children, so nested stages
+never count twice. The bindings' off-by-default `perf-stages` feature links
+only that leaf crate, which has no path dependencies, so a binding's source
+archive does not have to carry the SDK.
 Time inside no span is SDK-side work, for example the Rust SDK checking the
 schema package each time it builds a plan.
 

@@ -45,18 +45,21 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
 
     assert inventory.release_version == "2.3.0"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 23
+    assert len(inventory.packages) == 24
     assert len(inventory.public_packages) == 19
     assert len(inventory.first_party_packages) == 17
     assert len(inventory.immutable_packages) == 2
-    assert len(inventory.private_packages) == 4
+    assert len(inventory.private_packages) == 5
     assert [package.publish_order for package in inventory.public_packages] == list(range(1, 20))
     assert {package.name for package in inventory.binding_packages} == {
         "type-bridge-c",
         "type-bridge-core",
         "type-bridge-node",
     }
-    assert [package.name for package in inventory.tooling_packages] == ["type-bridge-perf"]
+    assert [package.name for package in inventory.tooling_packages] == [
+        "type-bridge-perf",
+        "type-bridge-perf-stages",
+    ]
     assert set(inventory.private_packages) == {
         *inventory.binding_packages,
         *inventory.tooling_packages,
@@ -223,7 +226,7 @@ def test_tooling_dependency_rule_accepts_the_checked_in_manifests() -> None:
 
 
 PYTHON_PERF_DEPENDENCY = (
-    'type-bridge-perf = { path = "../perf", default-features = false, optional = true }'
+    'type-bridge-perf-stages = { path = "../perf-stages", default-features = false, optional = true }'
 )
 
 
@@ -233,19 +236,19 @@ PYTHON_PERF_DEPENDENCY = (
         (
             "crates/orm/Cargo.toml",
             "[dependencies]\n",
-            '[dependencies]\ntype-bridge-perf = { path = "../perf", optional = true }\n',
+            '[dependencies]\ntype-bridge-perf-stages = { path = "../perf-stages", optional = true }\n',
             "only a private binding may link tooling",
         ),
         (
             "crates/python/Cargo.toml",
             PYTHON_PERF_DEPENDENCY,
-            'type-bridge-perf = { path = "../perf", default-features = false }',
+            'type-bridge-perf-stages = { path = "../perf-stages", default-features = false }',
             "must be an optional normal dependency",
         ),
         (
             "crates/python/Cargo.toml",
             PYTHON_PERF_DEPENDENCY,
-            'type-bridge-perf = { path = "../perf", optional = true }',
+            'type-bridge-perf-stages = { path = "../perf-stages", optional = true }',
             "must be an optional normal dependency",
         ),
         (
@@ -257,7 +260,7 @@ PYTHON_PERF_DEPENDENCY = (
         (
             "crates/python/Cargo.toml",
             "default = []",
-            'default = []\nprofiling = ["type-bridge-perf/pipelines"]',
+            'default = []\nprofiling = ["type-bridge-perf-stages/tracing"]',
             "must be enabled by 'perf-stages' alone",
         ),
     ],
