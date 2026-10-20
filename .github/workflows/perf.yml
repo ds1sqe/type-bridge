@@ -601,7 +601,7 @@ jobs:
       fail-fast: false
       matrix:
         sdk: [python, node]
-        version: ["2.0.2", "2.1.0", "2.2.5", head]
+        version: ["2.0.2", "2.1.0", "2.2.6", head]
     services:
       typedb:
         # Every compared version accepts semantic profile typedb-3.12.1/v1.

@@ -218,7 +218,7 @@ than Rust's records 0 overhead; the converter prints the signed difference.
 six CRUD ops as every other compared version: `insert_one`, `fetch_by_key`
 (one of 1,000 seeded items), `fetch_filtered` (stock of at least 900, 100
 items), `update`, `delete` and `batch_insert_1k`. The compared versions are
-2.0.2, 2.1.0, 2.2.5 and `head`, on one TypeDB 3.12.3 at semantic profile
+2.0.2, 2.1.0, 2.2.6 and `head`, on one TypeDB 3.12.3 at semantic profile
 `typedb-3.12.1/v1`, which all of them accept. A release is installed from
 PyPI into its own venv under the run's temp directory; `head` installs this
 tree with a plain (no `perf-stages`) `type-bridge-core` wheel.
@@ -233,7 +233,7 @@ differs, in the workload's `SHIMS` table:
 | --- | --- | --- |
 | 2.0.2 | hand-written `Entity` subclass | `SchemaManager(db).register(Item)`, `sync_schema()` |
 | 2.1.0 | generated with its CLI | its `migration make` TypeQL, run in one schema transaction |
-| 2.2.5, head | generated with its CLI | its `migration make` and `migration apply` |
+| 2.2.6, head | generated with its CLI | its `migration make` and `migration apply` |
 
 2.1.0 removed the hand-written model classes from the public package, and
 2.0.2's generated manager has only `insert`, `all` and `get_by_iid`, so no
@@ -248,7 +248,7 @@ docker run -d --name perf-typedb --tmpfs /var/lib/typedb/data:rw \
   -p 1729:1729 -p 8000:8000 typedb/typedb:3.12.3
 (cd type-bridge-core && uvx --from maturin==1.14.1 maturin build --release \
   -o ../tmp/perf/core-wheel)
-for version in 2.0.2 2.1.0 2.2.5 head; do
+for version in 2.0.2 2.1.0 2.2.6 head; do
   TYPEDB_USERNAME=admin TYPEDB_PASSWORD=password uv run python -m perf.harness.released \
     --version $version --typedb 3.12.3 --core-wheel tmp/perf/core-wheel/type_bridge_core-*.whl \
     --out tmp/perf/release-python-$version.json
@@ -267,7 +267,7 @@ fetching the instance that `update` and `delete` take is not.
 version has no call for get no metric.
 
 The workflow's `released` job runs every SDK and version (Python and Node,
-2.0.2, 2.1.0, 2.2.5 and `head`) nightly, on manual runs and on release
+2.0.2, 2.1.0, 2.2.6 and `head`) nightly, on manual runs and on release
 tags, against a TypeDB 3.12.3 service on tmpfs, and hands the results to
 the `store` job. The perf page draws one bar chart per `release.<sdk>.<op>`
 metric, a bar per version beside the head, and a gap where a version has

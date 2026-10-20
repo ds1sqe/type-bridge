@@ -60,7 +60,7 @@ def test_gaps_name_only_known_ops_and_versions() -> None:
         assert version in released_node.VERSIONS
         assert set(ops) <= set(released_node.OPS)
     assert released_node.present("2.0.2") == ("insert_one",)
-    assert released_node.present("2.2.5") == released_node.OPS
+    assert released_node.present("2.2.6") == released_node.OPS
     with pytest.raises(ValueError, match="unknown version"):
         released_node.present("1.9.0")
 
@@ -122,7 +122,7 @@ def test_main_fails_without_a_result_on_a_version_mismatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        released_node, "measure", lambda version, work, **_: write(work, report("2.2.5"))
+        released_node, "measure", lambda version, work, **_: write(work, report("2.2.6"))
     )
     out = tmp_path / "release.json"
     code = released_node.main(

@@ -53,11 +53,11 @@ def write(tmp_path: Path, document: dict[str, object]) -> Path:
 
 
 def test_every_compared_version_has_a_shim() -> None:
-    assert released.VERSIONS == ("2.0.2", "2.1.0", "2.2.5", "head")
+    assert released.VERSIONS == ("2.0.2", "2.1.0", "2.2.6", "head")
     assert workload.shim("2.0.2") == workload.Shim(models="handwritten", schema="schema-manager")
     # 2.1.0's ``migration apply`` needs a 3.12.1 server; the run uses 3.12.3.
     assert workload.shim("2.1.0") == workload.Shim(models="generated", schema="migration-typeql")
-    for version in ("2.2.5", "head"):
+    for version in ("2.2.6", "head"):
         assert workload.shim(version) == workload.Shim(models="generated", schema="migration-apply")
     with pytest.raises(ValueError, match="no shim for version '2.2.0'"):
         workload.shim("2.2.0")
@@ -152,8 +152,8 @@ def test_assemble_records_the_measured_version_and_release_matrix() -> None:
     assert assembled.source == "registry"
     head = released.assemble(run, "head", report(run.version), "3.12.3")
     assert (head.version, head.source) == (run.version, "tree")
-    with pytest.raises(ValueError, match="installed type-bridge 2.2.5, expected 2.1.0"):
-        released.assemble(run, "2.1.0", report("2.2.5"), "3.12.3")
+    with pytest.raises(ValueError, match="installed type-bridge 2.2.6, expected 2.1.0"):
+        released.assemble(run, "2.1.0", report("2.2.6"), "3.12.3")
 
 
 def test_main_writes_a_valid_result(

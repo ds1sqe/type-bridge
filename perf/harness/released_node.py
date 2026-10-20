@@ -50,7 +50,7 @@ from perf.released.python import workload
 
 SDK = "node"
 HEAD = released.HEAD
-VERSIONS = ("2.0.2", "2.1.0", "2.2.5", HEAD)
+VERSIONS = ("2.0.2", "2.1.0", "2.2.6", HEAD)
 OPS = tuple(workload.OPS)
 # Ops the version's generated ``ProjectedModelManager`` has no call for.
 # 2.0.2 has only ``insert``, ``getByIid`` and ``all``.

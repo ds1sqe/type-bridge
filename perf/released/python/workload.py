@@ -93,7 +93,7 @@ class Shim:
 SHIMS: dict[str, Shim] = {
     "2.0.2": Shim(models="handwritten", schema="schema-manager"),
     "2.1.0": Shim(models="generated", schema="migration-typeql"),
-    "2.2.5": Shim(models="generated", schema="migration-apply"),
+    "2.2.6": Shim(models="generated", schema="migration-apply"),
     "head": Shim(models="generated", schema="migration-apply"),
 }
 

@@ -21,7 +21,7 @@ signal, and wall times carry runner noise.
 </div>
 
 **Released versions** compares `type-bridge` and `@type-bridge/node` 2.0.2,
-2.1.0 and 2.2.5, installed from PyPI and npm, with the head built from the
+2.1.0 and 2.2.6, installed from PyPI and npm, with the head built from the
 commit, on the same six CRUD ops against TypeDB 3.12.3 (nightly, on manual
 runs and on release tags). Each bar is the newest run of one version. A gap
 means the version has no call for the op: the generated Node manager of
