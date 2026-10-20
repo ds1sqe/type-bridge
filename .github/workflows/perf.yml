@@ -326,6 +326,8 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          # schema-codegen's tests run cargo clippy on generated crates.
+          components: clippy
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -342,6 +344,14 @@ jobs:
           cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
       - name: Measure existing offline suites
         run: uv run python -m perf.harness.suite --out "$PERF_DIR/suite.json"
+      # The harness writes each suite's output to a log, not the job log.
+      - name: Upload suite logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-suite-logs
+          path: perf-out/**/*.log
+          if-no-files-found: ignore
       - name: Upload suite metrics
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
