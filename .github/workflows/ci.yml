@@ -760,20 +760,22 @@ jobs:
 
       - name: cargo test (schema-codegen ${{ matrix.shard }})
         working-directory: type-bridge-core
-        shell: bash
+        # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
+        # shadows the MSVC linker.
+        shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          if [ "$SHARD" = acceptance ]; then
+          if ($env:SHARD -eq 'acceptance') {
             cargo test --no-fail-fast -p type-bridge-schema-codegen --test rust_acceptance
-          else
-            targets=(--lib --examples)
-            for file in crates/schema-codegen/tests/*.rs; do
-              name="$(basename "$file" .rs)"
-              [ "$name" = rust_acceptance ] || targets+=(--test "$name")
-            done
-            cargo test --no-fail-fast -p type-bridge-schema-codegen "${targets[@]}"
-          fi
+          } else {
+            $targets = @('--lib', '--examples')
+            foreach ($file in Get-ChildItem crates/schema-codegen/tests -Filter *.rs) {
+              if ($file.BaseName -ne 'rust_acceptance') { $targets += @('--test', $file.BaseName) }
+            }
+            cargo test --no-fail-fast -p type-bridge-schema-codegen @targets
+          }
+          exit $LASTEXITCODE
 
   # Rustdoc validation and the MSRV checks, beside the Linux tests.
   rust-docs-msrv:
