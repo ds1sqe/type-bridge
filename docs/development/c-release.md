@@ -9,7 +9,8 @@ verification on 2026-09-14. The 2.2.3 artifacts completed promotion and
 independent public verification on 2026-10-07. The 2.2.4 artifacts completed
 promotion and independent public verification on 2026-10-11. The 2.2.5
 artifacts completed promotion and independent public verification on
-2026-10-15.
+2026-10-15. The 2.2.6 artifacts completed promotion and independent public
+verification on 2026-10-20.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -190,3 +191,15 @@ Sigstore bundles. Public archive signatures, provenance, clean installation,
 and the complete C application journeys passed against the downloaded bytes.
 This release keeps C ABI 1.6.0 and includes patched rustls 0.23.46 for
 RUSTSEC-2026-0346 through RUSTSEC-2026-0349.
+
+The 2.2.6 public artifacts were independently verified on 2026-10-20.
+They bind source `af379d875dfb6b7156bb1b133a3af702d1bf1a66`,
+[CI run 38868929656](https://github.com/ds1sqe/type-bridge/actions/runs/38868929656),
+[C verification run 39338460623](https://github.com/ds1sqe/type-bridge/actions/runs/39338460623),
+and [promotion run 39348322661](https://github.com/ds1sqe/type-bridge/actions/runs/39348322661).
+The [2.2.6 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.6)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. Public archive signatures, provenance, and the CMake,
+pkg-config, relocation and runtime-range checks passed against the downloaded
+bytes. This release keeps C ABI 1.6.0 and includes the #251 commit certainty
+fix.
