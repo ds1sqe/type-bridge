@@ -1,0 +1,62 @@
+[
+  {
+    "case": "owns_define",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "define\nperson owns name;",
+    "corrected_contains": "owns name[]"
+  },
+  {
+    "case": "owns_undefine",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "undefine\nowns name from person;",
+    "corrected_contains": "owns name[]"
+  },
+  {
+    "case": "relates_define",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "define\nbase relates participant;",
+    "corrected_contains": "relates participant[]"
+  },
+  {
+    "case": "relates_undefine",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "undefine\nrelates participant from base;",
+    "corrected_contains": "relates participant[]"
+  },
+  {
+    "case": "specialisation_define",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "define\nreview relates reviewer as participant;",
+    "corrected_contains": "reviewer[] as participant[]"
+  },
+  {
+    "case": "specialisation_remove",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "undefine\nas participant from review relates reviewer;",
+    "corrected_contains": "relates reviewer[]"
+  },
+  {
+    "case": "owns_doc_define",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "define\nperson owns name @doc(\"ordered\");",
+    "corrected_contains": "owns name[]"
+  },
+  {
+    "case": "owns_doc_undefine",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "undefine\n@doc from person owns name;",
+    "corrected_contains": "owns name[]"
+  },
+  {
+    "case": "relates_doc_define",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "define\nbase relates participant @doc(\"ordered\");",
+    "corrected_contains": "relates participant[]"
+  },
+  {
+    "case": "relates_doc_undefine",
+    "classification": "old-wrong-output: ordered declared, scalar emitted",
+    "old": "undefine\n@doc from base relates participant;",
+    "corrected_contains": "relates participant[]"
+  }
+]

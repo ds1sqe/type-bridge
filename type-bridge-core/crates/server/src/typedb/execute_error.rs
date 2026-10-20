@@ -19,15 +19,17 @@ impl std::fmt::Display for CommitCertainty {
     }
 }
 
-/// A failed driver commit, retaining its certainty and original driver text.
+/// A failed driver commit, retaining its certainty and value-free provider description.
 #[derive(Debug, thiserror::Error)]
 #[error("Commit {certainty}: {message}")]
 #[non_exhaustive]
 pub struct CommitFailure {
     /// Whether the transaction is known to have been rejected.
     pub certainty: CommitCertainty,
-    /// Original driver diagnostic, without additional prefixes.
+    /// Value-free provider diagnostic, without additional prefixes.
     pub message: String,
+    /// Structural runtime classification, retained by new server paths.
+    pub failure: Option<type_bridge_typedb_runtime::failure::Failure>,
 }
 
 /// Error returned by [`super::TypeDBClient::execute_classified`].
@@ -47,9 +49,20 @@ impl From<ExecuteError> for PipelineError {
         match error {
             ExecuteError::Pipeline(error) => error,
             ExecuteError::Commit(error) => {
-                // V1 preserves driver text while discarding durability certainty.
+                // V1 preserves the value-free description while discarding certainty.
                 Self::QueryExecution(format!("Commit failed: {}", error.message))
             }
+        }
+    }
+}
+
+impl ExecuteError {
+    /// Value-free provider failure for HTTP details and recovery-aware callers.
+    #[must_use]
+    pub fn failure(&self) -> Option<type_bridge_typedb_runtime::failure::Failure> {
+        match self {
+            Self::Pipeline(error) => error.failure(),
+            Self::Commit(error) => error.failure.clone(),
         }
     }
 }

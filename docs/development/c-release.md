@@ -1,15 +1,16 @@
 # C release procedure
 
-The C release path selects product version **2.2.6**, native ABI **1.6.0**,
+The C release path selects product version **2.3.0**, native ABI **1.7.0**,
 and the `x86_64-unknown-linux-gnu` shared runtime built and consumed on
 Ubuntu 24.04. C17 and C++17 applications use the installed runtime through
 CMake or pkg-config. Public C support for this matrix was established with
 2.2.0 on 2026-09-14. The 2.2.2 artifacts completed promotion and independent public
 verification on 2026-09-14. The 2.2.3 artifacts completed promotion and
 independent public verification on 2026-10-07. The 2.2.4 artifacts completed
-promotion and independent public verification on 2026-10-11. The 2.2.6
+promotion and independent public verification on 2026-10-11. The 2.2.5
 artifacts completed promotion and independent public verification on
-2026-10-15.
+2026-10-15. The 2.2.6 artifacts completed promotion and independent public
+verification on 2026-10-20.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -22,7 +23,7 @@ that profile identifier is not the connected server version requirement.
 
 ## Source and artifact acceptance
 
-The committed policy in `.github/release/c-2.2.6.json` enumerates every CI
+The committed policy in `.github/release/c-2.3.0.json` enumerates every CI
 job and explicit step, including the permitted platform and failure-log
 skips. It also binds the CI workflow digest, exact Actions artifact names,
 public filename mapping and signing identity. After reviewing a CI change,
@@ -46,12 +47,14 @@ Dispatch `c-release.yml` with `mode=verify` and that run's `ci_run_id` on
 the same source. Verification has read-only GitHub permissions. It checks
 every CI job and step, downloads exact Actions artifact IDs, verifies API
 archive digests and sizes, and rejects unexpected, linked or unsafe members.
-It then runs the real Sdk V1–V6 producers and independent comparators.
+It then runs the queries, models, administration, serialization and artifacts
+suite producers and independent comparators. Reports are retained under
+`reports/<suite>/<binding>.json`; artifacts binds the other four suites by name.
 The terminal FULL-C audit must accept all 44 C capabilities and every
 predecessor and current-SDK obligation.
 
 The successful attempt-one verification run produces
-`c-verified-release-2.2.6`. It contains the three accepted archives, a complete
+`c-verified-release-2.3.0`. It contains the three accepted archives, a complete
 evidence archive and a verification receipt binding their hashes to the
 source, CI run and policy. Public filenames are assigned by copying the
 accepted archive bytes; archive members and embedded artifact provenance
@@ -59,7 +62,7 @@ remain unchanged. The artifact's nonpublishing disposition is preserved.
 
 ## Protected promotion
 
-Complete the ordinary 2.2.6 release preflight and immutable annotated tag
+Complete the ordinary 2.3.0 release preflight and immutable annotated tag
 procedure. `release.yml` owns Python, npm, Cargo, OCI and the ordinary GitHub
 draft. Preserve successful publisher outputs and independently verify their
 public bytes before final publication.
@@ -69,7 +72,7 @@ The completed 2.2.1 release used an incident-specific recovery after
 stopped at a stale OCI certificate check. Its original source, tag, and bytes
 were preserved. The retained `.github/release/recovery-2.2.1.json` policy and
 read-only verifier support inspection of that historical evidence.
-The 2.2.6 workflow builds new artifacts and has no historical-publication
+The 2.3.0 workflow builds new artifacts and has no historical-publication
 recovery input.
 
 The 2.2.1 OCI `publication-recovery/v1` attestations distinguish its original
@@ -77,7 +80,7 @@ build from recovery control revision and run. That release's metadata retains
 the recovery and SBOM links. New ordinary releases produce build-provenance
 attestations for their own accepted source and run.
 
-On the exact `v2.2.6` tag, dispatch `c-release.yml` with `mode=publish` and
+On the exact `v2.3.0` tag, dispatch `c-release.yml` with `mode=publish` and
 the successful same-source `verify_run_id`. This job uses the `release`
 environment and rechecks the verification run, every required step, the master
 CI run, accepted artifact digests, policy and annotated tag object. Promotion
@@ -88,7 +91,7 @@ verification receipt and separate promotion record. The six Sigstore bundles
 must verify with this exact certificate identity:
 
 ```text
-https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.2.6
+https://github.com/ds1sqe/type-bridge/.github/workflows/c-release.yml@refs/tags/v2.3.0
 ```
 
 The issuer is `https://token.actions.githubusercontent.com`; the certificate's
@@ -177,14 +180,26 @@ Sigstore bundles. Public archive signatures, provenance, clean installation,
 and the complete C application journeys passed against the downloaded bytes.
 This release keeps C ABI 1.6.0 and includes the #247 bounded-query fix.
 
-The 2.2.6 public artifacts were independently verified on 2026-10-15.
+The 2.2.5 public artifacts were independently verified on 2026-10-15.
 They bind source `51f15f5f92c4b954de94aaf7a7f67e03e877e16c`,
 [CI run 38670370556](https://github.com/ds1sqe/type-bridge/actions/runs/38670370556),
 [C verification run 38676152137](https://github.com/ds1sqe/type-bridge/actions/runs/38676152137),
 and [promotion run 38689373079](https://github.com/ds1sqe/type-bridge/actions/runs/38689373079).
-The [2.2.6 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.6)
+The [2.2.5 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.5)
 retains the signed evidence, verification receipt, promotion record, and
 Sigstore bundles. Public archive signatures, provenance, clean installation,
 and the complete C application journeys passed against the downloaded bytes.
 This release keeps C ABI 1.6.0 and includes patched rustls 0.23.46 for
 RUSTSEC-2026-0346 through RUSTSEC-2026-0349.
+
+The 2.2.6 public artifacts were independently verified on 2026-10-20.
+They bind source `af379d875dfb6b7156bb1b133a3af702d1bf1a66`,
+[CI run 38868929656](https://github.com/ds1sqe/type-bridge/actions/runs/38868929656),
+[C verification run 39338460623](https://github.com/ds1sqe/type-bridge/actions/runs/39338460623),
+and [promotion run 39348322661](https://github.com/ds1sqe/type-bridge/actions/runs/39348322661).
+The [2.2.6 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.2.6)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. Public archive signatures, provenance, and the CMake,
+pkg-config, relocation and runtime-range checks passed against the downloaded
+bytes. This release keeps C ABI 1.6.0 and includes the #251 commit certainty
+fix.

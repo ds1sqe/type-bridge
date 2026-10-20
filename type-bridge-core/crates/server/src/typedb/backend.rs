@@ -33,29 +33,18 @@ pub(crate) enum QueryResultKind {
     Documents(Vec<serde_json::Value>),
 }
 
-/// Abstraction over a TypeDB transaction.
-///
-/// Real implementation wraps a TypeDB `Transaction`; mock implementation
-/// returns configurable results for testing.
-pub(crate) trait TransactionOps: Send {
-    /// Execute a TypeQL query within this transaction.
-    fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResultKind, PipelineError>>;
-
-    /// Commit this transaction.
-    fn commit(&mut self) -> BoxFuture<'_, Result<(), ExecuteError>>;
-}
-
 /// Abstraction over a TypeDB driver connection.
 ///
 /// Real implementation wraps a `TypeDBDriver`; mock implementation
 /// returns configurable transactions for testing.
 pub(crate) trait DriverBackend: Send + Sync {
-    /// Open a new transaction against the given database.
-    fn open_transaction(
+    /// Execute one query as an atomic core transaction with explicit options.
+    fn execute(
         &self,
         database: &str,
-        tx_type: TransactionType,
-    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, PipelineError>>;
+        typeql: &str,
+        options: type_bridge_orm::session::staged::TransactionOptions,
+    ) -> BoxFuture<'_, Result<QueryResultKind, ExecuteError>>;
 
     /// Check whether a database exists.
     fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, PipelineError>>;

@@ -22,8 +22,10 @@ interface BoundFailureCase {
   readonly diagnostic: Readonly<{
     category: string;
     code: string;
+    details: Readonly<Record<string, unknown>>;
     format: string;
     message: string;
+    path: readonly unknown[];
   }>;
   readonly fingerprint_canonicalization: string;
   readonly fingerprint_domain: string;
@@ -49,11 +51,24 @@ const corpusPath = path.resolve(
 );
 const corpus = JSON.parse(fs.readFileSync(corpusPath, "utf8")) as FailureCorpus;
 
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, sortKeys(entry)]),
+    );
+  }
+  return value;
+}
+
 function canonical(value: unknown): Uint8Array {
-  // Every object in the checked-in corpus is written in lexicographic key
-  // order. JSON.parse preserves that insertion order, so this reproduces the
-  // contract codec's canonical compact bytes without a second JS codec.
-  return Buffer.from(JSON.stringify(value));
+  // The contract codec writes compact JSON with keys in lexicographic order;
+  // sorting here reproduces those bytes without a second JS codec.
+  return Buffer.from(JSON.stringify(sortKeys(value)));
 }
 
 const signingSeed = Buffer.alloc(32, 0x42);
@@ -226,7 +241,7 @@ test("V2 string inputs fail at their semantic byte ceilings", () => {
 });
 
 test("shared remote failure corpus rejects unbound diagnostics identically", async () => {
-  assert.equal(corpus.format, "typebridge.query-remote-binding-failure-corpus/v1");
+  assert.equal(corpus.format, "typebridge.query-remote-binding-failure-corpus/v2");
   assert.deepEqual(queryV2RemoteCapabilities(advertisement()), corpus.capabilities);
 
   for (const failure of corpus.cases) {
@@ -288,7 +303,7 @@ test("success byte budget authenticates first and keeps failures decodable", asy
   }).nonce;
   const signedSuccess = Buffer.from(
     signedReply({
-      format: "typebridge.query-remote-response/v1",
+      format: "typebridge.query-remote-response/v2",
       nonce: forgedNonce,
       outcome: { kind: "rows", rows: [] },
       plan: "0".repeat(64),
@@ -316,7 +331,7 @@ test("success byte budget authenticates first and keeps failures decodable", asy
     Buffer.from(corpus.plan_b64, "base64"),
   );
   const signedWrongRequest = signedReply({
-    format: "typebridge.query-remote-response/v1",
+    format: "typebridge.query-remote-response/v2",
     nonce: wrongRequestNonce,
     outcome: { kind: "rows", rows: [] },
     plan: planFingerprint,
@@ -324,7 +339,7 @@ test("success byte budget authenticates first and keeps failures decodable", asy
   });
   await assert.rejects(
     wrongRequestPending.decodeReply(signedWrongRequest),
-    /query_remote_request_mismatch/,
+    /query_remote_v2_request_mismatch/,
   );
 
   const validPending = pendingReply(10n, 0n);
@@ -400,7 +415,7 @@ test("replay rejection does not inspect or snapshot response bytes", async () =>
   });
   await assert.rejects(
     pending.decodeReply(hostileReplay),
-    /query_remote_reply_replayed/,
+    /query_remote_v2_reply_replayed/,
   );
 });
 
@@ -428,7 +443,7 @@ test("invalid first response types consume the claim before inspection", async (
   });
   await assert.rejects(
     pending.decodeReply(hostileReplay),
-    /query_remote_reply_replayed/,
+    /query_remote_v2_reply_replayed/,
   );
   assert.equal(inspected, false);
 });

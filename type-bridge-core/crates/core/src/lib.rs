@@ -27,7 +27,7 @@ pub mod readme_doctests {}
 pub mod _bindgen;
 /// Frozen released-TypeQL parser retained behind compatibility tooling.
 #[doc(hidden)]
-#[path = "parser.rs"]
+#[path = "archive_parser.rs"]
 pub mod _parser;
 /// Frozen released-TypeQL schema representation retained behind compatibility tooling.
 #[doc(hidden)]
@@ -39,13 +39,22 @@ pub mod ast;
 pub mod compiler;
 /// Canonical TypeDB decimal parsing and semantic comparison.
 pub mod decimal;
+mod parser;
+/// Plaintext or TLS HTTP client for a TypeBridge proxy's `/v2` routes.
+pub mod proxy_http;
 /// Parses a TypeQL query string into the AST.
 pub mod query_parser;
 /// TypeQL reserved-word detection.
 pub mod reserved_words;
+mod tql;
 /// Schema-aware query validation plus a custom validation-rule DSL.
 pub mod validation;
 mod validation_rule_wire;
+/// Implementation-only TypeQL construction boundary for sibling crates.
+#[doc(hidden)]
+pub mod __internal {
+    pub use crate::tql::*;
+}
 /// Coerces raw values into TypeDB value-types and formats TypeQL literals.
 pub mod value_coercion;
 /// TypeDB compatibility window, protocol-band map, and connect-time version gate.

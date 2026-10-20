@@ -30,3 +30,11 @@ configuration, authenticate remote capability advertisements, and bind V2
 execution to the intended canonical schema. Detailed limits and trust inputs
 remain in the server, typed-query, migration, and upgrade guides rather than
 being duplicated here.
+
+Python provider failures expose an immutable `error.failure` dataclass with
+`phase`, `reason`, `lock_kind`, `annotation`, `op_index`, `retry_safe` and
+`code`. Ordinary commit errors remain catchable as `RuntimeError` and use
+`CommitRejected`, its `CommitConflict` subclass, or `CommitOutcomeUnknown`,
+exported by `type_bridge`. Existing structured-query exception ancestry stays
+unchanged. A rejection permits rerunning the entire transaction on a fresh
+snapshot; an indeterminate commit must be reconciled before retrying.

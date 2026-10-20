@@ -2364,7 +2364,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "type-bridge"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -2382,17 +2382,18 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-contract"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tracing",
  "unicode-ident",
 ]
 
 [[package]]
 name = "type-bridge-core-lib"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2410,6 +2411,7 @@ dependencies = [
  "ureq",
  "winnow",
  "winx",
+ "typeql",
 ]
 
 [[package]]
@@ -2428,7 +2430,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-migration"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "anstream 0.6.21",
  "anstyle",
@@ -2453,7 +2455,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "ed25519-dalek",
  "rand_core 0.6.4",
@@ -2476,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-orm-derive"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2486,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-query"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2494,7 +2496,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2508,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-codegen"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "type-bridge-contract",
  "type-bridge-schema",
@@ -2517,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-compat"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2530,7 +2532,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-schema-migration"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "cap-fs-ext",
  "cap-std",
@@ -2541,18 +2543,20 @@ dependencies = [
  "serde_json",
  "sha2",
  "type-bridge-contract",
+ "type-bridge-core-lib",
  "type-bridge-query",
  "type-bridge-schema",
 ]
 
 [[package]]
 name = "type-bridge-schema-migration-typedb"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "serde",
  "serde_json",
  "sha2",
  "type-bridge-contract",
+ "type-bridge-core-lib",
  "type-bridge-migration",
  "type-bridge-orm",
  "type-bridge-query",
@@ -2563,12 +2567,13 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-toml-transpiler"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "indexmap 2.13.1",
  "serde",
  "thiserror",
  "toml",
+ "type-bridge-core-lib",
 ]
 
 [[package]]
@@ -2604,7 +2609,7 @@ dependencies = [
 
 [[package]]
 name = "type-bridge-typedb-runtime"
-version = "2.2.6"
+version = "2.3.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2614,6 +2619,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-typedb-driver-b8",
  "typedb-driver",
@@ -2621,9 +2627,9 @@ dependencies = [
 
 [[package]]
 name = "typedb-driver"
-version = "3.12.3"
+version = "3.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76c285253f1b328ea1773acf5a68d64fc3917b1c20066186a2c6a578e3dc3922"
+checksum = "cd7eb7cce9def748f4436b8047890e39bab25ce9f8314a3bf72b19f9baadb0c9"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2646,9 +2652,9 @@ dependencies = [
 
 [[package]]
 name = "typedb-protocol"
-version = "3.12.0"
+version = "3.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01f6b7eb813a853349ff22f385c120c61d04d4648318c92072e7e04dd81cdc3f"
+checksum = "055a7816df94fbf63be32c095202a62e9fc9f2de2c9134768858b3056f76b2fa"
 dependencies = [
  "prost",
  "tonic",
@@ -2662,9 +2668,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
 name = "typeql"
-version = "3.12.0"
+version = "3.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e24a287f8584e26f76da31ac7465a1120fb79e323d42303be581a6614e4f5e5"
+checksum = "dc3edc20fe55190f7cc72c8d5343abf5c4141657595bd693d69ea3ea65a6c66f"
 dependencies = [
  "chrono",
  "itertools",

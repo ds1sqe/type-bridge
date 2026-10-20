@@ -6,20 +6,20 @@
 //! native driver `given` transport; unsupported scalar domains reject during
 //! provider-independent preflight, never through silent row-by-row emulation.
 
-use std::fmt::Write as _;
+use type_bridge_core_lib::__internal as tql;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
+use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
-    InputRow, QueryInvocation, QueryOperand, QueryOperation, QueryOutput, QueryPattern, QueryPlan,
-    ReadStage,
+    InputColumn, InputRow, LocalFunction, QueryInvocation, QueryOperand, QueryOperation,
+    QueryOutput, QueryPattern, QueryPlan, ReadStage,
 };
 use type_bridge_query::{
     DocumentColumnShape, DocumentSchema, OutputSchema, RowSchema, ValidatedQuery,
 };
 
-use crate::migration_assertion::{render_comparator, render_literal};
+use crate::migration_assertion::render_comparator;
 
 pub(crate) use crate::query_v2_model::{
     execute_validated_model_query_borrowed, execute_validated_model_query_with_statement_limit,
@@ -89,12 +89,12 @@ fn lower_validated_query_with_execution_limits(
         invocation,
         invocation.operation(),
     )? {
-        if compatibility.typeql().len() > MAX_CANONICAL_BYTES {
-            return Err(failure(
+        if compatibility.typeql().len() > plan.limits().codec.max_bytes {
+            return Err(plan.limits().annotate(failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_v2_lowered_typeql_byte_limit",
                 "lowered TypeQL exceeds the canonical protocol byte ceiling",
-            ));
+            )));
         }
         return Ok(LoweredQuery {
             given: None,
@@ -106,80 +106,21 @@ fn lower_validated_query_with_execution_limits(
     let (row, given) = match invocation.inputs() {
         [] => (None, None),
         [row] if !invocation_requires_given(invocation) => (Some(row), None),
-        rows => (None, Some(given_rows_spec(plan, rows)?)),
+        rows => (None, Some(given_rows_spec(plan.inputs(), rows)?)),
     };
 
-    let mut typeql = String::new();
-    for function in plan.functions() {
-        write!(typeql, "with fun {}(", function.name().label())
-            .expect("writing to String cannot fail");
-        for (index, label) in function.parameters().iter().enumerate() {
-            if index != 0 {
-                typeql.push_str(", ");
-            }
-            write!(
-                typeql,
-                "${}: {}",
-                local_variable(
-                    function.bindings(),
-                    BindingId::new(u16::try_from(index).expect("dense parameter ordinal"),)?
-                )?,
-                label.as_str(),
-            )
-            .expect("writing to String cannot fail");
-        }
-        writeln!(
-            typeql,
-            ") -> {}:",
-            given_type_keyword(function.returns().value_type())
-                .expect("contract admits integer and double local returns"),
-        )
-        .expect("writing to String cannot fail");
-        typeql.push_str("match\n");
-        render_scoped_patterns(
-            &mut typeql,
-            plan,
-            function.bindings(),
-            function.body(),
-            None,
-            0,
-            None,
-        )?;
-        let keyword = match function.returns().reducer() {
-            type_bridge_contract::query_plan::Reducer::Count => "count",
-            type_bridge_contract::query_plan::Reducer::Sum => "sum",
-            type_bridge_contract::query_plan::Reducer::Max => "max",
-            type_bridge_contract::query_plan::Reducer::Mean => "mean",
-            type_bridge_contract::query_plan::Reducer::Median => "median",
-            type_bridge_contract::query_plan::Reducer::Min => "min",
-            type_bridge_contract::query_plan::Reducer::Std => "std",
-        };
-        writeln!(
-            typeql,
-            "return {keyword}(${});",
-            local_variable(function.bindings(), function.returns().input())?,
-        )
-        .expect("writing to String cannot fail");
-    }
+    let functions = lower_functions(plan.inputs(), plan.functions())?;
+    let mut stages = Vec::new();
     if let Some(spec) = &given {
-        typeql.push_str("given ");
-        for (index, column) in plan.inputs().iter().enumerate() {
-            if index != 0 {
-                typeql.push_str(", ");
-            }
-            write!(
-                typeql,
-                "${}: {}",
-                column.public_name().as_str(),
-                given_type_keyword(column.value_type())
-                    .expect("spec construction admitted this value type"),
-            )
-            .expect("writing to String cannot fail");
-        }
-        typeql.push_str(";\n");
+        stages.push(ast(tql::given(
+            &plan
+                .inputs()
+                .iter()
+                .map(|column| (column.public_name().as_str(), column.value_type()))
+                .collect::<Vec<_>>(),
+        ))?);
         debug_assert_eq!(spec.variables.len(), plan.inputs().len());
     }
-    typeql.push_str("match\n");
     let Some(ReadStage::Match { patterns }) = plan.pipeline().first() else {
         return Err(failure(
             DiagnosticCategory::Integrity,
@@ -187,29 +128,20 @@ fn lower_validated_query_with_execution_limits(
             "a validated plan always opens with its match stage",
         ));
     };
-    render_patterns(&mut typeql, validated, patterns, row, 0)?;
-
-    // Reachable is an existential predicate over the declared root
-    // environment, not a request for one row per proof path. TypeQL distinct
-    // does not collapse equal projections produced by different disjunction
-    // branches, so aggregate every proof by the complete visible environment
-    // and then project the synthetic count away. This happens before any
-    // user-authored select/reduce/sort/window stage, and rows that differ in
-    // any declared visible binding remain distinct.
+    stages.push(tql::match_stage(lower_scoped_patterns(
+        plan.inputs(),
+        plan.bindings(),
+        patterns,
+        row,
+        Some(validated),
+    )?));
+    // Preserve one row per visible environment across reachability proofs.
     let reachability_projection = contains_reachable(patterns);
+    let visible = || variable_names(plan, validated.root_visibility());
     if reachability_projection {
-        typeql.push_str("reduce $RreachableProofCount = count groupby ");
-        render_variable_list(&mut typeql, plan, validated.root_visibility())?;
-        typeql.push_str(";\nselect ");
-        render_variable_list(&mut typeql, plan, validated.root_visibility())?;
-        typeql.push_str(";\n");
+        stages.push(ast(tql::count("RreachableProofCount", None, &visible()?))?);
+        stages.push(ast(tql::select(&visible()?))?);
     }
-
-    // A binding established only inside a negation is a witness the
-    // provider never returns as a column. When the plan carries no
-    // explicit Select or Reduce and a witness narrows the environment,
-    // project the validator-derived root visibility exactly, so implicit
-    // projection never requests a column no provider row can carry.
     let has_projection_stage = plan
         .pipeline()
         .iter()
@@ -218,20 +150,16 @@ fn lower_validated_query_with_execution_limits(
         && !has_projection_stage
         && validated.root_visibility().len() < plan.bindings().len()
     {
-        typeql.push_str("select ");
-        render_variable_list(&mut typeql, plan, validated.root_visibility())?;
-        typeql.push_str(";\n");
+        stages.push(ast(tql::select(&visible()?))?);
     }
-
-    let exists_probe = matches!(invocation.operation(), QueryOperation::Exists);
-    let max_provider_items = if exists_probe {
+    let max_provider_items = if matches!(invocation.operation(), QueryOperation::Exists) {
         Some(1)
     } else {
         max_provider_items
     };
     let mut rendered_limit = false;
     for stage in &plan.pipeline()[1..] {
-        match stage {
+        stages.push(match stage {
             ReadStage::Match { .. } => {
                 return Err(failure(
                     DiagnosticCategory::Integrity,
@@ -239,143 +167,114 @@ fn lower_validated_query_with_execution_limits(
                     "a validated plan carries exactly one match stage",
                 ));
             }
-            ReadStage::Select { bindings } => {
-                typeql.push_str("select ");
-                render_variable_list(&mut typeql, plan, bindings)?;
-                typeql.push_str(";\n");
-            }
-            ReadStage::Require { bindings } => {
-                typeql.push_str("require ");
-                render_variable_list(&mut typeql, plan, bindings)?;
-                typeql.push_str(";\n");
-            }
-            ReadStage::Distinct => typeql.push_str("distinct;\n"),
+            ReadStage::Select { bindings } => ast(tql::select(&variable_names(plan, bindings)?))?,
+            ReadStage::Require { bindings } => ast(tql::require(&variable_names(plan, bindings)?))?,
+            ReadStage::Distinct => tql::distinct(),
             ReadStage::Reduce {
                 assignments,
                 groups,
             } => {
-                typeql.push_str("reduce ");
-                for (index, assignment) in assignments.iter().enumerate() {
-                    if index != 0 {
-                        typeql.push_str(", ");
-                    }
-                    let keyword = match assignment.reducer() {
-                        type_bridge_contract::query_plan::Reducer::Count => "count",
-                        type_bridge_contract::query_plan::Reducer::Max => "max",
-                        type_bridge_contract::query_plan::Reducer::Mean => "mean",
-                        type_bridge_contract::query_plan::Reducer::Median => "median",
-                        type_bridge_contract::query_plan::Reducer::Min => "min",
-                        type_bridge_contract::query_plan::Reducer::Std => "std",
-                        type_bridge_contract::query_plan::Reducer::Sum => "sum",
-                    };
-                    write!(
-                        typeql,
-                        "${} = {keyword}",
-                        variable(plan, assignment.assigned())?,
-                    )
-                    .expect("writing to String cannot fail");
-                    if let Some(input) = assignment.input() {
-                        write!(typeql, "(${})", variable(plan, input)?)
-                            .expect("writing to String cannot fail");
-                    }
-                }
-                if !groups.is_empty() {
-                    typeql.push_str(" groupby ");
-                    render_variable_list(&mut typeql, plan, groups)?;
-                }
-                typeql.push_str(";\n");
+                let assignments = assignments
+                    .iter()
+                    .map(|assignment| {
+                        Ok((
+                            variable(plan, assignment.assigned())?,
+                            ast(tql::reducer(
+                                reducer_keyword(assignment.reducer()),
+                                assignment
+                                    .input()
+                                    .map(|input| variable(plan, input))
+                                    .transpose()?,
+                            ))?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                ast(tql::reduce_stage(
+                    assignments,
+                    &variable_names(plan, groups)?,
+                ))?
             }
             ReadStage::Sort { terms } => {
-                typeql.push_str("sort ");
-                for (index, term) in terms.iter().enumerate() {
-                    if index != 0 {
-                        typeql.push_str(", ");
-                    }
-                    write!(
-                        typeql,
-                        "${} {}",
-                        variable(plan, term.binding())?,
-                        match term.direction() {
-                            type_bridge_contract::query_plan::OrderDirection::Ascending => "asc",
-                            type_bridge_contract::query_plan::OrderDirection::Descending => "desc",
-                        },
-                    )
-                    .expect("writing to String cannot fail");
-                }
-                typeql.push_str(";\n");
+                let fields = terms
+                    .iter()
+                    .map(|term| {
+                        Ok((
+                            variable(plan, term.binding())?,
+                            matches!(
+                                term.direction(),
+                                type_bridge_contract::query_plan::OrderDirection::Descending
+                            ),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                ast(tql::sort(&fields))?
             }
-            ReadStage::Offset { rows } => {
-                writeln!(typeql, "offset {rows};").expect("writing to String cannot fail");
-            }
+            ReadStage::Offset { rows } => tql::offset(*rows),
             ReadStage::Limit { rows } => {
-                let rows = max_provider_items.map_or(*rows, |maximum| (*rows).min(maximum));
-                writeln!(typeql, "limit {rows};").expect("writing to String cannot fail");
                 rendered_limit = true;
+                tql::limit(max_provider_items.map_or(*rows, |maximum| (*rows).min(maximum)))
             }
-        }
+        });
     }
-
-    // The execution bound belongs in the TypeQL statement so the runtime can
-    // consume its terminal frame instead of abandoning a resumable driver
-    // stream. This must precede a document `fetch` output clause. Existing
-    // limits are clamped above, so an explicit `limit 0` remains zero.
-    if let Some(max_provider_items) = max_provider_items
+    if let Some(maximum) = max_provider_items
         && !rendered_limit
     {
-        writeln!(typeql, "limit {max_provider_items};").expect("writing to String cannot fail");
+        stages.push(tql::limit(maximum));
     }
-
-    if let type_bridge_contract::query_plan::QueryOutput::Documents { fields } = plan.output() {
-        typeql.push_str("fetch {\n");
-        for (index, field) in fields.iter().enumerate() {
-            write!(typeql, "    \"{}\": ", field.key().as_str())
-                .expect("writing to String cannot fail");
-            match field.source() {
-                type_bridge_contract::query_plan::DocumentSource::Binding { binding } => {
-                    write!(typeql, "${}", variable(plan, *binding)?)
-                        .expect("writing to String cannot fail");
-                }
-                type_bridge_contract::query_plan::DocumentSource::AttributeList {
-                    attribute,
-                    owner,
-                } => {
-                    if let Some(max_collection_members) = max_collection_members {
-                        let sentinel_limit = max_collection_members.saturating_add(1);
-                        let fetch_variable = format!("FtbDocumentValue{index}");
-                        write!(
-                            typeql,
-                            "[\n        match ${} has {} ${fetch_variable};\n        \
-                             limit {sentinel_limit};\n        return {{ ${fetch_variable} }};\n    ]",
-                            variable(plan, *owner)?,
-                            attribute.label(),
-                        )
-                        .expect("writing to String cannot fail");
-                    } else {
-                        write!(
-                            typeql,
-                            "[ ${}.{} ]",
-                            variable(plan, *owner)?,
-                            attribute.label(),
-                        )
-                        .expect("writing to String cannot fail");
+    if let QueryOutput::Documents { fields } = plan.output() {
+        let entries = fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| {
+                let value = match field.source() {
+                    type_bridge_contract::query_plan::DocumentSource::Binding { binding } => {
+                        tql::fetch_expr(ast(tql::var(variable(plan, *binding)?))?)
                     }
-                }
-            }
-            typeql.push_str(if index + 1 == fields.len() {
-                "\n"
-            } else {
-                ",\n"
-            });
-        }
-        typeql.push_str("};\n");
+                    type_bridge_contract::query_plan::DocumentSource::AttributeList {
+                        attribute,
+                        owner,
+                    } => {
+                        let owner = variable(plan, *owner)?;
+                        if let Some(maximum) = max_collection_members {
+                            let name = format!("FtbDocumentValue{index}");
+                            let pattern = ast(tql::thing(
+                                owner,
+                                vec![ast(tql::has(
+                                    attribute.label().as_str(),
+                                    ast(tql::var(&name))?,
+                                ))?],
+                            ))?;
+                            ast(tql::fetch_stream(
+                                vec![
+                                    tql::match_stage(vec![pattern]),
+                                    tql::limit(maximum.saturating_add(1)),
+                                ],
+                                &[&name],
+                            ))?
+                        } else {
+                            ast(tql::fetch_attribute(
+                                owner,
+                                attribute.label().as_str(),
+                                true,
+                            ))?
+                        }
+                    }
+                };
+                Ok((field.key().as_str(), value))
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        stages.push(ast(tql::fetch(entries))?);
     }
+    let typeql = ast(tql::render(&tql::pipeline_with_functions(
+        functions, stages,
+    )))?;
 
-    if typeql.len() > MAX_CANONICAL_BYTES {
-        return Err(failure(
+    if typeql.len() > plan.limits().codec.max_bytes {
+        return Err(plan.limits().annotate(failure(
             DiagnosticCategory::ResourceLimit,
             "query_v2_lowered_typeql_byte_limit",
             "lowered TypeQL exceeds the canonical protocol byte ceiling",
-        ));
+        )));
     }
 
     Ok(LoweredQuery {
@@ -384,6 +283,46 @@ fn lower_validated_query_with_execution_limits(
         output_schema: validated.output_schema().clone(),
         typeql,
     })
+}
+
+/// Lower plan-local read functions into the pipeline preamble.
+pub(crate) fn lower_functions(
+    inputs: &[InputColumn],
+    functions: &[LocalFunction],
+) -> Result<Vec<tql::FunctionDefinition>, Diagnostic> {
+    let mut output = Vec::new();
+    for function in functions {
+        let arguments = function
+            .parameters()
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                Ok((
+                    local_variable(
+                        function.bindings(),
+                        BindingId::new(u16::try_from(index).expect("dense parameter ordinal"))?,
+                    )?,
+                    label.as_str(),
+                ))
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        let body = lower_scoped_patterns(inputs, function.bindings(), function.body(), None, None)?;
+        let reducer = ast(tql::reducer(
+            reducer_keyword(function.returns().reducer()),
+            Some(local_variable(
+                function.bindings(),
+                function.returns().input(),
+            )?),
+        ))?;
+        output.push(ast(tql::function_definition(
+            function.name().label().as_str(),
+            &arguments,
+            function.returns().value_type(),
+            vec![tql::match_stage(body)],
+            reducer,
+        ))?);
+    }
+    Ok(output)
 }
 
 /// Charge schema-refined reachability lowering against the validated plan's
@@ -506,12 +445,11 @@ fn reachability_expansion_limit() -> Diagnostic {
 /// the active driver can carry without narrowing. Provider-domain durations
 /// use exact unsigned components after preflight rejects negative or wider
 /// contract values.
-fn given_rows_spec(
-    plan: &QueryPlan,
+pub(crate) fn given_rows_spec(
+    inputs: &[InputColumn],
     rows: &[type_bridge_contract::query_plan::InputRow],
 ) -> Result<crate::session::backend::GivenRowsSpec, Diagnostic> {
-    let variables = plan
-        .inputs()
+    let variables = inputs
         .iter()
         .map(|column| {
             if given_type_keyword(column.value_type()).is_none() {
@@ -626,7 +564,7 @@ pub(crate) fn preflight_invocation_transport(
         type_bridge_schema::validate_provider_temporal_value(value)?;
     }
     if invocation_requires_given(invocation) {
-        given_rows_spec(plan, invocation.inputs())?;
+        given_rows_spec(plan.inputs(), invocation.inputs())?;
     }
     Ok(())
 }
@@ -644,159 +582,118 @@ fn invocation_requires_given(invocation: &QueryInvocation) -> bool {
         })
 }
 
-fn render_patterns(
-    output: &mut String,
-    validated: &ValidatedQuery,
-    patterns: &[QueryPattern],
-    row: Option<&InputRow>,
-    depth: usize,
-) -> Result<(), Diagnostic> {
-    let plan = validated.plan();
-    render_scoped_patterns(
-        output,
-        plan,
-        plan.bindings(),
-        patterns,
-        row,
-        depth,
-        Some(validated),
-    )
+pub(crate) fn ast<T>(result: Result<T, tql::TqlError>) -> Result<T, Diagnostic> {
+    result.map_err(|_| {
+        failure(
+            DiagnosticCategory::Integrity,
+            "query_v2_ast_lowering",
+            "validated query cannot be represented by the TypeQL adapter",
+        )
+    })
 }
 
-fn render_scoped_patterns(
-    output: &mut String,
-    plan: &QueryPlan,
+pub(crate) fn reducer_keyword(reducer: type_bridge_contract::query_plan::Reducer) -> &'static str {
+    use type_bridge_contract::query_plan::Reducer;
+    match reducer {
+        Reducer::Count => "count",
+        Reducer::Sum => "sum",
+        Reducer::Max => "max",
+        Reducer::Mean => "mean",
+        Reducer::Median => "median",
+        Reducer::Min => "min",
+        Reducer::Std => "std",
+    }
+}
+
+fn variable_names<'a>(
+    plan: &'a QueryPlan,
+    bindings: &[BindingId],
+) -> Result<Vec<&'a str>, Diagnostic> {
+    bindings
+        .iter()
+        .map(|binding| variable(plan, *binding))
+        .collect()
+}
+
+pub(crate) fn lower_scoped_patterns(
+    inputs: &[InputColumn],
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    depth: usize,
     validated: Option<&ValidatedQuery>,
-) -> Result<(), Diagnostic> {
-    let indent = "    ".repeat(depth);
+) -> Result<Vec<tql::Pattern>, Diagnostic> {
+    let mut output = Vec::new();
     for (pattern_index, pattern) in patterns.iter().enumerate() {
         match pattern {
             QueryPattern::Isa {
                 binding,
                 include_subtypes,
                 type_id,
-            } => {
-                writeln!(
-                    output,
-                    "{indent}${} isa{} {};",
-                    local_variable(bindings, *binding)?,
-                    if *include_subtypes { "" } else { "!" },
-                    type_id.label()
-                )
-                .expect("writing to String cannot fail");
-            }
+            } => output.push(ast(tql::thing(
+                local_variable(bindings, *binding)?,
+                vec![ast(tql::isa(type_id.label().as_str(), !*include_subtypes))?],
+            ))?),
             QueryPattern::Has {
                 attribute,
                 attribute_id,
                 owner,
             } => {
-                writeln!(
-                    output,
-                    "{indent}${} has {} ${};",
+                let attribute = local_variable(bindings, *attribute)?;
+                output.push(ast(tql::thing(
                     local_variable(bindings, *owner)?,
-                    attribute_id.label(),
-                    local_variable(bindings, *attribute)?,
-                )
-                .expect("writing to String cannot fail");
-                writeln!(
-                    output,
-                    "{indent}${} isa! {};",
-                    local_variable(bindings, *attribute)?,
-                    attribute_id.label(),
-                )
-                .expect("writing to String cannot fail");
+                    vec![ast(tql::has(
+                        attribute_id.label().as_str(),
+                        ast(tql::var(attribute))?,
+                    ))?],
+                ))?);
+                output.push(ast(tql::thing(
+                    attribute,
+                    vec![ast(tql::isa(attribute_id.label().as_str(), true))?],
+                ))?);
             }
             QueryPattern::Links {
                 players,
                 relation,
                 relation_id,
             } => {
-                write!(
-                    output,
-                    "{indent}${} isa! {}, links (",
+                let players = players
+                    .iter()
+                    .map(|player| {
+                        Ok((
+                            player.role().label().as_str(),
+                            local_variable(bindings, player.player())?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                output.push(ast(tql::thing(
                     local_variable(bindings, *relation)?,
-                    relation_id.label(),
-                )
-                .expect("writing to String cannot fail");
-                for (index, player) in players.iter().enumerate() {
-                    if index != 0 {
-                        output.push_str(", ");
-                    }
-                    write!(
-                        output,
-                        "{}: ${}",
-                        player.role().label(),
-                        local_variable(bindings, player.player())?,
-                    )
-                    .expect("writing to String cannot fail");
-                }
-                output.push_str(");\n");
+                    vec![
+                        ast(tql::isa(relation_id.label().as_str(), true))?,
+                        ast(tql::links(players))?,
+                    ],
+                ))?);
             }
             QueryPattern::Value {
                 comparator,
                 left,
                 right,
-            } => {
-                writeln!(
-                    output,
-                    "{indent}{} {} {};",
-                    render_operand(plan, bindings, left, row)?,
-                    render_comparator(*comparator),
-                    render_operand(plan, bindings, right, row)?,
-                )
-                .expect("writing to String cannot fail");
-            }
-            QueryPattern::Or { branches } => {
-                for (index, branch) in branches.iter().enumerate() {
-                    writeln!(output, "{indent}{}{{", if index == 0 { "" } else { "or " },)
-                        .expect("writing to String cannot fail");
-                    render_scoped_patterns(
-                        output,
-                        plan,
-                        bindings,
-                        branch,
-                        row,
-                        depth + 1,
-                        validated,
-                    )?;
-                    writeln!(
-                        output,
-                        "{indent}}}{}",
-                        if index + 1 == branches.len() { ";" } else { "" },
-                    )
-                    .expect("writing to String cannot fail");
-                }
-            }
-            QueryPattern::Not { patterns } => {
-                writeln!(output, "{indent}not {{").expect("writing to String cannot fail");
-                render_scoped_patterns(
-                    output,
-                    plan,
-                    bindings,
-                    patterns,
-                    row,
-                    depth + 1,
-                    validated,
-                )?;
-                writeln!(output, "{indent}}};").expect("writing to String cannot fail");
-            }
-            QueryPattern::Try { patterns } => {
-                writeln!(output, "{indent}try {{").expect("writing to String cannot fail");
-                render_scoped_patterns(
-                    output,
-                    plan,
-                    bindings,
-                    patterns,
-                    row,
-                    depth + 1,
-                    validated,
-                )?;
-                writeln!(output, "{indent}}};").expect("writing to String cannot fail");
-            }
+            } => output.push(ast(tql::compare(
+                lower_operand(inputs, bindings, left, row)?,
+                render_comparator(*comparator),
+                lower_operand(inputs, bindings, right, row)?,
+            ))?),
+            QueryPattern::Or { branches } => output.push(tql::or(
+                branches
+                    .iter()
+                    .map(|branch| lower_scoped_patterns(inputs, bindings, branch, row, validated))
+                    .collect::<Result<_, _>>()?,
+            )),
+            QueryPattern::Not { patterns } => output.push(tql::not(lower_scoped_patterns(
+                inputs, bindings, patterns, row, validated,
+            )?)),
+            QueryPattern::Try { patterns } => output.push(tql::optional(lower_scoped_patterns(
+                inputs, bindings, patterns, row, validated,
+            )?)),
             QueryPattern::Reachable {
                 min_depth,
                 max_depth,
@@ -806,65 +703,41 @@ fn render_scoped_patterns(
                 source,
                 target,
             } => {
-                // Uppercase hop intermediates cannot collide with the
-                // lowercase plan variable space; the pattern index keeps
-                // them unique across root reachability patterns.
                 let source_id = *source;
                 let source = local_variable(bindings, source_id)?;
                 let target = local_variable(bindings, *target)?;
-                let mut branches = Vec::with_capacity(
-                    usize::from(*max_depth)
-                        .saturating_sub(usize::from(*min_depth))
-                        .saturating_add(1),
-                );
+                let mut branches = Vec::new();
                 for length in usize::from(*min_depth)..=usize::from(*max_depth) {
                     if length == 0 {
-                        let validated = validated.ok_or_else(|| {
-                            failure(
-                                DiagnosticCategory::Integrity,
-                                "query_v2_reachable_scope",
-                                "a validated reachable pattern appears outside the root query scope",
-                            )
-                        })?;
-                        let source_domain =
-                            validated.binding_domain(&source_id).ok_or_else(|| {
+                        // TypeDB requires an exact typed witness in each identity branch.
+                        let validated = validated.ok_or_else(|| failure(DiagnosticCategory::Integrity, "query_v2_reachable_scope", "a validated reachable pattern appears outside the root query scope"))?;
+                        let domain = validated
+                            .binding_domain(&source_id)
+                            .filter(|domain| !domain.type_ids().is_empty())
+                            .ok_or_else(|| {
                                 failure(
                                     DiagnosticCategory::Integrity,
                                     "query_v2_reachable_source_domain",
                                     "a validated reachable source has no schema-derived domain",
                                 )
                             })?;
-                        if source_domain.type_ids().is_empty() {
-                            return Err(failure(
-                                DiagnosticCategory::Integrity,
-                                "query_v2_reachable_source_domain",
-                                "a validated reachable source has no schema-derived domain",
-                            ));
-                        }
-                        // TypeDB 3.12 cannot plan a bare identity branch next
-                        // to relation branches. One exact typed witness per
-                        // validator-derived concrete source type preserves the
-                        // full source domain without widening it.
-                        for (type_ordinal, type_id) in source_domain.type_ids().iter().enumerate() {
-                            // Every disjunction branch owns its complete local
-                            // witness environment. Reusing one variable across
-                            // mutually exclusive concrete-type branches makes
-                            // TypeDB require that witness in sibling positive
-                            // path branches (REP44).
-                            let zero_var = format!("R{pattern_index}z{type_ordinal}");
-                            branches.push(format!(
-                                "${zero_var} isa! {}; ${source} is ${zero_var}; ${target} is ${zero_var};",
-                                type_id.label()
-                            ));
+                        // Distinct witness names keep mutually exclusive branches independent.
+                        for (ordinal, type_id) in domain.type_ids().iter().enumerate() {
+                            let name = format!("R{pattern_index}z{ordinal}");
+                            branches.push(vec![
+                                ast(tql::thing(
+                                    &name,
+                                    vec![ast(tql::isa(type_id.label().as_str(), true))?],
+                                ))?,
+                                ast(tql::identity(source, &name))?,
+                                ast(tql::identity(target, &name))?,
+                            ]);
                         }
                         continue;
                     }
-                    let mut branch = String::new();
+                    let mut branch = Vec::new();
                     let hop_var = |hop: usize| format!("R{pattern_index}l{length}h{hop}");
                     for hop in 1..=length {
-                        if hop != 1 {
-                            branch.push(' ');
-                        }
                         let from = if hop == 1 {
                             source.to_owned()
                         } else {
@@ -875,30 +748,20 @@ fn render_scoped_patterns(
                         } else {
                             hop_var(hop)
                         };
-                        // The Reachable contract promises the exact relation
-                        // type for every hop; `isa!` keeps subtype instances
-                        // out exactly like every other exact-type pattern.
-                        write!(
-                            branch,
-                            "({}: ${from}, {}: ${to}) isa! {};",
-                            role_from.label(),
-                            role_to.label(),
-                            relation.label(),
-                        )
-                        .expect("writing to String cannot fail");
+                        branch.push(ast(tql::anonymous_relation(
+                            vec![
+                                (role_from.label().as_str(), &from),
+                                (role_to.label().as_str(), &to),
+                            ],
+                            vec![ast(tql::isa(relation.label().as_str(), true))?],
+                        ))?);
                     }
                     branches.push(branch);
                 }
                 if branches.len() == 1 {
-                    writeln!(output, "{indent}{}", branches[0])
-                        .expect("writing to String cannot fail");
+                    output.extend(branches.pop().expect("one branch"));
                 } else {
-                    let joined = branches
-                        .iter()
-                        .map(|branch| format!("{{ {branch} }}"))
-                        .collect::<Vec<_>>()
-                        .join(" or ");
-                    writeln!(output, "{indent}{joined};").expect("writing to String cannot fail");
+                    output.push(tql::or(branches));
                 }
             }
             QueryPattern::FunctionCall {
@@ -906,24 +769,58 @@ fn render_scoped_patterns(
                 assigned,
                 function,
             } => {
-                write!(
-                    output,
-                    "{indent}let ${} = {}(",
-                    local_variable(bindings, *assigned)?,
-                    function.label(),
-                )
-                .expect("writing to String cannot fail");
-                for (index, argument) in arguments.iter().enumerate() {
-                    if index != 0 {
-                        output.push_str(", ");
-                    }
-                    output.push_str(&render_operand(plan, bindings, argument, row)?);
-                }
-                output.push_str(");\n");
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| lower_operand(inputs, bindings, argument, row))
+                    .collect::<Result<_, _>>()?;
+                output.push(ast(tql::let_value(
+                    &[local_variable(bindings, *assigned)?],
+                    ast(tql::function(function.label().as_str(), arguments))?,
+                    false,
+                ))?);
             }
         }
     }
-    Ok(())
+    Ok(output)
+}
+
+pub(crate) fn lower_operand(
+    inputs: &[InputColumn],
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
+    operand: &QueryOperand,
+    row: Option<&InputRow>,
+) -> Result<tql::Expr, Diagnostic> {
+    match operand {
+        QueryOperand::Binding { binding } => ast(tql::var(local_variable(bindings, *binding)?)),
+        QueryOperand::Literal { value } => ast(tql::literal(value)),
+        QueryOperand::Input { column } => match row {
+            Some(row) => ast(tql::literal(
+                row.values()
+                    .get(usize::from(column.get()))
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_missing_input_value",
+                            "pattern reads an input column absent from the bound row",
+                        )
+                    })?,
+            )),
+            None => ast(tql::var(
+                inputs
+                    .get(usize::from(column.get()))
+                    .ok_or_else(|| {
+                        failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_v2_missing_input_value",
+                            "pattern reads an undeclared input column",
+                        )
+                    })?
+                    .public_name()
+                    .as_str(),
+            )),
+        },
+    }
 }
 
 fn contains_reachable(patterns: &[QueryPattern]) -> bool {
@@ -941,70 +838,11 @@ fn contains_reachable(patterns: &[QueryPattern]) -> bool {
     })
 }
 
-fn render_variable_list(
-    output: &mut String,
-    plan: &QueryPlan,
-    bindings: &[BindingId],
-) -> Result<(), Diagnostic> {
-    for (index, binding) in bindings.iter().enumerate() {
-        if index != 0 {
-            output.push_str(", ");
-        }
-        output.push('$');
-        output.push_str(variable(plan, *binding)?);
-    }
-    Ok(())
-}
-
-fn render_operand(
-    plan: &QueryPlan,
-    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
-    operand: &QueryOperand,
-    row: Option<&InputRow>,
-) -> Result<String, Diagnostic> {
-    match operand {
-        QueryOperand::Binding { binding } => {
-            Ok(format!("${}", local_variable(bindings, *binding)?))
-        }
-        QueryOperand::Literal { value } => render_literal(value),
-        QueryOperand::Input { column } => match row {
-            Some(row) => {
-                let value = row
-                    .values()
-                    .get(usize::from(column.get()))
-                    .and_then(Option::as_ref)
-                    .ok_or_else(|| {
-                        failure(
-                            DiagnosticCategory::InvalidContract,
-                            "query_v2_missing_input_value",
-                            "pattern reads an input column absent from the bound row",
-                        )
-                    })?;
-                render_literal(value)
-            }
-            // Given lowering: the column is a driver-bound row variable.
-            None => {
-                let column = plan
-                    .inputs()
-                    .get(usize::from(column.get()))
-                    .ok_or_else(|| {
-                        failure(
-                            DiagnosticCategory::InvalidContract,
-                            "query_v2_missing_input_value",
-                            "pattern reads an undeclared input column",
-                        )
-                    })?;
-                Ok(format!("${}", column.public_name().as_str()))
-            }
-        },
-    }
-}
-
 fn variable(plan: &QueryPlan, binding: BindingId) -> Result<&str, Diagnostic> {
     local_variable(plan.bindings(), binding)
 }
 
-fn local_variable(
+pub(crate) fn local_variable(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     binding: BindingId,
 ) -> Result<&str, Diagnostic> {
@@ -1181,10 +1019,6 @@ pub struct QueryResultRow {
 }
 
 impl QueryResultRow {
-    pub(crate) fn from_values(values: Vec<QueryRowValue>) -> Self {
-        Self { values }
-    }
-
     /// Return positional typed values in output-column order.
     #[must_use]
     pub fn values(&self) -> &[QueryRowValue] {
@@ -1210,10 +1044,6 @@ pub struct QueryResultDocument {
 }
 
 impl QueryResultDocument {
-    pub(crate) fn from_values(values: Vec<DocumentFieldValue>) -> Self {
-        Self { values }
-    }
-
     /// Return field values in validated document-column order.
     pub fn values(&self) -> &[DocumentFieldValue] {
         &self.values
@@ -1258,7 +1088,7 @@ pub(crate) trait QueryV2ValidatedItemObserver: Send {
 /// projection; count and exists reuse the same validated stream and are
 /// decided in Rust, mirroring the released V1 executor discipline.
 pub async fn execute_validated_query(
-    transaction: &mut crate::session::transaction::Transaction,
+    transaction: &mut crate::session::transaction::OwnedTransaction,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
     limits: crate::session::backend::QueryV2AnswerLimits,
@@ -2571,7 +2401,7 @@ mod tests {
             error.path().segments(),
             &[crate::match_request::MatchErrorPathSegment::ProviderEvidence]
         );
-        assert!(provider.observed_typeql.ends_with("limit 2;\n"));
+        assert!(provider.observed_typeql.ends_with("limit 2;"));
         assert_eq!(
             provider.observed_limits,
             Some((2, expected_max_bytes, expected_max_collection_members,))
@@ -2642,8 +2472,8 @@ mod tests {
             panic!("the released provider resource-error surface is preserved");
         };
         assert_eq!(error.code().as_str(), "response_byte_limit");
-        assert!(provider.observed_typeql.contains("limit 101;\nfetch {\n"));
-        assert!(provider.observed_typeql.contains("        limit 2;\n"));
+        assert!(provider.observed_typeql.contains("limit 101; fetch {"));
+        assert!(provider.observed_typeql.contains("limit 2;"));
         assert_eq!(provider.observed_limits, Some((101, encoded_bytes - 1, 1)));
         assert_eq!(
             provider.controls,
@@ -2686,7 +2516,7 @@ mod tests {
         let (validated, plan) = fixture();
         let lowered = lower_validated_query(&validated, &invocation(&plan, QueryOperation::Exists))
             .expect("exists lowering");
-        assert!(lowered.typeql().ends_with("limit 1;\n"));
+        assert!(lowered.typeql().ends_with("limit 1;"));
 
         let (limited, limited_plan) = fixture_with_output_and_tail(
             PlanOutput::Rows {
@@ -2702,7 +2532,7 @@ mod tests {
         let lowered =
             lower_validated_query(&limited, &invocation(&limited_plan, QueryOperation::Exists))
                 .expect("limited exists lowering");
-        assert!(lowered.typeql().ends_with("limit 1;\n"));
+        assert!(lowered.typeql().ends_with("limit 1;"));
 
         let (zero, zero_plan) = fixture_with_output_and_tail(
             PlanOutput::Rows {
@@ -2717,7 +2547,7 @@ mod tests {
         );
         let lowered = lower_validated_query(&zero, &invocation(&zero_plan, QueryOperation::Exists))
             .expect("zero-limit exists lowering");
-        assert!(lowered.typeql().ends_with("limit 0;\n"));
+        assert!(lowered.typeql().ends_with("limit 0;"));
 
         let (documents, document_plan) = document_fixture();
         let lowered = lower_validated_query(
@@ -2725,7 +2555,7 @@ mod tests {
             &invocation(&document_plan, QueryOperation::Exists),
         )
         .expect("document exists lowering");
-        assert!(lowered.typeql().contains("limit 1;\nfetch {\n"));
+        assert!(lowered.typeql().contains("limit 1; fetch {"));
     }
 
     #[test]
@@ -2742,7 +2572,7 @@ mod tests {
             Some(2),
         )
         .expect("execution lowering");
-        assert!(bounded.typeql().ends_with("limit 2;\n"));
+        assert!(bounded.typeql().ends_with("limit 2;"));
 
         let (limited, limited_plan) = fixture_with_output_and_tail(
             PlanOutput::Rows {
@@ -2762,7 +2592,7 @@ mod tests {
             Some(2),
         )
         .expect("clamped execution lowering");
-        assert!(bounded.typeql().ends_with("limit 2;\n"));
+        assert!(bounded.typeql().ends_with("limit 2;"));
 
         let (documents, document_plan) = document_fixture();
         let bounded = lower_validated_query_with_execution_limits(
@@ -2772,8 +2602,8 @@ mod tests {
             Some(2),
         )
         .expect("bounded document lowering");
-        assert!(bounded.typeql().contains("limit 2;\nfetch {\n"));
-        assert!(bounded.typeql().contains("        limit 4;\n"));
+        assert!(bounded.typeql().contains("limit 2; fetch {"));
+        assert!(bounded.typeql().contains("limit 4;"));
     }
 
     #[tokio::test]
@@ -2818,7 +2648,7 @@ mod tests {
             .await
             .expect("bounded exists reaches EOF");
         assert_eq!(outcome, QueryV2Outcome::Exists(true));
-        assert!(provider.observed_typeql.ends_with("limit 1;\n"));
+        assert!(provider.observed_typeql.ends_with("limit 1;"));
         assert_eq!(
             provider.control,
             Some(crate::session::backend::AnswerControl::Continue)
@@ -2853,7 +2683,7 @@ mod tests {
         .await
         .expect("an empty result satisfies a zero-item budget");
         assert_eq!(outcome, QueryV2Outcome::Exists(false));
-        assert!(empty.observed_typeql.ends_with("limit 1;\n"));
+        assert!(empty.observed_typeql.ends_with("limit 1;"));
 
         let (limited, limited_plan) = fixture_with_output_and_tail(
             PlanOutput::Rows {
@@ -2876,7 +2706,7 @@ mod tests {
         .await
         .expect("an explicit zero limit proves false without an answer item");
         assert_eq!(outcome, QueryV2Outcome::Exists(false));
-        assert!(no_rows.observed_typeql.ends_with("limit 0;\n"));
+        assert!(no_rows.observed_typeql.ends_with("limit 0;"));
 
         let mut matching = DrainProbe::rows(vec![person_row("0x1", "ada")]);
         let error = execute_with_provider(
@@ -3135,11 +2965,9 @@ mod tests {
         let zero_limit =
             lower_validated_query_with_execution_limits(&validated, &invocation, Some(0), None)
                 .expect("bounded document lowering");
-        assert!(
-            zero_limit
-                .typeql()
-                .contains("match $person has name $FtbDocumentValue0;\n        limit 1;\n        return { $FtbDocumentValue0 };")
-        );
+        assert!(zero_limit.typeql().contains(
+            "match $person has name $FtbDocumentValue0;limit 1; return { $FtbDocumentValue0 };"
+        ));
         let canonical_limit = lower_validated_query_with_execution_limits(
             &validated,
             &invocation,
@@ -3180,5 +3008,70 @@ mod tests {
             provider.controls,
             vec![crate::session::backend::AnswerControl::Continue]
         );
+    }
+    #[test]
+    fn execution_queries_preserve_pre_ast_meaning() {
+        let (rows, row_plan) = fixture();
+        let (documents, document_plan) = document_fixture();
+        let (limited, limited_plan) = fixture_with_output_and_tail(
+            PlanOutput::Rows {
+                columns: vec![binding_id(0), binding_id(1)],
+            },
+            vec![
+                ReadStage::Sort {
+                    terms: vec![OrderTerm::new(binding_id(1), OrderDirection::Ascending)],
+                },
+                ReadStage::Limit { rows: 7 },
+            ],
+        );
+        let cases = [
+            (&rows, &row_plan, QueryOperation::Rows, None, Some(2)),
+            (&rows, &row_plan, QueryOperation::Rows, None, Some(0)),
+            (&rows, &row_plan, QueryOperation::Exists, None, None),
+            (&limited, &limited_plan, QueryOperation::Rows, None, Some(2)),
+            (
+                &documents,
+                &document_plan,
+                QueryOperation::Rows,
+                Some(0),
+                None,
+            ),
+            (
+                &documents,
+                &document_plan,
+                QueryOperation::Rows,
+                Some(3),
+                Some(2),
+            ),
+            (
+                &documents,
+                &document_plan,
+                QueryOperation::Exists,
+                Some(3),
+                Some(2),
+            ),
+        ];
+        let snapshots: Vec<String> = serde_json::from_str(include_str!(
+            "../tests/fixtures/query_v2_execution_pre_ast.json"
+        ))
+        .unwrap();
+        assert_eq!(snapshots.len(), cases.len());
+        for ((validated, plan, operation, collection, items), old) in
+            cases.into_iter().zip(snapshots)
+        {
+            let invocation = invocation(plan, operation);
+            let new = lower_validated_query_with_execution_limits(
+                validated,
+                &invocation,
+                collection,
+                items,
+            )
+            .unwrap();
+            let canonical = |source: &str| typeql::parse_query(source).unwrap().to_string();
+            assert_eq!(
+                typeql::parse_query(&canonical(&old)).unwrap(),
+                typeql::parse_query(&canonical(new.typeql())).unwrap()
+            );
+        }
     }
 }

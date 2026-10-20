@@ -20,6 +20,8 @@ for the working agreement and command map.
   versions, and TypeQL behavior
 - [Abstract type concepts](abstract-types.md) -- interface hierarchies and
   polymorphic queries
+- [Performance tracking](performance.md) -- perf results, local benchmark
+  runs, the `perf-data` history and adding a metric
 
 ## Maintainer contracts
 

@@ -7,11 +7,15 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::migration::{MIGRATION_FORMAT_V1, MigrationId, MigrationManifestDigest};
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_schema::ManagedDeltaContext;
 
-use crate::manifest::{peek_manifest_declares_legacy_bridge, peek_manifest_identity};
+use crate::manifest::{
+    peek_manifest_declares_legacy_bridge, peek_manifest_identity, peek_manifest_semantic_profile,
+};
+use crate::profile::MigrationProfile;
 use crate::{
     MigrationDirectory, VerifiedSchemaMigrationManifest, decode_verified_manifest,
     encode_verified_manifest,
@@ -213,6 +217,7 @@ impl MigrationHistoryGraph {
         }
 
         let topological = topological_order(&parents, &children)?;
+        validate_profile_lineage(&by_id, &parents, &children)?;
         let heads = children
             .iter()
             .filter(|(_, children)| children.is_empty())
@@ -247,6 +252,20 @@ impl MigrationHistoryGraph {
         &self,
     ) -> impl ExactSizeIterator<Item = (&MigrationId, &VerifiedSchemaMigrationManifest)> {
         self.manifests.iter()
+    }
+
+    /// Return the history's single profile-upgrade bridge and its ancestors.
+    ///
+    /// Graph validation admits at most one bridge, and every manifest on the
+    /// profile it moves from is one of these ancestors.
+    pub(crate) fn profile_bridge_with_ancestors(
+        &self,
+    ) -> Option<(&VerifiedSchemaMigrationManifest, BTreeSet<MigrationId>)> {
+        let bridge = self
+            .manifests
+            .values()
+            .find(|manifest| manifest.is_profile_bridge())?;
+        Some((bridge, reachable(bridge.id(), &self.parents)))
     }
 
     /// Return deterministic topological order with compound-ID ready-node ties.
@@ -524,6 +543,131 @@ pub fn discover_verified_migration_chain_with_evidence_in(
     genesis_source: &DeclaredSchema,
     context: &ManagedDeltaContext,
 ) -> Result<(MigrationHistoryGraph, CanonicalMigrationHistoryEvidence), Diagnostic> {
+    let (graph, evidence) = discover_any_profile_history_in(directory, genesis_source, context)?;
+    require_workspace_profile_heads(&graph, context.semantic_profile())?;
+    Ok((graph, evidence))
+}
+
+/// Where a canonical history stands for `migration upgrade-profile`.
+#[derive(Debug)]
+pub enum MigrationProfileUpgrade {
+    /// The history ends wholly on an older profile at one head. A bridge from
+    /// `from` with `parent` as its only parent moves it to the workspace.
+    Pending {
+        /// The verified history, every manifest on `from`.
+        graph: MigrationHistoryGraph,
+        /// The profile the history is on.
+        from: MigrationProfile,
+        /// The single history head the bridge continues.
+        parent: MigrationId,
+    },
+    /// The history already crosses into the workspace profile at `bridge`.
+    Bridged {
+        /// The verified bridged history.
+        graph: MigrationHistoryGraph,
+        /// The profile-upgrade bridge identity.
+        bridge: MigrationId,
+    },
+}
+
+/// Discover a history that the workspace profile may have moved past.
+///
+/// Ordinary discovery refuses a history wholly on an older profile with
+/// `migration_history_profile_upgrade_required`. This entry point replays it
+/// anyway, each manifest under its own profile, and reports either the single
+/// older-profile head to author a bridge from or the bridge already present.
+/// It refuses an empty history, several heads, a history already on the
+/// workspace profile (`migration_upgrade_profile_same_profile`) and one on a
+/// newer profile (`migration_upgrade_profile_downgrade`).
+pub fn discover_history_for_profile_upgrade_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    workspace: &ManagedDeltaContext,
+) -> Result<MigrationProfileUpgrade, Diagnostic> {
+    let target =
+        MigrationProfile::for_semantic_profile(workspace.semantic_profile()).ok_or_else(|| {
+            upgrade_failure(
+                "migration_upgrade_profile_unsupported_target",
+                "the workspace semantic profile is not a migration profile",
+            )
+            .with_detail(
+                "workspace_profile",
+                workspace.semantic_profile().as_str().to_owned(),
+            )
+        })?;
+    let (graph, _) = discover_any_profile_history_in(directory, genesis_source, workspace)?;
+    let bridge = graph
+        .manifests()
+        .find(|(_, manifest)| manifest.is_profile_bridge())
+        .map(|(id, _)| id.clone());
+    if let Some(bridge) = bridge {
+        require_workspace_profile_heads(&graph, workspace.semantic_profile())?;
+        return Ok(MigrationProfileUpgrade::Bridged { graph, bridge });
+    }
+    let parent = match graph.heads() {
+        [] => {
+            return Err(upgrade_failure(
+                "migration_upgrade_profile_empty_history",
+                "an empty migration history has no TypeDB line to upgrade from",
+            ));
+        }
+        [head] => head.clone(),
+        _ => {
+            return Err(upgrade_failure(
+                "migration_upgrade_profile_divergent_heads",
+                "a profile upgrade needs one history head; merge the heads first",
+            ));
+        }
+    };
+    // Without a bridge the lineage rules keep every manifest on one profile.
+    let history_profile = graph.manifests[&parent].semantic_profile().id();
+    let from = MigrationProfile::for_semantic_profile(history_profile).ok_or_else(|| {
+        upgrade_failure(
+            "migration_upgrade_profile_unsupported_history",
+            "the migration history is on a profile with no migration registry",
+        )
+        .with_detail("history_profile", history_profile.as_str().to_owned())
+    })?;
+    let refusal = match from.cmp(&target) {
+        std::cmp::Ordering::Less => {
+            return Ok(MigrationProfileUpgrade::Pending {
+                graph,
+                from,
+                parent,
+            });
+        }
+        std::cmp::Ordering::Equal => upgrade_failure(
+            "migration_upgrade_profile_same_profile",
+            "the migration history is already on the workspace profile",
+        ),
+        std::cmp::Ordering::Greater => upgrade_failure(
+            "migration_upgrade_profile_downgrade",
+            "the migration history is on a newer profile than the workspace",
+        ),
+    };
+    Err(refusal
+        .with_detail("history_profile", history_profile.as_str().to_owned())
+        .with_detail(
+            "workspace_profile",
+            workspace.semantic_profile().as_str().to_owned(),
+        ))
+}
+
+fn upgrade_failure(code: &'static str, message: &'static str) -> Diagnostic {
+    Diagnostic::new(
+        DiagnosticCategory::InvalidContract,
+        DiagnosticCode::new(code).expect("static profile-upgrade diagnostic code"),
+        message,
+    )
+}
+
+/// Discover and replay-verify a history without requiring its heads to be on
+/// the workspace profile. Lineage rules still apply.
+fn discover_any_profile_history_in(
+    directory: &MigrationDirectory,
+    genesis_source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<(MigrationHistoryGraph, CanonicalMigrationHistoryEvidence), Diagnostic> {
     let candidates = collect_canonical_candidates(directory)?;
     let mut headers = Vec::with_capacity(candidates.len());
     let mut index_by_id = BTreeMap::new();
@@ -571,7 +715,7 @@ pub fn discover_verified_migration_chain_with_evidence_in(
                 first_parent.target_schema()
             }
         };
-        let manifest = decode_verified_manifest(&candidate.bytes, (source, context))?;
+        let manifest = decode_verified_manifest_in_own_profile(&candidate.bytes, source, context)?;
         require_stem_binding(&manifest, &candidate.stem)?;
         verified_by_id.insert(id, manifest);
     }
@@ -579,6 +723,175 @@ pub fn discover_verified_migration_chain_with_evidence_in(
         MigrationHistoryGraph::from_verified(verified_by_id.into_values().collect::<Vec<_>>())?;
     let evidence = CanonicalMigrationHistoryEvidence::from_candidates(candidates);
     Ok((graph, evidence))
+}
+
+/// Replay one manifest under its own recorded semantic profile.
+///
+/// The workspace context supplies scope and capabilities only. Histories may
+/// cross one profile bridge, so a manifest is never replayed under another
+/// manifest's profile; the graph and head checks decide whether its profile
+/// is allowed.
+pub(crate) fn decode_verified_manifest_in_own_profile(
+    bytes: &[u8],
+    source: &DeclaredSchema,
+    context: &ManagedDeltaContext,
+) -> Result<VerifiedSchemaMigrationManifest, Diagnostic> {
+    let profile = peek_manifest_semantic_profile(bytes)?;
+    if &profile == context.semantic_profile() {
+        return decode_verified_manifest(bytes, (source, context));
+    }
+    let own_context = ManagedDeltaContext::new(
+        context.scope_id().clone(),
+        profile,
+        context.available_capabilities().clone(),
+    );
+    decode_verified_manifest(bytes, (source, &own_context))
+}
+
+/// Enforce the single profile-upgrade bridge rules on a structurally valid DAG.
+///
+/// A history stays on one profile except across at most one bridge: every
+/// edge keeps its parent's profile unless the child is the bridge moving from
+/// exactly that parent's profile, and every manifest is the bridge, one of its
+/// ancestors (old profile) or one of its descendants (new profile).
+fn validate_profile_lineage(
+    by_id: &BTreeMap<MigrationId, VerifiedSchemaMigrationManifest>,
+    parents: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+    children: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+) -> Result<(), Diagnostic> {
+    let bridges = by_id
+        .values()
+        .filter(|manifest| manifest.is_profile_bridge())
+        .collect::<Vec<_>>();
+    if bridges.len() > 1 {
+        return Err(graph_failure(
+            "migration_history_multiple_profile_bridges",
+            "migration history crosses more than one profile-upgrade bridge",
+        ));
+    }
+    for (id, manifest) in by_id {
+        for parent in &parents[id] {
+            let parent = &by_id[parent];
+            match manifest.profile_bridge() {
+                Some(bridge) => {
+                    if parent.semantic_profile() != bridge.from_semantic_profile()
+                        || parent.lowering_profile() != bridge.from_lowering_profile()
+                    {
+                        return Err(graph_failure(
+                            "migration_history_profile_bridge_parent_mismatch",
+                            "a profile bridge must move from its parent's exact profile",
+                        ));
+                    }
+                    if parent.target_state() != manifest.source_state() {
+                        return Err(graph_failure(
+                            "migration_history_profile_bridge_state_mismatch",
+                            "a profile bridge must start at its parent's verified target state",
+                        ));
+                    }
+                }
+                None => {
+                    if parent.semantic_profile() != manifest.semantic_profile()
+                        || parent.lowering_profile() != manifest.lowering_profile()
+                    {
+                        return Err(graph_failure(
+                            "migration_history_profile_change_without_bridge",
+                            "a migration changes profile from its parent without a profile bridge",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    let Some(bridge) = bridges.first() else {
+        return Ok(());
+    };
+    let ancestors = reachable(bridge.id(), parents);
+    let descendants = reachable(bridge.id(), children);
+    for (id, manifest) in by_id {
+        if id == bridge.id() || ancestors.contains(id) || descendants.contains(id) {
+            continue;
+        }
+        return Err(
+            if manifest.semantic_profile() == bridge.semantic_profile() {
+                graph_failure(
+                    "migration_history_root_beside_profile_bridge",
+                    "a bridged lineage admits no new-profile migration outside the bridge's descendants",
+                )
+            } else {
+                graph_failure(
+                    "migration_history_old_profile_not_bridge_ancestor",
+                    "every migration on the old profile must be an ancestor of the profile bridge",
+                )
+            },
+        );
+    }
+    Ok(())
+}
+
+fn reachable(
+    start: &MigrationId,
+    edges: &BTreeMap<MigrationId, BTreeSet<MigrationId>>,
+) -> BTreeSet<MigrationId> {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![start];
+    while let Some(id) = stack.pop() {
+        for next in &edges[id] {
+            if seen.insert(next.clone()) {
+                stack.push(next);
+            }
+        }
+    }
+    seen
+}
+
+/// Require every history head to be on the workspace semantic profile.
+///
+/// A lineage still wholly on an older profile is not an error in its
+/// manifests: it needs a profile bridge, so the diagnostic names the command
+/// that authors one.
+pub(crate) fn require_workspace_profile_heads(
+    graph: &MigrationHistoryGraph,
+    workspace: &SemanticProfileId,
+) -> Result<(), Diagnostic> {
+    for head in graph.heads() {
+        let head_profile = graph.manifests[head].semantic_profile().id();
+        if head_profile == workspace {
+            continue;
+        }
+        let bridged = graph
+            .manifests
+            .values()
+            .any(VerifiedSchemaMigrationManifest::is_profile_bridge);
+        let older = match (
+            MigrationProfile::for_semantic_profile(head_profile),
+            MigrationProfile::for_semantic_profile(workspace),
+        ) {
+            (Some(history), Some(workspace)) => history < workspace,
+            _ => false,
+        };
+        let diagnostic = if older && !bridged {
+            graph_failure(
+                "migration_history_profile_upgrade_required",
+                "the migration history is on an older TypeDB profile than the workspace",
+            )
+            .with_detail(
+                "hint",
+                format!(
+                    "run `migration upgrade-profile --to {}`",
+                    workspace.as_str()
+                ),
+            )
+        } else {
+            graph_failure(
+                "migration_history_profile_not_workspace",
+                "a migration history head is not on the workspace semantic profile",
+            )
+        };
+        return Err(diagnostic
+            .with_detail("history_profile", head_profile.as_str().to_owned())
+            .with_detail("workspace_profile", workspace.as_str().to_owned()));
+    }
+    Ok(())
 }
 
 fn require_stem_binding(

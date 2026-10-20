@@ -327,8 +327,8 @@ fn flat_descriptor_layout_is_valid(descriptor: &TypeBridgeSchemaPackageDescripto
         && descriptor.reserved == [0; 4]
 }
 
-fn descriptor_abi_is_supported(abi_major: u32, abi_minor: u32) -> bool {
-    abi_major == ABI_MAJOR && abi_minor == ABI_MINOR
+pub(crate) fn descriptor_abi_is_supported(abi_major: u32, abi_minor: u32) -> bool {
+    abi_major == ABI_MAJOR && (6..=ABI_MINOR).contains(&abi_minor)
 }
 
 fn check_consumed_byte_view(

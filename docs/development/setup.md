@@ -98,9 +98,14 @@ only when intentionally targeting an existing server.
 | `type-bridge-core/crates/node/` | N-API and public TypeScript runtime boundary |
 | `type-bridge-core/crates/rust/` | Public generated Rust client |
 | `type-bridge-core/crates/c/` | Private C projected-value and provider-lifecycle ABI foundation under development |
-| `tests/contracts/sdk_conformance/manifest-v1.json` | Capability, proof-profile, binding-state, and transition authority |
-| `tests/contracts/sdk_conformance/sdk-v*/` | Versioned executable conformance catalogs, journeys, report schemas, and evidence contracts |
+| `tests/contracts/sdk_conformance/manifest.json` | Capability, proof-profile, binding-state, and transition authority |
+| `tests/contracts/sdk_conformance/<suite>/` | Concern-based executable conformance catalogs, journeys, report schemas, and evidence contracts |
 | `tests/fixtures/generated-only-operation-parity-inventory.json` | Retained generated-only cutover evidence and manifest seed, not current acceptance authority |
+
+The conformance directories are `queries`, `models`, `administration`,
+`serialization`, and `artifacts`. Each contains a `profiles.json` matrix;
+`tests/contracts/sdk_conformance/README.md` describes selecting a profile and
+running its four binding producers.
 
 Do not add target-language schema declarations or a facade-local semantic
 implementation. Split-YAML is the only active authoring authority, and the Rust

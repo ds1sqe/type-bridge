@@ -1,10 +1,22 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::thread;
+use std::time::Duration;
+
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_contract::schema::DocumentId;
+use type_bridge_schema::{
+    ResolvedSchema, SchemaDocumentSet, VerifiedSchemaAuthority, normalize_documents, resolve,
+};
 
 pub const DATABASE_CREATED_MARKER: &str = "C test database created";
+/// Names the profile's exact live TypeDB server for the provider setup and
+/// the C consumer; the harness takes it from the SDK profile matrix.
+pub const EXPECTED_SERVER_VERSION_ENV: &str = "TYPE_BRIDGE_EXPECTED_SERVER_VERSION";
 pub const SETUP: &str = include_str!("../../../../../tests/support/provider/main.rs");
 pub const SETUP_LOCK: &[u8] = include_bytes!("../../../../../tests/support/provider/Cargo.lock");
 
@@ -23,20 +35,34 @@ pub struct IsolatedDatabase {
 
 impl IsolatedDatabase {
     fn run(&self, mode: &str) -> Output {
-        let mut command = Command::new(&self.cargo);
-        command
-            .args(["run", "--locked", "--quiet", "--manifest-path"])
-            .arg(&self.manifest)
-            .arg("--")
-            .arg(mode)
-            .env("CARGO_TARGET_DIR", &self.target)
-            .env("TYPE_BRIDGE_TEST_ENV_PREFIX", self.env_prefix);
-        for (name, value) in &self.environment {
-            command.env(name, value);
+        // A test-written launcher can briefly report ETXTBSY while a sibling
+        // test thread's forked child still holds its write descriptor.
+        const EXECUTABLE_BUSY_RETRIES: u32 = 5;
+
+        for retry in 0..=EXECUTABLE_BUSY_RETRIES {
+            let mut command = Command::new(&self.cargo);
+            command
+                .args(["run", "--locked", "--quiet", "--manifest-path"])
+                .arg(&self.manifest)
+                .arg("--")
+                .arg(mode)
+                .env("CARGO_TARGET_DIR", &self.target)
+                .env("TYPE_BRIDGE_TEST_ENV_PREFIX", self.env_prefix);
+            for (name, value) in &self.environment {
+                command.env(name, value);
+            }
+            match command.output() {
+                Ok(output) => return output,
+                Err(error)
+                    if error.kind() == ErrorKind::ExecutableFileBusy
+                        && retry < EXECUTABLE_BUSY_RETRIES =>
+                {
+                    thread::sleep(Duration::from_millis(10 * (1_u64 << retry)));
+                }
+                Err(error) => panic!("C live database {mode} did not launch: {error}"),
+            }
         }
-        command
-            .output()
-            .unwrap_or_else(|error| panic!("C live database {mode} did not launch: {error}"))
+        unreachable!("the executable-busy retry loop always returns or panics")
     }
 
     pub fn setup(&mut self) {
@@ -115,4 +141,24 @@ pub fn stage_setup(
         active: false,
         env_prefix,
     }
+}
+
+/// Resolve `source` and build its authority under `semantic_profile`, so a
+/// live package carries the profile its report names.
+pub fn profiled_authority(
+    source: &str,
+    document: &str,
+    scope: &str,
+    semantic_profile: &str,
+) -> (ResolvedSchema, VerifiedSchemaAuthority) {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new(document).expect("C live document ID is valid"),
+        source,
+    )])
+    .expect("C live schema parses");
+    let declared = normalize_documents(&documents).expect("C live schema normalizes");
+    let profile = SemanticProfileId::new(semantic_profile).expect("C live profile is valid");
+    let resolved = resolve(&declared, &profile).expect("C live schema resolves");
+    let authority = crate::support::authority_for_declared(&declared, scope, semantic_profile);
+    (resolved, authority)
 }

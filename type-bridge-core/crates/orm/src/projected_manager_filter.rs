@@ -14,17 +14,18 @@ use type_bridge_contract::sdk_diagnostic::{
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use crate::execution_diagnostic::{lower_execution_error, lower_match_error};
-use crate::match_request::selected_result_executor::ManagerRootSelection;
+use crate::match_request::result_validation::validate_manager_roots;
 use crate::match_request::{
-    BindingId, ComparisonOp, DescriptorId, MatchExpr, MatchMode, MatchOperation, SessionHandle,
-    ValidatedMatchRequest,
+    BindingId, ComparisonOp, DescriptorId, HydratedThing, MatchExpr, MatchMode, MatchOperation,
+    MatchResult, RowCardinality, SessionHandle, SlotValue, ValidatedMatchRequest,
+    ValidatedMatchResult, Window,
 };
 use crate::projected_model::{ProjectedAttributeValue, ProjectedThing, ProjectionBrand};
 use crate::projected_query::{
     ProjectedQueryOrigin, materialize_projected_manager_things_with_budget,
 };
 use crate::query_execution_limits::{
-    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, QueryExecutionDeadline,
+    DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES, QueryExecutionDeadline,
     QueryExecutionResourceLimits,
 };
 use crate::runtime_projection::InstalledRuntimeProjection;
@@ -48,6 +49,35 @@ pub enum ProjectedManagerComparison {
     Gt,
     /// Canonical scalar greater-than-or-equal ordering.
     Gte,
+}
+
+type_bridge_contract::enum_spellings!(ProjectedManagerComparison, "manager_comparison", canonical {
+    "eq" => Eq,
+    "ne" => Ne,
+    "lt" => Lt,
+    "lte" => Lte,
+    "gt" => Gt,
+    "gte" => Gte,
+});
+
+impl TryFrom<type_bridge_contract::projection::ManagerLookup> for ProjectedManagerComparison {
+    type Error = type_bridge_contract::projection::ManagerLookup;
+
+    /// The scalar comparison a manager lookup names, if it names one.
+    fn try_from(
+        lookup: type_bridge_contract::projection::ManagerLookup,
+    ) -> Result<Self, Self::Error> {
+        use type_bridge_contract::projection::ManagerLookup;
+        match lookup {
+            ManagerLookup::Eq => Ok(Self::Eq),
+            ManagerLookup::Ne => Ok(Self::Ne),
+            ManagerLookup::Lt => Ok(Self::Lt),
+            ManagerLookup::Lte => Ok(Self::Lte),
+            ManagerLookup::Gt => Ok(Self::Gt),
+            ManagerLookup::Gte => Ok(Self::Gte),
+            other => Err(other),
+        }
+    }
 }
 
 impl ProjectedManagerComparison {
@@ -242,28 +272,30 @@ impl ProjectedManagerFilter {
                     "The manager filter byte counter overflowed",
                     predicate_collection_path(&self.model),
                     u64::MAX,
-                    MAX_QUERY_BYTES,
+                    DEFAULT_PROXY_QUERY_BYTES,
                     true,
                 )
             })?;
-        if u64::try_from(next_bytes).unwrap_or(u64::MAX) > MAX_QUERY_BYTES {
+        if u64::try_from(next_bytes).unwrap_or(u64::MAX) > DEFAULT_PROXY_QUERY_BYTES {
             return Err(resource_limit(
                 "manager_filter_byte_limit",
                 "The manager filter exceeds the canonical byte ceiling",
                 predicate_collection_path(&self.model),
                 u64::try_from(next_bytes).unwrap_or(u64::MAX),
-                MAX_QUERY_BYTES,
+                DEFAULT_PROXY_QUERY_BYTES,
                 true,
             ));
         }
         let next_attribute_values = self.measure.attribute_values.saturating_add(1);
-        if u64::try_from(next_attribute_values).unwrap_or(u64::MAX) > MAX_QUERY_ATTRIBUTE_VALUES {
+        if u64::try_from(next_attribute_values).unwrap_or(u64::MAX)
+            > DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES
+        {
             return Err(resource_limit(
                 "manager_filter_attribute_value_limit",
                 "The manager filter exceeds the canonical literal ceiling",
                 predicate_collection_path(&self.model),
                 u64::try_from(next_attribute_values).unwrap_or(u64::MAX),
-                MAX_QUERY_ATTRIBUTE_VALUES,
+                DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
                 false,
             ));
         }
@@ -608,9 +640,14 @@ impl ProjectedManagerFilterInvocationControl {
             .map_err(|diagnostic| at_path(diagnostic, type_path(model)))
     }
 
+    /// Tighten resources and the absolute deadline by a connection ceiling,
+    /// as [`crate::QueryTarget::budget`] does for every other terminal.
     fn constrained_by(mut self, ceiling: Option<QueryExecutionResourceLimits>) -> Self {
         if let Some(ceiling) = ceiling {
             self.limits = self.limits.constrained_by(ceiling);
+            self.deadline = self
+                .deadline
+                .earliest(QueryExecutionDeadline::for_limits(ceiling));
         }
         self
     }
@@ -654,27 +691,24 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
         let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, false)?;
-        let hydrated = database
-            .execute_manager_roots_with_limits(
+        let (registry, request) = self.build_request(filter, ManagerTerminal::all(&control))?;
+        let result = database
+            .execute_match_with_limits(
                 &registry,
                 &request,
-                ManagerRootSelection::All,
                 control
                     .limits
                     .direct_with_deadline(control.cancellation.clone(), control.deadline),
             )
             .await
-            .map_err(|error| lower_manager_execution(error, filter.model()))?;
-        materialize_projected_manager_things_with_budget(
-            self.installed,
+            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        let roots = manager_roots(&request, &result)?;
+        self.materialize_roots(
             &registry,
             ProjectedQueryOrigin::for_database(database),
-            filter.model(),
-            &hydrated.into_things(),
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
+            filter,
+            &roots,
+            &control,
         )
     }
 
@@ -704,27 +738,24 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
         let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, false)?;
-        let hydrated = transaction
-            .execute_manager_roots_with_limits(
+        let (registry, request) = self.build_request(filter, ManagerTerminal::all(&control))?;
+        let result = transaction
+            .execute_match_with_limits(
                 &registry,
                 &request,
-                ManagerRootSelection::All,
                 control
                     .limits
                     .direct_with_deadline(control.cancellation.clone(), control.deadline),
             )
             .await
-            .map_err(|error| lower_manager_execution(error, filter.model()))?;
-        materialize_projected_manager_things_with_budget(
-            self.installed,
+            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        let roots = manager_roots(&request, &result)?;
+        self.materialize_roots(
             &registry,
             ProjectedQueryOrigin::for_transaction(transaction)?,
-            filter.model(),
-            &hydrated.into_things(),
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
+            filter,
+            &roots,
+            &control,
         )
     }
 
@@ -754,29 +785,26 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
         let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, true)?;
-        let (registry, request) = self.build_request(filter, false)?;
-        let hydrated = database
-            .execute_manager_roots_with_limits(
+        let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
+        let result = database
+            .execute_match_with_limits(
                 &registry,
                 &request,
-                ManagerRootSelection::First,
                 control
                     .limits
                     .direct_with_deadline(control.cancellation.clone(), control.deadline),
             )
             .await
-            .map_err(|error| lower_manager_execution(error, filter.model()))?;
-        let projected = materialize_projected_manager_things_with_budget(
-            self.installed,
+            .map_err(|error| lower_manager_first(error, filter.model()))?;
+        let roots = manager_roots(&request, &result)?;
+        let mut projected = self.materialize_roots(
             &registry,
             ProjectedQueryOrigin::for_database(database),
-            filter.model(),
-            &hydrated.into_things(),
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
+            filter,
+            &roots,
+            &control,
         )?;
-        optional_manager_first(projected)
+        Ok(projected.pop())
     }
 
     /// Return first without consuming one caller-owned read transaction.
@@ -805,29 +833,26 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
         let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, true)?;
-        let (registry, request) = self.build_request(filter, false)?;
-        let hydrated = transaction
-            .execute_manager_roots_with_limits(
+        let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
+        let result = transaction
+            .execute_match_with_limits(
                 &registry,
                 &request,
-                ManagerRootSelection::First,
                 control
                     .limits
                     .direct_with_deadline(control.cancellation.clone(), control.deadline),
             )
             .await
-            .map_err(|error| lower_manager_execution(error, filter.model()))?;
-        let projected = materialize_projected_manager_things_with_budget(
-            self.installed,
+            .map_err(|error| lower_manager_first(error, filter.model()))?;
+        let roots = manager_roots(&request, &result)?;
+        let mut projected = self.materialize_roots(
             &registry,
             ProjectedQueryOrigin::for_transaction(transaction)?,
-            filter.model(),
-            &hydrated.into_things(),
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
+            filter,
+            &roots,
+            &control,
         )?;
-        optional_manager_first(projected)
+        Ok(projected.pop())
     }
 
     /// Count all distinct exact-model matches in an owned read transaction.
@@ -856,7 +881,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<u64, SdkExecutionDiagnostic> {
         let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, false)?;
+        let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
         let result = database
             .execute_match_with_limits(
                 &registry,
@@ -902,7 +927,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<u64, SdkExecutionDiagnostic> {
         let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, false)?;
+        let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
         let result = transaction
             .execute_match_with_limits(
                 &registry,
@@ -948,7 +973,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<bool, SdkExecutionDiagnostic> {
         let control = control.constrained_by(database.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, true)?;
+        let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
         let result = database
             .execute_match_with_limits(
                 &registry,
@@ -994,7 +1019,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<bool, SdkExecutionDiagnostic> {
         let control = control.constrained_by(transaction.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, true)?;
+        let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
         let result = transaction
             .execute_match_with_limits(
                 &registry,
@@ -1032,7 +1057,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     fn build_request(
         &self,
         filter: &ProjectedManagerFilter,
-        exists: bool,
+        terminal: ManagerTerminal,
     ) -> Result<
         (
             Arc<crate::_registry::DescriptorRegistry>,
@@ -1055,16 +1080,43 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         let query = session
             .query(shape)
             .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let query = query
-            .where_predicates_in_order(self.build_predicates(filter, &root)?)
-            .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
-        let request = if exists {
-            query.validate_exists_by(&root)
-        } else {
-            query.validate_count_by(&root)
+        let mut query = query;
+        for predicate in self.build_predicates(filter, &root)? {
+            query = query
+                .where_predicate(predicate)
+                .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
+        }
+        let request = match terminal {
+            ManagerTerminal::Count => query.validate_count_by(&root),
+            ManagerTerminal::Exists => query.validate_exists_by(&root),
+            ManagerTerminal::Rows { limit } => query.validate_fetch_rows(
+                &[],
+                Window { offset: 0, limit },
+                RowCardinality::Complete,
+            ),
         }
         .map_err(|error| lower_execution_error(error, SdkProviderOperation::Read))?;
         Ok((registry, request))
+    }
+
+    fn materialize_roots(
+        &self,
+        registry: &crate::_registry::DescriptorRegistry,
+        origin: ProjectedQueryOrigin,
+        filter: &ProjectedManagerFilter,
+        roots: &[&HydratedThing],
+        control: &ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+        materialize_projected_manager_things_with_budget(
+            self.installed,
+            registry,
+            origin,
+            filter.model(),
+            roots,
+            control.limits.projected(),
+            &control.cancellation,
+            Some(control.deadline),
+        )
     }
 
     fn build_predicates(
@@ -1106,19 +1158,66 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     }
 }
 
-fn optional_manager_first(
-    mut values: Vec<Arc<ProjectedThing>>,
-) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
-    match values.len() {
-        0 => Ok(None),
-        1 => Ok(values.pop()),
-        _ => Err(SdkExecutionDiagnostic::internal_failure()),
+/// The request a manager terminal runs as.
+#[derive(Clone, Copy)]
+enum ManagerTerminal {
+    Count,
+    Exists,
+    /// Every distinct match of the root, refused when there are more than
+    /// `limit`.
+    Rows {
+        limit: u64,
+    },
+}
+
+impl ManagerTerminal {
+    /// Every match the terminal's item ceiling can hold.
+    fn all(control: &ProjectedManagerFilterInvocationControl) -> Self {
+        Self::Rows {
+            limit: control.limits.items,
+        }
+    }
+
+    /// The one match an identity filter admits. A second match is refused
+    /// rather than cut off, which is how `first` learns the filter did not
+    /// identify a single instance.
+    const fn first() -> Self {
+        Self::Rows { limit: 1 }
     }
 }
 
-fn lower_manager_execution(error: crate::OrmError, model: &TypeId) -> SdkExecutionDiagnostic {
+/// Borrow the root of every row of a manager `Rows` result, in result order.
+fn manager_roots<'result>(
+    request: &ValidatedMatchRequest,
+    result: &'result ValidatedMatchResult,
+) -> Result<Vec<&'result HydratedThing>, SdkExecutionDiagnostic> {
+    let canonical = result
+        .for_request(request)
+        .map_err(|error| lower_match_error(&error))?;
+    let MatchResult::Rows { rows } = canonical else {
+        return Err(SdkExecutionDiagnostic::internal_failure());
+    };
+    let mut roots = Vec::new();
+    roots
+        .try_reserve_exact(rows.len())
+        .map_err(|_| SdkExecutionDiagnostic::internal_failure())?;
+    for row in rows {
+        let [SlotValue::One(root)] = row.slots() else {
+            return Err(SdkExecutionDiagnostic::internal_failure());
+        };
+        roots.push(root);
+    }
+    let [binding] = request.request().plan.bindings.as_slice() else {
+        return Err(SdkExecutionDiagnostic::internal_failure());
+    };
+    validate_manager_roots(request, binding.id, &roots)
+        .map_err(|error| lower_execution_error(error.into(), SdkProviderOperation::Read))?;
+    Ok(roots)
+}
+
+fn lower_manager_first(error: crate::OrmError, model: &TypeId) -> SdkExecutionDiagnostic {
     if let crate::OrmError::Match(match_error) = &error
-        && match_error.code().as_str() == "manager_first_identity_not_unique"
+        && match_error.code().as_str() == "row_window_exceeded"
     {
         return integrity(
             "manager_first_identity_not_unique",
@@ -1364,5 +1463,33 @@ mod compatibility_lookup_tests {
         });
         assert_eq!(unsupported.field_name(), "score");
         assert_eq!(unsupported.lookup(), "unsupported");
+    }
+}
+
+#[cfg(test)]
+mod invocation_control_tests {
+    use super::*;
+
+    #[test]
+    fn connection_ceiling_tightens_resources_and_the_captured_deadline() {
+        let requested = QueryExecutionResourceLimits::default();
+        let control = ProjectedManagerFilterInvocationControl::from_parts(
+            requested,
+            QueryExecutionDeadline::for_limits(requested),
+            AnswerCancellation::default(),
+        );
+        let ceiling = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            items: 3,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let model = TypeId::new(TypeKind::Entity, "person").unwrap();
+
+        assert!(control.checkpoint(&model).is_ok());
+        let control = control.constrained_by(Some(ceiling));
+        assert_eq!(control.limits, requested.constrained_by(ceiling));
+        // The ceiling's zero timeout must bind the absolute deadline the
+        // binding captured with its wider request.
+        assert!(control.checkpoint(&model).is_err());
     }
 }

@@ -143,6 +143,48 @@ schema_authority_file = "/run/type-bridge/schema-authority.json"
 authority_mode = "managed"
 ```
 
+To accept queries beyond the default query limits, or to hold clients to
+stricter ones, name the limits to change under `[v2.query_limits]`:
+
+```toml
+[v2.query_limits]
+canonical_bytes = 67108864       # 64 MiB plans
+remote_request_bytes = 134217728 # 128 MiB request envelopes
+```
+
+The server validates the table at startup, advertises these limits in
+`/v2/capabilities`, and enforces exactly what it advertises. An unknown name
+or an unsupported value aborts startup. Clients older than configurable query
+limits cannot read an advertisement that names any, so leave the table out
+until every client is upgraded. Limit names and defaults are listed in the
+[typed-query contract](../development/typed-query-contract.md#query-limits).
+
+The server starts from the proxy answer defaults (65,536 items, 32 MiB). To
+let one query return more than they allow, or to hold clients to less, name
+the answer ceilings to change under `[v2.answer_limits]`:
+
+```toml
+[v2.answer_limits]
+items = 1000000        # provider items and rows per query
+bytes = 1073741824     # 1 GiB replies
+graph_nodes = 1000000
+```
+
+The same rules apply: the table is validated at startup, advertised in
+`/v2/capabilities`, and enforced as advertised. A client must raise its own
+answer policy too; each request runs under the stricter of the two. Names
+and defaults are listed in the
+[typed-query contract](../development/typed-query-contract.md#answer-limits).
+
+An enabled `[v2]` section also serves staged transactions at `/v3/staged`.
+Staged writes need an interceptor that authenticates the caller; to admit
+them without one, opt in explicitly:
+
+```toml
+[v2]
+allow_unauthenticated_staged_writes = true
+```
+
 Supply `TYPEDB_USERNAME` and `TYPEDB_PASSWORD` at runtime. `managed`
 authority requires the artifact's exact migration-control partition and free
 singleton. Use `query_only` only for a database with neither canonical nor

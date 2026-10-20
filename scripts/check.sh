@@ -37,6 +37,13 @@ run_step() {
 run_rust() {
     printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 
+    run_step "internal eager dependency boundary" python3 scripts/ci/check_internal_eager.py
+    run_step "TypeQL text construction boundary" \
+        python scripts/ci/check_typeql_text.py
+
+    run_step "private TypeQL AST public API boundary" \
+        python scripts/ci/check_typeql_public_api.py
+
     run_step "cargo audit (all maintained lockfiles)" \
         bash scripts/ci/check_dependency_security.sh
 
@@ -91,13 +98,7 @@ run_python() {
     run_step "pyright tests/" \
         uv run pyright tests/
 
-    run_step "typed Query negative Pyright contract" \
-        uv run python tests/contracts/typed_query/python/check_negative.py
-
-    run_step "owner-aware negative Pyright contract" \
-        uv run python tests/unit/typed_query/check_negative.py
-
-    run_step "typed Query API negative Pyright contract" \
+    run_step "query-v2 authoring negative Pyright contract" \
         uv run python tests/unit/typed_query/check_query_negative.py
 
     run_step "schema-codegen Python projection acceptance" \
@@ -146,14 +147,14 @@ run_c() {
     run_step "C distribution cross-slice broad-case ledger" \
         uv run pytest tests/unit/compat/test_c_broad_case_ledger.py -q
 
-    run_step "artifact-bound Sdk V6 fan-in contract" \
+    run_step "artifact-bound SDK artifacts fan-in contract" \
         uv run pytest \
-        tests/unit/compat/test_sdk_conformance_v6.py \
-        tests/unit/compat/test_sdk_conformance_v6_assembler.py \
+        tests/unit/compat/test_sdk_artifacts.py \
+        tests/unit/compat/test_sdk_artifacts_assembler.py \
         tests/unit/compat/test_persist_binding_reports.py \
         tests/unit/compat/test_sdk_conformance_runner.py \
-        tests/unit/compat/test_sdk_v6_surfaces.py \
-        tests/unit/compat/test_sdk_v6_surface_consumer.py -q
+        tests/unit/compat/test_sdk_artifacts_surfaces.py \
+        tests/unit/compat/test_sdk_artifacts_surface_consumer.py -q
 
     run_step "independent FULL-C artifact auditor" \
         uv run pytest tests/unit/compat/test_full_c_artifact_auditor.py -q
@@ -192,13 +193,14 @@ run_c() {
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c --lib --test execution_abi
 
-    run_step "C typed-query, diagnostic, function, and remote ABI" \
+    run_step "C typed-query, diagnostic, function, remote ABI, and parity corpus" \
         cargo test --locked --manifest-path type-bridge-core/Cargo.toml \
         -p type-bridge-c \
         --test query_abi \
         --test query_diagnostic_abi \
         --test query_function_abi \
-        --test query_remote_abi
+        --test query_remote_abi \
+        --test typed_query_corpus
 
     run_step "build the isolated C ABI shared library" \
         env CARGO_TARGET_DIR="$c_shared_target" \

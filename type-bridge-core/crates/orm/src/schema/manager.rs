@@ -7,6 +7,7 @@ use crate::_relation::TypeBridgeRelation;
 use crate::error::Result;
 use crate::session::backend::TxType;
 use crate::session::{Database, require_legacy_writer_open_in_transaction};
+use type_bridge_core_lib::__internal as tql;
 
 use super::error::SchemaError;
 use super::info::*;
@@ -152,7 +153,7 @@ impl<'db> SchemaManager<'db> {
     pub async fn has_existing_schema(&self) -> Result<bool> {
         // Try matching the first entity type
         if let Some(entity_name) = self.info.entities.keys().next() {
-            let typeql = format!("match $x isa {entity_name}; limit 1;");
+            let typeql = existence_query(entity_name).map_err(query_error)?;
             match self.db.execute_raw(&typeql, TxType::Read).await {
                 Ok(_) => return Ok(true),
                 Err(_) => return Ok(false),
@@ -160,7 +161,7 @@ impl<'db> SchemaManager<'db> {
         }
         // Try matching the first relation type
         if let Some(relation_name) = self.info.relations.keys().next() {
-            let typeql = format!("match $x isa {relation_name}; limit 1;");
+            let typeql = existence_query(relation_name).map_err(query_error)?;
             match self.db.execute_raw(&typeql, TxType::Read).await {
                 Ok(_) => return Ok(true),
                 Err(_) => return Ok(false),
@@ -197,9 +198,9 @@ impl<'db> SchemaManager<'db> {
         let mut info = SchemaInfo::default();
 
         // ── 1. Query all user-defined attribute types ──────────────
-        let attr_query = r#"match $t sub! attribute; fetch { "name": label($t), "value_type": value_type($t) };"#;
+        let attr_query = schema_scan_query("attribute").map_err(query_error)?;
         if let Ok(QueryResult::Documents(docs)) =
-            self.db.execute_raw(attr_query, TxType::Read).await
+            self.db.execute_raw(&attr_query, TxType::Read).await
         {
             for doc in &docs {
                 if let (Some(name), Some(vt_str)) = (
@@ -216,9 +217,9 @@ impl<'db> SchemaManager<'db> {
         }
 
         // ── 2. Query all entity types with owned attributes ────────
-        let entity_query = r#"match $t sub! entity; fetch { "name": label($t) };"#;
+        let entity_query = schema_scan_query("entity").map_err(query_error)?;
         if let Ok(QueryResult::Documents(docs)) =
-            self.db.execute_raw(entity_query, TxType::Read).await
+            self.db.execute_raw(&entity_query, TxType::Read).await
         {
             for doc in &docs {
                 if let Some(name) = doc
@@ -245,9 +246,9 @@ impl<'db> SchemaManager<'db> {
         }
 
         // ── 3. Query all relation types with roles and attributes ──
-        let relation_query = r#"match $t sub! relation; fetch { "name": label($t) };"#;
+        let relation_query = schema_scan_query("relation").map_err(query_error)?;
         if let Ok(QueryResult::Documents(docs)) =
-            self.db.execute_raw(relation_query, TxType::Read).await
+            self.db.execute_raw(&relation_query, TxType::Read).await
         {
             for doc in &docs {
                 if let Some(name) = doc
@@ -286,8 +287,9 @@ impl<'db> SchemaManager<'db> {
     ) -> Vec<OwnedAttributeEntry> {
         use crate::session::backend::QueryResult;
 
-        let query =
-            format!(r#"match $t type {type_name}; $t owns $a; fetch {{ "attr": label($a) }};"#);
+        let Ok(query) = schema_capability_query(type_name, false) else {
+            return Vec::new();
+        };
         let mut entries = Vec::new();
         if let Ok(QueryResult::Documents(docs)) = self.db.execute_raw(&query, TxType::Read).await {
             for doc in &docs {
@@ -317,9 +319,9 @@ impl<'db> SchemaManager<'db> {
     async fn introspect_roles(&self, relation_name: &str) -> Vec<RoleEntry> {
         use crate::session::backend::QueryResult;
 
-        let query = format!(
-            r#"match $t type {relation_name}; $t relates $r; fetch {{ "role": label($r) }};"#
-        );
+        let Ok(query) = schema_capability_query(relation_name, true) else {
+            return Vec::new();
+        };
         let mut entries = Vec::new();
         if let Ok(QueryResult::Documents(docs)) = self.db.execute_raw(&query, TxType::Read).await {
             for doc in &docs {
@@ -328,7 +330,12 @@ impl<'db> SchemaManager<'db> {
                     .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
                 {
                     entries.push(RoleEntry {
-                        role_name: role_name.to_string(),
+                        // TypeDB returns scoped role labels; the schema IR stores
+                        // the local name used by a relates declaration.
+                        role_name: role_name
+                            .rsplit_once(':')
+                            .map_or(role_name, |(_, name)| name)
+                            .to_owned(),
                         ..Default::default()
                     });
                 }
@@ -395,5 +402,87 @@ fn parse_value_type(s: &str) -> Option<crate::_attribute::ValueType> {
         "decimal" => Some(ValueType::Decimal),
         "duration" => Some(ValueType::Duration),
         _ => None,
+    }
+}
+
+fn existence_query(name: &str) -> std::result::Result<String, tql::TqlError> {
+    tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![tql::thing("x", vec![tql::isa(name, false)?])?]),
+        tql::limit(1),
+    ]))
+}
+fn schema_scan_query(kind: &str) -> std::result::Result<String, tql::TqlError> {
+    let mut fetch = vec![(
+        "name",
+        tql::fetch_expr(tql::function("label", vec![tql::var("t")?])?),
+    )];
+    if kind == "attribute" {
+        fetch.push((
+            "value_type",
+            tql::fetch_expr(tql::function("value_type", vec![tql::var("t")?])?),
+        ));
+    }
+    tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![tql::schema_type_pattern("$t", "sub!", kind)?]),
+        tql::fetch(fetch)?,
+    ]))
+}
+fn schema_capability_query(name: &str, role: bool) -> std::result::Result<String, tql::TqlError> {
+    let (kind, variable, key) = if role {
+        ("relates", "$r", "role")
+    } else {
+        ("owns", "$a", "attr")
+    };
+    tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![
+            tql::schema_type_pattern("$t", "label", name)?,
+            tql::schema_type_pattern("$t", kind, variable)?,
+        ]),
+        tql::fetch(vec![(
+            key,
+            tql::fetch_expr(tql::function("label", vec![tql::var(variable)?])?),
+        )])?,
+    ]))
+}
+fn query_error(error: tql::TqlError) -> crate::error::OrmError {
+    crate::error::OrmError::Compilation(error.to_string())
+}
+
+#[cfg(test)]
+mod ast_query_tests {
+    use super::*;
+    fn canonical(source: &str) -> typeql::Query {
+        typeql::parse_query(&typeql::parse_query(source).unwrap().to_string()).unwrap()
+    }
+    #[test]
+    fn introspection_queries_preserve_valid_ast_semantics() {
+        for (new, old) in [
+            (
+                existence_query("person").unwrap(),
+                "match $x isa person; limit 1;",
+            ),
+            (
+                schema_scan_query("attribute").unwrap(),
+                r#"match $t sub! attribute; fetch {"name":label($t),"value_type":value_type($t)};"#,
+            ),
+            (
+                schema_scan_query("entity").unwrap(),
+                r#"match $t sub! entity; fetch {"name":label($t)};"#,
+            ),
+            (
+                schema_scan_query("relation").unwrap(),
+                r#"match $t sub! relation; fetch {"name":label($t)};"#,
+            ),
+        ] {
+            assert_eq!(canonical(&new), canonical(old));
+        }
+    }
+    #[test]
+    fn corrected_type_label_introspection_parses_and_rejects_injection() {
+        for role in [false, true] {
+            canonical(&schema_capability_query("person", role).unwrap());
+            assert!(schema_capability_query("person; entity injected", role).is_err());
+        }
+        assert!(typeql::parse_query("match $t type person; $t owns $a;").is_err());
     }
 }

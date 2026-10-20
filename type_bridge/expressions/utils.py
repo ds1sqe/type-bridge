@@ -84,5 +84,10 @@ def generate_has_pattern(var: str, attr_type: type["Attribute"]) -> tuple[str, s
     """
     attr_type_name = attr_type.get_attribute_name()
     attr_var = generate_attr_var(var, attr_type)
-    pattern = f"{var} has {attr_type_name} {attr_var}"
+    from type_bridge.query.ast import HasPattern
+    from type_bridge.query.compiler import QueryCompiler
+
+    pattern = QueryCompiler()._compile(
+        HasPattern(thing_var=var, attr_type=attr_type_name, attr_var=attr_var)
+    )
     return attr_var, pattern

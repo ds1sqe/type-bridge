@@ -1,0 +1,1 @@
+define struct address:street value string, number value integer?; fun named($x: integer) -> integer @doc("identity"): match let $v = $x; return first $v;

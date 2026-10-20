@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::capability::CapabilitySet;
-use crate::codec::from_canonical_json;
+use crate::codec::from_canonical_json_with_limits;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, FunctionId, Label};
+use crate::limits::QueryLimits;
 use crate::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
 use crate::migration_assertion_wire::{
     AssertionRolePlayerWire, FingerprintWire, RoleIdWire, TypeIdWire, ValueComparatorWire,
@@ -20,12 +21,15 @@ use crate::query_plan::{
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
 
-pub(crate) fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
+pub(crate) fn decode_query_plan(
+    bytes: &[u8],
+    limits: QueryLimits,
+) -> Result<QueryPlan, Diagnostic> {
     // Inspect only canonical JSON and the discriminator before deserializing
     // any version-specific DTO. A V2 payload can never partially reconstruct
     // through V1 types, and an unknown version cannot select a permissive
     // fallback.
-    let value = from_canonical_json::<Value>(bytes)?;
+    let value = from_canonical_json_with_limits::<Value>(bytes, limits.codec)?;
     let format = value
         .as_object()
         .and_then(|object| object.get("format"))
@@ -38,8 +42,14 @@ pub(crate) fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
             )
         })?;
     let trusted = match format {
-        QUERY_PLAN_FORMAT_V1 => from_canonical_json::<QueryPlanWire>(bytes)?.rebuild()?,
-        QUERY_PLAN_FORMAT_V2 => from_canonical_json::<QueryPlanWireV2>(bytes)?.rebuild()?,
+        QUERY_PLAN_FORMAT_V1 => {
+            from_canonical_json_with_limits::<QueryPlanWire>(bytes, limits.codec)?
+                .rebuild(limits)?
+        }
+        QUERY_PLAN_FORMAT_V2 => {
+            from_canonical_json_with_limits::<QueryPlanWireV2>(bytes, limits.codec)?
+                .rebuild(limits)?
+        }
         _ => {
             return Err(failure(
                 DiagnosticCategory::InvalidContract,
@@ -74,8 +84,8 @@ struct QueryPlanWire {
 }
 
 impl QueryPlanWire {
-    fn rebuild(self) -> Result<QueryPlan, Diagnostic> {
-        let trusted = QueryPlan::new_with_functions(
+    fn rebuild(self, limits: QueryLimits) -> Result<QueryPlan, Diagnostic> {
+        let trusted = QueryPlan::new_with_functions_and_limits(
             self.bindings
                 .into_iter()
                 .map(QueryBindingWire::rebuild)
@@ -94,6 +104,7 @@ impl QueryPlanWire {
                 .collect::<Result<Vec<_>, _>>()?,
             self.output.rebuild()?,
             ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantics.rebuild()?)?,
+            limits,
         )?;
         if self.required_capabilities != *trusted.required_capabilities() {
             return Err(failure(
@@ -121,8 +132,8 @@ struct QueryPlanWireV2 {
 }
 
 impl QueryPlanWireV2 {
-    fn rebuild(self) -> Result<QueryPlan, Diagnostic> {
-        let trusted = QueryPlan::new_v2_with_functions(
+    fn rebuild(self, limits: QueryLimits) -> Result<QueryPlan, Diagnostic> {
+        let trusted = QueryPlan::new_v2_with_functions_and_limits(
             self.bindings
                 .into_iter()
                 .map(QueryBindingWire::rebuild)
@@ -142,6 +153,7 @@ impl QueryPlanWireV2 {
             self.output.rebuild()?,
             self.compatibility,
             ManagedSemanticSchemaFingerprint::from_wire(self.managed_semantics.rebuild()?)?,
+            limits,
         )?;
         if self.format != QUERY_PLAN_FORMAT_V2 {
             return Err(failure(
@@ -163,13 +175,13 @@ impl QueryPlanWireV2 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct QueryBindingWire {
+pub(crate) struct QueryBindingWire {
     id: u16,
     variable: String,
 }
 
 impl QueryBindingWire {
-    fn rebuild(self) -> Result<AssertionBinding, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<AssertionBinding, Diagnostic> {
         Ok(AssertionBinding::new(
             BindingId::new(self.id)?,
             QueryVariable::new(self.variable)?,
@@ -179,7 +191,7 @@ impl QueryBindingWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct InputColumnWire {
+pub(crate) struct InputColumnWire {
     id: u16,
     optional: bool,
     public_name: String,
@@ -187,7 +199,7 @@ struct InputColumnWire {
 }
 
 impl InputColumnWire {
-    fn rebuild(self) -> Result<InputColumn, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<InputColumn, Diagnostic> {
         Ok(InputColumn::new(
             InputColumnId::new(self.id),
             QueryVariable::new(self.public_name)?,
@@ -225,7 +237,7 @@ impl QueryOutputWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct LocalFunctionWire {
+pub(crate) struct LocalFunctionWire {
     bindings: Vec<QueryBindingWire>,
     body: Vec<QueryPatternWire>,
     name: String,
@@ -242,7 +254,7 @@ struct LocalReturnWire {
 }
 
 impl LocalFunctionWire {
-    fn rebuild(self) -> Result<LocalFunction, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<LocalFunction, Diagnostic> {
         Ok(LocalFunction::new(
             FunctionId::new(self.name)?,
             self.bindings
@@ -779,14 +791,14 @@ impl QueryPatternWireV2 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum QueryOperandWire {
+pub(crate) enum QueryOperandWire {
     Binding { binding: u16 },
     Literal { value: CanonicalValue },
     Input { column: u16 },
 }
 
 impl QueryOperandWire {
-    fn rebuild(self) -> Result<QueryOperand, Diagnostic> {
+    pub(crate) fn rebuild(self) -> Result<QueryOperand, Diagnostic> {
         Ok(match self {
             Self::Binding { binding } => QueryOperand::Binding {
                 binding: BindingId::new(binding)?,
@@ -801,4 +813,40 @@ impl QueryOperandWire {
 
 fn rebuild_bindings(values: Vec<u16>) -> Result<Vec<BindingId>, Diagnostic> {
     values.into_iter().map(BindingId::new).collect()
+}
+
+// V3 shares the released closed read vocabulary without exposing its DTOs.
+pub(crate) fn rebuild_read_stage_v2(value: Value) -> Result<ReadStage, Diagnostic> {
+    serde_json::from_value::<ReadStageWireV2>(value)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "invalid_canonical_value",
+                "invalid read stage",
+            )
+        })?
+        .rebuild()
+}
+pub(crate) fn rebuild_output(value: Value) -> Result<QueryOutput, Diagnostic> {
+    serde_json::from_value::<QueryOutputWire>(value)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "invalid_canonical_value",
+                "invalid output projection",
+            )
+        })?
+        .rebuild()
+}
+
+pub(crate) fn rebuild_pattern_v2(value: Value) -> Result<QueryPattern, Diagnostic> {
+    serde_json::from_value::<QueryPatternWireV2>(value)
+        .map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "invalid_canonical_value",
+                "invalid read pattern",
+            )
+        })?
+        .rebuild()
 }

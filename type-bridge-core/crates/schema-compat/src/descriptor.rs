@@ -1,5 +1,6 @@
 //! Closed generated-descriptor compatibility input for direct schema facts.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -36,31 +37,47 @@ struct ErrorDetail {
 
 impl IntoResponse for PipelineError {
     fn into_response(self) -> Response {
-        let (status, code) = match &self {
-            PipelineError::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR"),
-            PipelineError::Connection(_) => (StatusCode::SERVICE_UNAVAILABLE, "CONNECTION_ERROR"),
-            PipelineError::UnsupportedVersion(_) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "UNSUPPORTED_VERSION")
-            }
-            PipelineError::QueryExecution(_) => (StatusCode::BAD_REQUEST, "QUERY_EXECUTION_ERROR"),
-            PipelineError::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_FAILED"),
-            PipelineError::Parse(_) => (StatusCode::BAD_REQUEST, "PARSE_ERROR"),
-            PipelineError::Schema(_) => (StatusCode::INTERNAL_SERVER_ERROR, "SCHEMA_ERROR"),
-            PipelineError::Interceptor(_) => (StatusCode::FORBIDDEN, "INTERCEPTOR_ERROR"),
-            PipelineError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
-        };
-
-        let body = ErrorResponse {
-            status: "error".to_string(),
-            error: ErrorDetail {
-                code: code.to_string(),
-                message: self.to_string(),
-                details: None,
-            },
-        };
-
-        (status, axum::Json(body)).into_response()
+        let failure = self.failure();
+        failure_response(self, failure)
     }
+}
+
+#[cfg(feature = "typedb")]
+impl IntoResponse for crate::typedb::ExecuteError {
+    fn into_response(self) -> Response {
+        let failure = self.failure();
+        failure_response(self.into(), failure)
+    }
+}
+
+fn failure_response(
+    error: PipelineError,
+    failure: Option<type_bridge_contract::failure::Failure>,
+) -> Response {
+    let (status, code) = match &error {
+        PipelineError::Config(_) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR"),
+        PipelineError::Connection(_) => (StatusCode::SERVICE_UNAVAILABLE, "CONNECTION_ERROR"),
+        PipelineError::UnsupportedVersion(_) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "UNSUPPORTED_VERSION")
+        }
+        PipelineError::QueryExecution(_) => (StatusCode::BAD_REQUEST, "QUERY_EXECUTION_ERROR"),
+        PipelineError::Validation(_) => (StatusCode::BAD_REQUEST, "VALIDATION_FAILED"),
+        PipelineError::Parse(_) => (StatusCode::BAD_REQUEST, "PARSE_ERROR"),
+        PipelineError::Schema(_) => (StatusCode::INTERNAL_SERVER_ERROR, "SCHEMA_ERROR"),
+        PipelineError::Interceptor(_) => (StatusCode::FORBIDDEN, "INTERCEPTOR_ERROR"),
+        PipelineError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
+    };
+
+    let body = ErrorResponse {
+        status: "error".to_string(),
+        error: ErrorDetail {
+            code: code.to_string(),
+            message: error.to_string(),
+            details: failure.map(|failure| failure.host_json()),
+        },
+    };
+
+    (status, axum::Json(body)).into_response()
 }
 
 // --- Router ---
@@ -314,10 +331,11 @@ mod tests {
 
     #[cfg(feature = "typedb")]
     #[tokio::test]
-    async fn classified_commit_failures_keep_released_v1_body_bytes() {
+    async fn unclassified_commit_errors_keep_released_v1_body_bytes() {
         use crate::typedb::{CommitCertainty, CommitFailure, ExecuteError};
         for certainty in [CommitCertainty::Rejected, CommitCertainty::Indeterminate] {
             let error = ExecuteError::Commit(CommitFailure {
+                failure: None,
                 certainty,
                 message: "constraint violated".into(),
             });
@@ -328,6 +346,41 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "typedb")]
+    #[tokio::test]
+    async fn typed_failure_http_details_preserve_structural_commit_outcome() {
+        use type_bridge_typedb_runtime::failure::{classify_commit, redacted_failure};
+        let failure = classify_commit(
+            "STC2",
+            "[STC2] Commit in database 'db' failed with isolation conflict: \
+             Transaction uses a lock held by a concurrent commit.",
+            true,
+        );
+        let error = crate::typedb::ExecuteError::Commit(crate::typedb::CommitFailure {
+            certainty: crate::typedb::CommitCertainty::Rejected,
+            message: redacted_failure(&failure),
+            failure: Some(failure.clone()),
+        });
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "QUERY_EXECUTION_ERROR");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "status":"error", "error": {
+                    "code":"QUERY_EXECUTION_ERROR",
+                    "message":"Query execution error: Commit failed: [STC2] TypeDB commit rejected: exclusive lock conflict",
+                    "details":failure.host_json(),
+                }
+            })
+        );
+        let query =
+            PipelineError::QueryExecution("[CNT9] TypeDB query rejected: unique constraint".into());
+        let body = body_json(query.into_response()).await;
+        assert_eq!(body["error"]["details"]["reason"], "unique");
+        assert!(body["error"]["details"]["op_index"].is_null());
+    }
     #[tokio::test]
     async fn into_response_body_structure() {
         let resp = PipelineError::Config("bad config".into()).into_response();
@@ -750,4 +803,247 @@ mod tests {
         let content_type = resp.headers().get(http::header::CONTENT_TYPE).unwrap();
         assert!(content_type.to_str().unwrap().contains("application/json"));
     }
+}
+
+#[cfg(all(test, feature = "typedb"))]
+#[path = "../../../../../tests/support/typed_failure_live.rs"]
+mod typed_failure_live;
+#[cfg(all(test, feature = "typedb"))]
+#[tokio::test]
+#[ignore = "requires an owned TypeDB 3.13.6 container and failure-smoke environment"]
+async fn live_provider_failures_reach_http_details() {
+    use http_body_util::BodyExt;
+    for (case, error) in typed_failure_live::observations("tb_w11b_http").await {
+        let error = crate::typedb::ExecuteError::from(error);
+        let failure = error.failure().expect("classification retained");
+        let response = error.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "QUERY_EXECUTION_ERROR");
+        assert_eq!(body["error"]["details"], failure.host_json());
+        assert_eq!(failure.retry_safe(), case != "paused");
+        assert!(
+            !std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("SECRET_SENTINEL")
+        );
+        println!("{case}: {}", body["error"]["details"]);
+    }
+}
+
+#[cfg(all(test, feature = "typedb"))]
+#[tokio::test]
+#[ignore = "requires an isolated TypeDB 3.13.6 server and failure-smoke environment"]
+async fn live_http_requests_report_typed_failures() {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../tests/contracts/typed-failure-scenarios.json"
+    ))
+    .unwrap();
+    let name = format!("tb_w11b_http_request_{}", std::process::id());
+    let config = crate::config::TypeDBSection {
+        address: std::env::var("TYPEDB_ADDRESS").unwrap(),
+        database: name.clone(),
+        username: "admin".into(),
+        password: "password".into(),
+        http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+        server_version: None,
+    };
+    let admin = crate::typedb::TypeDBClient::connect(&config).await.unwrap();
+    admin.create_database(&name).await.unwrap();
+    admin
+        .execute(&name, fixture["schema"].as_str().unwrap(), "schema")
+        .await
+        .unwrap();
+    admin
+        .execute(&name, fixture["seed"].as_str().unwrap(), "write")
+        .await
+        .unwrap();
+    let executor = crate::typedb::TypeDBClient::connect(&config).await.unwrap();
+    let pipeline = crate::pipeline::PipelineBuilder::new(executor)
+        .with_default_database(&name)
+        .build()
+        .unwrap();
+    let app = create_router(Arc::new(pipeline));
+    let request = |query: &str| {
+        use type_bridge_core_lib::ast::{Clause, Pattern, Statement};
+        let (matched, inserted) = query
+            .strip_prefix("match ")
+            .unwrap()
+            .split_once("insert ")
+            .unwrap();
+        let clauses = vec![
+            Clause::Match(vec![Pattern::Raw(
+                matched.trim().trim_end_matches(';').to_owned(),
+            )]),
+            Clause::Insert(vec![Statement::Raw(
+                inserted.trim().trim_end_matches(';').to_owned(),
+            )]),
+        ];
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/query")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "database":name,"transaction_type":"write","clauses":clauses,
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+    for (case, reason) in [("cnt5", "cardinality"), ("cnt9", "unique")] {
+        let response = app
+            .clone()
+            .oneshot(request(fixture[case].as_str().unwrap()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["details"]["reason"], reason, "{body}");
+        assert_eq!(body["error"]["details"]["retry_safe"], true);
+        assert!(
+            !std::str::from_utf8(&bytes)
+                .unwrap()
+                .contains("SECRET_SENTINEL")
+        );
+        println!("HTTP {case}: {}", body["error"]["details"]);
+    }
+    enum Fault {
+        Race(tokio::sync::Barrier),
+        Pause,
+    }
+    struct ControlledExecutor {
+        database: type_bridge_orm::Database,
+        fault: Fault,
+    }
+    impl crate::executor::QueryExecutor for ControlledExecutor {
+        fn execute<'a>(
+            &'a self,
+            _database: &'a str,
+            typeql: &'a str,
+            _kind: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<serde_json::Value, PipelineError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                let tx = self
+                    .database
+                    .transaction_context(type_bridge_orm::session::backend::TxType::Write)
+                    .await
+                    .map_err(PipelineError::from)?;
+                if let Fault::Race(barrier) = &self.fault {
+                    barrier.wait().await;
+                }
+                tx.query(typeql).await.map_err(PipelineError::from)?;
+                let unpause = if matches!(self.fault, Fault::Pause) {
+                    Some(typed_failure_live::pause_owned_server())
+                } else {
+                    None
+                };
+                let result = tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    tx.commit_classified(),
+                )
+                .await
+                .expect("driver must return an actual commit failure");
+                drop(unpause);
+                tx.close().await.map_err(PipelineError::from)?;
+                result.map_err(|error| {
+                    PipelineError::from(crate::typedb::ExecuteError::from(error))
+                })?;
+                Ok(serde_json::json!({"ok":true}))
+            })
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+    }
+    let options = type_bridge_orm::ConnectOptions {
+        http_port: config.http_port,
+        ..Default::default()
+    };
+    let database = type_bridge_orm::Database::connect_with_options(
+        &config.address,
+        &name,
+        "admin",
+        "password",
+        options,
+    )
+    .await
+    .unwrap();
+    let race_app = create_router(Arc::new(
+        crate::pipeline::PipelineBuilder::new(ControlledExecutor {
+            database,
+            fault: Fault::Race(tokio::sync::Barrier::new(2)),
+        })
+        .with_default_database(&name)
+        .build()
+        .unwrap(),
+    ));
+    let (a, b) = tokio::join!(
+        race_app
+            .clone()
+            .oneshot(request(fixture["purchase"].as_str().unwrap())),
+        race_app
+            .clone()
+            .oneshot(request(fixture["purchase"].as_str().unwrap()))
+    );
+    let responses = [a.unwrap(), b.unwrap()];
+    assert_eq!(
+        responses
+            .iter()
+            .filter(|response| response.status() == StatusCode::OK)
+            .count(),
+        1
+    );
+    for response in responses {
+        if response.status() != StatusCode::OK {
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["error"]["details"]["code"], "STC2", "{body}");
+            assert_eq!(body["error"]["details"]["lock_kind"], "exclusive");
+            assert_eq!(body["error"]["details"]["retry_safe"], true);
+            println!("HTTP stc2: {}", body["error"]["details"]);
+        }
+    }
+    drop(race_app);
+    let database = type_bridge_orm::Database::connect_with_options(
+        &config.address,
+        &name,
+        "admin",
+        "password",
+        options,
+    )
+    .await
+    .unwrap();
+    let paused_app = create_router(Arc::new(
+        crate::pipeline::PipelineBuilder::new(ControlledExecutor {
+            database,
+            fault: Fault::Pause,
+        })
+        .with_default_database(&name)
+        .build()
+        .unwrap(),
+    ));
+    let response = paused_app
+        .oneshot(request(fixture["paused"].as_str().unwrap()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"]["details"]["retry_safe"], false, "{body}");
+    assert_eq!(body["error"]["details"]["reason"], serde_json::Value::Null);
+    println!("HTTP paused: {}", body["error"]["details"]);
+    drop(app);
+    admin.delete_database(&name).await.unwrap();
 }

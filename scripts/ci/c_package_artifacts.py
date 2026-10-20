@@ -26,14 +26,17 @@ ROOT = Path(__file__).resolve().parents[2]
 CORE = ROOT / "type-bridge-core"
 CONTRACT_PATH = ROOT / "tests/contracts/c-distribution-v1.json"
 ABI_PATH = ROOT / "tests/contracts/c-abi.json"
-SCHEMA_PATH = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+SCHEMA_PATH = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
 LICENSE_PATH = ROOT / "LICENSE"
 NOTICE_PATH = CORE / "crates/c/THIRD_PARTY_NOTICES.md"
 TARGET = "x86_64-unknown-linux-gnu"
 RUNTIME_NAME = "type-bridge-c-runtime"
 RUNTIME_LIBRARY = "libtype_bridge_c.so"
+# Published C asset name. The app label below must stay `sdkv3` so the
+# generator emits the tb_sdkv3 prefix this name and the release record use.
 PACKAGE_NAME = "tb_sdkv3"
 PACKAGE_VERSION = "1.0.0"
+# Milestone 11.36 keeps installed package metadata at 1.6 while runtime ABI is 1.7.
 ABI_VERSION = "1.6.0"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
 RUNTIME_FORMAT = "typebridge.c-runtime-artifact/v1"
@@ -405,7 +408,7 @@ def build_runtime(output: Path, build_root: Path, *, commit: str, tree: str) -> 
 def generated_config() -> bytes:
     return f'''# Generated TypeBridge C schema source-package config.
 include(CMakeFindDependencyMacro)
-find_dependency(TypeBridge 1.6.0 EXACT CONFIG)
+find_dependency(TypeBridge 1.7.0 EXACT CONFIG)
 get_filename_component(_tb_package_prefix "${{CMAKE_CURRENT_LIST_DIR}}/../../.." ABSOLUTE)
 if(NOT TARGET {PACKAGE_NAME}::schema)
   add_library({PACKAGE_NAME}_schema STATIC "${{_tb_package_prefix}}/src/{PACKAGE_NAME}.c")
@@ -438,7 +441,7 @@ generated_source=${{prefix}}/src/{PACKAGE_NAME}.c
 Name: {PACKAGE_NAME} schema
 Description: Generated TypeBridge C schema source package
 Version: {PACKAGE_VERSION}
-Requires: type-bridge = 1.6.0
+Requires: type-bridge-abi >= 1.7.0
 Cflags: -I${{includedir}}
 """.encode()
 
@@ -454,7 +457,7 @@ def build_generation_workspace(root: Path) -> Path:
     (workspace / "typebridge.yaml").write_text(
         "format: typebridge.workspace/v1\n"
         "schema:\n  root: schema/schema.yaml\n  ownership: exclusive\n"
-        "  managed-scope: sdk-v3-package\n"
+        "  managed-scope: models-package\n"
         "compatibility:\n  semantic-profile: typedb-3.12.1/v1\n"
         "migrations:\n  directory: migrations/v2\n  app-label: sdkv3\n"
         "bindings:\n  c:\n    output: generated/c\n",
@@ -537,7 +540,7 @@ def build_generated(output: Path, build_root: Path, *, commit: str, tree: str) -
     filename = f"{PACKAGE_NAME}-c-{projection_digest}.tar.gz"
     manifest = {
         "artifact-id": f"sha256:{identity}",
-        "declared-schema-source": "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
+        "declared-schema-source": "tests/contracts/sdk_conformance/models/schema.yaml",
         "declared-schema-source-sha256": sha256(read_regular(SCHEMA_PATH)),
         "filename": filename,
         "format": PACKAGE_FORMAT,
@@ -567,6 +570,8 @@ def build(output: Path) -> dict[str, str]:
     if platform.system() != "Linux" or platform.machine() not in {"x86_64", "AMD64"}:
         raise ArtifactError(f"C artifacts require native {TARGET}")
     contract = load_json(CONTRACT_PATH)
+    if contract.get("abi", {}).get("package_metadata_version") != ABI_VERSION:
+        raise ArtifactError("frozen package metadata version drifted")
     if contract.get("publication_disposition") != PUBLICATION_DISPOSITION:
         raise ArtifactError("frozen publication disposition drifted")
     commit, tree = git_identity()
@@ -642,9 +647,9 @@ def validate_generated(archive: Path) -> dict[str, Any]:
         raise ArtifactError("generated license template drifted")
     config = files[PACKAGE_MEMBERS[2]].decode("utf-8")
     pc = files[PACKAGE_MEMBERS[4]].decode("utf-8")
-    if "find_dependency(TypeBridge 1.6.0 EXACT CONFIG)" not in config:
+    if "find_dependency(TypeBridge 1.7.0 EXACT CONFIG)" not in config:
         raise ArtifactError("generated CMake runtime ABI fence drifted")
-    if "type-bridge = 1.6.0" not in pc:
+    if "type-bridge-abi >= 1.7.0" not in pc:
         raise ArtifactError("generated pkg-config runtime ABI fence drifted")
     if manifest.get("publication-disposition") != PUBLICATION_DISPOSITION:
         raise ArtifactError("generated publication disposition widened")
@@ -654,7 +659,7 @@ def validate_generated(archive: Path) -> dict[str, Any]:
 def cmake_consumer_source() -> tuple[bytes, bytes, bytes]:
     cmake = f"""cmake_minimum_required(VERSION 3.20)
 project(type_bridge_artifact_consumer LANGUAGES C CXX)
-find_package(TypeBridge 1.6.0 EXACT CONFIG REQUIRED)
+find_package(TypeBridge 1.7.0 EXACT CONFIG REQUIRED)
 find_package({PACKAGE_NAME} 1.0.0 EXACT CONFIG REQUIRED)
 add_executable(consumer main.c)
 add_library(cpp_header OBJECT header.cpp)

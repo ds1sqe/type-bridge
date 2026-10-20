@@ -32,7 +32,7 @@
   ],
   "enums": {
     "language": ["python", "typescript"],
-    "operation": ["construction", "fetch_rows", "page_by", "count_by", "exists_by"],
+    "operation": ["construction", "fetch_rows", "page_by", "count_by", "exists_by", "reduce_by"],
     "transaction_mode": ["none", "owned", "borrowed"],
     "outcome": ["success", "error"],
     "identity_basis": ["none", "selected_tuple", "root", "matching_solution", "concept"],

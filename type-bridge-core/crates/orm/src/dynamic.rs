@@ -1,5 +1,6 @@
 //! Dynamic rows and inputs used by runtime descriptor managers.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -2805,16 +2806,56 @@ mod tests {
         let clauses = relation_fetch_by_iid_clauses(&descriptor(), "0xabc", "$r");
         let query = compile(&clauses);
 
-        // Both min>=1 roles bind in the mandatory relation pattern, outside any
-        // `try` block.
-        let main_pattern = query
-            .lines()
-            .find(|line| line.contains("isa $t (") && line.contains("sender"))
-            .expect("main relation pattern present");
-        assert!(main_pattern.contains("sender: $rp0"));
-        assert!(main_pattern.contains("receiver: $rp1"));
-        assert!(!main_pattern.contains("participant"));
-        assert!(!main_pattern.contains("observer"));
+        let typeql::query::QueryStructure::Pipeline(pipeline) =
+            typeql::parse_query(&query).unwrap().structure
+        else {
+            panic!("pipeline")
+        };
+        let typeql::query::stage::Stage::Match(stage) = &pipeline.stages[0] else {
+            panic!("match")
+        };
+        // Inspect only top-level statements: optional role blocks must remain separate.
+        let main_players = stage
+            .patterns
+            .iter()
+            .find_map(|pattern| {
+                let typeql::Pattern::Statement(typeql::statement::Statement::Thing(thing)) =
+                    pattern
+                else {
+                    return None;
+                };
+                thing.constraints.iter().find_map(|constraint| {
+                    let typeql::statement::thing::Constraint::Isa(isa) = constraint else {
+                        return None;
+                    };
+                    let Some(typeql::statement::thing::isa::IsaInstanceConstraint::Relation(
+                        relation,
+                    )) = &isa.constraint
+                    else {
+                        return None;
+                    };
+                    Some(
+                        relation
+                            .role_players
+                            .iter()
+                            .map(|player| match player {
+                                typeql::statement::thing::RolePlayer::Typed(role, player) => {
+                                    (role.to_string(), player.to_string())
+                                }
+                                _ => panic!("typed role player"),
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+            })
+            .expect("main relation pattern");
+        assert_eq!(
+            main_players,
+            vec![
+                ("sender".into(), "$rp0".into()),
+                ("receiver".into(), "$rp1".into())
+            ]
+        );
     }
 
     #[test]
@@ -2923,7 +2964,7 @@ mod tests {
 
         assert_eq!(
             compile(&[Clause::Match(patterns)]),
-            "match\nnot { not { $owner has alias $dyn_attr0; }; };"
+            "match not { not { $owner has alias $dyn_attr0; \n}; \n};"
         );
     }
 }

@@ -1,0 +1,73 @@
+{
+  "format": "typebridge.c-broad-case-ledger/v1",
+  "authority_state": "frozen",
+  "publication_authority": false,
+  "transition_capabilities": ["G05", "G06", "G08", "G13"],
+  "source_slices": {
+    "query-remote": {
+      "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/queries/catalog.json", "sha256": "6ab0fde5f1ff95b6368c0dd3acde09f38e583baa9468c307f613cf3094e8ce44"},
+        {"path": "tests/contracts/sdk_conformance/queries/journey.json", "sha256": "e03d136c6b8f98aa7d24d483c95112615f97483107e2f7c48175a782d6b842f0"}
+      ]
+    },
+    "data-model": {
+      "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/models/catalog.json", "sha256": "1f2a247b1cdb6f9961a95126c4cd7f903c38f7f80c9111e7e7c63df864587bb5"},
+        {"path": "tests/contracts/sdk_conformance/models/journey.json", "sha256": "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f"}
+      ]
+    },
+    "admin-migration": {
+      "source_commit": "bf07384911bf893dae965e8805a58ce0d67aa5e4",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/administration/catalog.json", "sha256": "a69e6d1a7392164cb9c2cf654ca9a9910cae568cf4931b1d632bee420cae56bf"},
+        {"path": "tests/contracts/sdk_conformance/administration/journey.json", "sha256": "465fb6c6606252dee34e63c8a39f1b34a877b76d23142f197e9f2c24ae20c079"}
+      ]
+    },
+    "codec-archive": {
+      "source_commit": "6b12bbb43b76fa28d21a8c1eea533e9d3aa390af",
+      "authorities": [
+        {"path": "tests/contracts/sdk_conformance/serialization/catalog.json", "sha256": "13c7fac91a24779b9ac2ad7f1166e68874917aa6ecfb65371402ad429e0573bb"},
+        {"path": "tests/contracts/sdk_conformance/serialization/journey.json", "sha256": "d5d10e8cb04a75406fa09dea68ea5f0422d28b4a03798243d15a012b94ad45e3"}
+      ]
+    },
+    "artifact-cleanup": {
+      "source_commit": "177ce24ac182b94269561c8622e5533d29891a44",
+      "authorities": [
+        {"path": "tests/contracts/c-artifact-journey-v1.json", "sha256": "76e7057180129fd5e0e7d47a314cb6059c4fc69f99d59942b690e99331b5270f"},
+        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "8c3a9dec2a676dc840ab9a2d89d50e5f01924c15a86d19d1b5e2f3d9c42c3938"}
+      ]
+    }
+  },
+  "ledgers": {
+    "G05": [
+      {"slice": "query-remote", "evidence_refs": ["cancellation_direct", "cancellation_remote"]},
+      {"slice": "data-model", "evidence_refs": ["data_operation_cancellation", "transaction_cancellation_recovery"]},
+      {"slice": "admin-migration", "evidence_refs": ["administration_migration_cancellation", "backfill_recovery_after_cancellation"]},
+      {"slice": "codec-archive", "evidence_refs": ["serialization_cancellation", "atomic_archive_no_partial_output"]},
+      {"slice": "artifact-cleanup", "evidence_refs": ["artifact_consumer_cancellation", "task_owned_cleanup"]}
+    ],
+    "G06": [
+      {"slice": "query-remote", "evidence_refs": ["resource_limits_direct", "resource_limits_remote"]},
+      {"slice": "data-model", "evidence_refs": ["data_operation_resource_limits", "bounded_batch_and_hydration"]},
+      {"slice": "admin-migration", "evidence_refs": ["administration_migration_resource_limits", "bounded_history_plan_backfill_journal"]},
+      {"slice": "codec-archive", "evidence_refs": ["serialization_resource_limits", "bounded_record_archive"]},
+      {"slice": "artifact-cleanup", "evidence_refs": ["artifact_input_limits", "tighten_only_end_to_end_policy"]}
+    ],
+    "G08": [
+      {"slice": "query-remote", "evidence_refs": ["structured_query_diagnostic", "remote_structured_diagnostic"]},
+      {"slice": "data-model", "evidence_refs": ["data_operation_structured_diagnostic", "connection_provider_redaction"]},
+      {"slice": "admin-migration", "evidence_refs": ["administration_migration_structured_diagnostic", "recovery_structured_diagnostic"]},
+      {"slice": "codec-archive", "evidence_refs": ["serialization_structured_diagnostic", "schema_fence_diagnostic"]},
+      {"slice": "artifact-cleanup", "evidence_refs": ["artifact_compatibility_diagnostic", "security_redaction"]}
+    ],
+    "G13": [
+      {"slice": "query-remote", "evidence_refs": ["query_resources_close", "remote_claim_close"]},
+      {"slice": "data-model", "evidence_refs": ["data_resource_lifecycle", "transaction_parent_child_close"]},
+      {"slice": "admin-migration", "evidence_refs": ["administration_migration_resource_lifecycle", "plan_report_close"]},
+      {"slice": "codec-archive", "evidence_refs": ["serialization_resource_lifecycle", "codec_archive_close"]},
+      {"slice": "artifact-cleanup", "evidence_refs": ["generated_package_teardown", "process_library_unload_no_leak"]}
+    ]
+  }
+}

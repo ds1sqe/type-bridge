@@ -73,8 +73,12 @@ print(result)  # {"is_valid": true, "errors": []}
 
 The module exposes `query_v2_authority(...)`, `query_v2_prepare_remote(...)`,
 and the returned one-shot `PendingQueryV2Remote` handle for canonical Rust V2
-plans. The capability-advertisement bytes passed to preparation are an explicit
-trust input: obtain them over authenticated TLS for the intended executor, or
+plans. The request and its reply use the one remote envelope
+(`typebridge.query-remote-request/v2`), so the executor must advertise
+`query.plan.v2`, `query.remote.envelope-v2`, and
+`query.remote.structured-diagnostic`. The capability-advertisement bytes
+passed to preparation are an explicit trust input: obtain them over
+authenticated TLS for the intended executor, or
 pin/provision their exact bytes or fingerprint out of band. Fetching
 `/v2/capabilities` over unauthenticated HTTP is discovery only; it cannot
 authenticate the reply-signing key supplied by an intermediary.

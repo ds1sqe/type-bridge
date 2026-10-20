@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::decimal::parse_decimal;
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
+use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::projection::ProjectionHandler;
 use type_bridge_contract::query_plan::CompatibilityValueV2;
 use type_bridge_contract::temporal::{
@@ -35,7 +36,7 @@ use type_bridge_orm::{
     AnswerCancellation, AttributeValue, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
     InstalledRuntimeProjection, ProjectedAttributeValue, ProjectedQueryOrigin, ProjectedQueryRow,
     ProjectedQuerySlotValue, ProjectedQueryValue, ProjectedReducedValue, ProjectedReductionGroup,
-    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    ProjectedThing, QueryExecutionDeadline, QueryExecutionResourceLimits, QueryTarget,
 };
 
 use crate::__codegen::{
@@ -167,7 +168,7 @@ pub struct QuerySession<'db, S: Schema> {
 enum QueryExecution<'db, S: Schema> {
     Local(&'db Database<S>),
     Borrowed(&'db type_bridge_orm::session::context::TransactionContext),
-    Remote(&'db crate::remote::RemoteDatabase<S>),
+    Remote(&'db crate::remote::ProxyDatabase<S>),
 }
 
 impl<S: Schema> std::fmt::Debug for QuerySession<'_, S> {
@@ -622,7 +623,7 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     pub(crate) fn remote(
         installed: &'db InstalledRuntimeProjection,
         registry: Arc<DescriptorRegistry>,
-        remote: &'db crate::remote::RemoteDatabase<S>,
+        remote: &'db crate::remote::ProxyDatabase<S>,
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Self {
@@ -717,6 +718,35 @@ impl<'db, S: Schema> QuerySession<'db, S> {
     #[must_use]
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Validate, encode, and execute every query of this session under
+    /// `limits` instead of the canonical query limits.
+    ///
+    /// Call this before creating any binding: bindings belong to the limits
+    /// they were created under. `limits` is admitted by the shared engine,
+    /// so an unsupported value fails here rather than at the first query.
+    pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self> {
+        if !self.bindings.is_empty() {
+            return Err(Error::model_validation(
+                ModelValidationPhase::Input,
+                "query_limits_after_binding",
+                vec![],
+                "query limits must be set before the session creates a binding",
+                None,
+            ));
+        }
+        let limits = limits.validate().map_err(|error| {
+            Error::model_validation(
+                ModelValidationPhase::Input,
+                "query_limits_invalid",
+                vec![],
+                error.to_string(),
+                None,
+            )
+        })?;
+        self.session = OrmSessionHandle::with_limits(Arc::clone(&self.registry), limits);
+        Ok(self)
     }
 
     fn push_binding<M: ThingModel<Schema = S>, Mode: SelectionMode>(
@@ -3472,30 +3502,9 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
         self.ensure_open(ModelValidationPhase::Input)?;
         self.session
             .check_invocation(deadline, ModelValidationPhase::Input)?;
-        let result = match &self.session.execution {
-            QueryExecution::Borrowed(transaction) => {
-                transaction
-                    .execute_match_with_limits(
-                        &self.session.registry,
-                        &validated,
-                        self.session
-                            .resources
-                            .direct_with_deadline(self.session.cancellation.clone(), deadline),
-                    )
-                    .await
-            }
-            QueryExecution::Local(database) => {
-                database
-                    .inner_orm()
-                    .execute_match_with_limits(
-                        &self.session.registry,
-                        &validated,
-                        self.session
-                            .resources
-                            .direct_with_deadline(self.session.cancellation.clone(), deadline),
-                    )
-                    .await
-            }
+        let target = match &self.session.execution {
+            QueryExecution::Borrowed(transaction) => QueryTarget::Transaction(transaction),
+            QueryExecution::Local(database) => QueryTarget::Database(database.inner_orm()),
             QueryExecution::Remote(remote) => {
                 let result = remote
                     .execute_match(
@@ -3510,10 +3519,19 @@ impl<'s, 'db, S: Schema, Shape: SelectedShape<S>> Query<'s, 'db, S, Shape> {
                 return Ok(result);
             }
         };
+        let result = target
+            .execute(
+                &self.session.registry,
+                validated,
+                self.session.resources,
+                &self.session.cancellation,
+                deadline,
+            )
+            .await;
         self.session
             .check_invocation(deadline, ModelValidationPhase::Hydration)?;
         self.ensure_open(ModelValidationPhase::Hydration)?;
-        Ok((validated, result.map_err(Error::from_orm_hydration)?))
+        result.map_err(crate::remote::target_error)
     }
 }
 

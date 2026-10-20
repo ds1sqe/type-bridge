@@ -361,6 +361,7 @@ pub(super) fn function_names(
     let mut names = BTreeSet::new();
     for suffix in [
         "query_session_open",
+        "query_session_open_with_limits",
         "query_session_close",
         "query_predicate_and",
         "query_predicate_or",
@@ -392,6 +393,11 @@ pub(super) fn function_names(
         "read_transaction_query_execute_page",
         "read_transaction_query_execute_count",
         "read_transaction_query_execute_exists",
+        "proxy_query_execute_rows",
+        "proxy_query_execute_first",
+        "proxy_query_execute_page",
+        "proxy_query_execute_count",
+        "proxy_query_execute_exists",
         "query_rows_result_ref",
         "query_page_result_ref",
         "query_result_row_count",
@@ -587,6 +593,11 @@ fn render_declarations(
          }} {row_result_ref};\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_open(\n\
            const type_bridge_schema_package_t *package, {session} **out_session,\n\
+           type_bridge_execution_diagnostics_t **out_diagnostics);\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_open_with_limits(\n\
+           const type_bridge_schema_package_t *package,\n\
+           const type_bridge_query_limit_override_v1_t *overrides, size_t override_count,\n\
+           {session} **out_session,\n\
            type_bridge_execution_diagnostics_t **out_diagnostics);\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_close(\n\
            {session} **session);\n",
@@ -1094,6 +1105,7 @@ fn render_package_query_declarations(
     for (scope, owner) in [
         ("database", "type_bridge_database_t"),
         ("read_transaction", "type_bridge_read_transaction_t"),
+        ("proxy", "type_bridge_proxy_connection_t"),
     ] {
         for (kind, terminal, result, _) in [
             (
@@ -1346,6 +1358,15 @@ fn render_package_definitions(
            return type_bridge_query_session_open(\n\
                package, (type_bridge_query_session_t **)out_session, out_diagnostics);\n\
          }}\n\n\
+         type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_open_with_limits(\n\
+           const type_bridge_schema_package_t *package,\n\
+           const type_bridge_query_limit_override_v1_t *overrides, size_t override_count,\n\
+           {session} **out_session,\n\
+           type_bridge_execution_diagnostics_t **out_diagnostics) {{\n\
+           return type_bridge_query_session_open_with_limits_v1(\n\
+               package, overrides, override_count,\n\
+               (type_bridge_query_session_t **)out_session, out_diagnostics);\n\
+         }}\n\n\
          type_bridge_status_t TYPE_BRIDGE_CALL {prefix}_query_session_close(\n\
            {session} **session) {{\n\
            return type_bridge_query_session_close(\n\
@@ -1577,6 +1598,11 @@ fn render_package_definitions(
             "read_transaction",
             "type_bridge_read_transaction_t",
             "type_bridge_read_transaction_query_execute_v1",
+        ),
+        (
+            "proxy",
+            "type_bridge_proxy_connection_t",
+            "type_bridge_proxy_query_execute_v1",
         ),
     ] {
         for (kind, terminal, result, terminal_kind) in [

@@ -28,10 +28,7 @@ use super::ids::{
     BindingId, BoundFieldId, DescriptorId, FieldId, RoleEdgeId, RoleId, SessionBindingToken,
     SessionId,
 };
-use super::limits::{
-    MAX_BOOLEAN_TERMS, MAX_OUTPUT_NAME_BYTES, MAX_PREDICATE_DEPTH, MAX_PREDICATE_NODES,
-    MAX_SELECTED_SLOTS,
-};
+use super::limits::StructuralLimits;
 use super::model::{
     BindingPair, ComparisonOp, FetchShape, FetchSlot, MatchBinding, MatchExpr,
     MatchFunctionArgument, MatchFunctionCall, MatchMode, MatchOperation, MatchOrder, MatchPlan,
@@ -39,8 +36,10 @@ use super::model::{
     RowCardinality, SortDirection, ThingKind, Window,
 };
 use super::validation::{
-    ValidatedMatchRequest, validate_match_request, validate_public_function_argument_count,
+    ValidatedMatchRequest, validate_field_group_count, validate_function_argument_count,
+    validate_match_request_with_limits, validate_selection_count,
 };
+use type_bridge_contract::limits::QueryLimits;
 
 static NEXT_LIVE_TOKEN: AtomicU64 = AtomicU64::new(1);
 
@@ -64,10 +63,6 @@ fn handle_error(code: &'static str, message: impl Into<String>) -> OrmError {
     MatchError::new(MatchErrorCategory::InvalidPlan, code, message).into()
 }
 
-fn manager_filter_resource_error(code: &'static str, message: &'static str) -> OrmError {
-    MatchError::new(MatchErrorCategory::ResourceLimit, code, message).into()
-}
-
 fn function_value_package_mismatch() -> OrmError {
     handle_error(
         "generated_token_package_mismatch",
@@ -79,6 +74,7 @@ fn function_value_package_mismatch() -> OrmError {
 struct SessionState {
     id: SessionId,
     registry: Arc<DescriptorRegistry>,
+    limits: QueryLimits,
 }
 
 /// Owner of one isolated handle-construction session.
@@ -91,10 +87,26 @@ pub struct SessionHandle(Arc<SessionState>);
 impl SessionHandle {
     /// Start a handle-construction session over a descriptor registry.
     pub fn new(registry: Arc<DescriptorRegistry>) -> Self {
+        Self::with_limits(registry, QueryLimits::CANONICAL)
+    }
+
+    /// Start a session whose queries are validated, encoded, and executed
+    /// under `limits`.
+    ///
+    /// The caller admits untrusted values with [`QueryLimits::validate`]
+    /// first; the session applies whatever it is given.
+    pub fn with_limits(registry: Arc<DescriptorRegistry>, limits: QueryLimits) -> Self {
         Self(Arc::new(SessionState {
             id: SessionId::new(next_token(SESSION_TOKEN_DOMAIN)),
             registry,
+            limits,
         }))
+    }
+
+    /// Return the limits every query of this session runs under.
+    #[must_use]
+    pub fn limits(&self) -> QueryLimits {
+        self.0.limits
     }
 
     /// Create a fresh binding for a registered descriptor.
@@ -150,7 +162,7 @@ impl SessionHandle {
                 "function token is not present in this generated projection",
             )
         })?;
-        validate_public_function_argument_count(projection.parameters().len())?;
+        validate_function_argument_count(projection.parameters().len(), self.0.limits.structural)?;
         let FunctionReturnProjection::Scalar(result) = projection.returns() else {
             return Err(handle_error(
                 "function_return_shape_unsupported",
@@ -242,7 +254,7 @@ impl SessionHandle {
     ) -> Result<PredicateHandle> {
         self.require_session(source.session_id())?;
         self.require_session(target.session_id())?;
-        validate_reachability_bounds(min_depth, max_depth)?;
+        validate_reachability_bounds(self.0.limits.structural, min_depth, max_depth)?;
 
         let relation_id = self
             .0
@@ -302,7 +314,7 @@ impl SessionHandle {
         slots: impl IntoIterator<Item = SelectionHandle>,
     ) -> Result<ShapeHandle> {
         let slots: Vec<_> = slots.into_iter().collect();
-        validate_shape_arity(slots.len())?;
+        validate_shape_arity(self.0.limits.structural, slots.len())?;
         for slot in &slots {
             self.require_session(slot.session_id())?;
         }
@@ -322,11 +334,11 @@ impl SessionHandle {
             .into_iter()
             .map(|(name, slot)| (name.into(), slot))
             .collect();
-        validate_shape_arity(slots.len())?;
+        validate_shape_arity(self.0.limits.structural, slots.len())?;
         let mut names = BTreeSet::new();
         for (name, slot) in &slots {
             self.require_session(slot.session_id())?;
-            validate_output_name(name)?;
+            validate_output_name(self.0.limits.structural, name)?;
             if !names.insert(name.clone()) {
                 return Err(handle_error(
                     "duplicate_output_name",
@@ -355,7 +367,7 @@ impl SessionHandle {
     ) -> Result<ShapeHandle> {
         let declarations: Vec<_> = declarations.into_iter().collect();
         let slots: Vec<_> = slots.into_iter().collect();
-        validate_shape_arity(slots.len())?;
+        validate_shape_arity(self.0.limits.structural, slots.len())?;
         if declarations.len() != slots.len() {
             return Err(handle_error(
                 "named_declaration_length_mismatch",
@@ -367,8 +379,8 @@ impl SessionHandle {
             declarations.iter().zip(&slots)
         {
             self.require_session(selection.session_id())?;
-            validate_output_name(declared_name)?;
-            validate_output_name(actual_name)?;
+            validate_output_name(self.0.limits.structural, declared_name)?;
+            validate_output_name(self.0.limits.structural, actual_name)?;
             if declared_name != actual_name {
                 return Err(handle_error(
                     "named_declaration_name_mismatch",
@@ -443,8 +455,11 @@ impl SessionHandle {
     }
 }
 
-fn validate_output_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.len() > MAX_OUTPUT_NAME_BYTES || name.chars().any(char::is_control) {
+fn validate_output_name(limits: StructuralLimits, name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > limits.output_name_bytes
+        || name.chars().any(char::is_control)
+    {
         Err(handle_error(
             "invalid_output_name",
             "named output members must be non-empty and within the canonical byte ceiling",
@@ -454,37 +469,36 @@ fn validate_output_name(name: &str) -> Result<()> {
     }
 }
 
-fn validate_shape_arity(count: usize) -> Result<()> {
+fn validate_shape_arity(limits: StructuralLimits, count: usize) -> Result<()> {
     if count == 0 {
         return Err(handle_error(
             "empty_output",
             "typed queries must select at least one output binding",
         ));
     }
-    if count > MAX_SELECTED_SLOTS {
-        return Err(handle_error(
-            "selection_cap_exceeded",
-            "typed query output exceeds the canonical sixteen-slot ceiling",
-        ));
-    }
+    validate_selection_count(limits, count)?;
     Ok(())
 }
 
-fn validate_reachability_bounds(min_depth: u8, max_depth: u8) -> Result<()> {
+fn validate_reachability_bounds(
+    limits: StructuralLimits,
+    min_depth: u8,
+    max_depth: u8,
+) -> Result<()> {
     if min_depth > max_depth {
         return Err(handle_error(
             "reachable_bounds",
             "reachability minimum depth must not exceed its maximum depth",
         ));
     }
-    if usize::from(max_depth) > MAX_PREDICATE_DEPTH {
+    if usize::from(max_depth) > limits.predicate_depth {
         return Err(handle_error(
             "reachable_depth_limit",
             "reachability maximum depth exceeds the canonical predicate-depth ceiling",
         ));
     }
     let expanded = reachability_expanded_clauses(min_depth, max_depth);
-    if expanded > MAX_PREDICATE_NODES {
+    if expanded > limits.predicate_nodes {
         return Err(handle_error(
             "reachable_expansion_limit",
             "reachability expansion exceeds the canonical predicate-node ceiling",
@@ -622,7 +636,7 @@ impl BindingHandle {
                 "IID-set predicates require at least one IID",
             ));
         }
-        if iids.len() > MAX_BOOLEAN_TERMS {
+        if iids.len() > self.0.session.limits.structural.boolean_terms {
             return Err(handle_error(
                 "iid_set_limit",
                 "IID-set predicate exceeds the canonical boolean-term ceiling",
@@ -1342,27 +1356,35 @@ impl PredicateHandle {
     }
 
     /// Combine two predicates with conjunction in source order.
+    ///
+    /// An operand that is already a conjunction contributes its terms, so
+    /// repeated combination yields one n-ary node rather than a tree whose
+    /// depth grows with the number of terms.
     pub fn and(&self, other: &Self) -> Result<Self> {
         require_same_session(self.session_id, other.session_id)?;
-        Ok(Self::new(
-            self.session_id,
-            HandleExpr::And(vec![
-                Arc::clone(&self.expression),
-                Arc::clone(&other.expression),
-            ]),
-        ))
+        let mut terms = Vec::new();
+        for expression in [&self.expression, &other.expression] {
+            match expression.as_ref() {
+                HandleExpr::And(children) => terms.extend(children.iter().cloned()),
+                _ => terms.push(Arc::clone(expression)),
+            }
+        }
+        Ok(Self::new(self.session_id, HandleExpr::And(terms)))
     }
 
     /// Combine two predicates with disjunction in source order.
+    ///
+    /// An operand that is already a disjunction contributes its branches.
     pub fn or(&self, other: &Self) -> Result<Self> {
         require_same_session(self.session_id, other.session_id)?;
-        Ok(Self::new(
-            self.session_id,
-            HandleExpr::Or(vec![
-                Arc::clone(&self.expression),
-                Arc::clone(&other.expression),
-            ]),
-        ))
+        let mut branches = Vec::new();
+        for expression in [&self.expression, &other.expression] {
+            match expression.as_ref() {
+                HandleExpr::Or(children) => branches.extend(children.iter().cloned()),
+                _ => branches.push(Arc::clone(expression)),
+            }
+        }
+        Ok(Self::new(self.session_id, HandleExpr::Or(branches)))
     }
 
     /// Negate this predicate without mutating its lineage.
@@ -1582,6 +1604,15 @@ struct QueryState {
 pub struct QueryHandle(Arc<QueryState>);
 
 impl QueryHandle {
+    /// Return the limits of the session this query belongs to.
+    ///
+    /// A binding reads these to bound a foreign sequence before it
+    /// materializes it, so its early refusals match request validation.
+    #[must_use]
+    pub fn limits(&self) -> QueryLimits {
+        self.0.session.limits
+    }
+
     /// Canonically validate one selected-row terminal without serializing its
     /// semantic request. Intended for native language-binding entry seams.
     #[doc(hidden)]
@@ -1592,7 +1623,11 @@ impl QueryHandle {
         cardinality: RowCardinality,
     ) -> Result<ValidatedMatchRequest> {
         let request = self.fetch_rows(order, window, cardinality)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     /// Canonically validate one distinct-root page terminal without a
@@ -1606,53 +1641,33 @@ impl QueryHandle {
         include_total: bool,
     ) -> Result<ValidatedMatchRequest> {
         let request = self.page_by(root, order, window, include_total)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     /// Canonically validate one distinct-root count terminal.
     #[doc(hidden)]
     pub fn validate_count_by(&self, root: &BindingHandle) -> Result<ValidatedMatchRequest> {
         let request = self.count_by(root)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
-    }
-
-    /// Validate one generated-manager count lineage after flattening only its
-    /// conjunction spine in authored order.
-    ///
-    /// Generated C manager filters persist through repeated public
-    /// `where_predicate` transitions. Those transitions intentionally retain
-    /// the generic query builder's binary tree, while the manager contract
-    /// admits the full flat boolean-term ceiling. This hidden terminal seam
-    /// removes that representational depth without changing ordinary query
-    /// construction or admitting any additional predicate leaf kind.
-    #[doc(hidden)]
-    pub fn validate_manager_count_by(&self, root: &BindingHandle) -> Result<ValidatedMatchRequest> {
-        let Some(predicate) = &self.0.predicate else {
-            return self.validate_count_by(root);
-        };
-        let expressions = flatten_manager_conjunction(&predicate.expression)?;
-        let expression = if expressions.len() == 1 {
-            Arc::clone(&expressions[0])
-        } else {
-            Arc::new(HandleExpr::And(expressions))
-        };
-        let flattened = self.with_state(
-            self.0.hidden.clone(),
-            Some(PredicateHandle {
-                session_id: predicate.session_id,
-                expression,
-                bindings: predicate.bindings.clone(),
-            }),
-            self.0.allowed_cross_joins.clone(),
-        );
-        flattened.validate_count_by(root)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     /// Canonically validate one distinct-root existence terminal.
     #[doc(hidden)]
     pub fn validate_exists_by(&self, root: &BindingHandle) -> Result<ValidatedMatchRequest> {
         let request = self.exists_by(root)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     /// Return this opaque query lineage's descriptor registry to a trusted
@@ -1699,69 +1714,6 @@ impl QueryHandle {
             Some(existing) => existing.and(&predicate)?,
             None => predicate,
         };
-        Ok(self.with_state(
-            self.0.hidden.clone(),
-            Some(predicate),
-            self.0.allowed_cross_joins.clone(),
-        ))
-    }
-
-    /// Attach one authored sequence as a flat conjunction.
-    ///
-    /// This hidden generated-manager seam avoids turning a bounded list of
-    /// independent field comparisons into a depth-linear predicate tree. The
-    /// returned lineage remains persistent and every child retains its exact
-    /// source position.
-    #[doc(hidden)]
-    pub fn where_predicates_in_order(
-        &self,
-        predicates: impl IntoIterator<Item = PredicateHandle>,
-    ) -> Result<Self> {
-        let predicates = predicates.into_iter().collect::<Vec<_>>();
-        if predicates.is_empty() {
-            return Ok(self.clone());
-        }
-        if predicates.len() > MAX_BOOLEAN_TERMS {
-            return Err(handle_error(
-                "boolean_term_limit",
-                "flat conjunction exceeds the canonical boolean-term ceiling",
-            ));
-        }
-        for predicate in &predicates {
-            self.require_session(predicate.session_id)?;
-            if predicate
-                .bindings
-                .iter()
-                .any(|token| !self.is_attached(*token))
-            {
-                return Err(handle_error(
-                    "unattached_binding",
-                    "predicate references a binding not attached to this query",
-                ));
-            }
-        }
-        let mut expressions = Vec::new();
-        expressions
-            .try_reserve(
-                predicates
-                    .len()
-                    .saturating_add(usize::from(self.0.predicate.is_some())),
-            )
-            .map_err(|_| {
-                handle_error(
-                    "predicate_allocation_exhausted",
-                    "flat conjunction could not reserve bounded predicate storage",
-                )
-            })?;
-        if let Some(existing) = &self.0.predicate {
-            expressions.push(Arc::clone(&existing.expression));
-        }
-        expressions.extend(
-            predicates
-                .into_iter()
-                .map(|predicate| Arc::clone(&predicate.expression)),
-        );
-        let predicate = PredicateHandle::new(self.0.session.id, HandleExpr::And(expressions));
         Ok(self.with_state(
             self.0.hidden.clone(),
             Some(predicate),
@@ -1888,7 +1840,11 @@ impl QueryHandle {
         terms: &[(Reduction, Option<&FieldHandle>)],
     ) -> Result<ValidatedMatchRequest> {
         let request = self.reduce_by(root, group, terms)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     /// Lower this lineage to an unvalidated reduction grouped by one owned
@@ -1935,7 +1891,11 @@ impl QueryHandle {
         terms: &[(Reduction, Option<&FieldHandle>)],
     ) -> Result<ValidatedMatchRequest> {
         let request = self.reduce_by_field(root, group, terms)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     /// Lower this lineage to an unvalidated reduction grouped by the
@@ -1979,6 +1939,20 @@ impl QueryHandle {
         ))
     }
 
+    /// Check reduction group fields when a caller chooses them.
+    ///
+    /// Bindings call this from their group-by composition so too many group
+    /// fields are refused there, with the diagnostic the reduction terminal
+    /// would produce (`field_group_tuple_cap_exceeded` under the session's
+    /// `selected_slots`).
+    pub fn check_group_fields(&self, groups: &[&FieldHandle]) -> Result<()> {
+        for group in groups {
+            self.require_session(group.session_id())?;
+        }
+        validate_field_group_count(self.0.session.limits.structural, groups.len())?;
+        Ok(())
+    }
+
     /// Canonically validate one tuple-field-grouped reduction terminal.
     #[doc(hidden)]
     pub fn validate_reduce_by_fields(
@@ -1988,7 +1962,11 @@ impl QueryHandle {
         terms: &[(Reduction, Option<&FieldHandle>)],
     ) -> Result<ValidatedMatchRequest> {
         let request = self.reduce_by_fields(root, groups, terms)?;
-        Ok(validate_match_request(&self.0.session.registry, request)?)
+        Ok(validate_match_request_with_limits(
+            &self.0.session.registry,
+            request,
+            self.0.session.limits,
+        )?)
     }
 
     fn lower_reduce_terms(
@@ -2134,66 +2112,6 @@ impl QueryHandle {
             })
             .collect()
     }
-}
-
-fn flatten_manager_conjunction(expression: &Arc<HandleExpr>) -> Result<Vec<Arc<HandleExpr>>> {
-    let mut pending = Vec::new();
-    pending.try_reserve(1).map_err(|_| {
-        manager_filter_resource_error(
-            "manager_filter_allocation_exhausted",
-            "manager conjunction traversal could not reserve bounded storage",
-        )
-    })?;
-    pending.push((Arc::clone(expression), 1_usize));
-    let mut flattened = Vec::new();
-    let mut visited = 0_usize;
-    while let Some((expression, depth)) = pending.pop() {
-        visited = visited.saturating_add(1);
-        if visited > MAX_PREDICATE_NODES || depth > MAX_BOOLEAN_TERMS {
-            return Err(manager_filter_resource_error(
-                "manager_filter_predicate_limit",
-                "manager conjunction exceeds the canonical boolean-term ceiling",
-            ));
-        }
-        match expression.as_ref() {
-            HandleExpr::And(expressions) => {
-                pending.try_reserve(expressions.len()).map_err(|_| {
-                    manager_filter_resource_error(
-                        "manager_filter_allocation_exhausted",
-                        "manager conjunction traversal could not reserve bounded storage",
-                    )
-                })?;
-                pending.extend(
-                    expressions
-                        .iter()
-                        .rev()
-                        .map(|expression| (Arc::clone(expression), depth.saturating_add(1))),
-                );
-            }
-            _ => {
-                if flattened.len() == MAX_BOOLEAN_TERMS {
-                    return Err(manager_filter_resource_error(
-                        "manager_filter_predicate_limit",
-                        "manager conjunction exceeds the canonical boolean-term ceiling",
-                    ));
-                }
-                flattened.try_reserve(1).map_err(|_| {
-                    manager_filter_resource_error(
-                        "manager_filter_allocation_exhausted",
-                        "manager conjunction could not reserve bounded predicate storage",
-                    )
-                })?;
-                flattened.push(expression);
-            }
-        }
-    }
-    if flattened.is_empty() {
-        return Err(handle_error(
-            "empty_predicate",
-            "manager conjunction must contain at least one predicate",
-        ));
-    }
-    Ok(flattened)
 }
 
 struct LoweredQuery {

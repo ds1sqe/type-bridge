@@ -1,0 +1,9 @@
+[
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nlimit 2;\n",
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nlimit 0;\n",
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nlimit 1;\n",
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nsort $name asc;\nlimit 2;\n",
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nfetch {\n    \"names\": [\n        match $person has name $FtbDocumentValue0;\n        limit 1;\n        return { $FtbDocumentValue0 };\n    ]\n};\n",
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nlimit 2;\nfetch {\n    \"names\": [\n        match $person has name $FtbDocumentValue0;\n        limit 4;\n        return { $FtbDocumentValue0 };\n    ]\n};\n",
+  "match\n$person isa! person;\n$person has name $name;\n$name isa! name;\n$name >= \"a\";\nlimit 1;\nfetch {\n    \"names\": [\n        match $person has name $FtbDocumentValue0;\n        limit 4;\n        return { $FtbDocumentValue0 };\n    ]\n};\n"
+]

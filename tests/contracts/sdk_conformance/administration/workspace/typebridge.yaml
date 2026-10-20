@@ -1,0 +1,27 @@
+format: typebridge.workspace/v1
+schema:
+  root: schema/schema.yaml
+  ownership: exclusive
+  managed-scope: administration
+compatibility:
+  semantic-profile: typedb-3.12.1/v1
+migrations:
+  directory: migrations/v2
+  app-label: administration
+bindings:
+  python:
+    output: generated/python
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
+  c:
+    output: generated/c
+environments:
+  live:
+    database: sdk_administration
+    uri: 127.0.0.1:1729
+    migrate: "true"
+    credential:
+      username: env:TYPEBRIDGE_SDK_ADMINISTRATION_USERNAME
+      password: env:TYPEBRIDGE_SDK_ADMINISTRATION_PASSWORD

@@ -1,0 +1,1 @@
+match entity $t; relation $r; attribute $a; $t sub entity; $t sub! person; $t label person; $t owns name @card(1..); $r relates friend as participant; $t plays friendship:friend; $a value string;

@@ -16,7 +16,7 @@ HARNESS = PRODUCER.parents[1] / "rust_acceptance.rs"
 
 def test_rust_projected_producer_uses_real_generated_projection_paths() -> None:
     source = PRODUCER.read_text()
-    assert "RemoteDatabase::connect" in source
+    assert "ProxyDatabase::connect" in source
     assert "RemoteQueryResponseV2::new" in source
     assert "SCHEMA.generated_projection_validator()" in source
     assert "foreign::Person" in source
@@ -48,7 +48,7 @@ def test_rust_projected_producer_does_not_import_expected_parity_evidence() -> N
     for forbidden in (
         "expected_report",
         "compare_projected_parity",
-        'journey-v3.json")?',
+        'journey.json")?',
         "batch_parity",
         "filter_parity",
     ):

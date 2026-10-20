@@ -1,3 +1,5 @@
+mod support;
+
 use std::collections::BTreeSet;
 use std::env;
 use std::sync::Arc;
@@ -76,6 +78,8 @@ async fn databases() -> (Arc<Database>, Arc<Database>) {
             .await
             .expect("connect isolated journal database"),
     );
+    support::assert_live_server(&managed);
+    support::assert_live_server(&journal);
     (managed, journal)
 }
 
@@ -172,8 +176,7 @@ async fn query_document_count(database: &Database, query: &str) -> usize {
 fn context() -> ManagedDeltaContext {
     ManagedDeltaContext::new(
         ManagedScopeId::new("provider-live-scope").expect("scope"),
-        type_bridge_contract::fingerprint::SemanticProfileId::new("typedb-3.12.1/v1")
-            .expect("profile"),
+        support::live_profile(),
         execution_capability_vocabulary().expect("execution capability vocabulary"),
     )
 }
@@ -186,7 +189,7 @@ fn migration_id(name: &str) -> MigrationId {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn raw_attribute_type_undefinition_removes_its_dependencies_on_3_12_3() {
     let (managed, journal) = databases().await;
     let mut define = managed
@@ -299,7 +302,7 @@ fn conditional_manifest(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();
@@ -326,8 +329,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
     );
     let graph = MigrationHistoryGraph::from_verified([first.clone(), second.clone()])
         .expect("verified history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -416,7 +418,7 @@ async fn coordinator_applies_verified_plan_through_live_provider_on_3_12_3() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.3 server"]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
     let (managed, journal_database) = databases().await;
     let context = context();
@@ -430,8 +432,7 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         &context,
     );
     let graph = MigrationHistoryGraph::from_verified([expand.clone()]).expect("expand history");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let expand_plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),
@@ -605,4 +606,133 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
         .delete_database()
         .await
         .expect("delete isolated journal database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn commented_function_body_survives_export_without_toml_drift() {
+    use type_bridge_core_lib::__internal as tql;
+    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    let body = "match\n  # retained body comment\n  let $value = $seed;\nreturn first $value;";
+    let signature = "fun keep-body($seed: integer) -> integer";
+    let toml = format!(
+        "[functions.keep-body]\nsignature = \"{signature}\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
+    );
+    let expected = toml_to_declared(DocumentId::new("schema.toml.tql").unwrap(), &toml).unwrap();
+    let emitted = tql::render(&tql::schema_define(vec![
+        tql::schema_function(signature, body).unwrap(),
+    ]))
+    .unwrap();
+    // The second database represents the released 2.2 verbatim emitter.
+    let released = format!("define {signature}:\n{body}\n");
+    for query in [emitted, released] {
+        let (managed, journal) = databases().await;
+        let expected = expected.clone();
+        let body = body.to_owned();
+        let test_database = managed.clone();
+        let result = async move {
+            let managed = test_database;
+            let mut tx = managed.schema_transaction().await.unwrap();
+            tx.query(&query).await.unwrap();
+            tx.commit().await.unwrap();
+            let exported = managed.schema_text().await.unwrap();
+            let actual =
+                typeql_to_declared(DocumentId::new("live-export.tql").unwrap(), &exported).unwrap();
+            let function = actual
+                .facts()
+                .find_map(|fact| match fact {
+                    SchemaFact::Function(function) => Some(function),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(function.body().text(), body, "{exported}");
+            assert_eq!(
+                actual.declared_identity_fingerprint(),
+                expected.declared_identity_fingerprint()
+            );
+            assert_eq!(
+                type_bridge_schema::semantic_schema_fingerprint(&actual, &support::live_profile())
+                    .unwrap(),
+                type_bridge_schema::semantic_schema_fingerprint(
+                    &expected,
+                    &support::live_profile()
+                )
+                .unwrap(),
+            );
+        };
+        // Cleanup even when assertions panic, before propagating the failure.
+        let result = tokio::spawn(result).await;
+        managed.delete_database().await.unwrap();
+        journal.delete_database().await.unwrap();
+        result.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn tuple_function_from_native_lowering_defines_returns_and_preserves_body() {
+    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    use type_bridge_schema_migration::{SchemaFactCatalog, lower_schema_delta};
+    let body =
+        "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;";
+    let source = declared_facts(vec![]);
+    let input = format!(
+        "[functions.pair]\nsignature = \"fun pair($seed: integer) -> integer, integer\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
+    );
+    let target = toml_to_declared(DocumentId::new("tuple.toml").unwrap(), &input).unwrap();
+    let context = context();
+    let delta = type_bridge_contract::schema_delta::SchemaDelta::new(
+        type_bridge_contract::schema_delta::PatchFormatVersion::V1,
+        managed_schema_state(&source, &context).unwrap(),
+        managed_schema_state(&target, &context).unwrap(),
+        vec![
+            type_bridge_contract::schema::SchemaOperation::define(
+                target.facts().cloned().collect(),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    let lowering = lower_schema_delta(
+        &delta,
+        &SchemaFactCatalog::empty(),
+        &SchemaFactCatalog::new(target.facts().cloned()).unwrap(),
+        &SchemaLoweringBinding::for_context(&context).unwrap(),
+    )
+    .unwrap();
+    let (managed, journal) = databases().await;
+    let test_database = managed.clone();
+    let result = tokio::spawn(async move {
+        let mut transaction = test_database.schema_transaction().await.unwrap();
+        for unit in lowering.units() {
+            for statement in unit.statements() {
+                assert!(statement.query().contains(body));
+                transaction.query(statement.query()).await.unwrap();
+            }
+        }
+        transaction.commit().await.unwrap();
+        let exported = test_database.schema_text().await.unwrap();
+        let actual =
+            typeql_to_declared(DocumentId::new("tuple-export.tql").unwrap(), &exported).unwrap();
+        assert_eq!(
+            actual.declared_identity_fingerprint(),
+            target.declared_identity_fingerprint()
+        );
+        let mut read = test_database.read_transaction().await.unwrap();
+        let result = read
+            .query(
+                "match let $left, $right = pair(7); fetch { \"left\": $left, \"right\": $right };",
+            )
+            .await
+            .unwrap();
+        let type_bridge_orm::session::backend::QueryResult::Documents(rows) = result else {
+            panic!("expected tuple documents")
+        };
+        assert_eq!(rows, vec![serde_json::json!({"left": 7, "right": 7})]);
+        read.close().await.unwrap();
+    })
+    .await;
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
+    result.unwrap();
 }

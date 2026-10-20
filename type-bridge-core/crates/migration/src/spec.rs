@@ -149,6 +149,7 @@ pub enum OperationSpec {
         new_meta: std::collections::BTreeMap<String, String>,
     },
     /// Add a role to a relation.
+    /// Parent ordering is checked from graph declarations, otherwise inferred from the child.
     AddRole {
         /// Relation type name.
         relation_type: String,
@@ -239,8 +240,8 @@ pub enum OperationSpec {
 ///
 /// Carried TypeQL wins when present (it is the frozen Python
 /// `CopyAttribute.to_typeql()` output); otherwise the structured
-/// `owner`/`source`/`dest` fields synthesize it. The synthesis is pinned
-/// byte-identical to the Python template by a parity test on the Python side.
+/// `owner`/`source`/`dest` fields synthesize it through the official AST.
+/// New synthesis preserves the released query meaning; carried text stays exact.
 ///
 /// # Errors
 ///
@@ -270,14 +271,34 @@ pub fn copy_attribute_typeql(op: &OperationSpec) -> crate::Result<(String, Optio
                 .to_string(),
         });
     };
-    let filter_line = match filter {
-        Some(filter) => format!("\n  {filter};"),
-        None => String::new(),
-    };
-    let synthesized_forward = format!(
-        "match\n  $x isa {owner}, has {source} $v;\n  not {{ $x has {dest} $d; }};{filter_line}\ninsert\n  $x has {dest} == $v;"
-    );
-    let synthesized_reverse = format!("match $x isa {owner}, has {dest} $v;\ndelete $v of $x;");
+    use type_bridge_core_lib::__internal as tql;
+    let mut patterns = vec![
+        tql::thing(
+            "x",
+            vec![tql::isa(owner, false)?, tql::has(source, tql::var("v")?)?],
+        )?,
+        tql::not(vec![tql::thing(
+            "x",
+            vec![tql::has(dest, tql::var("d")?)?],
+        )?]),
+    ];
+    if let Some(filter) = filter {
+        patterns.extend(tql::parse_patterns(filter)?);
+    }
+    let synthesized_forward = tql::render(&tql::pipeline(vec![
+        tql::match_stage(patterns),
+        tql::insert(vec![tql::thing(
+            "x",
+            vec![tql::has_comparison(dest, "==", tql::var("v")?)?],
+        )?]),
+    ]))?;
+    let synthesized_reverse = tql::render(&tql::pipeline(vec![
+        tql::match_stage(vec![tql::thing(
+            "x",
+            vec![tql::isa(owner, false)?, tql::has(dest, tql::var("v")?)?],
+        )?]),
+        tql::delete(vec![tql::delete_has("x", "v")?]),
+    ]))?;
     Ok((
         synthesized_forward,
         Some(reverse.clone().unwrap_or(synthesized_reverse)),
@@ -488,11 +509,11 @@ mod tests {
     fn structured_copy_attribute_synthesizes_python_shaped_typeql() {
         let (forward, reverse) = copy_attribute_typeql(&structured_copy_attribute(None)).unwrap();
 
-        assert_eq!(
+        assert_typeql_eq!(
             forward,
             "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\ninsert\n  $x has new-name == $v;"
         );
-        assert_eq!(
+        assert_typeql_eq!(
             reverse.as_deref(),
             Some("match $x isa person, has new-name $v;\ndelete $v of $x;")
         );
@@ -505,7 +526,7 @@ mod tests {
         let (forward, _) =
             copy_attribute_typeql(&structured_copy_attribute(Some("$x has age $a"))).unwrap();
 
-        assert_eq!(
+        assert_typeql_eq!(
             forward,
             "match\n  $x isa person, has old-name $v;\n  not { $x has new-name $d; };\n  $x has age $a;\ninsert\n  $x has new-name == $v;"
         );
@@ -559,7 +580,7 @@ mod tests {
         };
         assert_eq!(owner.as_deref(), Some("person"));
         assert!(forward.as_deref().unwrap().contains("has new-name == $v"));
-        assert!(reverse.as_deref().unwrap().contains("delete $v of $x"));
+        assert!(reverse.as_deref().unwrap().contains("delete has $v of $x"));
 
         let passthrough = OperationSpec::RunTypeql {
             forward: "match $x isa person;".to_string(),

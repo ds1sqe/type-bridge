@@ -1,0 +1,47 @@
+{
+  "format": "typebridge.sdk-writes-program/v1",
+  "program": "constraints",
+  "semantic_profile": "typedb-3.13.6/v1",
+  "workspace": "typebridge.yaml",
+  "steps": [
+    {
+      "name": "seed",
+      "kind": "write",
+      "plans": [
+        "seed_doctor"
+      ]
+    },
+    {
+      "name": "reject",
+      "kind": "write",
+      "plans": [
+        "duplicate_doctor"
+      ]
+    }
+  ],
+  "plans": {
+    "seed_doctor": {
+      "insert": [
+        "doctor"
+      ],
+      "rows": [
+        {
+          "name": "D1",
+          "on_call": true
+        }
+      ]
+    },
+    "duplicate_doctor": {
+      "insert": [
+        "doctor"
+      ],
+      "rows": [
+        {
+          "name": "D1",
+          "on_call": false
+        }
+      ],
+      "rejected": "the doctor's name is a key D1 already holds"
+    }
+  }
+}

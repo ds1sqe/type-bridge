@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -63,31 +65,72 @@ def _load() -> dict[str, Any]:
     return json.loads(INVENTORY.read_text(encoding="utf-8"))
 
 
+def _dependency_tables(document: dict[str, Any]) -> list[dict[str, Any]]:
+    tables = [
+        document.get("dependencies", {}),
+        document.get("dev-dependencies", {}),
+        document.get("build-dependencies", {}),
+    ]
+    for target in document.get("target", {}).values():
+        tables.extend(
+            [
+                target.get("dependencies", {}),
+                target.get("dev-dependencies", {}),
+                target.get("build-dependencies", {}),
+            ]
+        )
+    return tables
+
+
+def _depends_on(document: dict[str, Any], package: str) -> list[str]:
+    return [
+        name
+        for dependencies in _dependency_tables(document)
+        for name, specification in dependencies.items()
+        if package
+        in (name, specification.get("package") if isinstance(specification, dict) else None)
+    ]
+
+
+# The private perf harness measures the public client from above it.
+CLIENT_CONSUMERS = {"rust", "perf"}
+
+
 def test_core_crates_do_not_depend_upward_on_the_public_rust_client() -> None:
     offenders: list[str] = []
     for manifest in sorted((ROOT / "type-bridge-core/crates").glob("*/Cargo.toml")):
-        if manifest.parent.name == "rust":
+        if manifest.parent.name in CLIENT_CONSUMERS:
             continue
         document = tomllib.loads(manifest.read_text(encoding="utf-8"))
-        dependency_tables = [
-            document.get("dependencies", {}),
-            document.get("dev-dependencies", {}),
-            document.get("build-dependencies", {}),
+        offenders += [
+            f"{manifest.relative_to(ROOT)}:{name}" for name in _depends_on(document, "type-bridge")
         ]
-        for target in document.get("target", {}).values():
-            dependency_tables.extend(
-                [
-                    target.get("dependencies", {}),
-                    target.get("dev-dependencies", {}),
-                    target.get("build-dependencies", {}),
-                ]
-            )
-        for dependencies in dependency_tables:
-            for name, specification in dependencies.items():
-                package = specification.get("package") if isinstance(specification, dict) else None
-                if name == "type-bridge" or package == "type-bridge":
-                    offenders.append(f"{manifest.relative_to(ROOT)}:{name}")
     assert not offenders
+
+
+def _inventory_module() -> Any:
+    path = ROOT / "scripts/ci/cargo_release_inventory.py"
+    spec = importlib.util.spec_from_file_location("cargo_release_inventory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault("cargo_release_inventory", module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_only_binding_perf_stages_features_depend_on_the_private_perf_harness() -> None:
+    cargo_release_inventory = _inventory_module()
+    inventory = cargo_release_inventory.load_inventory()
+    workspace = ROOT / "type-bridge-core"
+    assert cargo_release_inventory.tooling_dependency_violations(inventory, workspace) == []
+    dependents = sorted(
+        manifest.parent.name
+        for manifest in (workspace / "crates").glob("*/Cargo.toml")
+        if _depends_on(tomllib.loads(manifest.read_text(encoding="utf-8")), "type-bridge-perf")
+    )
+    assert dependents == ["c", "node", "python"]
+    perf = tomllib.loads((workspace / "crates/perf/Cargo.toml").read_text(encoding="utf-8"))
+    assert perf["package"]["publish"] is False
 
 
 def _assert_source_evidence(item: dict[str, Any]) -> None:

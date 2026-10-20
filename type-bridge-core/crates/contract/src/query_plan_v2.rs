@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::decimal::parse_decimal;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::id::{AttributeId, RoleId, TypeId, TypeKind, is_canonical_thing_iid};
-use crate::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, StructuralLimits};
+use crate::limits::{MAX_CANONICAL_STRING_BYTES, QueryLimits};
 use crate::migration_assertion::BindingId;
 use crate::temporal::{CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
 use crate::value::{CanonicalValue, Cardinality, ValueTypeTag};
@@ -33,6 +33,7 @@ pub(crate) const CAP_OUTPUT_COLLECT: &str = "query.output.collect";
 pub(crate) const CAP_OUTPUT_COLLECT_DISTINCT: &str = "query.output.collect-distinct";
 pub(crate) const CAP_OUTPUT_HYDRATED: &str = "query.output.hydrated";
 pub(crate) const CAP_EXACTLY_ONE: &str = "query.operation.exactly-one";
+pub(crate) const CAP_COMPLETE_ROWS: &str = "query.operation.complete-rows";
 pub(crate) const CAP_PAGE: &str = "query.operation.page";
 pub(crate) const CAP_DISTINCT_COUNT: &str = "query.operation.distinct-count";
 pub(crate) const CAP_DISTINCT_EXISTS: &str = "query.operation.distinct-exists";
@@ -305,25 +306,38 @@ impl CompatibilityValueV2 {
         }
     }
 
-    fn validate(&self) -> Result<(), Diagnostic> {
-        let CompatibilityValueV2Inner::Released { kind, chunks } = &self.inner else {
+    /// Refuse a released value larger than one whole plan artifact.
+    ///
+    /// The ceiling belongs to the plan's limits, so it is enforced where a
+    /// plan is validated rather than where a value is constructed.
+    fn check_artifact_bytes(&self, limits: QueryLimits) -> Result<(), Diagnostic> {
+        let CompatibilityValueV2Inner::Released { chunks, .. } = &self.inner else {
             return Ok(());
         };
-        let byte_len = chunks
-            .iter()
-            .try_fold(0usize, |total, chunk| total.checked_add(chunk.len()));
-        let Some(byte_len) = byte_len else {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_v2_compatibility_value_limit",
-                "compatibility value bytes overflow the bounded artifact domain",
-            ));
-        };
-        if byte_len > MAX_CANONICAL_BYTES {
+        let byte_len = chunks.iter().map(String::len).sum::<usize>();
+        if byte_len > limits.codec.max_bytes {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_v2_compatibility_value_limit",
                 "compatibility value exceeds the canonical artifact byte ceiling",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), Diagnostic> {
+        let CompatibilityValueV2Inner::Released { kind, chunks } = &self.inner else {
+            return Ok(());
+        };
+        if chunks
+            .iter()
+            .try_fold(0usize, |total, chunk| total.checked_add(chunk.len()))
+            .is_none()
+        {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_v2_compatibility_value_limit",
+                "compatibility value bytes overflow the bounded artifact domain",
             ));
         }
         let value = chunks.concat();
@@ -1517,6 +1531,10 @@ pub enum QueryRowCardinalityV2 {
     ExactlyOne,
     /// Return one bounded stable row window.
     BoundedMany,
+    /// Return every distinct selected-identity tuple, or refuse when there
+    /// are more than the window's limit. Nothing is cut off, so no order
+    /// is required.
+    Complete,
 }
 
 /// The closed reducer vocabulary used by model-compatible V2 terminals.
@@ -1766,9 +1784,9 @@ impl QueryPlanV2Compatibility {
     pub(crate) fn validate(
         &self,
         binding_count: usize,
-        limits: StructuralLimits,
+        limits: QueryLimits,
     ) -> Result<(), Diagnostic> {
-        if self.allowed_cross_joins.len() > limits.allowed_cross_joins {
+        if self.allowed_cross_joins.len() > limits.structural.allowed_cross_joins {
             return Err(failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_v2_cross_join_limit",
@@ -2067,18 +2085,18 @@ fn validate_pattern(
     depth: usize,
     positive_root: bool,
     binding_count: usize,
-    limits: StructuralLimits,
+    limits: QueryLimits,
     nodes: &mut usize,
 ) -> Result<(), Diagnostic> {
     *nodes = nodes.saturating_add(1);
-    if !limits.allows_predicate_nodes(*nodes) {
+    if !limits.structural.allows_predicate_nodes(*nodes) {
         return Err(failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_v2_pattern_node_limit",
             "V2 compatibility predicate nodes exceed the structural ceiling",
         ));
     }
-    if !limits.allows_predicate_depth(depth) {
+    if !limits.structural.allows_predicate_depth(depth) {
         return Err(failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_v2_pattern_depth_limit",
@@ -2093,6 +2111,7 @@ fn validate_pattern(
         } => {
             check_field(field, binding_count)?;
             value.validate()?;
+            value.check_artifact_bytes(limits)?;
             if field.value_type() != value.value_type() {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
@@ -2212,7 +2231,10 @@ fn validate_pattern(
                     "reachability requires relation-owned roles and canonical inclusive bounds",
                 ));
             }
-            if !limits.allows_predicate_depth(usize::from(*max_depth)) {
+            if !limits
+                .structural
+                .allows_predicate_depth(usize::from(*max_depth))
+            {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_v2_reachable_depth",
@@ -2228,7 +2250,7 @@ fn validate_pattern(
             };
             let expanded_clauses = expanded_hops.saturating_add(usize::from(*min_depth == 0));
             *nodes = nodes.saturating_add(expanded_clauses.saturating_sub(1));
-            if !limits.allows_predicate_nodes(*nodes) {
+            if !limits.structural.allows_predicate_nodes(*nodes) {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_v2_reachable_expansion_limit",
@@ -2255,10 +2277,10 @@ fn validate_boolean_children(
     depth: usize,
     positive_root: bool,
     binding_count: usize,
-    limits: StructuralLimits,
+    limits: QueryLimits,
     nodes: &mut usize,
 ) -> Result<(), Diagnostic> {
-    if patterns.is_empty() || patterns.len() > limits.boolean_terms {
+    if patterns.is_empty() || patterns.len() > limits.structural.boolean_terms {
         return Err(failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_v2_boolean_term_limit",
@@ -2281,7 +2303,7 @@ fn validate_boolean_children(
 fn validate_model_query(
     query: &ModelQueryV2,
     binding_count: usize,
-    limits: StructuralLimits,
+    limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
     match query {
         ModelQueryV2::Rows {
@@ -2319,7 +2341,7 @@ fn validate_model_query(
                             "bounded rows require a validator-proven stable total order",
                         )
                     })?;
-                    validate_stable_order(order, binding_count, limits.order_terms)?;
+                    validate_stable_order(order, binding_count, limits.structural.order_terms)?;
                     let exposed = selected_identity.iter().copied().collect();
                     validate_order_against_hydration(order, hydration, &exposed)?;
                     if order.identity_tiebreakers() != selected_identity {
@@ -2327,6 +2349,15 @@ fn validate_model_query(
                             DiagnosticCategory::InvalidContract,
                             "query_plan_v2_selected_order_tiebreaker",
                             "bounded row ordering must use the selected identity tuple",
+                        ));
+                    }
+                }
+                QueryRowCardinalityV2::Complete => {
+                    if window.offset() != 0 || order.is_some() {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_plan_v2_complete_rows_contract",
+                            "complete rows require offset zero and no row order",
                         ));
                     }
                 }
@@ -2356,7 +2387,7 @@ fn validate_model_query(
                     "the page root must be one singular public output slot",
                 ));
             }
-            validate_stable_order(order, binding_count, limits.order_terms)?;
+            validate_stable_order(order, binding_count, limits.structural.order_terms)?;
             validate_order_against_hydration(order, hydration, &BTreeSet::from([*root]))?;
             if order.identity_tiebreakers() != [*root] {
                 return Err(failure(
@@ -2401,7 +2432,7 @@ fn validate_model_query(
                     "reduction roots require descriptor authority",
                 ));
             }
-            if reducers.is_empty() || !limits.allows_selected_slots(reducers.len()) {
+            if reducers.is_empty() || !limits.structural.allows_selected_slots(reducers.len()) {
                 return Err(failure(
                     DiagnosticCategory::ResourceLimit,
                     "query_plan_v2_reducer_limit",
@@ -2454,7 +2485,7 @@ fn validate_model_query(
                             "tuple-field grouping requires at least two fields",
                         ));
                     }
-                    if !limits.allows_selected_slots(fields.len()) {
+                    if !limits.structural.allows_selected_slots(fields.len()) {
                         return Err(failure(
                             DiagnosticCategory::ResourceLimit,
                             "query_plan_v2_reduction_group_limit",
@@ -2591,9 +2622,9 @@ fn validate_model_output(
     output: &QueryModelOutputV2,
     hydration: &HydrationProjectionV2,
     binding_count: usize,
-    limits: StructuralLimits,
+    limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
-    if output.slot_count() == 0 || !limits.allows_selected_slots(output.slot_count()) {
+    if output.slot_count() == 0 || !limits.structural.allows_selected_slots(output.slot_count()) {
         return Err(failure(
             DiagnosticCategory::ResourceLimit,
             "query_plan_v2_output_limit",
@@ -2615,7 +2646,7 @@ fn validate_model_output(
         }
         if let Some(name) = name
             && (name.is_empty()
-                || name.len() > limits.output_name_bytes
+                || name.len() > limits.structural.output_name_bytes
                 || name.chars().any(char::is_control)
                 || !names.insert(name.to_owned()))
         {
@@ -2639,8 +2670,12 @@ fn validate_model_output(
             return;
         }
         if let QueryModelOutputSlotV2::Collect { binding, order, .. } = slot {
-            if let Err(order_error) =
-                validate_stable_order(order, binding_count, limits.collection_order_terms)
+            if let Err(order_error) = validate_stable_order(
+                order,
+                binding_count,
+                limits.structural.collection_order_terms,
+            )
+            .map_err(|diagnostic| limits.annotate_limit(diagnostic, "collection_order_terms"))
             {
                 error = Some(order_error);
             } else if let Err(order_error) =
@@ -2756,7 +2791,7 @@ fn validate_order_against_hydration(
 fn validate_hydration(
     hydration: &HydrationProjectionV2,
     binding_count: usize,
-    limits: StructuralLimits,
+    limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
     if hydration.bindings().is_empty() {
         return Err(failure(
@@ -2860,7 +2895,7 @@ fn validate_hydration(
 
 fn validate_hydration_descriptor(
     descriptor: &HydrationDescriptorV2,
-    limits: StructuralLimits,
+    limits: QueryLimits,
 ) -> Result<(), Diagnostic> {
     if !matches!(
         descriptor.descriptor().kind(),
@@ -2900,7 +2935,7 @@ fn validate_hydration_descriptor(
             ));
         }
         if field.alias().is_empty()
-            || field.alias().len() > limits.output_name_bytes
+            || field.alias().len() > limits.structural.output_name_bytes
             || field.alias().chars().any(char::is_control)
             || previous_alias.is_some_and(|previous| previous >= field.alias())
             || !aliases.insert(field.alias())
@@ -3072,6 +3107,9 @@ fn add_model_query_capabilities(
                 }
                 QueryRowCardinalityV2::BoundedMany => {
                     insert_capability(capabilities, CAP_STABLE_SELECTED)?;
+                }
+                QueryRowCardinalityV2::Complete => {
+                    insert_capability(capabilities, CAP_COMPLETE_ROWS)?;
                 }
             }
         }

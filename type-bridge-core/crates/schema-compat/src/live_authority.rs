@@ -280,6 +280,9 @@ fn writer_authority_presence_source(
         let mut query_has_relevant_declaration = false;
         for definable in define.definables {
             let (is_relevant, span) = match definable {
+                Definable::TypeRename(_) | Definable::RoleTypeRename(_) => {
+                    return WriterAuthorityPresenceSource::Unfiltered;
+                }
                 Definable::TypeDeclaration(declaration) => {
                     let label = declaration.label.ident.as_str_unchecked();
                     let direct_label = relevant_label(label);

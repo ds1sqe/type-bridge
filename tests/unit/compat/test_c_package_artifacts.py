@@ -57,7 +57,8 @@ def test_frozen_archive_layouts_match_artifact_implementation() -> None:
 
     assert runtime_layout == [path.as_posix() for path in ARTIFACT.RUNTIME_MEMBERS]
     assert package_layout == [path.as_posix() for path in ARTIFACT.PACKAGE_MEMBERS]
-    assert contract["abi"]["version"] == ARTIFACT.ABI_VERSION
+    assert contract["abi"]["version"] == "1.7.0"
+    assert contract["abi"]["package_metadata_version"] == ARTIFACT.ABI_VERSION == "1.6.0"
     assert contract["publication_disposition"] == ARTIFACT.PUBLICATION_DISPOSITION
 
 
@@ -94,9 +95,9 @@ def test_generated_metadata_has_exact_runtime_fences_and_source_discovery() -> N
     config = ARTIFACT.generated_config().decode()
     package_config = ARTIFACT.generated_pc().decode()
 
-    assert "find_dependency(TypeBridge 1.6.0 EXACT CONFIG)" in config
+    assert "find_dependency(TypeBridge 1.7.0 EXACT CONFIG)" in config
     assert f"src/{ARTIFACT.PACKAGE_NAME}.c" in config
-    assert "type-bridge = 1.6.0" in package_config
+    assert "type-bridge-abi >= 1.7.0" in package_config
     assert f"generated_source=${{prefix}}/src/{ARTIFACT.PACKAGE_NAME}.c" in package_config
 
 

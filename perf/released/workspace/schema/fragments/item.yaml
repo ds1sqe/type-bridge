@@ -1,0 +1,8 @@
+format: typebridge.schema/v2
+attributes:
+  item-id: { value: string }
+  stock: { value: integer }
+  price: { value: integer }
+entities:
+  item:
+    owns: { item-id: { key: true }, stock: {}, price: {} }

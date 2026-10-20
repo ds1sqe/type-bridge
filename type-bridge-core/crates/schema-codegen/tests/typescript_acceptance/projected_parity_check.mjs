@@ -9,6 +9,7 @@ import {
   fsyncSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
   writeSync,
 } from "node:fs";
@@ -16,15 +17,19 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const REPORT_FORMAT = "typebridge.projected-parity-report/v1";
+// The models catalog's own profile; a run reports the matrix profile it selects.
 export const SEMANTIC_PROFILE = "typedb-3.12.1/v1";
+export const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+export const PROFILE_MATRIX_RELATIVE =
+  "tests/contracts/sdk_conformance/models/profiles.json";
 export const OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_PARITY_REPORT";
 export const REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 export const MAX_REPORT_BYTES = 256 * 1024;
 export const MAX_AUTHORITY_BYTES = 1024 * 1024;
 export const SCHEMA_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml";
+  "tests/contracts/sdk_conformance/models/schema.yaml";
 export const JOURNEY_RELATIVE =
-  "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json";
+  "tests/contracts/sdk_conformance/models/journey.json";
 
 export class ProducerError extends Error {
   constructor(code, message) {
@@ -36,6 +41,34 @@ export class ProducerError extends Error {
 
 function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+/**
+ * Select the models profile-matrix profile a run reports: the profile named by
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+export function selectedProfile(root, environment = {}) {
+  const profile = environment[SEMANTIC_PROFILE_ENV] || SEMANTIC_PROFILE;
+  let matrix;
+  try {
+    matrix = JSON.parse(readFileSync(resolve(root, PROFILE_MATRIX_RELATIVE), "utf8"));
+  } catch {
+    throw new ProducerError("invalid_profile_matrix", "models profile matrix is unreadable");
+  }
+  const profiles = matrix?.suite === "models" ? matrix.profiles : undefined;
+  if (
+    profiles === null ||
+    typeof profiles !== "object" ||
+    !Object.hasOwn(profiles, profile) ||
+    typeof profiles[profile]?.live_server_version !== "string"
+  ) {
+    throw new ProducerError(
+      "semantic_profile_mismatch",
+      `models has no profile-matrix entry for ${JSON.stringify(profile)}`,
+    );
+  }
+  return profile;
 }
 
 function canonicalValue(value, ancestors = new Set()) {
@@ -663,37 +696,43 @@ async function hydrateExact(
   const advertisement = remoteAdvertisement();
   let exchanges = 0;
   const declared = JSON.parse(model.typeKey);
-  const session = new package_.RemoteQuerySession(
-    advertisement,
-    async (request) => {
-      exchanges += 1;
-      const reply = hydratedRowsReply(
-        request,
-        advertisement,
-        graph,
-        declared,
-        rootNode,
-      );
-      if (corruptSignature) {
-        const signatureOffset = reply.lastIndexOf(Buffer.from('"signature":"'));
-        requireCondition(
-          signatureOffset >= 0,
-          "signed remote reply has no signature field",
+  const session = new package_.QuerySession(
+    new package_.ExchangeConnection(
+      advertisement,
+      async (request) => {
+        exchanges += 1;
+        const reply = hydratedRowsReply(
+          request,
+          advertisement,
+          graph,
+          declared,
+          rootNode,
         );
-        const mutated = Buffer.from(reply);
-        const byte = signatureOffset + Buffer.byteLength('"signature":"');
-        mutated[byte] = mutated[byte] === 0x30 ? 0x31 : 0x30;
-        return mutated;
-      }
-      return reply;
-    },
+        if (corruptSignature) {
+          const signatureOffset = reply.lastIndexOf(Buffer.from('"signature":"'));
+          requireCondition(
+            signatureOffset >= 0,
+            "signed remote reply has no signature field",
+          );
+          const mutated = Buffer.from(reply);
+          const byte = signatureOffset + Buffer.byteLength('"signature":"');
+          mutated[byte] = mutated[byte] === 0x30 ? 0x31 : 0x30;
+          return mutated;
+        }
+        return reply;
+      },
+    ),
     {
-      maxItems: 8n,
-      maxBytes: 1n << 20n,
-      maxCollectionMembers: 16n,
-      maxGraphNodes: 16n,
-      maxAttributeValues: 128n,
-      maxRolePlayers: 64n,
+      resources: new package_.QueryExecutionResourceLimits({
+        items: 8n,
+        bytes: 1n << 20n,
+        collectionMembers: 16n,
+        graphNodes: 16n,
+        attributeValues: 128n,
+        rolePlayers: 64n,
+        timeoutMilliseconds: 30_000n,
+        statements: 3n,
+      }),
     },
   );
   try {
@@ -832,11 +871,11 @@ function diagnosticFrom(error) {
       if (
         value !== null &&
         typeof value === "object" &&
-        typeof value.sdkCategory === "string" &&
+        typeof value.sdk_category === "string" &&
         typeof value.code === "string"
       ) {
         return {
-          category: value.sdkCategory,
+          category: value.sdk_category,
           code: value.code,
           details: value.details ?? {},
           path: value.path ?? [],
@@ -1144,7 +1183,8 @@ function constraintObservation(package_, constructed) {
     "plain activity lost its inherited role identity",
   );
   rejected("inherited_relates", () => package_.PlainActivity.create({}), {
-    names: ["RangeError"],
+    category: "invalid_input",
+    code: "missing_required_role",
   });
   rejected(
     "invalid_player_type",
@@ -1172,13 +1212,14 @@ function constraintObservation(package_, constructed) {
     valDuration: constructed.ada.valDuration,
   };
   rejected("key", () => package_.Person.create(personWithoutKey), {
-    names: ["RangeError"],
+    category: "invalid_input",
+    code: "missing_required_field",
   });
 
   rejected(
     "maximum_cardinality",
     () => makePerson(package_, { aliases: ["one", "two", "three", "four"] }),
-    { names: ["RangeError"] },
+    { category: "invalid_input", code: "field_cardinality_violation" },
   );
   const playerDuplicate = rejected(
     "ordered_distinct_player",
@@ -1208,7 +1249,7 @@ function constraintObservation(package_, constructed) {
   rejected(
     "ownership_cardinality",
     () => package_.Person.create(personWithoutScore),
-    { names: ["RangeError"] },
+    { category: "invalid_input", code: "missing_required_field" },
   );
   const rangeError = rejected(
     "range",
@@ -1220,7 +1261,8 @@ function constraintObservation(package_, constructed) {
     code: "regex_constraint_violation",
   });
   rejected("required_cardinality", () => package_.Counter.create({}), {
-    names: ["RangeError"],
+    category: "invalid_input",
+    code: "missing_required_field",
   });
   rejected(
     "role_cardinality",
@@ -1232,7 +1274,7 @@ function constraintObservation(package_, constructed) {
           package_.Event.reference("0x03", {}),
         ],
       }),
-    { names: ["RangeError"] },
+    { category: "invalid_input", code: "role_cardinality_violation" },
   );
   requireCondition(
     !package_.Employment.metadata.create.roles.some(
@@ -1399,7 +1441,7 @@ async function foreignHydrationRejection(package_, foreign) {
   return { diagnostic: rejection.diagnostic, publicResultPublished };
 }
 
-async function buildReport(root, package_, foreign) {
+async function buildReport(root, package_, foreign, semanticProfile = selectedProfile(root)) {
   await proveAuthenticatedHydration(package_);
   const constructed = constructedObservations(package_);
   const hydrated = await hydratedObservations(package_);
@@ -1715,7 +1757,7 @@ async function buildReport(root, package_, foreign) {
     binding: "node",
     format: REPORT_FORMAT,
     observations,
-    semantic_profile: SEMANTIC_PROFILE,
+    semantic_profile: semanticProfile,
   };
 }
 
@@ -1725,7 +1767,8 @@ export async function main() {
       import("./generated_projected/dist/index.js"),
       import("./generated_projected_foreign/dist/index.js"),
     ]);
-    const report = await buildReport(repositoryRoot(), package_, foreign);
+    const root = repositoryRoot();
+    const report = await buildReport(root, package_, foreign, selectedProfile(root, process.env));
     publishReport(outputPath(), report);
     return 0;
   } catch (error) {

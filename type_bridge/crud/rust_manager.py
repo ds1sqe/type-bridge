@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import TYPE_CHECKING, Any, Never, Protocol, Self, cast
 
 from type_bridge._rust_runtime import (
@@ -24,6 +25,13 @@ from type_bridge.models.relation import _QueryRelation as Relation
 if TYPE_CHECKING:
     from type_bridge.models.base import _QueryTypeDBType as TypeDBType
     from type_bridge.session import Connection
+
+
+UPDATE_WITH_DEPRECATION = (
+    "update_with() is deprecated since 2.3.0 and is removed in 3.0; compute "
+    "the new value with let_() in an update plan (type_bridge.plan."
+    "PlanBuilder) and stage it in a transaction"
+)
 
 
 class RustTypeDBManager[T: "TypeDBType"]:
@@ -411,10 +419,10 @@ class RustTypeDBManager[T: "TypeDBType"]:
                 self._hook_runner.run_post(event, self.model_class, instance)
 
     def _clear_attributes(self, instance: T, attr_names: list[str], var: str) -> None:
+        if not attr_names:
+            return
         iid = getattr(instance, "_iid", None)
-        if iid:
-            match_line = f"{var} isa {self.model_class.get_type_name()}, iid {iid};"
-        elif isinstance(instance, Entity):
+        if not iid and isinstance(instance, Entity):
             filters = _key_filters_for_entity(instance)
             expressions = _entity_filter_expressions(self.model_class, filters)
             lowered = [
@@ -427,24 +435,16 @@ class RustTypeDBManager[T: "TypeDBType"]:
             iid = rows[0].get("_iid")
             if not iid:
                 return
-            match_line = f"{var} isa {self.model_class.get_type_name()}, iid {iid};"
-        elif isinstance(instance, Relation):
+        elif not iid and isinstance(instance, Relation):
             iid = self._resolve_delete_iid(instance)
             if not iid:
                 return
-            match_line = f"{var} isa {self.model_class.get_type_name()}, iid {iid};"
-        else:
+        elif not iid:
             return
 
-        match_parts = [f"match {match_line}"]
-        delete_parts = []
-        for index, attr_name in enumerate(attr_names):
-            old_var = f"$old_attr_{index}"
-            match_parts.append(
-                f"try {{ {var} has {attr_name} {old_var}; {old_var} isa {attr_name}; }};"
-            )
-            delete_parts.append(f"try {{ {old_var} of {var}; }};")
-        query = "\n".join(match_parts) + "\ndelete\n" + "\n".join(delete_parts)
+        query = rust_core()._clear_attribute_query(
+            self.model_class.get_type_name(), iid, var, attr_names
+        )
         _execute_write_query(self._connection, query)
 
 
@@ -569,6 +569,17 @@ class RustTypeDBQuery[T: "TypeDBType"]:
         return self.count() > 0
 
     def update_with(self, func: Any) -> list[T]:
+        """Apply ``func`` to every matched instance and update each one.
+
+        .. deprecated:: 2.3.0
+            Removed in 3.0. Build an update plan that computes the new value
+            with ``let_()`` and stage it in a transaction.
+        """
+        warnings.warn(
+            UPDATE_WITH_DEPRECATION,
+            DeprecationWarning,
+            stacklevel=2,
+        )
         instances = self.execute()
         if not instances:
             return []

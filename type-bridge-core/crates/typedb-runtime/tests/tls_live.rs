@@ -128,7 +128,7 @@ fn unique_database(prefix: &str) -> String {
 // stage bounded while leaving enough headroom to distinguish load from a hang.
 const LIVE_TLS_STAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const FORCE_CLOSE_RELEASE_RETRY_INTERVAL: Duration = Duration::from_millis(25);
-const DATABASE_IN_USE_DIAGNOSTIC: &str = "Cannot delete database since it is in use";
+const DATABASE_DELETE_REJECTION: &str = "Database delete failed: [DBD2] TypeDB operation failed";
 
 async fn await_live_tls_stage<T>(stage: &'static str, future: impl Future<Output = T>) -> T {
     tokio::time::timeout(LIVE_TLS_STAGE_TIMEOUT, future)
@@ -145,9 +145,7 @@ fn database_release_is_pending_after_force_close(error: &SecureConnectError) -> 
     matches!(
         error,
         SecureConnectError::Runtime(RuntimeError::Connection(message))
-            if message.contains("[DBD2]")
-                && message.contains(DATABASE_IN_USE_DIAGNOSTIC)
-                && message.contains("[SRV13]")
+            if message == DATABASE_DELETE_REJECTION
     )
 }
 
@@ -170,14 +168,10 @@ async fn delete_owned_database_after_force_close(
             .await;
             match result {
                 Err(error) if database_release_is_pending_after_force_close(&error) => {
-                    // The official driver acknowledges local shutdown dispatch,
-                    // not the server's observation of the closed transport. This
-                    // fixture owns the unique database, so only the exact
-                    // DBD2/in-use/SRV13 diagnostic is safe to classify as release
-                    // propagation.
-                    // This poll is not evidence for issue #196's upstream-removal
-                    // gate, which still requires release without a downstream
-                    // retry.
+                    // This bounded cleanup poll owns the unique fixture database;
+                    // DBD2 prose/nested codes are intentionally no longer exposed.
+                    // It is not evidence for #196's removal gate, which requires
+                    // release without a downstream retry.
                     tokio::time::sleep(FORCE_CLOSE_RELEASE_RETRY_INTERVAL).await;
                 }
                 result => break result,
@@ -199,8 +193,7 @@ async fn delete_owned_database_after_force_close(
 #[test]
 fn force_close_release_retry_classification_is_narrow() {
     let pending = SecureConnectError::Runtime(RuntimeError::Connection(
-        "Database delete failed: [DBD2] Cannot delete database since it is in use. Caused: [SRV13]"
-            .to_owned(),
+        DATABASE_DELETE_REJECTION.to_owned(),
     ));
     let wrong_diagnostic = SecureConnectError::Runtime(RuntimeError::Connection(
         "Database delete failed: [DBD2] permission denied. Caused: [SRV13]".to_owned(),
@@ -811,4 +804,128 @@ fn custom_root_runtime_survives_separate_block_on_calls_live() {
     runtime
         .block_on(connected.delete_database(&database))
         .expect("a later block_on can delete the database");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn closed_port_reports_unavailable_live() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a closed test port");
+    let address = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    let version = if cfg!(feature = "band9") {
+        "3.13.6"
+    } else {
+        "3.11.5"
+    };
+    let error = TypeDBRuntime::connect_secure(
+        &address,
+        "admin",
+        "SECRET_SENTINEL",
+        SecureConnectOptions {
+            http_port: 1,
+            tls_mode: TlsMode::Disabled,
+            server_version: Some(version.parse().unwrap()),
+        },
+    )
+    .await
+    .err()
+    .expect("a closed port must reject connection");
+    let message = error.to_string();
+    assert!(message.contains("Failed to connect:"), "{message}");
+    assert!(
+        message.contains("TypeDB transport failed: connection refused or unavailable"),
+        "{message}"
+    );
+    assert!(message.contains("[CXN"), "{message}");
+    assert!(!message.contains("SECRET_SENTINEL"), "{message}");
+    assert!(!message.contains(&address), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wrong_tls_trust_reports_tls_kind_live() {
+    let Some(context) = live_tls_context() else {
+        eprintln!("skipping wrong-trust proof: TLS endpoint variables are not set");
+        return;
+    };
+    // This existing CA fixture is distinct from tests/fixtures/tls/root-ca.pem.
+    let wrong_ca = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/root-ca.pem");
+    let error = TypeDBRuntime::connect_secure(
+        &context.address,
+        &context.username,
+        "SECRET_SENTINEL",
+        SecureConnectOptions {
+            http_port: context.http_port,
+            tls_mode: TlsMode::CustomRootCa(wrong_ca.clone()),
+            server_version: None,
+        },
+    )
+    .await
+    .err()
+    .expect("the unrelated CA must fail TLS admission");
+    let message = error.to_string();
+    assert!(
+        message.contains(
+            "HTTP version probe failed: could not reach TypeDB HTTP version endpoint: \
+             TLS/certificate failure; ensure the TypeDB HTTP endpoint is reachable"
+        ),
+        "{message}"
+    );
+    assert!(!message.contains("SECRET_SENTINEL"), "{message}");
+    assert!(!message.contains(&context.address), "{message}");
+    assert!(
+        !message.contains(&wrong_ca.display().to_string()),
+        "{message}"
+    );
+    let Some(expected) = &context.expected else {
+        return;
+    };
+    let error = TypeDBRuntime::connect_secure(
+        &context.address,
+        &context.username,
+        &context.password,
+        SecureConnectOptions {
+            http_port: context.http_port,
+            tls_mode: TlsMode::CustomRootCa(wrong_ca),
+            server_version: Some(expected.server_version.parse().unwrap()),
+        },
+    )
+    .await
+    .err()
+    .expect("the unrelated CA must also fail direct gRPC admission");
+    let message = error.to_string();
+    // The driver stringifies tonic transport errors; only the pinned band-9
+    // driver's exact templates classify as TLS, so a band-8 connection
+    // reports "other" even in builds that also carry band 9.
+    let expected_kind = if expected.driver_band == 9 {
+        "TypeDB transport failed: TLS/certificate failure"
+    } else {
+        "TypeDB transport failed: other transport"
+    };
+    assert!(message.contains(expected_kind), "{message}");
+    assert!(!message.contains(&context.address), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incorrect_credentials_report_authentication_live() {
+    let Some(context) = live_tls_context() else {
+        eprintln!("skipping authentication proof: TLS endpoint variables are not set");
+        return;
+    };
+    let error = TypeDBRuntime::connect_secure(
+        &context.address,
+        &context.username,
+        "SECRET_SENTINEL",
+        context.custom_root_options(),
+    )
+    .await
+    .err()
+    .expect("incorrect credentials must reject connection");
+    let message = error.to_string();
+    assert!(message.contains("Failed to connect:"), "{message}");
+    assert!(
+        message.contains("TypeDB transport failed: authentication failure"),
+        "{message}"
+    );
+    assert!(message.contains("[CXN"), "{message}");
+    assert!(!message.contains("SECRET_SENTINEL"), "{message}");
+    assert!(!message.contains(&context.address), "{message}");
 }

@@ -50,6 +50,7 @@ from type_bridge.query.ast import (
     RolePlayer,
     Statement,
     SubTypePattern,
+    TryPattern,
     UpdateClause,
     Value,
     ValueComparisonPattern,
@@ -177,6 +178,8 @@ def _dict_to_pattern(d: dict[str, Any]) -> Pattern:
         )
     if tag == "Not":
         return NotPattern(patterns=[_dict_to_pattern(p) for p in data])
+    if tag == "Try":
+        return TryPattern(patterns=[_dict_to_pattern(p) for p in data])
     if tag == "Or":
         return OrPattern(
             alternatives=[[_dict_to_pattern(p) for p in alt] for alt in data],

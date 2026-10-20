@@ -30,6 +30,7 @@ try:
         validate_python_package_version,
         validate_root_python_manifest_lockstep,
     )
+    from validate_latest_typedb_driver_pin import EXPECTED_SERIES as TYPEDB_BAND9_SERIES
 except ModuleNotFoundError:
     from scripts.ci.cargo_release_inventory import (
         load_inventory as load_cargo_release_inventory,
@@ -41,6 +42,9 @@ except ModuleNotFoundError:
         validate_node_package_lockstep,
         validate_python_package_version,
         validate_root_python_manifest_lockstep,
+    )
+    from scripts.ci.validate_latest_typedb_driver_pin import (
+        EXPECTED_SERIES as TYPEDB_BAND9_SERIES,
     )
 
 
@@ -1688,7 +1692,7 @@ def validate_server_oci_release_channels(workflow: Path) -> None:
         raise ValidationError(f"Release workflow is missing or non-regular: {workflow}")
     source = workflow.read_text(encoding="utf-8")
     preamble = source.split("\njobs:\n", maxsplit=1)[0]
-    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '2.2'"
+    alias_selector = "  SERVER_OCI_MINOR_ALIAS: '2.3'"
     if preamble.count(alias_selector) != 1:
         raise ValidationError("Release workflow has no exact OCI minor-alias selector")
 
@@ -1908,7 +1912,8 @@ def resolved_official_band9_components(
             )
         row = matches[0]
         version = stable_version(row.get("version"), label=f"Cargo lockfile {name} version")
-        if re.fullmatch(r"3\.12\.(?:0|[1-9]\d*)", version) is None:
+        major, minor = TYPEDB_BAND9_SERIES
+        if re.fullmatch(rf"{major}\.{minor}\.(?:0|[1-9]\d*)", version) is None:
             raise ValidationError(f"Cargo lockfile {name} is outside official band 9: {version!r}")
         source = row.get("source")
         if source != CRATES_IO_SOURCE:
@@ -2259,6 +2264,13 @@ def validate_native_band9_provenance(
                 f"Native notice {component.name} license/status drifted: {license_cell!r}"
             )
 
+        # Band-8 upstream archives share the crate name; every other archive
+        # row for this crate is band-9 provenance and must match Cargo.lock.
+        band8_archive_versions = {
+            legacy.upstream_version
+            for legacy in LEGACY_TYPEDB_COMPONENTS
+            if legacy.upstream_name == component.name
+        }
         archive_rows = [
             (version, checksum)
             for version, checksum in re.findall(
@@ -2267,12 +2279,12 @@ def validate_native_band9_provenance(
                 notice,
                 re.MULTILINE,
             )
-            if version.startswith("3.12.")
+            if version not in band8_archive_versions
         ]
         expected_archive = (component.version, component.checksum)
         if archive_rows != [expected_archive]:
             raise ValidationError(
-                f"Native notice {component.name} 3.12.x archive provenance disagrees with "
+                f"Native notice {component.name} band-9 archive provenance disagrees with "
                 f"Cargo.lock: actual={archive_rows!r}, expected={[expected_archive]!r}"
             )
 

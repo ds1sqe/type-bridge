@@ -1,0 +1,1 @@
+given $input: integer; match let $v = $input + 1; fetch { "value": $v};

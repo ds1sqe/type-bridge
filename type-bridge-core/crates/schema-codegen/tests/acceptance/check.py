@@ -191,7 +191,7 @@ def main() -> None:
         ]
     )
 
-    projected_schema = ROOT / "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"
+    projected_schema = ROOT / "tests/contracts/sdk_conformance/models/schema.yaml"
     command(
         [
             "cargo",

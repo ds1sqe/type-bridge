@@ -34,11 +34,20 @@ def test_fragment_ledger_covers_each_binding_and_exact_validator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
-    monkeypatch.setattr(RUNNER, "run", lambda command, **_kwargs: commands.append(command))
+    environments: list[dict[str, str]] = []
+
+    def record(command: list[str], **kwargs: Any) -> None:
+        commands.append(command)
+        environments.append(kwargs["env"])
+
+    monkeypatch.setattr(RUNNER, "run", record)
     RUNNER.query_proofs(tmp_path, {}, "0" * 64)
+    emitters = [env for env in environments if "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT" in env]
+    assert len(emitters) == 6
+    assert all(env["TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE"] == "0" * 64 for env in emitters)
     validators = [command for command in commands if "scripts/ci/proof_fragments.py" in command]
     assert len(validators) == 4
-    assert all(command[command.index("--sdk") + 1] == "2" for command in validators)
+    assert all(command[command.index("--suite") + 1] == "queries" for command in validators)
     assert [
         "uv",
         "run",
@@ -48,22 +57,21 @@ def test_fragment_ledger_covers_each_binding_and_exact_validator(
     for marker in (
         "python_direct_cancellation_fragment_is_measured_from_owned_execution",
         "node_direct_cancellation_fragment_is_measured_from_owned_execution",
-        "sdk_v2_rust_deterministic_proof_fragment",
-        "sdk_v2_c_deterministic_proof_fragment",
+        "sdk_queries_rust_deterministic_proof_fragment",
+        "sdk_queries_c_deterministic_proof_fragment",
     ):
         command = next(command for command in commands if any(marker in item for item in command))
         assert "--locked" in command and command[-2:] == ["--", "--exact"]
 
 
-def test_comparator_ledger_preserves_v1_three_and_v2_four(
+def test_comparator_ledger_uses_four_queries_reports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     commands: list[list[str]] = []
     monkeypatch.setattr(RUNNER, "run", lambda command, **_kwargs: commands.append(command))
     RUNNER.compare_queries(tmp_path, {})
-    assert len(commands) == 2
-    assert len(commands[0]) == 2 + len(RUNNER.V1_BINDINGS)
-    assert len(commands[1]) == 2 + len(RUNNER.BINDINGS)
+    assert len(commands) == 1
+    assert len(commands[0]) == 2 + len(RUNNER.BINDINGS)
 
 
 def test_phase_report_ledger_uses_all_three_validated_fan_ins(
@@ -96,11 +104,8 @@ def test_assembly_runs_four_compositors_four_assemblers_and_one_fan_in(
     (tmp_path / "fragments").mkdir()
     RUNNER.assemble_models(tmp_path, {}, "0" * 64)
     assert len(commands) == 5
-    assert (
-        sum(any("assemble_sdk_conformance_v3" in item for item in command) for command in commands)
-        == 4
-    )
-    assert any("compare_sdk_conformance_v3" in item for item in commands[-1])
+    assert sum(any("sdk_models_assemble" in item for item in command) for command in commands) == 4
+    assert any("sdk_models_compare" in item for item in commands[-1])
 
 
 def test_cleanup_evidence_is_exact_and_non_inferential(tmp_path: Path) -> None:
@@ -108,7 +113,7 @@ def test_cleanup_evidence_is_exact_and_non_inferential(tmp_path: Path) -> None:
     RUNNER.write_cleanup(path, "node")
     assert json.loads(path.read_bytes()) == {
         "binding": "node",
-        "format": "typebridge.sdk-v5-cleanup-evidence/v1",
+        "format": "typebridge.sdk-serialization-cleanup-evidence/v1",
         "managed_database_absent": True,
         "partial_output_absent": True,
         "temporary_evidence_absent": True,
@@ -131,19 +136,19 @@ def test_assembly_runs_each_real_composer_and_one_fan_in(
     assert len(commands) == 5
     assert (
         sum(
-            any(item.endswith("assemble_sdk_conformance_v5.py") for item in command)
+            any(item.endswith("sdk_serialization_assemble.py") for item in command)
             for command in commands
         )
         == 4
     )
     assert (
         sum(
-            any(item.endswith("assemble_sdk_conformance_v5.py") for item in command)
+            any(item.endswith("sdk_serialization_assemble.py") for item in command)
             for command in commands
         )
         == 4
     )
-    assert any(item.endswith("compare_sdk_conformance_v5.py") for item in commands[-1])
+    assert any(item.endswith("sdk_serialization_compare.py") for item in commands[-1])
 
 
 def test_provider_free_fan_in_names_each_binding(
@@ -156,7 +161,14 @@ def test_provider_free_fan_in_names_each_binding(
         lambda command, **_kwargs: commands.append(command),
     )
     RUNNER.codec_offline(tmp_path, {})
-    fan_in = [command for command in commands if any("compare_sdk_v5_" in item for item in command)]
+    fan_in = [
+        command
+        for command in commands
+        if any(
+            Path(item).name in {"sdk_serialization_corpora.py", "sdk_serialization_operational.py"}
+            for item in command
+        )
+    ]
     assert len(fan_in) == 2
     for command in fan_in:
         for binding in RUNNER.BINDINGS:
@@ -165,23 +177,33 @@ def test_provider_free_fan_in_names_each_binding(
 
 def _reports(root: Path) -> None:
     for binding in RUNNER.BINDINGS:
-        for version in RUNNER.conformance.predecessor_versions(binding):
-            path = root / f"v{version}" / f"{binding}.json"
+        for version in RUNNER.conformance.predecessor_suites(binding):
+            path = root / version / f"{binding}.json"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("{}", encoding="utf-8")
 
 
 def test_historical_inventory_does_not_invent_c_v1(tmp_path: Path) -> None:
     _reports(tmp_path)
-    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "rust")] == [1, 2, 3, 4, 5]
-    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "c")] == [2, 3, 4, 5]
+    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "rust")] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+    ]
+    assert [version for version, _ in RUNNER.predecessor_paths(tmp_path, "c")] == [
+        "queries",
+        "models",
+        "administration",
+        "serialization",
+    ]
     assert not (tmp_path / "v1/c.json").exists()
 
 
 def test_missing_real_predecessor_fails_closed(tmp_path: Path) -> None:
     _reports(tmp_path)
-    (tmp_path / "v4/c.json").unlink()
-    with pytest.raises(RUNNER.RunnerError, match="V4 c report"):
+    (tmp_path / "administration/c.json").unlink()
+    with pytest.raises(RUNNER.RunnerError, match="administration c report"):
         RUNNER.predecessor_paths(tmp_path, "c")
 
 
@@ -224,15 +246,7 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
 ) -> None:
     calls: list[str] = []
     scratch: list[Path] = []
-    names = (
-        [
-            f"v{version}/{binding}.json"
-            for version in (1, 2)
-            for binding in (RUNNER.V1_BINDINGS if version == 1 else RUNNER.BINDINGS)
-        ]
-        if suite == "queries"
-        else [f"{binding}.json" for binding in RUNNER.BINDINGS]
-    )
+    names = [f"{binding}.json" for binding in RUNNER.BINDINGS]
 
     def stage(name: str) -> Any:
         def produce(directory: Path, *_args: Any) -> tuple[Path, ...]:
@@ -244,7 +258,7 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
             for filename in names:
                 path = (
                     directory / "reports" / filename
-                    if suite == "serialization"
+                    if suite in ("queries", "serialization")
                     else directory / filename
                 )
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -319,7 +333,7 @@ def test_administration_owns_provider_and_always_cleans_up(
                 assert callable(handler)
                 handler(signal.SIGTERM, None)
             binding = command[command.index("--test") + 1].split("_")[2]
-            (tmp_path / f"{binding}-sdk-v4-report.json").write_text("{}")
+            (tmp_path / f"{binding}-administration-report.json").write_text("{}")
         return "{}"
 
     monkeypatch.setattr(RUNNER, "run", run)
@@ -337,8 +351,8 @@ def test_administration_owns_provider_and_always_cleans_up(
         assert len(reports) == 4 and all(path.is_file() for path in reports)
         assert [
             command[command.index("--test") + 1] for command in commands if command[0] == "cargo"
-        ] == [f"sdk_v4_{binding}_live" for binding in RUNNER.BINDINGS]
-        assert any(item.endswith("compare_sdk_conformance_v4.py") for item in commands[-2])
+        ] == [f"sdk_administration_{binding}_live" for binding in RUNNER.BINDINGS]
+        assert any(item.endswith("sdk_administration_compare.py") for item in commands[-2])
     assert commands[-1][-3:] == ["down", "-v", "--remove-orphans"]
     assert commands[0][:6] == commands[-1][:6]
     assert signal.getsignal(signal.SIGTERM) == previous
@@ -354,7 +368,7 @@ def test_subprocess_error_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> No
         RUNNER.run(["producer"], env={})
 
 
-def test_full_c_preserves_versioned_layout_with_named_suites(
+def test_full_c_uses_suite_directories_for_every_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     full_c = importlib.import_module("run_full_c_artifact")
@@ -364,9 +378,6 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
 
     def run(*arguments: str) -> None:
         calls.append(arguments)
-        if arguments[1] == "queries":
-            for version in (1, 2):
-                (output / f"v12/v{version}").mkdir(parents=True)
 
     monkeypatch.setattr(full_c, "run", run)
     monkeypatch.setattr(
@@ -376,15 +387,7 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
     assert [call[:2] for call in calls] == [
         ("run_sdk_conformance.py", suite) for suite in RUNNER.SUITES
     ]
-    assert [Path(call[call.index("--output") + 1]).name for call in calls] == [
-        "v12",
-        "v3",
-        "v4",
-        "v5",
-        "v6",
-    ]
-    assert (output / "v1").is_dir() and (output / "v2").is_dir()
-    assert not (output / "v12").exists()
+    assert [Path(call[call.index("--output") + 1]).name for call in calls] == list(RUNNER.SUITES)
     assert calls[-1][calls[-1].index("--predecessors") + 1] == str(output)
 
 
@@ -395,19 +398,19 @@ def test_full_c_preserves_versioned_layout_with_named_suites(
             "query_live",
             "test_generated_projection_round_trips_live_models",
             "generated package round-trips exact models on TypeDB",
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
         ),
         (
             "model_live",
-            "test_generated_data_model_runtime_v3_live",
-            "node.generated_data_model_runtime_v3_live",
-            "generated_data_model_runtime_v3_live",
+            "test_sdk_models_data_model_runtime_live",
+            "node.sdk_models_data_model_runtime_live",
+            "sdk_models_data_model_runtime_live",
         ),
         (
             "codec_live",
-            "test_generated_canonical_serialization_v5_live",
-            "node.generated_canonical_serialization_v5_live",
-            "live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3",
+            "test_sdk_serialization_live",
+            "node.sdk_serialization_live",
+            "live_c17_generated_person_and_membership_crud_round_trips_on_profile_server",
         ),
     ],
 )
@@ -481,9 +484,88 @@ def test_artifacts_build_once_and_compare_all_bindings(
         environment={},
     )
     assert len(commands) == 9
-    assert commands[0][1:3] == ["scripts/ci/sdk_v6_surfaces.py", "build"]
+    assert commands[0][1:3] == ["scripts/ci/sdk_artifacts_surfaces.py", "build"]
     assert commands[1][:3] == ["uv", "run", "python"]
-    for script in ("assemble_sdk_conformance_v6.py", "assemble_sdk_conformance_v6.py"):
+    for script in ("sdk_artifacts_assemble.py", "sdk_artifacts_assemble.py"):
         assert sum(f"scripts/ci/{script}" in command for command in commands) == 4
-    assert commands[-1][1] == "scripts/ci/compare_sdk_conformance_v6.py"
+    assert commands[-1][1] == "scripts/ci/sdk_artifacts_compare.py"
     assert len(commands[-1][2:]) == 4
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_writes_runs_outside_the_full_c_fan_in_and_publishes_its_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: bool
+) -> None:
+    assert "writes" not in RUNNER.SUITES
+    calls: list[bool] = []
+
+    def writes(directory: Path, environment: dict[str, str], *, live: bool) -> dict[str, Path]:
+        calls.append(live)
+        assert environment["TYPEDB_ADDRESS"] == "127.0.0.1:1729"
+        names = [*(f"{binding}.json" for binding in RUNNER.BINDINGS), "comparison.json"]
+        for name in names:
+            (directory / name).write_text("{}\n")
+        return {name: directory / name for name in names}
+
+    monkeypatch.setattr(RUNNER, "writes", writes)
+    output = tmp_path / "published"
+    argv = ["writes", "--output", str(output), "--semantic-profile", "typedb-3.13.6/v1"]
+    assert RUNNER.main([*argv, *(["--offline"] if offline else [])]) == 0
+    assert calls == [not offline]
+    assert sorted(path.name for path in output.iterdir()) == sorted(
+        [*(f"{binding}.json" for binding in RUNNER.BINDINGS), "comparison.json"]
+    )
+
+
+def test_offline_is_refused_outside_the_writes_suite(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        RUNNER.main(["queries", "--offline", "--output", str(tmp_path / "out")])
+
+
+def test_writes_runs_every_suite_in_its_own_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = []
+
+    def writes_suite(
+        directory: Path, suite: str, environment: dict[str, str], *, live: bool
+    ) -> dict[str, Path]:
+        calls.append((directory, suite, live))
+        return {"python.json": directory / "python.json", "comparison.json": directory / "c.json"}
+
+    monkeypatch.setattr(RUNNER, "writes_suite", writes_suite)
+    files = RUNNER.writes(tmp_path, {}, live=True)
+    assert calls == [(tmp_path / suite, suite, True) for suite in RUNNER.WRITES_SUITES]
+    assert RUNNER.WRITES_SUITES == ("purchase", "constraints")
+    assert sorted(files) == sorted(
+        f"{suite}/{name}"
+        for suite in RUNNER.WRITES_SUITES
+        for name in ("python.json", "comparison.json")
+    )
+    assert files["constraints/python.json"] == tmp_path / "constraints/python.json"
+
+
+def test_writes_refuses_a_profile_without_staged_plans(tmp_path: Path) -> None:
+    environment = {RUNNER.profile_matrix.SEMANTIC_PROFILE_ENV: "typedb-3.12.1/v1"}
+    with pytest.raises(RUNNER.RunnerError, match="typedb-3.13.6/v1"):
+        RUNNER.writes(tmp_path, environment, live=False)
+
+
+def test_writes_builds_every_binding_program_from_the_generated_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    generated = tmp_path / "generated"
+    for binding in ("python", "typescript/src", "rust", "c"):
+        (generated / binding).mkdir(parents=True)
+    (tmp_path / "run").mkdir()
+    commands = capture(monkeypatch)
+    programs = RUNNER.writes_programs(tmp_path / "run", generated, {})
+    assert set(programs) == set(RUNNER.BINDINGS)
+    assert programs["python"][0][-1].endswith("examples/purchase/python/program.py")
+    assert programs["node"][0] == ["node", "dist/program.js"]
+    assert (generated / "typescript/src/program.ts").is_file()
+    assert (tmp_path / "run/rust/src/main.rs").is_file()
+    assert "--offline" in programs["rust"][0]
+    compile_c = next(command for command in commands if command[0] == "cc")
+    assert "-Werror" in compile_c
+    assert any(item.endswith("examples/purchase/c/program.c") for item in compile_c)

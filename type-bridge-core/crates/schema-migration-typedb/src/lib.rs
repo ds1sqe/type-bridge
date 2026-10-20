@@ -17,6 +17,7 @@
 pub mod readme_doctests {}
 
 mod control_schema;
+mod lease_plan;
 mod legacy_import;
 mod observation;
 mod provider;
@@ -37,9 +38,12 @@ pub use observation::{
     partition_typeql_export, rebuild_live_managed_state, rebuild_live_query_authority,
     rebuild_live_query_authority_state,
 };
+#[allow(deprecated)]
+pub use provider::require_supported_migration_server;
 pub use provider::{
     TypeDbExecutionBinding, TypeDbMigrationProvider, execution_capability_vocabulary,
-    require_supported_migration_execution_binding, require_supported_migration_server,
+    migration_server_for_profile, require_supported_migration_execution_binding,
+    require_supported_migration_profile, require_supported_migration_server_for_profile,
 };
 pub use runner::{
     MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,

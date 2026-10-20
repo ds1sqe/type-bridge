@@ -52,10 +52,12 @@ async fn main() {
     let version = database
         .server_version()
         .expect("the server exposes authoritative version evidence");
+    // The harness selects the exact server from the SDK profile matrix.
+    let expected = required("TYPE_BRIDGE_EXPECTED_SERVER_VERSION");
     assert_eq!(
-        (version.major, version.minor, version.patch),
-        (3, 12, 3),
-        "the C test subset requires exact TypeDB 3.12.3",
+        format!("{}.{}.{}", version.major, version.minor, version.patch),
+        expected,
+        "the C test subset requires the profile's exact TypeDB server",
     );
 
     match mode.as_str() {
@@ -78,7 +80,7 @@ async fn main() {
             database
                 .execute_raw(PROVIDER_SCHEMA, TxType::Schema)
                 .await
-                .expect("the exact Sdk V3 provider schema installs");
+                .expect("the exact Models provider schema installs");
             println!("C test provider schema setup: passed");
         }
         "cleanup" => {

@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-contract"
-version = "2.2.6"
+version = "2.3.0"
 edition = "2024"
 description = "Versioned binding-neutral contract primitives for type-bridge"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-contract/2.2.6"
+documentation = "https://docs.rs/type-bridge-contract/2.3.0"
 rust-version = "1.88"
 
 [lib]
@@ -24,7 +24,12 @@ serde-backend-conformance = ["serde_json/arbitrary_precision", "serde_json/prese
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 sha2 = "0.10"
+# Stage spans only; without the default proc-macro feature.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 unicode-ident = "1.0"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+ed25519-dalek = "2"

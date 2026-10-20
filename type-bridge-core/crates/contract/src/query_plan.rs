@@ -19,16 +19,23 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::capability::{CapabilityId, CapabilitySet};
-use crate::codec::to_canonical_json;
+use crate::codec::to_canonical_json_with_limits;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::id::{AttributeId, FunctionId, Label, RoleId, TypeId};
-use crate::limits::StructuralLimits;
+use crate::limits::{QueryLimits, StructuralLimits};
 use crate::migration_assertion::{
     AssertionBinding, AssertionRolePlayer, BindingId, QueryVariable, ValueComparator,
 };
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
+
+/// Additive read/write plans with frozen V2 lifting.
+#[path = "query_plan_v3.rs"]
+pub mod v3;
+pub use v3::{
+    QUERY_PLAN_CANONICALIZATION_V3, QUERY_PLAN_FORMAT_V3, QueryPlanV3, decode_query_plan_v3,
+};
 
 #[path = "query_plan_v2.rs"]
 mod v2;
@@ -148,6 +155,7 @@ pub fn query_plan_v2_capability_vocabulary() -> CapabilitySet {
                 v2::CAP_OUTPUT_COLLECT_DISTINCT,
                 v2::CAP_OUTPUT_HYDRATED,
                 v2::CAP_EXACTLY_ONE,
+                v2::CAP_COMPLETE_ROWS,
                 v2::CAP_PAGE,
                 v2::CAP_DISTINCT_COUNT,
                 v2::CAP_DISTINCT_EXISTS,
@@ -400,6 +408,11 @@ pub enum OrderDirection {
     Descending,
 }
 
+crate::enum_spellings!(OrderDirection, "order_direction", canonical {
+    "ascending" => Ascending,
+    "descending" => Descending,
+});
+
 /// One typed sort key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct OrderTerm {
@@ -451,6 +464,16 @@ pub enum Reducer {
     /// The total of input values.
     Sum,
 }
+
+crate::enum_spellings!(Reducer, "plan_reducer", canonical {
+    "count" => Count,
+    "max" => Max,
+    "mean" => Mean,
+    "median" => Median,
+    "min" => Min,
+    "std" => Std,
+    "sum" => Sum,
+});
 
 impl Reducer {
     /// Whether this reducer yields a defined result on an empty stream.
@@ -749,6 +772,10 @@ pub struct QueryPlan {
     format: String,
     functions: Vec<LocalFunction>,
     inputs: Vec<InputColumn>,
+    // The limits this plan was constructed or decoded under. They are not
+    // wire state: every peer applies its own.
+    #[serde(skip)]
+    limits: QueryLimits,
     managed_semantics: ManagedSemanticSchemaFingerprint,
     output: QueryOutput,
     pipeline: Vec<ReadStage>,
@@ -772,7 +799,7 @@ impl QueryPlan {
             output,
             None,
             managed_semantics,
-            StructuralLimits::CANONICAL,
+            QueryLimits::CANONICAL,
         )
     }
 
@@ -793,7 +820,7 @@ impl QueryPlan {
             output,
             None,
             managed_semantics,
-            StructuralLimits::CANONICAL,
+            QueryLimits::CANONICAL,
         )
     }
 
@@ -838,7 +865,62 @@ impl QueryPlan {
             output,
             Some(compatibility),
             managed_semantics,
-            StructuralLimits::CANONICAL,
+            QueryLimits::CANONICAL,
+        )
+    }
+
+    /// Validate and construct one V1 plan under explicit limits.
+    ///
+    /// The plan keeps `limits` and applies them to its canonical encoding
+    /// and to every invocation bound to it.
+    pub fn new_with_functions_and_limits(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            None,
+            managed_semantics,
+            limits,
+        )
+    }
+
+    /// Validate and construct one V2 plan under explicit limits.
+    ///
+    /// The plan keeps `limits` and applies them to its canonical encoding
+    /// and to every invocation bound to it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor receives every independently versioned plan component"
+    )]
+    pub fn new_v2_with_functions_and_limits(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        compatibility: QueryPlanV2Compatibility,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            Some(compatibility),
+            managed_semantics,
+            limits,
         )
     }
 
@@ -854,7 +936,34 @@ impl QueryPlan {
         output: QueryOutput,
         compatibility: Option<QueryPlanV2Compatibility>,
         managed_semantics: ManagedSemanticSchemaFingerprint,
-        limits: StructuralLimits,
+        limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        Self::build(
+            bindings,
+            functions,
+            inputs,
+            pipeline,
+            output,
+            compatibility,
+            managed_semantics,
+            limits,
+        )
+        .map_err(|diagnostic| limits.annotate(diagnostic))
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the shared constructor receives every independently versioned plan component"
+    )]
+    fn build(
+        bindings: Vec<AssertionBinding>,
+        functions: Vec<LocalFunction>,
+        inputs: Vec<InputColumn>,
+        pipeline: Vec<ReadStage>,
+        output: QueryOutput,
+        compatibility: Option<QueryPlanV2Compatibility>,
+        managed_semantics: ManagedSemanticSchemaFingerprint,
+        limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
         if compatibility.is_none() {
             validate_v1_reachability(&pipeline)?;
@@ -886,6 +995,7 @@ impl QueryPlan {
             format: format.to_owned(),
             functions,
             inputs,
+            limits,
             managed_semantics,
             output,
             pipeline,
@@ -900,6 +1010,10 @@ impl QueryPlan {
     /// aggregate predicate-node budget — so a caller passing stricter
     /// [`StructuralLimits`] gets every field enforced, not a subset.
     pub fn check_structural_limits(&self, limits: StructuralLimits) -> Result<(), Diagnostic> {
+        let limits = QueryLimits {
+            structural: limits,
+            ..self.limits
+        };
         Self::validate_plan_structure(
             &self.bindings,
             &self.functions,
@@ -909,6 +1023,13 @@ impl QueryPlan {
             self.compatibility.as_ref(),
             limits,
         )
+        .map_err(|diagnostic| limits.annotate(diagnostic))
+    }
+
+    /// Return the limits this plan was constructed or decoded under.
+    #[must_use]
+    pub const fn limits(&self) -> QueryLimits {
+        self.limits
     }
 
     /// The construction-time structural traversal, shared with
@@ -921,147 +1042,18 @@ impl QueryPlan {
         pipeline: &[ReadStage],
         output: &QueryOutput,
         compatibility: Option<&QueryPlanV2Compatibility>,
-        limits: StructuralLimits,
+        limits: QueryLimits,
     ) -> Result<(), Diagnostic> {
-        if bindings.is_empty() || !limits.allows_bindings(bindings.len()) {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_binding_limit",
-                "plan binding count is empty or exceeds the structural ceiling",
-            ));
-        }
-        let mut names = BTreeSet::new();
-        for (index, binding) in bindings.iter().enumerate() {
-            if usize::from(binding.id().get()) != index {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_bindings_not_dense",
-                    "plan binding IDs must be ordered dense zero-based ordinals",
-                ));
-            }
-            validate_query_name_limit(
-                binding.variable(),
-                limits,
-                "a query variable name exceeds the structural ceiling",
-            )?;
-            if !names.insert(binding.variable().clone()) {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_duplicate_variable",
-                    "plan query variables must be unique",
-                ));
-            }
-        }
-        if !limits.allows_bindings(inputs.len().max(1)) {
-            return Err(failure(
-                DiagnosticCategory::ResourceLimit,
-                "query_plan_input_limit",
-                "plan input column count exceeds the structural ceiling",
-            ));
-        }
-        for (index, column) in inputs.iter().enumerate() {
-            if usize::from(column.id().get()) != index {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_inputs_not_dense",
-                    "input column IDs must be ordered dense zero-based ordinals",
-                ));
-            }
-            validate_query_name_limit(
-                column.public_name(),
-                limits,
-                "an input column name exceeds the structural ceiling",
-            )?;
-            if !names.insert(column.public_name().clone()) {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_plan_duplicate_variable",
-                    "input column names must not collide with query variables",
-                ));
-            }
-        }
+        let query_limits = limits;
+        let limits = limits.structural;
+        validate_declarations(bindings, inputs, limits)?;
 
         let mut nodes = 0usize;
         validate_local_functions(functions, limits, &mut nodes)?;
 
         let (mandatory, optional, has_sort) =
             validate_pipeline(pipeline, bindings.len(), inputs.len(), limits, &mut nodes)?;
-        let visible: BTreeSet<BindingId> = mandatory.union(&optional).copied().collect();
-
-        match output {
-            QueryOutput::Rows { columns } => {
-                if columns.is_empty() || !limits.allows_selected_slots(columns.len()) {
-                    return Err(failure(
-                        DiagnosticCategory::ResourceLimit,
-                        "query_plan_output_limit",
-                        "output column count is empty or exceeds the structural ceiling",
-                    ));
-                }
-                let mut seen = BTreeSet::new();
-                for column in columns {
-                    if !visible.contains(column) {
-                        return Err(failure(
-                            DiagnosticCategory::InvalidContract,
-                            "query_plan_output_not_visible",
-                            "output projects a binding outside the visible row environment",
-                        ));
-                    }
-                    if !seen.insert(*column) {
-                        return Err(failure(
-                            DiagnosticCategory::InvalidContract,
-                            "query_plan_duplicate_output_column",
-                            "output projects one binding twice",
-                        ));
-                    }
-                }
-            }
-            QueryOutput::Documents { fields } => {
-                if fields.is_empty() || !limits.allows_selected_slots(fields.len()) {
-                    return Err(failure(
-                        DiagnosticCategory::ResourceLimit,
-                        "query_plan_output_limit",
-                        "output column count is empty or exceeds the structural ceiling",
-                    ));
-                }
-                let mut keys = BTreeSet::new();
-                for field in fields {
-                    validate_query_name_limit(
-                        field.key(),
-                        limits,
-                        "a document output key exceeds the structural ceiling",
-                    )?;
-                    if !keys.insert(field.key().clone()) {
-                        return Err(failure(
-                            DiagnosticCategory::InvalidContract,
-                            "query_plan_duplicate_output_column",
-                            "documents fetch one key twice",
-                        ));
-                    }
-                    match field.source() {
-                        DocumentSource::Binding { binding } => {
-                            if !visible.contains(binding) {
-                                return Err(failure(
-                                    DiagnosticCategory::InvalidContract,
-                                    "query_plan_output_not_visible",
-                                    "output projects a binding outside the visible row environment",
-                                ));
-                            }
-                        }
-                        DocumentSource::AttributeList { owner, .. } => {
-                            // A list reaches through its owner per row;
-                            // absence would have no list to fetch from.
-                            if !mandatory.contains(owner) {
-                                return Err(failure(
-                                    DiagnosticCategory::InvalidContract,
-                                    "query_plan_output_not_visible",
-                                    "attribute lists require a mandatory owner binding",
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        validate_output(output, &mandatory, &optional, limits)?;
         // Offset and limit consume an ordered stream; without an explicit
         // sort there is no stable total order to consume. Fail closed rather
         // than inherit provider iteration order.
@@ -1077,10 +1069,19 @@ impl QueryPlan {
             ));
         }
         if let Some(compatibility) = compatibility {
-            compatibility.validate(bindings.len(), limits)?;
+            compatibility.validate(bindings.len(), query_limits)?;
         }
 
         Ok(())
+    }
+
+    /// Lift a read plan into V3 after validation against declared schema authority.
+    /// The returned V3 plan has its own format and fingerprint domain version.
+    pub fn to_v3(
+        &self,
+        schema: &crate::schema::DeclaredSchema,
+    ) -> Result<v3::QueryPlanV3, Diagnostic> {
+        v3::QueryPlanV3::from_read_plan(self, schema)
     }
 
     /// Return the exact wire format discriminator.
@@ -1142,8 +1143,12 @@ impl QueryPlan {
     /// Encode exact canonical bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, Diagnostic> {
         match self.format.as_str() {
-            QUERY_PLAN_FORMAT_V1 => to_canonical_json(&QueryPlanV1Projection::new(self)?),
-            QUERY_PLAN_FORMAT_V2 => to_canonical_json(self),
+            QUERY_PLAN_FORMAT_V1 => {
+                to_canonical_json_with_limits(&QueryPlanV1Projection::new(self)?, self.limits.codec)
+                    .map_err(|diagnostic| self.limits.annotate(diagnostic))
+            }
+            QUERY_PLAN_FORMAT_V2 => to_canonical_json_with_limits(self, self.limits.codec)
+                .map_err(|diagnostic| self.limits.annotate(diagnostic)),
             _ => Err(failure(
                 DiagnosticCategory::InvalidContract,
                 "query_plan_format_unsupported",
@@ -1504,7 +1509,8 @@ impl QueryInvocation {
         operation: QueryOperation,
         inputs: Vec<InputRow>,
     ) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(plan, operation, inputs, StructuralLimits::CANONICAL)
+        Self::new_with_limits(plan, operation, inputs, plan.limits().structural)
+            .map_err(|diagnostic| plan.limits().annotate(diagnostic))
     }
 
     fn new_with_limits(
@@ -1513,73 +1519,7 @@ impl QueryInvocation {
         inputs: Vec<InputRow>,
         limits: StructuralLimits,
     ) -> Result<Self, Diagnostic> {
-        if plan.inputs().is_empty() {
-            if !inputs.is_empty() {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_invocation_unexpected_inputs",
-                    "the plan declares no input columns yet the invocation carries rows",
-                ));
-            }
-        } else {
-            if inputs.is_empty() {
-                return Err(failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_invocation_missing_inputs",
-                    "the plan declares input columns and requires at least one row",
-                ));
-            }
-            if !limits.allows_input_rows(inputs.len()) {
-                return Err(failure(
-                    DiagnosticCategory::ResourceLimit,
-                    "query_invocation_row_limit",
-                    "invocation input row count exceeds the structural ceiling",
-                ));
-            }
-            let input_bytes = serde_json::to_vec(&inputs).map_err(|_| {
-                failure(
-                    DiagnosticCategory::InvalidContract,
-                    "query_invocation_inputs_unencodable",
-                    "invocation input rows cannot be encoded",
-                )
-            })?;
-            if !limits.allows_input_bytes(input_bytes.len()) {
-                return Err(failure(
-                    DiagnosticCategory::ResourceLimit,
-                    "query_invocation_input_byte_limit",
-                    "invocation input rows exceed the structural byte ceiling",
-                ));
-            }
-            for row in &inputs {
-                if row.values().len() != plan.inputs().len() {
-                    return Err(failure(
-                        DiagnosticCategory::InvalidContract,
-                        "query_invocation_row_arity",
-                        "input row does not carry exactly the declared column set",
-                    ));
-                }
-                for (column, value) in plan.inputs().iter().zip(row.values()) {
-                    match value {
-                        None if column.optional() => {}
-                        None => {
-                            return Err(failure(
-                                DiagnosticCategory::InvalidContract,
-                                "query_invocation_missing_value",
-                                "a required input column carries no value",
-                            ));
-                        }
-                        Some(value) if value.value_type() == column.value_type() => {}
-                        Some(_) => {
-                            return Err(failure(
-                                DiagnosticCategory::InvalidContract,
-                                "query_invocation_value_type",
-                                "input value type differs from the declared column type",
-                            ));
-                        }
-                    }
-                }
-            }
-        }
+        validate_input_rows(plan.inputs(), &inputs, limits)?;
         Ok(Self {
             inputs,
             operation,
@@ -1672,7 +1612,18 @@ impl QueryPlanFingerprint {
 
 /// Decode canonical bytes through private constructor-rebuilding wire types.
 pub fn decode_query_plan(bytes: &[u8]) -> Result<QueryPlan, Diagnostic> {
-    crate::query_plan_wire::decode_query_plan(bytes)
+    decode_query_plan_with_limits(bytes, QueryLimits::CANONICAL)
+}
+
+/// Decode canonical plan bytes under the receiver's own limits.
+///
+/// The decoded plan keeps `limits`; nothing in the bytes can widen them.
+pub fn decode_query_plan_with_limits(
+    bytes: &[u8],
+    limits: QueryLimits,
+) -> Result<QueryPlan, Diagnostic> {
+    crate::query_plan_wire::decode_query_plan(bytes, limits)
+        .map_err(|diagnostic| limits.annotate(diagnostic))
 }
 
 /// Decode exact canonical invocation bytes and bind them to one trusted plan.
@@ -1801,6 +1752,157 @@ fn validate_local_functions(
     Ok(())
 }
 
+fn validate_declarations(
+    bindings: &[AssertionBinding],
+    inputs: &[InputColumn],
+    limits: StructuralLimits,
+) -> Result<(), Diagnostic> {
+    if bindings.is_empty() || !limits.allows_bindings(bindings.len()) {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_plan_binding_limit",
+            "plan binding count is empty or exceeds the structural ceiling",
+        ));
+    }
+    let mut names = BTreeSet::new();
+    for (index, binding) in bindings.iter().enumerate() {
+        if usize::from(binding.id().get()) != index {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_bindings_not_dense",
+                "plan binding IDs must be ordered dense zero-based ordinals",
+            ));
+        }
+        validate_query_name_limit(
+            binding.variable(),
+            limits,
+            "a query variable name exceeds the structural ceiling",
+        )?;
+        if !names.insert(binding.variable().clone()) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_duplicate_variable",
+                "plan query variables must be unique",
+            ));
+        }
+    }
+    if !limits.allows_bindings(inputs.len().max(1)) {
+        return Err(failure(
+            DiagnosticCategory::ResourceLimit,
+            "query_plan_input_limit",
+            "plan input column count exceeds the structural ceiling",
+        ));
+    }
+    for (index, column) in inputs.iter().enumerate() {
+        if usize::from(column.id().get()) != index {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_inputs_not_dense",
+                "input column IDs must be ordered dense zero-based ordinals",
+            ));
+        }
+        validate_query_name_limit(
+            column.public_name(),
+            limits,
+            "an input column name exceeds the structural ceiling",
+        )?;
+        if !names.insert(column.public_name().clone()) {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_duplicate_variable",
+                "input column names must not collide with query variables",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_output(
+    output: &QueryOutput,
+    mandatory: &BTreeSet<BindingId>,
+    optional: &BTreeSet<BindingId>,
+    limits: StructuralLimits,
+) -> Result<(), Diagnostic> {
+    let visible: BTreeSet<BindingId> = mandatory.union(optional).copied().collect();
+
+    match output {
+        QueryOutput::Rows { columns } => {
+            if columns.is_empty() || !limits.allows_selected_slots(columns.len()) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_output_limit",
+                    "output column count is empty or exceeds the structural ceiling",
+                ));
+            }
+            let mut seen = BTreeSet::new();
+            for column in columns {
+                if !visible.contains(column) {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_output_not_visible",
+                        "output projects a binding outside the visible row environment",
+                    ));
+                }
+                if !seen.insert(*column) {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_duplicate_output_column",
+                        "output projects one binding twice",
+                    ));
+                }
+            }
+        }
+        QueryOutput::Documents { fields } => {
+            if fields.is_empty() || !limits.allows_selected_slots(fields.len()) {
+                return Err(failure(
+                    DiagnosticCategory::ResourceLimit,
+                    "query_plan_output_limit",
+                    "output column count is empty or exceeds the structural ceiling",
+                ));
+            }
+            let mut keys = BTreeSet::new();
+            for field in fields {
+                validate_query_name_limit(
+                    field.key(),
+                    limits,
+                    "a document output key exceeds the structural ceiling",
+                )?;
+                if !keys.insert(field.key().clone()) {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        "query_plan_duplicate_output_column",
+                        "documents fetch one key twice",
+                    ));
+                }
+                match field.source() {
+                    DocumentSource::Binding { binding } => {
+                        if !visible.contains(binding) {
+                            return Err(failure(
+                                DiagnosticCategory::InvalidContract,
+                                "query_plan_output_not_visible",
+                                "output projects a binding outside the visible row environment",
+                            ));
+                        }
+                    }
+                    DocumentSource::AttributeList { owner, .. } => {
+                        // A list reaches through its owner per row;
+                        // absence would have no list to fetch from.
+                        if !mandatory.contains(owner) {
+                            return Err(failure(
+                                DiagnosticCategory::InvalidContract,
+                                "query_plan_output_not_visible",
+                                "attribute lists require a mandatory owner binding",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_query_name_limit(
     name: &QueryVariable,
     limits: StructuralLimits,
@@ -1891,7 +1993,24 @@ fn validate_pipeline(
             "an optional binding cannot also be a negation-local witness",
         ));
     }
-    let mut mandatory = root_mandatory;
+    validate_read_stages(
+        rest,
+        root_mandatory,
+        optional,
+        &pattern_bound,
+        binding_count,
+        limits,
+    )
+}
+
+fn validate_read_stages(
+    rest: &[ReadStage],
+    mut mandatory: BTreeSet<BindingId>,
+    mut optional: BTreeSet<BindingId>,
+    pattern_bound: &BTreeSet<BindingId>,
+    binding_count: usize,
+    limits: StructuralLimits,
+) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>, bool), Diagnostic> {
     let mut previous_ordinal = 0u8;
     let mut has_sort = false;
     for stage in rest {
@@ -2614,4 +2733,79 @@ pub(crate) fn failure(
         DiagnosticCode::new(code).expect("static query-plan diagnostic code"),
         message,
     )
+}
+
+fn validate_input_rows(
+    columns: &[InputColumn],
+    inputs: &[InputRow],
+    limits: StructuralLimits,
+) -> Result<(), Diagnostic> {
+    if columns.is_empty() {
+        if !inputs.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_unexpected_inputs",
+                "the plan declares no input columns yet the invocation carries rows",
+            ));
+        }
+    } else {
+        if inputs.is_empty() {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_missing_inputs",
+                "the plan declares input columns and requires at least one row",
+            ));
+        }
+        if !limits.allows_input_rows(inputs.len()) {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_invocation_row_limit",
+                "invocation input row count exceeds the structural ceiling",
+            ));
+        }
+        let input_bytes = serde_json::to_vec(inputs).map_err(|_| {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_inputs_unencodable",
+                "invocation input rows cannot be encoded",
+            )
+        })?;
+        if !limits.allows_input_bytes(input_bytes.len()) {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_invocation_input_byte_limit",
+                "invocation input rows exceed the structural byte ceiling",
+            ));
+        }
+        for row in inputs {
+            if row.values().len() != columns.len() {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_invocation_row_arity",
+                    "input row does not carry exactly the declared column set",
+                ));
+            }
+            for (column, value) in columns.iter().zip(row.values()) {
+                match value {
+                    None if column.optional() => {}
+                    None => {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_invocation_missing_value",
+                            "a required input column carries no value",
+                        ));
+                    }
+                    Some(value) if value.value_type() == column.value_type() => {}
+                    Some(_) => {
+                        return Err(failure(
+                            DiagnosticCategory::InvalidContract,
+                            "query_invocation_value_type",
+                            "input value type differs from the declared column type",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

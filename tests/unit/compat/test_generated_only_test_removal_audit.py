@@ -73,10 +73,6 @@ def test_retained_query_tests_are_active_and_not_reclassified_as_authoring() -> 
     audit = _load(AUDIT)
     removed = {path for family in audit["families"] for path in family["removed_paths"]}
     retained = {
-        "tests/unit/typed_query/test_query.py",
-        "tests/unit/typed_query/test_references.py",
-        "tests/unit/typed_query/test_remote_query.py",
-        "tests/unit/typed_query/test_results.py",
         "tests/unit/query/test_query_v2_authoring_facade.py",
         "type-bridge-core/crates/node/tests/unit/query-v2-authoring.test.ts",
         "type-bridge-core/crates/node/tests/unit/query-v2-remote-failures.test.ts",

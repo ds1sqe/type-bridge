@@ -1,10 +1,13 @@
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 #[cfg(feature = "v2-query")]
 use futures::future::join_all;
 use type_bridge_core_lib::ast::Clause;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
 #[cfg(feature = "v2-query")]
-use super::traits::{V2PolicyOutcome, V2PolicyRequest};
+use super::traits::{
+    StagedWriteAuthority, V2PolicyOutcome, V2PolicyRequest, V3CommitOutcome, V3PolicyPlan,
+};
 
 /// Ordered request interceptor chain with reverse-order response hooks.
 pub struct InterceptorChain {
@@ -60,6 +63,29 @@ impl InterceptorChain {
         Ok(())
     }
 
+    /// Fail closed if any configured policy has not explicitly declared
+    /// staged V3 coverage.
+    ///
+    /// V3 is served only beside V2, whose admission already requires every
+    /// policy to declare V2 coverage, so this requires every V2-participating
+    /// policy to also cover V3.
+    #[cfg(feature = "v2-query")]
+    pub fn ensure_v3_coverage(&self) -> Result<(), InterceptError> {
+        if let Some(interceptor) = self
+            .interceptors
+            .iter()
+            .find(|interceptor| !interceptor.supports_v3())
+        {
+            return Err(InterceptError::ValidationFailed {
+                reason: format!(
+                    "interceptor {:?} does not declare staged V3 coverage",
+                    interceptor.name(),
+                ),
+            });
+        }
+        Ok(())
+    }
+
     /// Run header/identity policy before decoding an untrusted V2 envelope.
     #[cfg(feature = "v2-query")]
     pub async fn execute_v2_transport(
@@ -83,6 +109,56 @@ impl InterceptorChain {
             interceptor.on_v2_request(request, ctx).await?;
         }
         Ok(())
+    }
+
+    /// Admit a staged V3 write: any error refuses, at least one policy must
+    /// vouch for the caller.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v3_write_authority(
+        &self,
+        ctx: &RequestContext,
+    ) -> Result<bool, InterceptError> {
+        let mut admitted = false;
+        for interceptor in &self.interceptors {
+            admitted |= interceptor.on_v3_write_authority(ctx).await?
+                == StagedWriteAuthority::Authenticated;
+        }
+        Ok(admitted)
+    }
+
+    /// Run staged plan policy in order; the first refusal wins. Each policy
+    /// sees row values only if it asked for them.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v3_plan(
+        &self,
+        index: usize,
+        plan: V3PolicyPlan<'_>,
+        ctx: &RequestContext,
+    ) -> Result<(), InterceptError> {
+        for interceptor in &self.interceptors {
+            let view = plan.with_rows_visible(interceptor.wants_v3_plan_rows());
+            interceptor.on_v3_plan(index, &view, ctx).await?;
+        }
+        Ok(())
+    }
+
+    /// Run every staged commit observer concurrently; errors are logged only.
+    #[cfg(feature = "v2-query")]
+    pub async fn execute_v3_commit(&self, outcome: &V3CommitOutcome<'_>, ctx: &RequestContext) {
+        let results = join_all(
+            self.interceptors
+                .iter()
+                .map(|interceptor| interceptor.on_v3_commit(outcome, ctx)),
+        )
+        .await;
+        for (interceptor, result) in self.interceptors.iter().zip(results) {
+            if result.is_err() {
+                tracing::warn!(
+                    interceptor = interceptor.name(),
+                    "staged commit observer failed"
+                );
+            }
+        }
     }
 
     /// Run every V2 response hook even when one rejects, so audit evidence is

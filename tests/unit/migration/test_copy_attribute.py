@@ -88,7 +88,9 @@ def test_copy_attribute_to_rollback_typeql_deletes_dest() -> None:
     assert "person" in rollback, "rollback must reference the owner type"
     # TypeDB 3.x ownership-delete syntax is `delete <attr> of <owner>`; the older
     # `delete $x has <dest> $v` is a 3.x syntax error.
-    assert "delete $v of $x" in rollback, "rollback must use 3.x `delete $v of $x` syntax"
+    from tests.utils.typeql import assert_typeql_equivalent
+
+    assert_typeql_equivalent(rollback, "match $x isa person, has new-name $v; delete $v of $x;")
 
 
 def test_copy_attribute_is_reversible() -> None:

@@ -1,0 +1,1 @@
+with fun total($x: integer) -> integer: match let $y = $x; return sum($y); match let $answer = total(2); fetch { "answer": $answer};

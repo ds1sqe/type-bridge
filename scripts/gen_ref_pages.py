@@ -26,7 +26,6 @@ PUBLIC_MODULES = {
     "type_bridge.proxy",
     "type_bridge.query",
     "type_bridge.session",
-    "type_bridge.typed",
     "type_bridge.typedb_driver",
 }
 

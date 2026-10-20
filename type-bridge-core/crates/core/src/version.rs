@@ -10,9 +10,10 @@
 //! | Item | Role |
 //! |------|------|
 //! | [`MIN_SUPPORTED`](crate::version::MIN_SUPPORTED) | Floor of the support window (`3.11.0`) |
-//! | [`MAX_SUPPORTED_LINE`](crate::version::MAX_SUPPORTED_LINE) | Ceiling of the support window as `(major, minor)` (`3.12`) |
+//! | [`MAX_SUPPORTED_LINE`](crate::version::MAX_SUPPORTED_LINE) | Ceiling of the support window as `(major, minor)` (`3.13`) |
 //! | [`window_contains`](crate::version::window_contains) | Range predicate combining both bounds |
 //! | [`semantic_profile_id`](crate::version::semantic_profile_id) | Map any supported patch release to its frozen schema semantic profile |
+//! | [`GeneratedPackageRelease`](crate::version::GeneratedPackageRelease) | Exact TypeDB release a generated package's profile connects to |
 //! | [`band`](crate::version::band) | Band a driver natively speaks (data; measured against live servers) |
 //! | [`server_accepted_bands`](crate::version::server_accepted_bands) | Bands a server accepts connections from (data; measured) |
 //! | [`negotiate_server_band`](crate::version::negotiate_server_band) | Pick the embedded band to connect a server with |
@@ -159,15 +160,18 @@ pub const MIN_SUPPORTED: Version = Version::new(3, 11, 0);
 
 /// Ceiling of the TypeDB support window as `(major, minor)`, inclusive.
 ///
-/// Any patch release on this line is in-window (`3.12.0`, `3.12.1`, …).
-/// The first version on the **next** minor (`3.13.0`) is out of window.
-pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);
+/// Any patch release on this line is in-window (`3.13.0`, `3.13.6`, …).
+/// The first version on the **next** minor (`3.14.0`) is out of window.
+pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 13);
 
 /// Frozen schema semantic profile for every supported TypeDB 3.11 patch.
 pub const TYPEDB_3_11_SEMANTIC_PROFILE_ID: &str = "typedb-3.11.5/v1";
 
 /// Frozen schema semantic profile for every supported TypeDB 3.12 patch.
 pub const TYPEDB_3_12_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
+
+/// Frozen schema semantic profile for every supported TypeDB 3.13 patch.
+pub const TYPEDB_3_13_SEMANTIC_PROFILE_ID: &str = "typedb-3.13.6/v1";
 
 // ---------------------------------------------------------------------------
 // Window predicate
@@ -177,7 +181,7 @@ pub const TYPEDB_3_12_SEMANTIC_PROFILE_ID: &str = "typedb-3.12.1/v1";
 ///
 /// A version is in-window when:
 /// - `v >= MIN_SUPPORTED` (i.e. at least `3.11.0`), **and**
-/// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.12.x`).
+/// - `(v.major, v.minor) <= MAX_SUPPORTED_LINE` (i.e. at most `3.13.x`).
 pub fn window_contains(v: &Version) -> bool {
     *v >= MIN_SUPPORTED && (v.major, v.minor) <= MAX_SUPPORTED_LINE
 }
@@ -196,7 +200,50 @@ pub fn semantic_profile_id(v: &Version) -> Option<&'static str> {
     match (v.major, v.minor) {
         (3, 11) => Some(TYPEDB_3_11_SEMANTIC_PROFILE_ID),
         (3, 12) => Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID),
+        (3, 13) => Some(TYPEDB_3_13_SEMANTIC_PROFILE_ID),
         _ => None,
+    }
+}
+
+/// Exact TypeDB release a generated package connects to, selected by the
+/// package's semantic profile.
+///
+/// Generated packages connect only to the one release their profile was
+/// proven against. The set is closed: a value exists only for a profile
+/// listed here, so callers cannot require an arbitrary version.
+///
+/// | Package profile | Required server |
+/// |-----------------|-----------------|
+/// | `typedb-3.12.1/v1` | `3.12.3` |
+/// | `typedb-3.13.6/v1` | `3.13.6` |
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeneratedPackageRelease {
+    server: Version,
+}
+
+impl GeneratedPackageRelease {
+    /// Return the exact release for a generated package's semantic profile,
+    /// or `None` when generated packages on that profile cannot connect.
+    #[must_use]
+    pub fn for_profile(profile: &str) -> Option<Self> {
+        let server = match profile {
+            TYPEDB_3_12_SEMANTIC_PROFILE_ID => Version::new(3, 12, 3),
+            TYPEDB_3_13_SEMANTIC_PROFILE_ID => Version::new(3, 13, 6),
+            _ => return None,
+        };
+        Some(Self { server })
+    }
+
+    /// The exact server release the package requires.
+    #[must_use]
+    pub const fn server(self) -> Version {
+        self.server
+    }
+
+    /// Whether `observed` is exactly the required release.
+    #[must_use]
+    pub fn admits(self, observed: &Version) -> bool {
+        *observed == self.server
     }
 }
 
@@ -216,7 +263,8 @@ pub fn semantic_profile_id(v: &Version) -> Option<&'static str> {
 /// |-----------|------|
 /// | 3.11 | `8` (protocol 8) |
 /// | 3.12 | `9` (protocol 3.12.0-rc0) |
-/// | anything else (incl. 3.9, 3.13, 2.x) | `None` |
+/// | 3.13 | `9` (protocol 3.13.4; wire-compatible with 3.12, measured live) |
+/// | anything else (incl. 3.9, 3.14, 2.x) | `None` |
 ///
 /// When TypeDB ships a new minor line, measure it live and extend **both**
 /// this map and [`server_accepted_bands`] — together they are the only data
@@ -228,8 +276,8 @@ pub fn band(v: &Version) -> Option<u8> {
     }
     match v.minor {
         11 => Some(8),
-        12 => Some(9),
-        // 3.9 was never released; 3.13+ not yet mapped.
+        12 | 13 => Some(9),
+        // 3.9 was never released; 3.14+ not yet mapped.
         _ => None,
     }
 }
@@ -244,6 +292,10 @@ pub fn band(v: &Version) -> Option<u8> {
 /// per-version band cannot express that, so servers carry an accepted *set*
 /// and drivers keep their single native [`band`].
 ///
+/// Server 3.13 is listed as band 9 only: drivers 3.12.3 and 3.13.6 were
+/// measured against it, a band-8 (3.11.5) driver was not, so band 8 is not
+/// claimed. The default build embeds band 9, so it serves 3.13 natively.
+///
 /// HAZARD (measured live on 3.11.5): a band-9 connection attempt does not
 /// just fail against a 3.11 server — it crashes the server process.  Never
 /// probe band 9 against a server of unknown version; discover through
@@ -255,6 +307,7 @@ pub fn band(v: &Version) -> Option<u8> {
 /// |-------------|---------|
 /// | 3.11 | `[8]` |
 /// | 3.12 | `[9, 8]` |
+/// | 3.13 | `[9]` |
 /// | anything else | `[]` |
 pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
     if v.major != 3 {
@@ -263,6 +316,7 @@ pub fn server_accepted_bands(v: &Version) -> &'static [u8] {
     match v.minor {
         11 => &[8],
         12 => &[9, 8],
+        13 => &[9],
         _ => &[],
     }
 }
@@ -350,7 +404,7 @@ pub fn check_supported(driver: &Version, server: &Version) -> Result<(), Version
 /// # Errors
 ///
 /// - [`VersionError::Unsupported`] when `server` lies outside the support
-///   window (below-window `3.7`, above-window `3.13`) **or** is in-window but
+///   window (below-window `3.7`, above-window `3.14`) **or** is in-window but
 ///   has no accepted bands (e.g. a future `3.9` line, only reachable if the
 ///   window ever widens past the band map).  This path names no band — it is
 ///   the same window-class rejection an out-of-range server gets today.
@@ -1264,7 +1318,7 @@ impl RetainedCustomRootCa {
         }
     }
 
-    fn root_store(&self) -> rustls::RootCertStore {
+    pub(crate) fn root_store(&self) -> rustls::RootCertStore {
         self.0.roots.clone()
     }
 
@@ -1285,14 +1339,16 @@ fn native_root_store_from_loaded(
     Ok(roots)
 }
 
-fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurationError> {
+pub(crate) fn native_root_store() -> Result<rustls::RootCertStore, TlsConfigurationError> {
     // Platform stores are often heterogeneous. Individual unreadable or
     // malformed entries are not fatal when the same load produced at least
     // one certificate rustls can use.
     native_root_store_from_loaded(rustls_native_certs::load_native_certs())
 }
 
-fn tls_agent(roots: rustls::RootCertStore) -> Result<ureq::Agent, TlsConfigurationError> {
+pub(crate) fn tls_agent(
+    roots: rustls::RootCertStore,
+) -> Result<ureq::Agent, TlsConfigurationError> {
     // ureq's default rustls feature uses webpki roots.  Build the client
     // explicitly so `NativeRoots` means the operating-system store and a
     // custom mode trusts only the supplied PEM bundle.
@@ -1310,7 +1366,7 @@ fn tls_agent(roots: rustls::RootCertStore) -> Result<ureq::Agent, TlsConfigurati
         .build())
 }
 
-fn plaintext_agent() -> ureq::Agent {
+pub(crate) fn plaintext_agent() -> ureq::Agent {
     // The returned version authorizes the matching gRPC endpoint. Redirects
     // and ambient proxies could otherwise substitute a different authority.
     ureq::builder()
@@ -1383,43 +1439,118 @@ pub(crate) fn parse_version_response(json: &str) -> Result<Version, VersionError
 // HTTP probe (network)
 // ---------------------------------------------------------------------------
 
-fn server_version_request(request: ureq::Request, url: &str) -> Result<Version, VersionError> {
-    server_version_request_with_timeout(request, url, VERSION_PROBE_TIMEOUT)
+use type_bridge_contract::failure::TransportKind;
+
+const UNREACHABLE_PREFIX: &str = "could not reach TypeDB HTTP version endpoint: ";
+const UNREACHABLE_GUIDANCE: &str =
+    "; ensure the TypeDB HTTP endpoint is reachable and that the port is correct";
+
+/// Request failure with TypeBridge-owned guidance; the URL and provider prose stay out.
+fn probe_unreachable(kind: TransportKind) -> VersionError {
+    VersionError::Probe(format!(
+        "{UNREACHABLE_PREFIX}{}{UNREACHABLE_GUIDANCE}",
+        kind.description()
+    ))
+}
+
+fn probe_transport_failure(kind: TransportKind) -> VersionError {
+    VersionError::Probe(format!(
+        "HTTP version request failed: {}",
+        kind.description()
+    ))
+}
+
+fn transport_source_kind(
+    error: &(dyn std::error::Error + 'static),
+    remaining: u8,
+) -> Option<TransportKind> {
+    if remaining == 0 {
+        return None;
+    }
+    if error.is::<rustls::Error>() {
+        return Some(TransportKind::Tls);
+    }
+    if let Some(error) = error.downcast_ref::<std::io::Error>() {
+        if let Some(kind) = error
+            .get_ref()
+            .and_then(|source| transport_source_kind(source, remaining - 1))
+        {
+            return Some(kind);
+        }
+        let kind = match error.kind() {
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => TransportKind::Timeout,
+            std::io::ErrorKind::ConnectionRefused => TransportKind::Unavailable,
+            std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected => TransportKind::Closed,
+            _ => TransportKind::Other,
+        };
+        if kind != TransportKind::Other {
+            return Some(kind);
+        }
+    }
+    error
+        .source()
+        .and_then(|source| transport_source_kind(source, remaining - 1))
+}
+
+fn io_transport_kind(error: &std::io::Error) -> Option<TransportKind> {
+    transport_source_kind(error, 8)
+}
+
+fn http_transport_kind(error: &ureq::Error) -> TransportKind {
+    if let Some(kind) = transport_source_kind(error, 8) {
+        return kind;
+    }
+    match error {
+        ureq::Error::Status(401 | 403, _) => TransportKind::Authentication,
+        ureq::Error::Status(408 | 504, _) => TransportKind::Timeout,
+        ureq::Error::Status(502 | 503, _) => TransportKind::Unavailable,
+        ureq::Error::Transport(error) => match error.kind() {
+            ureq::ErrorKind::Dns
+            | ureq::ErrorKind::ConnectionFailed
+            | ureq::ErrorKind::ProxyConnect => TransportKind::Unavailable,
+            ureq::ErrorKind::ProxyUnauthorized => TransportKind::Authentication,
+            ureq::ErrorKind::InsecureRequestHttpsOnly => TransportKind::Tls,
+            _ => TransportKind::Other,
+        },
+        _ => TransportKind::Other,
+    }
+}
+
+fn server_version_request(request: ureq::Request) -> Result<Version, VersionError> {
+    server_version_request_with_timeout(request, VERSION_PROBE_TIMEOUT)
 }
 
 fn server_version_request_with_timeout(
     request: ureq::Request,
-    url: &str,
     timeout: Duration,
 ) -> Result<Version, VersionError> {
-    let response = request.timeout(timeout).call().map_err(|e| {
-        VersionError::Probe(format!(
-            "could not reach TypeDB HTTP version endpoint at {url}; \
-                 ensure the TypeDB HTTP endpoint is reachable and that the port is correct: {e}"
-        ))
-    })?;
+    let response = request
+        .timeout(timeout)
+        .call()
+        .map_err(|error| probe_unreachable(http_transport_kind(&error)))?;
     let mut response_body = Vec::with_capacity(MAX_VERSION_RESPONSE_BYTES + 1);
     response
         .into_reader()
         .take((MAX_VERSION_RESPONSE_BYTES + 1) as u64)
         .read_to_end(&mut response_body)
-        .map_err(|e| {
-            VersionError::Probe(format!("failed to read response body from {url}: {e}"))
+        .map_err(|error| {
+            probe_transport_failure(io_transport_kind(&error).unwrap_or(TransportKind::Other))
         })?;
     if response_body.len() > MAX_VERSION_RESPONSE_BYTES {
         return Err(VersionError::Probe(format!(
-            "version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit \
-             (endpoint: {url})"
+            "HTTP version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit"
         )));
     }
-    let response_body = std::str::from_utf8(&response_body).map_err(|_| {
-        VersionError::Probe(format!(
-            "version response is not valid UTF-8 (endpoint: {url})"
-        ))
-    })?;
+    let response_body = std::str::from_utf8(&response_body)
+        .map_err(|_| VersionError::Probe("HTTP version response is not valid UTF-8".to_owned()))?;
 
     parse_version_response(response_body).map_err(|e| match e {
-        VersionError::Probe(msg) => VersionError::Probe(format!("{msg} (endpoint: {url})")),
+        VersionError::Probe(_) => {
+            VersionError::Probe("HTTP version response is invalid".to_owned())
+        }
         other => other,
     })
 }
@@ -1439,7 +1570,7 @@ pub fn server_version_plaintext(
     http_port: u16,
 ) -> Result<Version, VersionProbeError> {
     let url = version_endpoint(address, http_port, false);
-    server_version_request(plaintext_agent().get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(plaintext_agent().get(&url)).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API over HTTPS using native system trust roots.
@@ -1458,7 +1589,7 @@ pub fn server_version_native_roots(
 ) -> Result<Version, VersionProbeError> {
     let agent = tls_agent(native_root_store()?)?;
     let url = version_endpoint(address, http_port, true);
-    server_version_request(agent.get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(agent.get(&url)).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API over HTTPS using only a custom root CA bundle.
@@ -1493,7 +1624,7 @@ pub fn server_version_retained_custom_root_ca(
 ) -> Result<Version, VersionProbeError> {
     let agent = tls_agent(material.root_store())?;
     let url = version_endpoint(address, http_port, true);
-    server_version_request(agent.get(&url), &url).map_err(VersionProbeError::Probe)
+    server_version_request(agent.get(&url)).map_err(VersionProbeError::Probe)
 }
 
 /// Query the TypeDB HTTP API for the server version.
@@ -1572,7 +1703,48 @@ pub enum VersionError {
 }
 
 /// Human-readable window string used consistently in error messages.
-const WINDOW_HUMAN: &str = "3.11.0–3.12.x";
+const WINDOW_HUMAN: &str = "3.11.0–3.13.x";
+
+impl VersionError {
+    /// Retain fixed HTTP probe diagnoses and locally authored version evidence.
+    /// Unrecognized legacy probe strings may contain provider values.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn redacted_probe_description(&self) -> String {
+        match self {
+            Self::Probe(message) => {
+                let fixed_transport = message
+                    .strip_prefix("HTTP version request failed: ")
+                    .or_else(|| {
+                        message
+                            .strip_prefix(UNREACHABLE_PREFIX)
+                            .and_then(|rest| rest.strip_suffix(UNREACHABLE_GUIDANCE))
+                    })
+                    .and_then(TransportKind::from_description)
+                    .is_some();
+                if fixed_transport
+                    || message
+                        == &format!(
+                            "HTTP version response exceeds the {MAX_VERSION_RESPONSE_BYTES}-byte limit"
+                        )
+                    || matches!(
+                        message.as_str(),
+                        "HTTP version response is not valid UTF-8"
+                            | "HTTP version response is invalid"
+                    )
+                {
+                    message.clone()
+                } else {
+                    format!(
+                        "HTTP version request failed: {}",
+                        TransportKind::Other.description()
+                    )
+                }
+            }
+            _ => self.to_string(),
+        }
+    }
+}
 
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1630,6 +1802,94 @@ impl std::error::Error for VersionError {}
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod transport_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn http_transport_sources_keep_only_fixed_kinds() {
+        let cases = [
+            (
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "SECRET_SENTINEL"),
+                TransportKind::Timeout,
+            ),
+            (
+                std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "SECRET_SENTINEL"),
+                TransportKind::Unavailable,
+            ),
+            (
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    rustls::Error::General("SECRET_SENTINEL".to_owned()),
+                ),
+                TransportKind::Tls,
+            ),
+            (
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SECRET_SENTINEL"),
+                TransportKind::Closed,
+            ),
+            (
+                std::io::Error::other("SECRET_SENTINEL timeout TLS"),
+                TransportKind::Other,
+            ),
+        ];
+        for (error, expected) in cases {
+            let error = ureq::Error::from(error);
+            let kind = http_transport_kind(&error);
+            assert_eq!(kind, expected);
+            let retained = probe_transport_failure(kind);
+            assert_eq!(
+                retained.redacted_probe_description(),
+                format!("HTTP version request failed: {}", kind.description())
+            );
+            assert!(!format!("{retained:?}").contains("SECRET_SENTINEL"));
+            let unreachable = probe_unreachable(kind);
+            assert_eq!(
+                unreachable.redacted_probe_description(),
+                format!(
+                    "could not reach TypeDB HTTP version endpoint: {}; ensure the TypeDB HTTP \
+                     endpoint is reachable and that the port is correct",
+                    kind.description()
+                )
+            );
+        }
+        let unauthorized = ureq::Error::Status(
+            401,
+            ureq::Response::new(401, "SECRET_SENTINEL", "SECRET_SENTINEL").unwrap(),
+        );
+        assert_eq!(
+            http_transport_kind(&unauthorized),
+            TransportKind::Authentication
+        );
+        assert!(
+            !probe_unreachable(http_transport_kind(&unauthorized))
+                .to_string()
+                .contains("SECRET_SENTINEL")
+        );
+    }
+
+    #[test]
+    fn local_version_evidence_survives_and_unrecognized_probe_values_do_not() {
+        let local = VersionError::Unsupported {
+            component: "server",
+            found: Version::new(3, 99, 0),
+        };
+        assert_eq!(local.redacted_probe_description(), local.to_string());
+        let remote = VersionError::Probe("SECRET_SENTINEL timeout TLS".to_owned());
+        assert_eq!(
+            remote.redacted_probe_description(),
+            "HTTP version request failed: other transport"
+        );
+        let forged = VersionError::Probe(format!(
+            "{UNREACHABLE_PREFIX}timeout SECRET_SENTINEL{UNREACHABLE_GUIDANCE}"
+        ));
+        assert_eq!(
+            forged.redacted_probe_description(),
+            "HTTP version request failed: other transport"
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1700,8 +1960,15 @@ mod tests {
     }
 
     #[test]
-    fn window_rejects_3_13_0() {
-        assert!(!window_contains(&Version::new(3, 13, 0)));
+    fn window_accepts_3_13_line() {
+        assert!(window_contains(&Version::new(3, 13, 0)));
+        assert!(window_contains(&Version::new(3, 13, 6)));
+        assert!(window_contains(&Version::new(3, 13, 99)));
+    }
+
+    #[test]
+    fn window_rejects_3_14_0() {
+        assert!(!window_contains(&Version::new(3, 14, 0)));
     }
 
     #[test]
@@ -1720,6 +1987,10 @@ mod tests {
                 semantic_profile_id(&Version::new(3, 12, patch)),
                 Some(TYPEDB_3_12_SEMANTIC_PROFILE_ID)
             );
+            assert_eq!(
+                semantic_profile_id(&Version::new(3, 13, patch)),
+                Some(TYPEDB_3_13_SEMANTIC_PROFILE_ID)
+            );
         }
     }
 
@@ -1728,11 +1999,31 @@ mod tests {
         for version in [
             Version::new(2, 12, 1),
             Version::new(3, 10, 99),
-            Version::new(3, 13, 0),
+            Version::new(3, 14, 0),
             Version::new(4, 11, 5),
         ] {
             assert_eq!(semantic_profile_id(&version), None);
         }
+    }
+
+    #[test]
+    fn generated_packages_bind_one_exact_release_per_profile() {
+        let release = |profile| GeneratedPackageRelease::for_profile(profile).map(|r| r.server());
+        assert_eq!(
+            release(TYPEDB_3_12_SEMANTIC_PROFILE_ID),
+            Some(Version::new(3, 12, 3))
+        );
+        assert_eq!(
+            release(TYPEDB_3_13_SEMANTIC_PROFILE_ID),
+            Some(Version::new(3, 13, 6))
+        );
+        assert_eq!(release(TYPEDB_3_11_SEMANTIC_PROFILE_ID), None);
+        assert_eq!(release("typedb-3.14.0/v1"), None);
+
+        let r313 = GeneratedPackageRelease::for_profile(TYPEDB_3_13_SEMANTIC_PROFILE_ID).unwrap();
+        assert!(r313.admits(&Version::new(3, 13, 6)));
+        assert!(!r313.admits(&Version::new(3, 13, 5)));
+        assert!(!r313.admits(&Version::new(3, 12, 3)));
     }
 
     // -- band ----------------------------------------------------------------
@@ -1761,8 +2052,14 @@ mod tests {
     }
 
     #[test]
-    fn band_3_13_is_none() {
-        assert_eq!(band(&Version::new(3, 13, 0)), None);
+    fn band_3_13_is_9() {
+        assert_eq!(band(&Version::new(3, 13, 0)), Some(9));
+        assert_eq!(band(&Version::new(3, 13, 6)), Some(9));
+    }
+
+    #[test]
+    fn band_3_14_is_none() {
+        assert_eq!(band(&Version::new(3, 14, 0)), None);
     }
 
     #[test]
@@ -1791,8 +2088,15 @@ mod tests {
     }
 
     #[test]
+    fn server_3_13_accepts_band9_only() {
+        // Measured: drivers 3.12.3 and 3.13.6 round-trip against 3.13.6.
+        // Band 8 is unmeasured on 3.13 and therefore not claimed.
+        assert_eq!(server_accepted_bands(&Version::new(3, 13, 6)), &[9]);
+    }
+
+    #[test]
     fn server_unmapped_accepts_nothing() {
-        assert!(server_accepted_bands(&Version::new(3, 13, 0)).is_empty());
+        assert!(server_accepted_bands(&Version::new(3, 14, 0)).is_empty());
         assert!(server_accepted_bands(&Version::new(2, 28, 0)).is_empty());
     }
 
@@ -1814,6 +2118,15 @@ mod tests {
             negotiate_server_band(&Version::new(3, 12, 0), &[8, 9]),
             Some(9)
         );
+    }
+
+    #[test]
+    fn negotiate_3_13_requires_band9() {
+        assert_eq!(
+            negotiate_server_band(&Version::new(3, 13, 6), &[8, 9]),
+            Some(9)
+        );
+        assert_eq!(negotiate_server_band(&Version::new(3, 13, 6), &[8]), None);
     }
 
     #[test]
@@ -1872,6 +2185,52 @@ mod tests {
         assert!(
             matches!(err, VersionError::BandMismatch { .. }),
             "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_band9_drivers_and_3_12_3_13_servers_accept_each_other() {
+        // Measured: drivers 3.12.3 and 3.13.6 against servers 3.12.3 and 3.13.6.
+        for driver in [Version::new(3, 12, 3), Version::new(3, 13, 6)] {
+            for server in [Version::new(3, 12, 3), Version::new(3, 13, 6)] {
+                assert!(
+                    check_supported(&driver, &server).is_ok(),
+                    "{driver} x {server}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_driver_3115_server_3136_reject_band_mismatch() {
+        let err = check_supported(&Version::new(3, 11, 5), &Version::new(3, 13, 6)).unwrap_err();
+        assert!(
+            matches!(err, VersionError::BandMismatch { .. }),
+            "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_driver_3136_server_3115_reject_band_mismatch() {
+        let err = check_supported(&Version::new(3, 13, 6), &Version::new(3, 11, 5)).unwrap_err();
+        assert!(
+            matches!(err, VersionError::BandMismatch { .. }),
+            "expected BandMismatch, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn check_driver_3140_rejects_window() {
+        let err = check_supported(&Version::new(3, 14, 0), &Version::new(3, 13, 6)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VersionError::Unsupported {
+                    component: "driver",
+                    ..
+                }
+            ),
+            "expected Unsupported(driver), got {err:?}"
         );
     }
 
@@ -1950,9 +2309,24 @@ mod tests {
     }
 
     #[test]
-    fn server_3130_reject_window() {
+    fn server_3136_band9_accepts() {
+        assert!(check_server_supported(&Version::new(3, 13, 0), &[8, 9]).is_ok());
+        assert!(check_server_supported(&Version::new(3, 13, 6), &[9]).is_ok());
+    }
+
+    #[test]
+    fn server_3136_band8_only_build_is_unavailable() {
+        let err = check_server_supported(&Version::new(3, 13, 6), &[8]).unwrap_err();
+        assert!(
+            matches!(err, VersionError::EmbeddedUnavailable { .. }),
+            "expected EmbeddedUnavailable, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn server_3140_reject_window() {
         // Above the ceiling — window class.
-        let err = check_server_supported(&Version::new(3, 13, 0), &[8, 9]).unwrap_err();
+        let err = check_server_supported(&Version::new(3, 14, 0), &[8, 9]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2033,7 +2407,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("2.28.0"), "missing detected version: {msg}");
         assert!(msg.contains("3.11.0"), "missing window floor: {msg}");
-        assert!(msg.contains("3.12.x"), "missing window ceiling: {msg}");
+        assert!(msg.contains("3.13.x"), "missing window ceiling: {msg}");
     }
 
     #[test]
@@ -2219,9 +2593,8 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/v1/version");
         let started = std::time::Instant::now();
 
-        let error =
-            server_version_request_with_timeout(ureq::get(&url), &url, Duration::from_millis(25))
-                .expect_err("the response read must honor the overall request timeout");
+        let error = server_version_request_with_timeout(ureq::get(&url), Duration::from_millis(25))
+            .expect_err("the response read must honor the overall request timeout");
         let elapsed = started.elapsed();
         server
             .join()

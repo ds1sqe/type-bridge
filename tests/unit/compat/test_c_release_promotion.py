@@ -61,20 +61,40 @@ def run_snapshot() -> dict[str, Any]:
 def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     selected = policy.selected_policy()
     assert json.loads(policy.POLICY.read_text()) == selected
-    assert len(selected["ci_jobs"]) == 52
+    assert len(selected["ci_jobs"]) == 59
     assert (
-        selected["ci_jobs"]["Rust windows-latest"]["Check C foundation on MSRV 1.88"] == "skipped"
+        selected["ci_jobs"]["Staged plans live (typedb/typedb:3.13.6)"][
+            "Run staged writes races across processes"
+        ]
+        == "success"
     )
-    assert selected["ci_jobs"]["Rust ubuntu-latest"]["Check C foundation on MSRV 1.88"] == "success"
+    assert (
+        selected["ci_jobs"]["Rust docs and MSRV 1.88"]["Check C foundation on MSRV 1.88"]
+        == "success"
+    )
+    # The accepted run is a master push, so master-only cache saves run.
+    assert selected["ci_jobs"]["Rust windows-latest"]["Save cargo build cache"] == "success"
+    assert (
+        selected["ci_jobs"]["Rust schema-codegen acceptance windows-latest"][
+            "Initialize MSVC and require clang-cl for Windows C tests"
+        ]
+        == "success"
+    )
+    assert (
+        selected["ci_jobs"]["Rust schema-codegen rest ubuntu-latest"][
+            "Initialize MSVC and require clang-cl for Windows C tests"
+        ]
+        == "skipped"
+    )
     assert (
         selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.12.3)"][
-            "Upload Python sdk report"
+            "Upload Python queries report"
         ]
         == "success"
     )
     assert (
         selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.11.5)"][
-            "Upload Python sdk report"
+            "Upload Python queries report"
         ]
         == "skipped"
     )
@@ -89,7 +109,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         ("head_sha", "c" * 40),
         ("head_branch", "develop"),
         ("head_branch", "release/c-sdk-readiness"),
-        ("head_branch", "v2.2.6"),
+        ("head_branch", "v2.3.0"),
         ("path", ".github/workflows/release.yml"),
         ("event", "pull_request"),
         ("event", "schedule"),
@@ -290,10 +310,10 @@ def test_verified_bundle_rejects_substitution(tmp_path: Path, change: str) -> No
 
 
 def test_tag_requires_an_annotated_direct_same_source_target() -> None:
-    reference = {"ref": "refs/tags/v2.2.6", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v2.3.0", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.2.6",
+        "tag": "v2.3.0",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -320,7 +340,7 @@ def test_workflow_keeps_publish_protected_and_without_builders() -> None:
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     publish = workflow["jobs"]["publish"]
     assert publish["environment"] == "release"
-    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.2.6'"
+    assert publish["if"] == "inputs.mode == 'publish' && github.ref == 'refs/tags/v2.3.0'"
     assert publish["permissions"] == {"contents": "write", "actions": "read", "id-token": "write"}
     assert all(job["runs-on"] == "ubuntu-24.04" for job in workflow["jobs"].values())
     source = json.dumps(publish)
@@ -372,9 +392,9 @@ def test_sealing_preserves_all_accepted_archive_bytes(
     )
     reports = tmp_path / "reports"
     for version, bindings in audit.REPORT_BINDINGS.items():
-        (reports / f"v{version}").mkdir(parents=True)
+        (reports / version).mkdir(parents=True)
         for binding in bindings:
-            (reports / f"v{version}" / f"{binding}.json").write_text("{}")
+            (reports / version / f"{binding}.json").write_text("{}")
     calls: list[dict[str, Any]] = []
 
     def accepted_audit(**arguments: Any) -> tuple[dict[str, Any], str]:
@@ -422,10 +442,10 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
             "files": [promotion.record(payloads / name) for name in files],
         },
     )
-    reference = {"ref": "refs/tags/v2.2.6", "object": {"type": "tag", "sha": "c" * 40}}
+    reference = {"ref": "refs/tags/v2.3.0", "object": {"type": "tag", "sha": "c" * 40}}
     tag = {
         "sha": "c" * 40,
-        "tag": "v2.2.6",
+        "tag": "v2.3.0",
         "object": {
             "type": "commit",
             "sha": SOURCE,
@@ -440,7 +460,7 @@ def test_conflicting_draft_bytes_stop_before_signing_or_upload(
         "id": 999,
         "draft": True,
         "prerelease": False,
-        "tag_name": "v2.2.6",
+        "tag_name": "v2.3.0",
         "target_commitish": SOURCE,
         "body": "Ordinary release",
         "assets": [

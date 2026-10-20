@@ -20,7 +20,7 @@ executes against TypeDB, then runs response interceptors.
 ### As a standalone server
 
 ```bash
-cargo install type-bridge-server --version 2.2.6 --locked
+cargo install type-bridge-server --version 2.3.0 --locked
 type-bridge-server --config config.toml
 ```
 
@@ -32,7 +32,7 @@ the V2 routes; retained V1 routes remain available in either state.
 
 ```toml
 [dependencies]
-type-bridge-server = "2.2.6"
+type-bridge-server = "2.3.0"
 ```
 
 This sketch is ignored because the executor, interceptor, input, and schema
@@ -109,10 +109,12 @@ type-bridge --manifest typebridge.yaml schema generate
 ```
 
 One captured workspace produces all configured packages and the server
-artifact. Python and TypeScript packages embed the authority for their normal
-`RemoteQuerySession`; they never read the standalone artifact or construct a
-low-level `QueryV2Authority`. Mount `generated/schema-authority.json` for this
-generic server.
+artifact. Every generated package embeds the authority its proxy connection
+uses (`connect_proxy` in Python, `connectProxy` in TypeScript,
+`ProxyConnectionPolicy` in Rust, `type_bridge_proxy_connection_open_v1` in C);
+none reads the standalone artifact or constructs a low-level
+`QueryV2Authority`. Mount `generated/schema-authority.json` for this generic
+server.
 
 The artifact uses the versioned `typebridge.schema-authority/v1` canonical JSON
 codec. JSON is bounded, deterministic, source-free deployment evidence—not a
@@ -263,7 +265,7 @@ one-shot request handle that created the request.
 
 Implement the `Interceptor` trait to add cross-cutting concerns. Because the
 released trait names the shared AST, an application implementing it must also
-declare `type-bridge-core-lib = "2.2.6"` directly:
+declare `type-bridge-core-lib = "2.3.0"` directly:
 
 ```rust
 use type_bridge_server::interceptor::{Interceptor, InterceptError, RequestContext};
@@ -347,9 +349,9 @@ cargo test -p type-bridge-server
 ./scripts/coverage.sh mcdc --open
 ```
 
-The crate is released in lockstep with TypeBridge 2.2.6, requires Rust 1.88+,
-and supports the retained TypeDB 3.11.x and 3.12.x provider bands.
+The crate is released in lockstep with TypeBridge 2.3.0, requires Rust 1.88+,
+and supports TypeDB 3.11.x–3.13.x through provider bands 8 and 9.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-server/2.2.6) ·
+[API documentation](https://docs.rs/type-bridge-server/2.3.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

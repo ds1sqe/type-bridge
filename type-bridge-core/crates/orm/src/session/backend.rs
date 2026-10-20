@@ -290,6 +290,12 @@ pub enum TxType {
     Schema,
 }
 
+type_bridge_contract::enum_spellings!(TxType, "transaction_type", folded, canonical {
+    "read" => Read,
+    "write" => Write,
+    "schema" => Schema,
+});
+
 /// A single value bound to a `given` variable.
 ///
 /// Released temporal variants retain their ISO-8601 text representation.
@@ -335,6 +341,38 @@ pub enum GivenValue {
         nanos: u64,
     },
 }
+
+/// The TypeQL value type a binding declares for one `given` column; it
+/// selects how the binding marshals that column's host cells.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GivenColumnType {
+    /// TypeQL `boolean`.
+    Boolean,
+    /// TypeQL `integer` (`long` is the ORM's older name for it).
+    Integer,
+    /// TypeQL `double`.
+    Double,
+    /// TypeQL `string`.
+    String,
+    /// TypeQL `date`.
+    Date,
+    /// TypeQL `datetime`.
+    Datetime,
+    /// TypeQL `datetime-tz`.
+    DatetimeTz,
+}
+
+type_bridge_contract::enum_spellings!(GivenColumnType, "given_column_type", canonical {
+    "boolean" => Boolean,
+    "integer" => Integer,
+    "double" => Double,
+    "string" => String,
+    "date" => Date,
+    "datetime" => Datetime,
+    "datetime-tz" => DatetimeTz,
+}, aliases {
+    "long" => Integer,
+});
 
 /// Input rows for a `given`-stage query: a variable header plus value rows.
 ///
@@ -636,6 +674,43 @@ pub trait TransactionOps: Send {
         })
     }
 
+    /// Materialize a bounded answer while preserving empty answer kinds.
+    /// Real providers enforce these limits while polling their streams.
+    fn query_materialized_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: Option<GivenRowsSpec>,
+        limits: BoundedAnswerLimits,
+        canonical: bool,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        Box::pin(async move {
+            let mut reader = BoundedAnswerReader::new(limits);
+            reader.check_before_read()?;
+            let result = match rows {
+                Some(rows) => self.query_with_rows(typeql, rows).await?,
+                None if canonical => self.query_canonical(typeql).await?,
+                None => self.query(typeql).await?,
+            };
+            let mut consumer = |_: AnswerItem| Ok(AnswerControl::Continue);
+            match &result {
+                QueryResult::Ok => {
+                    reader.check_before_read()?;
+                }
+                QueryResult::Rows(rows) => {
+                    for row in rows {
+                        reader.accept(AnswerItem::Row(row.clone()), &mut consumer)?;
+                    }
+                }
+                QueryResult::Documents(rows) => {
+                    for row in rows {
+                        reader.accept(AnswerItem::Document(row.clone()), &mut consumer)?;
+                    }
+                }
+            }
+            Ok(result)
+        })
+    }
+
     /// Execute a legacy TypeQL string through the bounded answer seam.
     ///
     /// The default preserves compatibility for test/legacy transactions that
@@ -797,13 +872,13 @@ pub trait TransactionOps: Send {
     fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>>;
 }
 
-fn resource_error(code: &'static str, message: &'static str) -> OrmError {
+pub(super) fn resource_error(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
         .at(MatchErrorPathSegment::ProviderEvidence)
         .into()
 }
 
-fn cancelled_error(code: &'static str, message: &'static str) -> OrmError {
+pub(super) fn cancelled_error(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::Cancelled, code, message)
         .at(MatchErrorPathSegment::ProviderEvidence)
         .into()
@@ -829,6 +904,23 @@ pub trait DriverBackend: Send + Sync {
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>>;
 
+    /// Open with transaction-level options. Legacy providers reject unsupported deadlines.
+    fn open_with_options(
+        &self,
+        database: &str,
+        tx_type: TxType,
+        options: &super::staged::TransactionOptions,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+        if options.deadline.is_some() {
+            return Box::pin(async {
+                Err(OrmError::Transaction(
+                    "Transaction deadlines are not supported by this backend".into(),
+                ))
+            });
+        }
+        self.open_transaction(database, tx_type)
+    }
+
     /// Open a read-capable V2 transaction that excludes schema commits until
     /// the transaction reaches a terminal state.
     ///
@@ -840,6 +932,10 @@ pub trait DriverBackend: Send + Sync {
     /// enforce `timeout` both while acquiring the schema lock and over the
     /// transaction lifetime, so a lost client cannot retain or later acquire
     /// schema exclusion indefinitely.
+    #[deprecated(
+        since = "2.3.0",
+        note = "Use the core transaction options; retained until 3.0"
+    )]
     fn open_schema_fenced_read_transaction(
         &self,
         database: &str,
@@ -1238,7 +1334,7 @@ mod tests {
         assert!(band9.plain.is_empty());
         assert_eq!(band9.prepared.len(), 1);
         let (typeql, rows) = &band9.prepared[0];
-        assert!(typeql.starts_with("given $g0: string;\nmatch"));
+        assert!(typeql.starts_with("given $g0: string; match"));
         assert!(typeql.contains("$f0 == $g0"));
         assert_eq!(rows.variables, ["g0"]);
         assert_eq!(rows.rows, [vec![GivenValue::String("Alice".into())]]);
@@ -1269,8 +1365,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(band9.prepared.len(), 3);
-        assert!(band9.prepared[1].0.starts_with("given $g0: string;\nmatch"));
-        assert!(band9.prepared[2].0.starts_with("given $g0: string;\nmatch"));
+        assert!(band9.prepared[1].0.starts_with("given $g0: string; match"));
+        assert!(band9.prepared[2].0.starts_with("given $g0: string; match"));
         assert!(band9.prepared.iter().all(|(_, rows)| rows.rows.len() == 1));
 
         let temporal_fetch = typed_literal_fetch(TypedLiteral::DateTimeTz(

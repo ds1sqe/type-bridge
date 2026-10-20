@@ -149,4 +149,17 @@ mod tests {
             );
         }
     }
+
+    // Bindings hold no input-length bound of their own: the parser bounds the
+    // significant digits, so a canonical decimal is at most 40 bytes, and
+    // only leading whole zeros (normalized away) can make an input longer.
+    #[test]
+    fn canonical_spelling_is_bounded_whatever_the_input_length() {
+        let widest = parse_decimal("-9223372036854775807.9999999999999999999dec").unwrap();
+        assert_eq!(widest.canonical_string().len(), 40);
+        let padded = format!("{}1.5", "0".repeat(4096));
+        assert_eq!(parse_decimal(&padded).unwrap().canonical_string(), "1.5");
+        assert!(parse_decimal(&format!("1{}", "0".repeat(19))).is_none());
+        assert!(parse_decimal(&format!("1.{}", "0".repeat(20))).is_none());
+    }
 }

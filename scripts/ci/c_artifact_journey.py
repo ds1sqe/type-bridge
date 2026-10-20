@@ -17,11 +17,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import c_package_artifacts as packages
+import sdk_profile_matrix as profile_matrix
 import standalone_cli_artifact as cli
 
 ROOT = Path(__file__).resolve().parents[2]
 FORMAT = "typebridge.c-artifact-clean-consumer/v1"
 DISPOSITION = "artifact-only-unpublished-unsupported"
+EXPECTED_SERVER_VERSION_ENV = "TYPE_BRIDGE_EXPECTED_SERVER_VERSION"
 FULL_CONSUMER = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/consumer.c"
 QUERY_CONSUMER = (
     ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/query_consumer.c"
@@ -31,15 +33,14 @@ QUERY_PACKAGE = (
 )
 SETUP_SOURCE = ROOT / "type-bridge-core/crates/schema-codegen/tests/c_projection_live/setup.rs"
 SETUP_LOCK = ROOT / "tests/support/provider/Cargo.lock"
-PROVIDER_SCHEMA = ROOT / "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql"
+PROVIDER_SCHEMA = ROOT / profile_matrix.suite_directory("models") / "provider-3.12.1.tql"
 JOURNEY_CONTRACT = ROOT / "tests/contracts/c-artifact-journey-v1.json"
 PREDECESSOR_CATALOGS = tuple(
-    ROOT / f"tests/contracts/sdk_conformance/sdk-v{version}/catalog-v{version}.json"
-    for version in range(1, 6)
+    ROOT / profile_matrix.catalog_relative(version) for version in tuple(profile_matrix.SUITES)[:-1]
 )
-FULL_MARKER_COUNT = 61
+FULL_MARKER_COUNT = 62
 QUERY_MARKER_COUNT = 8
-CODEC_MARKER = "Sdk V5 C live codec direct/remote parity: passed"
+CODEC_MARKER = "Serialization C live codec direct/remote parity: passed"
 
 
 class JourneyError(RuntimeError):
@@ -74,7 +75,7 @@ def run(
 
 
 def adapted_fixture(path: Path) -> bytes:
-    """Adapt frozen acceptance source to the independently packaged Sdk V3."""
+    """Adapt frozen acceptance source to the independently packaged Models."""
     source = path.read_text(encoding="utf-8")
     if source.count("#include <fixture/models.h>") != 1:
         raise JourneyError(f"fixture include authority drifted: {path.name}")
@@ -88,10 +89,10 @@ def adapted_fixture(path: Path) -> bytes:
     source = source.replace("FIXTURE_", "TB_SDKV3_")
     if path == FULL_CONSUMER:
         # The predecessor query fixture allowed arbitrary nickname strings.
-        # Sdk V3 freezes the field to Ada/Dana. Preserve the one
+        # Models freezes the field to Ada/Dana. Preserve the one
         # optional-field query row and omit the field from all other people;
         # this changes fixture data only, never generated/runtime semantics.
-        old_open = "if (!is_query_dana && !is_v5_live) {"
+        old_open = "if (!is_query_dana && !is_serialization_live) {"
         if source.count(old_open) != 1:
             raise JourneyError("full consumer nickname-open seam drifted")
         source = source.replace(old_open, "if (is_query_ada) {", 1)
@@ -117,7 +118,9 @@ def adapted_fixture(path: Path) -> bytes:
         if source.count('view_of("query route")') != 1:
             raise JourneyError("full consumer relation nickname seam drifted")
         source = source.replace('view_of("query route")', 'view_of("Ada")', 1)
-        old_alias_input = "args.field_aliases_chunks = is_v5_live ? NULL : &aliases_chunk;"
+        old_alias_input = (
+            "args.field_aliases_chunks = is_serialization_live ? NULL : &aliases_chunk;"
+        )
         if source.count(old_alias_input) != 1:
             raise JourneyError("full consumer ordered-alias input seam drifted")
         source = source.replace(old_alias_input, "args.field_aliases_chunks = NULL;", 1)
@@ -223,7 +226,7 @@ def loader_source() -> bytes:
 
 
 def _tls_source_template() -> bytes:
-    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_sdkv3/tb_sdkv3.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_v2_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 7) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_sdkv3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open_v2(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != 6u || memcmp(version.data, \"3.12.3\", 6u) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
+    return b"""#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <tb_sdkv3/tb_sdkv3.h>\n+static type_bridge_byte_view_t view(const char *text) { type_bridge_byte_view_t value = {(const uint8_t *)text, strlen(text)}; return value; }\n+int main(int argc, char **argv) {\n+  FILE *stream; long length; uint8_t *pem = NULL; type_bridge_schema_package_t *package = NULL;\n+  type_bridge_execution_diagnostics_t *diagnostics = NULL; type_bridge_runtime_t *runtime = NULL; type_bridge_database_t *database = NULL;\n+  type_bridge_byte_view_t version = {0}; type_bridge_runtime_config_v1_t runtime_config = {0}; type_bridge_database_config_v2_t config = {0};\n+  type_bridge_query_execution_limits_v1_t limits = TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;\n+  if (argc != 8) return 10; stream = fopen(argv[6], \"rb\"); if (stream == NULL) return 11;\n+  if (fseek(stream, 0, SEEK_END) != 0 || (length = ftell(stream)) <= 0 || length > TYPE_BRIDGE_DATABASE_CUSTOM_ROOT_CA_BYTES_MAX || fseek(stream, 0, SEEK_SET) != 0) return 12;\n+  pem = (uint8_t *)malloc((size_t)length); if (pem == NULL || fread(pem, 1u, (size_t)length, stream) != (size_t)length || fclose(stream) != 0) return 13;\n+  if (tb_sdkv3_schema_package_open_v2(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 14;\n+  runtime_config.struct_size = sizeof(runtime_config); runtime_config.version = TYPE_BRIDGE_RUNTIME_CONFIG_VERSION; runtime_config.worker_threads = TYPE_BRIDGE_RUNTIME_WORKER_THREADS_MIN;\n+  if (type_bridge_runtime_open_v1(&runtime_config, &runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 15;\n+  config.struct_size = sizeof(config); config.version = TYPE_BRIDGE_DATABASE_CONFIG_V2_VERSION; config.address = view(argv[1]); config.http_port = (uint32_t)strtoul(argv[2], NULL, 10);\n+  config.database = view(argv[3]); config.username = view(argv[4]); config.password = view(argv[5]); config.tls_mode = TYPE_BRIDGE_TLS_CUSTOM_ROOT_CA;\n+  config.custom_root_ca_pem.data = pem; config.custom_root_ca_pem.length = (size_t)length; config.connection_limits = limits; config.answer_limits = limits;\n+  if (type_bridge_database_open_v2(runtime, package, &config, NULL, &database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || diagnostics != NULL) return 16;\n+  memset(pem, 0xa5, (size_t)length); free(pem); pem = NULL;\n+  if (type_bridge_database_server_version(database, &version) != TYPE_BRIDGE_STATUS_OK || version.length != strlen(argv[7]) || memcmp(version.data, argv[7], version.length) != 0) return 17;\n+  if (type_bridge_database_close(&database, &diagnostics) != TYPE_BRIDGE_STATUS_OK || database != NULL) return 18;\n+  if (type_bridge_runtime_close(&runtime, &diagnostics) != TYPE_BRIDGE_STATUS_OK || runtime != NULL) return 19;\n+  if (type_bridge_schema_package_close(&package) != TYPE_BRIDGE_STATUS_OK || package != NULL || diagnostics != NULL) return 20;\n+  puts(\"custom-root TLS direct artifact connection: passed\"); return 0;\n+}\n"""
 
 
 def tls_source() -> bytes:
@@ -238,7 +241,9 @@ def passed_markers(path: Path, *, exclude_codec: bool = False) -> list[str]:
         )
     ]
     if exclude_codec:
-        markers = [marker for marker in markers if not marker.startswith("Sdk V5 C live codec")]
+        markers = [
+            marker for marker in markers if not marker.startswith("Serialization C live codec")
+        ]
     if len(markers) != len(set(markers)):
         raise JourneyError(f"duplicate connected marker authority: {path.name}")
     return markers
@@ -261,14 +266,15 @@ def tls_probe(
     password: str,
     root_ca: Path,
     root: Path,
+    expected_server_version: str,
 ) -> dict[str, Any]:
     if not root_ca.is_file() or root_ca.is_symlink():
         raise JourneyError("TLS root CA must be a regular non-symlink file")
     source = root / "tls-consumer.c"
     body = tls_source()
     body = body.replace(
-        b'if (argc != 7) return 10; stream = fopen(argv[6], "rb");',
-        b'if (argc != 7) return 10;\n  stream = fopen(argv[6], "rb");',
+        b'if (argc != 8) return 10; stream = fopen(argv[6], "rb");',
+        b'if (argc != 8) return 10;\n  stream = fopen(argv[6], "rb");',
     )
     source.write_bytes(body)
     executable = root / "tls-consumer"
@@ -290,6 +296,7 @@ def tls_probe(
             username,
             password,
             str(root_ca),
+            expected_server_version,
         ],
         env={**os.environ, "LD_LIBRARY_PATH": str(runtime / "lib")},
     )
@@ -332,6 +339,7 @@ def connected(
         "TYPEDB_USERNAME": username,
         "TYPEDB_PASSWORD": password,
         "TYPE_BRIDGE_C_REMOTE_PORT": remote_port,
+        EXPECTED_SERVER_VERSION_ENV: expected_server_version(),
     }
     with tempfile.TemporaryDirectory(prefix="type-bridge-c-artifact-connected-") as temporary:
         root = Path(temporary)
@@ -359,6 +367,7 @@ def connected(
                 password=password,
                 root_ca=tls_root_ca,
                 root=root,
+                expected_server_version=environment[EXPECTED_SERVER_VERSION_ENV],
             )
             if tls_address is not None and tls_http_port is not None and tls_root_ca is not None
             else None
@@ -386,7 +395,7 @@ def connected(
             codec_executable,
             runtime,
             generated,
-            extra=("-DTYPE_BRIDGE_SDK_V5_C_CODEC",),
+            extra=("-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC",),
         )
         codec_evidence = root / "codec-evidence"
         codec_evidence.mkdir()
@@ -394,15 +403,15 @@ def connected(
             [str(codec_executable)],
             env={
                 **environment,
-                "TYPE_BRIDGE_SDK_V5_C_EVIDENCE_DIR": str(codec_evidence),
+                "TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR": str(codec_evidence),
             },
         )
-        require_markers(codec_stdout, [CODEC_MARKER], "Sdk V5 codec consumer")
+        require_markers(codec_stdout, [CODEC_MARKER], "Serialization codec consumer")
         codec_files = {}
         for name in ("entity.bin", "relation.bin"):
             body = packages.read_regular(codec_evidence / name)
             if not body:
-                raise JourneyError(f"Sdk V5 codec evidence is empty: {name}")
+                raise JourneyError(f"Serialization codec evidence is empty: {name}")
             codec_files[name] = {"sha256": packages.sha256(body), "size": len(body)}
 
         package_source = root / "query-package.c"
@@ -512,6 +521,12 @@ def setup_workspace(root: Path) -> Path:
     return manifest
 
 
+def expected_server_version() -> str:
+    """The exact live server of the requested queries profile."""
+
+    return profile_matrix.requested("queries").live_server_version
+
+
 def fixture_environment(
     *, address: str, http_port: str, database: str, username: str, password: str
 ) -> dict[str, str]:
@@ -522,7 +537,7 @@ def fixture_environment(
         "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": database,
         "TYPEDB_USERNAME": username,
         "TYPEDB_PASSWORD": password,
-        "TYPE_BRIDGE_C_EXPECTED_PROVIDER_PATCH": "3",
+        EXPECTED_SERVER_VERSION_ENV: expected_server_version(),
     }
 
 
@@ -806,7 +821,7 @@ def provider_free(
                 "-Wextra",
                 "-Werror",
                 "-pedantic-errors",
-                "-DTYPE_BRIDGE_SDK_V5_C_CODEC",
+                "-DTYPE_BRIDGE_SDK_SERIALIZATION_C_CODEC",
                 f"-I{runtime / 'include'}",
                 f"-I{generated / 'include'}",
                 "-fsyntax-only",

@@ -686,7 +686,10 @@ pub(crate) unsafe extern "C" fn type_bridge_projected_batch_builder_open_v1_impl
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
         // SAFETY: descriptor preflight fenced a complete optional limits value.
-        let limits = match parse_common_limits(unsafe { copied_limits(construction_limits) }) {
+        let limits = match parse_common_limits(
+            unsafe { copied_limits(construction_limits) },
+            type_bridge_orm::AnswerTransport::Direct,
+        ) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -939,7 +942,10 @@ unsafe fn execute_impl(
         }
 
         // SAFETY: execution preflight fenced a complete optional descriptor.
-        let call_limits = match parse_common_limits(unsafe { copied_limits(limits) }) {
+        let call_limits = match parse_common_limits(
+            unsafe { copied_limits(limits) },
+            type_bridge_orm::AnswerTransport::Direct,
+        ) {
             Ok(value) => value,
             Err(diagnostic) => return return_execution_error(diagnostic, out_diagnostics),
         };
@@ -1354,7 +1360,7 @@ mod tests {
         BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
     };
     use type_bridge_orm::{
-        ClassifiedCommitError, CommitFailureCertainty, Database, OrmError, ProjectedAttributeValue,
+        ClassifiedCommitError, CommitFailureCertainty, OrmError, ProjectedAttributeValue,
         ProjectedCreate, ProjectedReference, TransactionContextState, TxType,
     };
     use type_bridge_schema::{
@@ -1376,7 +1382,7 @@ mod tests {
     };
     use crate::runtime::{
         type_bridge_cancellation_close, type_bridge_cancellation_open,
-        type_bridge_cancellation_request, type_bridge_write_transaction_rollback,
+        type_bridge_cancellation_request, type_bridge_write_transaction_close,
     };
 
     const BATCH_SCHEMA: &str = r#"format: typebridge.schema/v2
@@ -1651,18 +1657,18 @@ plays:
             responses: responses.into(),
             ..RecordingState::default()
         }));
-        let database = Database::with_backend(
+        let database = crate::runtime::test_orm_database(
             Box::new(RecordingBackend {
                 state: Arc::clone(&state),
                 commit,
             }),
             "projected-batch-c",
+            ceiling,
         );
         (
-            Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+            Box::new(TypeBridgeDatabase::from_test_database(
                 Arc::clone(&package.state),
                 database,
-                ceiling,
             )),
             state,
         )
@@ -2169,6 +2175,7 @@ plays:
         assert_eq!(unsafe { &*batch }.value.len(), 2);
         assert_eq!(
             unsafe { &*batch }.value.resource_ceiling(),
+            // An omitted C descriptor on a direct batch carries the direct defaults.
             QueryExecutionResourceLimits::default().effective()
         );
         close_batch(&mut batch);
@@ -2339,9 +2346,7 @@ plays:
                     .open_transaction_context(TxType::Write)
                     .expect("borrowed write transaction opens");
                 let mut transaction = Box::into_raw(Box::new(
-                    TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                        &database, context, None,
-                    ),
+                    TypeBridgeWriteTransaction::from_test_context(&database, context),
                 ));
                 let mut result = ptr::dangling_mut();
                 assert_eq!(
@@ -2369,7 +2374,7 @@ plays:
                 assert_eq!(
                     // SAFETY: the transaction owner and diagnostics slots are live.
                     unsafe {
-                        type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics)
+                        type_bridge_write_transaction_close(&mut transaction, &mut diagnostics)
                     },
                     TypeBridgeStatus::Ok
                 );
@@ -2456,14 +2461,10 @@ plays:
         }
 
         let context = database
-            .open_transaction_context(TxType::Write)
+            .open_transaction_context_with_answer_limits(TxType::Write, ceiling)
             .expect("borrowed empty transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                &database,
-                context,
-                Some(ceiling),
-            ),
+            TypeBridgeWriteTransaction::from_test_context(&database, context),
         ));
         let cause = SdkExecutionDiagnostic::internal_failure();
         unsafe { &*transaction }.block_on(
@@ -2491,8 +2492,8 @@ plays:
         close_result(&mut result);
         assert!(state.lock().unwrap().calls.is_empty());
         assert_eq!(
-            // SAFETY: rollback consumes the live borrowed transaction.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            // SAFETY: close rolls back and consumes the live borrowed transaction.
+            unsafe { type_bridge_write_transaction_close(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());
@@ -2666,9 +2667,7 @@ plays:
             .open_transaction_context(TxType::Write)
             .expect("poisoned borrowed transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                &database, context, None,
-            ),
+            TypeBridgeWriteTransaction::from_test_context(&database, context),
         ));
         // SAFETY: the transaction remains owned by this test until rollback.
         unsafe { &*transaction }.mark_poisoned();
@@ -2694,8 +2693,8 @@ plays:
         close_diagnostics(&mut diagnostics);
         assert!(state.lock().unwrap().calls.is_empty());
         assert_eq!(
-            // SAFETY: rollback consumes the still-live poisoned transaction.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            // SAFETY: close rolls back and consumes the still-live poisoned transaction.
+            unsafe { type_bridge_write_transaction_close(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());
@@ -2765,9 +2764,7 @@ plays:
             .open_transaction_context(TxType::Write)
             .expect("borrowed failure transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeWriteTransaction::from_test_context_with_answer_ceiling(
-                &database, context, None,
-            ),
+            TypeBridgeWriteTransaction::from_test_context(&database, context),
         ));
         assert_eq!(
             // SAFETY: transaction, batch, and outputs remain live.
@@ -2798,8 +2795,8 @@ plays:
             assert_eq!(state.rollbacks, 0);
         }
         assert_eq!(
-            // SAFETY: rollback consumes rollback-only transaction ownership.
-            unsafe { type_bridge_write_transaction_rollback(&mut transaction, &mut diagnostics) },
+            // SAFETY: close rolls back and consumes rollback-only transaction ownership.
+            unsafe { type_bridge_write_transaction_close(&mut transaction, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
         assert!(diagnostics.is_null());

@@ -1844,3 +1844,93 @@ fn reducer_spellings_cover_the_complete_canonical_vocabulary() {
     }
     assert!(query_builder_reducer("variance").is_err());
 }
+
+// Both glue crates bound host collections and invocation rows through these
+// two entries, so the ceiling, code, and annotation are the core's alone.
+#[test]
+fn host_sequence_bounds_are_decided_and_annotated_by_the_core() {
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+    use type_bridge_orm::query_v2_builder::{
+        query_builder_bounded_len, query_builder_sort_term_limit_error,
+    };
+
+    assert_eq!(
+        query_builder_bounded_len(Some(4), 4, query_builder_sort_term_limit_error),
+        Ok(4)
+    );
+    for unrepresentable in [Some(5), None] {
+        let refusal =
+            query_builder_bounded_len(unrepresentable, 4, query_builder_sort_term_limit_error)
+                .expect_err("over the ceiling");
+        assert_eq!(refusal.code().as_str(), "query_plan_sort_term_limit");
+        assert_eq!(
+            refusal.details().get("maximum"),
+            Some(&DiagnosticDetailValue::Long(4))
+        );
+        assert_eq!(
+            refusal.details().get("source"),
+            Some(&DiagnosticDetailValue::Text("configured".into()))
+        );
+    }
+}
+
+#[test]
+fn invocation_row_budget_counts_rows_arity_and_canonical_bytes() {
+    use type_bridge_contract::diagnostic::DiagnosticDetailValue;
+    use type_bridge_contract::limits::{MAX_INPUT_ROWS, QueryLimits};
+    use type_bridge_orm::query_v2_builder::QueryInvocationRowBudget;
+
+    let plan = basic_authored_plan(schema_authority(), false);
+    let mut budget = QueryInvocationRowBudget::new(&plan);
+    assert_eq!(budget.columns().len(), 1);
+    assert_eq!(budget.row_count(Some(MAX_INPUT_ROWS)), Ok(MAX_INPUT_ROWS));
+    assert_eq!(
+        budget
+            .row_count(Some(MAX_INPUT_ROWS + 1))
+            .expect_err("row ceiling")
+            .code()
+            .as_str(),
+        "query_invocation_row_limit"
+    );
+    assert_eq!(
+        budget
+            .open_row(0, Some(2))
+            .expect_err("arity")
+            .code()
+            .as_str(),
+        "query_invocation_row_arity"
+    );
+
+    // The budget charges exactly the canonical invocation-row JSON: `[]`,
+    // `[`/`]` and `,` per row, and each value's JSON.
+    let value = Some(CanonicalValue::String(
+        CanonicalString::new("ab").expect("string"),
+    ));
+    let rows = vec![vec![value.clone()], vec![None]];
+    let exact = serde_json::to_vec(&rows).expect("rows json").len();
+    let mut limits = QueryLimits::CANONICAL;
+    limits.structural.input_bytes = exact;
+    let authority = Arc::new(schema_authority().rebound_with_limits(limits));
+    let plan = basic_authored_plan(authority.clone(), false);
+    let mut budget = QueryInvocationRowBudget::new(&plan);
+    for (row_index, row) in rows.iter().enumerate() {
+        budget.open_row(row_index, Some(1)).expect("row fits");
+        budget.add_value(0, &row[0]).expect("value fits");
+    }
+
+    limits.structural.input_bytes = exact - 1;
+    let authority = Arc::new(schema_authority().rebound_with_limits(limits));
+    let plan = basic_authored_plan(authority, false);
+    let mut budget = QueryInvocationRowBudget::new(&plan);
+    budget.open_row(0, Some(1)).expect("first row");
+    budget.add_value(0, &value).expect("first value");
+    budget.open_row(1, Some(1)).expect("second row");
+    let refusal = budget.add_value(0, &None).expect_err("one byte over");
+    assert_eq!(refusal.code().as_str(), "query_invocation_input_byte_limit");
+    assert_eq!(
+        refusal.details().get("maximum"),
+        Some(&DiagnosticDetailValue::Long(
+            i64::try_from(exact - 1).unwrap()
+        ))
+    );
+}

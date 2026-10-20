@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::_attribute::ValueType;
+use type_bridge_core_lib::__internal as tql;
 
-use super::info::{AttributeSchemaEntry, EntitySchemaEntry, RelationSchemaEntry, SchemaInfo};
+use super::info::{AttributeSchemaEntry, SchemaInfo};
 
 /// A plays clause collected during relation processing.
 ///
@@ -34,259 +35,311 @@ fn plays_card_for(info: &SchemaInfo, player: &str, role_ref: &str) -> Option<(u3
         })
 }
 
-/// Generate a TypeQL `define` block from the given schema info.
+fn player_parent<'a>(info: &'a SchemaInfo, player: &str) -> Option<&'a str> {
+    info.entities
+        .get(player)
+        .and_then(|entry| entry.parent_type.as_deref())
+        .or_else(|| {
+            info.relations
+                .get(player)
+                .and_then(|entry| entry.parent_type.as_deref())
+        })
+}
+
+/// Generate a schema using checked official-AST construction.
 ///
-/// Output is deterministic (alphabetically sorted) and produces syntax like:
-/// ```text
-/// define
-///
-/// attribute name, value string;
-/// attribute age, value integer;
-///
-/// entity person,
-///     owns name @key,
-///     owns age;
-///
-/// relation employment,
-///     relates employee,
-///     relates employer,
-///     owns position;
-///
-/// person plays employment:employee;
-/// company plays employment:employer;
-/// ```
+/// Invalid structured inputs return an empty string. Use
+/// [`try_generate_define_block`] to retain the typed diagnostic.
+#[deprecated(
+    since = "2.3.0",
+    note = "use try_generate_define_block; removed in 3.0"
+)]
 pub fn generate_define_block(info: &SchemaInfo) -> String {
-    let mut lines = Vec::new();
-    lines.push("define".to_string());
-    lines.push(String::new());
+    try_generate_define_block(info).unwrap_or_default()
+}
 
-    // 1. Attribute definitions (sorted)
-    let attr_names: BTreeSet<&str> = info.attributes.keys().map(|s| s.as_str()).collect();
-    for attr_name in &attr_names {
-        let attr = &info.attributes[*attr_name];
-        lines.push(build_attribute_definition(attr, true));
-    }
-    if !attr_names.is_empty() {
-        lines.push(String::new());
-    }
-
-    // 2. Entity definitions (topologically sorted: parents before children)
-    let entity_order = topological_sort(&info.entities, |e| e.parent_type.as_deref());
-    for entity_name in &entity_order {
-        let entity = &info.entities[entity_name.as_str()];
-
-        // Skip only effective entries copied unchanged from the parent. A direct
-        // redeclaration may retain the attribute label while changing constraints
-        // such as ordered-list `@distinct`, and must still be emitted.
-        let parent_attributes: BTreeMap<&str, &super::info::OwnedAttributeEntry> = entity
-            .parent_type
-            .as_ref()
-            .and_then(|p| info.entities.get(p))
-            .map(|parent| {
-                parent
-                    .owned_attributes
-                    .iter()
-                    .map(|attribute| (attribute.attr_name.as_str(), attribute))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Build owns clauses (only non-inherited attributes)
-        let mut parts = Vec::new();
-        for attr in &entity.owned_attributes {
-            if parent_attributes
-                .get(attr.attr_name.as_str())
-                .is_some_and(|parent| *parent == attr)
-            {
-                continue;
-            }
-            parts.push(build_owns_clause(attr));
+/// Build and render a schema with typed construction errors.
+pub fn try_generate_define_block(info: &SchemaInfo) -> Result<String, super::error::SchemaError> {
+    let result = (|| -> Result<String, tql::TqlError> {
+        let mut definitions = Vec::new();
+        for attribute in info.attributes.values() {
+            definitions.push(attribute_node(attribute, true)?);
         }
-
-        // Build header: entity <name> [@abstract] [sub <parent>]
-        let header = build_entity_header(entity);
-
-        if parts.is_empty() {
-            lines.push(format!("{header};"));
-        } else {
-            lines.push(format!("{header},"));
-            let last = parts.len() - 1;
-            for (i, part) in parts.iter().enumerate() {
-                if i == last {
-                    lines.push(format!("{part};"));
-                } else {
-                    lines.push(format!("{part},"));
-                }
-            }
+        for name in topological_sort(&info.entities, |entry| entry.parent_type.as_deref()) {
+            let entity = &info.entities[&name];
+            let parent = entity
+                .parent_type
+                .as_ref()
+                .and_then(|name| info.entities.get(name));
+            definitions.push(entity_node(entity, parent)?);
         }
-    }
-    if !entity_order.is_empty() {
-        lines.push(String::new());
-    }
-
-    // 3. Relation definitions (topologically sorted)
-    let relation_order = topological_sort(&info.relations, |r| r.parent_type.as_deref());
-
-    // Collect plays clauses: player_type, relation:role, optional cardinality
-    let mut plays_clauses: Vec<PlaysClause> = Vec::new();
-
-    for relation_name in &relation_order {
-        let relation = &info.relations[relation_name.as_str()];
-
-        // As for entities, equal entries are inherited copies while changed entries
-        // are direct redeclarations that must remain visible to TypeQL.
-        let parent_attributes: BTreeMap<&str, &super::info::OwnedAttributeEntry> = relation
-            .parent_type
-            .as_ref()
-            .and_then(|p| info.relations.get(p))
-            .map(|parent| {
-                parent
-                    .owned_attributes
-                    .iter()
-                    .map(|attribute| (attribute.attr_name.as_str(), attribute))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let parent_role_names: HashSet<&str> = relation
-            .parent_type
-            .as_ref()
-            .and_then(|p| info.relations.get(p))
-            .map(|parent| parent.roles.iter().map(|r| r.role_name.as_str()).collect())
-            .unwrap_or_default();
-
-        let mut parts = Vec::new();
-
-        // Deduplicate roles by name, skip inherited roles.
-        // Inherited roles are present in the child descriptor (effective-set
-        // contract) but belong to the parent type in TypeDB's schema — emitting
-        // `relates` or `plays` for them on the child would create phantom role
-        // references that the engine rejects.  The parent's own descriptor
-        // already emitted the correct `plays` clauses.
-        let mut seen_roles = BTreeSet::new();
-        for role in &relation.roles {
-            if parent_role_names.contains(role.role_name.as_str()) {
-                // Inherited role: skip both the `relates` emission and the `plays`
-                // clause — the declaring parent's descriptor handles both.
-                continue;
-            }
-            if seen_roles.insert(&role.role_name) {
-                // Emit per canon: relates <name>[<[]>][ as <parent>[<[]>]][ @abstract][ @distinct][ @card(...)].
-                // `[]` attaches directly to both role labels with no space. TypeQL's
-                // list-specialization grammar requires the child and parent labels to
-                // carry the same list marker.
-                let mut clause = if role.ordered {
-                    format!("    relates {}[]", role.role_name)
-                } else {
-                    format!("    relates {}", role.role_name)
-                };
-                if let Some(ref parent_role) = role.overrides {
-                    if role.ordered {
-                        clause.push_str(&format!(" as {parent_role}[]"));
-                    } else {
-                        clause.push_str(&format!(" as {parent_role}"));
-                    }
+        let mut plays_clauses = Vec::new();
+        for name in topological_sort(&info.relations, |entry| entry.parent_type.as_deref()) {
+            let relation = &info.relations[&name];
+            let parent = relation
+                .parent_type
+                .as_ref()
+                .and_then(|name| info.relations.get(name));
+            definitions.push(relation_node(relation, parent)?);
+            let parent_roles: BTreeSet<_> = parent
+                .into_iter()
+                .flat_map(|parent| &parent.roles)
+                .map(|role| role.role_name.as_str())
+                .collect();
+            let mut seen = BTreeSet::new();
+            for role in &relation.roles {
+                if parent_roles.contains(role.role_name.as_str()) || !seen.insert(&role.role_name) {
+                    continue;
                 }
-                if role.is_abstract {
-                    clause.push_str(" @abstract");
-                }
-                if role.distinct {
-                    clause.push_str(" @distinct");
-                }
-                if let Some((min, max)) = role.cardinality {
-                    clause.push(' ');
-                    clause.push_str(&card_annotation(min, max));
-                }
-                let mut doc_meta = Vec::new();
-                super::info::append_doc_meta_annotations(
-                    &mut doc_meta,
-                    role.doc.as_deref(),
-                    &role.meta,
-                );
-                for token in doc_meta {
-                    clause.push(' ');
-                    clause.push_str(&token);
-                }
-                parts.push(clause);
-            }
-            for player_type_name in &role.player_type_names {
                 let role_ref = format!("{}:{}", relation.type_name, role.role_name);
-                let cardinality = plays_card_for(info, player_type_name, &role_ref);
-                plays_clauses.push(PlaysClause {
-                    player: player_type_name.clone(),
-                    role_ref,
-                    cardinality,
-                });
-            }
-        }
-
-        for attr in &relation.owned_attributes {
-            if parent_attributes
-                .get(attr.attr_name.as_str())
-                .is_some_and(|parent| *parent == attr)
-            {
-                continue;
-            }
-            parts.push(build_owns_clause(attr));
-        }
-
-        // Build header: relation <name> [@abstract] [sub <parent>]
-        let header = build_relation_header(relation);
-
-        if parts.is_empty() {
-            lines.push(format!("{header};"));
-        } else {
-            lines.push(format!("{header},"));
-            let last = parts.len() - 1;
-            for (i, part) in parts.iter().enumerate() {
-                if i == last {
-                    lines.push(format!("{part};"));
-                } else {
-                    lines.push(format!("{part},"));
+                for player in &role.player_type_names {
+                    plays_clauses.push(PlaysClause {
+                        player: player.clone(),
+                        role_ref: role_ref.clone(),
+                        cardinality: plays_card_for(info, player, &role_ref),
+                    });
                 }
             }
         }
-    }
-
-    // 4. Plays clauses (sorted by player type, then role, then cardinality)
-    if !plays_clauses.is_empty() {
-        lines.push(String::new());
         plays_clauses.sort();
         plays_clauses.dedup();
-        for c in &plays_clauses {
-            match c.cardinality {
-                Some((min, max)) => lines.push(format!(
-                    "{} plays {} {};",
-                    c.player,
-                    c.role_ref,
-                    card_annotation(min, max)
-                )),
-                None => lines.push(format!("{} plays {};", c.player, c.role_ref)),
+        for clause in &plays_clauses {
+            // Flattened schema IR includes inherited players. TypeDB rejects an
+            // unchanged plays declaration repeated on a subtype (SVL42).
+            let mut ancestor = player_parent(info, &clause.player);
+            let mut visited = BTreeSet::new();
+            let mut inherited = false;
+            while let Some(parent) = ancestor {
+                if !visited.insert(parent) {
+                    break;
+                }
+                if let Some(candidate) = plays_clauses.iter().find(|candidate| {
+                    candidate.player == parent && candidate.role_ref == clause.role_ref
+                }) {
+                    // No local annotation means inheritance, not a reset of
+                    // the ancestor's cardinality. An unannotated intermediate
+                    // declaration likewise inherits its nearest explicit card.
+                    if clause.cardinality.is_none() {
+                        inherited = true;
+                        break;
+                    }
+                    if candidate.cardinality.is_some() {
+                        inherited = candidate.cardinality == clause.cardinality;
+                        break;
+                    }
+                }
+                ancestor = player_parent(info, parent);
             }
+            if inherited {
+                continue;
+            }
+            let (relation, role) = clause
+                .role_ref
+                .split_once(':')
+                .ok_or(tql::TqlError::InvalidIdentifier)?;
+            let mut annotations = Vec::new();
+            if let Some((min, max)) = clause.cardinality {
+                annotations.push(tql::schema_card(u64::from(min), max.map(u64::from))?);
+            }
+            definitions.push(tql::schema_type(
+                None,
+                &clause.player,
+                vec![],
+                vec![tql::schema_plays(relation, role, annotations)?],
+            )?);
         }
-    }
-
-    lines.join("\n")
+        tql::render_schema_document(
+            definitions
+                .into_iter()
+                .map(|definition| (definition, vec![]))
+                .collect(),
+        )
+    })();
+    result.map_err(|error| super::error::SchemaError::Validation {
+        message: error.to_string(),
+    })
 }
 
-/// Build one `owns` clause per emission canon.
-///
-/// Canon: `owns <name>[<[]>][ @key|@unique|@distinct|@card(...)]`
-/// `[]` attaches directly to the name (no space) when `is_ordered` is set.
-fn build_owns_clause(attr: &super::info::OwnedAttributeEntry) -> String {
-    let name_token = if attr.is_ordered {
-        format!("{}[]", attr.attr_name)
-    } else {
-        attr.attr_name.clone()
-    };
-    let flags = attr.flags_string();
-    if flags.is_empty() {
-        format!("    owns {name_token}")
-    } else {
-        format!("    owns {name_token} {flags}")
+/// Build one checked entity definition with its declared parent context.
+pub fn entity_node(
+    entity: &super::info::EntitySchemaEntry,
+    parent: Option<&super::info::EntitySchemaEntry>,
+) -> Result<tql::SchemaDefinition, tql::TqlError> {
+    let parent_attributes: BTreeMap<_, _> = parent
+        .into_iter()
+        .flat_map(|parent| &parent.owned_attributes)
+        .map(|attribute| (attribute.attr_name.as_str(), attribute))
+        .collect();
+    let mut capabilities = Vec::new();
+    if let Some(parent) = &entity.parent_type {
+        capabilities.push(tql::schema_sub(parent)?);
     }
+    for attribute in &entity.owned_attributes {
+        if parent_attributes
+            .get(attribute.attr_name.as_str())
+            .is_some_and(|parent| *parent == attribute)
+        {
+            continue;
+        }
+        capabilities.push(ownership_node(attribute)?);
+    }
+    let mut annotations = Vec::new();
+    if entity.is_abstract {
+        annotations.push(tql::schema_flag("abstract")?);
+    }
+    doc_meta(&mut annotations, entity.doc.as_deref(), &entity.meta)?;
+    tql::schema_type(Some("entity"), &entity.type_name, annotations, capabilities)
 }
 
+/// Build one checked relation definition with its declared parent context.
+pub fn relation_node(
+    relation: &super::info::RelationSchemaEntry,
+    parent: Option<&super::info::RelationSchemaEntry>,
+) -> Result<tql::SchemaDefinition, tql::TqlError> {
+    let parent_attributes: BTreeMap<_, _> = parent
+        .into_iter()
+        .flat_map(|parent| &parent.owned_attributes)
+        .map(|attribute| (attribute.attr_name.as_str(), attribute))
+        .collect();
+    let parent_roles: BTreeSet<_> = parent
+        .into_iter()
+        .flat_map(|parent| &parent.roles)
+        .map(|role| role.role_name.as_str())
+        .collect();
+    let mut capabilities = Vec::new();
+    if let Some(parent) = &relation.parent_type {
+        capabilities.push(tql::schema_sub(parent)?);
+    }
+    let mut seen = BTreeSet::new();
+    for role in &relation.roles {
+        if parent_roles.contains(role.role_name.as_str()) || !seen.insert(&role.role_name) {
+            continue;
+        }
+        let mut annotations = Vec::new();
+        if role.is_abstract {
+            annotations.push(tql::schema_flag("abstract")?);
+        }
+        if role.distinct {
+            annotations.push(tql::schema_flag("distinct")?);
+        }
+        if let Some((min, max)) = role.cardinality {
+            annotations.push(tql::schema_card(u64::from(min), max.map(u64::from))?);
+        }
+        doc_meta(&mut annotations, role.doc.as_deref(), &role.meta)?;
+        capabilities.push(tql::schema_relates_with_parent_source(
+            &role.role_name,
+            role.ordered,
+            role.overrides.as_deref(),
+            annotations,
+        )?);
+    }
+    for attribute in &relation.owned_attributes {
+        if parent_attributes
+            .get(attribute.attr_name.as_str())
+            .is_some_and(|parent| *parent == attribute)
+        {
+            continue;
+        }
+        capabilities.push(ownership_node(attribute)?);
+    }
+    let mut annotations = Vec::new();
+    if relation.is_abstract {
+        annotations.push(tql::schema_flag("abstract")?);
+    }
+    doc_meta(&mut annotations, relation.doc.as_deref(), &relation.meta)?;
+    tql::schema_type(
+        Some("relation"),
+        &relation.type_name,
+        annotations,
+        capabilities,
+    )
+}
+
+pub(crate) fn doc_meta(
+    output: &mut Vec<tql::SchemaAnnotation>,
+    doc: Option<&str>,
+    meta: &BTreeMap<String, String>,
+) -> Result<(), tql::TqlError> {
+    if let Some(doc) = doc {
+        output.push(tql::schema_doc(doc)?);
+    }
+    for (key, value) in meta {
+        output.push(tql::schema_meta(key, value)?);
+    }
+    Ok(())
+}
+
+/// Build one checked ownership capability.
+pub fn ownership_node(
+    attribute: &super::info::OwnedAttributeEntry,
+) -> Result<tql::SchemaCapability, tql::TqlError> {
+    tql::schema_owns(
+        &attribute.attr_name,
+        attribute.is_ordered,
+        ownership_annotations(attribute)?,
+    )
+}
+
+/// Build checked ownership annotations in their declared order.
+pub fn ownership_annotations(
+    attribute: &super::info::OwnedAttributeEntry,
+) -> Result<Vec<tql::SchemaAnnotation>, tql::TqlError> {
+    use crate::_entity::Annotation;
+    let mut annotations = Vec::new();
+    for annotation in &attribute.annotations {
+        annotations.push(match annotation {
+            Annotation::Key => tql::schema_flag("key")?,
+            Annotation::Unique => tql::schema_flag("unique")?,
+            Annotation::Distinct => tql::schema_flag("distinct")?,
+            Annotation::Card(min, max) => tql::schema_card(u64::from(*min), max.map(u64::from))?,
+        });
+    }
+    doc_meta(&mut annotations, attribute.doc.as_deref(), &attribute.meta)?;
+    Ok(annotations)
+}
+
+/// Build checked attribute nodes for schema generation and migration authoring.
+pub fn attribute_node(
+    attribute: &AttributeSchemaEntry,
+    include_doc_meta: bool,
+) -> Result<tql::SchemaDefinition, tql::TqlError> {
+    let mut annotations = Vec::new();
+    if attribute.is_abstract {
+        annotations.push(tql::schema_flag("abstract")?);
+    }
+    if attribute.is_independent {
+        annotations.push(tql::schema_flag("independent")?);
+    }
+    if include_doc_meta {
+        doc_meta(&mut annotations, attribute.doc.as_deref(), &attribute.meta)?;
+    }
+    let mut capabilities = Vec::new();
+    if let Some(parent) = &attribute.parent_type {
+        capabilities.push(tql::schema_sub(parent)?);
+    }
+    let mut values = Vec::new();
+    if let Some((min, max)) = &attribute.range {
+        values.push(tql::schema_range(min.as_deref(), max.as_deref())?);
+    }
+    if let Some(regex) = &attribute.regex {
+        values.push(tql::schema_regex_source(regex)?);
+    }
+    if let Some(allowed) = &attribute.allowed_values {
+        values.push(tql::schema_values_source(
+            &allowed.iter().map(String::as_str).collect::<Vec<_>>(),
+        )?);
+    }
+    capabilities.push(tql::schema_value(
+        typedb_value_type(&attribute.value_type),
+        values,
+    )?);
+    tql::schema_type(
+        Some("attribute"),
+        &attribute.attr_name,
+        annotations,
+        capabilities,
+    )
+}
 fn typedb_value_type(value_type: &ValueType) -> &'static str {
     match value_type {
         ValueType::String => "string",
@@ -301,125 +354,35 @@ fn typedb_value_type(value_type: &ValueType) -> &'static str {
     }
 }
 
-/// Render a `@card(min..max)` annotation; unbounded max renders as `@card(min..)`.
+/// Render a cardinality annotation. Invalid bounds return an empty string.
+#[deprecated(
+    since = "2.3.0",
+    note = "use checked core schema builders; removed in 3.0"
+)]
 pub fn card_annotation(min: u32, max: Option<u32>) -> String {
-    // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`; `*` is rejected.
-    let max_str = max.map(|value| value.to_string()).unwrap_or_default();
-    format!("@card({min}..{max_str})")
+    tql::schema_card(u64::from(min), max.map(u64::from))
+        .map(|value| tql::render_schema_annotations(&[value]))
+        .unwrap_or_default()
 }
-
-/// Render one attribute type definition statement (no `define` keyword),
-/// e.g. `attribute email, value string;`.
-///
-/// Shared with the migration authoring core, which embeds the definition
-/// under an explicit `define`/`redefine` keyword for attribute type changes.
-pub fn attribute_definition(attr: &AttributeSchemaEntry) -> String {
-    build_attribute_definition(attr, true)
+/// Render an attribute definition. Invalid structured inputs return an empty string.
+#[deprecated(
+    since = "2.3.0",
+    note = "use checked core schema builders; removed in 3.0"
+)]
+pub fn attribute_definition(attribute: &AttributeSchemaEntry) -> String {
+    attribute_node(attribute, true)
+        .and_then(tql::render_schema_definition)
+        .unwrap_or_default()
 }
-
-/// Render one attribute type definition statement with `@doc`/`@meta` head
-/// annotations omitted.
-///
-/// Head annotations are rejected inside `redefine` and collide (DEX16)
-/// inside `define` when already present, so attribute type *changes* embed
-/// this form and lower annotation changes to dedicated steps.
-pub fn attribute_constraint_definition(attr: &AttributeSchemaEntry) -> String {
-    build_attribute_definition(attr, false)
-}
-
-fn build_attribute_definition(attr: &AttributeSchemaEntry, include_doc_meta: bool) -> String {
-    let mut definition = format!("attribute {}", attr.attr_name);
-
-    if attr.is_abstract {
-        definition.push_str(" @abstract");
-    }
-    if attr.is_independent {
-        definition.push_str(" @independent");
-    }
-    let has_doc_meta =
-        include_doc_meta && push_doc_meta(&mut definition, attr.doc.as_deref(), &attr.meta);
-
-    if let Some(ref parent) = attr.parent_type {
-        if attr.is_abstract || attr.is_independent || has_doc_meta {
-            definition.push_str(&format!(", sub {parent}"));
-        } else {
-            definition.push_str(&format!(" sub {parent}"));
-        }
-    }
-
-    definition.push_str(&format!(", value {}", typedb_value_type(&attr.value_type)));
-
-    if let Some((min, max)) = &attr.range {
-        let min = min.as_deref().unwrap_or_default();
-        let max = max.as_deref().unwrap_or_default();
-        definition.push_str(&format!(" @range({min}..{max})"));
-    }
-    if let Some(ref pattern) = attr.regex {
-        definition.push_str(&format!(" @regex({})", annotation_string_literal(pattern)));
-    }
-    if let Some(ref values) = attr.allowed_values {
-        let values = values
-            .iter()
-            .map(|value| annotation_string_literal(value))
-            .collect::<Vec<_>>()
-            .join(", ");
-        definition.push_str(&format!(" @values({values})"));
-    }
-
-    definition.push(';');
-    definition
-}
-
-fn annotation_string_literal(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\\\""))
-}
-
-/// Append `@doc`/`@meta` annotation tokens to a header or definition line.
-/// Returns whether anything was appended (callers use this for `, sub` comma
-/// placement, mirroring the `@abstract` rule).
-fn push_doc_meta(line: &mut String, doc: Option<&str>, meta: &BTreeMap<String, String>) -> bool {
-    let mut tokens = Vec::new();
-    super::info::append_doc_meta_annotations(&mut tokens, doc, meta);
-    let appended = !tokens.is_empty();
-    for token in tokens {
-        line.push(' ');
-        line.push_str(&token);
-    }
-    appended
-}
-
-/// Build the entity header line: `entity <name> [@abstract] [@doc/@meta] [sub <parent>]`.
-fn build_entity_header(entity: &EntitySchemaEntry) -> String {
-    let mut header = format!("entity {}", entity.type_name);
-    if entity.is_abstract {
-        header.push_str(" @abstract");
-    }
-    let has_doc_meta = push_doc_meta(&mut header, entity.doc.as_deref(), &entity.meta);
-    if let Some(ref parent) = entity.parent_type {
-        if entity.is_abstract || has_doc_meta {
-            header.push_str(&format!(", sub {parent}"));
-        } else {
-            header.push_str(&format!(" sub {parent}"));
-        }
-    }
-    header
-}
-
-/// Build the relation header line: `relation <name> [@abstract] [@doc/@meta] [sub <parent>]`.
-fn build_relation_header(relation: &RelationSchemaEntry) -> String {
-    let mut header = format!("relation {}", relation.type_name);
-    if relation.is_abstract {
-        header.push_str(" @abstract");
-    }
-    let has_doc_meta = push_doc_meta(&mut header, relation.doc.as_deref(), &relation.meta);
-    if let Some(ref parent) = relation.parent_type {
-        if relation.is_abstract || has_doc_meta {
-            header.push_str(&format!(", sub {parent}"));
-        } else {
-            header.push_str(&format!(" sub {parent}"));
-        }
-    }
-    header
+/// Render attribute constraints without head documentation annotations.
+#[deprecated(
+    since = "2.3.0",
+    note = "use checked core schema builders; removed in 3.0"
+)]
+pub fn attribute_constraint_definition(attribute: &AttributeSchemaEntry) -> String {
+    attribute_node(attribute, false)
+        .and_then(tql::render_schema_definition)
+        .unwrap_or_default()
 }
 
 /// Topological sort: parents before children, deterministic order within each level.
@@ -467,6 +430,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::_attribute::ValueType;
@@ -480,7 +444,7 @@ mod tests {
     fn empty_schema_produces_define_only() {
         let info = SchemaInfo::default();
         let result = generate_define_block(&info);
-        assert_eq!(result, "define\n");
+        assert_eq!(result, "define");
     }
 
     #[test]
@@ -544,7 +508,7 @@ mod tests {
         let result = generate_define_block(&info);
 
         assert!(result.contains("attribute child-id @abstract, sub base-id, value string;"));
-        assert!(!result.contains("attribute child-id sub base-id @abstract"));
+        assert!(!result.contains("attribute child-id, sub base-id @abstract"));
     }
 
     #[test]
@@ -576,7 +540,7 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(result.contains("entity person,"));
-        assert!(result.contains("    owns name @key;"));
+        assert!(result.contains("owns name @key;"));
     }
 
     #[test]
@@ -613,8 +577,8 @@ mod tests {
         );
 
         let result = generate_define_block(&info);
-        assert!(result.contains("    owns name @key,"));
-        assert!(result.contains("    owns age;"));
+        assert!(result.contains("owns name @key,"));
+        assert!(result.contains("owns age;"));
     }
 
     #[test]
@@ -656,11 +620,11 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(result.contains("relation employment,"));
-        assert!(result.contains("    relates employee,"));
-        assert!(result.contains("    relates employer,"));
-        assert!(result.contains("    owns position;"));
-        assert!(result.contains("company plays employment:employer;"));
-        assert!(result.contains("person plays employment:employee;"));
+        assert!(result.contains("relates employee,"));
+        assert!(result.contains("relates employer,"));
+        assert!(result.contains("owns position;"));
+        assert!(result.contains("company, plays employment:employer;"));
+        assert!(result.contains("person, plays employment:employee;"));
     }
 
     #[test]
@@ -687,7 +651,7 @@ mod tests {
         );
 
         let result = generate_define_block(&info);
-        assert!(result.contains("    owns tag @card(2..5);"));
+        assert!(result.contains("owns tag @card(2..5);"));
     }
 
     #[test]
@@ -714,7 +678,7 @@ mod tests {
         );
 
         let result = generate_define_block(&info);
-        assert!(result.contains("    owns email @unique;"));
+        assert!(result.contains("owns email @unique;"));
     }
 
     #[test]
@@ -745,7 +709,7 @@ mod tests {
             result.contains("entity animal @abstract,"),
             "should have @abstract: {result}"
         );
-        assert!(result.contains("    owns name @key;"));
+        assert!(result.contains("owns name @key;"));
     }
 
     #[test]
@@ -802,7 +766,7 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains("entity dog sub animal,"),
+            result.contains("entity dog, sub animal,"),
             "should have sub clause: {result}"
         );
     }
@@ -838,7 +802,7 @@ mod tests {
         let result = generate_define_block(&info);
 
         assert!(result.contains("entity mammal @abstract, sub animal;"));
-        assert!(!result.contains("entity mammal sub animal @abstract"));
+        assert!(!result.contains("entity mammal, sub animal @abstract"));
     }
 
     #[test]
@@ -901,7 +865,7 @@ mod tests {
 
         let result = generate_define_block(&info);
 
-        assert!(result.contains("entity person sub animal;"), "{result}");
+        assert!(result.contains("entity person, sub animal;"), "{result}");
         assert!(!result.contains("entity animal"), "{result}");
     }
 
@@ -925,7 +889,7 @@ mod tests {
         let result = generate_define_block(&info);
 
         assert!(
-            result.contains("relation part-time-employment sub employment;"),
+            result.contains("relation part-time-employment, sub employment;"),
             "{result}"
         );
         assert!(!result.contains("relation employment"), "{result}");
@@ -1049,7 +1013,7 @@ mod tests {
 
         let emitted = generate_define_block(&info);
         assert!(
-            emitted.contains("entity child sub base,\n    owns tag[] @card(0..3);"),
+            emitted.contains("entity child, sub base, owns tag[] @card(0..3);"),
             "the distinct drop must remain an explicit subtype redeclaration: {emitted}"
         );
         typeql::parse_query(&emitted).expect("TypeQL 3.12 accepts the ordered redeclaration");
@@ -1119,7 +1083,7 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains("relation employment sub connection,"),
+            result.contains("relation employment, sub connection,"),
             "should have sub clause: {result}"
         );
     }
@@ -1157,7 +1121,7 @@ mod tests {
         let result = generate_define_block(&info);
 
         assert!(result.contains("relation interaction @abstract, sub connection;"));
-        assert!(!result.contains("relation interaction sub connection @abstract"));
+        assert!(!result.contains("relation interaction, sub connection @abstract"));
     }
 
     #[test]
@@ -1234,7 +1198,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "define\n\nentity player;\n\nrelation rel,\n    relates definition,\n    relates actor;\n\nplayer plays rel:actor;"
+            "define entity player; relation rel, relates definition, relates actor; player, plays rel:actor;"
         );
     }
 
@@ -1280,7 +1244,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "define\n\nentity player;\n\nrelation rel,\n    relates definition,\n    relates actor;\n\nplayer plays rel:actor;"
+            "define entity player; relation rel, relates definition, relates actor; player, plays rel:actor;"
         );
     }
 
@@ -1323,15 +1287,14 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains("player plays r:role @card(0..1);"),
+            result.contains("player, plays r:role @card(0..1);"),
             "expected plays @card annotation, got:\n{result}"
         );
     }
 
-    /// When no plays-card is present, the plays line is byte-identical to the
-    /// pre-existing format: exactly `person plays employment:employee;`.
+    /// When no plays-card is present, the emitted plays clause has no annotation.
     #[test]
-    fn plays_line_byte_identical_when_no_card() {
+    fn plays_clause_has_no_card_when_absent() {
         let mut info = SchemaInfo::default();
         info.entities.insert(
             "person".into(),
@@ -1366,9 +1329,7 @@ mod tests {
         let result = generate_define_block(&info);
         // Assert full line, not just contains — no trailing @card
         assert!(
-            result
-                .lines()
-                .any(|l| l == "person plays employment:employee;"),
+            result.contains("person, plays employment:employee;"),
             "expected bare plays line, got:\n{result}"
         );
     }
@@ -1417,7 +1378,7 @@ mod tests {
             "expected relates @card(1..1), got:\n{result}"
         );
         assert!(
-            result.contains("person plays employment:employee @card(0..1);"),
+            result.contains("person, plays employment:employee @card(0..1);"),
             "expected plays @card(0..1), got:\n{result}"
         );
     }
@@ -1462,7 +1423,7 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains("b plays a:role @card(1..1);"),
+            result.contains("b, plays a:role @card(1..1);"),
             "expected relation-as-player plays @card, got:\n{result}"
         );
     }
@@ -1506,7 +1467,7 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains("thing plays r:slot @card(0..);"),
+            result.contains("thing, plays r:slot @card(0..);"),
             "expected @card(0..), got:\n{result}"
         );
     }
@@ -1558,7 +1519,7 @@ mod tests {
 
         let result = generate_define_block(&info);
         let count = result
-            .matches("person plays friendship:friend @card(0..5);")
+            .matches("person, plays friendship:friend @card(0..5);")
             .count();
         assert_eq!(
             count, 1,
@@ -1650,11 +1611,9 @@ mod tests {
         );
         // Inherited role must not be re-emitted on the child.
         let authoring_section = result
-            .lines()
-            .skip_while(|l| !l.contains("relation authoring"))
-            .take_while(|l| !l.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
+            .split(';')
+            .find(|part| part.contains("relation authoring"))
+            .expect("authoring declaration");
         assert!(
             !authoring_section.contains("relates contributor"),
             "inherited role must not be re-emitted: {authoring_section}"
@@ -1704,11 +1663,11 @@ mod tests {
         assert_eq!(
             emitted,
             concat!(
-                "define\n\n",
-                "relation contribution,\n",
-                "    relates contributor[];\n",
-                "relation authoring sub contribution,\n",
-                "    relates author[] as contributor[];",
+                "define ",
+                "relation contribution, ",
+                "relates contributor[]; ",
+                "relation authoring, sub contribution, ",
+                "relates author[] as contributor[];",
             )
         );
         typeql::parse_query(&emitted).expect("TypeQL 3.12 accepts ordered specialization");
@@ -2338,9 +2297,8 @@ mod tests {
 
         let result = generate_define_block(&info);
         assert!(
-            result.contains(
-                "    owns name @key @doc(\"full legal name\") @meta(\"column\", \"name\");"
-            )
+            result
+                .contains("owns name @key @doc(\"full legal name\") @meta(\"column\", \"name\");")
         );
     }
 
@@ -2374,7 +2332,7 @@ mod tests {
         let result = generate_define_block(&info);
         assert!(result.contains("relation friendship @doc(\"a mutual bond\"),"));
         assert!(result.contains(
-            "    relates friend @card(0..2) @doc(\"one side of the bond\") @meta(\"endpoint\", \"true\");"
+            "relates friend @card(0..2) @doc(\"one side of the bond\") @meta(\"endpoint\", \"true\");"
         ));
     }
 
@@ -2406,6 +2364,9 @@ mod tests {
         let source = "define\n\nattribute name @doc(\"a personal name\") @meta(\"pii\", \"true\"), value string;\n\nentity person @doc(\"an individual\"),\n    owns name @key @doc(\"full name\") @meta(\"column\", \"name\");\n";
         let info = SchemaInfo::from_typeql(source).expect("parse");
         let regenerated = generate_define_block(&info);
-        assert_eq!(regenerated.trim(), source.trim());
+        assert_eq!(
+            typeql::parse_query(&regenerated).unwrap(),
+            typeql::parse_query(&typeql::parse_query(source).unwrap().to_string()).unwrap()
+        );
     }
 }

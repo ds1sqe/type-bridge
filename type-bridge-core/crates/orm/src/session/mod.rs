@@ -9,13 +9,22 @@ pub mod context;
 pub mod database;
 #[cfg(feature = "typedb")]
 mod direct_connection;
+#[cfg(feature = "internal-eager")]
+#[doc(hidden)]
+pub mod eager;
+#[cfg(not(feature = "internal-eager"))]
+pub(crate) mod eager;
 pub mod legacy_writer;
+mod proxy_connection;
+pub mod staged;
+pub(crate) mod staged_proxy;
+mod tls_policy;
 pub mod transaction;
 
 #[cfg(feature = "typedb")]
 pub mod real_driver;
 
-pub use backend::{GivenRowsSpec, GivenValue, TxType};
+pub use backend::{GivenColumnType, GivenRowsSpec, GivenValue, TxType};
 pub use context::TransactionContext;
 #[doc(hidden)]
 pub use context::TransactionContextState;
@@ -23,8 +32,15 @@ pub use database::{
     Database, DatabaseConnectionAuthority, DatabaseCreateOutcome, DatabaseDeleteOutcome,
 };
 #[cfg(feature = "typedb")]
-pub use direct_connection::{DirectConnectionPolicy, DirectTls};
+pub use direct_connection::DirectConnectionPolicy;
 pub use legacy_writer::{require_legacy_writer_open, require_legacy_writer_open_in_transaction};
+pub use proxy_connection::{ProxyEndpoint, ProxyHttpTransport};
+pub use staged_proxy::StagedExchangeFn;
+#[allow(deprecated)]
+pub use tls_policy::DirectTls;
+pub use tls_policy::TlsPolicy;
+pub use transaction::OwnedTransaction;
+#[allow(deprecated)]
 pub use transaction::Transaction;
 
 #[cfg(feature = "typedb")]

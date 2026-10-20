@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use type_bridge::__codegen::{EncodedCreate, EncodedReference, EncodedScalar, IntoEncodedCreate};
 use type_bridge::{
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport,
+    ProxyConnectionPolicy, ProxyDatabase, ProxyExchange, QueryExecutionResourceLimits,
 };
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
@@ -46,12 +46,12 @@ use type_bridge_orm::{
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
 
 const REPORT_FORMAT: &str = "typebridge.projected-parity-report/v1";
-const SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
+const SEMANTIC_PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_SEMANTIC_PROFILE";
 const REPORT_ENV: &str = "TYPE_BRIDGE_PROJECTED_RUST_REPORT";
 const ROOT_ENV: &str = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 const MANAGED_SCOPE: &str = "schema-codegen-acceptance";
-const SCHEMA_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml";
-const JOURNEY_RELATIVE: &str = "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json";
+const SCHEMA_RELATIVE: &str = "tests/contracts/sdk_conformance/models/schema.yaml";
+const JOURNEY_RELATIVE: &str = "tests/contracts/sdk_conformance/models/journey.json";
 const MAX_REPORT_BYTES: usize = 256 * 1024;
 const MAX_AUTHORITY_BYTES: u64 = 1024 * 1024;
 
@@ -70,7 +70,7 @@ struct HydrationTransport {
     signer: RemoteReplySigningKey,
 }
 
-impl RemoteQueryTransport for HydrationTransport {
+impl ProxyExchange for HydrationTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -720,7 +720,7 @@ async fn foreign_hydration_diagnostic(
     let authority = QueryAuthority::from_declared_bytes(
         &foreign_declared_schema(root)?,
         MANAGED_SCOPE,
-        SEMANTIC_PROFILE,
+        &semantic_profile()?,
     )?;
     if !authority.matches_semantic_fingerprint(foreign.projection().semantic_fingerprint()) {
         return Err("foreign query authority does not match the installed foreign package".into());
@@ -807,12 +807,30 @@ struct Hydrated {
     provider_calls: usize,
 }
 
+fn answer_limits(
+    items: u64,
+    bytes: u64,
+    collection_members: u64,
+    graph_nodes: u64,
+    attribute_values: u64,
+    role_players: u64,
+) -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits {
+        items,
+        bytes,
+        collection_members,
+        graph_nodes,
+        attribute_values,
+        role_players,
+        ..QueryExecutionResourceLimits::default()
+    }
+}
+
 async fn hydrated_observations(root: &Path) -> Result<Hydrated, Box<dyn std::error::Error>> {
     let (transport, exchanges) = hydration_transport(local_replies());
-    let database = RemoteDatabase::connect(RemoteConnectionOptions::generated(
-        RemoteQueryLimits::new(32, 1 << 20, 64, 64, 256, 128),
-        transport,
-    ))
+    let database = ProxyDatabase::connect(
+        ProxyConnectionPolicy::with_exchange(transport).answer_limits(answer_limits(32, 1 << 20, 64, 64, 256, 128)),
+    )
     .await?
     .with_schema(SCHEMA)?;
 
@@ -857,10 +875,9 @@ async fn hydrated_observations(root: &Path) -> Result<Hydrated, Box<dyn std::err
         .expect("foreign construction exchange counter locks");
     let construction_rejected_before_provider_io =
         construction_calls_before == 0 && construction_calls_after == construction_calls_before;
-    let foreign_database = RemoteDatabase::connect(RemoteConnectionOptions::generated(
-        RemoteQueryLimits::new(8, 1 << 20, 16, 16, 128, 64),
-        foreign_transport,
-    ))
+    let foreign_database = ProxyDatabase::connect(
+        ProxyConnectionPolicy::with_exchange(foreign_transport).answer_limits(answer_limits(8, 1 << 20, 16, 16, 128, 64)),
+    )
     .await?
     .with_schema(foreign::SCHEMA)?;
     let mut foreign_session = foreign_database.query()?;
@@ -1674,7 +1691,7 @@ fn build_report(
         "binding": "rust",
         "format": REPORT_FORMAT,
         "observations": observations,
-        "semantic_profile": SEMANTIC_PROFILE,
+        "semantic_profile": semantic_profile()?,
     }))
 }
 
@@ -1704,6 +1721,14 @@ fn source_identity(
         "path": relative,
         "sha256": format!("{:x}", Sha256::digest(bytes)),
     }))
+}
+
+/// The models matrix profile the harness projected the generated packages on.
+fn semantic_profile() -> Result<String, Box<dyn std::error::Error>> {
+    env::var(SEMANTIC_PROFILE_ENV)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{SEMANTIC_PROFILE_ENV} must be set").into())
 }
 
 fn output_path() -> Result<PathBuf, Box<dyn std::error::Error>> {

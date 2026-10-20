@@ -230,7 +230,7 @@
       {
         "family": "python_authenticated_structured_remote_diagnostic",
         "needles": [
-          "generated_remote_session = RemoteQuerySession(",
+          "generated_remote_session = QuerySession(",
           "assert error.code == \"remote_application_failure\"",
           "\"kind\": \"text_list\"",
           "assert generated_remote_exchanges == 1"
@@ -241,9 +241,9 @@
         "family": "python_static_struct_rejection",
         "needles": [
           "builder.isa(value, \"struct\", \"record\", False)",
-          "typed-query-error: struct-is-not-queryable"
+          "query-v2-error: struct-is-not-queryable"
         ],
-        "path": "tests/unit/type-check-except/test_typed_query.py"
+        "path": "tests/unit/type-check-except/test_query_v2_authoring_negative.py"
       },
       {
         "family": "node_static_authoring_contract",
@@ -256,7 +256,7 @@
       {
         "family": "node_authenticated_structured_remote_diagnostic",
         "needles": [
-          "const generatedRemoteSession = new RemoteQuerySession(",
+          "const generatedRemoteSession = new QuerySession(",
           "{ kind: \"identifier\", value: \"person\" }",
           "expected: { kind: \"text_list\", value: [\"person\", \"employee\"] }",
           "assert.equal(generatedRemoteExchanges, 1)"
@@ -771,7 +771,7 @@
         "needles": [
           "define_closed_builder_vocabulary!(",
           "QUERY_BUILDER_VALUE_TYPES,",
-          "define_queryable_type_kinds!(",
+          "pub enum QueryableTypeKind",
           "QUERY_BUILDER_COMPARATORS,",
           "QUERY_BUILDER_ORDER_DIRECTIONS,",
           "QUERY_BUILDER_REDUCERS,",
@@ -791,20 +791,18 @@
       {
         "family": "python_ffi_canonical_limits",
         "needles": [
-          "MAX_BOOLEAN_TERMS",
-          "MAX_SELECTED_SLOTS",
-          "MAX_INPUT_ROWS",
-          "MAX_INPUT_BYTES"
+          "limits().structural.boolean_terms",
+          "limits().structural.selected_slots",
+          "QueryInvocationRowBudget"
         ],
         "path": "type-bridge-core/crates/python/src/query_v2_builder_runtime.rs"
       },
       {
         "family": "node_ffi_canonical_limits",
         "needles": [
-          "MAX_BOOLEAN_TERMS",
-          "MAX_SELECTED_SLOTS",
-          "MAX_INPUT_ROWS",
-          "MAX_INPUT_BYTES"
+          "limits().structural.boolean_terms",
+          "limits().structural.selected_slots",
+          "QueryInvocationRowBudget"
         ],
         "path": "type-bridge-core/crates/node/src/query_v2_builder_runtime.rs"
       }
@@ -1371,7 +1369,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_reachable_depth",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "predicate_depth"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "64"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "reachability requires a finite hop bound within the depth ceiling",
         "path": []
       },
@@ -1404,7 +1415,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_reachable_expansion_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "predicate_nodes"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "4096"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "reachability expansion exceeds the plan pattern-node ceiling",
         "path": []
       },
@@ -1508,7 +1532,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_negation_term_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "negation is empty or exceeds the boolean-term ceiling",
         "path": []
       },
@@ -1524,7 +1561,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_disjunction_term_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "disjunction branches are empty or exceed the boolean-term ceiling",
         "path": []
       },
@@ -1540,7 +1590,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_disjunction_term_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "disjunction branches are empty or exceed the boolean-term ceiling",
         "path": []
       },
@@ -1601,7 +1664,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_try_term_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "optional block is empty or exceeds the boolean-term ceiling",
         "path": []
       },
@@ -1789,7 +1865,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_reduce_term_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "reduce has no assignments or exceeds the term ceiling",
         "path": []
       },
@@ -1826,7 +1915,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_sort_term_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "order_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "64"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "sort has no terms or exceeds the term ceiling",
         "path": []
       },
@@ -2131,9 +2233,33 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_value_type_unknown",
-        "details": {},
-        "message": "value type must use one exact canonical scalar-domain spelling",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "string",
+              "long",
+              "double",
+              "boolean",
+              "date",
+              "datetime",
+              "datetime_tz",
+              "decimal",
+              "duration",
+              "datetime-tz"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "scalar_domain"
+          },
+          "value": {
+            "kind": "text",
+            "value": "integer"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2149,9 +2275,29 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_comparator_unknown",
-        "details": {},
-        "message": "comparator must use one exact canonical comparator spelling",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "equal",
+              "not_equal",
+              "less",
+              "less_or_equal",
+              "greater",
+              "greater_or_equal"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "value_comparator"
+          },
+          "value": {
+            "kind": "text",
+            "value": "contains"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2188,9 +2334,25 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_order_direction_unknown",
-        "details": {},
-        "message": "order direction must be ascending or descending",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "ascending",
+              "descending"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "order_direction"
+          },
+          "value": {
+            "kind": "text",
+            "value": "sideways"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2211,9 +2373,30 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_reducer_unknown",
-        "details": {},
-        "message": "reducer must use one exact canonical reducer spelling",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "count",
+              "max",
+              "mean",
+              "median",
+              "min",
+              "std",
+              "sum"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "plan_reducer"
+          },
+          "value": {
+            "kind": "text",
+            "value": "variance"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -2235,9 +2418,26 @@
     {
       "expected": {
         "category": "invalid_contract",
-        "code": "query_builder_type_kind_unknown",
-        "details": {},
-        "message": "type kind must be entity, relation, or attribute",
+        "code": "unknown_enum_value",
+        "details": {
+          "accepted": {
+            "kind": "text_list",
+            "value": [
+              "entity",
+              "relation",
+              "attribute"
+            ]
+          },
+          "kind": {
+            "kind": "text",
+            "value": "queryable_type_kind"
+          },
+          "value": {
+            "kind": "text",
+            "value": "struct"
+          }
+        },
+        "message": "The value is not an accepted spelling of its enum",
         "path": []
       },
       "failure": {
@@ -3243,7 +3443,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_output_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "selected_slots"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "16"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "output column count is empty or exceeds the structural ceiling",
         "path": []
       },
@@ -3279,7 +3492,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_output_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "selected_slots"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "16"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "output field count is empty or exceeds the structural ceiling",
         "path": []
       },
@@ -5388,7 +5614,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_binding_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "bindings"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "local binding count is empty or exceeds the structural ceiling",
         "path": []
       },
@@ -5626,7 +5865,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_function_argument_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "function call arguments exceed the term ceiling",
         "path": []
       },
@@ -5660,7 +5912,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_role_player_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "links pattern has no players or exceeds the term ceiling",
         "path": []
       },
@@ -5696,7 +5961,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_pattern_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "boolean_terms"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "256"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "plan root conjunction is empty or exceeds the term ceiling",
         "path": []
       },
@@ -5729,7 +6007,20 @@
       "expected": {
         "category": "resource_limit",
         "code": "query_plan_pattern_depth_limit",
-        "details": {},
+        "details": {
+          "limit": {
+            "kind": "text",
+            "value": "predicate_depth"
+          },
+          "maximum": {
+            "kind": "long",
+            "value": "64"
+          },
+          "source": {
+            "kind": "text",
+            "value": "default"
+          }
+        },
         "message": "plan pattern depth exceeds the structural ceiling",
         "path": []
       },

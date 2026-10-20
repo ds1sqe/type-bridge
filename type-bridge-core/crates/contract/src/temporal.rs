@@ -12,6 +12,8 @@ use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 pub const MIN_CANONICAL_YEAR: i32 = -262_143;
 /// Maximum year representable by the canonical TypeDB date profile.
 pub const MAX_CANONICAL_YEAR: i32 = 262_142;
+/// Largest authored IANA zone name, in bytes, of a canonical `datetime-tz`.
+pub const MAX_TIME_ZONE_NAME_BYTES: usize = 255;
 
 fn invalid_temporal(kind: &'static str) -> Diagnostic {
     Diagnostic::stable(
@@ -269,7 +271,7 @@ impl CanonicalDateTimeTz {
     ) -> Result<Self, Diagnostic> {
         let name = name.into();
         if name.is_empty()
-            || name.len() > 255
+            || name.len() > MAX_TIME_ZONE_NAME_BYTES
             || !name.bytes().all(|byte| {
                 byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'-' | b'+')
             })

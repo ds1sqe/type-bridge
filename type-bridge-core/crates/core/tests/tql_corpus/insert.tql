@@ -1,0 +1,1 @@
+match $p isa person; let $v = "new"; insert $x isa person; $x has name == $v; $a isa name "standalone"; $r isa friendship, links (friend: $p, friend: $x), has name "friends";

@@ -1,0 +1,47 @@
+# TypeBridge C runtime package version.
+#
+# The runtime implements native ABI @TYPE_BRIDGE_C_ABI_VERSION@ and reports it
+# as the package version. ABI minors are additive, so the runtime also serves
+# every supported earlier minor of the same major, down to
+# @TYPE_BRIDGE_C_ABI_OLDEST@: a consumer pinned with
+# `find_package(TypeBridge 1.6.0 EXACT)` keeps finding it, and a consumer of
+# the newer surface can require the current minor.
+set(PACKAGE_VERSION "@TYPE_BRIDGE_C_ABI_VERSION@")
+set(PACKAGE_VERSION_COMPATIBLE FALSE)
+set(PACKAGE_VERSION_EXACT FALSE)
+
+if(PACKAGE_FIND_VERSION_RANGE)
+  # A range accepts the runtime when its own version lies inside it.
+  if(PACKAGE_FIND_VERSION_RANGE_MIN STREQUAL "INCLUDE")
+    set(_type_bridge_above_min FALSE)
+    if(PACKAGE_VERSION VERSION_GREATER_EQUAL PACKAGE_FIND_VERSION_MIN)
+      set(_type_bridge_above_min TRUE)
+    endif()
+  else()
+    set(_type_bridge_above_min FALSE)
+    if(PACKAGE_VERSION VERSION_GREATER PACKAGE_FIND_VERSION_MIN)
+      set(_type_bridge_above_min TRUE)
+    endif()
+  endif()
+  set(_type_bridge_below_max FALSE)
+  if(PACKAGE_FIND_VERSION_RANGE_MAX STREQUAL "INCLUDE")
+    if(PACKAGE_VERSION VERSION_LESS_EQUAL PACKAGE_FIND_VERSION_MAX)
+      set(_type_bridge_below_max TRUE)
+    endif()
+  elseif(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION_MAX)
+    set(_type_bridge_below_max TRUE)
+  endif()
+  if(_type_bridge_above_min AND _type_bridge_below_max)
+    set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  endif()
+  unset(_type_bridge_above_min)
+  unset(_type_bridge_below_max)
+elseif(PACKAGE_FIND_VERSION_MAJOR EQUAL "@TYPE_BRIDGE_C_ABI_MAJOR@" AND
+       PACKAGE_FIND_VERSION VERSION_GREATER_EQUAL "@TYPE_BRIDGE_C_ABI_OLDEST@" AND
+       PACKAGE_FIND_VERSION VERSION_LESS_EQUAL PACKAGE_VERSION)
+  set(PACKAGE_VERSION_COMPATIBLE TRUE)
+  # Every served minor is an exact ABI: its patch level is always zero.
+  if(PACKAGE_FIND_VERSION_PATCH EQUAL 0 AND PACKAGE_FIND_VERSION_TWEAK EQUAL 0)
+    set(PACKAGE_VERSION_EXACT TRUE)
+  endif()
+endif()

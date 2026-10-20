@@ -22,7 +22,7 @@ use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
 use type_bridge_orm::GivenValue;
-use type_bridge_orm::query_v2::lower_validated_query;
+
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
 
@@ -229,7 +229,8 @@ fn single_row_inline_lowering_is_deterministic_golden_text() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          $person has name $name;\n\
          $name isa! name;\n\
@@ -240,7 +241,8 @@ fn single_row_inline_lowering_is_deterministic_golden_text() {
          distinct;\n\
          sort $name asc;\n\
          offset 2;\n\
-         limit 7;\n",
+         limit 7;\n"
+        ),
     );
     assert_eq!(lowered.operation(), QueryOperation::Rows);
     assert_eq!(
@@ -272,7 +274,7 @@ fn multi_row_and_absent_values_reject_before_data_io() {
     assert!(
         lowered
             .typeql()
-            .starts_with("given $wanted_name: string;\nmatch\n"),
+            .starts_with("given $wanted_name: string; match "),
         "{}",
         lowered.typeql(),
     );
@@ -360,7 +362,7 @@ fn given_lowering_carries_temporal_decimal_and_optional_absence_without_inline_t
     assert!(lowered.typeql().starts_with(
         "given $flag: boolean, $number: integer, $ratio: double, $text: string, \
          $day: date, $moment: datetime, $zoned: datetime-tz, $amount: decimal, \
-         $maybe: string;\nmatch\n"
+         $maybe: string; match "
     ));
     assert!(!lowered.typeql().contains("value-one"));
     let rows = &lowered.given_rows().expect("given rows").rows;
@@ -447,7 +449,7 @@ fn single_datetime_tz_inputs_use_one_exact_given_lowering() {
         );
         let lowered = lower_validated_query(&validated, &invocation)
             .expect("datetime-tz uses exact driver transport");
-        assert!(lowered.typeql().starts_with("given $zoned: datetime-tz;\n"));
+        assert!(lowered.typeql().starts_with("given $zoned: datetime-tz; "));
         assert_eq!(
             lowered.given_rows().expect("given rows").rows,
             [vec![GivenValue::DatetimeTzExact {
@@ -544,7 +546,7 @@ fn single_row_optional_absence_uses_given_while_present_value_stays_inline() {
     let absent = QueryInvocation::new(&plan, QueryOperation::Rows, vec![InputRow::new(vec![None])])
         .expect("absent optional input");
     let lowered = lower_validated_query(&validated, &absent).expect("one-row given lowering");
-    assert!(lowered.typeql().starts_with("given $maybe: string;\n"));
+    assert!(lowered.typeql().starts_with("given $maybe: string; "));
     assert_eq!(
         lowered.given_rows().expect("given rows").rows,
         [vec![GivenValue::Empty]]
@@ -569,7 +571,7 @@ fn optional_duration_absence_uses_an_empty_given_cell() {
     assert!(
         lowered
             .typeql()
-            .starts_with("given $maybe_elapsed: duration;\n")
+            .starts_with("given $maybe_elapsed: duration; ")
     );
     assert_eq!(
         lowered.given_rows().expect("given rows").rows,
@@ -604,7 +606,7 @@ fn duration_batches_use_lossless_given_components_through_the_driver_boundary() 
     .expect("duration batch is a valid portable invocation");
     let lowered = lower_validated_query(&validated, &invocation)
         .expect("provider-domain duration batches use exact components");
-    assert!(lowered.typeql().starts_with("given $elapsed: duration;\n"));
+    assert!(lowered.typeql().starts_with("given $elapsed: duration; "));
     assert_eq!(
         lowered.given_rows().expect("given rows").rows,
         [
@@ -762,10 +764,12 @@ fn scalar_function_calls_lower_to_deterministic_let_assignments() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          let $name_length = person_name_length($person);\n\
-         sort $name_length asc;\n",
+         sort $name_length asc;\n"
+        ),
     );
 
     let repeat = lower_validated_query(&validated, &invocation).expect("repeat lowering");
@@ -874,12 +878,14 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          $person has name $name;\n\
          $name isa! name;\n\
          reduce $name_count = count($name) groupby $person;\n\
-         sort $name_count desc;\n",
+         sort $name_count desc;\n"
+        ),
     );
 
     // Median and standard deviation lower to their TypeQL reduce keywords.
@@ -927,11 +933,13 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered median/std");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          $person has age $age;\n\
          $age isa! age;\n\
-         reduce $age_median = median($age), $age_std = std($age) groupby $person;\n",
+         reduce $age_median = median($age), $age_std = std($age) groupby $person;\n"
+        ),
     );
 
     // A global bare count reduces the whole stream to one row.
@@ -964,9 +972,11 @@ fn reduce_stages_lower_to_deterministic_grouped_reducers() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
-         reduce $total = count;\n",
+         reduce $total = count;\n"
+        ),
     );
 }
 
@@ -1063,12 +1073,14 @@ fn try_blocks_lower_to_indented_optional_bodies() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          try {\n\
          \x20   $person has name $name;\n\
          \x20   $name isa! name;\n\
-         };\n",
+         };\n"
+        ),
     );
 }
 
@@ -1171,14 +1183,16 @@ fn document_outputs_lower_to_deterministic_fetch_blocks() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          $person has name $name;\n\
          $name isa! name;\n\
          fetch {\n\
          \x20   \"name\": $name,\n\
          \x20   \"all_names\": [ $person.name ]\n\
-         };\n",
+         };\n"
+        ),
     );
     assert!(lowered.output_schema().documents().is_some());
 }
@@ -1287,7 +1301,8 @@ fn local_functions_lower_to_with_fun_preambles() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "with fun name_count_of($subject: person) -> integer:\n\
+        canonical_typeql(
+            "with fun name_count_of($subject: person) -> integer:\n\
          match\n\
          $subject has name $value;\n\
          $value isa! name;\n\
@@ -1295,7 +1310,8 @@ fn local_functions_lower_to_with_fun_preambles() {
          match\n\
          $person isa person;\n\
          let $name_count = name_count_of($person);\n\
-         sort $name_count desc;\n",
+         sort $name_count desc;\n"
+        ),
     );
 }
 
@@ -1393,7 +1409,8 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          { $R0z0 isa! node; $start is $R0z0; $finish is $R0z0; } or \
          { $R0z1 isa! node-child; $start is $R0z1; $finish is $R0z1; } or \
          { (origin: $start, destination: $finish) isa! edge; } or \
@@ -1403,7 +1420,8 @@ fn bounded_reachability_lowers_to_unrolled_disjunctions() {
          (origin: $R0l3h1, destination: $R0l3h2) isa! edge; \
          (origin: $R0l3h2, destination: $finish) isa! edge; };\n\
          reduce $RreachableProofCount = count groupby $start, $finish;\n\
-         select $start, $finish;\n",
+         select $start, $finish;\n"
+        ),
     );
 }
 
@@ -1517,7 +1535,8 @@ fn hidden_negation_witnesses_lower_with_an_exact_root_select() {
     let lowered = lower_validated_query(&validated, &invocation).expect("lowered query");
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          $person isa person;\n\
          $person has name $name;\n\
          $name isa! name;\n\
@@ -1526,7 +1545,8 @@ fn hidden_negation_witnesses_lower_with_an_exact_root_select() {
          \x20   $hidden isa! name;\n\
          \x20   $hidden == \"zed\";\n\
          };\n\
-         select $person, $name;\n",
+         select $person, $name;\n"
+        ),
     );
 }
 
@@ -1640,7 +1660,8 @@ fn ordinary_disjunction_lowers_conjunction_branches_with_nested_negation() {
 
     assert_eq!(
         lowered.typeql(),
-        "match\n\
+        canonical_typeql(
+            "match\n\
          {\n\
          \x20   $person isa! person;\n\
          \x20   $person has name $left_name;\n\
@@ -1654,6 +1675,31 @@ fn ordinary_disjunction_lowers_conjunction_branches_with_nested_negation() {
          \x20       $right_name == \"blocked\";\n\
          \x20   };\n\
          };\n\
-         select $person;\n",
+         select $person;\n"
+        ),
     );
+}
+
+fn lower_validated_query(
+    validated: &ValidatedQuery,
+    invocation: &QueryInvocation,
+) -> Result<type_bridge_orm::query_v2::LoweredQuery, type_bridge_contract::diagnostic::Diagnostic> {
+    let result = type_bridge_orm::query_v2::lower_validated_query(validated, invocation)?;
+    let key = serde_json::to_string(&(validated.plan(), invocation)).expect("snapshot key");
+    let snapshots: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(include_str!("fixtures/query_v2_pre_ast.json")).unwrap();
+    let previous = snapshots.get(&key).expect("pre-change query snapshot");
+    let canonical = |source: &str| typeql::parse_query(source).unwrap().to_string();
+    assert_eq!(
+        typeql::parse_query(&canonical(previous)).unwrap(),
+        typeql::parse_query(&canonical(result.typeql())).unwrap(),
+        "V2 query changed meaning"
+    );
+    Ok(result)
+}
+
+fn canonical_typeql(source: &str) -> String {
+    typeql::parse_query(source)
+        .expect("released query fixture")
+        .to_string()
 }

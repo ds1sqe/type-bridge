@@ -897,10 +897,24 @@ impl PlanRecord {
         }
         let semantic_profile = first.manifest().semantic_profile().fingerprint().clone();
         let lowering_profile = first.manifest().lowering_profile().fingerprint().clone();
+        // The record binds the first manifest's profile. A plan replaying a
+        // bridged history crosses the profile only at the bridge, which moves
+        // from exactly the profile in force before it.
+        let mut current = (&semantic_profile, &lowering_profile);
         for migration in plan.migrations() {
-            if migration.manifest().managed_scope().id() != scope.managed_scope_id()
-                || migration.manifest().semantic_profile().fingerprint() != &semantic_profile
-                || migration.manifest().lowering_profile().fingerprint() != &lowering_profile
+            let manifest = migration.manifest();
+            if let Some(bridge) = manifest.profile_bridge()
+                && bridge.from_semantic_profile().fingerprint() == current.0
+                && bridge.from_lowering_profile().fingerprint() == current.1
+            {
+                current = (
+                    manifest.semantic_profile().fingerprint(),
+                    manifest.lowering_profile().fingerprint(),
+                );
+            }
+            if manifest.managed_scope().id() != scope.managed_scope_id()
+                || manifest.semantic_profile().fingerprint() != current.0
+                || manifest.lowering_profile().fingerprint() != current.1
             {
                 return Err(failure(
                     DiagnosticCategory::Integrity,

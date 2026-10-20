@@ -34,22 +34,27 @@ const PUBLIC_QUERY_NAMES: &[&str] = &[
     "BoundRole",
     "BoundVar",
     "Collected",
+    "ExchangeConnection",
     "FunctionCall",
     "FunctionInput",
     "GroupedQuery",
     "Page",
     "Predicate",
+    "ProxyConnection",
     "Query",
     "QueryCancellation",
+    "QueryConnection",
     "QueryExecutionResourceLimits",
+    "QueryLimits",
     "QueryOrder",
     "QuerySession",
-    "RemoteQuery",
     "RemoteGroupedQuery",
+    "RemoteQuery",
     "RemoteQueryLimits",
     "RemoteQuerySession",
     "SubtypeBoundVar",
     "aggregate",
+    "connect_proxy",
 ];
 const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "MIGRATION_HISTORY_RESOURCE",
@@ -59,6 +64,7 @@ const PUBLIC_SCHEMA_NAMES: &[&str] = &[
     "RUNTIME_PROJECTION_JSON",
     "SEMANTIC_SCHEMA_FINGERPRINT_JSON",
     "open_migration_catalog",
+    "schema_authority",
 ];
 const MODEL_RESERVED_NAMES: &[&str] = &[
     "value",
@@ -170,14 +176,18 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._query import BoundRole as BoundRole\n\
          from ._query import BoundVar as BoundVar\n\
          from ._query import Collected as Collected\n\
+         from ._query import ExchangeConnection as ExchangeConnection\n\
          from ._query import FunctionCall as FunctionCall\n\
          from ._query import FunctionInput as FunctionInput\n\
          from ._query import GroupedQuery as GroupedQuery\n\
          from ._query import Page as Page\n\
          from ._query import Predicate as Predicate\n\
+         from ._query import ProxyConnection as ProxyConnection\n\
          from ._query import Query as Query\n\
          from ._query import QueryCancellation as QueryCancellation\n\
+         from ._query import QueryConnection as QueryConnection\n\
          from ._query import QueryExecutionResourceLimits as QueryExecutionResourceLimits\n\
+         from ._query import QueryLimits as QueryLimits\n\
          from ._query import QueryOrder as QueryOrder\n\
          from ._query import QuerySession as QuerySession\n\
          from ._query import RemoteGroupedQuery as RemoteGroupedQuery\n\
@@ -185,25 +195,30 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
          from ._query import RemoteQueryLimits as RemoteQueryLimits\n\
          from ._query import RemoteQuerySession as RemoteQuerySession\n\
          from ._query import SubtypeBoundVar as SubtypeBoundVar\n\
-         from ._query import aggregate as aggregate\n";
+         from ._query import aggregate as aggregate\n\
+         from ._query import connect_proxy as connect_proxy\n";
     if stub || !ordered {
         output.push_str(query_imports);
     }
     if stub {
         output.push_str(
-            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\n\n\
+            "from collections.abc import Mapping\nfrom typing import Final\nfrom type_bridge_core import MigrationCatalog as MigrationCatalog\nfrom type_bridge_core import QueryV2Authority as _QueryV2Authority\n\n\
              MIGRATION_HISTORY_RESOURCE: Final[str]\n\
              SEMANTIC_SCHEMA_FINGERPRINT_JSON: Final[str]\n\
              PROJECTION_FINGERPRINT_JSON: Final[str]\n\
              RUNTIME_PROJECTION_JSON: Final[str]\n\
              PLAYING_FACTS: Final[Mapping[str, object]]\n\n\
-             def open_migration_catalog() -> MigrationCatalog: ...\n",
+             def open_migration_catalog() -> MigrationCatalog: ...\n\
+             def schema_authority() -> _QueryV2Authority:\n\
+             \x20\x20\x20\x20\"\"\"This package's verified schema authority; build plans with `plan.build(schema_authority())`.\"\"\"\n",
         );
     } else {
         output.push_str(
             "from pathlib import Path as _Path\n\
              from type_bridge_core import MigrationCatalog as MigrationCatalog\n\
+             from type_bridge_core import QueryV2Authority as _QueryV2Authority\n\
              from type_bridge_core import open_migration_catalog as _open_migration_catalog\n\
+             from type_bridge_core import query_v2_authority_from_schema_authority as _query_v2_authority_from_schema_authority\n\
              from ._authority import SCHEMA_AUTHORITY_BYTES as _SCHEMA_AUTHORITY_BYTES\n\
              from ._schema import PLAYING_FACTS as PLAYING_FACTS\n\
              from ._schema import PROJECTION_FINGERPRINT_JSON as PROJECTION_FINGERPRINT_JSON\n\
@@ -212,7 +227,17 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
              MIGRATION_HISTORY_RESOURCE = \"typebridge/migration-history.json\"\n\n\
              def open_migration_catalog() -> MigrationCatalog:\n\
              \x20\x20\x20\x20history = (_Path(__file__).parent / MIGRATION_HISTORY_RESOURCE).read_bytes()\n\
-             \x20\x20\x20\x20return _open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)\n",
+             \x20\x20\x20\x20return _open_migration_catalog(_SCHEMA_AUTHORITY_BYTES, history)\n\n\
+             _schema_authority: list[_QueryV2Authority] = []\n\n\
+             def schema_authority() -> _QueryV2Authority:\n\
+             \x20\x20\x20\x20\"\"\"This package's verified schema authority; build plans with `plan.build(schema_authority())`.\"\"\"\n\
+             \x20\x20\x20\x20if not _schema_authority:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20_schema_authority.append(\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_query_v2_authority_from_schema_authority(\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20_SCHEMA_AUTHORITY_BYTES, SEMANTIC_SCHEMA_FINGERPRINT_JSON.encode(\"utf-8\")\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20)\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20)\n\
+             \x20\x20\x20\x20return _schema_authority[0]\n",
         );
     }
     let mut exports = PUBLIC_RUNTIME_NAMES
@@ -565,9 +590,6 @@ fn render_model_query_imports(output: &mut String, body: &str) {
     }
     if body.contains("_QuerySession") {
         query.push("QuerySession as _QuerySession");
-    }
-    if body.contains("_RemoteQuerySession") {
-        query.push("RemoteQuerySession as _RemoteQuerySession");
     }
     if !query.is_empty() {
         let _ = writeln!(output, "from ._query import {}", query.join(", "));
@@ -1077,14 +1099,14 @@ fn render_function(
                 if stub {
                     let _ = writeln!(
                         output,
-                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}: ...",
+                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}: ...",
                         scalar_type(domain),
                         python_attribute_base(domain)
                     );
                 } else {
                     let _ = writeln!(
                         output,
-                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession | _RemoteQuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
+                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
                         scalar_type(domain),
                         python_attribute_base(domain),
                         scalar_type(domain)
@@ -1129,7 +1151,7 @@ fn render_function(
             .map(|parameter| parameter.target_name().as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let signature = std::iter::once("session: _QuerySession | _RemoteQuerySession".to_owned())
+        let signature = std::iter::once("session: _QuerySession".to_owned())
             .chain(function_parameters)
             .collect::<Vec<_>>()
             .join(", ");

@@ -30,6 +30,7 @@ use crate::match_request::{
 };
 
 /// Real TypeDB backend wrapping the shared runtime.
+#[derive(Clone)]
 pub struct RealBackend {
     inner: Arc<runtime::TypeDBRuntime>,
 }
@@ -190,12 +191,36 @@ impl DriverBackend for RealBackend {
         database: &str,
         tx_type: TxType,
     ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
-        let runtime_tx_type = runtime_tx_type(tx_type);
-        let database = database.to_string();
+        self.open_with_options(
+            database,
+            tx_type,
+            &super::staged::TransactionOptions::default(),
+        )
+    }
+
+    fn open_with_options(
+        &self,
+        database: &str,
+        tx_type: TxType,
+        options: &super::staged::TransactionOptions,
+    ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+        let options_runtime =
+            options
+                .deadline
+                .map_or_else(runtime::TransactionOptions::new, |timeout| {
+                    runtime::TransactionOptions::new()
+                        .with_transaction_timeout(timeout)
+                        .with_schema_lock_acquire_timeout(timeout)
+                });
+        let database = database.to_owned();
         let runtime = Arc::clone(&self.inner);
         Box::pin(async move {
             let inner = runtime
-                .open_transaction(&database, runtime_tx_type)
+                .open_transaction_with_options(
+                    &database,
+                    runtime_tx_type(tx_type),
+                    &options_runtime,
+                )
                 .await
                 .map_err(OrmError::from)?;
             Ok(Box::new(RealTransaction {
@@ -211,32 +236,22 @@ impl DriverBackend for RealBackend {
         database: &str,
         timeout: std::time::Duration,
     ) -> BoxFuture<'_, Result<SchemaFencedReadTransaction, OrmError>> {
-        let database = database.to_string();
-        let runtime = Arc::clone(&self.inner);
+        let database = database.to_owned();
         Box::pin(async move {
-            // TypeDB admits WRITE and SCHEMA transactions under mutually
-            // exclusive database guards. V2 emits read-only TypeQL and closes
-            // without commit, so WRITE supplies schema exclusion without
-            // turning the query API into a mutation surface.
-            let mut inner = runtime
-                .open_transaction_with_timeout(&database, runtime::TxType::Write, timeout)
-                .await
-                .map_err(OrmError::from)?;
-            let schema_text = match runtime.schema_text(&database).await {
-                Ok(schema_text) => schema_text,
+            let options = super::staged::TransactionOptions::default()
+                .with_deadline(timeout)
+                .with_never_commit(true);
+            let mut transaction = self
+                .open_with_options(&database, TxType::Write, &options)
+                .await?;
+            let schema_text = match self.schema_text(&database).await {
+                Ok(schema) => schema,
                 Err(error) => {
-                    let _ = inner.close().await;
-                    return Err(OrmError::from(error));
+                    let _ = transaction.close().await;
+                    return Err(error);
                 }
             };
-            Ok(SchemaFencedReadTransaction::new(
-                Box::new(RealTransaction {
-                    inner,
-                    runtime,
-                    database,
-                }),
-                schema_text,
-            ))
+            Ok(SchemaFencedReadTransaction::new(transaction, schema_text))
         })
     }
 
@@ -370,6 +385,30 @@ impl TransactionOps for RealTransaction {
         Box::pin(async move {
             self.inner
                 .query_with_rows(&typeql, rows)
+                .await
+                .map(query_result)
+                .map_err(OrmError::from)
+        })
+    }
+
+    fn query_materialized_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        rows: Option<GivenRowsSpec>,
+        limits: BoundedAnswerLimits,
+        canonical: bool,
+    ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        Box::pin(async move {
+            let limits = runtime::RuntimeAnswerLimits {
+                max_items: limits.max_items,
+                max_bytes: limits.max_bytes,
+                deadline: limits.deadline,
+                cancellation: runtime::RuntimeAnswerCancellation::from_shared(
+                    limits.cancellation.shared(),
+                ),
+            };
+            self.inner
+                .query_materialized_bounded(typeql, rows.map(runtime_given_rows), limits, canonical)
                 .await
                 .map(query_result)
                 .map_err(OrmError::from)

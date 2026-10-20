@@ -106,7 +106,7 @@ fn emits_exact_deterministic_es_module_package() {
     );
     let package_json = String::from_utf8(first.get("package.json").unwrap().to_vec()).unwrap();
     assert!(package_json.contains("\"type\": \"module\""));
-    assert!(package_json.contains("\"@type-bridge/node\": \"^2.2.6\""));
+    assert!(package_json.contains("\"@type-bridge/node\": \"^2.3.0\""));
     assert!(
         String::from_utf8(first.get("tsconfig.json").unwrap().to_vec())
             .unwrap()
@@ -116,7 +116,7 @@ fn emits_exact_deterministic_es_module_package() {
 
 #[test]
 fn emits_canonical_struct_type_identity() {
-    let source = include_str!("../../../../tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml");
+    let source = include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml");
     let emitter = TypeScriptEmitter::new();
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("typescript-struct.yaml").unwrap(), source)])

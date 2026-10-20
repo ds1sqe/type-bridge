@@ -1,0 +1,1 @@
+match $x isa person; $r isa friendship; update $x has name "changed"; $r links (friend: $x);

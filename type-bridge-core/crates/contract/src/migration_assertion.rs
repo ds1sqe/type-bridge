@@ -181,6 +181,15 @@ pub enum ValueComparator {
     GreaterOrEqual,
 }
 
+crate::enum_spellings!(ValueComparator, "value_comparator", canonical {
+    "equal" => Equal,
+    "not_equal" => NotEqual,
+    "less" => Less,
+    "less_or_equal" => LessOrEqual,
+    "greater" => Greater,
+    "greater_or_equal" => GreaterOrEqual,
+});
+
 /// One typed operand in a value comparison.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

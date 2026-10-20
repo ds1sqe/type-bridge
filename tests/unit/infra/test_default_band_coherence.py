@@ -16,7 +16,7 @@ RUNTIME_MANIFEST = REPO_ROOT / "type-bridge-core/crates/typedb-runtime/Cargo.tom
 WORKSPACE_MANIFEST = REPO_ROOT / "type-bridge-core/Cargo.toml"
 CI_WORKFLOW = REPO_ROOT / ".github/workflows/ci.yml"
 
-EXPECTED_DRIVERS = {8: "3.11.5", 9: "3.12.3"}
+EXPECTED_DRIVERS = {8: "3.11.5", 9: "3.13.6"}
 EXPECTED_SERVERS = {"typedb/typedb:3.11.5", "typedb/typedb:3.12.3"}
 
 
@@ -36,7 +36,7 @@ def test_retired_server_lines_fail_the_native_gate(server: str) -> None:
         type_bridge_core.check_server_supported(server)
 
 
-@pytest.mark.parametrize("server", ["3.11.5", "3.12.3"])
+@pytest.mark.parametrize("server", ["3.11.5", "3.12.3", "3.13.6"])
 def test_retained_server_lines_pass_the_native_gate(server: str) -> None:
     type_bridge_core.check_server_supported(server)
 
@@ -49,7 +49,7 @@ def test_runtime_manifest_has_only_band8_and_band9_features() -> None:
     assert features["default"] == ["band8", "band9"]
     assert set(features) == {"default", "band8", "band9"}
     assert dependencies["type-bridge-typedb-driver-b8"]["version"] == "=3.11.5"
-    assert dependencies["typedb-driver"]["version"] == "=3.12.3"
+    assert dependencies["typedb-driver"]["version"] == "=3.13.6"
     assert all("b7" not in name and "band7" not in name for name in dependencies)
 
 
@@ -71,12 +71,12 @@ def test_single_feature_ci_compiles_each_retained_band() -> None:
             "band": "band8",
             "features": "band8,v2-query",
             "required_driver": "type-bridge-typedb-driver-b8 v3.11.5",
-            "forbidden_driver": "typedb-driver v3.12.3",
+            "forbidden_driver": "typedb-driver v3.13.6",
         },
         {
             "band": "band9",
             "features": "band9,v2-query",
-            "required_driver": "typedb-driver v3.12.3",
+            "required_driver": "typedb-driver v3.13.6",
             "forbidden_driver": "type-bridge-typedb-driver-b8 v3.11.5",
         },
     ]
@@ -98,10 +98,12 @@ def test_python_live_matrix_pairs_each_server_with_its_driver() -> None:
         {
             "typedb-server": "typedb/typedb:3.11.5",
             "python-driver": "3.11.5",
+            "semantic-profile": "typedb-3.11.5/v1",
         },
         {
             "typedb-server": "typedb/typedb:3.12.3",
             "python-driver": "3.12.3",
+            "semantic-profile": "typedb-3.12.1/v1",
         },
     ]
     workflow_text = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -126,7 +128,7 @@ def test_tls_matrix_covers_exactly_the_retained_topologies() -> None:
             "server-version": "3.12.3",
             "semantic-profile": "typedb-3.12.1/v1",
             "driver-band": "9",
-            "driver-version": "3.12.3",
+            "driver-version": "3.13.6",
         },
     ]
 
@@ -158,16 +160,27 @@ def test_gate_matrix_keeps_retired_lines_negative_only() -> None:
 
 
 def test_compose_and_local_harness_default_to_the_band9_server() -> None:
-    expected = "typedb/typedb:3.12.3"
+    expected = "typedb/typedb:3.13.6"
     for name in ("docker-compose.yml", "docker-compose.proxy.yml"):
         text = (REPO_ROOT / name).read_text(encoding="utf-8")
         match = re.search(r"\$\{TYPEDB_IMAGE:-(typedb/typedb:[\w.\-]+)\}", text)
         assert match is not None
         assert match.group(1) == expected
 
-    assert (REPO_ROOT / "test.sh").read_text(encoding="utf-8").count(
-        "${TYPEDB_IMAGE:-typedb/typedb:3.12.3}"
-    ) == 2
+    harness = (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
+    # The harness lane defaults to the band-9 server unless --typedb or the
+    # requested semantic profile picks another line; the TLS lane shares it.
+    assert harness.count('default_lane="3.13.6"') == 1
+    assert harness.count("${CALLER_TYPEDB_IMAGE:-typedb/typedb:${lane_server}}") == 1
+    assert "TYPEDB_LANES=(3.11.5 3.12.3 3.13.6)" in harness
+    for server, profile in (
+        ("3.11.5", "typedb-3.11.5/v1"),
+        ("3.12.3", "typedb-3.12.1/v1"),
+        ("3.13.6", "typedb-3.13.6/v1"),
+    ):
+        assert f"    [{server}]={profile}\n" in harness
+    assert re.search(r"typedb/typedb:3\.1[0-9]\.[0-9]", harness) is None
+    assert "TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION=3." not in harness
 
 
 def test_optional_python_driver_groups_exclude_retired_lines() -> None:
@@ -177,11 +190,11 @@ def test_optional_python_driver_groups_exclude_retired_lines() -> None:
     expected = {
         "dev": {
             "typedb-driver~=3.11.5; python_version < '3.14'",
-            "typedb-driver==3.12.3; python_version >= '3.14'",
+            "typedb-driver==3.13.6; python_version >= '3.14'",
         },
         "typedb-driver": {
-            "typedb-driver>=3.11,<3.13; python_version < '3.14'",
-            "typedb-driver==3.12.3; python_version >= '3.14'",
+            "typedb-driver>=3.11,<3.14; python_version < '3.14'",
+            "typedb-driver>=3.12.3,<3.14; python_version >= '3.14'",
         },
     }
     for group, requirements in expected.items():

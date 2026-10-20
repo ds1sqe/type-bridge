@@ -382,6 +382,30 @@ impl ProjectedRole {
     }
 }
 
+/// The record kind a generated model encodes or decodes through the canonical
+/// record codec.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ProjectedRecordKind {
+    /// One attribute or scalar wrapper value.
+    Attribute,
+    /// One entity or relation create input.
+    Create,
+    /// One reference to a stored entity or relation.
+    Reference,
+    /// One detached hydrated snapshot.
+    Snapshot,
+    /// One struct value.
+    Struct,
+}
+
+crate::enum_spellings!(ProjectedRecordKind, "projected_record_kind", canonical {
+    "attribute" => Attribute,
+    "create" => Create,
+    "reference" => Reference,
+    "snapshot" => Snapshot,
+    "struct" => Struct,
+});
+
 /// The closed canonical projected-record content vocabulary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -920,7 +944,7 @@ mod tests {
             FingerprintDomain::new("typebridge.schema.declared-identity").unwrap(),
             CanonicalizationVersion::new("typebridge.schema-canonical-json/v1").unwrap(),
             None,
-            b"sdk-v5",
+            b"serialization",
         );
         (
             profile,
@@ -948,7 +972,7 @@ mod tests {
         let bytes = first.encode().unwrap();
         assert_eq!(
             String::from_utf8(bytes.clone()).unwrap(),
-            r#"{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"038c5fe50913ff32d678d7d4e62a32714a7c6846352a34ecc103b5d3306f0e33","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-record/v1","digest":"6232ba6c9709321aa359c03b120bcbe8bba0e72b065b56acf9a4efcfbefc3199","domain":"typebridge.projected-record","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-record/v1","record":{"kind":"attribute_value","type":{"kind":"attribute","label":"display-name"},"value":{"kind":"string","value":"Ada"}},"semantic_profile":"typedb-3.12.1/v1"}"#
+            r#"{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"91e73cdb0d280f4bb3e99b4a4e55cb2163fa61b65932af290080fc3454df4f42","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-record/v1","digest":"b4edad5ed3be801098157855b88433845463c1b638503ff79674640432a63197","domain":"typebridge.projected-record","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-record/v1","record":{"kind":"attribute_value","type":{"kind":"attribute","label":"display-name"},"value":{"kind":"string","value":"Ada"}},"semantic_profile":"typedb-3.12.1/v1"}"#
         );
         assert_eq!(ProjectedRecord::decode(&bytes).unwrap(), first);
         assert_eq!(
@@ -960,7 +984,7 @@ mod tests {
         let archive_bytes = archive.encode().unwrap();
         assert_eq!(
             String::from_utf8(archive_bytes.clone()).unwrap(),
-            r#"{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"038c5fe50913ff32d678d7d4e62a32714a7c6846352a34ecc103b5d3306f0e33","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-archive/v1","digest":"8be2b6fba55502db5a9b3e54a6654d8cd80a3fac8576b4f4e7fb0579c3908b93","domain":"typebridge.projected-archive","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-archive/v1","records":[{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"038c5fe50913ff32d678d7d4e62a32714a7c6846352a34ecc103b5d3306f0e33","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-record/v1","digest":"6232ba6c9709321aa359c03b120bcbe8bba0e72b065b56acf9a4efcfbefc3199","domain":"typebridge.projected-record","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-record/v1","record":{"kind":"attribute_value","type":{"kind":"attribute","label":"display-name"},"value":{"kind":"string","value":"Ada"}},"semantic_profile":"typedb-3.12.1/v1"},{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"038c5fe50913ff32d678d7d4e62a32714a7c6846352a34ecc103b5d3306f0e33","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-record/v1","digest":"4f19a152a7fe77c918f43c1f4d75db79e3276045a4afd160f442977b86e860a5","domain":"typebridge.projected-record","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-record/v1","record":{"kind":"attribute_value","type":{"kind":"attribute","label":"display-name"},"value":{"kind":"string","value":"Grace"}},"semantic_profile":"typedb-3.12.1/v1"}],"semantic_profile":"typedb-3.12.1/v1"}"#
+            r#"{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"91e73cdb0d280f4bb3e99b4a4e55cb2163fa61b65932af290080fc3454df4f42","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-archive/v1","digest":"aedad93aad3bb1677ecce30c0df4497839baf1338e08f182ffa908704846175d","domain":"typebridge.projected-archive","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-archive/v1","records":[{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"91e73cdb0d280f4bb3e99b4a4e55cb2163fa61b65932af290080fc3454df4f42","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-record/v1","digest":"b4edad5ed3be801098157855b88433845463c1b638503ff79674640432a63197","domain":"typebridge.projected-record","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-record/v1","record":{"kind":"attribute_value","type":{"kind":"attribute","label":"display-name"},"value":{"kind":"string","value":"Ada"}},"semantic_profile":"typedb-3.12.1/v1"},{"declared_schema_identity":{"algorithm":"sha256","canonicalization":"typebridge.schema-canonical-json/v1","digest":"91e73cdb0d280f4bb3e99b4a4e55cb2163fa61b65932af290080fc3454df4f42","domain":"typebridge.schema.declared-identity"},"fingerprint":{"algorithm":"sha256","canonicalization":"typebridge.projected-record/v1","digest":"d63020f95b2f4c18c95bb5d184afcf4183083f03b778321dc392f8fd8709b784","domain":"typebridge.projected-record","semantic_profile":"typedb-3.12.1/v1"},"format":"typebridge.projected-record/v1","record":{"kind":"attribute_value","type":{"kind":"attribute","label":"display-name"},"value":{"kind":"string","value":"Grace"}},"semantic_profile":"typedb-3.12.1/v1"}],"semantic_profile":"typedb-3.12.1/v1"}"#
         );
         assert_eq!(ProjectedArchive::decode(&archive_bytes).unwrap(), archive);
         assert_eq!(

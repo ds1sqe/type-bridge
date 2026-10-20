@@ -3,16 +3,46 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
-use super::ids::BindingId;
-use super::lowering::{LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain};
+use super::ids::{BindingId, BoundFieldId, FieldId};
 use super::model::Reduction;
 use super::result::{
-    BoundConceptEvidence, HydratedThing, ProviderResultEvidence, ProviderSolutionEvidence,
-    ReducedValue, ReductionRow,
+    BoundConceptEvidence, HydratedThing, ProviderSolutionEvidence, ReducedValue, ReductionRow,
 };
-use super::validation::ValidatedMatchRequest;
 use crate::error::OrmError;
 use crate::value::AttributeValue;
+
+/// Registry-resolved group key for one lowered reduction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LoweredReduceGroup {
+    /// Group by one attached thing's distinct identity.
+    Binding(BindingId),
+    /// Group by each witnessed value of one descriptor-qualified owned field.
+    Field(BoundFieldId),
+    /// Group by the Cartesian tuple of witnessed values from multiple owned fields.
+    Fields(Vec<BoundFieldId>),
+}
+
+/// The canonical numeric domain of one lowered reducer input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReduceDomain {
+    Long,
+    Double,
+}
+
+/// One reducer term with its registry-resolved input identity and domain.
+#[derive(Debug, Clone)]
+pub(crate) struct LoweredReduceTerm {
+    pub(crate) reduction: Reduction,
+    pub(crate) input: Option<LoweredReduceInput>,
+}
+
+/// One registry-resolved reducer input.
+#[derive(Debug, Clone)]
+pub(crate) struct LoweredReduceInput {
+    pub(crate) binding: BindingId,
+    pub(crate) field: FieldId,
+    pub(crate) domain: ReduceDomain,
+}
 
 fn decode_error(code: &'static str, message: &'static str) -> OrmError {
     MatchError::new(MatchErrorCategory::ResultDecode, code, message)
@@ -191,44 +221,6 @@ fn reduction_input_value<'a>(
         .iter()
         .find(|attribute| attribute.field() == &input.field)
         .and_then(|attribute| attribute.values().first()))
-}
-
-pub(crate) fn reduction_evidence(
-    validated: &ValidatedMatchRequest,
-    root: BindingId,
-    group: Option<LoweredReduceGroup>,
-    rows: Vec<ReductionRow>,
-) -> ProviderResultEvidence {
-    match group {
-        None => ProviderResultEvidence::reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            None,
-            rows,
-        ),
-        Some(LoweredReduceGroup::Binding(group)) => ProviderResultEvidence::reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            Some(group),
-            rows,
-        ),
-        Some(LoweredReduceGroup::Field(group)) => ProviderResultEvidence::field_reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            group,
-            rows,
-        ),
-        Some(LoweredReduceGroup::Fields(groups)) => ProviderResultEvidence::field_tuple_reduction(
-            validated.request_token(),
-            validated.shape_id().clone(),
-            root,
-            groups,
-            rows,
-        ),
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -660,7 +652,7 @@ mod tests {
                 .into_iter()
                 .map(|(binding, thing)| BoundConceptEvidence::new(BindingId::new(binding), thing)),
         );
-        ProviderSolutionEvidence::new(evidence, Vec::new())
+        ProviderSolutionEvidence::new(evidence)
     }
 
     fn count_term() -> LoweredReduceTerm {

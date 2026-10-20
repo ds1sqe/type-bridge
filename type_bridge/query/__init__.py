@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from type_bridge.query.ast import (
+    Clause,
     DeleteClause,
     FetchClause,
     FetchWildcard,
@@ -13,6 +14,8 @@ from type_bridge.query.ast import (
     MatchClause,
     RawPattern,
     RawStatement,
+    _NativePattern,
+    _NativeStatement,
 )
 from type_bridge.query.compiler import QueryCompiler
 from type_bridge.query.parser import parse_typeql_query as parse_typeql_query
@@ -159,43 +162,18 @@ class Query:
         Returns:
             Complete TypeQL query
         """
-        logger.debug("Building TypeQL query")
-        parts = []
-
-        # Match clause
+        clauses: list[Clause] = []
         if self.match_clause.patterns:
-            parts.append(self.compiler.compile(self.match_clause))
-
-        # Delete clause
+            clauses.append(self.match_clause)
         if self.delete_clause.statements:
-            parts.append(self.compiler.compile(self.delete_clause))
-
-        # Insert clause
+            clauses.append(self.delete_clause)
         if self.insert_clause.statements:
-            parts.append(self.compiler.compile(self.insert_clause))
-
-        # Sort, offset, and limit modifiers (must come BEFORE fetch in TypeQL 3.x)
-        modifier_parts = []
-        if self.sort_clauses:
-            sort_items = [f"{var} {dir}" for var, dir in self.sort_clauses]
-            modifier_parts.append(f"sort {', '.join(sort_items)};")
-
-        # Order matters: form modifiers, put offset then limit
-        if self.offset_val is not None:
-            modifier_parts.append(f"offset {self.offset_val};")
-        if self.limit_val is not None:
-            modifier_parts.append(f"limit {self.limit_val};")
-
-        if modifier_parts:
-            parts.append("\n".join(modifier_parts))
-
-        # Fetch clause
+            clauses.append(self.insert_clause)
         if self.fetch_clause.items:
-            parts.append(self.compiler.compile(self.fetch_clause))
-
-        query = "\n".join(parts)
-        logger.debug(f"Built query: {query}")
-        return query
+            clauses.append(self.fetch_clause)
+        return self.compiler._compile_query(
+            clauses, self.sort_clauses, self.offset_val, self.limit_val
+        )
 
     def __str__(self) -> str:
         """String representation of query."""
@@ -225,10 +203,10 @@ class QueryBuilder:
             f"QueryBuilder.match_entity: {model_class.__name__}, var={var}, filters={filters}"
         )
         query = Query()
-        from type_bridge._runtime_projection import projected_query_builder_match_entity_for
+        from type_bridge._runtime_projection import _projected_query_builder_match_entity_clause_for
 
-        pattern = projected_query_builder_match_entity_for(model_class, var, filters)
-        query.match(pattern)
+        clause = _projected_query_builder_match_entity_clause_for(model_class, var, filters)
+        query.match_clause.patterns.extend(_NativePattern(data) for data in clause["Match"])
         return query
 
     @staticmethod
@@ -244,10 +222,12 @@ class QueryBuilder:
         """
         logger.debug(f"QueryBuilder.insert_entity: {instance.__class__.__name__}, var={var}")
         query = Query()
-        from type_bridge._runtime_projection import projected_query_builder_insert_entity_for
+        from type_bridge._runtime_projection import (
+            _projected_query_builder_insert_entity_clause_for,
+        )
 
-        insert_pattern = projected_query_builder_insert_entity_for(instance, var)
-        query.insert(insert_pattern)
+        clause = _projected_query_builder_insert_entity_clause_for(instance, var)
+        query.insert_clause.statements.extend(_NativeStatement(data) for data in clause["Insert"])
         return query
 
     @staticmethod
@@ -274,8 +254,10 @@ class QueryBuilder:
             f"role_players={role_players}"
         )
         query = Query()
-        from type_bridge._runtime_projection import projected_query_builder_match_relation_for
+        from type_bridge._runtime_projection import (
+            _projected_query_builder_match_relation_clause_for,
+        )
 
-        pattern = projected_query_builder_match_relation_for(model_class, var, role_players)
-        query.match(pattern)
+        clause = _projected_query_builder_match_relation_clause_for(model_class, var, role_players)
+        query.match_clause.patterns.extend(_NativePattern(data) for data in clause["Match"])
         return query

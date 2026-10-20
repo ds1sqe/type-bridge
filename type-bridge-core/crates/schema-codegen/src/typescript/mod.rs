@@ -41,8 +41,6 @@ const ORDERED_MATERIALIZE_THING_SOURCE: &[u8] = br#"function materializeThing(
 
 const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 
-import { projectedManagerNativeCall } from "@type-bridge/node/runtime-projection";
-
 /** Canonical collection semantics present only in ordered projection resources. */
 export interface Multiplicity {
   readonly collection_mode?: "ordered_list";
@@ -1309,15 +1307,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 132_719);
+        assert_eq!(RUNTIME_SOURCE.len(), 123_101);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "71f6aba6c743d3dd7d19b88b8f7549b90f069ce96341ace75e92417ad01ad849"
+            "3eb500a1c94d29612a35286bc2b3382522aad9193cafe6894a2ad5647e949b83"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "955879feedff263aa72d578c5c05823adf1f4811dc1429f2dd3d2a3816abd25a"
+            "fb090775f172a3c9b8de66dd2e4e4c37fcae39f0f152e5dd19302ddb2ff00361"
         );
     }
 
@@ -1341,9 +1339,8 @@ mod tests {
         assert!(source.contains("readonly #password: string;"));
         assert!(source.contains("DirectConnectionPolicy([REDACTED])"));
         assert!(source.contains("projection.connectDirect({"));
-        assert!(source.contains(
-            "import { projectedManagerNativeCall } from \"@type-bridge/node/runtime-projection\";"
-        ));
+        // The base runtime imports the structured-error wrapper once.
+        assert_eq!(source.matches("  projectedManagerNativeCall,\n").count(), 1);
         assert!(source.contains("const entries = Object.entries(filters);"));
         assert!(source.contains("orderedCompatibilityPredicates(typeKey, entries)"));
         assert!(!source.contains("orderedCompatibilityPredicates(typeKey, filters)"));
@@ -1473,7 +1470,6 @@ mod tests {
             BTreeSet::from([
                 "BigInt".to_owned(),
                 "Date".to_owned(),
-                "RangeError".to_owned(),
                 "TypeError".to_owned(),
                 "assertRecord".to_owned(),
                 "defineProperty".to_owned(),

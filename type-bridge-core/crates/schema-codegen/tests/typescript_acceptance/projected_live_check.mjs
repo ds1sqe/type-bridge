@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Produce Node's exact-TypeDB-3.12.3 Projected live-subset report. */
+/** Produce Node's Projected live-subset report on one exact models matrix server. */
 
 import crypto from "node:crypto";
 import {
@@ -8,6 +8,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readFileSync,
   readSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -41,10 +42,59 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "c6b712db34f5057fb1c2cfda7fb9fe108fc3aef7e0b781371bbbdbb40bd1d74e",
+  digest: "f2160b51f254a87daa73d492b5c1e8673394a766c5759380a281418f6494a558",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
+// `SEMANTIC_PROFILE` and the two fingerprints above are the models catalog's own
+// identity. A run reports the models profile-matrix entry it selects instead.
+export const SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE";
+export const PROFILE_MATRIX_RELATIVE =
+  "tests/contracts/sdk_conformance/models/profiles.json";
+const MODULE_REPOSITORY_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
+
+/**
+ * Select the models profile-matrix entry a run reports: the profile named by
+ * `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`, else the catalog's own profile
+ * (mirrors `scripts/ci/sdk_profile_matrix.py` `requested`).
+ */
+export function profileIdentity(root = MODULE_REPOSITORY_ROOT, environment = {}) {
+  const profile = environment[SEMANTIC_PROFILE_ENV] || SEMANTIC_PROFILE;
+  let matrix;
+  try {
+    matrix = JSON.parse(readFileSync(resolve(root, PROFILE_MATRIX_RELATIVE), "utf8"));
+  } catch (error) {
+    throw new ProducerError(
+      "invalid_profile_matrix",
+      "models profile matrix is unreadable",
+      { cause: error },
+    );
+  }
+  const profiles = matrix?.suite === "models" ? matrix.profiles : undefined;
+  const entry =
+    profiles !== null && typeof profiles === "object" && Object.hasOwn(profiles, profile)
+      ? profiles[profile]
+      : undefined;
+  const fingerprints = entry?.expected_fingerprints;
+  requireCondition(
+    typeof entry?.live_server_version === "string" &&
+      fingerprints?.semantic?.semantic_profile === profile &&
+      fingerprints?.projections?.node?.semantic_profile === profile,
+    "semantic_profile_mismatch",
+    `models has no profile-matrix entry for ${JSON.stringify(profile)}`,
+  );
+  return Object.freeze({
+    semanticProfile: profile,
+    liveServerVersion: entry.live_server_version,
+    semantic: fingerprints.semantic,
+    projection: fingerprints.projections.node,
+  });
+}
+
+/** The models catalog's own matrix entry; the default of offline seams. */
+export function catalogIdentity() {
+  return profileIdentity(MODULE_REPOSITORY_ROOT, {});
+}
 
 export const OUTPUT_ENV = "TYPE_BRIDGE_PROJECTED_LIVE_REPORT";
 export const ADDRESS_ENV = "TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS";
@@ -55,14 +105,14 @@ export const REPOSITORY_ROOT_ENV = "TYPE_BRIDGE_PROJECTED_REPOSITORY_ROOT";
 export const MAX_AUTHORITY_BYTES = 1024 * 1024;
 
 export const SOURCE_PATHS = Object.freeze({
-  schema: "tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml",
-  journey: "tests/contracts/sdk_conformance/sdk-v3/journey-v3.json",
+  schema: "tests/contracts/sdk_conformance/models/schema.yaml",
+  journey: "tests/contracts/sdk_conformance/models/journey.json",
   provider:
-    "tests/contracts/sdk_conformance/sdk-v3/provider-3.12.1-v3.tql",
+    "tests/contracts/sdk_conformance/models/provider-3.12.1.tql",
 });
 export const SOURCE_SHA256 = Object.freeze({
   schema: "74b9161e3d8fd70a1f22c3a8b7fc70a823b18cb07973064e2e10ce0940f76f1f",
-  journey: "c5679b428c22e2bff7989f6d674cde3780b752a40f6bbce6ccb3aa451797b1c0",
+  journey: "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f",
   provider: "af61aaece22d666e19d2c1357f8ebc39b8cbcf4bff7b98a19a56daf171a1faba",
 });
 export const OBSERVATION_REFS = Object.freeze([
@@ -254,7 +304,7 @@ function packageObject(value, label) {
   return value;
 }
 
-export function validateGeneratedPackage(package_) {
+export function validateGeneratedPackage(package_, identity = catalogIdentity()) {
   let semantic;
   let runtimeProjection;
   try {
@@ -272,14 +322,13 @@ export function validateGeneratedPackage(package_) {
   let identityMatches = false;
   try {
     identityMatches =
-      canonicalString(semantic) ===
-        canonicalString(SEMANTIC_SCHEMA_FINGERPRINT) &&
+      canonicalString(semantic) === canonicalString(identity.semantic) &&
       canonicalString(runtimeProjection.semantic_fingerprint) ===
-        canonicalString(SEMANTIC_SCHEMA_FINGERPRINT) &&
+        canonicalString(identity.semantic) &&
       canonicalString(JSON.parse(package_.PROJECTION_FINGERPRINT_JSON)) ===
-        canonicalString(PROJECTION_FINGERPRINT) &&
+        canonicalString(identity.projection) &&
       canonicalString(runtimeProjection.projection_fingerprint) ===
-        canonicalString(PROJECTION_FINGERPRINT) &&
+        canonicalString(identity.projection) &&
       runtimeProjection.target === "typescript";
   } catch {
     identityMatches = false;
@@ -287,7 +336,7 @@ export function validateGeneratedPackage(package_) {
   if (!identityMatches) {
     throw new ProducerError(
       "generated_package_identity",
-      "generated package is not the frozen Sdk V3 schema projection",
+      "generated package is not the frozen Models schema projection",
     );
   }
   for (const [name, typeKey] of Object.entries(EXPECTED_MODEL_TYPES)) {
@@ -301,7 +350,7 @@ export function validateGeneratedPackage(package_) {
     ) {
       throw new ProducerError(
         "generated_package_identity",
-        `generated ${name} token does not match Sdk V3`,
+        `generated ${name} token does not match Models`,
       );
     }
   }
@@ -327,7 +376,7 @@ function regularPackagePath(path, label, directory) {
   }
 }
 
-export async function loadGeneratedPackage(packageRoot) {
+export async function loadGeneratedPackage(packageRoot, identity = catalogIdentity()) {
   const generatedRoot = resolve(packageRoot, "generated_projected");
   const manifest = resolve(generatedRoot, "package.json");
   const entry = resolve(generatedRoot, "dist/index.js");
@@ -347,7 +396,7 @@ export async function loadGeneratedPackage(packageRoot) {
       { cause: error },
     );
   }
-  validateGeneratedPackage(package_);
+  validateGeneratedPackage(package_, identity);
   if (
     runtime === null ||
     typeof runtime !== "object" ||
@@ -469,7 +518,7 @@ function parseJourney(raw) {
   } catch (error) {
     throw new ProducerError(
       "invalid_journey",
-      "sdk-v3 journey is not valid UTF-8 JSON",
+      "models journey is not valid UTF-8 JSON",
       { cause: error },
     );
   }
@@ -477,19 +526,19 @@ function parseJourney(raw) {
     journey === null ||
     typeof journey !== "object" ||
     Array.isArray(journey) ||
-    journey.format !== "typebridge.sdk-journey/v3" ||
-    journey.fixture_id !== "sdk-v3" ||
+    journey.format !== "typebridge.sdk-models-journey/v1" ||
+    journey.fixture_id !== "models" ||
     journey.version !== 3 ||
     journey.semantic_profile !== SEMANTIC_PROFILE
   ) {
     throw new ProducerError(
       "invalid_journey",
-      "sdk-v3 journey identity drifted",
+      "models journey identity drifted",
     );
   }
   const groups = journey.records;
   if (groups === null || typeof groups !== "object" || Array.isArray(groups)) {
-    throw new ProducerError("invalid_journey", "sdk-v3 records are malformed");
+    throw new ProducerError("invalid_journey", "models records are malformed");
   }
   const records = new Map();
   const index = (record, group) => {
@@ -1175,6 +1224,7 @@ export async function runOwnedDatabase({
   cleanupOrder,
   versionDetector = detectServerVersion,
   journeyRunner = runJourney,
+  liveServerVersion = catalogIdentity().liveServerVersion,
 }) {
   const database = runtime.RustDatabase.connect(address, databaseName, {
     httpPort: port,
@@ -1184,11 +1234,11 @@ export async function runOwnedDatabase({
   let failure;
   try {
     const detected = await versionDetector(address, port);
-    if (detected !== "3.12.3") {
+    if (detected !== liveServerVersion) {
       throw new ProducerError(
         "server_version_mismatch",
-        "live evidence requires the actually detected TypeDB server version 3.12.3; " +
-          `detected ${JSON.stringify(detected)}`,
+        "live evidence requires the actually detected TypeDB server version " +
+          `${liveServerVersion}; detected ${JSON.stringify(detected)}`,
       );
     }
     if (database.databaseExists()) {
@@ -1260,13 +1310,13 @@ export async function runOwnedDatabase({
   return observations;
 }
 
-export function buildReport(authority, observations) {
+export function buildReport(authority, observations, identity = catalogIdentity()) {
   return {
     authority,
     binding: "node",
     format: REPORT_FORMAT,
     observations,
-    semantic_profile: SEMANTIC_PROFILE,
+    semantic_profile: identity.semanticProfile,
   };
 }
 
@@ -1283,8 +1333,9 @@ export async function produce(environment = process.env) {
   const address = requiredEnvironment(ADDRESS_ENV, environment);
   const databaseName = requiredEnvironment(DATABASE_ENV, environment);
   const port = httpPort(environment);
+  const identity = profileIdentity(root, environment);
   const { authority, sources } = sourceAuthority(root);
-  const { package_, runtime } = await loadGeneratedPackage(packageRoot);
+  const { package_, runtime } = await loadGeneratedPackage(packageRoot, identity);
   const { records, createOrder, cleanupOrder } = parseJourney(sources.journey);
   let providerSchema;
   try {
@@ -1308,8 +1359,9 @@ export async function produce(environment = process.env) {
     records,
     createOrder,
     cleanupOrder,
+    liveServerVersion: identity.liveServerVersion,
   });
-  publishReport(output, buildReport(authority, observations));
+  publishReport(output, buildReport(authority, observations, identity));
 }
 
 export async function main(environment = process.env) {

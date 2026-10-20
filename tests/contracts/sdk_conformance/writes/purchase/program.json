@@ -1,0 +1,296 @@
+{
+  "format": "typebridge.sdk-writes-program/v1",
+  "program": "purchase",
+  "semantic_profile": "typedb-3.13.6/v1",
+  "workspace": "typebridge.yaml",
+  "steps": [
+    {
+      "name": "seed",
+      "kind": "write",
+      "plans": [
+        "seed"
+      ]
+    },
+    {
+      "name": "program",
+      "kind": "write",
+      "plans": [
+        "purchase",
+        "touch",
+        "batch"
+      ]
+    },
+    {
+      "name": "read",
+      "kind": "read",
+      "plans": [
+        "sold_out",
+        "charged",
+        "orders",
+        "on_call"
+      ]
+    },
+    {
+      "name": "journeys",
+      "kind": "write",
+      "plans": [
+        "put_doctor",
+        "returns",
+        "refer",
+        "remove"
+      ]
+    },
+    {
+      "name": "after",
+      "kind": "read",
+      "plans": [
+        "doctors_on_call",
+        "referred",
+        "removed"
+      ]
+    },
+    {
+      "name": "rollback",
+      "kind": "write",
+      "rolled_back": [
+        "ghost"
+      ],
+      "plans": [
+        "kept"
+      ]
+    }
+  ],
+  "plans": {
+    "seed": {
+      "insert": [
+        "item",
+        "account",
+        "doctor"
+      ],
+      "rows": [
+        {
+          "item_id": "I1",
+          "stock": 1,
+          "price": 40,
+          "account_id": "A1",
+          "balance": 100,
+          "doctor": "D1",
+          "on_call": true
+        }
+      ]
+    },
+    "purchase": {
+      "note": "the one-query purchase: stock > 0 and balance >= price; take one item and the price; insert the purchase",
+      "rows": [
+        {
+          "order_id": "O1",
+          "item_id": "I1",
+          "account_id": "A1"
+        }
+      ]
+    },
+    "touch": {
+      "note": "rewrite every doctor's on-call value with itself"
+    },
+    "batch": {
+      "note": "insert a purchase of I1 by A1 per row",
+      "rows": [
+        {
+          "order_id": "B01"
+        },
+        {
+          "order_id": "B02"
+        },
+        {
+          "order_id": "B03"
+        },
+        {
+          "order_id": "B04"
+        },
+        {
+          "order_id": "B05"
+        },
+        {
+          "order_id": "B06"
+        },
+        {
+          "order_id": "B07"
+        },
+        {
+          "order_id": "B08"
+        },
+        {
+          "order_id": "B09"
+        },
+        {
+          "order_id": "B10"
+        },
+        {
+          "order_id": "B11"
+        },
+        {
+          "order_id": "B12"
+        },
+        {
+          "order_id": "B13"
+        },
+        {
+          "order_id": "B14"
+        },
+        {
+          "order_id": "B15"
+        },
+        {
+          "order_id": "B16"
+        },
+        {
+          "order_id": "B17"
+        },
+        {
+          "order_id": "B18"
+        },
+        {
+          "order_id": "B19"
+        },
+        {
+          "order_id": "B20"
+        },
+        {
+          "order_id": "B21"
+        },
+        {
+          "order_id": "B22"
+        },
+        {
+          "order_id": "B23"
+        },
+        {
+          "order_id": "B24"
+        },
+        {
+          "order_id": "B25"
+        },
+        {
+          "order_id": "B26"
+        },
+        {
+          "order_id": "B27"
+        },
+        {
+          "order_id": "B28"
+        },
+        {
+          "order_id": "B29"
+        },
+        {
+          "order_id": "B30"
+        },
+        {
+          "order_id": "B31"
+        },
+        {
+          "order_id": "B32"
+        },
+        {
+          "order_id": "B33"
+        },
+        {
+          "order_id": "B34"
+        },
+        {
+          "order_id": "B35"
+        },
+        {
+          "order_id": "B36"
+        },
+        {
+          "order_id": "B37"
+        },
+        {
+          "order_id": "B38"
+        },
+        {
+          "order_id": "B39"
+        },
+        {
+          "order_id": "B40"
+        },
+        {
+          "order_id": "B41"
+        },
+        {
+          "order_id": "B42"
+        },
+        {
+          "order_id": "B43"
+        },
+        {
+          "order_id": "B44"
+        },
+        {
+          "order_id": "B45"
+        },
+        {
+          "order_id": "B46"
+        },
+        {
+          "order_id": "B47"
+        },
+        {
+          "order_id": "B48"
+        },
+        {
+          "order_id": "B49"
+        },
+        {
+          "order_id": "B50"
+        }
+      ]
+    },
+    "sold_out": {
+      "count": "item I1 with stock 0"
+    },
+    "charged": {
+      "count": "account A1 with balance 60"
+    },
+    "orders": {
+      "count": "purchases"
+    },
+    "on_call": {
+      "exists": "a doctor on call"
+    },
+    "put_doctor": {
+      "note": "put doctor D2, off call; none matches, so it is created",
+      "put": "doctor"
+    },
+    "returns": {
+      "note": "put doctor D2 on call and answer its name (Write{returns})",
+      "returns": [
+        "name"
+      ]
+    },
+    "refer": {
+      "note": "insert item I2, account A2 and purchase R1 whose players are the item and account the same write inserts"
+    },
+    "remove": {
+      "note": "delete purchase O1"
+    },
+    "doctors_on_call": {
+      "count": "doctors on call"
+    },
+    "referred": {
+      "count": "purchase R1 whose buyer is account A2"
+    },
+    "removed": {
+      "exists": "purchase O1"
+    },
+    "ghost": {
+      "note": "insert doctor D3 on call, staged and rolled back: it leaves no state (on_call stays 2)",
+      "insert": "doctor"
+    },
+    "kept": {
+      "note": "insert doctor D4 off call in the same transaction after the rollback, and commit",
+      "insert": "doctor"
+    }
+  }
+}

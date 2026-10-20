@@ -456,8 +456,7 @@ fn bridge_applies_as_a_pure_ledger_checkpoint() {
     );
     let graph = MigrationHistoryGraph::from_verified([bridge.clone(), child.clone()])
         .expect("bridged lineage");
-    let lowering = SchemaLoweringBinding::current(context.available_capabilities().clone())
-        .expect("lowering binding");
+    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
     let plan = build_verified_migration_apply_plan(
         &graph,
         &BTreeSet::new(),

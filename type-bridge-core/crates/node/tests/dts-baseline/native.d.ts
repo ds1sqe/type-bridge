@@ -1,4 +1,5 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
+import type { NativeQueryV2Authority } from "./query-v2-internals.js";
 import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, RuntimeProjectionInstall } from "./runtime-projection.js";
 type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
@@ -13,6 +14,8 @@ interface NativeMatchSessionHandle {
     close(): void;
     exact(typeName: string): NativeMatchBindingHandle;
     subtypes(typeName: string): NativeMatchBindingHandle;
+    /** `matchMode` is parsed by the core: `exact` or `subtypes`. */
+    binding(typeName: string, matchMode: string): NativeMatchBindingHandle;
     functionById(functionId: string): NativeMatchFunctionHandle;
     functionValueJson(attributeTypeKey: string, valueJson: string): NativeMatchFunctionValueHandle;
     reachable(relationType: string, roleFrom: string, roleTo: string, source: NativeMatchBindingHandle, target: NativeMatchBindingHandle, minDepth: number, maxDepth: number): NativeMatchPredicateHandle;
@@ -86,27 +89,28 @@ interface NativeMatchQueryHandle {
     addHidden(binding: NativeMatchBindingHandle): NativeMatchQueryHandle;
     wherePredicate(predicate: NativeMatchPredicateHandle): NativeMatchQueryHandle;
     allowCrossJoin(left: NativeMatchBindingHandle, right: NativeMatchBindingHandle): NativeMatchQueryHandle;
+    checkGroupFields(groups: NativeMatchFieldHandle[]): void;
     fetchRowsDiagnostic(orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): string;
-    executeFetchRowsOwned(database: NativeRustDatabase, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativeValidatedMatchResultHandle;
-    executeFetchRowsBorrowed(transaction: NativeRustTransactionContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativeValidatedMatchResultHandle;
-    executePageByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativeValidatedMatchResultHandle;
-    executePageByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativeValidatedMatchResultHandle;
-    executeCountByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
-    executeCountByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
-    executeExistsByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
-    executeExistsByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): NativeValidatedMatchResultHandle;
+    executeFetchRowsOwned(database: NativeRustDatabase, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
+    executeFetchRowsBorrowed(transaction: NativeRustTransactionContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
+    executePageByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
+    executePageByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
+    executeCountByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    executeCountByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    executeExistsByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    executeExistsByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
     pageByDiagnostic(root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): string;
     countByDiagnostic(root: NativeMatchBindingHandle): string;
     existsByDiagnostic(root: NativeMatchBindingHandle): string;
     reduceByDiagnostic(root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
-    executeReduceByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
-    executeReduceByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    executeReduceByBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
     reduceByFieldDiagnostic(root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
-    executeReduceByFieldOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
-    executeReduceByFieldBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByFieldOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    executeReduceByFieldBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
     reduceByFieldsDiagnostic(root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
-    executeReduceByFieldsOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
-    executeReduceByFieldsBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativeValidatedMatchResultHandle;
+    executeReduceByFieldsOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    executeReduceByFieldsBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
 }
 interface NativeValidatedMatchResultHandle {
     readonly [nativeMatchHandleKind]: "validated-result";
@@ -149,6 +153,10 @@ interface NativeValidatedThingHandle {
 }
 interface NativeRemoteModelQueryContext {
 }
+export interface NativeQueryLimits {
+    names(): string[];
+    get(name: string): bigint;
+}
 export interface NativeQueryExecutionResources {
     readonly timeoutMilliseconds: bigint;
     readonly items: bigint;
@@ -169,11 +177,114 @@ interface NativePendingRemoteModelQuery {
     requestBytes(): Uint8Array;
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
+export interface NativePendingPlanAnswer {
+    getJson(): string;
+}
+export interface NativeStagedTransaction {
+    stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
+    stage(plan: NativePlan): NativePendingPlanAnswer;
+    hasUnknownOutcome(): boolean;
+    commit(): Promise<void>;
+    commitRetry(): Promise<void>;
+    rollback(): void;
+    close(): void;
+    dispose(): Promise<void>;
+}
+/** One operand: a binding, an input column, or a registered literal. */
+export interface NativePlanOperand {
+    readonly kind: "binding" | "input" | "literal";
+    readonly index: number;
+}
+/** One validated `query-plan/v3` program. */
+export interface NativePlan {
+    canonicalBytes(): Uint8Array;
+    fingerprint(): string;
+    writes(): boolean;
+}
+/** The shared core plan builder; handles are dense indexes. */
+export interface NativePlanBuilder {
+    exact(typeJson: string): number;
+    subtypes(typeJson: string): number;
+    field(owner: number, ownsJson: string): number;
+    links(relation: number, roleJson: string, player: number): void;
+    compare(left: NativePlanOperand, comparator: string, right: NativePlanOperand): void;
+    input(name: string, valueType: string, optional: boolean): number;
+    literal(valueType: string, value: unknown): number;
+    exprOperand(operand: NativePlanOperand): number;
+    exprArith(op: string, lhs: number, rhs: number): number;
+    exprCall(func: string, args: number[]): number;
+    let(name: string, expr: number): number;
+    update(owner: number, ownsJson: string, value: NativePlanOperand): void;
+    updatePlayer(relation: number, roleJson: string, player: number): void;
+    insert(typeJson: string): number;
+    put(typeJson: string): number;
+    thingField(thing: number, ownsJson: string, value: NativePlanOperand): void;
+    thingPlayer(thing: number, roleJson: string, player: number): void;
+    delete(thing: number): void;
+    deleteField(owner: number, ownsJson: string): void;
+    deletePlayer(relation: number, roleJson: string, player: number): void;
+    row(columns: number[], literals: (number | null)[]): void;
+    returning(columns: number[]): void;
+    count(): void;
+    exists(): void;
+    build(authority: NativeQueryV2Authority): NativePlan;
+}
+interface NativePlanBuilderModule {
+    NodePlanBuilder: new () => NativePlanBuilder;
+}
+/** Native proxy connection over the built-in HTTP route. */
+export interface NativeProxyConnection {
+    readonly answerLimits: NativeQueryExecutionResources;
+    transaction(kind?: string, cancellation?: NativeQueryCancellation): Promise<NativeStagedTransaction>;
+    rows(query: NativeMatchQueryHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
+    page(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<NativeValidatedMatchResultHandle>;
+    count(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    exists(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle): Promise<NativeValidatedMatchResultHandle>;
+    reduce(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    reduceByField(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    reduceByFields(query: NativeMatchQueryHandle, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+}
+interface NativeProxyConnectionModule {
+    NodeProxyConnection: {
+        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, stagedAdvertisement?: Uint8Array): Promise<NativeProxyConnection>;
+    };
+}
+/** Core limits the addon exports, so the package holds no copies. */
+interface NativeLimitsModule {
+    readonly DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_ITEMS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_BYTES: bigint;
+    readonly DEFAULT_DIRECT_QUERY_GRAPH_NODES: bigint;
+    readonly DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES: bigint;
+    readonly DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_ROLE_PLAYERS: bigint;
+    readonly DEFAULT_DIRECT_QUERY_STATEMENTS: bigint;
+    readonly DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS: bigint;
+    readonly DEFAULT_PROXY_QUERY_ITEMS: bigint;
+    readonly DEFAULT_PROXY_QUERY_BYTES: bigint;
+    readonly DEFAULT_PROXY_QUERY_GRAPH_NODES: bigint;
+    readonly DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES: bigint;
+    readonly DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS: bigint;
+    readonly DEFAULT_PROXY_QUERY_ROLE_PLAYERS: bigint;
+    readonly DEFAULT_PROXY_QUERY_STATEMENTS: bigint;
+    readonly MAX_CANONICAL_BYTES: number;
+    readonly MAX_REMOTE_ENVELOPE_BYTES: number;
+    readonly MAX_DIAGNOSTIC_CODE_BYTES: number;
+}
+/** The core's one parser per closed enum. */
+interface NativeEnumSpellingModule {
+    /**
+     * The canonical spelling of `value` in the enum named by `kind`; an unknown
+     * spelling throws the `unknown_enum_value` diagnostic.
+     */
+    canonicalEnumSpelling(kind: string, value: string): string;
+}
 interface NativeRemoteModelQueryModule {
-    NodeQueryExecutionResources: new (timeoutMilliseconds: bigint, items: bigint, bytes: bigint, graphNodes: bigint, attributeValues: bigint, collectionMembers: bigint, rolePlayers: bigint, statements: bigint) => NativeQueryExecutionResources;
+    /** An omitted dimension takes the core default. */
+    NodeQueryExecutionResources: new (timeoutMilliseconds?: bigint, items?: bigint, bytes?: bigint, graphNodes?: bigint, attributeValues?: bigint, collectionMembers?: bigint, rolePlayers?: bigint, statements?: bigint) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
-    queryV2RemoteModelContext(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, maxItems: bigint, maxBytes: bigint, maxCollectionMembers: bigint, maxGraphNodes: bigint, maxAttributeValues: bigint, maxRolePlayers: bigint, deadlineMs?: bigint | null): NativeRemoteModelQueryContext;
-    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeRemoteModelQueryContext;
+    NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
+    queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, answerLimits?: NativeQueryExecutionResources): NativeRemoteModelQueryContext;
     queryV2PrepareRemoteModelRows(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelPage(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingRemoteModelQuery;
     queryV2PrepareRemoteModelCount(query: NativeMatchQueryHandle, context: NativeRemoteModelQueryContext, root: NativeMatchBindingHandle): NativePendingRemoteModelQuery;
@@ -186,12 +297,12 @@ interface NativeRuntimeProjectionHandle {
     connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
-    matchSession(): NativeMatchSessionHandle;
-    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation): NativeMatchSessionHandle;
+    matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): NativeMatchSessionHandle;
     matchModelType(typeKey: string): string;
     validateAttributeValueJson(typeKey: string, valueJson: string): void;
     validateHydratedAttributeValueJson(typeKey: string, valueJson: string): void;
     validateFieldValueJson(typeKey: string, fieldName: string, valueJson: string): void;
+    validateMemberCardinality(typeKey: string, memberName: string, count: number): void;
     validateCreateJson(typeKey: string, valueJson: string): void;
     encodeAttributeJson(typeKey: string, valueJson: string): Uint8Array;
     decodeAttributeJson(typeKey: string, bytes: Uint8Array): string;
@@ -219,7 +330,7 @@ interface NativeRuntimeProjectionHandle {
 interface NativeRuntimeProjectionModule {
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string, projectedBatchMaterializer?: (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object) => NativeRuntimeProjectionHandle;
 }
-type LoadedNativeModule = NativeModule & NativeRemoteModelQueryModule & NativeRuntimeProjectionModule;
+type LoadedNativeModule = NativeModule & NativeLimitsModule & NativeEnumSpellingModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativePlanBuilderModule & NativeRuntimeProjectionModule;
 /**
  * Loads and returns the native .node module. The result is cached after the
  * first successful load; subsequent calls return the same object.

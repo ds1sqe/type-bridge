@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use tracing::Instrument as _;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::migration::MigrationId;
@@ -566,6 +567,8 @@ impl MigrationPlanState {
         holder: &str,
         control: &type_bridge_schema_migration::MigrationExecutionControl,
     ) -> Result<MigrationPlanExecutionState, Diagnostic> {
+        let entry = crate::perf_stages::entry();
+        let _entered = entry.enter();
         self.require_execution_authorized()?;
         let holder = LeaseHolderId::new(holder)?;
         let managed_database = database.orm_database_arc();
@@ -578,7 +581,8 @@ impl MigrationPlanState {
                         &holder,
                         plan,
                         control,
-                    ),
+                    )
+                    .instrument(entry.clone()),
                 )
                 .map(MigrationExecutionReport::from_apply)
                 .map(|report| MigrationPlanExecutionState { report }),
@@ -590,7 +594,8 @@ impl MigrationPlanState {
                         &holder,
                         plan,
                         control,
-                    ),
+                    )
+                    .instrument(entry.clone()),
                 )
                 .map(MigrationExecutionReport::from_rollback)
                 .map(|report| MigrationPlanExecutionState { report }),

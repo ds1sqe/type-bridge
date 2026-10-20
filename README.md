@@ -76,7 +76,7 @@ Use its package-local query session when a query spans types:
 ```python
 session = Person.query(db)
 person = session.exact(Person)
-adults = (
+adults = await (
     session.query(person)
     .where(person.field(Person.age).gte(Age(18)))
     .rows(limit=100)

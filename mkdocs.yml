@@ -67,6 +67,16 @@ plugins:
       nav_file: SUMMARY.md
   - section-index
 
+# perf/harness/render.py publishes PERF_DATA_DIR's index for /perf/.
+hooks:
+  - perf/harness/render.py
+
+extra_css:
+  - perf/perf.css
+
+extra_javascript:
+  - perf/perf.js
+
 markdown_extensions:
   - admonition
   - pymdownx.details
@@ -77,7 +87,8 @@ markdown_extensions:
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      check_paths: true
   - pymdownx.tabbed:
       alternate_style: true
   - toc:
@@ -111,6 +122,7 @@ nav:
     - Read and Write Data:
       - Overview: guide/data.md
       - CRUD & Transactions: guide/crud.md
+      - Concurrency & Conditional Writes: guide/concurrency.md
       - Queries & Expressions: guide/queries.md
       - Immutable Typed Queries: guide/typed-queries.md
       - Functions: guide/functions.md
@@ -125,9 +137,11 @@ nav:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md
       - Logging: guide/logging.md
+      - Upgrading to 2.3: guide/upgrade-2.3.md
       - Upgrading to 2.0: guide/upgrade-v2.md
       - V2 Deprecations: guide/v2-deprecations.md
       - 2.0.2 Expanded Notice: guide/v2.0.2-notice.md
+  - Query-plan V3: reference/query-plan-v3.md
   - Python API: reference/
   - Development:
     - development/index.md
@@ -143,6 +157,8 @@ nav:
       - Unified Typed Query Contract: development/typed-query-contract.md
       - Generated Rust Parity: development/rust-generated-parity.md
       - Integration Coverage Inventory: development/integration-coverage-inventory.md
+    - Performance Tracking: development/performance.md
+  - Performance: perf/index.md
   - Changelog: changelog.md
 
 extra:

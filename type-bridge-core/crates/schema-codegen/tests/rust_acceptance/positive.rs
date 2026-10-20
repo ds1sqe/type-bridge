@@ -236,7 +236,7 @@ async fn canonical_manager_filters_compile(
 
 struct RemoteTransport;
 
-impl type_bridge::RemoteQueryTransport for RemoteTransport {
+impl type_bridge::ProxyExchange for RemoteTransport {
     fn capabilities(
         &self,
     ) -> std::pin::Pin<
@@ -266,9 +266,74 @@ impl type_bridge::RemoteQueryTransport for RemoteTransport {
 }
 
 async fn remote_generated_outputs_compile() -> type_bridge::Result<()> {
+    let options = type_bridge::ProxyConnectionPolicy::with_exchange(RemoteTransport).answer_limits(
+        type_bridge::QueryExecutionResourceLimits {
+            items: 100,
+            bytes: 1 << 20,
+            collection_members: 100,
+            graph_nodes: 1000,
+            attribute_values: 1000,
+            role_players: 1000,
+            ..type_bridge::QueryExecutionResourceLimits::default()
+        },
+    );
+    let remote: type_bridge::ProxyDatabase<AppSchema> =
+        type_bridge::ProxyDatabase::connect(options)
+            .await?
+            .with_schema(SCHEMA)?;
+    let mut session = remote.query()?;
+    let person = session.exact::<Person>()?;
+    let event = session.exact::<Event>()?;
+    let tuple = session.query((person, event))?;
+    let tuple = tuple.allow_cross_join(person, event)?;
+    let _rows: Vec<(Person, Event)> = tuple.rows(type_bridge::RowsOptions::new(10)).await?;
+    let graph = PersonGraph::select(person, event.collect())?;
+    let page: type_bridge::Page<PersonGraph> = session
+        .query(graph)?
+        .page_by(person, type_bridge::PageOptions::new(10))
+        .await?;
+    let _ = page.items();
+    Ok(())
+}
+
+// The 2.2.4 proxy example, unchanged, against the deprecated 2.2 names.
+struct LegacyRemoteTransport;
+
+#[allow(deprecated)]
+impl type_bridge::RemoteQueryTransport for LegacyRemoteTransport {
+    fn capabilities(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>,
+    > {
+        Box::pin(async {
+            Err(type_bridge::Error::Other {
+                message: "compile-only transport".into(),
+                source: None,
+            })
+        })
+    }
+
+    fn exchange<'a>(
+        &'a self,
+        _request: &'a [u8],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>,
+    > {
+        Box::pin(async {
+            Err(type_bridge::Error::Other {
+                message: "compile-only transport".into(),
+                source: None,
+            })
+        })
+    }
+}
+
+#[allow(deprecated)]
+async fn remote_2_2_names_compile() -> type_bridge::Result<()> {
     let options = type_bridge::RemoteConnectionOptions::generated(
         type_bridge::RemoteQueryLimits::new(100, 1 << 20, 100, 1000, 1000, 1000),
-        RemoteTransport,
+        LegacyRemoteTransport,
     );
     let remote: type_bridge::RemoteDatabase<AppSchema> =
         type_bridge::RemoteDatabase::connect(options)

@@ -36,10 +36,12 @@ environments:
 
 `migration make` and `migration plan` are offline. Connected commands resolve
 one named environment and enforce its `migrate` policy. TypeDB-backed
-`migration apply`, `migration verify`, and `migration adopt` require both an
-exact `typedb-3.12.1/v1` workspace semantic profile and a negotiated TypeDB
-3.12.3 server. Generated applications and offline authoring retain the wider
-3.11–3.12 support window.
+`migration apply`, `migration verify`, `migration rollback --execute`,
+`migration adopt`, and `migration upgrade-profile` run on exactly two
+profile/server pairs: workspace semantic profile `typedb-3.12.1/v1` with a
+negotiated TypeDB 3.12.3 server, or `typedb-3.13.6/v1` with TypeDB 3.13.6.
+Any other pair is refused. Generated applications and offline authoring retain
+the wider 3.11–3.13 support window.
 
 ## Author and apply a change
 
@@ -129,6 +131,61 @@ competing canonical publisher. After it succeeds, continue only with V2
 The retained Python loader, checksum, snapshot metadata, state reader, and
 sidecar converter are read-only recovery components. They cannot author a new
 root history, update an applied ledger, or write a historical snapshot.
+
+## Move a history to a new TypeDB line
+
+A migration history is bound to the semantic profile it was authored on. To
+continue a `typedb-3.12.1/v1` history on TypeDB 3.13.6, record one profile
+bridge per history:
+
+1. Quiesce writers and move the managed database and its migration journal
+   (`<database>__tbv2_journal`) to the 3.13.6 server with TypeDB's own
+   `database export` and `database import`.
+2. Set the workspace profile in `typebridge.yaml`:
+
+   ```yaml
+   compatibility:
+     semantic-profile: typedb-3.13.6/v1
+   ```
+
+3. Point the environment at the new server and run, once per environment:
+
+   ```bash
+   type-bridge --manifest typebridge.yaml migration upgrade-profile \
+     --environment production --to typedb-3.13.6/v1
+   ```
+
+4. Commit the new bridge manifest and continue with `migration make` and
+   `migration apply` as usual.
+
+Until the bridge exists, `make`, `plan`, `apply`, and `verify` refuse the
+older history with `migration_history_profile_upgrade_required` and print the
+command above. `--to` must equal the workspace profile, be a supported
+migration profile, and be newer than the history's profile; anything else is
+refused before credentials are read or files are written.
+
+The command writes a zero-operation bridge manifest named like `migration make`
+names migrations (`0004_profile_upgrade_typedb_3_13_6.tbmigration.json`;
+`--name` replaces the descriptive part). Then it connects and records the
+bridge in the ledger. Recording requires the ledger to stand at the history
+head and the live schema to equal that head's schema; out-of-band changes are
+refused with `migration_upgrade_profile_live_drift`. A second run reports the
+bridge as already recorded. Once the committed bridge exists, other moved
+environments can also catch up with an ordinary `migration apply`.
+
+New environments on the newer server need no export. `migration apply` into
+an empty database on 3.13.6 replays the whole bridged history: the 3.12.1
+migrations before the bridge are lowered and verified under their own
+profile, the bridge switches the recorded state to `typedb-3.13.6/v1`, and the
+later migrations apply as usual. Every step is checked as in any other apply,
+and the ledger records each migration. Older-profile migrations replay only as
+ancestors of a bridge to the server's profile; without such a bridge they are
+refused.
+
+The bridge is one-way. A history crosses at most one bridge, and rollback
+refuses the bridge and every migration before it
+(`migration_rollback_profile_bridge`); returning to 3.12 needs a database
+restored on the old server.
 
 ## Historical TOML
 

@@ -1,0 +1,73 @@
+{
+  "baselines": [
+    null,
+    null
+  ],
+  "benchmark_exe": "target/release/deps/validation_iai-0123456789abcdef",
+  "benchmark_file": "crates/core/benches/validation_iai.rs",
+  "duration_ns": 412377201,
+  "function_name": "type_name",
+  "group": "validate_type_name",
+  "id": "simple",
+  "kind": "LibraryBenchmark",
+  "module_path": "validation_iai::validate_type_name::type_name",
+  "output_dir": "target/gungraun/type-bridge-core-lib/validation_iai/validate_type_name/type_name.simple",
+  "package_dir": "crates/core",
+  "profiles": [
+    {
+      "data": {
+        "parts": [
+          {
+            "metrics": {
+              "Ir": {
+                "change": null,
+                "values": {
+                  "new": 1284
+                }
+              },
+              "EstimatedCycles": {
+                "change": null,
+                "values": {
+                  "new": 3969
+                }
+              }
+            },
+            "tool_run": {
+              "new": {
+                "command": "validation_iai-0123456789abcdef",
+                "part": 0,
+                "pid": 4242,
+                "thread": 1
+              }
+            }
+          }
+        ],
+        "total": {
+          "metrics": {
+            "Ir": {
+              "change": null,
+              "values": {
+                "new": 1284
+              }
+            },
+            "EstimatedCycles": {
+              "change": null,
+              "values": {
+                "new": 3969
+              }
+            }
+          },
+          "regressions": []
+        }
+      },
+      "duration_ns": 401998050,
+      "flamegraphs": [],
+      "process_ns": 398002311,
+      "started_at": "2026-10-16T03:14:07.512345678Z",
+      "tool": "Callgrind"
+    }
+  ],
+  "project_root": "/home/runner/work/type-bridge/type-bridge/type-bridge-core",
+  "started_at": "2026-10-16T03:14:07.512345678Z",
+  "version": "7"
+}

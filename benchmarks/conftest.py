@@ -1,8 +1,9 @@
-"""Shared fixtures for Python vs Rust benchmarks."""
+"""Shared fixtures for the Python binding benchmarks."""
 
 from __future__ import annotations
 
 import pytest
+from type_bridge_core import QueryCompiler, ValidationEngine
 
 from type_bridge.query.ast import (
     ArithmeticValue,
@@ -32,6 +33,7 @@ from type_bridge.query.ast import (
     MatchLetClause,
     NotPattern,
     OrPattern,
+    Pattern,
     ReduceAssignment,
     ReduceClause,
     RelationPattern,
@@ -41,26 +43,6 @@ from type_bridge.query.ast import (
     UpdateClause,
     ValueComparisonPattern,
 )
-from type_bridge.query.compiler import QueryCompiler
-
-# ---------------------------------------------------------------------------
-# Rust availability
-# ---------------------------------------------------------------------------
-
-try:
-    from type_bridge_core import (
-        QueryCompiler as RustQueryCompiler,
-    )
-    from type_bridge_core import (
-        ValidationEngine as RustValidationEngine,
-    )
-
-    RUST_AVAILABLE = True
-except ImportError:
-    RUST_AVAILABLE = False
-
-requires_rust = pytest.mark.skipif(not RUST_AVAILABLE, reason="type_bridge_core not installed")
-
 
 # ---------------------------------------------------------------------------
 # Compiler / validator instances
@@ -68,23 +50,15 @@ requires_rust = pytest.mark.skipif(not RUST_AVAILABLE, reason="type_bridge_core 
 
 
 @pytest.fixture
-def python_compiler() -> QueryCompiler:
-    """A QueryCompiler that always uses the Python path."""
+def compiler() -> QueryCompiler:
+    """The native query compiler that ``type_bridge.query.compiler`` calls."""
     return QueryCompiler()
 
 
 @pytest.fixture
-def rust_compiler():
-    """The Rust QueryCompiler (skips if unavailable)."""
-    pytest.importorskip("type_bridge_core")
-    return RustQueryCompiler()
-
-
-@pytest.fixture
-def rust_validator():
-    """The Rust ValidationEngine (skips if unavailable)."""
-    pytest.importorskip("type_bridge_core")
-    return RustValidationEngine()
+def validator() -> ValidationEngine:
+    """The native validation engine that ``type_bridge.validation`` calls."""
+    return ValidationEngine()
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +336,7 @@ def long_query() -> MatchClause:
 def deeply_nested_query() -> MatchClause:
     """Deeply nested boolean logic: or { not { or { ... } } }."""
     # Level 3 (innermost): simple entity patterns
-    inner_entities = [
+    inner_entities: list[list[Pattern]] = [
         [
             EntityPattern(
                 variable=f"$deep{i}",

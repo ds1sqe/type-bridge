@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -22,6 +23,8 @@ from typing import (
 )
 from weakref import ReferenceType, ref
 
+from type_bridge_core import canonical_enum_spelling
+
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 
 if TYPE_CHECKING:
@@ -30,11 +33,13 @@ if TYPE_CHECKING:
         PyProjectedModelManager,
         PyRuntimeProjection,
         QueryCancellation,
+        QueryExecutionResourceLimits,
+        QueryLimits,
     )
 
     from type_bridge.session import Database, TransactionContext
 
-    from ._query import QuerySession
+    from ._query import QueryConnection, QuerySession
 
 
 logger = logging.getLogger(__name__)
@@ -217,10 +222,22 @@ class ModelBase:
         return ProjectedModelManager(cls, native)
 
     @classmethod
-    def query(cls, connection: Database | TransactionContext) -> QuerySession:
+    def query(
+        cls,
+        connection: QueryConnection,
+        *,
+        resources: QueryExecutionResourceLimits | None = None,
+        cancellation: QueryCancellation | None = None,
+        query_limits: QueryLimits | None = None,
+    ) -> QuerySession:
         from ._query import QuerySession
 
-        return QuerySession(cls.__runtime_projection__, connection)
+        return QuerySession(
+            connection,
+            resources=resources,
+            cancellation=cancellation,
+            query_limits=query_limits,
+        )
 
     def runtime_values(self) -> dict[str, object]:
         return self._values
@@ -500,6 +517,19 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return resolved
 
     def update_with(self, function: Callable[[ModelT], None]) -> list[ModelT]:
+        """Apply ``function`` to every filtered instance and update each one.
+
+        .. deprecated:: 2.3.0
+            Removed in 3.0. Build an update plan that computes the new value
+            with ``let_()`` and stage it in a transaction.
+        """
+        warnings.warn(
+            "update_with() is deprecated since 2.3.0 and is removed in 3.0; compute "
+            "the new value with let_() in an update plan (type_bridge.plan."
+            "PlanBuilder) and stage it in a transaction",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not self._filtered:
             raise TypeError("generated manager update_with() requires filter()")
         instances = cast(list[ModelT], self._native.legacy_all())
@@ -695,25 +725,6 @@ class RelationBase(ModelBase, GeneratedRelationProjection):
         )
 
 
-_OWNER_LOOKUPS = frozenset(
-    {
-        "eq",
-        "exact",
-        "ne",
-        "gt",
-        "gte",
-        "lt",
-        "lte",
-        "contains",
-        "startswith",
-        "endswith",
-        "regex",
-        "in",
-        "present",
-    }
-)
-
-
 def _is_model_class(value: object) -> TypeGuard[type[ModelBase]]:
     return isinstance(value, type) and issubclass(value, ModelBase)
 
@@ -774,11 +785,12 @@ def _owner_lookup(
         raise RuntimeError("generated package runtime projection is not installed")
     if attribute.__dict__.get("__runtime_projection__") is not projection:
         raise TypeError("generated owner lookup requires an attribute from this package")
-    if lookup not in _OWNER_LOOKUPS:
-        raise ValueError(f"unsupported generated owner lookup {lookup!r}")
+    # The core owns the lookup vocabulary; an unknown spelling raises
+    # UnknownEnumValueError (a ValueError). Aliases become canonical (exact -> eq).
+    lookup = canonical_enum_spelling("owner_lookup", lookup)
     if lookup == "present" and value is not None:
         raise TypeError("generated owner lookup 'present' does not accept a value")
-    if value is None and lookup not in {"eq", "exact", "present"}:
+    if value is None and lookup not in {"eq", "present"}:
         raise TypeError("generated owner lookup comparison requires a value")
 
     expected_base: type[ModelBase]
@@ -820,7 +832,7 @@ def _owner_lookup(
                 raise TypeError("generated owner lookup 'in' requires a non-string sequence")
             filters = {f"{field_name}__in": list(value)}
         else:
-            filter_name = field_name if lookup in {"eq", "exact"} else f"{field_name}__{lookup}"
+            filter_name = field_name if lookup == "eq" else f"{field_name}__{lookup}"
             filters = {filter_name: value}
         results.extend(candidate.manager(connection).filter(**filters).all())
     return results
@@ -941,6 +953,17 @@ class _ProjectedField:
             raise AttributeError(f"{self.name} is read-only")
         multiplicity = _mapping(self.create["multiplicity"])
         normalized = _normalize(value, multiplicity)
+        if _string(multiplicity["container"]) == "sequence":
+            count = len(cast(tuple[object, ...], normalized))
+        else:
+            count = 0 if normalized is None else 1
+        # The core decides the cardinality rule and raises its structured
+        # ProjectedCardinalityError (a ValueError).
+        type(instance).__runtime_projection__.validate_member_cardinality(
+            type(instance),
+            self.name,
+            count,
+        )
         _validate_projected(normalized, self.create, role=self.role)
         if not self.role and normalized is not None:
             values = normalized if _is_object_tuple(normalized) else (normalized,)
@@ -977,20 +1000,10 @@ def _normalize(
     multiplicity: Mapping[str, object],
 ) -> object:
     if _string(multiplicity["container"]) == "scalar":
-        if value is None and _boolean(multiplicity["required"]):
-            raise ValueError("required projected value is absent")
         return value
     if isinstance(value, (str, bytes)) or not _is_object_sequence(value):
         raise TypeError("projected multi-value field requires a sequence")
-    values: tuple[object, ...] = tuple(value)
-    cardinality = _mapping(multiplicity["cardinality"])
-    minimum = int(_string(cardinality["min"]))
-    maximum = _string(cardinality["max"])
-    if len(values) < minimum:
-        raise ValueError("projected value is below its cardinality minimum")
-    if maximum != "unbounded" and len(values) > int(maximum):
-        raise ValueError("projected value exceeds its cardinality maximum")
-    return values
+    return tuple(value)
 
 
 def _validate_projected(

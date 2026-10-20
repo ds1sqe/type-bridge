@@ -1,7 +1,6 @@
 //! TypeDB lowering and bounded execution for validated migration assertions.
 
 use std::fmt;
-use std::fmt::Write as _;
 
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -18,6 +17,7 @@ use type_bridge_contract::temporal::{CanonicalDate, CanonicalDateTime, Canonical
 use type_bridge_contract::value::{
     CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue, ValueTypeTag,
 };
+use type_bridge_core_lib::__internal as tql;
 use type_bridge_query::{BindingDomain, RowSchema, ValidatedMigrationAssertionPlan};
 
 use crate::error::OrmError;
@@ -26,7 +26,7 @@ use crate::session::backend::{
     AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
     BoundedAnswerStats, BoxFuture, QueryV2AnswerLimits, TransactionOps,
 };
-use crate::session::transaction::Transaction;
+use crate::session::transaction::OwnedTransaction as Transaction;
 
 /// Ephemeral provider statement and its exact selected-row contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,17 +173,18 @@ pub fn lower_migration_assertion(
         ));
     }
 
-    let mut typeql = String::from("match\n");
-    render_patterns(&mut typeql, plan, plan.patterns(), 0)?;
-    typeql.push_str("select ");
-    for (index, output) in plan.outputs().iter().enumerate() {
-        if index != 0 {
-            typeql.push_str(", ");
-        }
-        typeql.push('$');
-        typeql.push_str(variable(plan, *output)?.as_str());
-    }
-    typeql.push_str(";\nlimit 1;\n");
+    let patterns = lower_patterns(plan, plan.patterns())?;
+    let selected = plan
+        .outputs()
+        .iter()
+        .map(|output| variable(plan, *output).map(|variable| variable.as_str()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let typeql = tql::render(&tql::pipeline(vec![
+        tql::match_stage(patterns),
+        tql::select(&selected).map_err(assertion_tql_error)?,
+        tql::limit(1),
+    ]))
+    .map_err(assertion_tql_error)?;
 
     Ok(LoweredMigrationAssertion {
         typeql,
@@ -469,13 +470,19 @@ fn preflight(
     Ok(())
 }
 
-fn render_patterns(
-    output: &mut String,
+fn assertion_tql_error(_: tql::TqlError) -> Diagnostic {
+    assertion_diagnostic(
+        DiagnosticCategory::InvalidContract,
+        "migration_assertion_typeql_shape",
+        "validated assertion cannot be lowered to TypeQL",
+    )
+}
+
+fn lower_patterns(
     plan: &MigrationAssertionPlan,
     patterns: &[AssertionPattern],
-    depth: usize,
-) -> Result<(), Diagnostic> {
-    let indent = "    ".repeat(depth);
+) -> Result<Vec<tql::Pattern>, Diagnostic> {
+    let mut output = Vec::new();
     for pattern in patterns {
         match pattern {
             AssertionPattern::Isa {
@@ -483,84 +490,93 @@ fn render_patterns(
                 include_subtypes,
                 type_id,
             } => {
-                writeln!(
-                    output,
-                    "{indent}${} isa{} {};",
-                    variable(plan, *binding)?,
-                    if *include_subtypes { "" } else { "!" },
-                    type_id.label()
-                )
-                .expect("writing to String cannot fail");
+                output.push(
+                    tql::thing(
+                        variable(plan, *binding)?.as_str(),
+                        vec![
+                            tql::isa(type_id.label().as_str(), !include_subtypes)
+                                .map_err(assertion_tql_error)?,
+                        ],
+                    )
+                    .map_err(assertion_tql_error)?,
+                );
             }
             AssertionPattern::Has {
                 attribute,
                 attribute_id,
                 owner,
             } => {
-                writeln!(
-                    output,
-                    "{indent}${} has {} ${};",
-                    variable(plan, *owner)?,
-                    attribute_id.label(),
-                    variable(plan, *attribute)?,
-                )
-                .expect("writing to String cannot fail");
-                writeln!(
-                    output,
-                    "{indent}${} isa! {};",
-                    variable(plan, *attribute)?,
-                    attribute_id.label(),
-                )
-                .expect("writing to String cannot fail");
+                output.push(
+                    tql::thing(
+                        variable(plan, *owner)?.as_str(),
+                        vec![
+                            tql::has(
+                                attribute_id.label().as_str(),
+                                tql::var(variable(plan, *attribute)?.as_str())
+                                    .map_err(assertion_tql_error)?,
+                            )
+                            .map_err(assertion_tql_error)?,
+                        ],
+                    )
+                    .map_err(assertion_tql_error)?,
+                );
+                output.push(
+                    tql::thing(
+                        variable(plan, *attribute)?.as_str(),
+                        vec![
+                            tql::isa(attribute_id.label().as_str(), true)
+                                .map_err(assertion_tql_error)?,
+                        ],
+                    )
+                    .map_err(assertion_tql_error)?,
+                );
             }
             AssertionPattern::Links {
                 players,
                 relation,
                 relation_id,
             } => {
-                write!(
-                    output,
-                    "{indent}${} isa! {}, links (",
-                    variable(plan, *relation)?,
-                    relation_id.label(),
-                )
-                .expect("writing to String cannot fail");
-                for (index, player) in players.iter().enumerate() {
-                    if index != 0 {
-                        output.push_str(", ");
-                    }
-                    write!(
-                        output,
-                        "{}: ${}",
-                        player.role().label(),
-                        variable(plan, player.player())?,
+                let players = players
+                    .iter()
+                    .map(|player| {
+                        Ok((
+                            player.role().label().as_str(),
+                            variable(plan, player.player())?.as_str(),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, Diagnostic>>()?;
+                output.push(
+                    tql::thing(
+                        variable(plan, *relation)?.as_str(),
+                        vec![
+                            tql::isa(relation_id.label().as_str(), true)
+                                .map_err(assertion_tql_error)?,
+                            tql::links(players).map_err(assertion_tql_error)?,
+                        ],
                     )
-                    .expect("writing to String cannot fail");
-                }
-                output.push_str(");\n");
+                    .map_err(assertion_tql_error)?,
+                );
             }
             AssertionPattern::Value {
                 comparator,
                 left,
                 right,
             } => {
-                writeln!(
-                    output,
-                    "{indent}{} {} {};",
-                    render_operand(plan, left)?,
-                    render_comparator(*comparator),
-                    render_operand(plan, right)?,
-                )
-                .expect("writing to String cannot fail");
+                output.push(
+                    tql::compare(
+                        lower_operand(plan, left)?,
+                        render_comparator(*comparator),
+                        lower_operand(plan, right)?,
+                    )
+                    .map_err(assertion_tql_error)?,
+                );
             }
             AssertionPattern::Not { patterns } => {
-                writeln!(output, "{indent}not {{").expect("writing to String cannot fail");
-                render_patterns(output, plan, patterns, depth + 1)?;
-                writeln!(output, "{indent}}};").expect("writing to String cannot fail");
+                output.push(tql::not(lower_patterns(plan, patterns)?));
             }
         }
     }
-    Ok(())
+    Ok(output)
 }
 
 fn variable(
@@ -578,13 +594,18 @@ fn variable(
         })
 }
 
-fn render_operand(
+fn lower_operand(
     plan: &MigrationAssertionPlan,
     operand: &ValueOperand,
-) -> Result<String, Diagnostic> {
+) -> Result<tql::Expr, Diagnostic> {
     match operand {
-        ValueOperand::Binding { binding } => Ok(format!("${}", variable(plan, *binding)?)),
-        ValueOperand::Literal { value } => render_literal(value),
+        ValueOperand::Binding { binding } => {
+            tql::var(variable(plan, *binding)?.as_str()).map_err(assertion_tql_error)
+        }
+        ValueOperand::Literal { value } => {
+            type_bridge_schema::validate_provider_temporal_literal(value)?;
+            tql::compact_literal(value).map_err(assertion_tql_error)
+        }
     }
 }
 
@@ -599,42 +620,12 @@ pub(crate) const fn render_comparator(comparator: ValueComparator) -> &'static s
     }
 }
 
-pub(crate) fn render_literal(value: &CanonicalValue) -> Result<String, Diagnostic> {
+#[cfg(test)]
+fn render_literal(value: &CanonicalValue) -> Result<String, Diagnostic> {
     type_bridge_schema::validate_provider_temporal_literal(value)?;
-    Ok(match value {
-        CanonicalValue::String(value) => {
-            serde_json::to_string(value.as_str()).expect("serializing a string cannot fail")
-        }
-        CanonicalValue::Long(value) => value.to_string(),
-        CanonicalValue::Double(value) => render_double(*value),
-        CanonicalValue::Boolean(value) => value.to_string(),
-        CanonicalValue::Date(value) => value.to_string(),
-        CanonicalValue::DateTime(value) => value.to_string(),
-        CanonicalValue::DateTimeTz(value) => match value.zone() {
-            type_bridge_contract::temporal::TimeZoneDesignator::Named(name) => {
-                format!("{} {name}", value.local())
-            }
-            type_bridge_contract::temporal::TimeZoneDesignator::Utc
-            | type_bridge_contract::temporal::TimeZoneDesignator::OffsetSeconds(_) => {
-                value.to_string()
-            }
-        },
-        CanonicalValue::Decimal(value) => format!("{}dec", value.as_str()),
-        CanonicalValue::Duration(value) => value.to_string(),
-    })
-}
-
-fn render_double(value: CanonicalDouble) -> String {
-    let value = value.get();
-    let absolute = value.abs();
-    if absolute >= 1e21 || absolute != 0.0 && absolute < 1e-6 {
-        return format!("{value:e}");
-    }
-    let mut rendered = value.to_string();
-    if !rendered.contains('.') && !rendered.contains('e') && !rendered.contains('E') {
-        rendered.push_str(".0");
-    }
-    rendered
+    Ok(tql::render_expression(
+        &tql::compact_literal(value).map_err(assertion_tql_error)?,
+    ))
 }
 
 fn validate_evidence_row(
@@ -1227,7 +1218,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             self.calls += 1;
             self.statements.push(typeql.to_owned());
-            let bounded_to_one = typeql.ends_with("limit 1;\n");
+            let bounded_to_one = typeql.trim_end().ends_with("limit 1;");
             let result = self.result.take().unwrap_or(QueryResult::Rows(Vec::new()));
             Box::pin(async move {
                 let mut reader = BoundedAnswerReader::new(limits);
@@ -1321,9 +1312,10 @@ mod tests {
         let fixture = schema_fixture();
         let validated = validated(&fixture);
         let lowered = lower_migration_assertion(&validated).expect("lowering");
-        assert_eq!(
-            lowered.typeql(),
-            "match\n\
+        assert!(
+            tql::equivalent(
+                lowered.typeql(),
+                "match\n\
 $person isa! person;\n\
 $person isa person;\n\
 $person has name $name;\n\
@@ -1335,6 +1327,8 @@ not {\n\
 };\n\
 select $person;\n\
 limit 1;\n"
+            )
+            .unwrap()
         );
         assert_eq!(lowered, lower_migration_assertion(&validated).unwrap());
         assert_eq!(lowered.row_schema(), validated.row_schema());
@@ -1569,7 +1563,7 @@ limit 1;\n"
                 _limits: BoundedAnswerLimits,
                 consumer: &'a mut dyn AnswerConsumer,
             ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-                assert!(typeql.ends_with("limit 1;\n"));
+                assert!(typeql.trim_end().ends_with("limit 1;"));
                 Box::pin(async move {
                     self.control = Some(consumer.accept(AnswerItem::Row(valid_row()))?);
                     Ok(BoundedAnswerStats {
@@ -1617,7 +1611,7 @@ limit 1;\n"
                 limits: BoundedAnswerLimits,
                 consumer: &'a mut dyn AnswerConsumer,
             ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-                assert!(typeql.ends_with("limit 1;\n"));
+                assert!(typeql.trim_end().ends_with("limit 1;"));
                 assert_eq!(limits.max_items, 1);
                 self.max_bytes = Some(limits.max_bytes);
                 Box::pin(async move {
@@ -1677,7 +1671,7 @@ limit 1;\n"
                 _limits: BoundedAnswerLimits,
                 consumer: &'a mut dyn AnswerConsumer,
             ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-                assert!(typeql.ends_with("limit 1;\n"));
+                assert!(typeql.trim_end().ends_with("limit 1;"));
                 Box::pin(async move {
                     let mut row = valid_row();
                     row.as_object_mut()

@@ -12,9 +12,7 @@ use super::database::DatabaseExecutionIdentity;
 use crate::_registry::DescriptorRegistry;
 use crate::QueryExecutionResourceLimits;
 use crate::error::{ClassifiedCommitError, OrmError, Result};
-use crate::match_request::selected_result_executor::{
-    ManagerHydratedRoots, ManagerRootSelection, SelectedResultExecutor,
-};
+use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{
     CapabilitySet, MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult,
 };
@@ -49,6 +47,9 @@ pub enum TransactionContextState {
 
 enum CommitOnceError {
     RollbackOnly,
+    /// The commit was refused before dispatch because the context no longer
+    /// owns an open transaction; no provider outcome exists to classify.
+    Consumed,
     Other(ClassifiedCommitError),
 }
 
@@ -58,13 +59,14 @@ impl CommitOnceError {
             Self::RollbackOnly => ClassifiedCommitError::from(OrmError::Transaction(
                 "Transaction is rollback-only".into(),
             )),
+            Self::Consumed => ClassifiedCommitError::from(consumed_error()),
             Self::Other(error) => error,
         }
     }
 }
 
 struct TransactionContextInner {
-    transaction: Option<Box<dyn TransactionOps>>,
+    transaction: Option<super::eager::EagerTransaction>,
     state: TransactionContextState,
     rollback_only_cause: Option<SdkExecutionDiagnostic>,
 }
@@ -104,7 +106,7 @@ pub(crate) struct TransactionContextMutationLease {
 }
 
 impl TransactionContextMutationLease {
-    fn transaction(&mut self) -> Result<&mut Box<dyn TransactionOps>> {
+    fn transaction(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
         active_transaction(&mut self.inner)
     }
 
@@ -183,7 +185,7 @@ impl Drop for TransactionContextMutationLease {
 
 impl TransactionContext {
     pub(crate) fn new(
-        inner: Box<dyn TransactionOps>,
+        inner: super::eager::EagerTransaction,
         tx_type: TxType,
         match_capabilities: CapabilitySet,
         server_version: Option<Version>,
@@ -222,7 +224,10 @@ impl TransactionContext {
                 "Projected batch mutations require a write transaction".into(),
             ));
         }
-        let inner = Arc::clone(&self.inner).lock_owned().await;
+        let mut inner = Arc::clone(&self.inner).lock_owned().await;
+        if inner.state == TransactionContextState::RolledBack {
+            inner.state = TransactionContextState::Active;
+        }
         if inner.state != TransactionContextState::Active || inner.transaction.is_none() {
             return Err(consumed_error());
         }
@@ -296,6 +301,48 @@ impl TransactionContext {
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
         tx.query_v2_bounded(typeql, limits, consumer).await
+    }
+
+    /// Lower one trusted v3 plan for this transaction without dispatching
+    /// it. A failure here means nothing reached the provider.
+    ///
+    /// Helpers that still run inside an eager transaction use this and
+    /// [`Self::dispatch_plan`] until they stage plans. Inputs travel as
+    /// `given` rows, so the caller builds literal-only plans for connections
+    /// without the `given` stage.
+    pub(crate) async fn prepare_plan(
+        &self,
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    ) -> Result<crate::session::staged::StagedQuery> {
+        let supports_given = self.supports_given_stage().await?;
+        let query = crate::query_plan_exec::staged_query(plan, supports_given)
+            .map_err(plan_diagnostic_error)?;
+        self.check_schema_annotation_support(&query.typeql)?;
+        Ok(query)
+    }
+
+    /// Dispatch one prepared plan query and return the provider answer.
+    pub(crate) async fn dispatch_plan(
+        &self,
+        query: crate::session::staged::StagedQuery,
+    ) -> Result<QueryResult> {
+        let mut guard = self.inner.lock().await;
+        let tx = active_transaction(&mut guard)?;
+        tx.query_materialized_bounded(
+            &query.typeql,
+            query.rows,
+            BoundedAnswerLimits::default(),
+            query.canonical,
+        )
+        .await
+    }
+
+    /// Resolve a dispatched plan answer.
+    pub(crate) fn resolve_plan(
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        answer: QueryResult,
+    ) -> Result<crate::query_plan_exec::PlanAnswer> {
+        crate::query_plan_exec::resolve(plan.operation(), answer).map_err(plan_diagnostic_error)
     }
 
     /// Export the schema under this transaction's provider-side schema fence,
@@ -437,13 +484,17 @@ impl TransactionContext {
             .await
             .map_err(|error| match error {
                 CommitOnceError::RollbackOnly => transaction_rollback_only_diagnostic(),
+                CommitOnceError::Consumed => crate::execution_diagnostic::lower_execution_error(
+                    consumed_error(),
+                    SdkProviderOperation::Write,
+                ),
                 CommitOnceError::Other(error) => {
                     crate::execution_diagnostic::lower_commit_error(&error)
                 }
             })
     }
 
-    /// Roll back the shared transaction.
+    /// Roll back writes and retain this shared context for more work.
     pub async fn rollback(&self) -> Result<()> {
         let mut inner = self.inner.lock().await;
         let mut transaction = match inner.state {
@@ -462,8 +513,13 @@ impl TransactionContext {
 
         let result = transaction.rollback().await;
         match &result {
-            Ok(()) => inner.state = TransactionContextState::RolledBack,
+            Ok(()) => {
+                inner.transaction = Some(transaction);
+                inner.rollback_only_cause = None;
+                inner.state = TransactionContextState::RolledBack;
+            }
             Err(_) => {
+                let _ = transaction.close().await;
                 if inner.rollback_only_cause.is_none() {
                     inner.rollback_only_cause = Some(SdkExecutionDiagnostic::provider_failure(
                         SdkProviderOperation::Rollback,
@@ -479,14 +535,15 @@ impl TransactionContext {
         let transaction = {
             let mut inner = self.inner.lock().await;
             match inner.state {
-                TransactionContextState::Active | TransactionContextState::RollbackOnly => {
+                TransactionContextState::Active
+                | TransactionContextState::RollbackOnly
+                | TransactionContextState::RolledBack => {
                     inner.state = TransactionContextState::Closed;
                     inner.transaction.take()
                 }
                 TransactionContextState::Committed
                 | TransactionContextState::DefinitelyAborted
                 | TransactionContextState::CommitOutcomeUnknown
-                | TransactionContextState::RolledBack
                 | TransactionContextState::Closed => None,
             }
         };
@@ -533,18 +590,6 @@ impl TransactionContext {
             .await
     }
 
-    pub(crate) async fn execute_manager_roots_with_limits(
-        &self,
-        registry: &DescriptorRegistry,
-        validated: &ValidatedMatchRequest,
-        selection: ManagerRootSelection,
-        limits: MatchExecutionLimits,
-    ) -> Result<ManagerHydratedRoots> {
-        SelectedResultExecutor::new(registry, self.match_capabilities.clone(), limits)
-            .execute_manager_roots_borrowed(self, validated, selection)
-            .await
-    }
-
     async fn commit_classified_once(&self) -> std::result::Result<(), CommitOnceError> {
         let mut inner = self.inner.lock().await;
         let mut transaction = begin_commit(&mut inner)?;
@@ -568,12 +613,10 @@ impl TransactionContext {
 
 fn begin_commit(
     inner: &mut TransactionContextInner,
-) -> std::result::Result<Box<dyn TransactionOps>, CommitOnceError> {
+) -> std::result::Result<super::eager::EagerTransaction, CommitOnceError> {
     match inner.state {
-        TransactionContextState::Active => {
-            let transaction = inner.transaction.take().ok_or_else(|| {
-                CommitOnceError::Other(ClassifiedCommitError::from(consumed_error()))
-            })?;
+        TransactionContextState::Active | TransactionContextState::RolledBack => {
+            let transaction = inner.transaction.take().ok_or(CommitOnceError::Consumed)?;
             // Commit dispatch is irreversible. If this future is dropped,
             // the provider outcome cannot safely be inferred.
             inner.state = TransactionContextState::CommitOutcomeUnknown;
@@ -583,25 +626,38 @@ fn begin_commit(
         TransactionContextState::Committed
         | TransactionContextState::DefinitelyAborted
         | TransactionContextState::CommitOutcomeUnknown
-        | TransactionContextState::RolledBack
-        | TransactionContextState::Closed => Err(CommitOnceError::Other(
-            ClassifiedCommitError::from(consumed_error()),
-        )),
+        | TransactionContextState::Closed => Err(CommitOnceError::Consumed),
     }
 }
 
-fn active_transaction(inner: &mut TransactionContextInner) -> Result<&mut Box<dyn TransactionOps>> {
+fn active_transaction(
+    inner: &mut TransactionContextInner,
+) -> Result<&mut (dyn TransactionOps + 'static)> {
+    if inner.state == TransactionContextState::RolledBack {
+        inner.state = TransactionContextState::Active;
+    }
     if inner.state != TransactionContextState::Active {
         return Err(consumed_error());
     }
-    inner.transaction.as_mut().ok_or_else(consumed_error)
+    inner
+        .transaction
+        .as_mut()
+        .ok_or_else(consumed_error)?
+        .provider_mut()
 }
 
 fn active_transaction_ref(inner: &TransactionContextInner) -> Result<&dyn TransactionOps> {
-    if inner.state != TransactionContextState::Active {
+    if !matches!(
+        inner.state,
+        TransactionContextState::Active | TransactionContextState::RolledBack
+    ) {
         return Err(consumed_error());
     }
-    inner.transaction.as_deref().ok_or_else(consumed_error)
+    inner
+        .transaction
+        .as_ref()
+        .ok_or_else(consumed_error)?
+        .provider_ref()
 }
 
 fn consumed_error() -> OrmError {
@@ -628,6 +684,17 @@ impl Clone for TransactionContext {
             answer_limits: self.answer_limits,
         }
     }
+}
+
+/// A plan that cannot lower or answer is a contract failure, never provider
+/// prose; it keeps its diagnostic code.
+fn plan_diagnostic_error(diagnostic: type_bridge_contract::diagnostic::Diagnostic) -> OrmError {
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::ResultDecode,
+        diagnostic.code().as_str(),
+        diagnostic.message(),
+    )
+    .into()
 }
 
 #[cfg(test)]
@@ -771,15 +838,19 @@ mod tests {
     ) -> (TransactionContext, Arc<Calls>) {
         let calls = Arc::new(Calls::default());
         let context = TransactionContext::new(
-            Box::new(LifecycleTransaction {
-                calls: Arc::clone(&calls),
-                commit_result,
-                rollback_fails,
-                close_fails,
-                commit_gate,
-                rollback_gate,
-                close_gate,
-            }),
+            super::super::eager::EagerTransaction::new(
+                Box::new(LifecycleTransaction {
+                    calls: Arc::clone(&calls),
+                    commit_result,
+                    rollback_fails,
+                    close_fails,
+                    commit_gate,
+                    rollback_gate,
+                    close_gate,
+                }),
+                TxType::Write,
+                None,
+            ),
             TxType::Write,
             CapabilitySet::new(),
             None,
@@ -835,6 +906,28 @@ mod tests {
             context.lifecycle_state().await,
             TransactionContextState::RollbackOnly
         );
+    }
+
+    #[tokio::test]
+    async fn second_sdk_commit_is_a_pre_dispatch_lifecycle_error() {
+        let (context, calls) = active_context();
+        context.commit_sdk().await.unwrap();
+
+        // The second commit never reaches the provider, so it must not
+        // claim an unknown durability outcome.
+        let diagnostic = context.commit_sdk().await.unwrap_err();
+        assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Transaction);
+        assert_eq!(diagnostic.code().as_str(), "transaction_state_invalid");
+        assert!(diagnostic.failure().is_none());
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Committed
+        );
+        let OrmError::Transaction(message) = context.commit().await.unwrap_err() else {
+            panic!("legacy double commit keeps the released transaction error");
+        };
+        assert_eq!(message, "Transaction already consumed");
     }
 
     #[tokio::test]
@@ -917,6 +1010,26 @@ mod tests {
             );
             assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
         }
+    }
+
+    #[tokio::test]
+    async fn rollback_then_query_then_commit_reuses_the_same_provider() {
+        let (context, calls) = active_context();
+        context
+            .latch_rollback_only(&SdkExecutionDiagnostic::internal_failure())
+            .await;
+        context.rollback().await.unwrap();
+        assert!(context.rollback_only_cause().await.is_none());
+        context.query("match $x isa marker;").await.unwrap();
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+        context.commit().await.unwrap();
+        assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.closes.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]

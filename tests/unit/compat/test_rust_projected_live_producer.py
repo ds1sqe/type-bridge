@@ -32,8 +32,12 @@ def test_producer_is_expectation_independent_and_exactly_authority_bound() -> No
     comparator.validate_producer_source(source)
     assert len(source) <= comparator.MAX_PRODUCER_SOURCE_BYTES
     assert "typebridge.projected-live-report/v1" in text
-    assert "typedb-3.12.1/v1" in text
-    assert "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8" in text
+    # The profile, live server and semantic fingerprint arrive from the
+    # models profile matrix through the harness, never as producer literals.
+    assert 'const PROFILE_ENV: &str = "TYPE_BRIDGE_PROJECTED_LIVE_PROFILE";' in text
+    assert '"semantic_profile": profile.semantic_profile' in text
+    assert "typedb-3.12.1/v1" not in text
+    assert "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8" not in text
     for digest in comparator.SOURCE_SHA256.values():
         assert digest in text
     for environment in (
@@ -121,8 +125,9 @@ def test_harness_generates_local_and_foreign_packages_then_validates_report() ->
     harness = HARNESS_PATH.read_text()
 
     assert 'include_str!("rust_acceptance/projected_live.rs")' in harness
-    assert "emit_from_source(&sdk_source())" in harness
-    assert "emit_from_source(&foreign_sdk_source())" in harness
+    assert "emit_from_source(&sdk_source(), &profile)" in harness
+    assert "emit_from_source(&foreign_sdk_source(), &profile)" in harness
+    assert 'sdk_profile_matrix::requested("models")' in harness
     assert "generated_package_mismatch" in harness
     assert "validate_producer_source" in harness
     assert "module._load_report" not in harness

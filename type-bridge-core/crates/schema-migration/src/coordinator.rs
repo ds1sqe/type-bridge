@@ -895,8 +895,13 @@ where
             }
         }
 
-        if observed.is_none() {
-            let target = migration.manifest().target_state();
+        // A profile bridge has no groups; its target is the same schema read
+        // under the newer profile, so it is observed afresh rather than
+        // inherited from an older-profile predecessor.
+        let target = migration.manifest().target_state();
+        if observed.is_none()
+            || (migration.manifest().is_profile_bridge() && observed.as_ref() != Some(target))
+        {
             observed = Some(
                 provider
                     .observe_managed_state(lease, target, target)

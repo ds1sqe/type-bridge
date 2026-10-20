@@ -30,6 +30,25 @@ pub enum PipelineError {
     Internal(String),
 }
 
+impl PipelineError {
+    /// Typed provider failure from runtime-owned redacted descriptions.
+    /// Released V1 carriers have no staged operation index or schema context.
+    #[must_use]
+    pub fn failure(&self) -> Option<type_bridge_contract::failure::Failure> {
+        #[cfg(feature = "typedb")]
+        match self {
+            Self::QueryExecution(message) => {
+                type_bridge_typedb_runtime::failure::failure_from_message(message)
+            }
+            _ => None,
+        }
+        #[cfg(not(feature = "typedb"))]
+        {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {

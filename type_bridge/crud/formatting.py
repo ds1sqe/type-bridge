@@ -1,21 +1,10 @@
 """Value formatting utilities for TypeQL."""
 
-from datetime import date, datetime, timedelta
-from decimal import Decimal as DecimalType
 from typing import Any
 
-import isodate
-from isodate import Duration as IsodateDuration
+from type_bridge_core import format_value as _rust_format_value
 
-try:
-    from type_bridge_core import (
-        format_value as _rust_format_value,
-    )
-
-    _USE_RUST = True
-except ImportError:
-    _rust_format_value = None
-    _USE_RUST = False
+_USE_RUST = True
 
 
 def format_value(value: Any) -> str:
@@ -41,52 +30,7 @@ def format_value(value: Any) -> str:
         '123.45dec'
     """
     # Use Rust implementation when available for performance
-    if _USE_RUST and _rust_format_value is not None:
-        return _rust_format_value(value)
-
-    # Python fallback below
-    # Extract value from Attribute instances first
-    if hasattr(value, "value"):
-        value = value.value
-
-    if isinstance(value, str):
-        # Escape special characters for TypeQL string literals (JSON-style escaping)
-        # Order matters: backslashes first, then other sequences
-        escaped = (
-            value.replace("\\", "\\\\")  # Backslashes
-            .replace('"', '\\"')  # Double quotes
-            .replace("\n", "\\n")  # Newlines
-            .replace("\r", "\\r")  # Carriage returns
-            .replace("\t", "\\t")  # Tabs
-        )
-        return f'"{escaped}"'
-    elif isinstance(value, bool):
-        return "true" if value else "false"
-    elif isinstance(value, DecimalType):
-        # TypeDB decimal literals use 'dec' suffix
-        return f"{value}dec"
-    elif isinstance(value, (int, float)):
-        return str(value)
-    elif isinstance(value, datetime):
-        # TypeDB datetime/datetimetz literals are unquoted ISO 8601 strings
-        return value.isoformat()
-    elif isinstance(value, date):
-        # TypeDB date literals are unquoted ISO 8601 date strings
-        return value.isoformat()
-    elif isinstance(value, (IsodateDuration, timedelta)):
-        # TypeDB duration literals are unquoted ISO 8601 duration strings
-        return isodate.duration_isoformat(value)
-    else:
-        # For other types, convert to string and escape
-        str_value = str(value)
-        escaped = (
-            str_value.replace("\\", "\\\\")  # Backslashes
-            .replace('"', '\\"')  # Double quotes
-            .replace("\n", "\\n")  # Newlines
-            .replace("\r", "\\r")  # Carriage returns
-            .replace("\t", "\\t")  # Tabs
-        )
-        return f'"{escaped}"'
+    return _rust_format_value(value)
 
 
 def unwrap_attribute(value: Any) -> Any:

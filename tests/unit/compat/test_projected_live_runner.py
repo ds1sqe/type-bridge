@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+SEMANTIC_PROFILE_ENV = "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE"
+
 ROOT = Path(__file__).resolve().parents[3]
 RUNNER_PATH = ROOT / "scripts/ci/run_generated_live.py"
 CHECK = ROOT / "scripts/check.sh"
@@ -102,6 +104,27 @@ def test_command_plan_runs_four_live_producers_then_exactly_one_comparator(
     assert "generated_c17_projected_live_subset_round_trips_exact_3_12_1" in plan[13].arguments
     assert plan[-1].arguments[1] == str(runner.PROJECTED.COMPARATOR)
     assert plan[-1].arguments[2:] == reports
+
+
+def test_command_plan_runs_producers_and_guards_on_the_requested_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv(SEMANTIC_PROFILE_ENV, "typedb-3.13.6/v1")
+    layout = runner.Layout.under(tmp_path.resolve(), "0123456789abcdef01234567")
+    fixture = runner.Fixture(address="127.0.0.1:32942", http_port="32943")
+    plan = runner.command_plan(layout, fixture)
+    producers = [command for command in plan if command.label.startswith("produce the ")]
+    guards = [command for command in plan if command.label.startswith("verify the ")]
+    assert len(producers) == len(guards) == 4
+    for command in producers:
+        assert command.environment is not None
+        assert command.environment[SEMANTIC_PROFILE_ENV] == "typedb-3.13.6/v1"
+    for command in guards:
+        assert command.arguments[6] == "3.13.6"
+    monkeypatch.setenv(SEMANTIC_PROFILE_ENV, "typedb-9.9.9/v1")
+    with pytest.raises(ValueError, match="semantic_profile_mismatch"):
+        runner.command_plan(layout, fixture)
 
 
 def test_runner_validates_every_committed_producer_before_tools_or_staging() -> None:
@@ -463,7 +486,7 @@ def test_check_local_integration_and_ci_persist_the_same_exact_live_gate() -> No
     ):
         assert owned in local
     local_gate = local.index("scripts/ci/run_generated_live.py")
-    exact_detection = local.index('if [[ "$typedb_server_version" == "3.12.3" ]]')
+    exact_detection = local.index('if [[ "$lane_in_sdk_matrix" == 1 ]]')
     rust_integration = local.index('printf "${BOLD}━━━ Rust (integration)')
     assert exact_detection < local_gate < rust_integration
 

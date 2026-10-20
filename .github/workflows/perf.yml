@@ -1,0 +1,942 @@
+name: Perf
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  # A published release runs everything, and the released matrix adds it to
+  # the version comparison once PyPI and npm both serve it.
+  release:
+    types: [published]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      data_branch:
+        description: Branch that stores perf history
+        required: false
+        default: perf-data
+        type: string
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run. Every other run gets
+# a group of its own: GitHub keeps one pending run per group and cancels the
+# rest, which would drop their results.
+concurrency:
+  group: perf-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_HOME: ${{ github.workspace }}/../.cargo-home
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUST_STABLE_TOOLCHAIN: "1.94.1"
+  # Must equal the exact gungraun dev-dependency of the core and ORM crates.
+  GUNGRAUN_RUNNER_VERSION: "0.20.0"
+  GUNGRAUN_RUNNER_ROOT: ${{ github.workspace }}/../.gungraun-runner
+  PERF_DIR: ${{ github.workspace }}/perf-out
+
+jobs:
+  metadata:
+    name: Shared run identity
+    runs-on: ubuntu-latest
+    outputs:
+      started_at: ${{ steps.clock.outputs.started_at }}
+    steps:
+      - name: Record workflow start
+        id: clock
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  micro:
+    needs: metadata
+    name: Micro and Python binding benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y valgrind
+          valgrind --version
+
+      - name: Cache gungraun-runner
+        id: gungraun-runner
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ env.GUNGRAUN_RUNNER_ROOT }}
+          key: ${{ runner.os }}-gungraun-runner-${{ env.GUNGRAUN_RUNNER_VERSION }}-rust-${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install gungraun-runner
+        if: steps.gungraun-runner.outputs.cache-hit != 'true'
+        run: |
+          cargo install gungraun-runner --version "$GUNGRAUN_RUNNER_VERSION" --locked \
+            --root "$GUNGRAUN_RUNNER_ROOT"
+
+      - name: Put gungraun-runner on PATH
+        run: |
+          echo "$GUNGRAUN_RUNNER_ROOT/bin" >> "$GITHUB_PATH"
+          test -x "$GUNGRAUN_RUNNER_ROOT/bin/gungraun-runner"
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      # Each crate writes into its own directory, which names the crate in
+      # the metric ids. New bench targets must be added to these lists.
+      - name: Criterion wall time
+        working-directory: type-bridge-core
+        run: |
+          CRITERION_HOME="$PERF_DIR/criterion/core" cargo bench --locked -p type-bridge-core-lib \
+            --bench validation --bench compilation --bench schema -- --noplot
+          CRITERION_HOME="$PERF_DIR/criterion/orm" cargo bench --locked -p type-bridge-orm \
+            --bench serde --bench query_building --bench staged -- --noplot
+
+      - name: Instruction counts
+        working-directory: type-bridge-core
+        env:
+          GUNGRAUN_SAVE_SUMMARY: json
+        run: |
+          GUNGRAUN_HOME="$PERF_DIR/iai/core" cargo bench --locked -p type-bridge-core-lib \
+            --bench validation_iai --bench compilation_iai --bench schema_iai
+          GUNGRAUN_HOME="$PERF_DIR/iai/orm" cargo bench --locked -p type-bridge-orm \
+            --bench serde_iai --bench query_building_iai --bench staged_iai
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # uv builds the native module through maturin's PEP 517 backend, which
+      # uses the release profile, as the published wheel does.
+      - name: Install the Python package
+        run: uv sync --extra dev
+
+      - name: Python binding benchmarks
+        run: >-
+          uv run pytest benchmarks --benchmark-only -q -p no:cacheprovider
+          --benchmark-json "$PERF_DIR/pytest-benchmark.json"
+
+      - name: Convert to a perf result
+        run: >-
+          python -m perf.harness.micro
+          --criterion-dir "$PERF_DIR/criterion"
+          --iai-dir "$PERF_DIR/iai"
+          --pytest-benchmark "$PERF_DIR/pytest-benchmark.json"
+          --started-at "$PERF_STARTED_AT"
+          --out "$PERF_DIR/micro.json"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$PERF_DIR/micro.json"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-micro
+          path: perf-out/micro.json
+          if-no-files-found: error
+
+  build:
+    needs: metadata
+    name: Cold release build times
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+      - name: Install wheel builder
+        run: |
+          uv tool install maturin==1.14.1
+          echo "$(uv tool dir --bin)" >> "$GITHUB_PATH"
+      # Only the registry is reusable: each group creates an absent target.
+      - name: Measure cold release builds
+        run: >-
+          python -m perf.harness.build
+          --target-dir "$GITHUB_WORKSPACE/tmp/perf-cold-build"
+          --out "$PERF_DIR/build.json"
+      - name: Upload build metrics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-build
+          path: perf-out/build.json
+          if-no-files-found: error
+
+  size:
+    needs: metadata
+    name: Linux x86_64 artifact sizes
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - name: Build Linux wheel as in release
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          maturin-version: v1.14.1
+          rust-toolchain: "1.94.1"
+          target: x86_64-unknown-linux-gnu
+          args: --release --out dist -i python3.13
+          manylinux: auto
+          working-directory: type-bridge-core
+      # maturin's manylinux container leaves type-bridge-core/target owned by
+      # root; hand it back so the host Node and cargo builds can use it.
+      - name: Reclaim the Rust target directory
+        run: sudo chown -R "$(id -u):$(id -g)" type-bridge-core/target
+      - name: Pack Linux npm package
+        working-directory: type-bridge-core/crates/node
+        run: |
+          npm ci
+          npm run build
+          mkdir -p "$PERF_DIR/packages"
+          npm pack --ignore-scripts --pack-destination "$PERF_DIR/packages"
+      - name: Build unstripped CLI and release server binary
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target
+        run: |
+          cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-cli --bin type-bridge
+          cp "$CARGO_TARGET_DIR/release/type-bridge" "$PERF_DIR/cli-unstripped"
+          cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-server --no-default-features --features band8,band9,v2-query
+          strip -o "$PERF_DIR/server" "$CARGO_TARGET_DIR/release/type-bridge-server"
+      - name: Build canonical stripped CLI
+        run: >-
+          python scripts/ci/standalone_cli_artifact.py build
+          --output "$GITHUB_WORKSPACE/tmp/perf-cli"
+      # The release C helper remains frozen to 1.6 until 2.3 release prep.
+      - name: Archive current CMake runtime install with release Cargo flags
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "scripts/ci")
+          from standalone_cli_artifact import artifact_build_environment
+          root = Path.cwd()
+          target = root / "tmp/perf-c-build"
+          prefix = root / "tmp/perf-c-install"
+          environment = artifact_build_environment(target)
+          subprocess.run(["cargo", "build", "--locked", "--release", "--target",
+              "x86_64-unknown-linux-gnu", "--manifest-path", "type-bridge-core/Cargo.toml",
+              "-p", "type-bridge-c", "--lib"], env=environment, check=True)
+          library = target / "x86_64-unknown-linux-gnu/release/libtype_bridge_c.so"
+          subprocess.run(["cmake", "-S", "type-bridge-core/crates/c", "-B", "tmp/perf-c-cmake",
+              f"-DTYPE_BRIDGE_C_LIBRARY={library}", f"-DCMAKE_INSTALL_PREFIX={prefix}",
+              "-DCMAKE_INSTALL_LIBDIR=lib"], check=True)
+          subprocess.run(["cmake", "--install", "tmp/perf-c-cmake"], check=True)
+          subprocess.run(["tar", "--sort=name", "--mtime=@0", "--owner=0", "--group=0",
+              "--numeric-owner", "-C", str(prefix), "-czf",
+              os.environ["PERF_DIR"] + "/c-runtime.tar.gz", "."], check=True)
+          PY
+      - name: Measure release artifacts
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+          out = Path(os.environ["PERF_DIR"])
+          def single(pattern):
+              matches = list(Path.cwd().glob(pattern))
+              if len(matches) != 1:
+                  raise ValueError(f"expected one {pattern}, got {matches}")
+              return matches[0]
+          artifacts = {
+              "wheel": single("type-bridge-core/dist/*.whl"),
+              "npm": single("perf-out/packages/*.tgz"),
+              "cli_unstripped": out / "cli-unstripped",
+              "cli_stripped": Path("tmp/perf-cli/build/x86_64-unknown-linux-gnu/release/type-bridge"),
+              "server": out / "server",
+              "c_runtime": out / "c-runtime.tar.gz",
+              "c_runtime_lib": Path("tmp/perf-c-install/lib/libtype_bridge_c.so"),
+          }
+          command = [sys.executable, "-m", "perf.harness.size", "--out", str(out / "size.json")]
+          for name, path in artifacts.items():
+              command += ["--artifact", f"{name}={path}"]
+          subprocess.run(command, check=True)
+          PY
+      - name: Upload size metrics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-size
+          path: perf-out/size.json
+          if-no-files-found: error
+
+  suite:
+    needs: metadata
+    name: Offline test-suite durations
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+      - name: Prepare native test dependencies outside suite timing
+        run: |
+          uv sync --extra dev
+          npm ci --prefix type-bridge-core/crates/node
+          npm run build --prefix type-bridge-core/crates/node
+          cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+      - name: Measure existing offline suites
+        run: uv run python -m perf.harness.suite --out "$PERF_DIR/suite.json"
+      - name: Upload suite metrics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-suite
+          path: perf-out/suite.json
+          if-no-files-found: error
+
+  # Live pipelines through every SDK against a TypeDB 3.13.6 service on
+  # tmpfs. The bindings are built with perf-stages for their private stage
+  # recorders (perf/drivers/build.py); shipped builds never enable it. Pull
+  # requests skip them: a base-versus-head comparison needs two release
+  # builds and its wall times on shared runners sit above the comparison
+  # noise threshold.
+  pipeline:
+    needs: metadata
+    name: Live SDK pipelines
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.13.6
+        ports:
+          - 1729:1729
+          - 8000:8000
+        options: --tmpfs /var/lib/typedb/data:rw
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      TYPEDB_ADDRESS: localhost:1729
+      TYPEDB_HTTP_PORT: "8000"
+      TYPEDB_USERNAME: admin
+      TYPEDB_PASSWORD: password
+      PERF_SDK: ${{ github.workspace }}/../perf-sdk
+      PERF_CLI: ${{ github.workspace }}/type-bridge-core/target/release/type-bridge
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-sdk-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # The Python driver imports the facade from this checkout; its native
+      # module comes from the perf-stages build on PYTHONPATH instead.
+      - name: Install the Python facade dependencies
+        run: uv sync --no-dev --no-install-package type-bridge-core
+
+      - name: Build the SDK drivers with perf-stages
+        run: .venv/bin/python -m perf.drivers.build --out "$PERF_SDK"
+
+      # Ready when the gRPC port is open and the HTTP API reports the
+      # version, which the result records.
+      - name: Wait for TypeDB
+        id: typedb
+        run: |
+          for i in {1..30}; do
+            body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            version="$(python3 -c '
+          import json, sys
+          try:
+              print(json.loads(sys.argv[1])["version"])
+          except (ValueError, KeyError, TypeError):
+              pass
+          ' "$body")"
+            if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Run the Rust pipelines
+        run: >-
+          type-bridge-core/target/release/type-bridge-perf-pipelines
+          --out "$PERF_DIR/pipelines-rust.json"
+          --work-dir "$RUNNER_TEMP/perf-pipelines-rust"
+
+      - name: Run the Python pipelines
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+        run: >-
+          .venv/bin/python -m perf.drivers.python.pipelines --cli "$PERF_CLI"
+          --out "$PERF_DIR/pipelines-python.json"
+          --work-dir "$RUNNER_TEMP/perf-pipelines-python"
+
+      # The Node and C drivers create and drop each pipeline's database
+      # through TB_PERF_SETUP, a command line taking `apply|drop DATABASE`.
+      - name: Run the Node pipelines
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+          TYPE_BRIDGE_NODE_PACKAGE_ROOT: ${{ github.workspace }}/type-bridge-core/crates/node
+          TYPE_BRIDGE_NODE_NATIVE_PATH: ${{ env.PERF_SDK }}/type_bridge_node.node
+        run: |
+          export TB_PERF_SETUP="[\"$PWD/.venv/bin/python\",\"-m\",\"perf.drivers.workspace\",\"--root\",\"$PERF_SDK\",\"--cli\",\"$PERF_CLI\"]"
+          node perf/drivers/node/pipelines.cjs --workspace "$PERF_SDK/workspace" \
+            --out "$PERF_DIR/pipelines-node.json"
+
+      - name: Run the C pipelines
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+        run: |
+          export TB_PERF_SETUP="[\"$PWD/.venv/bin/python\",\"-m\",\"perf.drivers.workspace\",\"--root\",\"$PERF_SDK\",\"--cli\",\"$PERF_CLI\"]"
+          "$PERF_SDK/c-pipelines" --workspace "$PERF_SDK/workspace" \
+            --out "$PERF_DIR/pipelines-c.json"
+
+      - name: Convert to a perf result
+        run: >-
+          python -m perf.harness.pipeline
+          --report "$PERF_DIR/pipelines-rust.json"
+          --report "$PERF_DIR/pipelines-python.json"
+          --report "$PERF_DIR/pipelines-node.json"
+          --report "$PERF_DIR/pipelines-c.json"
+          --sdk rust --sdk python --sdk node --sdk c
+          --typedb "${{ steps.typedb.outputs.version }}"
+          --started-at "$PERF_STARTED_AT"
+          --out "$PERF_DIR/pipeline.json"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$PERF_DIR/pipeline.json"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-pipeline
+          path: perf-out/pipeline.json
+          if-no-files-found: error
+
+  # Offline binding overhead: the same plan work through every SDK, timed
+  # in the host language, minus the Rust baseline. No TypeDB.
+  binding:
+    needs: metadata
+    name: Offline SDK binding overhead
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      PERF_SDK: ${{ github.workspace }}/../perf-sdk
+      PERF_CLI: ${{ github.workspace }}/type-bridge-core/target/release/type-bridge
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-sdk-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      # The Python driver imports the facade from this checkout; its native
+      # module comes from the perf-stages build on PYTHONPATH instead.
+      - name: Install the Python facade dependencies
+        run: uv sync --no-dev --no-install-package type-bridge-core
+
+      - name: Build the SDK drivers with perf-stages
+        run: .venv/bin/python -m perf.drivers.build --out "$PERF_SDK"
+
+      - name: Run the binding ops
+        env:
+          PYTHONPATH: ${{ env.PERF_SDK }}/site
+          TYPE_BRIDGE_NODE_PACKAGE_ROOT: ${{ github.workspace }}/type-bridge-core/crates/node
+          TYPE_BRIDGE_NODE_NATIVE_PATH: ${{ env.PERF_SDK }}/type_bridge_node.node
+        run: |
+          type-bridge-core/target/release/type-bridge-perf-pipelines --binding \
+            --out "$PERF_DIR/binding-rust.json"
+          .venv/bin/python -m perf.drivers.python.pipelines --binding --cli "$PERF_CLI" \
+            --out "$PERF_DIR/binding-python.json" --work-dir "$RUNNER_TEMP/perf-binding-python"
+          node perf/drivers/node/pipelines.cjs --binding --workspace "$PERF_SDK/workspace" \
+            --out "$PERF_DIR/binding-node.json"
+          "$PERF_SDK/c-pipelines" --binding --out "$PERF_DIR/binding-c.json"
+
+      - name: Convert to a perf result
+        run: >-
+          python -m perf.harness.binding
+          --report "$PERF_DIR/binding-rust.json"
+          --report "$PERF_DIR/binding-python.json"
+          --report "$PERF_DIR/binding-node.json"
+          --report "$PERF_DIR/binding-c.json"
+          --sdk rust --sdk python --sdk node --sdk c
+          --started-at "$PERF_STARTED_AT"
+          --out "$PERF_DIR/binding.json"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$PERF_DIR/binding.json"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-binding
+          path: perf-out/binding.json
+          if-no-files-found: error
+
+  # Released packages beside the head on the same CRUD ops, one SDK and
+  # version per job (release.<sdk>.<op>, trigger release-matrix). Releases
+  # come from PyPI and npm; the head is built from this commit.
+  # The newest patch of every line from 2.0 that PyPI and npm both serve,
+  # then the head. A release run waits until its own version is there.
+  versions:
+    name: Compared versions
+    if: >-
+      github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      versions: ${{ steps.pick.outputs.versions }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Pick the newest patch of each line
+        id: pick
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          args=(--github-output)
+          [ -n "$RELEASE_TAG" ] && args+=(--require "${RELEASE_TAG#v}")
+          python -m perf.harness.versions "${args[@]}"
+
+  released:
+    needs: [metadata, versions]
+    name: Released ${{ matrix.sdk }} ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: [python, node]
+        version: ${{ fromJSON(needs.versions.outputs.versions) }}
+    services:
+      typedb:
+        # Every compared version accepts semantic profile typedb-3.12.1/v1.
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
+        options: --tmpfs /var/lib/typedb/data:rw
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+      TYPEDB_ADDRESS: localhost:1729
+      TYPEDB_HTTP_PORT: "8000"
+      TYPEDB_USERNAME: admin
+      TYPEDB_PASSWORD: password
+      HEAD_BUILD: ${{ github.workspace }}/../perf-head
+      RESULT: perf-out/release-${{ matrix.sdk }}-${{ matrix.version }}.json
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Set up Node
+        if: matrix.sdk == 'node'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Install Rust toolchain
+        if: matrix.version == 'head'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Cache cargo registry and build
+        if: matrix.version == 'head'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: ${{ runner.os }}-cargo-perf-released-${{ matrix.sdk }}-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      # A plain release wheel of the workspace root package: it carries the
+      # Python module and the type-bridge CLI (a `-m crates/core` build has
+      # no PyInit). Node's head generates its package with this CLI too.
+      - name: Build the head core wheel
+        if: matrix.version == 'head'
+        working-directory: type-bridge-core
+        run: >-
+          uvx --from maturin==1.14.1 maturin build --release
+          --interpreter python3.13 --out "$HEAD_BUILD/wheel"
+
+      - name: Pack the head Node package
+        if: matrix.version == 'head' && matrix.sdk == 'node'
+        working-directory: type-bridge-core/crates/node
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+          npm pack --pack-destination "$HEAD_BUILD"
+
+      # Ready when the gRPC port is open and the HTTP API reports the
+      # version, which the result records.
+      - name: Wait for TypeDB
+        id: typedb
+        run: |
+          for i in {1..30}; do
+            body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            version="$(python3 -c '
+          import json, sys
+          try:
+              print(json.loads(sys.argv[1])["version"])
+          except (ValueError, KeyError, TypeError):
+              pass
+          ' "$body")"
+            if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
+              echo "version=$version" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Run the release workload
+        env:
+          SDK: ${{ matrix.sdk }}
+          VERSION: ${{ matrix.version }}
+          TYPEDB_VERSION: ${{ steps.typedb.outputs.version }}
+        run: |
+          module=perf.harness.released
+          [ "$SDK" = node ] && module=perf.harness.released_node
+          args=(--version "$VERSION" --typedb "$TYPEDB_VERSION" --out "$RESULT"
+            --started-at "$PERF_STARTED_AT")
+          if [ "$VERSION" = head ]; then
+            wheels=("$HEAD_BUILD"/wheel/type_bridge_core-*.whl)
+            args+=(--core-wheel "${wheels[0]}")
+            if [ "$SDK" = node ]; then
+              packages=("$HEAD_BUILD"/*.tgz)
+              args+=(--node-package "${packages[0]}")
+            fi
+          fi
+          python -m "$module" "${args[@]}"
+
+      - name: Validate the perf result
+        run: python -m perf.harness.validate "$RESULT"
+
+      - name: Upload the perf result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-release-${{ matrix.sdk }}-${{ matrix.version }}
+          path: ${{ env.RESULT }}
+          if-no-files-found: error
+
+  compare:
+    name: Base versus head micro benchmarks
+    if: github.event_name == 'pull_request'
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      PERF_STARTED_AT: ${{ needs.metadata.outputs.started_at }}
+    steps:
+      - name: Checkout base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: Checkout head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+          persist-credentials: false
+      - name: Check for a base harness
+        id: harness
+        run: |
+          if [ -f base/perf/harness/micro.py ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Base predates the perf micro harness; comparison skipped"
+            echo "Base predates the perf micro harness; comparison skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Set up Python
+        if: steps.harness.outputs.available == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+      - name: Install Rust toolchain
+        if: steps.harness.outputs.available == 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+      - name: Install instruction-count tools
+        if: steps.harness.outputs.available == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y valgrind
+          cargo install gungraun-runner --version "$GUNGRAUN_RUNNER_VERSION" --locked \
+            --root "$GUNGRAUN_RUNNER_ROOT"
+          echo "$GUNGRAUN_RUNNER_ROOT/bin" >> "$GITHUB_PATH"
+      - name: Measure both revisions on this runner
+        if: steps.harness.outputs.available == 'true'
+        env:
+          GUNGRAUN_SAVE_SUMMARY: json
+        run: |
+          mkdir -p "$PERF_DIR"
+          for side in base head; do
+            (
+              cd "$GITHUB_WORKSPACE/$side"
+              export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/tmp/compare-$side"
+              export GITHUB_SHA
+              GITHUB_SHA=$(git rev-parse HEAD)
+              export GITHUB_HEAD_REF="$side"
+              for spec in 'core:type-bridge-core-lib:validation compilation schema' 'orm:type-bridge-orm:serde query_building staged'; do
+                IFS=: read -r group package benches <<< "$spec"
+                wall=()
+                instructions=()
+                for bench in $benches; do
+                  # A bench newer than the base is compared once both have it.
+                  if [ ! -f "type-bridge-core/crates/$group/benches/$bench.rs" ]; then
+                    continue
+                  fi
+                  wall+=(--bench "$bench")
+                  instructions+=(--bench "${bench}_iai")
+                done
+                CRITERION_HOME="$PERF_DIR/$side/criterion/$group" \
+                  cargo bench --locked --manifest-path type-bridge-core/Cargo.toml \
+                  -p "$package" "${wall[@]}" -- --noplot
+                GUNGRAUN_HOME="$PERF_DIR/$side/iai/$group" \
+                  cargo bench --locked --manifest-path type-bridge-core/Cargo.toml \
+                  -p "$package" "${instructions[@]}"
+              done
+              python -m perf.harness.micro --criterion-dir "$PERF_DIR/$side/criterion" \
+                --iai-dir "$PERF_DIR/$side/iai" --started-at "$PERF_STARTED_AT" \
+                --out "$PERF_DIR/$side.json"
+            )
+          done
+      - name: Write advisory comparison
+        if: steps.harness.outputs.available == 'true'
+        working-directory: head
+        run: |
+          python -m perf.harness.compare "$PERF_DIR/base.json" "$PERF_DIR/head.json" \
+            --out "$PERF_DIR/comparison.md"
+          cat "$PERF_DIR/comparison.md" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload comparison evidence
+        if: steps.harness.outputs.available == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-perf-comparison
+          path: |
+            perf-out/base.json
+            perf-out/head.json
+            perf-out/comparison.md
+          if-no-files-found: error
+
+  # Appends this run's results to the history branch. Runs only for master
+  # pushes, the nightly schedule and manual dispatch, never for pull
+  # requests; it is the only job with write access, and it writes only the
+  # data branch. It has no concurrency group: GitHub keeps one pending job
+  # per group and cancels the rest, which would drop their results.
+  # Concurrent stores are serialized by the push retry below instead.
+  store:
+    name: Store perf history
+    # versions and released are skipped on master pushes; any failed or cancelled producer
+    # still stores nothing.
+    if: >-
+      !cancelled()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && ((github.event_name == 'push' && github.ref == 'refs/heads/master')
+        || github.event_name == 'release'
+        || github.event_name == 'schedule'
+        || github.event_name == 'workflow_dispatch')
+    needs: [micro, build, size, suite, pipeline, binding, versions, released]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      DATA_BRANCH: ${{ inputs.data_branch || 'perf-data' }}
+      DATA_DIR: ${{ github.workspace }}/perf-data
+      RESULTS_DIR: ${{ github.workspace }}/perf-results
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Download the perf results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: perf-*
+          path: perf-results
+          merge-multiple: true
+
+      - name: Validate the perf results
+        run: python -m perf.harness.validate "$RESULTS_DIR"/*.json
+
+      # A worktree of the code checkout shares its fetch credentials. The
+      # branch is created as an orphan on the first run.
+      - name: Check out the data branch
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin "$DATA_BRANCH" >/dev/null; then
+            git fetch --no-tags --depth=1 origin "+refs/heads/$DATA_BRANCH:refs/remotes/origin/$DATA_BRANCH"
+            git worktree add -B "$DATA_BRANCH" "$DATA_DIR" "origin/$DATA_BRANCH"
+          else
+            echo "Creating $DATA_BRANCH as an orphan branch"
+            git worktree add --detach "$DATA_DIR"
+            git -C "$DATA_DIR" switch --orphan "$DATA_BRANCH"
+          fi
+
+      # index.json changes on every store, so a rejected push is never
+      # rebased: the store is idempotent and is redone on the new tip. The
+      # randomized delay keeps concurrent store jobs from retrying in step.
+      - name: Store and push
+        run: |
+          attempts=10
+          # Exits the step successfully when there is nothing new to push.
+          store_and_commit() {
+            python -m perf.harness.store --data-dir "$DATA_DIR" "$RESULTS_DIR"/*.json
+            git -C "$DATA_DIR" add runs index.json
+            if git -C "$DATA_DIR" diff --cached --quiet; then
+              echo "Nothing new to store"
+              exit 0
+            fi
+            git -C "$DATA_DIR" commit --quiet \
+              -m "perf: store ${GITHUB_SHA::12} (${GITHUB_EVENT_NAME})"
+          }
+          store_and_commit
+          for attempt in $(seq 1 "$attempts"); do
+            if git -C "$DATA_DIR" push origin "HEAD:refs/heads/$DATA_BRANCH"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq "$attempts" ]; then
+              break
+            fi
+            delay=$((RANDOM % 5 + 1))
+            echo "Push rejected (attempt $attempt of $attempts); storing again on the new tip in ${delay}s"
+            sleep "$delay"
+            git -C "$DATA_DIR" fetch --no-tags --depth=1 origin \
+              "+refs/heads/$DATA_BRANCH:refs/remotes/origin/$DATA_BRANCH"
+            git -C "$DATA_DIR" reset --hard --quiet "origin/$DATA_BRANCH"
+            store_and_commit
+          done
+          echo "::error::could not push $DATA_BRANCH after $attempts attempts; these results are not stored"
+          exit 1

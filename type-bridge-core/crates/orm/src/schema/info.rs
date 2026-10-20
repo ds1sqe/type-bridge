@@ -48,55 +48,10 @@ impl OwnedAttributeEntry {
     /// matching the annotation order of TypeDB's schema export (constraints
     /// first, then doc, then meta).
     pub fn flags_string(&self) -> String {
-        let mut parts = Vec::new();
-        for ann in &self.annotations {
-            match ann {
-                Annotation::Key => parts.push("@key".to_string()),
-                Annotation::Unique => parts.push("@unique".to_string()),
-                Annotation::Distinct => parts.push("@distinct".to_string()),
-                Annotation::Card(min, max) => {
-                    // TypeDB 3.x spells an unbounded upper bound as `@card(min..)`.
-                    let max_str = match max {
-                        Some(m) => m.to_string(),
-                        None => String::new(),
-                    };
-                    parts.push(format!("@card({min}..{max_str})"));
-                }
-            }
-        }
-        append_doc_meta_annotations(&mut parts, self.doc.as_deref(), &self.meta);
-        parts.join(" ")
+        generator::ownership_annotations(self)
+            .map(|values| type_bridge_core_lib::__internal::render_schema_annotations(&values))
+            .unwrap_or_default()
     }
-}
-
-/// Append `@doc("...")` / `@meta("key", "value")` annotation tokens in the
-/// canonical order of TypeDB's schema export (doc before meta, meta sorted
-/// by key). Values are escaped for TypeQL string-literal emission.
-pub(crate) fn append_doc_meta_annotations(
-    parts: &mut Vec<String>,
-    doc: Option<&str>,
-    meta: &BTreeMap<String, String>,
-) {
-    if let Some(text) = doc {
-        parts.push(format!("@doc({})", escaped_string_literal(text)));
-    }
-    for (key, value) in meta {
-        parts.push(format!(
-            "@meta({}, {})",
-            escaped_string_literal(key),
-            escaped_string_literal(value)
-        ));
-    }
-}
-
-/// Render a TypeQL string literal for `@doc` / `@meta` values, escaping
-/// backslashes, quotes, and control characters the way TypeDB's schema
-/// export renders them (so parse -> emit round-trips byte-identically).
-///
-/// Distinct from the `@regex` emission path, which preserves user escape
-/// sequences verbatim and must not be double-escaped.
-pub(crate) fn escaped_string_literal(value: &str) -> String {
-    super::annotations::escaped_string_literal(value)
 }
 
 /// Metadata for one role in a relation.
@@ -264,7 +219,7 @@ impl SchemaInfo {
             return Ok(Self::default());
         }
 
-        let schema = core_schema::TypeSchema::from_typeql(input).map_err(|error| {
+        let schema = type_bridge_core_lib::__internal::parse_schema(input).map_err(|error| {
             SchemaError::Validation {
                 message: error.to_string(),
             }
@@ -554,7 +509,7 @@ impl SchemaInfo {
     /// Generate a TypeQL `define` block from this schema.
     pub fn to_typeql(&self) -> Result<String, SchemaError> {
         self.validate()?;
-        Ok(generator::generate_define_block(self))
+        generator::try_generate_define_block(self)
     }
 
     /// Compare this schema to another and return the diff.
@@ -698,7 +653,7 @@ fn cardinality_tuple(cardinality: &core_schema::Cardinality) -> (u32, Option<u32
 fn value_type_from_typeql(value_type: &str) -> ValueType {
     match value_type {
         "integer" => ValueType::Long,
-        other => ValueType::parse(other).unwrap_or(ValueType::String),
+        other => other.parse().unwrap_or(ValueType::String),
     }
 }
 
@@ -1124,7 +1079,7 @@ mod tests {
 define
 
 attribute base-token @abstract, value string;
-attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
+attribute email, sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");
 attribute status @independent, value string @values("active", "inactive");
 attribute age, value integer @range(0..150);
 "#;
@@ -1152,7 +1107,7 @@ attribute age, value integer @range(0..150);
 
         let emitted = info.to_typeql().expect("emit failed");
         assert!(emitted.contains(
-            r#"attribute email sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#
+            r#"attribute email, sub base-token, value string @regex("^[a-z]+@[a-z]+\.[a-z]+$");"#
         ));
         assert!(emitted.contains(
             r#"attribute status @independent, value string @values("active", "inactive");"#
@@ -1244,7 +1199,7 @@ entity player-b, plays link:member;
     /// Integration smoke: a plays-card authored as inline TypeQL survives the
     /// full parse → IR → emit boundary. The parser reads the inline
     /// `entity X, plays r:role` form (TypeDB's export grammar); the emitter
-    /// renders the standalone `X plays r:role;` form (TypeDB's define grammar).
+    /// renders the standalone `X, plays r:role;` form (TypeDB's define grammar).
     /// This is the realistic introspect-then-re-emit flow, not byte idempotence
     /// — the two grammars are intentionally asymmetric, so
     /// `from_typeql(to_typeql(..))` is not a valid oracle.
@@ -1264,7 +1219,7 @@ entity holder, plays owns-one:slot @card(0..1);
         let info = SchemaInfo::from_typeql(typeql).expect("parse failed");
         let emitted = info.to_typeql().expect("emit failed");
         assert!(
-            emitted.contains("holder plays owns-one:slot @card(0..1);"),
+            emitted.contains("holder, plays owns-one:slot @card(0..1);"),
             "plays-card must survive parse->IR->emit: {emitted}"
         );
     }

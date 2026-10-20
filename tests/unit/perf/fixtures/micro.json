@@ -1,0 +1,37 @@
+{
+  "format": "perf-result/v1",
+  "run": {
+    "commit": "c7ee52d30dcea6358a8a6a8f1b023f9df7fb5e90",
+    "branch": "master",
+    "version": "2.3.0.dev0",
+    "trigger": "push",
+    "runner": {
+      "image": "ubuntu-24.04/20261012.1",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "cores": 4
+    },
+    "toolchains": {
+      "rust": "1.88.0",
+      "python": null,
+      "node": null,
+      "cc": null
+    },
+    "typedb": null,
+    "started_at": "2026-10-16T03:12:45Z"
+  },
+  "metrics": [
+    {
+      "id": "micro.core.compilation.insert_entity",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1843.2,
+      "ci95": [1838.9, 1848.1]
+    },
+    {
+      "id": "micro.core.compilation.insert_entity.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 21544
+    }
+  ]
+}

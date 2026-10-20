@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import c_release_policy as policy
+import sdk_profile_matrix as profile_matrix
 
 ROOT = policy.ROOT
 REPOSITORY = "ds1sqe/type-bridge"
@@ -360,8 +361,8 @@ def seal(inputs: Path, reports: Path, output: Path) -> None:
     )
     for version, bindings in audit.REPORT_BINDINGS.items():
         for binding in bindings:
-            evidence_files[f"reports/v{version}/{binding}.json"] = read(
-                reports / f"v{version}" / f"{binding}.json"
+            evidence_files[f"reports/{profile_matrix.report_directory(version)}/{binding}.json"] = (
+                read(reports / profile_matrix.report_directory(version) / f"{binding}.json")
             )
     evidence_files["full-c-audit.json"] = canonical(result)
     evidence_files["full-c-summary.md"] = summary.encode()
@@ -493,7 +494,7 @@ def stage(verify_run: int, output: Path) -> None:
             "verification_run": verify_run,
             "verification_attempt": 1,
             "artifact_set_id": receipt["artifact_set_id"],
-            "abi": "1.6.0",
+            "abi": policy.ABI,
             "target": policy.TARGET,
             "runner": "ubuntu-24.04",
             "linkage": "shared",

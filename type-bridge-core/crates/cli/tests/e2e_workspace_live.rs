@@ -33,8 +33,26 @@ use type_bridge_orm::session::backend::QueryV2AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};
 
+#[path = "../../../../tests/support/typedb_database_move.rs"]
+mod database_move;
+
+use database_move::move_database;
+
 const MANAGED_SCOPE: &str = "e2e-smoke";
-const PROFILE: &str = "typedb-3.12.1/v1";
+/// Environment variable naming the workspace semantic profile the live suite
+/// runs under; the CLI requires the TypeDB server that profile pairs with.
+const PROFILE_ENV: &str = "TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE";
+
+fn live_profile() -> String {
+    let profile = std::env::var(PROFILE_ENV).unwrap_or_else(|_| "typedb-3.12.1/v1".to_owned());
+    let id = type_bridge_contract::fingerprint::SemanticProfileId::new(&profile)
+        .unwrap_or_else(|error| panic!("{PROFILE_ENV}={profile:?} is invalid: {error}"));
+    assert!(
+        type_bridge_schema_migration_typedb::migration_server_for_profile(&id).is_some(),
+        "{PROFILE_ENV}={profile} cannot run connected migrations"
+    );
+    profile
+}
 
 fn connect_options(http_port: &str) -> ConnectOptions {
     let http_port = http_port.parse::<u16>().unwrap_or_else(|error| {
@@ -147,12 +165,13 @@ fn write_manifest(workspace: &Path, address: &str, http_port: &str, databases: &
              username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n",
         ));
     }
+    let profile = live_profile();
     fs::write(
         workspace.join("typebridge.yaml"),
         format!(
             "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  \
              ownership: exclusive\n  managed-scope: {MANAGED_SCOPE}\ncompatibility:\n  \
-             semantic-profile: {PROFILE}\nmigrations:\n  directory: migrations/v2\n  \
+             semantic-profile: {profile}\nmigrations:\n  directory: migrations/v2\n  \
              app-label: smoke\nenvironments:\n{environments}",
         ),
     )
@@ -160,12 +179,13 @@ fn write_manifest(workspace: &Path, address: &str, http_port: &str, databases: &
 }
 
 fn write_tls_manifest(workspace: &Path, address: &str, http_port: u16, database: &str) {
+    let profile = live_profile();
     fs::write(
         workspace.join("typebridge.yaml"),
         format!(
             "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  \
              ownership: exclusive\n  managed-scope: {MANAGED_SCOPE}\ncompatibility:\n  \
-             semantic-profile: {PROFILE}\nmigrations:\n  directory: migrations/v2\n  \
+             semantic-profile: {profile}\nmigrations:\n  directory: migrations/v2\n  \
              app-label: smoke\nenvironments:\n  tls-live:\n    database: {database}\n    \
              uri: {address}\n    http-port: '{http_port}'\n    tls: 'true'\n    \
              tls-root-ca: certs/root-ca.pem\n    migrate: 'true'\n    credential:\n      \
@@ -354,7 +374,7 @@ async fn empty_workspace_to_replayed_history_live() {
     let authority = QueryAuthority::from_declared_bytes(
         &declared_bytes_with_nickname(false),
         MANAGED_SCOPE,
-        PROFILE,
+        &live_profile(),
     )
     .expect("first authority");
     let plan = person_name_plan_bytes(&authority);
@@ -408,7 +428,7 @@ async fn empty_workspace_to_replayed_history_live() {
     let evolved_authority = QueryAuthority::from_declared_bytes(
         &declared_bytes_with_nickname(true),
         MANAGED_SCOPE,
-        PROFILE,
+        &live_profile(),
     )
     .expect("evolved authority");
     let evolved_plan = person_name_plan_bytes(&evolved_authority);
@@ -476,7 +496,7 @@ async fn empty_workspace_to_replayed_history_live() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB 3.12.1 server"]
+#[ignore = "requires an isolated TypeDB 3.13.6 server (the documented examples' profile)"]
 async fn documented_examples_initial_constraints_apply_and_verify_live() {
     let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
     let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap_or_else(|_| "8000".into());
@@ -1733,4 +1753,221 @@ class _DisabledMigration(Migration):
         .delete_database()
         .await
         .expect("converter live database cleanup");
+}
+
+/// Address of the TypeDB 3.12.3 server the history is first applied on.
+const UPGRADE_FROM_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM";
+/// Address of the TypeDB 3.13.6 server the history moves to.
+const UPGRADE_TO_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO";
+/// Optional HTTP ports of the two servers; both default to TypeDB's 8000,
+/// which two servers on one host cannot share.
+const UPGRADE_FROM_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_FROM_HTTP_PORT";
+const UPGRADE_TO_HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MIGRATION_UPGRADE_TO_HTTP_PORT";
+
+/// The HTTP port set for the upgrade endpoint at `address`, if any.
+fn upgrade_http_port(address: &str) -> Option<String> {
+    [
+        (UPGRADE_FROM_ENV, UPGRADE_FROM_HTTP_PORT_ENV),
+        (UPGRADE_TO_ENV, UPGRADE_TO_HTTP_PORT_ENV),
+    ]
+    .into_iter()
+    .find(|(endpoint, _)| std::env::var(endpoint).as_deref() == Ok(address))
+    .and_then(|(_, port)| std::env::var(port).ok())
+}
+
+fn upgrade_connect_options(address: &str) -> ConnectOptions {
+    upgrade_http_port(address).map_or_else(ConnectOptions::default, |port| connect_options(&port))
+}
+
+fn write_upgrade_manifest(workspace: &Path, profile: &str, from: &str, to: &str, database: &str) {
+    let mut environments = String::new();
+    for (name, address) in [("old", from), ("new", to)] {
+        environments.push_str(&format!(
+            "  {name}:\n    database: {database}\n    uri: {address}\n    migrate: 'true'\n    \
+             credential:\n      username: env:TYPEDB_USERNAME\n      password: env:TYPEDB_PASSWORD\n",
+        ));
+        if let Some(port) = upgrade_http_port(address) {
+            environments.push_str(&format!("    http-port: '{port}'\n"));
+        }
+    }
+    fs::write(
+        workspace.join("typebridge.yaml"),
+        format!(
+            "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  \
+             ownership: exclusive\n  managed-scope: {MANAGED_SCOPE}\ncompatibility:\n  \
+             semantic-profile: {profile}\nmigrations:\n  directory: migrations/v2\n  \
+             app-label: smoke\nenvironments:\n{environments}",
+        ),
+    )
+    .expect("manifest writes");
+}
+
+fn assert_failure_contains(output: &std::process::Output, step: &str, needle: &str) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success() && stderr.contains(needle),
+        "{step} must fail with {needle}:\nstdout: {}\nstderr: {stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires TYPE_BRIDGE_MIGRATION_UPGRADE_FROM (TypeDB 3.12.3) and \
+            TYPE_BRIDGE_MIGRATION_UPGRADE_TO (TypeDB 3.13.6)"]
+async fn upgrade_profile_moves_a_3_12_history_to_3_13_live() {
+    let (Ok(from), Ok(to)) = (
+        std::env::var(UPGRADE_FROM_ENV),
+        std::env::var(UPGRADE_TO_ENV),
+    ) else {
+        eprintln!("{UPGRADE_FROM_ENV} and {UPGRADE_TO_ENV} are unset; skipping");
+        return;
+    };
+    let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+    // SAFETY: test process, set before any CLI child spawns.
+    unsafe {
+        std::env::set_var("TYPEDB_USERNAME", &username);
+        std::env::set_var("TYPEDB_PASSWORD", &password);
+    }
+    let database_name = format!("tb_e2e_upgrade_profile_{}", std::process::id());
+    let journal_name =
+        type_bridge_schema_migration_typedb::derived_journal_database_name(&database_name);
+    let workspace = tempfile::tempdir().expect("workspace directory");
+    let root = workspace.path();
+    fs::create_dir_all(root.join("schema/fragments")).expect("schema directory");
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [fragments/*.yaml]\n",
+    )
+    .expect("schema set writes");
+    let model = root.join("schema/fragments/model.yaml");
+    fs::write(
+        &model,
+        "format: typebridge.schema/v2\nentities: {person: {}}\n",
+    )
+    .expect("schema writes");
+
+    // 1. Author and apply a history on the 3.12.3 server.
+    write_upgrade_manifest(root, "typedb-3.12.1/v1", &from, &to, &database_name);
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "initial"]),
+        "make initial",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "apply", "--environment", "old"]),
+        "apply on 3.12.3",
+    );
+
+    // 2. Move both databases to the 3.13.6 server.
+    let files = tempfile::tempdir().expect("export directory");
+    for name in [&database_name, &journal_name] {
+        move_database(name, &from, &to, &username, &password, files.path()).await;
+    }
+
+    // 3. The workspace moves to 3.13.6; ordinary commands name the upgrade.
+    write_upgrade_manifest(root, "typedb-3.13.6/v1", &from, &to, &database_name);
+    let refused = run_cli(root, &["migration", "apply", "--environment", "new"]);
+    assert_failure_contains(
+        &refused,
+        "apply before the upgrade",
+        "migration_history_profile_upgrade_required",
+    );
+    assert_failure_contains(
+        &refused,
+        "apply before the upgrade",
+        "hint: run `migration upgrade-profile --to typedb-3.13.6/v1`",
+    );
+    let upgrade_new = [
+        "migration",
+        "upgrade-profile",
+        "--environment",
+        "new",
+        "--to",
+        "typedb-3.13.6/v1",
+    ];
+
+    // 4. Live drift refuses the upgrade; the bridge file is already published.
+    let managed = Database::connect_with_options(
+        &to,
+        &database_name,
+        &username,
+        &password,
+        upgrade_connect_options(&to),
+    )
+    .await
+    .expect("moved managed database connects");
+    let mut drift = managed.schema_transaction().await.expect("drift tx");
+    drift
+        .query("define entity intruder;")
+        .await
+        .expect("add out-of-band type");
+    drift.commit().await.expect("commit out-of-band type");
+    assert_failure_contains(
+        &run_cli(root, &upgrade_new),
+        "upgrade over drift",
+        "migration_upgrade_profile_live_drift",
+    );
+    assert!(
+        root.join("migrations/v2/0002_profile_upgrade_typedb_3_13_6.tbmigration.json")
+            .is_file()
+    );
+    let mut repair = managed.schema_transaction().await.expect("repair tx");
+    repair
+        .query("undefine intruder;")
+        .await
+        .expect("remove out-of-band type");
+    repair.commit().await.expect("commit repair");
+
+    // 5. Record the bridge, then again as a no-op.
+    let recorded = run_cli(root, &upgrade_new);
+    assert_success(&recorded, "upgrade-profile");
+    assert!(
+        String::from_utf8_lossy(&recorded.stdout).contains("recorded profile bridge"),
+        "{}",
+        String::from_utf8_lossy(&recorded.stdout)
+    );
+    let repeated = run_cli(root, &upgrade_new);
+    assert_success(&repeated, "repeated upgrade-profile");
+    assert!(
+        String::from_utf8_lossy(&repeated.stdout).contains("already recorded"),
+        "{}",
+        String::from_utf8_lossy(&repeated.stdout)
+    );
+
+    // 6. The history continues on 3.13.6 and verifies clean.
+    fs::write(
+        &model,
+        "format: typebridge.schema/v2\nentities: {person: {}, company: {}}\n",
+    )
+    .expect("schema evolves");
+    assert_success(
+        &run_cli(root, &["migration", "make", "--name", "company"]),
+        "make after the bridge",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "apply", "--environment", "new"]),
+        "apply after the bridge",
+    );
+    assert_success(
+        &run_cli(root, &["migration", "verify", "--environment", "new"]),
+        "verify after the bridge",
+    );
+
+    for address in [&from, &to] {
+        for name in [&database_name, &journal_name] {
+            let database = Database::connect_with_options(
+                address,
+                name,
+                &username,
+                &password,
+                upgrade_connect_options(address),
+            )
+            .await
+            .expect("isolated database connects");
+            database
+                .delete_database()
+                .await
+                .expect("delete isolated database");
+        }
+    }
 }

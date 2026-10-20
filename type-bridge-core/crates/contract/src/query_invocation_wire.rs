@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{from_canonical_json, to_canonical_json};
+use crate::codec::{from_canonical_json_with_limits, to_canonical_json_with_limits};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
 use crate::fingerprint::Fingerprint;
 use crate::query_plan::{InputRow, QueryInvocation, QueryOperation, QueryPlan, failure};
@@ -12,7 +12,8 @@ pub(crate) fn decode_query_invocation(
     plan: &QueryPlan,
     bytes: &[u8],
 ) -> Result<QueryInvocation, Diagnostic> {
-    let wire = from_canonical_json::<QueryInvocationWire>(bytes)?;
+    let codec = plan.limits().codec;
+    let wire = from_canonical_json_with_limits::<QueryInvocationWire>(bytes, codec)?;
     let expected_fingerprint = plan.fingerprint()?;
     if wire.plan_fingerprint != *expected_fingerprint.as_fingerprint() {
         return Err(failure(
@@ -26,7 +27,7 @@ pub(crate) fn decode_query_invocation(
         wire.operation.rebuild(),
         wire.inputs.into_iter().map(InputRow::new).collect(),
     )?;
-    if to_canonical_json(&trusted)? != bytes {
+    if to_canonical_json_with_limits(&trusted, codec)? != bytes {
         return Err(failure(
             DiagnosticCategory::Integrity,
             "query_invocation_wire_mismatch",

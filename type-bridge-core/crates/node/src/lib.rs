@@ -9,12 +9,27 @@
 
 #[cfg(feature = "contract-test-adapter")]
 mod contract_test_adapter;
+pub mod limits;
 mod match_runtime;
 mod migration_catalog_runtime;
+mod perf_stages;
+#[cfg(feature = "perf-stages")]
+pub use perf_stages::perf_stages;
+mod plan_builder_runtime;
+mod proxy_connection_runtime;
+#[cfg(test)]
+#[path = "../../rust/tests/support/purchase_plan.rs"]
+mod purchase_plan;
+mod query_plan_v3_codec;
 mod query_v2_builder_runtime;
 mod query_v2_model_remote_runtime;
 pub mod query_v2_runtime;
 mod runtime_projection;
+#[cfg(test)]
+#[path = "../../../../tests/support/sdk_profile_matrix.rs"]
+#[allow(dead_code)]
+mod sdk_profile_matrix;
+mod staged_transaction_runtime;
 
 #[cfg(feature = "contract-test-adapter")]
 pub use contract_test_adapter::{
@@ -26,7 +41,8 @@ pub use match_runtime::{
     NodeMatchFunctionCallHandle, NodeMatchFunctionHandle, NodeMatchFunctionValueHandle,
     NodeMatchOrderHandle, NodeMatchPredicateHandle, NodeMatchQueryHandle, NodeMatchRoleHandle,
     NodeMatchSelectionHandle, NodeMatchSessionHandle, NodeMatchShapeHandle, NodeQueryCancellation,
-    NodeQueryExecutionResources, NodeValidatedMatchResultHandle, NodeValidatedThingHandle,
+    NodeQueryExecutionResources, NodeQueryLimits, NodeValidatedMatchResultHandle,
+    NodeValidatedThingHandle, canonical_enum_spelling,
 };
 pub use migration_catalog_runtime::{
     NodeMigrationApprovalBuilder, NodeMigrationApprovalSet, NodeMigrationBackfillObservation,
@@ -35,12 +51,15 @@ pub use migration_catalog_runtime::{
     NodeMigrationPlan, NodeMigrationPreview, NodeMigrationPreviewEntry,
     NodeMigrationVerificationFinding, NodeMigrationVerificationReport, open_migration_catalog,
 };
+pub use plan_builder_runtime::{NodePlan, NodePlanBuilder, NodePlanOperand};
+pub use proxy_connection_runtime::NodeProxyConnection;
+pub use query_plan_v3_codec::{_query_plan_v3_round_trip, QueryPlanV3Encoding};
 pub use query_v2_model_remote_runtime::{
     NodePendingRemoteModelQuery, NodeRemoteModelQueryContext, query_v2_prepare_remote_model_count,
     query_v2_prepare_remote_model_exists, query_v2_prepare_remote_model_page,
     query_v2_prepare_remote_model_reduce, query_v2_prepare_remote_model_reduce_by_field,
     query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
-    query_v2_remote_model_context, query_v2_remote_model_context_with_resources,
+    query_v2_remote_model_context_with_resources,
 };
 pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
 
@@ -52,6 +71,7 @@ use std::time::{Duration, Instant};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{Map, Value};
+use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_core_lib::version as core_version;
 #[cfg(test)]
 use type_bridge_orm::_descriptor::{EntityDescriptor, RelationDescriptor};
@@ -473,7 +493,8 @@ impl NodeRustDatabase {
         &self,
         transaction_type: Option<String>,
     ) -> Result<NodeRustTransactionContext> {
-        let tx_type = parse_tx_type(transaction_type.as_deref().unwrap_or("read"))?;
+        let tx_type =
+            match_runtime::parse_enum::<TxType>(transaction_type.as_deref().unwrap_or("read"))?;
         let context = self
             .runtime
             .block_on(self.db.transaction_context(tx_type))
@@ -483,6 +504,23 @@ impl NodeRustDatabase {
             runtime: Arc::clone(&self.runtime),
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
         })
+    }
+}
+
+#[napi]
+impl NodeRustDatabase {
+    /// Create a deferred staged transaction; nothing opens until commit.
+    /// An omitted kind is inferred from the staged writes.
+    #[napi(js_name = "stagedTransaction")]
+    pub fn staged_transaction(
+        &self,
+        kind: Option<String>,
+    ) -> Result<staged_transaction_runtime::NodeStagedTransaction> {
+        let options = staged_transaction_runtime::staged_options(kind.as_deref())?;
+        Ok(staged_transaction_runtime::NodeStagedTransaction::new(
+            self.db.transaction(options),
+            Arc::clone(&self.runtime),
+        ))
     }
 }
 
@@ -528,6 +566,7 @@ impl NodeRustTransactionContext {
         }
     }
 
+    /// Roll back writes and retain this context for more work.
     #[napi(js_name = "rollback")]
     pub fn rollback(&self) -> Result<()> {
         self.runtime
@@ -544,7 +583,7 @@ impl NodeRustTransactionContext {
 
     #[napi(js_name = "transactionType")]
     pub fn transaction_type(&self) -> String {
-        tx_type_name(self.context.tx_type()).to_string()
+        self.context.tx_type().spelling().to_string()
     }
 }
 
@@ -633,16 +672,10 @@ pub(crate) fn attribute_value_from_js(
     let object = value
         .as_object()
         .ok_or_else(|| Error::from_reason("Attribute value must be an object"))?;
-    let value_type_name = required_string(object, "value_type")?;
-    let value_type = match value_type_name.as_str() {
-        "datetime_tz" => Some(ValueType::DateTimeTz),
-        value_type => ValueType::parse(value_type),
-    }
-    .ok_or_else(|| {
-        Error::from_reason(format!(
-            "value_type must be one of the TypeDB value types, got '{value_type_name}'"
-        ))
-    })?;
+    // Generated code sends the projected wire's scalar-domain spelling.
+    let value_type = ValueType::from(match_runtime::parse_enum::<ValueTypeTag>(
+        &required_string(object, "value_type")?,
+    )?);
     if let Some(expected_type) = expected_type
         && value_type != expected_type
     {
@@ -741,26 +774,6 @@ fn query_result_to_json(result: QueryResult) -> Result<String> {
     serde_json::to_string(&values).map_err(json_serialize_error)
 }
 
-fn parse_tx_type(value: &str) -> Result<TxType> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "read" => Ok(TxType::Read),
-        "write" => Ok(TxType::Write),
-        "schema" => Ok(TxType::Schema),
-        other => Err(Error::new(
-            Status::InvalidArg,
-            format!("transaction_type must be 'read', 'write', or 'schema', got {other:?}"),
-        )),
-    }
-}
-
-fn tx_type_name(tx_type: TxType) -> &'static str {
-    match tx_type {
-        TxType::Read => "read",
-        TxType::Write => "write",
-        TxType::Schema => "schema",
-    }
-}
-
 fn napi_secure_connect_options(
     http_port: Option<u32>,
     server_version: Option<String>,
@@ -824,6 +837,12 @@ fn napi_secure_connect_error(error: type_bridge_orm::SecureConnectError) -> napi
 }
 
 pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
+    if error.failure().is_some() {
+        return match_runtime::napi_sdk_diagnostic(type_bridge_orm::lower_execution_error(
+            error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+        ));
+    }
     match error {
         OrmError::Match(error) => match_runtime::napi_match_error(error),
         OrmError::DescriptorValidation { .. }
@@ -849,6 +868,96 @@ mod tests {
     use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
 
     use super::*;
+
+    struct ReusableBackend(Arc<Mutex<Vec<&'static str>>>);
+    impl DriverBackend for ReusableBackend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, std::result::Result<Box<dyn TransactionOps>, OrmError>> {
+            self.0.lock().unwrap().push("open");
+            let transaction = ReusableProvider(Arc::clone(&self.0));
+            Box::pin(async { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+    struct ReusableProvider(Arc<Mutex<Vec<&'static str>>>);
+    impl TransactionOps for ReusableProvider {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, std::result::Result<QueryResult, OrmError>> {
+            self.0.lock().unwrap().push("query");
+            Box::pin(async { Ok(QueryResult::Rows(Vec::new())) })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.0.lock().unwrap().push("commit");
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.0.lock().unwrap().push("rollback");
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, std::result::Result<(), OrmError>> {
+            self.0.lock().unwrap().push("close");
+            Box::pin(async { Ok(()) })
+        }
+    }
+    #[test]
+    fn node_transaction_queries_and_commits_after_rollback_on_the_same_provider() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let database = NodeRustDatabase {
+            db: Arc::new(type_bridge_orm::Database::with_backend(
+                Box::new(ReusableBackend(Arc::clone(&events))),
+                "test",
+            )),
+            runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            managed_scope_id: None,
+        };
+        let transaction = database.transaction(Some("write".into())).unwrap();
+        transaction.query_json("before".into()).unwrap();
+        transaction.rollback().unwrap();
+        transaction.query_json("after".into()).unwrap();
+        transaction.commit().unwrap();
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["open", "query", "rollback", "query", "commit"]
+        );
+    }
+
+    #[test]
+    fn node_double_commit_keeps_the_released_lifecycle_error() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let database = NodeRustDatabase {
+            db: Arc::new(type_bridge_orm::Database::with_backend(
+                Box::new(ReusableBackend(Arc::clone(&events))),
+                "test",
+            )),
+            runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+            managed_scope_id: None,
+        };
+        let transaction = database.transaction(Some("write".into())).unwrap();
+        transaction.commit().unwrap();
+        // Refused before dispatch: no unknown-outcome diagnostic.
+        let error = transaction.commit().unwrap_err();
+        assert!(error.reason.contains("Transaction already consumed"));
+        assert!(!error.reason.contains("commit_outcome_unknown"));
+        assert_eq!(*events.lock().unwrap(), ["open", "commit"]);
+    }
+
+    #[test]
+    fn attribute_values_accept_the_2_2_datetime_tz_spelling() {
+        for spelling in ["datetime_tz", "datetime-tz"] {
+            let value = serde_json::json!({
+                "value_type": spelling,
+                "value": "2026-10-25T00:30:00Z",
+            });
+            assert_eq!(
+                attribute_value_from_js(&value, Some(ValueType::DateTimeTz)).unwrap(),
+                AttributeValue::DateTimeTZ("2026-10-25T00:30:00Z".to_owned())
+            );
+        }
+    }
 
     struct AdministrationBackend {
         databases: Arc<Mutex<BTreeSet<String>>>,

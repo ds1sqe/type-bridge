@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LEDGER = ROOT / "tests/contracts/c-broad-case-ledger-v1.json"
+DEFAULT_LEDGER = ROOT / "tests/contracts/c-broad-case-ledger.json"
 CAPABILITIES = ("G05", "G06", "G08", "G13")
 SLICES = (
     "query-remote",

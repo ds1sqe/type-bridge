@@ -4,6 +4,7 @@
 //! aggregation operations, [`SortDir`] for sort direction, and
 //! [`AggResult`] for typed aggregation results.
 
+#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

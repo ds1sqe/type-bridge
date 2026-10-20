@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
-use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+use type_bridge_contract::limits::{
+    MAX_BOOLEAN_TERMS, MAX_COLLECTION_ORDER_TERMS, MAX_ORDER_TERMS, MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_SUPPORTED_SELECTED_SLOTS, QueryLimits, StructuralLimits,
+};
 use type_bridge_contract::projection::{ProjectedTokenIdentity, ProjectionHandler};
-use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::schema::{OwnsFactId, encode_declared_schema};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
@@ -29,13 +31,15 @@ use type_bridge_orm::{
     QueryExecutionDeadline, QueryExecutionResourceLimits, QueryHandle, Reduction,
     RemoteModelQueryV2Error, RoleHandle, RowCardinality, SelectionHandle, SessionHandle,
     SortDirection, ValidatedMatchRequest, Window, lower_execution_error,
-    materialize_projected_query_result_with_budget, prepare_remote_model_query_v2_with_budget,
+    materialize_projected_query_result_with_budget, validate_field_group_count,
+    validate_order_term_count, validate_reducer_count, validate_selection_count,
 };
 #[cfg(test)]
 use type_bridge_orm::{
-    MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS,
+    DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES, DEFAULT_PROXY_QUERY_BYTES,
+    DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS, DEFAULT_PROXY_QUERY_GRAPH_NODES,
+    DEFAULT_PROXY_QUERY_ITEMS, DEFAULT_PROXY_QUERY_ROLE_PLAYERS, DEFAULT_PROXY_QUERY_STATEMENTS,
+    DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
 };
 
 use crate::abi::{
@@ -47,7 +51,7 @@ use crate::execution_diagnostic::{
     TypeBridgeExecutionDiagnostics, initialize_execution_outputs, return_execution_error,
 };
 use crate::generated_preflight::{DirectOutputPreflight, direct_output_preflight};
-use crate::policy::{ParsedLimits, parse_common_limits, parse_limits_constrained};
+use crate::policy::{ParsedLimits, parse_common_limits, parse_limits};
 use crate::projected_model::{
     TypeBridgeProjectedThing, check_projected_attribute_value_ranges, check_projected_thing_ranges,
 };
@@ -62,12 +66,27 @@ use crate::runtime::{
     poisoned_transaction_diagnostic,
 };
 
+mod proxy_connection;
+pub(crate) use proxy_connection::StagedProxyGuard;
+pub use proxy_connection::{
+    TypeBridgeProxyConnection, TypeBridgeProxyConnectionOptionsV1, TypeBridgeProxyHeaderV1,
+};
+#[cfg(test)]
+use proxy_connection::{
+    type_bridge_proxy_connection_close, type_bridge_proxy_connection_open_v1,
+    type_bridge_proxy_query_execute_v1,
+};
+
 const DESCRIPTOR_VERSION: u32 = 1;
-const SELECTED_SLOT_MAX: usize = 16;
-const ORDER_TERM_MAX: usize = 16;
-const BOOLEAN_TERM_MAX: usize = 256;
+// Table-read bounds are the core's absolute ceilings (sessions only tighten
+// them); a count above one is refused with the core's diagnostic.
+const SELECTED_SLOT_MAX: usize = MAX_SUPPORTED_SELECTED_SLOTS;
+const ORDER_TERM_MAX: usize = MAX_ORDER_TERMS;
+const COLLECTION_ORDER_TERM_MAX: usize = MAX_COLLECTION_ORDER_TERMS;
+const BOOLEAN_TERM_MAX: usize = MAX_BOOLEAN_TERMS;
+// The C object-size floor of a generated argument struct (C11 5.2.4.1), not
+// a query rule.
 const FUNCTION_ARGUMENT_HOSTED_OBJECT_BYTES_MAX: usize = 65_535;
-const OUTPUT_NAME_BYTES_MAX: usize = 128;
 const REMOTE_RESPONSE_SNAPSHOT_LIMIT: usize = MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1);
 
 const MATCH_EXACT: u32 = 1;
@@ -504,9 +523,7 @@ enum QueryResultStorage {
 struct QueryRemoteContextState {
     package: Arc<SchemaPackageState>,
     registry: Arc<DescriptorRegistry>,
-    authority: Arc<QueryAuthority>,
-    advertisement: Vec<u8>,
-    limits: QueryExecutionResourceLimits,
+    connection: type_bridge_orm::ProxyQueryConnection,
 }
 
 /// Opaque immutable authenticated caller-transport remote query context.
@@ -723,11 +740,7 @@ impl TypeBridgeQueryRemoteContext {
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
-        preflight.check_package_borrowed_ranges(&self.state.package)?;
-        preflight.check_bytes(
-            self.state.advertisement.as_ptr().cast(),
-            self.state.advertisement.len(),
-        )
+        preflight.check_package_borrowed_ranges(&self.state.package)
     }
 }
 
@@ -737,10 +750,6 @@ impl TypeBridgeQueryRemotePending {
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
         preflight.check_package_borrowed_ranges(&self.state.package)?;
-        preflight.check_bytes(
-            self.state.advertisement.as_ptr().cast(),
-            self.state.advertisement.len(),
-        )?;
         preflight.check_bytes(
             self.pending.request_bytes().as_ptr().cast(),
             self.pending.request_bytes().len(),
@@ -753,11 +762,7 @@ impl TypeBridgeQueryRemoteClaim {
         &self,
         preflight: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
-        preflight.check_package_borrowed_ranges(&self.state.package)?;
-        preflight.check_bytes(
-            self.state.advertisement.as_ptr().cast(),
-            self.state.advertisement.len(),
-        )
+        preflight.check_package_borrowed_ranges(&self.state.package)
     }
 }
 
@@ -951,10 +956,49 @@ fn query_result_value(storage: &QueryResultStorage) -> Option<&ProjectedQueryVal
     }
 }
 
+/// One named override of a canonical query limit.
+///
+/// `name` is `name_length` bytes of UTF-8, not NUL-terminated, spelling one
+/// stable limit name. A limit that is not named keeps its default.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeBridgeQueryLimitOverrideV1 {
+    pub name: *const u8,
+    pub name_length: usize,
+    pub value: u64,
+}
+
 /// Open an isolated provider-free typed-query construction session.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_query_session_open(
     package: *const TypeBridgeSchemaPackage,
+    out_session: *mut *mut TypeBridgeQuerySession,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: the caller contract is forwarded unchanged with no overrides.
+    unsafe {
+        type_bridge_query_session_open_with_limits_v1(
+            package,
+            ptr::null(),
+            0,
+            out_session,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a typed-query construction session whose queries are validated,
+/// encoded, and executed under caller-supplied query limits.
+///
+/// `overrides` names the limits that differ from the canonical defaults; a
+/// NULL pointer with a zero count selects the defaults. The shared engine
+/// admits the values: an unknown name, a repeated name, or an unsupported
+/// value returns `TYPE_BRIDGE_STATUS_INVALID_ARGUMENT` and opens nothing.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_query_session_open_with_limits_v1(
+    package: *const TypeBridgeSchemaPackage,
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    override_count: usize,
     out_session: *mut *mut TypeBridgeQuerySession,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
@@ -980,6 +1024,12 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
         if package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
+        // SAFETY: the caller retains `override_count` readable overrides and
+        // each named byte range for the duration of this call.
+        let Some(limits) = (unsafe { query_limits_from_overrides(overrides, override_count) })
+        else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
         // SAFETY: caller retains the immutable package through this call.
         let package = unsafe { &*package };
         let registry = match package.state().installed_projection.match_registry() {
@@ -988,7 +1038,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
         };
         let state = Arc::new(QuerySessionState {
             package: Arc::clone(package.state()),
-            handle: SessionHandle::new(Arc::clone(&registry)),
+            handle: SessionHandle::with_limits(Arc::clone(&registry), limits),
             registry,
         });
         write_handle(
@@ -998,6 +1048,41 @@ pub unsafe extern "C" fn type_bridge_query_session_open(
             out_diagnostics,
         )
     })
+}
+
+/// Read caller-supplied limit overrides and admit them through the shared
+/// engine. Returns `None` for a malformed or refused set.
+///
+/// # Safety
+/// `overrides` must be NULL with a zero count, or point to `count` readable
+/// entries whose `name` ranges are readable for `name_length` bytes.
+unsafe fn query_limits_from_overrides(
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    count: usize,
+) -> Option<QueryLimits> {
+    if count == 0 {
+        return Some(QueryLimits::CANONICAL);
+    }
+    // More entries than limits can only repeat or invent a name.
+    if overrides.is_null() || count > QueryLimits::FIELDS.len() {
+        return None;
+    }
+    // SAFETY: the caller guarantees `count` readable entries.
+    let entries = unsafe { std::slice::from_raw_parts(overrides, count) };
+    let mut named = Vec::with_capacity(count);
+    for entry in entries {
+        if entry.name.is_null() {
+            return None;
+        }
+        // SAFETY: the caller guarantees `name_length` readable bytes.
+        let name = unsafe { std::slice::from_raw_parts(entry.name, entry.name_length) };
+        let name = std::str::from_utf8(name).ok()?;
+        if named.iter().any(|(seen, _)| *seen == name) {
+            return None;
+        }
+        named.push((name, entry.value));
+    }
+    QueryLimits::from_overrides(named).ok()
 }
 
 /// Close an immutable query-construction session handle.
@@ -2770,7 +2855,11 @@ pub unsafe extern "C" fn type_bridge_query_selection_open_v1(
         ) && value.reserved0 == [0; 7]
             && matches!(value.kind, SELECTION_ONE | SELECTION_COLLECT)
             && value.distinct <= 1
-            && collection_pointer_is_canonical(value.orders, value.order_count, ORDER_TERM_MAX)
+            && collection_pointer_is_canonical(
+                value.orders,
+                value.order_count,
+                COLLECTION_ORDER_TERM_MAX,
+            )
             && (value.kind != SELECTION_ONE || (value.distinct == 0 && value.order_count == 0))
     });
     if layout_active {
@@ -2912,11 +3001,12 @@ pub unsafe extern "C" fn type_bridge_query_open_v1(
             value.reserved,
         ) && value.reserved0 == 0
             && matches!(value.shape_kind, SHAPE_POSITIONAL | SHAPE_NAMED)
-            && (1..=SELECTED_SLOT_MAX).contains(&value.slot_count)
-            && !value.slots.is_null()
+            && collection_pointer_is_canonical(value.slots, value.slot_count, usize::MAX)
     });
+    // The core refuses empty and over-wide shapes; an over-wide table is not read.
+    let slots_over_ceiling = snapshot.is_some_and(|value| value.slot_count > SELECTED_SLOT_MAX);
     let mut slots_valid = top_layout;
-    if let Some(descriptor) = snapshot.filter(|_| top_layout) {
+    if let Some(descriptor) = snapshot.filter(|_| top_layout && !slots_over_ceiling) {
         let table_bytes = match descriptor
             .slot_count
             .checked_mul(size_of::<TypeBridgeQueryShapeSlotV1>())
@@ -2933,7 +3023,8 @@ pub unsafe extern "C" fn type_bridge_query_open_v1(
             let name_canonical = if descriptor.shape_kind == SHAPE_POSITIONAL {
                 slot.name.length == 0 && slot.name.data.is_null()
             } else {
-                (1..=OUTPUT_NAME_BYTES_MAX).contains(&slot.name.length) && !slot.name.data.is_null()
+                // The core refuses empty and over-long names (`invalid_output_name`).
+                slot.name.length != 0 && !slot.name.data.is_null()
             };
             if !descriptor_layout::<TypeBridgeQueryShapeSlotV1>(
                 slot.struct_size,
@@ -2984,6 +3075,13 @@ pub unsafe extern "C" fn type_bridge_query_open_v1(
         }
         // SAFETY: caller retains the immutable session for the call.
         let session = unsafe { &*session };
+        if slots_over_ceiling {
+            let limits = session.state.handle.limits().structural;
+            let error = validate_selection_count(limits, descriptor.slot_count)
+                .err()
+                .map_or_else(layout_invalid, |error| lower(error.into()));
+            return return_execution_error(error, out_diagnostics);
+        }
         let mut selections = Vec::new();
         let mut declarations = Vec::new();
         let mut named = Vec::new();
@@ -3420,14 +3518,14 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
         return false;
     }
     if matches!(value.kind, TERMINAL_ROWS | TERMINAL_FIRST | TERMINAL_PAGE)
-        && !collection_pointer_is_canonical(value.orders, value.order_count, ORDER_TERM_MAX)
+        && !collection_pointer_is_canonical(value.orders, value.order_count, usize::MAX)
     {
         return false;
     }
     match value.kind {
         TERMINAL_ROWS => {
+            // The core refuses a zero limit (`zero_window_limit`).
             if !matches!(value.cardinality, ROWS_EXACTLY_ONE | ROWS_BOUNDED_MANY)
-                || value.limit == 0
                 || (value.cardinality == ROWS_EXACTLY_ONE
                     && (value.offset != 0 || value.limit != 1))
             {
@@ -3440,7 +3538,7 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
             }
         }
         TERMINAL_PAGE => {
-            if value.cardinality != ROWS_BOUNDED_MANY || value.limit == 0 {
+            if value.cardinality != ROWS_BOUNDED_MANY {
                 return false;
             }
         }
@@ -3487,7 +3585,7 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
                 || !value.expected_group_model.is_null()
                 || value.expected_group_mode != 0
                 || value.group_fields.is_null()
-                || !(2..=SELECTED_SLOT_MAX).contains(&value.group_field_count)
+                || value.group_field_count < 2
             {
                 return false;
             }
@@ -3504,11 +3602,31 @@ fn terminal_lanes_valid(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
         }
     }
     if reduction_terminal {
-        collection_pointer_is_canonical(value.reducers, value.reducer_count, SELECTED_SLOT_MAX)
-            && value.reducer_count != 0
+        // The core refuses an empty reducer list (`empty_reducers`).
+        collection_pointer_is_canonical(value.reducers, value.reducer_count, usize::MAX)
     } else {
         value.reducers.is_null() && value.reducer_count == 0
     }
+}
+
+/// Whether a terminal table is longer than the core's absolute ceiling, so it
+/// is not read and the core's refusal is returned instead.
+fn terminal_table_over_ceiling(value: &TypeBridgeQueryTerminalDescriptorV1) -> bool {
+    value.order_count > ORDER_TERM_MAX
+        || value.group_field_count > SELECTED_SLOT_MAX
+        || value.reducer_count > SELECTED_SLOT_MAX
+}
+
+/// The core's refusal of a terminal table above its absolute ceiling.
+fn terminal_ceiling_refusal(
+    limits: StructuralLimits,
+    value: &TypeBridgeQueryTerminalDescriptorV1,
+) -> SdkExecutionDiagnostic {
+    validate_order_term_count(value.order_count, limits)
+        .and_then(|()| validate_field_group_count(limits, value.group_field_count))
+        .and_then(|()| validate_reducer_count(limits, value.reducer_count))
+        .err()
+        .map_or_else(layout_invalid, |error| lower(error.into()))
 }
 
 fn field_reference_layout(value: &TypeBridgeQueryFieldReferenceV1) -> bool {
@@ -3544,6 +3662,7 @@ unsafe fn terminal_active_preflight(
     if !terminal_lanes_valid(value) {
         return Ok(false);
     }
+    let tables_readable = !terminal_table_over_ceiling(value);
     // SAFETY: lane validation identifies required root and optional active group binding.
     for result in [
         unsafe { preflight_handle(preflight, value.root) },
@@ -3561,7 +3680,7 @@ unsafe fn terminal_active_preflight(
         // SAFETY: caller retains the active immutable group binding.
         unsafe { &*value.group_binding }.check_borrowed_ranges(preflight)?;
     }
-    if value.order_count != 0 {
+    if tables_readable && value.order_count != 0 {
         // SAFETY: lane validation bounded the canonical active pointer table.
         unsafe { preflight.check_pointer_array(value.orders, value.order_count) }?;
         for index in 0..value.order_count {
@@ -3573,7 +3692,7 @@ unsafe fn terminal_active_preflight(
             }
         }
     }
-    if value.group_field_count != 0 {
+    if tables_readable && value.group_field_count != 0 {
         let bytes = value
             .group_field_count
             .checked_mul(size_of::<TypeBridgeQueryFieldReferenceV1>())
@@ -3596,7 +3715,7 @@ unsafe fn terminal_active_preflight(
             unsafe { &*field.field }.check_borrowed_ranges(preflight)?;
         }
     }
-    if value.reducer_count != 0 {
+    if tables_readable && value.reducer_count != 0 {
         let bytes = value
             .reducer_count
             .checked_mul(size_of::<TypeBridgeQueryReducerV1>())
@@ -3725,6 +3844,11 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
         }
         // SAFETY: caller retains the immutable query.
         let query = unsafe { &*query };
+        if terminal_table_over_ceiling(&descriptor) {
+            let limits = query.state.handle.limits().structural;
+            let error = terminal_ceiling_refusal(limits, &descriptor);
+            return return_execution_error(error, out_diagnostics);
+        }
         let manager_operation = manager_terminal_marker(&descriptor);
         if manager_operation.is_some() && !manager_terminal_package_allowed(&query.state.package) {
             return return_execution_error(layout_invalid(), out_diagnostics);
@@ -3775,7 +3899,7 @@ pub unsafe extern "C" fn type_bridge_query_terminal_open_v1(
             let root = root
                 .as_ref()
                 .expect("manager terminal exact-root lane was validated");
-            let validated = match query.handle.validate_manager_count_by(root) {
+            let validated = match query.handle.validate_count_by(root) {
                 Ok(value) => value,
                 Err(error) => return return_execution_error(lower(error), out_diagnostics),
             };
@@ -4001,7 +4125,7 @@ fn check_database_query_borrowed_ranges(
     preflight: &DirectOutputPreflight,
     database: &TypeBridgeDatabase,
 ) -> Result<(), TypeBridgeStatus> {
-    if database.policy_answer_ceiling().is_some() {
+    if database.answer_limits().is_some() {
         check_database_borrowed_ranges(preflight, database)
     } else {
         preflight.check_package_borrowed_ranges(database.package_state())
@@ -4012,7 +4136,7 @@ fn check_read_transaction_query_borrowed_ranges(
     preflight: &DirectOutputPreflight,
     transaction: &TypeBridgeReadTransaction,
 ) -> Result<(), TypeBridgeStatus> {
-    if transaction.policy_answer_ceiling().is_some() {
+    if transaction.answer_limits().is_some() {
         check_read_transaction_borrowed_ranges(preflight, transaction)
     } else {
         preflight.check_package_borrowed_ranges(transaction.package_state())
@@ -4023,7 +4147,6 @@ fn check_read_transaction_query_borrowed_ranges(
 unsafe fn execute_preflight<T>(
     target: *const T,
     target_borrowed_ranges: impl FnOnce(&DirectOutputPreflight, &T) -> Result<(), TypeBridgeStatus>,
-    target_policy_ceiling: impl FnOnce(&T) -> Option<QueryExecutionResourceLimits>,
     terminal: *const TypeBridgeQueryTerminal,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
@@ -4053,18 +4176,11 @@ unsafe fn execute_preflight<T>(
         // caller retains it immutable throughout this invocation.
         unsafe { &*cancellation }.answer_cancellation()
     };
-    let target_ceiling = if target.is_null() {
-        None
-    } else {
-        // SAFETY: complete-object preflight above proved the target readable;
-        // this snapshots only immutable policy before any provider work.
-        unsafe { target_policy_ceiling(&*target) }
-    };
-    // Capture the one absolute invocation budget after intersecting any V2
-    // target ceiling and before potentially large borrowed-range walks.
-    // Interruption errors are retained until those read-only walks prove
-    // outputs cannot alias live input bytes.
-    let parsed = parse_limits_constrained(limits_snapshot, &answer, target_ceiling);
+    // Capture the one absolute invocation budget before potentially large
+    // borrowed-range walks. The target's connection ceiling is applied by
+    // `QueryTarget::budget` at execution. Interruption errors are retained
+    // until those read-only walks prove outputs cannot alias live input bytes.
+    let parsed = parse_limits(limits_snapshot, &answer);
     #[cfg(test)]
     QUERY_PREFLIGHT_DELAY_MILLISECONDS.with(|delay| {
         let delay = delay.replace(0);
@@ -4121,6 +4237,52 @@ fn materialize_result(
         state: Arc::clone(&terminal.state),
         storage: QueryResultStorage::Query(value),
     })
+}
+
+fn lower_target(error: type_bridge_orm::QueryTargetError) -> SdkExecutionDiagnostic {
+    match error {
+        type_bridge_orm::QueryTargetError::Direct(error) => lower(error),
+        type_bridge_orm::QueryTargetError::Prepare(error)
+        | type_bridge_orm::QueryTargetError::Reply(error) => lower_remote(error),
+        type_bridge_orm::QueryTargetError::Interrupted(error) => error,
+    }
+}
+
+/// Run one validated non-manager terminal on `target` and materialize its
+/// result under the same target budget. Every C `*_query_execute_v1` entry
+/// point funnels through here, whatever the transport.
+pub(crate) async fn execute_validated_on_target(
+    target: type_bridge_orm::QueryTarget<'_>,
+    terminal: &TypeBridgeQueryTerminal,
+    request: ValidatedMatchRequest,
+    origin: ProjectedQueryOrigin,
+    resources: QueryExecutionResourceLimits,
+    deadline: QueryExecutionDeadline,
+    answer: &type_bridge_orm::AnswerCancellation,
+) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
+    let (resources, deadline) = target.budget(resources, deadline);
+    let (request, result) = target
+        .execute(
+            &terminal.state.registry,
+            request,
+            resources,
+            answer,
+            deadline,
+        )
+        .await
+        .map_err(lower_target)?;
+    materialize_result(
+        terminal,
+        &terminal.state.registry,
+        origin,
+        request,
+        result,
+        MaterializationBudget {
+            limits: resources.projected(),
+            cancellation: answer,
+            deadline,
+        },
+    )
 }
 
 async fn execute_manager_database(
@@ -4301,8 +4463,23 @@ fn build_remote_context_state(
     advertisement: Vec<u8>,
     limits: QueryExecutionResourceLimits,
 ) -> Result<QueryRemoteContextState, SdkExecutionDiagnostic> {
-    RemoteCapabilities::decode(&advertisement)
-        .map_err(type_bridge_orm::lower_remote_query_diagnostic)?;
+    let (authority, registry) = remote_authority(package)?;
+    // The connection validates the advertisement and owns the ceiling that
+    // every prepared request on this context is constrained by.
+    let connection =
+        type_bridge_orm::ProxyQueryConnection::with_exchange(advertisement, authority, limits)?;
+    Ok(QueryRemoteContextState {
+        package: Arc::clone(package),
+        registry,
+        connection,
+    })
+}
+
+/// The schema authority proxy requests are prepared under, checked against
+/// the package's projection, and the package's match registry.
+fn remote_authority(
+    package: &Arc<SchemaPackageState>,
+) -> Result<(Arc<QueryAuthority>, Arc<DescriptorRegistry>), SdkExecutionDiagnostic> {
     let declared = encode_declared_schema(package._authority.declared_schema())
         .map_err(type_bridge_orm::lower_remote_query_diagnostic)?;
     let authority = QueryAuthority::from_declared_bytes(
@@ -4324,13 +4501,7 @@ fn build_remote_context_state(
         .match_registry()
         .map(Arc::new)
         .map_err(lower)?;
-    Ok(QueryRemoteContextState {
-        package: Arc::clone(package),
-        registry,
-        authority: Arc::new(authority),
-        advertisement,
-        limits,
-    })
+    Ok((Arc::new(authority), registry))
 }
 
 fn take_remote_claim(
@@ -4360,7 +4531,6 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
         execute_preflight(
             database,
             check_database_query_borrowed_ranges,
-            TypeBridgeDatabase::policy_answer_ceiling,
             terminal,
             limits,
             cancellation,
@@ -4446,29 +4616,15 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    let value = database
-                        .block_on(
-                            database.orm_database().execute_match_with_limits(
-                                &terminal.state.registry,
-                                &request,
-                                parsed
-                                    .resources
-                                    .direct_with_deadline(answer.clone(), parsed.deadline),
-                            ),
-                        )
-                        .map_err(lower)?;
-                    materialize_result(
+                    database.block_on(execute_validated_on_target(
+                        type_bridge_orm::QueryTarget::Database(database.orm_database()),
                         terminal,
-                        &terminal.state.registry,
-                        ProjectedQueryOrigin::for_database(database.orm_database()),
                         request,
-                        value,
-                        MaterializationBudget {
-                            limits: parsed.resources.projected(),
-                            cancellation: &answer,
-                            deadline: parsed.deadline,
-                        },
-                    )
+                        ProjectedQueryOrigin::for_database(database.orm_database()),
+                        parsed.resources,
+                        parsed.deadline,
+                        &answer,
+                    ))
                 }));
                 let value = match outcome {
                     Ok(Ok(value)) => value,
@@ -4507,7 +4663,6 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
         execute_preflight(
             transaction,
             check_read_transaction_query_borrowed_ranges,
-            TypeBridgeReadTransaction::policy_answer_ceiling,
             terminal,
             limits,
             cancellation,
@@ -4595,30 +4750,16 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    let value = transaction
-                        .block_on(
-                            context.execute_match_with_limits(
-                                &terminal.state.registry,
-                                &request,
-                                parsed
-                                    .resources
-                                    .direct_with_deadline(answer.clone(), parsed.deadline),
-                            ),
-                        )
-                        .map_err(lower)?;
                     let origin = ProjectedQueryOrigin::for_transaction(context)?;
-                    materialize_result(
+                    transaction.block_on(execute_validated_on_target(
+                        type_bridge_orm::QueryTarget::Transaction(context),
                         terminal,
-                        &terminal.state.registry,
-                        origin,
                         request,
-                        value,
-                        MaterializationBudget {
-                            limits: parsed.resources.projected(),
-                            cancellation: &answer,
-                            deadline: parsed.deadline,
-                        },
-                    )
+                        origin,
+                        parsed.resources,
+                        parsed.deadline,
+                        &answer,
+                    ))
                 }));
                 let value = match outcome {
                     Ok(Ok(value)) => value,
@@ -4693,10 +4834,12 @@ pub unsafe extern "C" fn type_bridge_query_remote_context_open_v1(
         if advertisement.length > MAX_REMOTE_ENVELOPE_BYTES {
             return return_execution_error(remote_advertisement_limit(), out_diagnostics);
         }
-        let common = match parse_common_limits(limits_snapshot) {
-            Ok(value) => value,
-            Err(error) => return return_execution_error(error, out_diagnostics),
-        };
+        // A remote context opened without limits runs at the proxy (wire) defaults.
+        let common =
+            match parse_common_limits(limits_snapshot, type_bridge_orm::AnswerTransport::Proxy) {
+                Ok(value) => value,
+                Err(error) => return return_execution_error(error, out_diagnostics),
+            };
         let reservation = match ReservedBox::try_new(AllocationSite::QueryRemoteContextHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
@@ -4767,7 +4910,9 @@ pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
         None
     } else {
         // SAFETY: the complete context outer object was fenced above.
-        let deadline = QueryExecutionDeadline::for_limits(unsafe { &*context }.state.limits);
+        let deadline = QueryExecutionDeadline::for_limits(
+            unsafe { &*context }.state.connection.answer_limits(),
+        );
         let check = deadline.check(&answer);
         Some((deadline, check))
     };
@@ -4826,21 +4971,17 @@ pub unsafe extern "C" fn type_bridge_query_remote_prepare_v1(
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
-        let pending = match prepare_remote_model_query_v2_with_budget(
-            &context.state.authority,
+        let connection = &context.state.connection;
+        let pending = match connection.prepare(
             &context.state.registry,
             request,
-            &context.state.advertisement,
-            context.state.limits.remote(),
-            deadline,
+            connection.answer_limits(),
             &answer,
+            deadline,
         ) {
             Ok(value) => value,
-            Err(error) => return return_execution_error(lower_remote(error), out_diagnostics),
+            Err(error) => return return_execution_error(lower_target(error), out_diagnostics),
         };
-        if let Err(error) = deadline.check(&answer) {
-            return return_execution_error(error, out_diagnostics);
-        }
         let pending = reservation.initialize(TypeBridgeQueryRemotePending {
             state: Arc::clone(&context.state),
             terminal: terminal.clone(),
@@ -5128,7 +5269,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_claim_decode_v1(
             request,
             result,
             MaterializationBudget {
-                limits: claim.state.limits.projected(),
+                limits: claim.state.connection.answer_limits().projected(),
                 cancellation: &answer,
                 deadline: claim.deadline,
             },
@@ -6581,7 +6722,7 @@ mod tests {
         answer_ceiling: QueryExecutionResourceLimits,
     ) -> FakeDatabase {
         let events = Arc::new(Events::default());
-        let database = Database::with_backend(
+        let database = Database::with_backend_answer_limits(
             Box::new(FakeBackend {
                 events: Arc::clone(&events),
                 queries: Arc::new(Mutex::new(queries.into())),
@@ -6590,12 +6731,12 @@ mod tests {
                 open_pending: false,
             }),
             "query-c-abi-policy",
+            answer_ceiling,
         );
         FakeDatabase {
-            value: Box::new(TypeBridgeDatabase::from_test_database_with_answer_ceiling(
+            value: Box::new(TypeBridgeDatabase::from_test_database(
                 Arc::clone(package.state()),
                 database,
-                Some(answer_ceiling),
             )),
             events,
         }
@@ -6963,9 +7104,9 @@ mod tests {
         })
     }
 
-    fn requested_sdk_v2_proof() -> Option<(PathBuf, String)> {
-        let path = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT");
-        let nonce = env::var_os("TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE");
+    fn requested_sdk_queries_proof() -> Option<(PathBuf, String)> {
+        let path = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT");
+        let nonce = env::var_os("TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE");
         assert_eq!(
             path.is_some(),
             nonce.is_some(),
@@ -7003,24 +7144,28 @@ mod tests {
         Some((path, nonce))
     }
 
-    fn publish_sdk_v2_proof(destination: &Path, run_nonce: &str, results: Vec<serde_json::Value>) {
+    fn publish_sdk_queries_proof(
+        destination: &Path,
+        run_nonce: &str,
+        results: Vec<serde_json::Value>,
+    ) {
         let core = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(Path::parent)
             .expect("C crate has a workspace root");
         let repository = core.parent().expect("core workspace has a repository root");
-        let proof_schema = "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-schema-v1.json";
-        let allowlist = "tests/contracts/sdk_conformance/sdk-v2/proof-fragment-allowlist-v1.json";
-        let journey = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
+        let proof_schema = "tests/contracts/sdk_conformance/queries/proof-fragment-schema.json";
+        let allowlist = "tests/contracts/sdk_conformance/queries/proof-fragment-allowlist.json";
+        let journey = "tests/contracts/sdk_conformance/queries/journey.json";
         let sources = [
             "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
             "type-bridge-core/crates/c/src/lib.rs",
             "type-bridge-core/crates/c/src/query.rs",
         ];
         let fragment = serde_json::json!({
-            "format": "typebridge.sdk-v2-proof-fragment/v1",
+            "format": "typebridge.sdk-queries-proof-fragment/v1",
             "binding": "c",
-            "semantic_profile": "typedb-3.12.1/v1",
+            "semantic_profile": crate::sdk_profile_matrix::requested("queries").semantic_profile,
             "run_nonce": run_nonce,
             "contract": {
                 "proof_schema": proof_source(repository, proof_schema),
@@ -7321,6 +7466,26 @@ mod tests {
         context
     }
 
+    #[test]
+    fn a_remote_context_without_limits_runs_at_the_proxy_defaults() {
+        let package = package("remotecontextdefaults");
+        let remote = remote_fixture(0x73);
+        // SAFETY: package and advertisement remain immutable.
+        let mut context = unsafe { open_remote_context(&package, &remote.advertisement) };
+        // SAFETY: the context was just opened and is closed below.
+        let ceiling = unsafe { &*context }.state.connection.answer_limits();
+        assert_eq!(
+            ceiling,
+            QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy),
+        );
+        assert_ne!(ceiling, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            // SAFETY: the context is owned by this test.
+            unsafe { type_bridge_query_remote_context_close(&mut context) },
+            TypeBridgeStatus::Ok,
+        );
+    }
+
     unsafe fn prepare_remote(
         context: *const TypeBridgeQueryRemoteContext,
         terminal: *const TypeBridgeQueryTerminal,
@@ -7395,6 +7560,16 @@ mod tests {
             terminal_kind: u32,
             cardinality: u32,
         ) -> Self {
+            // SAFETY: forwarded caller contract; no overrides are read.
+            unsafe { Self::open_with_limits(package, terminal_kind, cardinality, &[]) }
+        }
+
+        unsafe fn open_with_limits(
+            package: &TypeBridgeSchemaPackage,
+            terminal_kind: u32,
+            cardinality: u32,
+            overrides: &[TypeBridgeQueryLimitOverrideV1],
+        ) -> Self {
             let model = model_token(
                 package,
                 TypeId::new(TypeKind::Entity, "person").expect("test type identity"),
@@ -7402,8 +7577,20 @@ mod tests {
             let mut diagnostics = ptr::null_mut();
             let mut session = ptr::null_mut();
             assert_eq!(
-                // SAFETY: package and writable independent outputs are live.
-                unsafe { type_bridge_query_session_open(package, &mut session, &mut diagnostics) },
+                // SAFETY: package, overrides, and writable independent outputs are live.
+                unsafe {
+                    type_bridge_query_session_open_with_limits_v1(
+                        package,
+                        if overrides.is_empty() {
+                            ptr::null()
+                        } else {
+                            overrides.as_ptr()
+                        },
+                        overrides.len(),
+                        &mut session,
+                        &mut diagnostics,
+                    )
+                },
                 TypeBridgeStatus::Ok,
             );
             assert!(diagnostics.is_null());
@@ -7561,7 +7748,7 @@ mod tests {
         }
     }
 
-    fn observe_sdk_v2_direct_cancellation() -> serde_json::Value {
+    fn observe_sdk_queries_direct_cancellation() -> serde_json::Value {
         let package = package("queryproofdirectcancel");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
@@ -7667,7 +7854,7 @@ mod tests {
         })
     }
 
-    fn observe_sdk_v2_remote_cancellation() -> serde_json::Value {
+    fn observe_sdk_queries_remote_cancellation() -> serde_json::Value {
         let package = package("queryproofremotecancel");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
@@ -7809,7 +7996,7 @@ mod tests {
         })
     }
 
-    fn observe_sdk_v2_remote_structured_diagnostic() -> serde_json::Value {
+    fn observe_sdk_queries_remote_structured_diagnostic() -> serde_json::Value {
         let package = package("queryproofremotediagnostic");
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
@@ -8168,14 +8355,14 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: DESCRIPTOR_VERSION,
-            timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-            items: MAX_QUERY_ITEMS,
-            bytes: MAX_QUERY_BYTES,
-            graph_nodes: MAX_QUERY_GRAPH_NODES,
-            attribute_values: MAX_QUERY_ATTRIBUTE_VALUES,
-            collection_members: MAX_QUERY_COLLECTION_MEMBERS,
-            role_players: MAX_QUERY_ROLE_PLAYERS,
-            statements: MAX_QUERY_STATEMENTS,
+            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+            items: DEFAULT_PROXY_QUERY_ITEMS,
+            bytes: DEFAULT_PROXY_QUERY_BYTES,
+            graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
+            attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+            collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+            role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
+            statements: DEFAULT_PROXY_QUERY_STATEMENTS,
             reserved0: 0,
             reserved: [0; 4],
         }
@@ -8509,6 +8696,98 @@ mod tests {
         assert_eq!(filter.resource_measure().attribute_values(), 3);
     }
 
+    fn limit_override(name: &'static str, value: u64) -> TypeBridgeQueryLimitOverrideV1 {
+        TypeBridgeQueryLimitOverrideV1 {
+            name: name.as_ptr(),
+            name_length: name.len(),
+            value,
+        }
+    }
+
+    #[test]
+    fn session_limits_are_admitted_by_the_shared_engine_or_open_nothing() {
+        let package = ordered_package("querysessionlimitsadmission");
+        for refused in [
+            vec![limit_override("made_up", 1)],
+            vec![limit_override("boolean_terms", 0)],
+            vec![limit_override("canonical_depth", 1_000)],
+            vec![
+                limit_override("boolean_terms", 4),
+                limit_override("boolean_terms", 8),
+            ],
+        ] {
+            let mut session = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                // SAFETY: package, overrides, and writable outputs are live.
+                unsafe {
+                    type_bridge_query_session_open_with_limits_v1(
+                        &package,
+                        refused.as_ptr(),
+                        refused.len(),
+                        &mut session,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument,
+            );
+            assert!(session.is_null());
+        }
+        // A non-zero count without overrides is refused, not read.
+        let mut session = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_session_open_with_limits_v1(
+                    &package,
+                    ptr::null(),
+                    1,
+                    &mut session,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument,
+        );
+        assert!(session.is_null());
+    }
+
+    #[test]
+    fn a_session_with_a_lowered_limit_refuses_what_the_default_accepts() {
+        let package = ordered_package("querysessionloweredlimit");
+        let overrides = [limit_override("boolean_terms", 1)];
+        // SAFETY: fixture owns the exact generated construction graph.
+        let mut built = unsafe {
+            BuiltQuery::open_with_limits(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY, &overrides)
+        };
+        for value in [b"Ada".as_slice(), b"Bob".as_slice()] {
+            // SAFETY: this mirrors one generated immutable manager predicate transition.
+            unsafe { add_identifier_equality(&package, &mut built, value) };
+        }
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        assert_eq!(
+            unsafe { type_bridge_query_terminal_close(&mut built.terminal) },
+            TypeBridgeStatus::Ok,
+        );
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_query_terminal_open_v1(
+                    built.query,
+                    &descriptor,
+                    &mut built.terminal,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit,
+        );
+        assert!(built.terminal.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "structural_limit_exceeded"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+    }
+
     #[test]
     fn manager_terminal_accepts_the_shared_boolean_term_ceiling() {
         let package = ordered_package("querymanagertermceiling");
@@ -8554,7 +8833,7 @@ mod tests {
         assert!(built.terminal.is_null());
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
-            "manager_filter_predicate_limit"
+            "structural_limit_exceeded"
         );
         unsafe { close_diagnostics(&mut diagnostics) };
     }
@@ -11803,13 +12082,13 @@ mod tests {
         // SAFETY: fixture owns exact generated handles.
         let built = unsafe { BuiltQuery::open(&package, TERMINAL_FIRST, ROWS_BOUNDED_MANY) };
         let ceiling = QueryExecutionResourceLimits::tightened(
-            MAX_QUERY_TIMEOUT_MILLISECONDS,
-            MAX_QUERY_ITEMS,
-            MAX_QUERY_BYTES,
-            MAX_QUERY_GRAPH_NODES,
-            MAX_QUERY_ATTRIBUTE_VALUES,
-            MAX_QUERY_COLLECTION_MEMBERS,
-            MAX_QUERY_ROLE_PLAYERS,
+            DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+            DEFAULT_PROXY_QUERY_ITEMS,
+            DEFAULT_PROXY_QUERY_BYTES,
+            DEFAULT_PROXY_QUERY_GRAPH_NODES,
+            DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
+            DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
+            DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
             0,
         );
         let database = fake_database_with_answer_ceiling(&package, Vec::new(), Vec::new(), ceiling);
@@ -11841,14 +12120,10 @@ mod tests {
         let transaction_database = fake_database(&package, Vec::new(), Vec::new());
         let context = transaction_database
             .value
-            .open_transaction_context(TxType::Read)
+            .open_transaction_context_with_answer_limits(TxType::Read, ceiling)
             .expect("the fake read transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeReadTransaction::from_test_context_with_answer_ceiling(
-                &transaction_database.value,
-                context,
-                Some(ceiling),
-            ),
+            TypeBridgeReadTransaction::from_test_context(&transaction_database.value, context),
         ));
         assert_eq!(
             unsafe {
@@ -11879,6 +12154,116 @@ mod tests {
             TypeBridgeStatus::Ok,
         );
         assert!(diagnostics.is_null());
+    }
+
+    /// Execute one manager `All` terminal over two provider rows and return
+    /// the refusal code, or `None` on success.
+    fn manager_all_refusal(
+        database: &FakeDatabase,
+        all: &BuiltQuery,
+        limits: &TypeBridgeQueryExecutionLimitsV1,
+    ) -> Option<String> {
+        let mut result = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: fixture owns every live handle and the writable outputs.
+        let status = unsafe {
+            type_bridge_database_query_execute_v1(
+                &*database.value,
+                all.terminal,
+                TERMINAL_ROWS,
+                limits,
+                ptr::null(),
+                &mut result,
+                &mut diagnostics,
+            )
+        };
+        if status == TypeBridgeStatus::Ok {
+            assert_eq!(
+                // SAFETY: success transferred one owned result handle.
+                unsafe { type_bridge_query_result_close(&mut result) },
+                TypeBridgeStatus::Ok,
+            );
+            return None;
+        }
+        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
+        assert!(result.is_null());
+        // SAFETY: the failed call retained one diagnostics handle.
+        let code = unsafe { diagnostic_code(diagnostics) };
+        unsafe { close_diagnostics(&mut diagnostics) };
+        Some(code)
+    }
+
+    #[test]
+    fn direct_execution_runs_under_the_orm_connection_ceiling_whatever_the_call_asks() {
+        let package = ordered_package("queryormceiling");
+        // SAFETY: fixture owns exact generated handles.
+        let mut all = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let descriptor = manager_terminal_descriptor(&all, ManagerTerminalKind::All);
+        unsafe { replace_terminal(&mut all, &descriptor) };
+        let rows = || {
+            (
+                vec![Response::Items(vec![solution("0x01"), solution("0x02")])],
+                vec![Response::Items(vec![
+                    hydration(&package, "0x01", "Ada"),
+                    hydration(&package, "0x02", "Bob"),
+                ])],
+            )
+        };
+        let raised = TypeBridgeQueryExecutionLimitsV1 {
+            items: DEFAULT_PROXY_QUERY_ITEMS * 2,
+            ..default_limits()
+        };
+        let one_item = TypeBridgeQueryExecutionLimitsV1 {
+            items: 1,
+            ..default_limits()
+        };
+        let zero_timeout = TypeBridgeQueryExecutionLimitsV1 {
+            timeout_milliseconds: 0,
+            ..default_limits()
+        };
+
+        // Without a ceiling the raised call runs, and the call's own
+        // one-item or zero-timeout limit fixes the refusal codes.
+        let (queries, hydrations) = rows();
+        let unbounded = fake_database(&package, queries, hydrations);
+        assert_eq!(manager_all_refusal(&unbounded, &all, &raised), None);
+        let (queries, hydrations) = rows();
+        let unbounded = fake_database(&package, queries, hydrations);
+        let item_code =
+            manager_all_refusal(&unbounded, &all, &one_item).expect("one item refuses two rows");
+        let unbounded = fake_database(&package, Vec::new(), Vec::new());
+        let timeout_code =
+            manager_all_refusal(&unbounded, &all, &zero_timeout).expect("a zero timeout refuses");
+        assert_eq!(unbounded.events.opens.load(Ordering::Acquire), 0);
+
+        // The same raised call on a connection whose orm ceiling is one item,
+        // or a zero timeout, refuses exactly as the narrow call did.
+        let (queries, hydrations) = rows();
+        let one_item_ceiling = QueryExecutionResourceLimits {
+            items: 1,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let bounded =
+            fake_database_with_answer_ceiling(&package, queries, hydrations, one_item_ceiling);
+        assert_eq!(
+            manager_all_refusal(&bounded, &all, &raised),
+            Some(item_code)
+        );
+        let zero_timeout_ceiling = QueryExecutionResourceLimits {
+            timeout_milliseconds: 0,
+            ..QueryExecutionResourceLimits::default()
+        };
+        let bounded = fake_database_with_answer_ceiling(
+            &package,
+            Vec::new(),
+            Vec::new(),
+            zero_timeout_ceiling,
+        );
+        assert_eq!(
+            manager_all_refusal(&bounded, &all, &raised),
+            Some(timeout_code)
+        );
+        assert_eq!(bounded.events.opens.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -11912,52 +12297,52 @@ mod tests {
         );
         unsafe { close_diagnostics(&mut diagnostics) };
         assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
-        let excessive_limits = [
+        // A dimension may be raised past its default and is kept as given.
+        let raised = {
+            let mut value = default_limits();
+            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1;
+            value.items = DEFAULT_PROXY_QUERY_ITEMS + 1;
+            value.bytes = DEFAULT_PROXY_QUERY_BYTES + 1;
+            value.graph_nodes = DEFAULT_PROXY_QUERY_GRAPH_NODES + 1;
+            value.attribute_values = DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES + 1;
+            value.collection_members = DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS + 1;
+            value.role_players = DEFAULT_PROXY_QUERY_ROLE_PLAYERS + 1;
+            value
+        };
+        assert_eq!(
+            parse_common_limits(Some(raised), type_bridge_orm::AnswerTransport::Direct)
+                .expect("a raised policy is admitted"),
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1,
+                items: DEFAULT_PROXY_QUERY_ITEMS + 1,
+                bytes: DEFAULT_PROXY_QUERY_BYTES + 1,
+                graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES + 1,
+                attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES + 1,
+                collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS + 1,
+                role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS + 1,
+                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+            },
+        );
+        // Past a supported maximum it is refused, never clamped.
+        let unsupported = [
             {
                 let mut value = default_limits();
-                value.timeout_milliseconds = MAX_QUERY_TIMEOUT_MILLISECONDS + 1;
+                value.timeout_milliseconds = type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1;
                 value
             },
             {
                 let mut value = default_limits();
-                value.items = MAX_QUERY_ITEMS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.bytes = MAX_QUERY_BYTES + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.graph_nodes = MAX_QUERY_GRAPH_NODES + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.attribute_values = MAX_QUERY_ATTRIBUTE_VALUES + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.collection_members = MAX_QUERY_COLLECTION_MEMBERS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.role_players = MAX_QUERY_ROLE_PLAYERS + 1;
-                value
-            },
-            {
-                let mut value = default_limits();
-                value.statements = MAX_QUERY_STATEMENTS + 1;
+                value.statements = type_bridge_orm::MAX_QUERY_STATEMENTS + 1;
                 value
             },
         ];
-        for excessive in &excessive_limits {
+        for refused in &unsupported {
             assert_eq!(
-                parse_common_limits(Some(*excessive)).expect("layout remains canonical"),
-                QueryExecutionResourceLimits::default(),
+                parse_common_limits(Some(*refused), type_bridge_orm::AnswerTransport::Direct)
+                    .expect_err("a value past its supported maximum")
+                    .code()
+                    .as_str(),
+                "c_query_execution_limits_invalid",
             );
             assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
         }
@@ -12109,11 +12494,7 @@ mod tests {
             .open_transaction_context(TxType::Read)
             .expect("the fake read transaction opens");
         let mut transaction = Box::into_raw(Box::new(
-            TypeBridgeReadTransaction::from_test_context_with_answer_ceiling(
-                &database.value,
-                context,
-                Some(answer_ceiling),
-            ),
+            TypeBridgeReadTransaction::from_test_context(&database.value, context),
         ));
         assert_eq!(
             unsafe {
@@ -13512,39 +13893,196 @@ mod tests {
 
     #[test]
     fn remote_structured_failure_is_redacted_and_semantically_consumes_claim() {
-        let observation = observe_sdk_v2_remote_structured_diagnostic();
+        let observation = observe_sdk_queries_remote_structured_diagnostic();
         assert_eq!(observation["code"], "remote_application_failure");
         assert_eq!(observation["redacted"], true);
         assert_eq!(observation["claim_consumed"], true);
     }
 
     #[test]
-    fn sdk_v2_c_deterministic_proof_fragment() {
+    fn sdk_queries_c_deterministic_proof_fragment() {
         let results = vec![
             serde_json::json!({
                 "observation_ref": "cancellation_direct",
                 "proof_kind": "direct_runtime",
-                "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment",
+                "test_id": "query::tests::sdk_queries_c_deterministic_proof_fragment",
                 "outcome": "passed",
-                "observation": observe_sdk_v2_direct_cancellation(),
+                "observation": observe_sdk_queries_direct_cancellation(),
             }),
             serde_json::json!({
                 "observation_ref": "cancellation_remote",
                 "proof_kind": "remote_runtime",
-                "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment",
+                "test_id": "query::tests::sdk_queries_c_deterministic_proof_fragment",
                 "outcome": "passed",
-                "observation": observe_sdk_v2_remote_cancellation(),
+                "observation": observe_sdk_queries_remote_cancellation(),
             }),
             serde_json::json!({
                 "observation_ref": "remote_structured_diagnostic",
                 "proof_kind": "diagnostic",
-                "test_id": "query::tests::sdk_v2_c_deterministic_proof_fragment",
+                "test_id": "query::tests::sdk_queries_c_deterministic_proof_fragment",
                 "outcome": "passed",
-                "observation": observe_sdk_v2_remote_structured_diagnostic(),
+                "observation": observe_sdk_queries_remote_structured_diagnostic(),
             }),
         ];
-        if let Some((destination, run_nonce)) = requested_sdk_v2_proof() {
-            publish_sdk_v2_proof(&destination, &run_nonce, results);
+        if let Some((destination, run_nonce)) = requested_sdk_queries_proof() {
+            publish_sdk_queries_proof(&destination, &run_nonce, results);
         }
+    }
+
+    fn proxy_options(endpoint: &'static str) -> TypeBridgeProxyConnectionOptionsV1 {
+        TypeBridgeProxyConnectionOptionsV1 {
+            struct_size: size_of::<TypeBridgeProxyConnectionOptionsV1>() as u32,
+            version: 1,
+            endpoint: TypeBridgeByteView {
+                data: endpoint.as_ptr(),
+                length: endpoint.len(),
+            },
+            tls_mode: 0,
+            reserved0: 0,
+            custom_root_ca_path: TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            },
+            headers: ptr::null(),
+            header_count: 0,
+            pinned_advertisement: TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            },
+            connection_limits: ptr::null(),
+            answer_limits: ptr::null(),
+            reserved: [0; 4],
+        }
+    }
+
+    unsafe fn open_proxy(
+        package: *const TypeBridgeSchemaPackage,
+        options: *const TypeBridgeProxyConnectionOptionsV1,
+    ) -> (TypeBridgeStatus, *mut TypeBridgeProxyConnection, String) {
+        let mut connection = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: caller retains immutable inputs; outputs are independent.
+        let status = unsafe {
+            type_bridge_proxy_connection_open_v1(
+                package,
+                options,
+                ptr::null(),
+                &mut connection,
+                &mut diagnostics,
+            )
+        };
+        let code = if diagnostics.is_null() {
+            String::new()
+        } else {
+            // SAFETY: the diagnostics handle was just returned.
+            let code = unsafe { diagnostic_code(diagnostics) };
+            // SAFETY: owned diagnostics handle.
+            unsafe { close_diagnostics(&mut diagnostics) };
+            code
+        };
+        (status, connection, code)
+    }
+
+    #[test]
+    fn proxy_connection_open_refuses_invalid_options_before_io() {
+        let package = package("proxyoptions");
+        // SAFETY: a null options pointer is a documented refusal.
+        let (status, connection, code) = unsafe { open_proxy(&package, ptr::null()) };
+        assert_ne!(status, TypeBridgeStatus::Ok);
+        assert!(connection.is_null());
+        assert_eq!(code, "c_proxy_options_missing");
+
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.tls_mode = 7;
+        // SAFETY: options are retained for the call.
+        let (_, connection, code) = unsafe { open_proxy(&package, &options) };
+        assert!(connection.is_null());
+        assert_eq!(code, "c_proxy_tls_mode_invalid");
+
+        let mut options = proxy_options("https://127.0.0.1:9");
+        options.tls_mode = 2;
+        // SAFETY: options are retained for the call.
+        let (_, _, code) = unsafe { open_proxy(&package, &options) };
+        assert_eq!(code, "direct_tls_custom_root_path_empty");
+
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.header_count = 1;
+        // SAFETY: options are retained for the call.
+        let (_, _, code) = unsafe { open_proxy(&package, &options) };
+        assert_eq!(code, "c_proxy_headers_invalid");
+
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.struct_size -= 8;
+        // SAFETY: options are retained for the call.
+        let (_, _, code) = unsafe { open_proxy(&package, &options) };
+        assert_eq!(code, "c_proxy_options_layout_invalid");
+
+        let garbage = b"not an advertisement";
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.pinned_advertisement = TypeBridgeByteView {
+            data: garbage.as_ptr(),
+            length: garbage.len(),
+        };
+        // SAFETY: options and advertisement bytes are retained for the call.
+        let (status, connection, code) = unsafe { open_proxy(&package, &options) };
+        assert_ne!(status, TypeBridgeStatus::Ok);
+        assert!(connection.is_null());
+        assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn proxy_execute_reports_unreachable_route_and_package_mismatch() {
+        let package_a = package("proxyroutea");
+        let package_b = package("proxyrouteb");
+        let remote = remote_fixture(0x51);
+        let mut options = proxy_options("http://127.0.0.1:9");
+        options.pinned_advertisement = TypeBridgeByteView {
+            data: remote.advertisement.as_ptr(),
+            length: remote.advertisement.len(),
+        };
+        // SAFETY: options and advertisement bytes are retained for the call.
+        let (status, mut connection, code) = unsafe { open_proxy(&package_a, &options) };
+        assert_eq!(status, TypeBridgeStatus::Ok, "{code}");
+        // SAFETY: fixtures own exact generated handles.
+        let built_a = unsafe { BuiltQuery::open(&package_a, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        // SAFETY: fixtures own exact generated handles.
+        let built_b = unsafe { BuiltQuery::open(&package_b, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for (terminal, expected) in [
+            (built_a.terminal, None),
+            (built_b.terminal, Some("c_query_package_lineage_mismatch")),
+        ] {
+            let mut result = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            // SAFETY: every input is retained; outputs are independent.
+            let status = unsafe {
+                type_bridge_proxy_query_execute_v1(
+                    connection,
+                    terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            };
+            assert_ne!(status, TypeBridgeStatus::Ok);
+            assert!(result.is_null());
+            assert!(!diagnostics.is_null());
+            // SAFETY: the diagnostics handle was just returned.
+            let code = unsafe { diagnostic_code(diagnostics) };
+            if let Some(expected) = expected {
+                assert_eq!(code, expected);
+            }
+            // SAFETY: owned diagnostics handle.
+            unsafe { close_diagnostics(&mut diagnostics) };
+        }
+        drop(built_a);
+        drop(built_b);
+        assert_eq!(
+            // SAFETY: owned connection handle.
+            unsafe { type_bridge_proxy_connection_close(&mut connection) },
+            TypeBridgeStatus::Ok,
+        );
+        assert!(connection.is_null());
     }
 }

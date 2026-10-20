@@ -6,19 +6,18 @@
 //! compatibility lowering. Schema-aware validation recomputes the hydration
 //! graph and rejects any second native semantic program before provider I/O.
 //!
-//! Arbitrary V1 strings predate the fixed V2 canonical artifact ceiling. A
-//! request whose exact V2 representation cannot fit that envelope receives a
-//! typed, non-error legacy disposition so the released direct executor can
-//! preserve its behavior. This fallback is decided only after V1 validation
-//! and registry recheck; decoded V2 input can never request it.
+//! Arbitrary V1 strings predate the V2 canonical artifact ceiling. A request
+//! whose exact V2 representation does not fit the session's query limits is
+//! refused with a resource-limit diagnostic naming the limit, on the direct
+//! path and the remote path alike. There is no fallback executor: a caller
+//! whose request legitimately needs more raises the limit.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
-use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
-use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, StructuralLimits};
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
@@ -33,7 +32,7 @@ use type_bridge_contract::query_plan::{
     QueryReductionKindV2, QueryReductionTermV2, QueryRowCardinalityV2, QueryStableOrderV2,
     QueryWindowV2, ReadStage,
 };
-use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
+use type_bridge_contract::schema::DocumentId;
 use type_bridge_contract::temporal::{
     CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration,
 };
@@ -46,13 +45,12 @@ use type_bridge_schema::{
 };
 use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
-use crate::_attribute::ValueType;
 use crate::_descriptor::{
     OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptorRef,
 };
 use crate::_entity::Annotation;
-use crate::_registry::DescriptorRegistry;
-use crate::_schema::{SchemaInfo, generator::generate_define_block};
+use crate::_registry::{DescriptorRegistry, InstalledSchemaAuthority};
+use crate::_schema::{SchemaInfo, generator::try_generate_define_block};
 use crate::AttributeValue;
 use crate::match_request::{
     BoundFieldId, Capability, ComparisonOp, FetchShape, FetchSlot, MatchExpr,
@@ -71,22 +69,29 @@ const V1_ADAPTER_SEMANTIC_PROFILE: &str = "typedb-3.12.1/v1";
 const V1_ADAPTER_MANAGED_SCOPE: &str = "typebridge-v1-descriptor-registry";
 const V1_ADAPTER_SCHEMA_DOCUMENT: &str = "typebridge-v1-descriptor-registry.tql";
 
-/// Owned schema authority reconstructed from the exact descriptor snapshot
-/// which validated a released request.
+/// The schema authority one validated request is adapted under.
 ///
-/// The registry remains the V1 public authority. This internal projection is
-/// deterministic and performs no provider, filesystem, or transport I/O.
-pub(crate) struct MatchRequestAdapterAuthority {
-    managed: ManagedSchemaState,
-    resolved: ResolvedSchema,
-}
+/// Obtaining it is deterministic and performs no provider, filesystem, or
+/// transport I/O.
+pub(crate) struct MatchRequestAdapterAuthority(Arc<InstalledSchemaAuthority>);
 
 impl MatchRequestAdapterAuthority {
-    /// Reconstruct the strict V2 schema authority represented by one released
-    /// descriptor registry.
+    /// Return the V2 schema authority one registry adapts under.
+    ///
+    /// A registry installed from a generated package carries the package's
+    /// verified authority and uses it as is. A dynamic registry has none, so
+    /// its authority is reconstructed from the registered descriptors.
     pub(crate) fn from_registry(registry: &DescriptorRegistry) -> Result<Self, Diagnostic> {
+        if let Some(installed) = registry.installed_schema_authority() {
+            return Ok(Self(Arc::clone(installed)));
+        }
         let schema = SchemaInfo::from_descriptors(&registry.snapshot());
-        let source = generate_define_block(&schema);
+        let source = try_generate_define_block(&schema).map_err(|_| {
+            integrity(
+                "query_v2_adapter_registry_projection",
+                "registered schema cannot render",
+            )
+        })?;
         // The registry, not this generated TypeQL, remains the exact released
         // authority. Use schema-compat's portable projection so released list
         // capability markers and @distinct do not make an otherwise valid V1
@@ -119,31 +124,15 @@ impl MatchRequestAdapterAuthority {
                 "validated descriptor registry cannot form managed V2 schema authority",
             )
         })?;
-        Ok(Self { managed, resolved })
+        Ok(Self(Arc::new(InstalledSchemaAuthority::new(
+            resolved, managed,
+        ))))
     }
 
     /// Borrow the ordinary validator context for adaptation.
     pub(crate) fn context(&self) -> MigrationAssertionValidationContext<'_> {
-        MigrationAssertionValidationContext::new(&self.resolved, &self.managed)
+        MigrationAssertionValidationContext::new(self.0.resolved(), self.0.managed())
     }
-}
-
-/// Why a released request must remain on the direct V1 executor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum V1ResourceEnvelopeReason {
-    /// One exact released literal is larger than the complete V2 artifact.
-    LiteralExceedsCanonicalArtifact,
-    /// The complete canonical plan, including escaping and hydration, is too large.
-    EncodedPlanExceedsCanonicalArtifact,
-}
-
-/// Result of production V1-to-V2 adaptation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum MatchRequestAdaptation {
-    /// Execute the schema-validated ordinary V2 plan.
-    Adapted(AdaptedMatchRequest),
-    /// Preserve released behavior through the already-validated direct V1 path.
-    LegacyRequired(V1ResourceEnvelopeReason),
 }
 
 /// The V2 program one V1 request adapts to.
@@ -178,13 +167,14 @@ impl AdaptedMatchRequest {
 ///
 /// Semantic translation failures are diagnostics and indicate a bridge bug or
 /// stale/contradictory authority. Only a fixed V2 representation-envelope
-/// mismatch returns [`MatchRequestAdaptation::LegacyRequired`].
+/// mismatch is refused with a resource-limit diagnostic naming the limit.
 pub(crate) fn adapt_match_request(
     validated: &ValidatedMatchRequest,
     registry: &DescriptorRegistry,
     context: &MigrationAssertionValidationContext<'_>,
-    limits: StructuralLimits,
-) -> Result<MatchRequestAdaptation, Diagnostic> {
+) -> Result<AdaptedMatchRequest, Diagnostic> {
+    // The limits V1 validation ran under govern the adapted plan too.
+    let limits = validated.limits();
     validated.recheck_schema(registry).map_err(|_| {
         reject(
             "query_v2_adapter_registry_mismatch",
@@ -209,14 +199,21 @@ pub(crate) fn adapt_match_request(
             ));
         }
     }
-    if request
+    if let Some(actual) = request
         .plan
         .predicate
         .as_ref()
-        .is_some_and(predicate_has_artifact_sized_literal)
+        .and_then(|predicate| artifact_sized_literal_bytes(predicate, limits.codec.max_bytes))
     {
-        return Ok(MatchRequestAdaptation::LegacyRequired(
-            V1ResourceEnvelopeReason::LiteralExceedsCanonicalArtifact,
+        return Err(limits.annotate(
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
+                    .expect("static adapter diagnostic code"),
+                "a predicate literal exceeds the canonical artifact byte ceiling",
+            )
+            .with_detail("actual_bytes", byte_count(actual))
+            .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
         ));
     }
 
@@ -298,7 +295,7 @@ pub(crate) fn adapt_match_request(
         ReadStage::Distinct,
     ];
     let compatibility = QueryPlanV2Compatibility::new(predicate, cross_joins, Some(model_query));
-    let validated = match QueryPlanBuilder::finalize_compatibility(
+    let validated = QueryPlanBuilder::finalize_compatibility(
         QueryCompatibilityPlanInput::new(
             bindings,
             inputs,
@@ -310,28 +307,19 @@ pub(crate) fn adapt_match_request(
         ),
         context,
         limits,
-    ) {
-        Ok(validated) => validated,
-        Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            return Ok(MatchRequestAdaptation::LegacyRequired(
-                V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact,
-            ));
-        }
-        Err(error) => return Err(error),
-    };
-    match to_canonical_json(validated.plan()) {
-        Ok(_) => Ok(MatchRequestAdaptation::Adapted(AdaptedMatchRequest {
-            inputs: invocation_inputs,
-            operation,
-            validated: Box::new(validated),
-        })),
-        Err(error) if error.category() == DiagnosticCategory::ResourceLimit => {
-            Ok(MatchRequestAdaptation::LegacyRequired(
-                V1ResourceEnvelopeReason::EncodedPlanExceedsCanonicalArtifact,
-            ))
-        }
-        Err(error) => Err(error),
-    }
+    )
+    .map_err(|error| limits.annotate(error))?;
+    // The plan must also encode: a remote peer and the model executor both
+    // read its canonical bytes.
+    validated
+        .plan()
+        .canonical_bytes()
+        .map_err(|error| limits.annotate(error))?;
+    Ok(AdaptedMatchRequest {
+        inputs: invocation_inputs,
+        operation,
+        validated: Box::new(validated),
+    })
 }
 
 /// Compile-time completeness guard for the released provider vocabulary.
@@ -469,7 +457,7 @@ fn hydration_descriptor(
                 )
             })?
             .value_type();
-        if value_type_tag(registered.value_type) != attribute_type
+        if ValueTypeTag::from(registered.value_type) != attribute_type
             || registered_cardinality(registered)? != owns.cardinality()
             || (registered.is_key() || registered.is_unique())
                 != (owns.is_key() || owns.is_unique())
@@ -604,6 +592,7 @@ fn adapt_operation(
                 .collect::<Result<Vec<_>, _>>()?;
             let (cardinality, order) = match cardinality {
                 RowCardinality::ExactlyOne => (QueryRowCardinalityV2::ExactlyOne, None),
+                RowCardinality::Complete => (QueryRowCardinalityV2::Complete, None),
                 RowCardinality::BoundedMany => (
                     QueryRowCardinalityV2::BoundedMany,
                     Some(adapt_stable_order(
@@ -1210,7 +1199,7 @@ fn adapt_field(
         BindingId::new(field.binding.get())?,
         descriptor_id_type(field.field.owner.as_str())?,
         AttributeId::new(attribute.attr_name.clone())?,
-        value_type_tag(attribute.value_type),
+        ValueTypeTag::from(attribute.value_type),
     ))
 }
 
@@ -1279,22 +1268,27 @@ pub(crate) fn adapt_value(value: &AttributeValue) -> Result<CompatibilityValueV2
     )?))
 }
 
-fn predicate_has_artifact_sized_literal(expression: &MatchExpr) -> bool {
+/// Return the byte length of the first literal larger than a whole artifact.
+fn artifact_sized_literal_bytes(expression: &MatchExpr, maximum: usize) -> Option<usize> {
     match expression {
-        MatchExpr::FieldValue { value, .. } => {
-            textual_value(value).is_some_and(|value| value.len() > MAX_CANONICAL_BYTES)
-        }
-        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => {
-            expressions.iter().any(predicate_has_artifact_sized_literal)
-        }
-        MatchExpr::Not { expression } => predicate_has_artifact_sized_literal(expression),
+        MatchExpr::FieldValue { value, .. } => textual_value(value)
+            .map(str::len)
+            .filter(|bytes| *bytes > maximum),
+        MatchExpr::And { expressions } | MatchExpr::Or { expressions } => expressions
+            .iter()
+            .find_map(|child| artifact_sized_literal_bytes(child, maximum)),
+        MatchExpr::Not { expression } => artifact_sized_literal_bytes(expression, maximum),
         MatchExpr::FieldComparison { .. }
         | MatchExpr::ScalarComparison { .. }
         | MatchExpr::FieldPresence { .. }
         | MatchExpr::BindingIid { .. }
         | MatchExpr::RoleEdge { .. }
-        | MatchExpr::Reachable { .. } => false,
+        | MatchExpr::Reachable { .. } => None,
     }
+}
+
+fn byte_count(bytes: usize) -> i64 {
+    i64::try_from(bytes).unwrap_or(i64::MAX)
 }
 
 fn textual_value(value: &AttributeValue) -> Option<&str> {
@@ -1469,20 +1463,6 @@ fn registered_cardinality(attribute: &OwnedAttributeDescriptor) -> Result<Cardin
 fn registered_role_cardinality(role: &RoleDescriptor) -> Result<Cardinality, Diagnostic> {
     let (minimum, maximum) = role.cardinality.unwrap_or((0, Some(1)));
     Cardinality::new(u64::from(minimum), maximum.map(u64::from))
-}
-
-const fn value_type_tag(value_type: ValueType) -> ValueTypeTag {
-    match value_type {
-        ValueType::String => ValueTypeTag::String,
-        ValueType::Long => ValueTypeTag::Long,
-        ValueType::Double => ValueTypeTag::Double,
-        ValueType::Boolean => ValueTypeTag::Boolean,
-        ValueType::Date => ValueTypeTag::Date,
-        ValueType::DateTime => ValueTypeTag::DateTime,
-        ValueType::DateTimeTz => ValueTypeTag::DateTimeTz,
-        ValueType::Decimal => ValueTypeTag::Decimal,
-        ValueType::Duration => ValueTypeTag::Duration,
-    }
 }
 
 fn output_slots(output: &FetchShape) -> impl Iterator<Item = &FetchSlot> {

@@ -254,65 +254,9 @@ class Attribute(ABC):
         Returns:
             TypeQL schema definition string
         """
-        from type_bridge.typeql.annotations import (
-            format_doc_meta_annotations,
-            format_type_annotations,
-        )
+        from type_bridge.typeql._schema import attribute_definition
 
-        attr_name = cls.get_attribute_name()
-        value_type = cls.get_value_type()
-
-        # Build type-level annotations (@abstract, @independent come right after name)
-        type_annotations = format_type_annotations(
-            abstract=cls.abstract,
-            independent=cls.independent,
-        )
-        if include_doc_meta:
-            flags = getattr(cls, "flags", None)
-            type_annotations.extend(
-                format_doc_meta_annotations(
-                    getattr(flags, "doc", None),
-                    dict(getattr(flags, "meta", {}) or {}),
-                )
-            )
-
-        # Build definition: attribute name [@abstract] [@independent], [sub parent,] value type;
-        if type_annotations:
-            annotations_str = " ".join(type_annotations)
-            if cls._supertype:
-                definition = f"attribute {attr_name} {annotations_str}, sub {cls._supertype}, value {value_type}"
-            else:
-                definition = f"attribute {attr_name} {annotations_str}, value {value_type}"
-        elif cls._supertype:
-            definition = f"attribute {attr_name} sub {cls._supertype}, value {value_type}"
-        else:
-            definition = f"attribute {attr_name}, value {value_type}"
-
-        # Add @range annotation if range_constraint is defined (after value type)
-        range_constraint = getattr(cls, "range_constraint", None)
-        if range_constraint is not None:
-            range_min, range_max = range_constraint
-            # Format as @range(min..max), @range(min..), or @range(..max)
-            min_part = range_min if range_min is not None else ""
-            max_part = range_max if range_max is not None else ""
-            definition += f" @range({min_part}..{max_part})"
-
-        # Add @regex annotation if regex_pattern is defined (after value type)
-        # Note: Use regex_pattern (not regex) to avoid conflict with String.regex() query method
-        regex_pattern = getattr(cls, "regex_pattern", None)
-        if regex_pattern is not None and isinstance(regex_pattern, str):
-            # Escape any quotes in the pattern
-            escaped_pattern = regex_pattern.replace('"', '\\"')
-            definition += f' @regex("{escaped_pattern}")'
-
-        # Add @values annotation if allowed_values is defined (after value type)
-        allowed_values = getattr(cls, "allowed_values", None)
-        if allowed_values is not None and isinstance(allowed_values, tuple):
-            # Format as @values("a", "b", ...)
-            values_str = ", ".join(f'"{v}"' for v in allowed_values)
-            definition += f" @values({values_str})"
-
-        return definition + ";"
+        return attribute_definition(cls, include_doc_meta)
 
     # ========================================================================
     # Query Expression Class Methods (Type-Safe API)

@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use type_bridge_schema_codegen::{GeneratedPackage, RustEmitter};
 
 mod support;
+use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{
-    Stage, cargo_with_env as cargo, repository_root as repository,
-    rust_projection as project_from_source, write_package,
+    Stage, cargo_with_env as cargo, repository_root as repository, rust_projection_on,
+    write_package,
 };
 
 const PRODUCER: &str = include_str!("rust_acceptance/manager_live.rs");
@@ -16,11 +17,12 @@ const ADDRESS_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_ADDRESS";
 const DATABASE_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_DATABASE";
 const HTTP_PORT_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_HTTP_PORT";
 const ROOT_ENV: &str = "TYPE_BRIDGE_MANAGER_REPOSITORY_ROOT";
+const PROFILE_ENV: &str = "TYPE_BRIDGE_MANAGER_LIVE_PROFILE";
 const MAX_PRODUCER_BYTES: usize = 1024 * 1024;
 
 fn sdk_source() -> String {
-    fs::read_to_string(repository().join("tests/contracts/sdk_conformance/sdk-v3/schema-v3.yaml"))
-        .expect("Sdk V3 schema reads")
+    fs::read_to_string(repository().join("tests/contracts/sdk_conformance/models/schema.yaml"))
+        .expect("Models schema reads")
 }
 
 fn foreign_sdk_source() -> String {
@@ -32,11 +34,12 @@ fn foreign_sdk_source() -> String {
     foreign
 }
 
-fn emit_from_source(source: &str, document: &str) -> GeneratedPackage {
+fn emit_from_source(source: &str, document: &str, profile: &SdkProfile) -> GeneratedPackage {
+    let semantic_profile = profile.semantic_profile.as_str();
     RustEmitter::new()
         .emit(
-            &project_from_source(source, document),
-            &support::authority(source),
+            &rust_projection_on(source, document, semantic_profile),
+            &support::authority_with(source, support::TEST_SCOPE, semantic_profile),
         )
         .expect("Manager Rust package emits")
 }
@@ -101,13 +104,20 @@ type-bridge-orm = {{ path = "{orm_path}" }}
     .expect("consumer lockfile is staged");
 }
 
-fn staged_consumer(stage: &Stage) -> PathBuf {
+fn staged_consumer(stage: &Stage, profile: &SdkProfile) -> PathBuf {
     let generated = stage.path().join("generated");
     let foreign = stage.path().join("generated-foreign");
     let consumer = stage.path().join("consumer");
-    write_package(&emit_from_source(&sdk_source(), "sdk-v3.yaml"), &generated);
+    write_package(
+        &emit_from_source(&sdk_source(), "models.yaml", profile),
+        &generated,
+    );
     write_foreign_package(
-        &emit_from_source(&foreign_sdk_source(), "sdk-v3-foreign-foo-bar.yaml"),
+        &emit_from_source(
+            &foreign_sdk_source(),
+            "models-foreign-foo-bar.yaml",
+            profile,
+        ),
         &foreign,
     );
     write_consumer(&consumer);
@@ -123,6 +133,7 @@ fn rust_manager_live_producer_is_bounded_and_expectation_independent() {
         DATABASE_ENV,
         HTTP_PORT_ENV,
         ROOT_ENV,
+        PROFILE_ENV,
     ] {
         assert!(PRODUCER.contains(required), "producer omits {required}");
     }
@@ -141,7 +152,7 @@ fn rust_manager_live_producer_is_bounded_and_expectation_independent() {
 #[test]
 fn generated_rust_manager_live_producer_compiles() {
     let stage = Stage::new();
-    let manifest = staged_consumer(&stage);
+    let manifest = staged_consumer(&stage, &sdk_profile_matrix::requested("models"));
     let checked = cargo(
         &[
             "clippy",
@@ -180,7 +191,9 @@ fn generated_rust_manager_live_runs_when_explicitly_configured() {
     assert!(!report.exists(), "report destination must be absent");
 
     let stage = Stage::new();
-    let manifest = staged_consumer(&stage);
+    let profile = sdk_profile_matrix::requested("models");
+    let profile_json = support::sdk_profile_entry_json(&profile);
+    let manifest = staged_consumer(&stage, &profile);
     let repository = repository();
     let output = cargo(
         &[
@@ -194,6 +207,7 @@ fn generated_rust_manager_live_runs_when_explicitly_configured() {
         &[
             (OUTPUT_ENV, report.as_os_str()),
             (ROOT_ENV, repository.as_os_str()),
+            (PROFILE_ENV, profile_json.as_ref()),
         ],
     );
     assert!(

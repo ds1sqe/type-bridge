@@ -6,20 +6,25 @@ use std::fmt;
 
 use serde::Serialize;
 use type_bridge_contract::capability::{CapabilityId, CapabilitySet};
-use type_bridge_contract::id::{FunctionId, TypeKind};
+use type_bridge_contract::id::{FunctionId, TypeId, TypeKind};
 use type_bridge_contract::schema::{
-    AnnotationFact, AnnotationKindId, AnnotationSubjectId, FunctionFact, FunctionReturnElement,
-    FunctionReturnMode, RelatesFact, SchemaAnnotationValue, SchemaDelta, SchemaFact, SchemaFactId,
-    SchemaOperation, SchemaOperationKind, TypeReference,
+    AnnotationFact, AnnotationKindId, AnnotationSubjectId, CollectionMode, RelatesFact,
+    RelatesFactId, SchemaAnnotationValue, SchemaDelta, SchemaFact, SchemaFactId, SchemaOperation,
+    SchemaOperationKind,
 };
-use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+use type_bridge_contract::value::CanonicalValue;
+use type_bridge_core_lib::__internal as tql;
 
 use type_bridge_schema::SafetyClass;
 
-use crate::profile::{classify_operation_transition, typedb_3_12_1_profile};
-use crate::{SchemaLoweringProfileFingerprint, SchemaLoweringProfileId, profile_fingerprint};
+use type_bridge_contract::fingerprint::SemanticProfileId;
+use type_bridge_schema::ManagedDeltaContext;
+
+use crate::profile::{MigrationProfile, classify_operation_transition};
+use crate::{SchemaLoweringProfileFingerprint, SchemaLoweringProfileId};
 
 const CODE_PROFILE_MISMATCH: &str = "schema_lowering_profile_mismatch";
+const CODE_SEMANTIC_PROFILE_UNSUPPORTED: &str = "schema_lowering_semantic_profile_unsupported";
 const CODE_CAPABILITY_MISMATCH: &str = "schema_lowering_capability_mismatch";
 const CODE_CONTEXT_MISMATCH: &str = "schema_lowering_fact_context_mismatch";
 const CODE_REQUIRES_ASSERTION: &str = "schema_lowering_requires_assertion";
@@ -150,7 +155,8 @@ impl SchemaFactCatalog {
     }
 }
 
-/// Fixed lowering-profile identity plus provider capabilities available to the caller.
+/// Registry-selected lowering-profile identity plus provider capabilities
+/// available to the caller.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchemaLoweringBinding {
     profile_id: SchemaLoweringProfileId,
@@ -159,14 +165,15 @@ pub struct SchemaLoweringBinding {
 }
 
 impl SchemaLoweringBinding {
-    /// Bind caller capabilities to the exact compiled lowering profile.
+    /// Bind caller capabilities to the exact compiled lowering profile named
+    /// by `profile_id`.
     pub fn new(
         profile_id: SchemaLoweringProfileId,
         profile_fingerprint: SchemaLoweringProfileFingerprint,
         available_capabilities: CapabilitySet,
     ) -> Result<Self, SchemaLoweringDiagnostic> {
-        let profile = typedb_3_12_1_profile();
-        if profile_id != profile.id || profile_fingerprint != crate::profile_fingerprint() {
+        let registry = MigrationProfile::for_lowering_profile_id(&profile_id);
+        if registry.is_none_or(|registry| profile_fingerprint != registry.fingerprint()) {
             return Err(SchemaLoweringDiagnostic::new(
                 CODE_PROFILE_MISMATCH,
                 "schema lowering profile identity or fingerprint does not match the compiled registry",
@@ -179,14 +186,46 @@ impl SchemaLoweringBinding {
         })
     }
 
-    /// Bind capabilities to the current compiled profile.
+    /// Bind capabilities to the compiled registry for a semantic profile.
+    pub fn for_semantic_profile(
+        semantic_profile: &SemanticProfileId,
+        available_capabilities: CapabilitySet,
+    ) -> Result<Self, SchemaLoweringDiagnostic> {
+        let registry =
+            MigrationProfile::for_semantic_profile(semantic_profile).ok_or_else(|| {
+                SchemaLoweringDiagnostic::new(
+                    CODE_SEMANTIC_PROFILE_UNSUPPORTED,
+                    "no schema-transition registry exists for the semantic profile",
+                )
+            })?;
+        Self::new(
+            registry.lowering_profile_id(),
+            registry.fingerprint(),
+            available_capabilities,
+        )
+    }
+
+    /// Bind capabilities to the TypeDB 3.12.1 lowering profile, the only
+    /// profile 2.2 compiled.
+    #[deprecated(
+        since = "2.3.0",
+        note = "binds the 3.12.1 profile only; use for_semantic_profile or for_context; removed in 3.0"
+    )]
     pub fn current(
         available_capabilities: CapabilitySet,
     ) -> Result<Self, SchemaLoweringDiagnostic> {
         Self::new(
-            typedb_3_12_1_profile().id.clone(),
-            profile_fingerprint(),
+            crate::profile::typedb_3_12_1_profile().id.clone(),
+            crate::profile::profile_fingerprint(),
             available_capabilities,
+        )
+    }
+
+    /// Bind a delta context's capabilities to its semantic profile's registry.
+    pub fn for_context(context: &ManagedDeltaContext) -> Result<Self, SchemaLoweringDiagnostic> {
+        Self::for_semantic_profile(
+            context.semantic_profile(),
+            context.available_capabilities().clone(),
         )
     }
 
@@ -218,16 +257,6 @@ pub enum TypeQlVerb {
     Redefine,
 }
 
-impl TypeQlVerb {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Define => "define",
-            Self::Undefine => "undefine",
-            Self::Redefine => "redefine",
-        }
-    }
-}
-
 /// One complete TypeQL schema query.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TypeQlStatement {
@@ -236,11 +265,11 @@ pub struct TypeQlStatement {
 }
 
 impl TypeQlStatement {
-    fn new(verb: TypeQlVerb, body: String) -> Self {
-        Self {
+    fn new(verb: TypeQlVerb, query: tql::Query) -> Result<Self, RenderFailure> {
+        Ok(Self {
             verb,
-            query: format!("{}\n{body}", verb.as_str()),
-        }
+            query: tql::render(&query)?,
+        })
     }
 
     /// Return the schema query verb.
@@ -562,6 +591,15 @@ fn render_operation(
     })
 }
 
+impl From<tql::TqlError> for RenderFailure {
+    fn from(_: tql::TqlError) -> Self {
+        Self {
+            code: CODE_UNSUPPORTED,
+            message: "schema statement cannot be rendered through the official TypeQL AST",
+        }
+    }
+}
+
 fn render_operation_inner(
     operation: &SchemaOperation,
     source_facts: &SchemaFactCatalog,
@@ -577,7 +615,8 @@ fn render_operation_inner(
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>();
-            let mut function_annotations = BTreeMap::<FunctionId, Vec<&AnnotationFact>>::new();
+            let mut function_annotations =
+                BTreeMap::<FunctionId, Vec<tql::SchemaAnnotation>>::new();
             for fact in facts {
                 if let SchemaFact::Annotation(annotation) = fact
                     && let AnnotationSubjectId::Function(function) = annotation.id().subject()
@@ -586,36 +625,40 @@ fn render_operation_inner(
                     function_annotations
                         .entry(function.clone())
                         .or_default()
-                        .push(annotation);
+                        .push(annotation_node(annotation)?);
                 }
             }
-            let mut bodies = Vec::new();
+            for values in function_annotations.values_mut() {
+                values.sort_by_cached_key(|value| {
+                    tql::render_schema_annotations(std::slice::from_ref(value))
+                });
+            }
+            let mut definitions = Vec::new();
             for fact in facts {
                 match fact {
                     SchemaFact::Annotation(annotation) if matches!(annotation.id().subject(), AnnotationSubjectId::Function(id) if function_ids.contains(id)) =>
                         {}
-                    SchemaFact::Function(function) => bodies.push(render_function(
+                    SchemaFact::Function(function) => definitions.push(tql::schema_function_fact(
                         function,
                         function_annotations
-                            .get(function.id())
-                            .map(Vec::as_slice)
+                            .remove(function.id())
                             .unwrap_or_default(),
                     )?),
-                    _ => bodies.push(render_definition(fact, target_facts, true)?),
+                    _ => definitions.push(definition_node(fact, target_facts, true)?),
                 }
             }
             Ok(vec![TypeQlStatement::new(
                 TypeQlVerb::Define,
-                bodies.join("\n"),
-            )])
+                tql::schema_define(definitions),
+            )?])
         }
         SchemaOperationKind::Undefine => Ok(vec![TypeQlStatement::new(
             TypeQlVerb::Undefine,
-            render_undefinition(
+            tql::schema_undefine(vec![undefinition_node(
                 operation.undefined_fact().expect("undefine exposes fact"),
                 source_facts,
-            )?,
-        )]),
+            )?]),
+        )?]),
         SchemaOperationKind::Redefine => {
             let expected = operation
                 .expected_fact()
@@ -634,33 +677,35 @@ fn render_operation_inner(
                 return Ok(vec![
                     TypeQlStatement::new(
                         TypeQlVerb::Undefine,
-                        render_annotation_undefinition(old, source_facts)?,
-                    ),
+                        tql::schema_undefine(vec![annotation_undefinition(old, source_facts)?]),
+                    )?,
                     TypeQlStatement::new(
                         TypeQlVerb::Define,
-                        render_annotation_definition(new, target_facts, false)?,
-                    ),
+                        tql::schema_define(vec![annotation_definition(new, target_facts, false)?]),
+                    )?,
                 ]);
             }
             if let (SchemaFact::Relates(old), SchemaFact::Relates(new)) = (expected, replacement) {
                 return match (old.specializes(), new.specializes()) {
                     (None, Some(_)) => Ok(vec![TypeQlStatement::new(
                         TypeQlVerb::Define,
-                        render_relates(new),
-                    )]),
-                    (Some(old_parent), None) => Ok(vec![TypeQlStatement::new(
+                        tql::schema_define(vec![relates_definition(new, target_facts)?]),
+                    )?]),
+                    (Some(parent), None) => Ok(vec![TypeQlStatement::new(
                         TypeQlVerb::Undefine,
-                        format!(
-                            "as {} from {} relates {};",
-                            old_parent.label().as_str(),
-                            old.id().relation().label().as_str(),
-                            old.id().role().label().as_str()
-                        ),
-                    )]),
+                        tql::schema_undefine(vec![
+                            tql::schema_undefine_specialisation_with_ordering(
+                                old.id().relation().label().as_str(),
+                                old.id().role().label().as_str(),
+                                parent.label().as_str(),
+                                old.collection_mode() == CollectionMode::OrderedList,
+                            )?,
+                        ]),
+                    )?]),
                     (Some(_), Some(_)) => Ok(vec![TypeQlStatement::new(
                         TypeQlVerb::Redefine,
-                        render_relates(new),
-                    )]),
+                        tql::schema_redefine(vec![relates_definition(new, target_facts)?]),
+                    )?]),
                     (None, None) => Err(RenderFailure {
                         code: CODE_INVALID_TRANSITION,
                         message: "relates redefinition does not change specialization",
@@ -669,132 +714,260 @@ fn render_operation_inner(
             }
             Ok(vec![TypeQlStatement::new(
                 TypeQlVerb::Redefine,
-                render_definition(replacement, target_facts, false)?,
-            )])
+                tql::schema_redefine(vec![definition_node(replacement, target_facts, false)?]),
+            )?])
         }
     }
 }
 
-fn render_definition(
+fn definition_node(
     fact: &SchemaFact,
     catalog: &SchemaFactCatalog,
     defining: bool,
-) -> Result<String, RenderFailure> {
-    match fact {
-        SchemaFact::Type(fact) => Ok(format!(
-            "{} {};",
-            type_kind(fact.id().kind()),
-            fact.id().label().as_str()
-        )),
-        SchemaFact::Sub(fact) => Ok(format!(
-            "{} sub {};",
+) -> Result<tql::SchemaDefinition, RenderFailure> {
+    let node = match fact {
+        SchemaFact::Type(fact) => tql::schema_type(
+            Some(type_kind(fact.id().kind())),
+            fact.id().label().as_str(),
+            vec![],
+            vec![],
+        )?,
+        SchemaFact::Sub(fact) => tql::schema_type(
+            None,
             fact.id().subtype().label().as_str(),
-            fact.id().supertype().label().as_str()
-        )),
-        SchemaFact::Value(fact) => Ok(format!(
-            "{} value {};",
+            vec![],
+            vec![tql::schema_sub(fact.id().supertype().label().as_str())?],
+        )?,
+        SchemaFact::Value(fact) => tql::schema_type(
+            None,
             fact.id().attribute().label().as_str(),
-            value_type(fact.value_type())
-        )),
-        SchemaFact::Owns(fact) => Ok(format!(
-            "{} owns {};",
+            vec![],
+            vec![tql::schema_value_domain(fact.value_type(), vec![])],
+        )?,
+        SchemaFact::Owns(fact) => tql::schema_type(
+            None,
             fact.id().owner().label().as_str(),
-            fact.id().attribute().label().as_str()
-        )),
-        SchemaFact::Relates(fact) => Ok(render_relates(fact)),
-        SchemaFact::Plays(fact) => Ok(format!(
-            "{} plays {}:{};",
+            vec![],
+            vec![tql::schema_owns(
+                fact.id().attribute().label().as_str(),
+                fact.collection_mode() == CollectionMode::OrderedList,
+                vec![],
+            )?],
+        )?,
+        SchemaFact::Relates(fact) => return relates_definition(fact, catalog),
+        SchemaFact::Plays(fact) => tql::schema_type(
+            None,
             fact.id().player().label().as_str(),
-            fact.id().role().declaring_relation().as_str(),
-            fact.id().role().label().as_str()
-        )),
-        SchemaFact::Annotation(fact) => render_annotation_definition(fact, catalog, defining),
-        SchemaFact::Function(fact) => render_function(fact, &[]),
-        SchemaFact::Struct(_) => Err(RenderFailure {
-            code: CODE_UNSUPPORTED,
-            message: "TypeDB 3.12.1 does not admit the pinned struct transition grammar",
-        }),
-    }
+            vec![],
+            vec![tql::schema_plays(
+                fact.id().role().declaring_relation().as_str(),
+                fact.id().role().label().as_str(),
+                vec![],
+            )?],
+        )?,
+        SchemaFact::Annotation(fact) => return annotation_definition(fact, catalog, defining),
+        SchemaFact::Function(fact) => tql::schema_function_fact(fact, vec![])?,
+        SchemaFact::Struct(_) => {
+            return Err(RenderFailure {
+                code: CODE_UNSUPPORTED,
+                message: "TypeDB 3.12.1 does not admit the pinned struct transition grammar",
+            });
+        }
+    };
+    Ok(node)
 }
-
-fn render_undefinition(
+fn undefinition_node(
     fact: &SchemaFact,
     catalog: &SchemaFactCatalog,
-) -> Result<String, RenderFailure> {
-    match fact {
-        // Type deletion takes the bare label: the kind keyword belongs to
-        // the define grammar only.
-        SchemaFact::Type(fact) => Ok(format!("{};", fact.id().label().as_str())),
-        SchemaFact::Sub(fact) => Ok(format!(
-            "sub {} from {};",
-            fact.id().supertype().label().as_str(),
-            fact.id().subtype().label().as_str()
-        )),
-        SchemaFact::Value(fact) => Ok(format!(
-            "value {} from {};",
-            value_type(fact.value_type()),
-            fact.id().attribute().label().as_str()
-        )),
-        SchemaFact::Owns(fact) => Ok(format!(
-            "owns {} from {};",
+) -> Result<tql::SchemaUndefinition, RenderFailure> {
+    let node = match fact {
+        SchemaFact::Type(fact) => tql::schema_undefine_type(fact.id().label().as_str())?,
+        SchemaFact::Sub(fact) => tql::schema_undefine_capability(
+            fact.id().subtype().label().as_str(),
+            tql::schema_sub(fact.id().supertype().label().as_str())?,
+        )?,
+        SchemaFact::Value(fact) => tql::schema_undefine_capability(
             fact.id().attribute().label().as_str(),
-            fact.id().owner().label().as_str()
-        )),
-        SchemaFact::Relates(fact) => Ok(format!(
-            "relates {} from {};",
-            fact.id().role().label().as_str(),
-            fact.id().relation().label().as_str()
-        )),
-        SchemaFact::Plays(fact) => Ok(format!(
-            "plays {}:{} from {};",
-            fact.id().role().declaring_relation().as_str(),
-            fact.id().role().label().as_str(),
-            fact.id().player().label().as_str()
-        )),
-        SchemaFact::Annotation(fact) => render_annotation_undefinition(fact, catalog),
-        SchemaFact::Function(fact) => Ok(format!("fun {};", fact.id().label().as_str())),
-        SchemaFact::Struct(_) => Err(RenderFailure {
-            code: CODE_UNSUPPORTED,
-            message: "TypeDB 3.12.1 does not admit the pinned struct transition grammar",
-        }),
+            tql::schema_value_domain(fact.value_type(), vec![]),
+        )?,
+        SchemaFact::Owns(fact) => tql::schema_undefine_capability(
+            fact.id().owner().label().as_str(),
+            tql::schema_owns(
+                fact.id().attribute().label().as_str(),
+                fact.collection_mode() == CollectionMode::OrderedList,
+                vec![],
+            )?,
+        )?,
+        SchemaFact::Relates(fact) => tql::schema_undefine_capability(
+            fact.id().relation().label().as_str(),
+            tql::schema_relates(
+                fact.id().role().label().as_str(),
+                fact.collection_mode() == CollectionMode::OrderedList,
+                None,
+                vec![],
+            )?,
+        )?,
+        SchemaFact::Plays(fact) => tql::schema_undefine_capability(
+            fact.id().player().label().as_str(),
+            tql::schema_plays(
+                fact.id().role().declaring_relation().as_str(),
+                fact.id().role().label().as_str(),
+                vec![],
+            )?,
+        )?,
+        SchemaFact::Annotation(fact) => return annotation_undefinition(fact, catalog),
+        SchemaFact::Function(fact) => tql::schema_undefine_function(fact.id().label().as_str())?,
+        SchemaFact::Struct(_) => {
+            return Err(RenderFailure {
+                code: CODE_UNSUPPORTED,
+                message: "TypeDB 3.12.1 does not admit the pinned struct transition grammar",
+            });
+        }
+    };
+    Ok(node)
+}
+fn relates_definition(
+    fact: &RelatesFact,
+    catalog: &SchemaFactCatalog,
+) -> Result<tql::SchemaDefinition, RenderFailure> {
+    if let Some(parent) = fact.specializes() {
+        let invalid = |_| RenderFailure {
+            code: CODE_INVALID_TRANSITION,
+            message: "invalid specialized role identity",
+        };
+        let parent_id = RelatesFactId::new(
+            TypeId::new(TypeKind::Relation, parent.declaring_relation().as_str())
+                .map_err(invalid)?,
+            parent.clone(),
+        )
+        .map_err(invalid)?;
+        if let Some(SchemaFact::Relates(parent)) = catalog.get(&SchemaFactId::Relates(parent_id))
+            && parent.collection_mode() != fact.collection_mode()
+        {
+            return Err(RenderFailure {
+                code: CODE_INVALID_TRANSITION,
+                message: "a specialized role must preserve parent collection mode",
+            });
+        }
     }
-}
-
-fn render_relates(fact: &RelatesFact) -> String {
-    let specializes = fact
-        .specializes()
-        .map(|role| format!(" as {}", role.label().as_str()))
-        .unwrap_or_default();
-    format!(
-        "{} relates {}{};",
+    Ok(tql::schema_type(
+        None,
         fact.id().relation().label().as_str(),
-        fact.id().role().label().as_str(),
-        specializes
-    )
+        vec![],
+        vec![tql::schema_relates(
+            fact.id().role().label().as_str(),
+            fact.collection_mode() == CollectionMode::OrderedList,
+            fact.specializes().map(|role| role.label().as_str()),
+            vec![],
+        )?],
+    )?)
 }
-
-fn render_annotation_definition(
+fn annotation_subject(
+    subject: &AnnotationSubjectId,
+    catalog: &SchemaFactCatalog,
+) -> Result<(String, Option<tql::SchemaCapability>), RenderFailure> {
+    let (name, capability) = match subject {
+        AnnotationSubjectId::Type(id) => (id.label().as_str(), None),
+        AnnotationSubjectId::Sub(id) => (
+            id.subtype().label().as_str(),
+            Some(tql::schema_sub(id.supertype().label().as_str())?),
+        ),
+        AnnotationSubjectId::Value(id) => {
+            let Some(SchemaFact::Value(value)) = catalog.get(&SchemaFactId::Value(id.clone()))
+            else {
+                return Err(RenderFailure {
+                    code: CODE_RENDER_CONTEXT,
+                    message: "value annotation rendering requires its exact value fact payload",
+                });
+            };
+            (
+                id.attribute().label().as_str(),
+                Some(tql::schema_value_domain(value.value_type(), vec![])),
+            )
+        }
+        AnnotationSubjectId::Owns(id) => (
+            id.owner().label().as_str(),
+            Some(tql::schema_owns(
+                id.attribute().label().as_str(),
+                catalog.get(&SchemaFactId::Owns(id.clone())).is_some_and(|fact| {
+                    matches!(fact, SchemaFact::Owns(fact) if fact.collection_mode() == CollectionMode::OrderedList)
+                }),
+                vec![],
+            )?),
+        ),
+        AnnotationSubjectId::Relates(id) => (
+            id.relation().label().as_str(),
+            Some(tql::schema_relates(
+                id.role().label().as_str(),
+                catalog.get(&SchemaFactId::Relates(id.clone())).is_some_and(|fact| {
+                    matches!(fact, SchemaFact::Relates(fact) if fact.collection_mode() == CollectionMode::OrderedList)
+                }),
+                None,
+                vec![],
+            )?),
+        ),
+        AnnotationSubjectId::Plays(id) => (
+            id.player().label().as_str(),
+            Some(tql::schema_plays(
+                id.role().declaring_relation().as_str(),
+                id.role().label().as_str(),
+                vec![],
+            )?),
+        ),
+        AnnotationSubjectId::Function(_) => {
+            return Err(RenderFailure {
+                code: CODE_UNSUPPORTED,
+                message: "persistent function annotations are unsupported; fold metadata into function definition",
+            });
+        }
+    };
+    Ok((name.to_owned(), capability))
+}
+fn annotation_definition(
     annotation: &AnnotationFact,
     catalog: &SchemaFactCatalog,
     defining: bool,
-) -> Result<String, RenderFailure> {
-    reject_distinct_lowering(annotation.id().kind())?;
-    let subject = render_annotation_subject(annotation.id().subject(), catalog, defining)?;
-    Ok(format!("{subject} {};", render_annotation(annotation)))
+) -> Result<tql::SchemaDefinition, RenderFailure> {
+    let value = annotation_node(annotation)?;
+    let (name, capability) = annotation_subject(annotation.id().subject(), catalog)?;
+    let (head, capabilities) = if let Some(capability) = capability {
+        (vec![], vec![capability.annotated(vec![value])])
+    } else {
+        (vec![value], vec![])
+    };
+    let kind = if defining {
+        match annotation.id().subject() {
+            AnnotationSubjectId::Type(id) => Some(type_kind(id.kind())),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(tql::schema_type(kind, &name, head, capabilities)?)
 }
-
-fn render_annotation_undefinition(
+fn annotation_undefinition(
     annotation: &AnnotationFact,
     catalog: &SchemaFactCatalog,
-) -> Result<String, RenderFailure> {
+) -> Result<tql::SchemaUndefinition, RenderFailure> {
     reject_distinct_lowering(annotation.id().kind())?;
-    let subject = render_annotation_subject(annotation.id().subject(), catalog, false)?;
-    Ok(format!(
-        "{} from {subject};",
-        render_annotation_selector(annotation.id().kind())
-    ))
+    let (name, capability) = annotation_subject(annotation.id().subject(), catalog)?;
+    let (category, key) = match annotation.id().kind() {
+        AnnotationKindId::Abstract => ("abstract", None),
+        AnnotationKindId::Independent => ("independent", None),
+        AnnotationKindId::Key => ("key", None),
+        AnnotationKindId::Unique => ("unique", None),
+        AnnotationKindId::Distinct => ("distinct", None),
+        AnnotationKindId::Card => ("card", None),
+        AnnotationKindId::Regex => ("regex", None),
+        AnnotationKindId::Range => ("range", None),
+        AnnotationKindId::Values => ("values", None),
+        AnnotationKindId::Doc => ("doc", None),
+        AnnotationKindId::Meta(key) => ("meta", Some(key.as_str())),
+    };
+    Ok(tql::schema_undefine_annotation(
+        category, key, &name, capability,
+    )?)
 }
-
 fn reject_distinct_lowering(kind: &AnnotationKindId) -> Result<(), RenderFailure> {
     if kind == &AnnotationKindId::Distinct {
         return Err(RenderFailure {
@@ -804,220 +977,49 @@ fn reject_distinct_lowering(kind: &AnnotationKindId) -> Result<(), RenderFailure
     }
     Ok(())
 }
-
-fn render_annotation_subject(
-    subject: &AnnotationSubjectId,
-    catalog: &SchemaFactCatalog,
-    defining: bool,
-) -> Result<String, RenderFailure> {
-    match subject {
-        AnnotationSubjectId::Type(id) if defining => {
-            Ok(format!("{} {}", type_kind(id.kind()), id.label().as_str()))
+fn annotation_node(annotation: &AnnotationFact) -> Result<tql::SchemaAnnotation, RenderFailure> {
+    reject_distinct_lowering(annotation.id().kind())?;
+    let node = match (annotation.id().kind(), annotation.value()) {
+        (AnnotationKindId::Abstract, SchemaAnnotationValue::Presence) => {
+            tql::schema_flag("abstract")?
         }
-        AnnotationSubjectId::Type(id) => Ok(id.label().as_str().to_owned()),
-        AnnotationSubjectId::Sub(id) => Ok(format!(
-            "{} sub {}",
-            id.subtype().label().as_str(),
-            id.supertype().label().as_str()
-        )),
-        AnnotationSubjectId::Value(id) => {
-            let fact_id = SchemaFactId::Value(id.clone());
-            let Some(SchemaFact::Value(value)) = catalog.get(&fact_id) else {
-                return Err(RenderFailure {
-                    code: CODE_RENDER_CONTEXT,
-                    message: "value annotation rendering requires its exact value fact payload",
-                });
-            };
-            Ok(format!(
-                "{} value {}",
-                id.attribute().label().as_str(),
-                value_type(value.value_type())
-            ))
+        (AnnotationKindId::Independent, SchemaAnnotationValue::Presence) => {
+            tql::schema_flag("independent")?
         }
-        AnnotationSubjectId::Owns(id) => Ok(format!(
-            "{} owns {}",
-            id.owner().label().as_str(),
-            id.attribute().label().as_str()
-        )),
-        AnnotationSubjectId::Relates(id) => Ok(format!(
-            "{} relates {}",
-            id.relation().label().as_str(),
-            id.role().label().as_str()
-        )),
-        AnnotationSubjectId::Plays(id) => Ok(format!(
-            "{} plays {}:{}",
-            id.player().label().as_str(),
-            id.role().declaring_relation().as_str(),
-            id.role().label().as_str()
-        )),
-        AnnotationSubjectId::Function(_) => Err(RenderFailure {
-            code: CODE_UNSUPPORTED,
-            message: "persistent function annotations are unsupported; fold metadata into function definition",
-        }),
-    }
-}
-
-fn render_annotation(annotation: &AnnotationFact) -> String {
-    match (annotation.id().kind(), annotation.value()) {
-        (AnnotationKindId::Abstract, SchemaAnnotationValue::Presence) => "@abstract".into(),
-        (AnnotationKindId::Independent, SchemaAnnotationValue::Presence) => "@independent".into(),
-        (AnnotationKindId::Key, SchemaAnnotationValue::Presence) => "@key".into(),
-        (AnnotationKindId::Unique, SchemaAnnotationValue::Presence) => "@unique".into(),
-        (AnnotationKindId::Distinct, SchemaAnnotationValue::Presence) => {
-            unreachable!("distinct lowering rejects before annotation rendering")
+        (AnnotationKindId::Key, SchemaAnnotationValue::Presence) => tql::schema_flag("key")?,
+        (AnnotationKindId::Unique, SchemaAnnotationValue::Presence) => tql::schema_flag("unique")?,
+        (AnnotationKindId::Card, SchemaAnnotationValue::Cardinality(card)) => {
+            tql::schema_card((*card).min(), (*card).max())?
         }
-        (AnnotationKindId::Card, SchemaAnnotationValue::Cardinality(cardinality)) => format!(
-            "@card({}..{})",
-            (*cardinality).min(),
-            (*cardinality)
-                .max()
-                .map(|value| value.to_string())
-                .unwrap_or_default()
-        ),
         (AnnotationKindId::Regex, SchemaAnnotationValue::Regex(regex)) => {
-            format!("@regex({})", quote(regex.as_str()))
+            tql::schema_regex(regex.as_str())?
         }
-        (AnnotationKindId::Range, SchemaAnnotationValue::Range(range)) => format!(
-            "@range({}..{})",
-            range.lower().map(render_value).unwrap_or_default(),
-            range.upper().map(render_value).unwrap_or_default()
-        ),
-        (AnnotationKindId::Values, SchemaAnnotationValue::Values(values)) => format!(
-            "@values({})",
-            values
-                .iter()
-                .map(render_value)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        (AnnotationKindId::Doc, SchemaAnnotationValue::Doc(doc)) => {
-            format!("@doc({})", quote(doc.as_str()))
+        (AnnotationKindId::Range, SchemaAnnotationValue::Range(range)) => {
+            tql::schema_canonical_range(range.lower(), range.upper())?
         }
-        (AnnotationKindId::Meta(key), SchemaAnnotationValue::Meta(value)) => {
-            format!("@meta({}, {})", quote(key.as_str()), render_value(value))
+        (AnnotationKindId::Values, SchemaAnnotationValue::Values(values)) => {
+            tql::schema_canonical_values(&values.iter().cloned().collect::<Vec<_>>())?
         }
-        _ => unreachable!("annotation constructors preserve kind-safe payloads"),
-    }
-}
-
-fn render_annotation_selector(kind: &AnnotationKindId) -> String {
-    match kind {
-        AnnotationKindId::Abstract => "@abstract".into(),
-        AnnotationKindId::Independent => "@independent".into(),
-        AnnotationKindId::Key => "@key".into(),
-        AnnotationKindId::Unique => "@unique".into(),
-        AnnotationKindId::Distinct => {
-            unreachable!("distinct lowering rejects before annotation selector rendering")
+        (AnnotationKindId::Doc, SchemaAnnotationValue::Doc(doc)) => tql::schema_doc(doc.as_str())?,
+        (
+            AnnotationKindId::Meta(key),
+            SchemaAnnotationValue::Meta(CanonicalValue::String(value)),
+        ) => tql::schema_meta(key.as_str(), value.as_str())?,
+        _ => {
+            return Err(RenderFailure {
+                code: CODE_UNSUPPORTED,
+                message: "annotation payload is unsupported by the official TypeQL AST",
+            });
         }
-        AnnotationKindId::Card => "@card".into(),
-        AnnotationKindId::Regex => "@regex".into(),
-        AnnotationKindId::Range => "@range".into(),
-        AnnotationKindId::Values => "@values".into(),
-        AnnotationKindId::Doc => "@doc".into(),
-        AnnotationKindId::Meta(key) => format!("@meta({})", quote(key.as_str())),
-    }
-}
-
-fn render_function(
-    function: &FunctionFact,
-    annotations: &[&AnnotationFact],
-) -> Result<String, RenderFailure> {
-    let parameters = function
-        .signature()
-        .parameters()
-        .iter()
-        .map(|parameter| {
-            format!(
-                "${}: {}",
-                parameter.name().as_str(),
-                render_type_reference(parameter.type_ref())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let returns = match function.signature().returns() {
-        FunctionReturnMode::Scalar(element) => render_return_element(element),
-        FunctionReturnMode::Tuple(elements) => format!(
-            "({})",
-            elements
-                .iter()
-                .map(render_return_element)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        FunctionReturnMode::Stream(elements) => format!(
-            "{{ {} }}",
-            elements
-                .iter()
-                .map(render_return_element)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
     };
-    let mut rendered_annotations = annotations
-        .iter()
-        .map(|annotation| render_annotation(annotation))
-        .collect::<Vec<_>>();
-    rendered_annotations.sort();
-    let suffix = if rendered_annotations.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", rendered_annotations.join(" "))
-    };
-    Ok(format!(
-        "fun {}({parameters}) -> {returns}{suffix}:\n{}",
-        function.id().label().as_str(),
-        function.body().text()
-    ))
+    Ok(node)
 }
-
-fn render_return_element(element: &FunctionReturnElement) -> String {
-    format!(
-        "{}{}",
-        render_type_reference(element.type_ref()),
-        if element.optional() { "?" } else { "" }
-    )
-}
-
-fn render_type_reference(reference: &TypeReference) -> String {
-    match reference {
-        TypeReference::Value(value) => value_type(*value).into(),
-        TypeReference::Schema(label) => label.as_str().into(),
-    }
-}
-
-fn render_value(value: &CanonicalValue) -> String {
-    match value {
-        CanonicalValue::String(value) => quote(value.as_str()),
-        CanonicalValue::Long(value) => value.to_string(),
-        CanonicalValue::Double(value) => format!("{:?}", value.get()),
-        CanonicalValue::Boolean(value) => value.to_string(),
-        CanonicalValue::Date(value) => value.to_string(),
-        CanonicalValue::DateTime(value) => value.to_string(),
-        CanonicalValue::DateTimeTz(value) => value.to_string(),
-        CanonicalValue::Decimal(value) => format!("{}dec", value.as_str()),
-        CanonicalValue::Duration(value) => value.to_string(),
-    }
-}
-
-fn quote(value: &str) -> String {
-    serde_json::to_string(value).expect("strings always serialize")
-}
-
 fn type_kind(kind: TypeKind) -> &'static str {
     match kind {
         TypeKind::Entity => "entity",
         TypeKind::Relation => "relation",
         TypeKind::Attribute => "attribute",
         TypeKind::Struct => "struct",
-    }
-}
-
-fn value_type(value: ValueTypeTag) -> &'static str {
-    match value.as_str() {
-        "long" => "integer",
-        "datetime_tz" => "datetime-tz",
-        other => other,
     }
 }
 
@@ -1031,7 +1033,21 @@ mod tests {
         RegexPattern, RelatesFactId, SchemaOperation, StructFact, StructField, SubFact, SubFactId,
         TypeFact, ValueFact, ValueFactId,
     };
-    use type_bridge_contract::value::{CanonicalString, Cardinality};
+    use type_bridge_contract::schema::{
+        FunctionFact, FunctionReturnElement, FunctionReturnMode, TypeReference,
+    };
+    use type_bridge_contract::value::{CanonicalString, Cardinality, ValueTypeTag};
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_current_binds_the_3_12_1_registry() {
+        let capabilities = CapabilitySet::default();
+        let profile = SemanticProfileId::new("typedb-3.12.1/v1").unwrap();
+        assert_eq!(
+            SchemaLoweringBinding::current(capabilities.clone()).unwrap(),
+            SchemaLoweringBinding::for_semantic_profile(&profile, capabilities).unwrap()
+        );
+    }
 
     fn type_id(kind: TypeKind, label: &str) -> TypeId {
         TypeId::new(kind, label).unwrap()
@@ -1081,8 +1097,12 @@ mod tests {
     }
 
     fn full_binding() -> SchemaLoweringBinding {
-        SchemaLoweringBinding::current(typedb_3_12_1_profile().required_capabilities.clone())
-            .unwrap()
+        let profile = MigrationProfile::Typedb3_12_1;
+        SchemaLoweringBinding::for_semantic_profile(
+            &profile.semantic_profile_id(),
+            profile.profile().required_capabilities.clone(),
+        )
+        .unwrap()
     }
 
     fn dump(
@@ -1106,6 +1126,39 @@ mod tests {
             output.push_str(statement.query());
             output.push('\n');
         }
+    }
+
+    #[test]
+    fn tuple_function_lowering_corrects_old_invalid_header_and_keeps_body_bytes() {
+        let body = "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;\n";
+        let element = FunctionReturnElement::new(TypeReference::Value(ValueTypeTag::Long), false);
+        let function = FunctionFact::new(
+            FunctionId::new("pair").unwrap(),
+            FunctionSignature::new(
+                vec![FunctionParameter::new(
+                    Label::new("seed").unwrap(),
+                    TypeReference::Value(ValueTypeTag::Long),
+                )],
+                FunctionReturnMode::tuple(vec![element.clone(), element]).unwrap(),
+            )
+            .unwrap(),
+            FunctionBody::new(body).unwrap(),
+        );
+        let fact = SchemaFact::Function(function.clone());
+        let catalog = SchemaFactCatalog::new(vec![fact.clone()]).unwrap();
+        let statements = render_operation_inner(
+            &SchemaOperation::define(vec![fact]).unwrap(),
+            &SchemaFactCatalog::empty(),
+            &catalog,
+        )
+        .unwrap();
+        let new = statements[0].query();
+        let old = format!("define fun pair($seed: integer) -> (integer, integer):\n{body}");
+        assert!(tql::parse(&old).is_err());
+        assert!(new.contains("-> integer, integer:"), "{new}");
+        assert!(new.contains(body), "{new}");
+        assert_eq!(function.body().text(), body);
+        tql::parse(new).unwrap();
     }
 
     #[test]
@@ -1419,10 +1472,31 @@ mod tests {
             &mut output,
         );
 
-        assert_eq!(
-            output,
-            include_str!("../tests/fixtures/lowering-supported-v1.txt")
-        );
+        let old = include_str!("../tests/fixtures/lowering-supported-v1.txt");
+        let sections = |source: &str| {
+            source
+                .split("## ")
+                .skip(1)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        let old = sections(old);
+        let new = sections(&output);
+        assert_eq!(old.len(), new.len());
+        for (old, new) in old.iter().zip(&new) {
+            let (old_name, old_queries) = old.split_once('\n').unwrap();
+            let (new_name, new_queries) = new.split_once('\n').unwrap();
+            assert_eq!(old_name, new_name);
+            let old = old_queries.split("-- atomic-next --").collect::<Vec<_>>();
+            let new = new_queries.split("-- atomic-next --").collect::<Vec<_>>();
+            assert_eq!(old.len(), new.len(), "{old_name}");
+            for (old, new) in old.iter().zip(new) {
+                assert!(
+                    tql::equivalent(old, new).unwrap(),
+                    "{old_name}: {old} != {new}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1501,7 +1575,11 @@ mod tests {
             output.push_str(error.code());
             output.push('\n');
         }
-        let no_capabilities = SchemaLoweringBinding::current(CapabilitySet::new()).unwrap();
+        let no_capabilities = SchemaLoweringBinding::for_semantic_profile(
+            &MigrationProfile::Typedb3_12_1.semantic_profile_id(),
+            CapabilitySet::new(),
+        )
+        .unwrap();
         let capability_error = lower_operation(
             0,
             &SchemaOperation::define(vec![type_fact]).unwrap(),
@@ -1517,7 +1595,10 @@ mod tests {
         output.push('\n');
         let profile_error = SchemaLoweringBinding::new(
             SchemaLoweringProfileId::typedb_3_12_1(),
-            SchemaLoweringProfileFingerprint::compute(b"wrong profile bytes"),
+            SchemaLoweringProfileFingerprint::compute_for_profile(
+                &SchemaLoweringProfileId::typedb_3_12_1(),
+                b"wrong profile bytes",
+            ),
             CapabilitySet::new(),
         )
         .unwrap_err();
@@ -1596,9 +1677,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unit.safety(), SafetyClass::FormalOnly);
-        assert_eq!(
-            unit.statements()[0].query(),
-            "undefine\n@card from person owns name;"
+        assert!(
+            tql::equivalent(
+                unit.statements()[0].query(),
+                "undefine\n@card from person owns name;"
+            )
+            .unwrap()
         );
     }
 
@@ -1693,5 +1777,283 @@ mod tests {
         ] {
             assert!(gate_safety(0, safety, true, false).is_err());
         }
+    }
+    #[test]
+    fn ordered_facts_correct_old_scalar_output_through_every_builder() {
+        let owns_id =
+            OwnsFactId::new(type_id(TypeKind::Entity, "person"), attribute_id("name")).unwrap();
+        let owns = SchemaFact::Owns(
+            OwnsFact::new(owns_id.clone()).with_collection_mode(CollectionMode::OrderedList),
+        );
+        let parent_id = RelatesFactId::new(
+            type_id(TypeKind::Relation, "base"),
+            role_id("base", "participant"),
+        )
+        .unwrap();
+        let parent = SchemaFact::Relates(
+            RelatesFact::new_with_collection_mode(
+                parent_id.clone(),
+                None,
+                CollectionMode::OrderedList,
+            )
+            .unwrap(),
+        );
+        let child_id = RelatesFactId::new(
+            type_id(TypeKind::Relation, "review"),
+            role_id("review", "reviewer"),
+        )
+        .unwrap();
+        let child = SchemaFact::Relates(
+            RelatesFact::new_with_collection_mode(
+                child_id.clone(),
+                Some(parent_id.role().clone()),
+                CollectionMode::OrderedList,
+            )
+            .unwrap(),
+        );
+        let unspecialized = SchemaFact::Relates(
+            RelatesFact::new_with_collection_mode(child_id, None, CollectionMode::OrderedList)
+                .unwrap(),
+        );
+        let catalog =
+            SchemaFactCatalog::new([owns.clone(), parent.clone(), child.clone()]).unwrap();
+        let owns_doc = annotation(
+            AnnotationSubjectId::Owns(owns_id),
+            AnnotationKindId::Doc,
+            SchemaAnnotationValue::Doc(DocText::new("ordered").unwrap()),
+        );
+        let relates_doc = annotation(
+            AnnotationSubjectId::Relates(parent_id),
+            AnnotationKindId::Doc,
+            SchemaAnnotationValue::Doc(DocText::new("ordered").unwrap()),
+        );
+        let define = |fact: SchemaFact| SchemaOperation::define(vec![fact]).unwrap();
+        let cases = [
+            ("owns_define", define(owns.clone())),
+            ("owns_undefine", SchemaOperation::undefine(owns)),
+            ("relates_define", define(parent.clone())),
+            ("relates_undefine", SchemaOperation::undefine(parent)),
+            ("specialisation_define", define(child.clone())),
+            (
+                "specialisation_remove",
+                SchemaOperation::redefine(child, unspecialized).unwrap(),
+            ),
+            ("owns_doc_define", define(owns_doc.clone())),
+            ("owns_doc_undefine", SchemaOperation::undefine(owns_doc)),
+            ("relates_doc_define", define(relates_doc.clone())),
+            (
+                "relates_doc_undefine",
+                SchemaOperation::undefine(relates_doc),
+            ),
+        ];
+        let baseline: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../tests/fixtures/native_ordered_pre_ast.json"
+        ))
+        .unwrap();
+        for ((name, operation), baseline) in cases.into_iter().zip(&baseline) {
+            assert_eq!(name, baseline["case"]);
+            let statements = render_operation_inner(&operation, &catalog, &catalog).unwrap();
+            assert_eq!(statements.len(), 1);
+            let new = statements[0].query();
+            let old = baseline["old"].as_str().unwrap();
+            tql::parse(new).unwrap();
+            tql::parse(old).unwrap();
+            assert!(
+                new.contains(baseline["corrected_contains"].as_str().unwrap()),
+                "{name}: {new}"
+            );
+            assert!(
+                !tql::equivalent(old, new).unwrap(),
+                "{name}: old scalar output must differ"
+            );
+        }
+    }
+
+    #[test]
+    fn native_specialisation_refuses_known_collection_mode_mismatches() {
+        for ordered in [false, true] {
+            let parent_id = RelatesFactId::new(
+                type_id(TypeKind::Relation, "base"),
+                role_id("base", "participant"),
+            )
+            .unwrap();
+            let mode = if ordered {
+                CollectionMode::OrderedList
+            } else {
+                CollectionMode::Unordered
+            };
+            let opposite = if ordered {
+                CollectionMode::Unordered
+            } else {
+                CollectionMode::OrderedList
+            };
+            let parent = SchemaFact::Relates(
+                RelatesFact::new_with_collection_mode(parent_id.clone(), None, mode).unwrap(),
+            );
+            let child = SchemaFact::Relates(
+                RelatesFact::new_with_collection_mode(
+                    RelatesFactId::new(
+                        type_id(TypeKind::Relation, "review"),
+                        role_id("review", "reviewer"),
+                    )
+                    .unwrap(),
+                    Some(parent_id.role().clone()),
+                    opposite,
+                )
+                .unwrap(),
+            );
+            let catalog = SchemaFactCatalog::new([parent, child.clone()]).unwrap();
+            let error = render_operation_inner(
+                &SchemaOperation::define(vec![child]).unwrap(),
+                &SchemaFactCatalog::empty(),
+                &catalog,
+            )
+            .unwrap_err();
+            assert_eq!(error.code, CODE_INVALID_TRANSITION);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires an isolated TypeDB 3.13.6 server"]
+    async fn native_ordered_formatter_exports_and_removes_schema_live() {
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_orm::{ConnectOptions, Database};
+        use type_bridge_schema_compat::typeql_to_declared;
+        let baseline_text = "define attribute name, value string; entity person; relation base @abstract; relation review @abstract, sub base;";
+        let target_text = "define attribute name, value string; entity person, owns name[]; relation base @abstract, relates participant[] @abstract; relation review @abstract, sub base, relates reviewer[] as participant[];";
+        let declared = |text: &str| {
+            typeql_to_declared(DocumentId::new("ordered-live.tql").unwrap(), text).unwrap()
+        };
+        let baseline = declared(baseline_text);
+        let target = declared(target_text);
+        let additions = target
+            .facts()
+            .filter(|fact| match fact {
+                SchemaFact::Owns(_) | SchemaFact::Relates(_) => true,
+                SchemaFact::Annotation(annotation) => {
+                    matches!(annotation.id().subject(), AnnotationSubjectId::Relates(_))
+                }
+                _ => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let catalog = SchemaFactCatalog::new(target.facts().cloned()).unwrap();
+        let statements = render_operation_inner(
+            &SchemaOperation::define(additions.clone()).unwrap(),
+            &catalog,
+            &catalog,
+        )
+        .unwrap();
+        let child = additions
+            .iter()
+            .find_map(|fact| match fact {
+                SchemaFact::Relates(relates) if relates.specializes().is_some() => {
+                    Some(relates.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        let unspecialized = RelatesFact::new_with_collection_mode(
+            child.id().clone(),
+            None,
+            CollectionMode::OrderedList,
+        )
+        .unwrap();
+        let mut removals = render_operation_inner(
+            &SchemaOperation::redefine(
+                SchemaFact::Relates(child),
+                SchemaFact::Relates(unspecialized.clone()),
+            )
+            .unwrap(),
+            &catalog,
+            &catalog,
+        )
+        .unwrap();
+        removals.extend(
+            render_operation_inner(
+                &SchemaOperation::undefine(SchemaFact::Relates(unspecialized)),
+                &catalog,
+                &catalog,
+            )
+            .unwrap(),
+        );
+        for fact in &additions {
+            if match fact {
+                SchemaFact::Owns(_) => true,
+                SchemaFact::Relates(relates) => relates.specializes().is_none(),
+                _ => false,
+            } {
+                removals.extend(
+                    render_operation_inner(
+                        &SchemaOperation::undefine(fact.clone()),
+                        &catalog,
+                        &catalog,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+        let address = std::env::var("TYPEDB_ADDRESS").expect("TYPEDB_ADDRESS");
+        let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
+        let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
+        let mut options = ConnectOptions::default();
+        if let Ok(port) = std::env::var("TYPEDB_HTTP_PORT") {
+            options.http_port = port.parse().unwrap();
+        }
+        let name = format!(
+            "tb_ordered_formatter_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        type_bridge_orm::ensure_database_exists(&address, &name, &username, &password, options)
+            .await
+            .unwrap();
+        let database = std::sync::Arc::new(
+            Database::connect_with_options(&address, &name, &username, &password, options)
+                .await
+                .unwrap(),
+        );
+        let live = database.clone();
+        // Join before cleanup so assertion failures still delete this test's database.
+        let result = tokio::spawn(async move {
+            assert_eq!(
+                live.server_version(),
+                Some(type_bridge_core_lib::version::Version::new(3, 13, 6))
+            );
+            let mut transaction = live.schema_transaction().await.unwrap();
+            transaction.query(baseline_text).await.unwrap();
+            for statement in statements {
+                transaction.query(statement.query()).await.unwrap();
+            }
+            transaction.commit().await.unwrap();
+            let exported = live.schema_text().await.unwrap();
+            for marker in [
+                "owns name[]",
+                "relates participant[]",
+                "reviewer[] as participant[]",
+            ] {
+                assert!(exported.contains(marker), "{marker} absent from {exported}");
+            }
+            assert_eq!(
+                declared(&exported).declared_identity_fingerprint(),
+                target.declared_identity_fingerprint()
+            );
+            let mut transaction = live.schema_transaction().await.unwrap();
+            for statement in removals {
+                transaction.query(statement.query()).await.unwrap();
+            }
+            transaction.commit().await.unwrap();
+            let exported = live.schema_text().await.unwrap();
+            assert_eq!(
+                declared(&exported).declared_identity_fingerprint(),
+                baseline.declared_identity_fingerprint()
+            );
+        })
+        .await;
+        database.delete_database().await.unwrap();
+        result.unwrap();
     }
 }

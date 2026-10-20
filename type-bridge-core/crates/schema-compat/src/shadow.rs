@@ -1,5 +1,6 @@
 //! Honest, comparison-only shadowing of the frozen V1 schema parser.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -595,6 +596,7 @@ fn rejected_v1(error: &SchemaError) -> ShadowLaneOutcome {
         SchemaError::UnknownParent { .. } => "v1_unknown_parent",
         SchemaError::DuplicateDefinition { .. } => "v1_duplicate_definition",
         SchemaError::ValidationError { .. } => "v1_validation_error",
+        SchemaError::UnsupportedProjection { .. } => "v1_unsupported_projection",
     };
     ShadowLaneOutcome::Rejected(ShadowLaneRejection::new(code, error.to_string()))
 }

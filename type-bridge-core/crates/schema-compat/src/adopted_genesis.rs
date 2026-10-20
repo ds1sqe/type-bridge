@@ -15,6 +15,7 @@
 //! ledger partition to be absent or exactly the frozen contract, and
 //! returns the remaining facts as the adopted genesis.
 
+#![allow(deprecated)] // Frozen released-schema recovery remains available until 3.0.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
@@ -233,10 +234,11 @@ pub const ADOPTED_GENESIS_FILE_NAME: &str = "adopted-genesis.typeql";
 
 /// Frozen TypeQL rendering of the released v1 migration-ledger schema.
 ///
-/// This is the exact `migration_state_schema().to_typeql()` output of the
-/// released 1.5.x line, pinned here so offline surfaces can recognize the
-/// ledger without depending on the provider-bearing v1 compat crate. The
-/// v1 crate carries the equality test that keeps the two in lock-step; the
+/// This is AST-equivalent to the `migration_state_schema().to_typeql()`
+/// output of the released 1.5.x line, pinned here so offline surfaces can
+/// recognize the ledger without depending on the provider-bearing v1 compat
+/// crate. The v1 crate carries the equivalence test that keeps the two in
+/// lock-step; the
 /// ledger is frozen, so a divergence there is a contract break, not a
 /// refactor.
 pub const LEGACY_LEDGER_SCHEMA_TYPEQL: &str = "\

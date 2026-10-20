@@ -7,16 +7,16 @@ should depend on [`type-bridge`](https://crates.io/crates/type-bridge) instead.
 
 ```toml
 [dependencies]
-type-bridge-schema-compat = "2.2.6"
+type-bridge-schema-compat = "2.3.0"
 ```
 
 Integrators should start with the released-syntax parsers and shadow-report
-types in the [crate API](https://docs.rs/type-bridge-schema-compat/2.2.6). Treat
+types in the [crate API](https://docs.rs/type-bridge-schema-compat/2.3.0). Treat
 a matching shadow report only as evidence for the explicitly shared domain.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.2.6, requires Rust 1.88+, and evaluates schemas against the TypeDB 3.12.1 V2
-semantic baseline. The wider runtime supports TypeDB 3.11.x–3.12.x.
+2.3.0, requires Rust 1.88+, and evaluates schemas against the TypeDB 3.12.1 V2
+semantic baseline. The wider runtime supports TypeDB 3.11.x–3.13.x.
 
 ## Corpus completion criterion
 
@@ -49,5 +49,5 @@ gained or lost the relevant information. It must not be changed merely to make
 `is_cutover_evidence()` return true.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-schema-compat/2.2.6) ·
+[API documentation](https://docs.rs/type-bridge-schema-compat/2.3.0) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

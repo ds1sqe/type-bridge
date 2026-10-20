@@ -17,19 +17,18 @@ use napi::bindgen_prelude::{
 use napi_derive::napi;
 use type_bridge_contract::codec::{from_canonical_json, to_canonical_json};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::fingerprint::Fingerprint;
+use type_bridge_contract::fingerprint::{Fingerprint, MAX_FINGERPRINT_IDENTIFIER_BYTES};
 use type_bridge_contract::limits::{
-    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_QUERY_INVOCATION_BYTES,
-    MAX_REMOTE_ENVELOPE_BYTES,
+    MAX_CANONICAL_BYTES, MAX_CANONICAL_STRING_BYTES, MAX_REMOTE_ENVELOPE_BYTES,
 };
 use type_bridge_contract::query_remote::{
-    RemoteLimits, checked_remote_deadline, checked_remote_limit, remote_deadline_limit,
-    remote_limit_invalid,
+    checked_remote_deadline, checked_remote_limit, remote_deadline_limit, remote_limit_invalid,
 };
+use type_bridge_contract::query_remote_v2::RemoteLimitsV2;
 use type_bridge_contract::schema::encode_declared_schema;
 use type_bridge_orm::query_v2_prepared::{
-    ClaimedRemoteReply, PendingRemoteQuery, QueryAuthority, decode_remote_capabilities,
-    execute_prepared_local, prepare_remote_query, query_v2_host_string_unicode_error,
+    ClaimedRemoteReplyV2, PendingRemoteQueryV2, QueryAuthority, decode_remote_capabilities,
+    execute_prepared_local, prepare_remote_query_v2, query_v2_host_string_unicode_error,
 };
 use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
 use type_bridge_schema::{
@@ -38,8 +37,6 @@ use type_bridge_schema::{
 };
 
 use crate::NodeRustDatabase;
-
-const MAX_SEMANTIC_PROFILE_ID_BYTES: usize = 255;
 
 pub(crate) fn napi_error(diagnostic: &Diagnostic) -> napi::Error {
     napi::Error::from_reason(serde_json::to_string(diagnostic).unwrap_or_else(|_| {
@@ -72,10 +69,25 @@ impl NodeQueryV2Authority {
     }
 }
 
+#[napi]
+impl NodeQueryV2Authority {
+    /// Derive an authority over the same schema whose plans are authored,
+    /// decoded, and validated under `query_limits`.
+    #[napi(js_name = "withQueryLimits")]
+    pub fn with_query_limits(
+        &self,
+        query_limits: &crate::match_runtime::NodeQueryLimits,
+    ) -> NodeQueryV2Authority {
+        NodeQueryV2Authority {
+            authority: Arc::new(self.authority.rebound_with_limits(query_limits.inner())),
+        }
+    }
+}
+
 /// One prepared request with an atomic one-shot reply decoder.
 #[napi]
 pub struct NodePendingQueryV2Remote {
-    pending: Arc<PendingRemoteQuery>,
+    pending: Arc<PendingRemoteQueryV2>,
 }
 
 /// One remote reply decode scheduled on the libuv worker pool.
@@ -85,7 +97,7 @@ pub struct DecodeRemoteReplyTask {
 
 enum DecodeRemoteReplyTaskState {
     Claimed {
-        claimed: Option<ClaimedRemoteReply>,
+        claimed: Option<ClaimedRemoteReplyV2>,
         response: Vec<u8>,
     },
     Rejected {
@@ -415,7 +427,7 @@ pub fn query_v2_authority(
     let profile = bounded_string(
         &env,
         profile,
-        MAX_SEMANTIC_PROFILE_ID_BYTES,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES,
         semantic_profile_id_too_large,
     )?;
     let authority = QueryAuthority::from_declared_bytes(
@@ -552,7 +564,7 @@ pub fn query_v2_query_only_authority(
     let profile = bounded_string(
         &env,
         profile,
-        MAX_SEMANTIC_PROFILE_ID_BYTES,
+        MAX_FINGERPRINT_IDENTIFIER_BYTES,
         semantic_profile_id_too_large,
     )?;
     let (database, _) = database.handles();
@@ -586,7 +598,7 @@ pub fn query_v2_execute_local<'env>(
     let invocation_json = bounded_string(
         &env,
         invocation_json,
-        MAX_QUERY_INVOCATION_BYTES,
+        authority.authority.limits().invocation_bytes(),
         invocation_input_too_large,
     )?;
     let deadline = checked_remote_deadline(
@@ -613,7 +625,8 @@ pub fn query_v2_execute_local<'env>(
     };
     let (database, runtime) = database.handles();
     let authority = Arc::clone(&authority.authority);
-    let plan = bounded_response_snapshot(&plan, MAX_CANONICAL_BYTES.saturating_add(1));
+    let plan =
+        bounded_response_snapshot(&plan, authority.limits().codec.max_bytes.saturating_add(1));
     let (deferred, promise) = env.create_deferred::<String, _>()?;
 
     let execution = runtime.spawn(async move {
@@ -656,9 +669,14 @@ fn remote_limits(
     max_bytes: &BigInt,
     max_collection_members: &BigInt,
     deadline_ms: Option<&BigInt>,
-) -> napi::Result<RemoteLimits> {
-    let build = || -> Result<RemoteLimits, Diagnostic> {
-        Ok(RemoteLimits {
+) -> napi::Result<RemoteLimitsV2> {
+    let build = || -> Result<RemoteLimitsV2, Diagnostic> {
+        // A low-level plan returns no hydration graph, so the graph budgets
+        // keep the proxy (wire) defaults this remote request travels under.
+        let policy = type_bridge_orm::QueryExecutionResourceLimits::default_for(
+            type_bridge_orm::AnswerTransport::Proxy,
+        );
+        Ok(RemoteLimitsV2 {
             deadline_ms: checked_remote_deadline(
                 deadline_ms
                     .map(|value| remote_limit(value).map(i128::from))
@@ -667,6 +685,10 @@ fn remote_limits(
             max_bytes: remote_limit(max_bytes)?,
             max_items: remote_limit(max_items)?,
             max_collection_members: remote_limit(max_collection_members)?,
+            max_graph_nodes: policy.graph_nodes,
+            max_attribute_values: policy.attribute_values,
+            max_role_players: policy.role_players,
+            max_statements: policy.statements,
         })
     };
     build().map_err(|diagnostic| napi_error(&diagnostic))
@@ -707,7 +729,7 @@ pub fn query_v2_prepare_remote(
     let invocation_json = bounded_string(
         &env,
         invocation_json,
-        MAX_QUERY_INVOCATION_BYTES,
+        authority.authority.limits().invocation_bytes(),
         invocation_input_too_large,
     )?;
     let advertisement = non_shared_buffer(&env, advertisement)?;
@@ -717,9 +739,17 @@ pub fn query_v2_prepare_remote(
         &max_collection_members,
         deadline_ms.as_ref(),
     )?;
-    let pending = prepare_remote_query(
+    let pending = prepare_remote_query_v2(
         &authority.authority,
-        bounded_buffer(&plan, MAX_CANONICAL_BYTES.saturating_add(1)),
+        bounded_buffer(
+            &plan,
+            authority
+                .authority
+                .limits()
+                .codec
+                .max_bytes
+                .saturating_add(1),
+        ),
         &invocation_json,
         bounded_buffer(&advertisement, MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1)),
         limits,

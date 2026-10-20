@@ -18,11 +18,11 @@ use type_bridge::value::{
     Decimal as QueryDecimal, Double as QueryDouble, Regex, Text,
 };
 use type_bridge::{
-    AnswerCancellation, ConnectionOptions, Database, Error, ErrorCategory, ErrorDetail,
-    ErrorPathSegment, MAX_QUERY_ITEMS, PageOptions, ProjectedManagerComparison,
-    QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits, QuerySession,
-    RemoteConnectionOptions, RemoteDatabase, RemoteQueryLimits, RemoteQueryTransport, RowsOptions,
-    aggregate,
+    AnswerCancellation, AnswerTransport, Connection, ConnectionOptions, DEFAULT_DIRECT_QUERY_ITEMS,
+    Database, DirectConnectionPolicy, Error, ErrorCategory, ErrorDetail, ErrorPathSegment,
+    PageOptions, ProjectedManagerComparison, ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint,
+    ProxyExchange, QueryDiagnosticCategory, QueryDiagnosticPathKind, QueryExecutionResourceLimits,
+    QuerySession, RowsOptions, TlsPolicy, aggregate,
 };
 use type_bridge_generated_schema::{
     Actor, ActorType, Aliases, AppSchema, CanonicalDouble, Container, ContainerCreate,
@@ -158,31 +158,26 @@ impl type_bridge::LifecycleHook for RecordingLifecycleHook {
     }
 }
 
+/// An HTTP exchange that counts its `/v2/query` requests, for journeys that
+/// assert how many exchanges a terminal performs. Connections that only need
+/// a working proxy use the built-in transport through [`ProxyEndpoint`].
 struct HttpTransport {
     client: reqwest::Client,
     base_url: String,
-    exchange_count: Option<Arc<AtomicUsize>>,
+    exchange_count: Arc<AtomicUsize>,
 }
 
 impl HttpTransport {
-    fn new(base_url: String) -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            base_url,
-            exchange_count: None,
-        }
-    }
-
     fn recording(base_url: String, exchange_count: Arc<AtomicUsize>) -> Self {
         Self {
             client: reqwest::Client::new(),
             base_url,
-            exchange_count: Some(exchange_count),
+            exchange_count,
         }
     }
 }
 
-impl RemoteQueryTransport for HttpTransport {
+impl ProxyExchange for HttpTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -218,9 +213,7 @@ impl RemoteQueryTransport for HttpTransport {
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            if let Some(exchange_count) = &self.exchange_count {
-                exchange_count.fetch_add(1, Ordering::SeqCst);
-            }
+            self.exchange_count.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .client
                 .post(format!("{}/v2/query", self.base_url))
@@ -243,7 +236,7 @@ struct CancelBeforeDecodeTransport {
     response_completed: Arc<AtomicBool>,
 }
 
-impl RemoteQueryTransport for CancelBeforeDecodeTransport {
+impl ProxyExchange for CancelBeforeDecodeTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -267,7 +260,7 @@ struct CallerAbortProbeTransport {
     cancellation: AnswerCancellation,
 }
 
-impl RemoteQueryTransport for CallerAbortProbeTransport {
+impl ProxyExchange for CallerAbortProbeTransport {
     fn capabilities(
         &self,
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + '_>> {
@@ -303,6 +296,20 @@ fn transport_error(error: reqwest::Error) -> type_bridge::Error {
     type_bridge::Error::remote("remote_transport", error.to_string(), Some(Box::new(error)))
 }
 
+/// The answer-limit ceiling of the remote journeys.
+fn remote_answer_limits() -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits {
+        timeout_milliseconds: 30_000,
+        items: 100,
+        bytes: 8 << 20,
+        collection_members: 1000,
+        graph_nodes: 1000,
+        attribute_values: 1000,
+        role_players: 1000,
+        ..QueryExecutionResourceLimits::default()
+    }
+}
+
 fn connection_options() -> ConnectionOptions {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1729".to_owned());
     let database = env::var("TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE")
@@ -332,15 +339,34 @@ async fn database() -> Database<AppSchema> {
         .expect("schema binding handshake succeeds")
 }
 
-const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest-v1.json";
-const SDK_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v1/catalog-v1.json";
+const SDK_MANIFEST_PATH: &str = "tests/contracts/sdk_conformance/manifest.json";
 const SDK_SCHEMA_PATH: &str = "type-bridge-core/crates/schema-codegen/tests/acceptance/schema.yaml";
 const SDK_PROVIDER_SCHEMA_PATH: &str =
     "type-bridge-core/crates/schema-codegen/tests/acceptance/provider-3.12.1.tql";
-const SDK_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/sdk-v1/journey-v1.json";
-const SDK_V2_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/catalog-v2.json";
-const SDK_V2_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/sdk-v2/journey-v2.json";
-const SDK_PROFILE: &str = "typedb-3.12.1/v1";
+const SDK_QUERIES_CATALOG_PATH: &str = "tests/contracts/sdk_conformance/queries/catalog.json";
+const SDK_QUERIES_JOURNEY_PATH: &str = "tests/contracts/sdk_conformance/queries/journey.json";
+/// Matrix entries the harness selected for this run's semantic profile, keyed
+/// `sdk-vN`; each carries `semantic_profile`, `live_server_version`, and for
+/// queries and models `expected_fingerprints`.
+const SDK_PROFILE_ENTRIES_ENV: &str = "TYPE_BRIDGE_SDK_PROFILE_ENTRIES";
+
+fn sdk_matrix_entry(suite: &str) -> Value {
+    let entries: Value = serde_json::from_str(
+        &env::var(SDK_PROFILE_ENTRIES_ENV)
+            .unwrap_or_else(|_| panic!("{SDK_PROFILE_ENTRIES_ENV} is required")),
+    )
+    .unwrap_or_else(|error| panic!("{SDK_PROFILE_ENTRIES_ENV} is JSON: {error}"));
+    let entry = entries[suite].clone();
+    assert!(
+        entry.is_object(),
+        "{SDK_PROFILE_ENTRIES_ENV} carries the {suite} entry"
+    );
+    entry
+}
+
+fn sdk_matrix_profile(entry: &Value) -> &str {
+    sdk_string(&entry["semantic_profile"], "sdk matrix semantic profile")
+}
 
 fn sdk_env_path(name: &str) -> PathBuf {
     PathBuf::from(env::var_os(name).unwrap_or_else(|| panic!("{name} is required")))
@@ -624,28 +650,20 @@ fn sort_sdk_json(value: &mut Value) {
 }
 
 fn validate_sdk_report_path(path: &Path) {
-    let raw = path.to_str().expect("TYPE_BRIDGE_SDK_REPORT must be UTF-8");
-    assert!(
-        raw.len() <= 4096,
-        "TYPE_BRIDGE_SDK_REPORT exceeds 4096 UTF-8 bytes"
-    );
-    assert!(
-        path.is_absolute(),
-        "TYPE_BRIDGE_SDK_REPORT must be absolute"
-    );
-    let parent = path
-        .parent()
-        .expect("TYPE_BRIDGE_SDK_REPORT must have a parent");
+    let raw = path.to_str().expect("SDK report must be UTF-8");
+    assert!(raw.len() <= 4096, "SDK report exceeds 4096 UTF-8 bytes");
+    assert!(path.is_absolute(), "SDK report must be absolute");
+    let parent = path.parent().expect("SDK report must have a parent");
     let parent_metadata =
-        fs::symlink_metadata(parent).expect("TYPE_BRIDGE_SDK_REPORT parent must already exist");
+        fs::symlink_metadata(parent).expect("SDK report parent must already exist");
     assert!(
         parent_metadata.is_dir() && !parent_metadata.file_type().is_symlink(),
-        "TYPE_BRIDGE_SDK_REPORT parent must be a non-symlink directory"
+        "SDK report parent must be a non-symlink directory"
     );
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Ok(_) => panic!("TYPE_BRIDGE_SDK_REPORT destination must be absent"),
-        Err(error) => panic!("TYPE_BRIDGE_SDK_REPORT is not inspectable: {error}"),
+        Ok(_) => panic!("SDK report destination must be absent"),
+        Err(error) => panic!("SDK report is not inspectable: {error}"),
     }
 }
 
@@ -657,7 +675,7 @@ fn publish_sdk_report(path: &Path, mut report: Value) {
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
-        .expect("TYPE_BRIDGE_SDK_REPORT must name a UTF-8 file");
+        .expect("SDK report must name a UTF-8 file");
     let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
     struct RemoveTemporary(PathBuf);
     impl Drop for RemoveTemporary {
@@ -714,7 +732,7 @@ fn sdk_version_endpoint() -> String {
     assert_ne!(
         env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref(),
         Ok("1"),
-        "sdk evidence is accepted only from the plaintext 3.12.1 lane"
+        "sdk evidence is accepted only from the plaintext lane"
     );
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1729".to_owned());
     let address_url = if address.contains("://") {
@@ -740,7 +758,8 @@ fn sdk_version_endpoint() -> String {
     format!("http://{host}:{http_port}/v1/version")
 }
 
-async fn require_sdk_server_version() {
+async fn require_sdk_server_version(entry: &Value) {
+    let expected = sdk_string(&entry["live_server_version"], "sdk matrix live server");
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(StdDuration::from_secs(30))
@@ -773,8 +792,8 @@ async fn require_sdk_server_version() {
         serde_json::from_slice(&body).expect("sdk TypeDB version body is valid JSON");
     assert_eq!(
         document.get("version").and_then(Value::as_str),
-        Some("3.12.3"),
-        "sdk evidence requires the actual detected TypeDB server version 3.12.3"
+        Some(expected),
+        "sdk evidence requires the actual detected TypeDB server version {expected}"
     );
 }
 
@@ -827,57 +846,60 @@ fn sdk_results(catalog: &Value, observations: &BTreeMap<String, Value>) -> Vec<V
         .collect()
 }
 
-type SdkV2ObservationKey = (String, String);
+type SdkQueriesObservationKey = (String, String);
 
-fn sdk_v2_observation_key(observation_ref: &str, proof_kind: &str) -> SdkV2ObservationKey {
+fn sdk_queries_observation_key(
+    observation_ref: &str,
+    proof_kind: &str,
+) -> SdkQueriesObservationKey {
     (observation_ref.to_owned(), proof_kind.to_owned())
 }
 
-fn sdk_v2_results(
+fn sdk_queries_results(
     catalog: &Value,
-    observations: &BTreeMap<SdkV2ObservationKey, Value>,
+    observations: &BTreeMap<SdkQueriesObservationKey, Value>,
 ) -> Vec<Value> {
     let mut capabilities = BTreeMap::new();
     for case in catalog["cases"]
         .as_array()
-        .expect("sdk-v2 catalog cases must be an array")
+        .expect("queries catalog cases must be an array")
     {
-        let case_id = sdk_string(&case["id"], "sdk-v2 case ID").to_owned();
-        let capability = sdk_string(&case["capability_id"], "sdk-v2 capability ID").to_owned();
+        let case_id = sdk_string(&case["id"], "queries case ID").to_owned();
+        let capability = sdk_string(&case["capability_id"], "queries capability ID").to_owned();
         assert!(
             capabilities.insert(case_id, capability).is_none(),
-            "sdk-v2 catalog contains a duplicate case"
+            "queries catalog contains a duplicate case"
         );
     }
     let selected = catalog["selected_proofs"]
         .as_array()
-        .expect("sdk-v2 selected proofs must be an array");
-    assert_eq!(selected.len(), 34, "sdk-v2 report requires 34 proofs");
+        .expect("queries selected proofs must be an array");
+    assert_eq!(selected.len(), 34, "queries report requires 34 proofs");
     let mut required = BTreeMap::new();
     let mut rows = selected
         .iter()
         .map(|proof| {
-            let case_id = sdk_string(&proof["case_id"], "sdk-v2 selected case ID").to_owned();
+            let case_id = sdk_string(&proof["case_id"], "queries selected case ID").to_owned();
             let proof_kind =
-                sdk_string(&proof["proof_kind"], "sdk-v2 selected proof kind").to_owned();
+                sdk_string(&proof["proof_kind"], "queries selected proof kind").to_owned();
             let observation_ref = sdk_string(
                 &proof["observation_ref"],
-                "sdk-v2 selected observation reference",
+                "queries selected observation reference",
             )
             .to_owned();
             let capability_id = capabilities
                 .get(&case_id)
-                .unwrap_or_else(|| panic!("selected sdk-v2 case is unknown: {case_id}"))
+                .unwrap_or_else(|| panic!("selected queries case is unknown: {case_id}"))
                 .clone();
-            let key = sdk_v2_observation_key(&observation_ref, &proof_kind);
+            let key = sdk_queries_observation_key(&observation_ref, &proof_kind);
             assert!(
                 required.insert(key.clone(), ()).is_none(),
-                "sdk-v2 selected proof is duplicated: {case_id}/{proof_kind}"
+                "queries selected proof is duplicated: {case_id}/{proof_kind}"
             );
             let observation = observations
                 .get(&key)
                 .unwrap_or_else(|| {
-                    panic!("selected sdk-v2 observation is absent: {observation_ref}/{proof_kind}")
+                    panic!("selected queries observation is absent: {observation_ref}/{proof_kind}")
                 })
                 .clone();
             (case_id, capability_id, proof_kind, observation)
@@ -886,7 +908,7 @@ fn sdk_v2_results(
     assert_eq!(
         observations.keys().collect::<Vec<_>>(),
         required.keys().collect::<Vec<_>>(),
-        "sdk-v2 producer must emit exactly the selected observation lanes"
+        "queries producer must emit exactly the selected observation lanes"
     );
     rows.sort_by(|left, right| (&left.0, &left.2).cmp(&(&right.0, &right.2)));
     rows.into_iter()
@@ -902,19 +924,19 @@ fn sdk_v2_results(
         .collect()
 }
 
-fn sdk_v2_provider_proofs() -> BTreeMap<SdkV2ObservationKey, Value> {
-    let raw = env::var("TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS")
-        .expect("outer harness must supply validated sdk-v2 observations");
+fn sdk_queries_provider_proofs() -> BTreeMap<SdkQueriesObservationKey, Value> {
+    let raw = env::var("TYPE_BRIDGE_SDK_QUERIES_VALIDATED_OBSERVATIONS")
+        .expect("outer harness must supply validated queries observations");
     assert!(
         raw.len() <= 64 * 1024,
-        "validated sdk-v2 observations exceed 64 KiB"
+        "validated queries observations exceed 64 KiB"
     );
-    let observations: BTreeMap<String, Value> =
-        serde_json::from_str(&raw).expect("outer-validated sdk-v2 observations are canonical JSON");
+    let observations: BTreeMap<String, Value> = serde_json::from_str(&raw)
+        .expect("outer-validated queries observations are canonical JSON");
     let allowed = [
-        sdk_v2_observation_key("cancellation_direct", "direct_runtime"),
-        sdk_v2_observation_key("cancellation_remote", "remote_runtime"),
-        sdk_v2_observation_key("remote_structured_diagnostic", "diagnostic"),
+        sdk_queries_observation_key("cancellation_direct", "direct_runtime"),
+        sdk_queries_observation_key("cancellation_remote", "remote_runtime"),
+        sdk_queries_observation_key("remote_structured_diagnostic", "diagnostic"),
     ];
     assert_eq!(
         observations.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -922,7 +944,7 @@ fn sdk_v2_provider_proofs() -> BTreeMap<SdkV2ObservationKey, Value> {
             .iter()
             .map(|(observation_ref, proof_kind)| format!("{observation_ref}/{proof_kind}"))
             .collect::<Vec<_>>(),
-        "outer-validated sdk-v2 observations have incomplete lane coverage"
+        "outer-validated queries observations have incomplete lane coverage"
     );
     allowed
         .into_iter()
@@ -932,7 +954,7 @@ fn sdk_v2_provider_proofs() -> BTreeMap<SdkV2ObservationKey, Value> {
             let observation = observations
                 .get(&serialized_key)
                 .unwrap_or_else(|| {
-                    panic!("validated sdk-v2 observation is absent: {serialized_key}")
+                    panic!("validated queries observation is absent: {serialized_key}")
                 })
                 .clone();
             assert!(observation.is_object());
@@ -941,70 +963,73 @@ fn sdk_v2_provider_proofs() -> BTreeMap<SdkV2ObservationKey, Value> {
         .collect()
 }
 
-fn sdk_v2_person_create(record: &Value) -> PersonCreate {
+fn sdk_queries_person_create(record: &Value) -> PersonCreate {
     let fields = &record["fields"];
     let nickname = fields.get("nickname").map(|value| {
-        assert_eq!(sdk_string(&value["kind"], "sdk-v2 nickname kind"), "string");
-        Nickname::new(sdk_string(&value["value"], "sdk-v2 nickname value").to_owned())
-            .expect("sdk-v2 nickname is valid")
+        assert_eq!(
+            sdk_string(&value["kind"], "queries nickname kind"),
+            "string"
+        );
+        Nickname::new(sdk_string(&value["value"], "queries nickname value").to_owned())
+            .expect("queries nickname is valid")
     });
     PersonCreate::try_new(
         sdk_aliases(fields)
             .into_iter()
-            .map(|value| Aliases::new(value).expect("sdk-v2 alias is valid"))
+            .map(|value| Aliases::new(value).expect("queries alias is valid"))
             .collect(),
         None,
         Identifier::new(sdk_field_string(fields, "identifier", "string"))
-            .expect("sdk-v2 person identifier is valid"),
+            .expect("queries person identifier is valid"),
         nickname,
-        Score::new(sdk_field_long(fields, "score")).expect("sdk-v2 score is valid"),
+        Score::new(sdk_field_long(fields, "score")).expect("queries score is valid"),
         Some(
             ScoreGte::new(sdk_field_long(fields, "score__gte"))
-                .expect("sdk-v2 score__gte is valid"),
+                .expect("queries score__gte is valid"),
         ),
         ValBool::new(
             sdk_typed_field(fields, "val_bool", "boolean")["value"]
                 .as_bool()
-                .expect("sdk-v2 boolean is valid"),
+                .expect("queries boolean is valid"),
         )
-        .expect("sdk-v2 val_bool is valid"),
+        .expect("queries val_bool is valid"),
         ValConstrained::new(sdk_field_long(fields, "val_constrained"))
-            .expect("sdk-v2 val_constrained is valid"),
+            .expect("queries val_constrained is valid"),
         ValDate::new(
             Date::try_new(sdk_field_string(fields, "val_date", "date"))
-                .expect("sdk-v2 date is valid"),
+                .expect("queries date is valid"),
         )
-        .expect("sdk-v2 val_date is valid"),
+        .expect("queries val_date is valid"),
         ValDatetime::new(
             DateTime::try_new(sdk_field_string(fields, "val_datetime", "datetime"))
-                .expect("sdk-v2 datetime is valid"),
+                .expect("queries datetime is valid"),
         )
-        .expect("sdk-v2 val_datetime is valid"),
+        .expect("queries val_datetime is valid"),
         ValDatetimeTz::new(
             DateTimeTz::try_new(sdk_field_string(fields, "val_datetime_tz", "datetime_tz"))
-                .expect("sdk-v2 datetime-tz is valid"),
+                .expect("queries datetime-tz is valid"),
         )
-        .expect("sdk-v2 val_datetime_tz is valid"),
+        .expect("queries val_datetime_tz is valid"),
         ValDecimal::new(
             Decimal::try_new(sdk_field_string(fields, "val_decimal", "decimal"))
-                .expect("sdk-v2 decimal is valid"),
+                .expect("queries decimal is valid"),
         )
-        .expect("sdk-v2 val_decimal is valid"),
+        .expect("queries val_decimal is valid"),
         ValDouble::new(
             CanonicalDouble::try_new(sdk_field_double(fields, "val_double"))
-                .expect("sdk-v2 double is valid"),
+                .expect("queries double is valid"),
         )
-        .expect("sdk-v2 val_double is valid"),
+        .expect("queries val_double is valid"),
         ValDuration::new(
             Duration::try_new(sdk_field_string(fields, "val_duration", "duration"))
-                .expect("sdk-v2 duration is valid"),
+                .expect("queries duration is valid"),
         )
-        .expect("sdk-v2 val_duration is valid"),
+        .expect("queries val_duration is valid"),
     )
-    .expect("sdk-v2 PersonCreate is valid")
+    .expect("queries PersonCreate is valid")
 }
 
-fn sdk_v2_assert_person(person: &Person, record: &Value) {
+fn sdk_queries_assert_person(person: &Person, record: &Value) {
     let fields = &record["fields"];
     assert_eq!(
         person.identifier().value(),
@@ -1023,7 +1048,7 @@ fn sdk_v2_assert_person(person: &Person, record: &Value) {
         person.nickname().map(|value| value.value().as_str()),
         fields
             .get("nickname")
-            .map(|value| { sdk_string(&value["value"], "sdk-v2 nickname value") })
+            .map(|value| { sdk_string(&value["value"], "queries nickname value") })
     );
     assert_eq!(person.foo__bar(), None);
     assert_eq!(person.score().value(), &sdk_field_long(fields, "score"));
@@ -1035,7 +1060,7 @@ fn sdk_v2_assert_person(person: &Person, record: &Value) {
         person.val_bool().value(),
         &sdk_typed_field(fields, "val_bool", "boolean")["value"]
             .as_bool()
-            .expect("sdk-v2 boolean is valid")
+            .expect("queries boolean is valid")
     );
     assert_eq!(
         person.val_constrained().value(),
@@ -1067,8 +1092,8 @@ fn sdk_v2_assert_person(person: &Person, record: &Value) {
     );
 }
 
-fn sdk_v2_model_observation(person: &Person, record: &Value) -> Value {
-    sdk_v2_assert_person(person, record);
+fn sdk_queries_model_observation(person: &Person, record: &Value) -> Value {
+    sdk_queries_assert_person(person, record);
     let mut aliases = person
         .aliases()
         .iter()
@@ -1078,35 +1103,35 @@ fn sdk_v2_model_observation(person: &Person, record: &Value) -> Value {
     let reference = person.reference();
     let key = reference
         .identifier()
-        .expect("sdk-v2 person reference carries its key")
+        .expect("queries person reference carries its key")
         .value();
     let mut scalar_domains = vec![
-        sdk_v2_scalar_domain(person.val_bool().value()),
-        sdk_v2_scalar_domain(person.val_date().value()),
-        sdk_v2_scalar_domain(person.val_datetime().value()),
-        sdk_v2_scalar_domain(person.val_datetime_tz().value()),
-        sdk_v2_scalar_domain(person.val_decimal().value()),
-        sdk_v2_scalar_domain(person.val_double().value()),
-        sdk_v2_scalar_domain(person.val_duration().value()),
-        sdk_v2_scalar_domain(person.score().value()),
-        sdk_v2_scalar_domain(person.identifier().value()),
+        sdk_queries_scalar_domain(person.val_bool().value()),
+        sdk_queries_scalar_domain(person.val_date().value()),
+        sdk_queries_scalar_domain(person.val_datetime().value()),
+        sdk_queries_scalar_domain(person.val_datetime_tz().value()),
+        sdk_queries_scalar_domain(person.val_decimal().value()),
+        sdk_queries_scalar_domain(person.val_double().value()),
+        sdk_queries_scalar_domain(person.val_duration().value()),
+        sdk_queries_scalar_domain(person.score().value()),
+        sdk_queries_scalar_domain(person.identifier().value()),
     ];
     scalar_domains.sort_unstable();
     scalar_domains.dedup();
     json!({
         "aliases": aliases,
         "key": person.identifier().value(),
-        "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
-        "nickname": person.nickname().expect("sdk-v2 Ada nickname is present").value(),
+        "model": sdk_queries_type_label(PersonType::TOKEN.type_id_json()),
+        "nickname": person.nickname().expect("queries Ada nickname is present").value(),
         "reference": {
             "key": key,
-            "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+            "model": sdk_queries_type_label(PersonType::TOKEN.type_id_json()),
         },
         "scalar_domains": scalar_domains,
     })
 }
 
-fn sdk_v2_scalar_domain(value: &impl IntoEncodedScalar) -> &'static str {
+fn sdk_queries_scalar_domain(value: &impl IntoEncodedScalar) -> &'static str {
     match value.into_encoded_scalar() {
         EncodedScalar::String(_) => "string",
         EncodedScalar::Long(_) => "long",
@@ -1120,43 +1145,43 @@ fn sdk_v2_scalar_domain(value: &impl IntoEncodedScalar) -> &'static str {
     }
 }
 
-fn sdk_v2_type_label(type_id_json: &str) -> String {
+fn sdk_queries_type_label(type_id_json: &str) -> String {
     serde_json::from_str::<Value>(type_id_json)
-        .expect("generated sdk-v2 type identity is JSON")["label"]
+        .expect("generated queries type identity is JSON")["label"]
         .as_str()
-        .expect("generated sdk-v2 type identity carries a label")
+        .expect("generated queries type identity carries a label")
         .to_owned()
 }
 
-fn sdk_v2_field_label(owns_id_json: &str) -> String {
+fn sdk_queries_field_label(owns_id_json: &str) -> String {
     serde_json::from_str::<Value>(owns_id_json)
-        .expect("generated sdk-v2 field identity is JSON")["attribute"]
+        .expect("generated queries field identity is JSON")["attribute"]
         .as_str()
-        .expect("generated sdk-v2 field identity carries an attribute label")
+        .expect("generated queries field identity carries an attribute label")
         .to_owned()
 }
 
-fn sdk_v2_role_label(role_id_json: &str) -> String {
+fn sdk_queries_role_label(role_id_json: &str) -> String {
     serde_json::from_str::<Value>(role_id_json)
-        .expect("generated sdk-v2 role identity is JSON")["label"]
+        .expect("generated queries role identity is JSON")["label"]
         .as_str()
-        .expect("generated sdk-v2 role identity carries a label")
+        .expect("generated queries role identity carries a label")
         .to_owned()
 }
 
-fn sdk_v2_network_player_key(player: &Person) -> &str {
+fn sdk_queries_network_player_key(player: &Person) -> &str {
     player.identifier().value()
 }
 
-fn sdk_v2_network_origin_key(player: &Person) -> &str {
+fn sdk_queries_network_origin_key(player: &Person) -> &str {
     player.identifier().value()
 }
 
-fn sdk_v2_network_destination_key(player: &Person) -> &str {
+fn sdk_queries_network_destination_key(player: &Person) -> &str {
     player.identifier().value()
 }
 
-fn sdk_v2_query_category(error: &Error) -> Option<&'static str> {
+fn sdk_queries_query_category(error: &Error) -> Option<&'static str> {
     error.details()?.values().find_map(|value| match value {
         ErrorDetail::QueryCategory(QueryDiagnosticCategory::InvalidPlan) => Some("invalid_plan"),
         ErrorDetail::QueryCategory(QueryDiagnosticCategory::Cardinality) => Some("cardinality"),
@@ -1174,10 +1199,10 @@ fn sdk_v2_query_category(error: &Error) -> Option<&'static str> {
     })
 }
 
-fn sdk_v2_diagnostic_path(error: &Error) -> Vec<Value> {
+fn sdk_queries_diagnostic_path(error: &Error) -> Vec<Value> {
     error
         .diagnostic_path()
-        .expect("sdk-v2 query error carries a typed path")
+        .expect("queries query error carries a typed path")
         .iter()
         .map(|segment| match segment {
             ErrorPathSegment::Field(value) => json!({"kind": "field", "value": value}),
@@ -1228,16 +1253,16 @@ fn sdk_v2_diagnostic_path(error: &Error) -> Vec<Value> {
             ErrorPathSegment::ContractIdentity(value) => {
                 json!({"kind": "contract_identity", "value": value})
             }
-            _ => panic!("sdk-v2 received an unsupported diagnostic path segment"),
+            _ => panic!("queries received an unsupported diagnostic path segment"),
         })
         .collect()
 }
 
-fn sdk_v2_diagnostic_details(error: &Error) -> Value {
+fn sdk_queries_diagnostic_details(error: &Error) -> Value {
     let mut details = serde_json::Map::new();
     for (name, value) in error
         .details()
-        .expect("sdk-v2 query error carries typed details")
+        .expect("queries query error carries typed details")
     {
         if matches!(value, ErrorDetail::QueryCategory(_)) {
             continue;
@@ -1257,30 +1282,30 @@ fn sdk_v2_diagnostic_details(error: &Error) -> Value {
                 json!({"kind": "query_identity_list", "value": value})
             }
             ErrorDetail::QueryCategory(_) => unreachable!(),
-            _ => panic!("sdk-v2 received an unsupported diagnostic detail"),
+            _ => panic!("queries received an unsupported diagnostic detail"),
         };
         assert!(
             details.insert(name.clone(), normalized).is_none(),
-            "sdk-v2 diagnostic detail names are unique"
+            "queries diagnostic detail names are unique"
         );
     }
     Value::Object(details)
 }
 
-fn sdk_v2_diagnostic(
+fn sdk_queries_diagnostic(
     error: &Error,
     claim_consumed: Option<bool>,
     forbidden_values: &[&str],
 ) -> Value {
     let query_category =
-        sdk_v2_query_category(error).expect("sdk-v2 query error carries a query category");
+        sdk_queries_query_category(error).expect("queries query error carries a query category");
     let category = match (error.category(), query_category) {
         (ErrorCategory::ModelValidation, "cardinality") => "invalid_input",
         (ErrorCategory::ModelValidation, "result_decode") => "integrity",
         (category, _) => category.as_str(),
     };
-    let path = sdk_v2_diagnostic_path(error);
-    let details = sdk_v2_diagnostic_details(error);
+    let path = sdk_queries_diagnostic_path(error);
+    let details = sdk_queries_diagnostic_details(error);
     let rendered = format!("{}{:?}{:?}", error.message(), path, details);
     let redacted = !forbidden_values
         .iter()
@@ -1288,7 +1313,7 @@ fn sdk_v2_diagnostic(
     let mut observation = json!({
         "category": category,
         "query_category": query_category,
-        "code": error.code().expect("sdk-v2 query error carries a stable code"),
+        "code": error.code().expect("queries query error carries a stable code"),
         "message": error.message(),
         "path": path,
         "details": details,
@@ -1300,49 +1325,49 @@ fn sdk_v2_diagnostic(
     observation
 }
 
-fn sdk_v2_keys(people: &[Person]) -> Vec<String> {
+fn sdk_queries_keys(people: &[Person]) -> Vec<String> {
     people
         .iter()
         .map(|person| person.identifier().value().clone())
         .collect()
 }
 
-fn sdk_v2_common_key_prefix(keys: &[String]) -> String {
+fn sdk_queries_common_key_prefix(keys: &[String]) -> String {
     let mut prefix = keys
         .first()
-        .expect("sdk-v2 keyed records are present")
+        .expect("queries keyed records are present")
         .clone();
     while keys.iter().any(|key| !key.starts_with(&prefix)) {
         assert!(
             prefix.pop().is_some(),
-            "sdk-v2 keyed records require a shared namespace"
+            "queries keyed records require a shared namespace"
         );
     }
     assert!(
         !prefix.is_empty(),
-        "sdk-v2 keyed records require a nonempty shared namespace"
+        "queries keyed records require a nonempty shared namespace"
     );
     prefix
 }
 
-fn sdk_v2_family_identity(value: &EmployeeFamily) -> Value {
+fn sdk_queries_family_identity(value: &EmployeeFamily) -> Value {
     match value {
         EmployeeFamily::Employee(employee) => {
             json!({
-                "model": sdk_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+                "model": sdk_queries_type_label(EmployeeType::TOKEN.type_id_json()),
                 "key": employee.identifier().value(),
             })
         }
         EmployeeFamily::Manager(manager) => {
             json!({
-                "model": sdk_v2_type_label(ManagerType::TOKEN.type_id_json()),
+                "model": sdk_queries_type_label(ManagerType::TOKEN.type_id_json()),
                 "key": manager.identifier().value(),
             })
         }
     }
 }
 
-async fn sdk_v2_query_observations(
+async fn sdk_queries_query_observations(
     session: &mut QuerySession<'_, AppSchema>,
     records: &Value,
     person_iids: &[String; 2],
@@ -1350,8 +1375,8 @@ async fn sdk_v2_query_observations(
 ) -> BTreeMap<String, Value> {
     let people_records = records["people"]
         .as_array()
-        .expect("sdk-v2 people records must be an array");
-    assert_eq!(people_records.len(), 2, "sdk-v2 requires two people");
+        .expect("queries people records must be an array");
+    assert_eq!(people_records.len(), 2, "queries requires two people");
     let ada_key = sdk_field_string(&people_records[0]["fields"], "identifier", "string");
     let dana_key = sdk_field_string(&people_records[1]["fields"], "identifier", "string");
     let employee_key = sdk_field_string(&records["employee"]["fields"], "identifier", "string");
@@ -1362,112 +1387,112 @@ async fn sdk_v2_query_observations(
         people_records
             .iter()
             .all(|record| sdk_field_long(&record["fields"], "score__gte") == scalar_operand),
-        "sdk-v2 scalar comparison operand must be shared by the fixture rows"
+        "queries scalar comparison operand must be shared by the fixture rows"
     );
 
-    let person = session.exact::<Person>().expect("sdk-v2 person binding");
+    let person = session.exact::<Person>().expect("queries person binding");
     let grouped_person = session
         .exact::<Person>()
-        .expect("sdk-v2 grouped person binding");
+        .expect("queries grouped person binding");
     let employee = session
         .exact::<Employee>()
-        .expect("sdk-v2 exact employee binding");
+        .expect("queries exact employee binding");
     let employee_family = session
         .subtypes::<Employee>()
-        .expect("sdk-v2 employee subtype binding");
+        .expect("queries employee subtype binding");
     let membership = session
         .exact::<Membership>()
-        .expect("sdk-v2 membership binding");
+        .expect("queries membership binding");
     let membership_person = session
         .exact::<Person>()
-        .expect("sdk-v2 membership person binding");
+        .expect("queries membership person binding");
     let network = session
         .exact::<NetworkLink>()
-        .expect("sdk-v2 network binding");
+        .expect("queries network binding");
     let network_origin = session
         .exact::<Person>()
-        .expect("sdk-v2 network origin binding");
+        .expect("queries network origin binding");
     let network_destination = session
         .exact::<Person>()
-        .expect("sdk-v2 network destination binding");
+        .expect("queries network destination binding");
     let network_participant = session
         .exact::<Person>()
-        .expect("sdk-v2 network participant binding");
+        .expect("queries network participant binding");
     let source = session
         .exact::<Person>()
-        .expect("sdk-v2 topology source binding");
+        .expect("queries topology source binding");
     let target = session
         .exact::<Person>()
-        .expect("sdk-v2 topology target binding");
+        .expect("queries topology target binding");
     let cross_left = session
         .exact::<Person>()
-        .expect("sdk-v2 cross-left binding");
+        .expect("queries cross-left binding");
     let cross_right = session
         .exact::<Person>()
-        .expect("sdk-v2 cross-right binding");
+        .expect("queries cross-right binding");
     let shape_link = session
         .exact::<NetworkLink>()
-        .expect("sdk-v2 shape network binding");
+        .expect("queries shape network binding");
     let shape_origin = session
         .exact::<Person>()
-        .expect("sdk-v2 shape origin binding");
+        .expect("queries shape origin binding");
     let shape_participant = session
         .exact::<Person>()
-        .expect("sdk-v2 shape participant binding");
+        .expect("queries shape participant binding");
     let identifier = person.field(PersonType::identifier);
     let grouped_identifier = grouped_person.field(PersonType::identifier);
     let score = person.field(PersonType::score);
     let score_gte = person.field(PersonType::score__gte);
-    let scope = identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
-        | identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key"));
+    let scope = identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+        | identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key"));
     let people_query = session
         .query(person)
-        .expect("sdk-v2 people selection")
+        .expect("queries people selection")
         .where_(scope.clone())
-        .expect("sdk-v2 people scope");
+        .expect("queries people scope");
 
     let one_terminal = stringify!(one);
     let exchanges_before_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
     let ada = people_query
-        .where_(identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key")))
-        .expect("sdk-v2 Ada predicate")
+        .where_(identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key")))
+        .expect("queries Ada predicate")
         .one()
         .await
-        .expect("sdk-v2 Ada terminal");
+        .expect("queries Ada terminal");
     let exchanges_after_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
-    sdk_v2_assert_person(&ada, &people_records[0]);
-    let model_values = sdk_v2_model_observation(&ada, &people_records[0]);
+    sdk_queries_assert_person(&ada, &people_records[0]);
+    let model_values = sdk_queries_model_observation(&ada, &people_records[0]);
 
-    let owner_keys = sdk_v2_keys(
+    let owner_keys = sdk_queries_keys(
         &people_query
             .where_(score.is_present())
-            .expect("sdk-v2 score owner predicate")
+            .expect("queries score owner predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 score owner rows"),
+            .expect("queries score owner rows"),
     );
-    let optional_present_keys = sdk_v2_keys(
+    let optional_present_keys = sdk_queries_keys(
         &people_query
             .where_(person.field(PersonType::nickname).is_present())
-            .expect("sdk-v2 nickname presence predicate")
+            .expect("queries nickname presence predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 nickname presence rows"),
+            .expect("queries nickname presence rows"),
     );
-    let iid_set_keys = sdk_v2_keys(
+    let iid_set_keys = sdk_queries_keys(
         &session
             .query(person)
-            .expect("sdk-v2 IID-set query")
+            .expect("queries IID-set query")
             .where_(person.iid_in([person_iids[0].as_str(), person_iids[1].as_str()]))
-            .expect("sdk-v2 IID-set predicate")
+            .expect("queries IID-set predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 IID-set rows"),
+            .expect("queries IID-set rows"),
     );
     let owner_iid_set = json!({
-        "owner_field": sdk_v2_field_label(PersonType::score.owns_id_json()),
+        "owner_field": sdk_queries_field_label(PersonType::score.owns_id_json()),
         "owner_keys": owner_keys,
-        "optional_field": sdk_v2_field_label(PersonType::nickname.owns_id_json()),
+        "optional_field": sdk_queries_field_label(PersonType::nickname.owns_id_json()),
         "optional_present_keys": optional_present_keys,
         "iid_set_keys": iid_set_keys,
     });
@@ -1475,86 +1500,86 @@ async fn sdk_v2_query_observations(
     let employee_identifier = employee.field(EmployeeType::identifier);
     let exact_employees = session
         .query(employee)
-        .expect("sdk-v2 exact employee query")
+        .expect("queries exact employee query")
         .where_(
             employee_identifier
-                .eq(Identifier::new(employee_key.clone()).expect("sdk-v2 employee key")),
+                .eq(Identifier::new(employee_key.clone()).expect("queries employee key")),
         )
-        .expect("sdk-v2 exact employee predicate")
+        .expect("queries exact employee predicate")
         .rows(RowsOptions::new(2).order_by(employee_identifier.asc()))
         .await
-        .expect("sdk-v2 exact employee rows");
+        .expect("queries exact employee rows");
     let exact = exact_employees
         .iter()
         .map(|employee| {
             json!({
-                "model": sdk_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+                "model": sdk_queries_type_label(EmployeeType::TOKEN.type_id_json()),
                 "key": employee.identifier().value(),
             })
         })
         .collect::<Vec<_>>();
     let family_identifier = employee_family.field(EmployeeType::identifier);
     let employee_scope = family_identifier
-        .eq(Identifier::new(employee_key.clone()).expect("sdk-v2 employee key"))
-        | family_identifier.eq(Identifier::new(manager_key.clone()).expect("sdk-v2 manager key"));
+        .eq(Identifier::new(employee_key.clone()).expect("queries employee key"))
+        | family_identifier.eq(Identifier::new(manager_key.clone()).expect("queries manager key"));
     let subtypes = session
         .query(employee_family)
-        .expect("sdk-v2 employee subtype query")
+        .expect("queries employee subtype query")
         .where_(employee_scope)
-        .expect("sdk-v2 employee subtype scope")
+        .expect("queries employee subtype scope")
         .rows(RowsOptions::new(2).order_by(family_identifier.asc()))
         .await
-        .expect("sdk-v2 employee subtype rows")
+        .expect("queries employee subtype rows")
         .iter()
-        .map(sdk_v2_family_identity)
+        .map(sdk_queries_family_identity)
         .collect::<Vec<_>>();
     let exact_subtypes = json!({
-        "declared_model": sdk_v2_type_label(EmployeeType::TOKEN.type_id_json()),
+        "declared_model": sdk_queries_type_label(EmployeeType::TOKEN.type_id_json()),
         "exact": exact,
         "subtypes": subtypes,
     });
 
-    let and_keys = sdk_v2_keys(
+    let and_keys = sdk_queries_keys(
         &people_query
             .where_(
                 score.ge(scalar_operand)
                     & person
                         .field(PersonType::val_bool)
-                        .eq(ValBool::new(true).expect("sdk-v2 true value")),
+                        .eq(ValBool::new(true).expect("queries true value")),
             )
-            .expect("sdk-v2 conjunction")
+            .expect("queries conjunction")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 conjunction rows"),
+            .expect("queries conjunction rows"),
     );
-    let or_keys = sdk_v2_keys(
+    let or_keys = sdk_queries_keys(
         &session
             .query(person)
-            .expect("sdk-v2 disjunction query")
+            .expect("queries disjunction query")
             .where_(
-                identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
-                    | identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key")),
+                identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+                    | identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
             )
-            .expect("sdk-v2 disjunction")
+            .expect("queries disjunction")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 disjunction rows"),
+            .expect("queries disjunction rows"),
     );
-    let not_keys = sdk_v2_keys(
+    let not_keys = sdk_queries_keys(
         &people_query
             .where_(!score.ge(scalar_operand))
-            .expect("sdk-v2 negation")
+            .expect("queries negation")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 negation rows"),
+            .expect("queries negation rows"),
     );
-    let field_comparison_keys = sdk_v2_keys(
+    let field_comparison_keys = sdk_queries_keys(
         &people_query
             .where_(score.ge_field(score_gte))
-            .expect("sdk-v2 field comparison")
+            .expect("queries field comparison")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 field comparison rows"),
+            .expect("queries field comparison rows"),
     );
     let scalar_boolean = json!({
         "and_keys": and_keys,
@@ -1566,25 +1591,25 @@ async fn sdk_v2_query_observations(
     let membership_person_identifier = membership_person.field(PersonType::identifier);
     let (hydrated_membership, hydrated_member) = session
         .query((membership, membership_person))
-        .expect("sdk-v2 membership selection")
+        .expect("queries membership selection")
         .where_(
             membership
                 .role(MembershipType::member)
                 .connects(membership_person)
                 & membership_person_identifier
-                    .eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key")),
+                    .eq(Identifier::new(ada_key.clone()).expect("queries Ada key")),
         )
-        .expect("sdk-v2 membership role predicate")
+        .expect("queries membership role predicate")
         .one()
         .await
-        .expect("sdk-v2 membership role result");
+        .expect("queries membership role result");
     let membership_player_key = match hydrated_membership.member() {
         MembershipMemberPlayer::Person(reference) => reference
             .identifier()
-            .expect("sdk-v2 member carries its key")
+            .expect("queries member carries its key")
             .value()
             .clone(),
-        MembershipMemberPlayer::Robot(_) => panic!("sdk-v2 member must be a person"),
+        MembershipMemberPlayer::Robot(_) => panic!("queries member must be a person"),
     };
     assert_eq!(
         membership_player_key,
@@ -1593,17 +1618,17 @@ async fn sdk_v2_query_observations(
 
     let hydrated_network = session
         .query(network)
-        .expect("sdk-v2 network query")
+        .expect("queries network query")
         .match_(network_origin)
-        .expect("sdk-v2 attach network origin")
+        .expect("queries attach network origin")
         .match_(network_destination)
-        .expect("sdk-v2 attach network destination")
+        .expect("queries attach network destination")
         .match_(network_participant)
-        .expect("sdk-v2 attach network participant")
+        .expect("queries attach network participant")
         .where_(
             network
                 .field(NetworkLinkType::identifier)
-                .eq(Identifier::new(network_key.clone()).expect("sdk-v2 network key"))
+                .eq(Identifier::new(network_key.clone()).expect("queries network key"))
                 & network
                     .role(NetworkLinkType::origin)
                     .connects(network_origin)
@@ -1614,38 +1639,38 @@ async fn sdk_v2_query_observations(
                     .role(NetworkLinkType::participant)
                     .connects(network_participant),
         )
-        .expect("sdk-v2 network role predicates")
+        .expect("queries network role predicates")
         .one()
         .await
-        .expect("sdk-v2 network role result");
+        .expect("queries network role result");
     let mut participant_keys = hydrated_network
         .participant()
         .iter()
-        .map(sdk_v2_network_player_key)
+        .map(sdk_queries_network_player_key)
         .map(str::to_owned)
         .collect::<Vec<_>>();
     participant_keys.sort();
     let roles = json!({
         "membership": {
-            "relation": sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
-            "role": sdk_v2_role_label(MembershipType::member.role_id_json()),
+            "relation": sdk_queries_type_label(MembershipType::TOKEN.type_id_json()),
+            "role": sdk_queries_role_label(MembershipType::member.role_id_json()),
             "players": [{
-                "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "model": sdk_queries_type_label(PersonType::TOKEN.type_id_json()),
                 "key": membership_player_key,
             }],
         },
         "network_link": {
-            "relation": sdk_v2_type_label(NetworkLinkType::TOKEN.type_id_json()),
-            "origin": sdk_v2_network_origin_key(hydrated_network.origin()),
-            "destination": sdk_v2_network_destination_key(hydrated_network.destination()),
+            "relation": sdk_queries_type_label(NetworkLinkType::TOKEN.type_id_json()),
+            "origin": sdk_queries_network_origin_key(hydrated_network.origin()),
+            "destination": sdk_queries_network_destination_key(hydrated_network.destination()),
             "participants": participant_keys,
         },
     });
     let hydrated_result = json!({
         "rows": [{
-            "model": sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
-            "roles": {sdk_v2_role_label(MembershipType::member.role_id_json()): [{
-                "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+            "model": sdk_queries_type_label(MembershipType::TOKEN.type_id_json()),
+            "roles": {sdk_queries_role_label(MembershipType::member.role_id_json()): [{
+                "model": sdk_queries_type_label(PersonType::TOKEN.type_id_json()),
                 "key": membership_player_key,
             }]},
         }],
@@ -1665,23 +1690,24 @@ async fn sdk_v2_query_observations(
             reachability_min_hops,
             reachability_max_hops,
         )
-        .expect("sdk-v2 one-hop reachability predicate");
+        .expect("queries one-hop reachability predicate");
     let reachable_rows = session
         .query((source, target))
-        .expect("sdk-v2 reachability query")
+        .expect("queries reachability query")
         .where_(
             reachable
-                & source_identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
-                & target_identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key")),
+                & source_identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+                & target_identifier
+                    .eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
         )
-        .expect("sdk-v2 reachability filters")
+        .expect("queries reachability filters")
         .rows(
             RowsOptions::new(2)
                 .order_by(source_identifier.asc())
                 .order_by(target_identifier.asc()),
         )
         .await
-        .expect("sdk-v2 reachability rows");
+        .expect("queries reachability rows");
     let reachable = reachable_rows
         .iter()
         .map(|(source, target)| {
@@ -1696,25 +1722,25 @@ async fn sdk_v2_query_observations(
     let cross_left_identifier = cross_left.field(PersonType::identifier);
     let cross_right_identifier = cross_right.field(PersonType::identifier);
     let left_scope = cross_left_identifier
-        .eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
-        | cross_left_identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key"));
+        .eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+        | cross_left_identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key"));
     let right_scope = cross_right_identifier
-        .eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
-        | cross_right_identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key"));
+        .eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+        | cross_right_identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key"));
     let cross_join_pairs = session
         .query((cross_left, cross_right))
-        .expect("sdk-v2 cross-join query")
+        .expect("queries cross-join query")
         .allow_cross_join(cross_left, cross_right)
-        .expect("sdk-v2 explicit cross join")
+        .expect("queries explicit cross join")
         .where_(left_scope & right_scope)
-        .expect("sdk-v2 cross-join scope")
+        .expect("queries cross-join scope")
         .rows(
             RowsOptions::new(4)
                 .order_by(cross_left_identifier.asc())
                 .order_by(cross_right_identifier.asc()),
         )
         .await
-        .expect("sdk-v2 cross-join rows")
+        .expect("queries cross-join rows")
         .iter()
         .map(|(left, right)| json!([left.identifier().value(), right.identifier().value()]))
         .collect::<Vec<_>>();
@@ -1728,10 +1754,10 @@ async fn sdk_v2_query_observations(
         .collect()
         .distinct()
         .order_by(shape_participant_identifier.asc())
-        .expect("sdk-v2 collection order");
+        .expect("queries collection order");
     let shape_predicate = shape_link
         .field(NetworkLinkType::identifier)
-        .eq(Identifier::new(network_key).expect("sdk-v2 network key"))
+        .eq(Identifier::new(network_key).expect("queries network key"))
         & shape_link
             .role(NetworkLinkType::origin)
             .connects(shape_origin)
@@ -1740,22 +1766,22 @@ async fn sdk_v2_query_observations(
             .connects(shape_participant);
     let positional_page = session
         .query((shape_origin, collected.clone()))
-        .expect("sdk-v2 positional selection")
+        .expect("queries positional selection")
         .match_(shape_link)
-        .expect("sdk-v2 positional network match")
+        .expect("queries positional network match")
         .where_(shape_predicate.clone())
-        .expect("sdk-v2 positional predicates")
+        .expect("queries positional predicates")
         .page_by(
             shape_origin,
             PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
         )
         .await
-        .expect("sdk-v2 positional page");
+        .expect("queries positional page");
     let positional_rows = positional_page.items();
-    assert_eq!(positional_rows.len(), 1, "sdk-v2 positional row is unique");
+    assert_eq!(positional_rows.len(), 1, "queries positional row is unique");
     let positional = json!([
         positional_rows[0].0.identifier().value(),
-        sdk_v2_keys(&positional_rows[0].1),
+        sdk_queries_keys(&positional_rows[0].1),
     ]);
     let positional_distinct = positional_rows[0]
         .1
@@ -1765,25 +1791,25 @@ async fn sdk_v2_query_observations(
         .len()
         == positional_rows[0].1.len();
     let named_shape =
-        SdkNetworkShape::select(shape_origin, collected).expect("sdk-v2 named selection shape");
+        SdkNetworkShape::select(shape_origin, collected).expect("queries named selection shape");
     let named_page = session
         .query(named_shape)
-        .expect("sdk-v2 named selection")
+        .expect("queries named selection")
         .match_(shape_link)
-        .expect("sdk-v2 named network match")
+        .expect("queries named network match")
         .where_(shape_predicate)
-        .expect("sdk-v2 named predicates")
+        .expect("queries named predicates")
         .page_by(
             shape_origin,
             PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
         )
         .await
-        .expect("sdk-v2 named page");
+        .expect("queries named page");
     let named_rows = named_page.items();
-    assert_eq!(named_rows.len(), 1, "sdk-v2 named row is unique");
+    assert_eq!(named_rows.len(), 1, "queries named row is unique");
     let named = json!({
         "origin": named_rows[0].origin.identifier().value(),
-        "participants": sdk_v2_keys(&named_rows[0].participants),
+        "participants": sdk_queries_keys(&named_rows[0].participants),
     });
     let named_distinct = named_rows[0]
         .participants
@@ -1799,32 +1825,32 @@ async fn sdk_v2_query_observations(
         "collected_distinct": positional_distinct,
         "collection_order": format!(
             "{}_asc",
-            sdk_v2_field_label(PersonType::identifier.owns_id_json()),
+            sdk_queries_field_label(PersonType::identifier.owns_id_json()),
         ),
     });
 
     let one = people_query
-        .where_(identifier.eq(Identifier::new(dana_key).expect("sdk-v2 Dana key")))
-        .expect("sdk-v2 one predicate")
+        .where_(identifier.eq(Identifier::new(dana_key).expect("queries Dana key")))
+        .expect("queries one predicate")
         .one()
         .await
-        .expect("sdk-v2 one terminal")
+        .expect("queries one terminal")
         .identifier()
         .value()
         .clone();
     let first = people_query
         .first(identifier.asc())
         .await
-        .expect("sdk-v2 first terminal")
-        .expect("sdk-v2 first row exists")
+        .expect("queries first terminal")
+        .expect("queries first row exists")
         .identifier()
         .value()
         .clone();
-    let rows = sdk_v2_keys(
+    let rows = sdk_queries_keys(
         &people_query
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 rows terminal"),
+            .expect("queries rows terminal"),
     );
     let page = people_query
         .page_by(
@@ -1834,10 +1860,13 @@ async fn sdk_v2_query_observations(
                 .order_by(identifier.asc()),
         )
         .await
-        .expect("sdk-v2 page terminal");
-    let page_items = sdk_v2_keys(page.items());
-    let count = people_query.count().await.expect("sdk-v2 count terminal");
-    let exists = people_query.exists().await.expect("sdk-v2 exists terminal");
+        .expect("queries page terminal");
+    let page_items = sdk_queries_keys(page.items());
+    let count = people_query.count().await.expect("queries count terminal");
+    let exists = people_query
+        .exists()
+        .await
+        .expect("queries exists terminal");
     let terminals = json!({
         "one": one,
         "first": first,
@@ -1846,7 +1875,7 @@ async fn sdk_v2_query_observations(
             "items": page_items,
             "offset": page.offset(),
             "limit": page.limit(),
-            "total": page.total().expect("sdk-v2 page total was requested"),
+            "total": page.total().expect("queries page total was requested"),
         },
         "count": count,
         "exists": exists,
@@ -1871,21 +1900,21 @@ async fn sdk_v2_query_observations(
             score.stddev(),
         ))
         .await
-        .expect("sdk-v2 reductions");
+        .expect("queries reductions");
     let mut binding_groups = people_query
         .match_(grouped_person)
-        .expect("sdk-v2 grouped person match")
+        .expect("queries grouped person match")
         .where_(identifier.eq_field(grouped_identifier))
-        .expect("sdk-v2 grouped person identity join")
+        .expect("queries grouped person identity join")
         .group_by(grouped_person)
-        .expect("sdk-v2 binding groups")
+        .expect("queries binding groups")
         .aggregate((aggregate::count(),))
         .await
-        .expect("sdk-v2 binding-grouped reductions")
+        .expect("queries binding-grouped reductions")
         .into_iter()
         .map(|(person, (count,))| {
             json!({
-                "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+                "model": sdk_queries_type_label(PersonType::TOKEN.type_id_json()),
                 "key": person.identifier().value(),
                 "count": count,
             })
@@ -1894,20 +1923,20 @@ async fn sdk_v2_query_observations(
     binding_groups.sort_by(|left, right| left["key"].as_str().cmp(&right["key"].as_str()));
     let mut field_groups = people_query
         .group_by_field(score)
-        .expect("sdk-v2 score groups")
+        .expect("queries score groups")
         .aggregate((aggregate::count(),))
         .await
-        .expect("sdk-v2 score-grouped reductions")
+        .expect("queries score-grouped reductions")
         .into_iter()
         .map(|(score, (count,))| json!({"key": score.value(), "count": count}))
         .collect::<Vec<_>>();
     field_groups.sort_by_key(|value| value["key"].as_i64());
     let mut tuple_groups = people_query
         .group_by_fields((score, score_gte))
-        .expect("sdk-v2 score tuple groups")
+        .expect("queries score tuple groups")
         .aggregate((aggregate::count(),))
         .await
-        .expect("sdk-v2 score tuple-grouped reductions")
+        .expect("queries score tuple-grouped reductions")
         .into_iter()
         .map(|((score, score_gte), (count,))| {
             json!({"key": [score.value(), score_gte.value()], "count": count})
@@ -1918,11 +1947,11 @@ async fn sdk_v2_query_observations(
         "reducers": {
             "count": reductions.0,
             "sum": reductions.1,
-            "min": reductions.2.expect("sdk-v2 minimum exists"),
-            "max": reductions.3.expect("sdk-v2 maximum exists"),
-            "mean_bits": format!("{:016x}", reductions.4.expect("sdk-v2 mean exists").to_bits()),
-            "median_bits": format!("{:016x}", reductions.5.expect("sdk-v2 median exists").to_bits()),
-            "std_bits": format!("{:016x}", reductions.6.expect("sdk-v2 std exists").to_bits()),
+            "min": reductions.2.expect("queries minimum exists"),
+            "max": reductions.3.expect("queries maximum exists"),
+            "mean_bits": format!("{:016x}", reductions.4.expect("queries mean exists").to_bits()),
+            "median_bits": format!("{:016x}", reductions.5.expect("queries median exists").to_bits()),
+            "std_bits": format!("{:016x}", reductions.6.expect("queries std exists").to_bits()),
         },
         "groups": {
             "binding": binding_groups,
@@ -1931,37 +1960,37 @@ async fn sdk_v2_query_observations(
         },
     });
 
-    let minimum_score = Score::new(30).expect("sdk-v2 authored function minimum");
+    let minimum_score = Score::new(30).expect("queries authored function minimum");
     let minimum: IntegerInput =
-        integer_input(session, &minimum_score).expect("sdk-v2 function input");
+        integer_input(session, &minimum_score).expect("queries function input");
     let call: IntegerCall =
-        qualifying_score(session, person, &minimum).expect("sdk-v2 function call");
-    let values = sdk_v2_keys(
+        qualifying_score(session, person, &minimum).expect("queries function call");
+    let values = sdk_queries_keys(
         &people_query
             .where_(call.ge_field(score))
-            .expect("sdk-v2 function field predicate")
+            .expect("queries function field predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 function field rows"),
+            .expect("queries function field rows"),
     );
     let nested: IntegerCall =
-        qualifying_score(session, person, &call).expect("sdk-v2 nested function call");
+        qualifying_score(session, person, &call).expect("queries nested function call");
     let nested_people = people_query
         .where_(
             call.ge_call(&nested)
-                .expect("sdk-v2 nested function predicate"),
+                .expect("queries nested function predicate"),
         )
-        .expect("sdk-v2 nested function filter")
+        .expect("queries nested function filter")
         .rows(RowsOptions::new(2).order_by(identifier.asc()))
         .await
-        .expect("sdk-v2 nested function rows");
+        .expect("queries nested function rows");
     let function_values = values
         .iter()
         .map(|key| {
             [&ada, &nested_people[0], &nested_people[1]]
                 .into_iter()
                 .find(|person| person.identifier().value() == key)
-                .unwrap_or_else(|| panic!("sdk-v2 function result has unknown key: {key}"))
+                .unwrap_or_else(|| panic!("queries function result has unknown key: {key}"))
                 .score()
                 .value()
         })
@@ -1977,16 +2006,16 @@ async fn sdk_v2_query_observations(
         "nested_values": nested_values,
     });
 
-    let scalar_keys = sdk_v2_keys(
+    let scalar_keys = sdk_queries_keys(
         &people_query
             .where_(score.ge(scalar_operand))
-            .expect("sdk-v2 scalar predicate")
+            .expect("queries scalar predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
-            .expect("sdk-v2 scalar rows"),
+            .expect("queries scalar rows"),
     );
     let scalar_domain = json!({
-        "domain": sdk_v2_scalar_domain(&scalar_operand),
+        "domain": sdk_queries_scalar_domain(&scalar_operand),
         "operator": "gte",
         "operand": scalar_operand,
         "keys": scalar_keys,
@@ -2007,7 +2036,11 @@ async fn sdk_v2_query_observations(
         ("schema_function".to_owned(), schema_function),
     ]);
     if let (Some(before), Some(after)) = (exchanges_before_one, exchanges_after_one) {
-        assert_eq!(after - before, 1, "sdk-v2 remote one performs one exchange");
+        assert_eq!(
+            after - before,
+            1,
+            "queries remote one performs one exchange"
+        );
         observations.insert(
             "remote_one_exchange".to_owned(),
             json!({"exchange_count": after - before, "terminal": one_terminal}),
@@ -2016,16 +2049,16 @@ async fn sdk_v2_query_observations(
     observations
 }
 
-fn sdk_v2_cancellation_error(error: &Error, partial_result: bool) -> Value {
+fn sdk_queries_cancellation_error(error: &Error, partial_result: bool) -> Value {
     json!({
         "category": error.category().as_str(),
-        "code": error.code().expect("sdk-v2 cancellation has a stable code"),
+        "code": error.code().expect("queries cancellation has a stable code"),
         "partial_result": partial_result,
     })
 }
 
-async fn sdk_v2_remote_cancellation(
-    remote: &RemoteDatabase<AppSchema>,
+async fn sdk_queries_remote_cancellation(
+    remote: &ProxyDatabase<AppSchema>,
     exchange_count: &Arc<AtomicUsize>,
     remote_url: &str,
 ) -> Value {
@@ -2034,69 +2067,67 @@ async fn sdk_v2_remote_cancellation(
     let exchanges_before = exchange_count.load(Ordering::SeqCst);
     let mut before_session = remote
         .query_with_resources(QueryExecutionResourceLimits::default(), before_cancellation)
-        .expect("sdk-v2 cancelled remote session");
+        .expect("queries cancelled remote session");
     let before_person = before_session
         .exact::<Person>()
-        .expect("sdk-v2 cancelled remote binding");
+        .expect("queries cancelled remote binding");
     let before_result = before_session
         .query(before_person)
-        .expect("sdk-v2 cancelled remote query")
+        .expect("queries cancelled remote query")
         .count()
         .await;
     let before_partial_result = before_result.is_ok();
-    let before_error = before_result.expect_err("sdk-v2 pre-cancelled remote query must fail");
+    let before_error = before_result.expect_err("queries pre-cancelled remote query must fail");
     let exchanges_after = exchange_count.load(Ordering::SeqCst);
     assert_eq!(before_error.category(), ErrorCategory::Cancelled);
     assert_eq!(before_error.code(), Some("provider_cancelled"));
-    let mut before_exchange = sdk_v2_cancellation_error(&before_error, before_partial_result);
+    let mut before_exchange = sdk_queries_cancellation_error(&before_error, before_partial_result);
     before_exchange["exchange_count"] = json!(exchanges_after - exchanges_before);
 
     let decode_cancellation = AnswerCancellation::default();
     let decode_exchange_count = Arc::new(AtomicUsize::new(0));
     let response_completed = Arc::new(AtomicBool::new(false));
-    let decode_remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
-            CancelBeforeDecodeTransport {
-                inner: HttpTransport::recording(
-                    remote_url.to_owned(),
-                    Arc::clone(&decode_exchange_count),
-                ),
-                cancellation: decode_cancellation.clone(),
-                response_completed: Arc::clone(&response_completed),
-            },
-        ))
-        .await
-        .expect("sdk-v2 decode-cancel remote connects")
-        .with_schema(SCHEMA)
-        .expect("sdk-v2 decode-cancel remote schema binds");
+    let decode_remote: ProxyDatabase<AppSchema> = ProxyDatabase::connect(
+        ProxyConnectionPolicy::with_exchange(CancelBeforeDecodeTransport {
+            inner: HttpTransport::recording(
+                remote_url.to_owned(),
+                Arc::clone(&decode_exchange_count),
+            ),
+            cancellation: decode_cancellation.clone(),
+            response_completed: Arc::clone(&response_completed),
+        }),
+    )
+    .await
+    .expect("queries decode-cancel remote connects")
+    .with_schema(SCHEMA)
+    .expect("queries decode-cancel remote schema binds");
     let mut decode_session = decode_remote
         .query_with_resources(QueryExecutionResourceLimits::default(), decode_cancellation)
-        .expect("sdk-v2 decode-cancel session");
+        .expect("queries decode-cancel session");
     let decode_person = decode_session
         .exact::<Person>()
-        .expect("sdk-v2 decode-cancel binding");
+        .expect("queries decode-cancel binding");
     let decode_result = decode_session
         .query(decode_person)
-        .expect("sdk-v2 decode-cancel query")
+        .expect("queries decode-cancel query")
         .count()
         .await;
     let decode_partial_result = decode_result.is_ok();
-    let decode_error = decode_result.expect_err("sdk-v2 remote decode cancellation must fail");
+    let decode_error = decode_result.expect_err("queries remote decode cancellation must fail");
     assert_eq!(decode_error.category(), ErrorCategory::Cancelled);
     assert_eq!(decode_error.code(), Some("provider_cancelled"));
-    let mut during_decode = sdk_v2_cancellation_error(&decode_error, decode_partial_result);
+    let mut during_decode = sdk_queries_cancellation_error(&decode_error, decode_partial_result);
     during_decode["exchange_count"] = json!(decode_exchange_count.load(Ordering::SeqCst));
 
     let abort_signal = AnswerCancellation::default();
     let abort_transport = CallerAbortProbeTransport {
         cancellation: abort_signal.clone(),
     };
-    let abort_future = abort_transport.exchange(b"sdk-v2-caller-abort-probe");
+    let abort_future = abort_transport.exchange(b"queries-caller-abort-probe");
     abort_signal.cancel();
     let abort_error = abort_future
         .await
-        .expect_err("sdk-v2 caller transport abort probe must stop");
+        .expect_err("queries caller transport abort probe must stop");
     let caller_transport_abort_supported = abort_error.category() == ErrorCategory::Remote
         && abort_error.code() == Some("caller_transport_aborted");
 
@@ -2108,20 +2139,36 @@ async fn sdk_v2_remote_cancellation(
     })
 }
 
-fn sdk_v2_resource_limit_base() -> Value {
-    let hard = QueryExecutionResourceLimits::default();
-    let plus_one = QueryExecutionResourceLimits::tightened(
-        hard.timeout_milliseconds.saturating_add(1),
-        hard.items.saturating_add(1),
-        hard.bytes.saturating_add(1),
-        hard.graph_nodes.saturating_add(1),
-        hard.attribute_values.saturating_add(1),
-        hard.collection_members.saturating_add(1),
-        hard.role_players.saturating_add(1),
-        hard.statements.saturating_add(1),
-    );
+fn sdk_queries_resource_limit_base() -> Value {
+    // The frozen SDK-v2 journey records the wire/proxy defaults.
+    let hard = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
+    // Every dimension but the statement count may be raised past its default
+    // and is kept as given.
+    let raised = QueryExecutionResourceLimits {
+        timeout_milliseconds: hard.timeout_milliseconds + 1,
+        items: hard.items + 1,
+        bytes: hard.bytes + 1,
+        graph_nodes: hard.graph_nodes + 1,
+        attribute_values: hard.attribute_values + 1,
+        collection_members: hard.collection_members + 1,
+        role_players: hard.role_players + 1,
+        statements: hard.statements,
+    };
+    let plus_one_kept_all = raised.validate() == Ok(raised) && raised.effective() == raised;
+    // Past a supported maximum a value is refused by name, never clamped.
+    let past_maximum_refused = QueryExecutionResourceLimits {
+        statements: hard.statements + 1,
+        ..hard
+    }
+    .validate()
+    .is_err_and(|refusal| refusal.limit == "statements")
+        && QueryExecutionResourceLimits {
+            timeout_milliseconds: type_bridge::MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
+            ..hard
+        }
+        .validate()
+        .is_err_and(|refusal| refusal.limit == "timeout_milliseconds");
     let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
-    let plus_one_clamped_all = plus_one == hard;
     let zero_tightening_all = zero.timeout_milliseconds == 0
         && zero.items == 0
         && zero.bytes == 0
@@ -2131,7 +2178,7 @@ fn sdk_v2_resource_limit_base() -> Value {
         && zero.role_players == 0
         && zero.statements == 0;
     json!({
-        "hard_maxima": {
+        "defaults": {
             "timeout_milliseconds": hard.timeout_milliseconds,
             "items": hard.items,
             "bytes": hard.bytes,
@@ -2141,69 +2188,70 @@ fn sdk_v2_resource_limit_base() -> Value {
             "role_players": hard.role_players,
             "statements": hard.statements,
         },
-        "plus_one_clamped_all": plus_one_clamped_all,
+        "plus_one_kept_all": plus_one_kept_all,
+        "past_maximum_refused": past_maximum_refused,
         "zero_tightening_all": zero_tightening_all,
     })
 }
 
-async fn sdk_v2_enforced_role_player_limit(
+async fn sdk_queries_enforced_role_player_limit(
     session: &mut QuerySession<'_, AppSchema>,
     ada_key: &str,
     dimension: &str,
 ) -> Value {
     let membership = session
         .exact::<Membership>()
-        .expect("sdk-v2 limited membership binding");
+        .expect("queries limited membership binding");
     let person = session
         .exact::<Person>()
-        .expect("sdk-v2 limited person binding");
+        .expect("queries limited person binding");
     let result = session
         .query(membership)
-        .expect("sdk-v2 limited membership query")
+        .expect("queries limited membership query")
         .match_(person)
-        .expect("sdk-v2 limited member match")
+        .expect("queries limited member match")
         .where_(
             membership.role(MembershipType::member).connects(person)
                 & person
                     .field(PersonType::identifier)
-                    .eq(Identifier::new(ada_key.to_owned()).expect("sdk-v2 limited Ada key")),
+                    .eq(Identifier::new(ada_key.to_owned()).expect("queries limited Ada key")),
         )
-        .expect("sdk-v2 limited membership predicate")
+        .expect("queries limited membership predicate")
         .one()
         .await;
     let no_partial_result = result.is_err();
-    let error = result.expect_err("sdk-v2 zero role-player limit must reject hydration");
+    let error = result.expect_err("queries zero role-player limit must reject hydration");
     assert_eq!(error.category(), ErrorCategory::ResourceLimit);
     json!({
         "dimension": dimension,
         "category": error.category().as_str(),
-        "code": error.code().expect("sdk-v2 resource limit has a stable code"),
+        "code": error.code().expect("queries resource limit has a stable code"),
         "no_partial_result": no_partial_result,
     })
 }
 
-async fn sdk_v2_lifecycle_lane(
+async fn sdk_queries_lifecycle_lane(
     session: &mut QuerySession<'_, AppSchema>,
     key: &str,
     exchange_count: Option<&Arc<AtomicUsize>>,
 ) -> (Value, bool) {
     let person = session
         .exact::<Person>()
-        .expect("sdk-v2 lifecycle person binding");
+        .expect("queries lifecycle person binding");
     let identifier = person.field(PersonType::identifier);
     let key_predicate =
-        identifier.eq(Identifier::new(key.to_owned()).expect("sdk-v2 lifecycle key"));
+        identifier.eq(Identifier::new(key.to_owned()).expect("queries lifecycle key"));
     let ancestor = session
         .query(person)
-        .expect("sdk-v2 lifecycle ancestor")
+        .expect("queries lifecycle ancestor")
         .where_(key_predicate)
-        .expect("sdk-v2 lifecycle ancestor predicate");
+        .expect("queries lifecycle ancestor predicate");
     let descendant = ancestor
         .where_(person.field(PersonType::score).is_present())
-        .expect("sdk-v2 lifecycle descendant");
+        .expect("queries lifecycle descendant");
     let sibling = ancestor
         .where_(person.field(PersonType::val_bool).is_present())
-        .expect("sdk-v2 lifecycle sibling");
+        .expect("queries lifecycle sibling");
 
     descendant.close();
     let ancestor_usable_after_descendant_close =
@@ -2211,7 +2259,7 @@ async fn sdk_v2_lifecycle_lane(
 
     let descendant_after_ancestor = ancestor
         .where_(person.field(PersonType::aliases).is_present())
-        .expect("sdk-v2 descendant retained before ancestor close");
+        .expect("queries descendant retained before ancestor close");
     ancestor.close();
     ancestor.close();
     let close_idempotent = ancestor.is_closed();
@@ -2224,7 +2272,7 @@ async fn sdk_v2_lifecycle_lane(
     let post_close_error = ancestor
         .count()
         .await
-        .expect_err("sdk-v2 closed query must reject");
+        .expect_err("queries closed query must reject");
     let exchanges_after = exchange_count.map(|count| count.load(Ordering::SeqCst));
     let post_close_io_count = exchanges_before
         .zip(exchanges_after)
@@ -2234,20 +2282,20 @@ async fn sdk_v2_lifecycle_lane(
     let sibling_usable = sibling.count().await.is_ok_and(|count| count == 1);
     let session_query = session
         .query(person)
-        .expect("sdk-v2 session remains usable")
-        .where_(identifier.eq(Identifier::new(key.to_owned()).expect("sdk-v2 session key")))
-        .expect("sdk-v2 session query predicate");
+        .expect("queries session remains usable")
+        .where_(identifier.eq(Identifier::new(key.to_owned()).expect("queries session key")))
+        .expect("queries session query predicate");
     let session_usable_after_query_close =
         session_query.count().await.is_ok_and(|count| count == 1);
 
     let result_query = session
         .query(person)
-        .expect("sdk-v2 result lifecycle query")
+        .expect("queries result lifecycle query")
         .where_(
-            identifier.eq(Identifier::new(key.to_owned()).expect("sdk-v2 result lifecycle key")),
+            identifier.eq(Identifier::new(key.to_owned()).expect("queries result lifecycle key")),
         )
-        .expect("sdk-v2 result lifecycle predicate");
-    let result = result_query.one().await.expect("sdk-v2 lifecycle result");
+        .expect("queries result lifecycle predicate");
+    let result = result_query.one().await.expect("queries lifecycle result");
     result_query.close();
     let result_usable_after_query_close = result.identifier().value() == key;
 
@@ -2266,422 +2314,71 @@ async fn sdk_v2_lifecycle_lane(
     )
 }
 
-async fn run_sdk_journey(db: &Database<AppSchema>) {
-    let report_path = sdk_env_path("TYPE_BRIDGE_SDK_REPORT");
+async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
+    let report_path = sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_REPORT");
     validate_sdk_report_path(&report_path);
-    require_sdk_server_version().await;
-    let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MANIFEST"))
-        .expect("staged sdk manifest is readable");
-    let catalog_bytes =
-        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_CATALOG")).expect("staged sdk catalog is readable");
-    let journey_bytes =
-        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_JOURNEY")).expect("staged sdk journey is readable");
-    let schema_bytes =
-        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_SCHEMA")).expect("staged sdk schema is readable");
-    let provider_schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA"))
-        .expect("staged sdk provider schema is readable");
-    let catalog: Value = serde_json::from_slice(&catalog_bytes).expect("sdk catalog is valid JSON");
-    let journey: Value = serde_json::from_slice(&journey_bytes).expect("sdk journey is valid JSON");
-
-    assert_eq!(
-        sdk_string(&journey["format"], "sdk journey format"),
-        "typebridge.sdk-journey/v1"
-    );
-    assert_eq!(
-        sdk_string(&journey["semantic_profile"], "sdk semantic profile"),
-        SDK_PROFILE
-    );
-    assert_eq!(
-        env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
-            .expect("generated live semantic profile is configured"),
-        SDK_PROFILE
-    );
-    assert_eq!(
-        sdk_string(&catalog["fixture"]["schema_path"], "sdk schema path"),
-        SDK_SCHEMA_PATH
-    );
-    assert_eq!(
-        sdk_string(
-            &catalog["fixture"]["provider_schema_path"],
-            "sdk provider schema path",
-        ),
-        SDK_PROVIDER_SCHEMA_PATH
-    );
-    assert_eq!(
-        sdk_string(&catalog["journey_path"], "sdk journey path"),
-        SDK_JOURNEY_PATH
-    );
-    let projection_target = sdk_string(
-        &catalog["projection_targets"]["rust"],
-        "sdk Rust projection target",
-    );
-    assert_eq!(projection_target, "rust");
-    let operation_order = journey["operation_order"]
-        .as_array()
-        .expect("sdk operation order must be an array")
-        .iter()
-        .map(|value| sdk_string(value, "sdk operation").to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        operation_order,
-        [
-            "insert_person",
-            "read_person",
-            "update_person",
-            "insert_membership",
-            "read_membership",
-            "direct_role_query_one",
-            "remote_role_query_one",
-            "delete_membership",
-            "delete_person",
-        ]
-    );
-
-    let person_record = &journey["records"]["person"];
-    let fields = &person_record["fields"];
-    let person_model = sdk_string(&person_record["model"], "sdk person model");
-    assert_eq!(person_model, "person");
-    let initial_nickname = sdk_string(
-        &sdk_typed_field(fields, "nickname", "string")["value"],
-        "sdk initial nickname",
-    );
-    let updated_nickname = sdk_string(
-        &person_record["update"]["nickname"]["value"],
-        "sdk updated nickname",
-    );
-    assert_eq!(
-        sdk_string(
-            &person_record["update"]["nickname"]["kind"],
-            "sdk updated nickname kind",
-        ),
-        "string"
-    );
-    let membership_record = &journey["records"]["membership"];
-    assert_eq!(
-        sdk_string(
-            &membership_record["player"]["key"],
-            "sdk membership player key",
-        ),
-        sdk_field_string(fields, "identifier", "string")
-    );
-
-    let person_baseline = db
-        .entities::<Person>()
-        .count()
-        .await
-        .expect("sdk person baseline count");
-    let membership_baseline = db
-        .relations::<Membership>()
-        .count()
-        .await
-        .expect("sdk membership baseline count");
-
-    let inserted_person = db
-        .entities::<Person>()
-        .insert(sdk_person_create(fields, initial_nickname))
-        .await
-        .expect("sdk person insert");
-    assert_sdk_person(&inserted_person, fields, initial_nickname);
-    let person_iid = inserted_person.iid().to_owned();
-    let read_person = db
-        .entities::<Person>()
-        .get_by_iid(&person_iid)
-        .await
-        .expect("sdk person read")
-        .expect("sdk person exists after insert");
-    assert_sdk_person(&read_person, fields, initial_nickname);
-    let updated_person = db
-        .entities::<Person>()
-        .update(&person_iid, sdk_person_create(fields, updated_nickname))
-        .await
-        .expect("sdk person update");
-    assert_sdk_person(&updated_person, fields, updated_nickname);
-    let updated_read = db
-        .entities::<Person>()
-        .get_by_iid(&person_iid)
-        .await
-        .expect("sdk updated person read")
-        .expect("sdk person exists after update");
-    let direct_model_observation =
-        sdk_model_observation(&updated_read, fields, person_model, updated_nickname);
-
-    let membership = db
-        .relations::<Membership>()
-        .insert(
-            MembershipCreate::new(MembershipMemberRef::Person(updated_read.reference()))
-                .expect("sdk membership create"),
-        )
-        .await
-        .expect("sdk membership insert");
-    let membership_iid = membership.iid().to_owned();
-    let membership_read = db
-        .relations::<Membership>()
-        .get_by_iid(&membership_iid)
-        .await
-        .expect("sdk membership read")
-        .expect("sdk membership exists after insert");
-    let _ = sdk_role_observations(&membership_read, &updated_read, membership_record);
-
-    let (direct_relation, direct_person) =
-        {
-            let mut session = db.query().expect("sdk direct query session");
-            let relation = session
-                .exact::<Membership>()
-                .expect("sdk direct membership binding");
-            let person = session
-                .exact::<Person>()
-                .expect("sdk direct person binding");
-            session
-                .query((relation, person))
-                .expect("sdk direct selection")
-                .where_(
-                    relation.role(MembershipType::member).connects(person)
-                        & person.field(PersonType::identifier).eq(Identifier::new(
-                            sdk_field_string(fields, "identifier", "string"),
-                        )
-                        .expect("sdk direct person key")),
-                )
-                .expect("sdk direct role predicate")
-                .one()
-                .await
-                .expect("sdk direct role result")
-        };
-    let (direct_hydration, direct_role) =
-        sdk_role_observations(&direct_relation, &direct_person, membership_record);
-    let direct_query_model_observation =
-        sdk_model_observation(&direct_person, fields, person_model, updated_nickname);
-    assert_eq!(direct_query_model_observation, direct_model_observation);
-
-    let exchange_count = Arc::new(AtomicUsize::new(0));
-    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("sdk remote server URL");
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-            HttpTransport::recording(remote_url, Arc::clone(&exchange_count)),
-        ))
-        .await
-        .expect("sdk remote database connects")
-        .with_schema(SCHEMA)
-        .expect("sdk remote schema authority binds");
-    assert_eq!(exchange_count.load(Ordering::SeqCst), 0);
-    let (remote_relation, remote_person) =
-        {
-            let mut session = remote.query().expect("sdk remote query session");
-            let relation = session
-                .exact::<Membership>()
-                .expect("sdk remote membership binding");
-            let person = session
-                .exact::<Person>()
-                .expect("sdk remote person binding");
-            session
-                .query((relation, person))
-                .expect("sdk remote selection")
-                .where_(
-                    relation.role(MembershipType::member).connects(person)
-                        & person.field(PersonType::identifier).eq(Identifier::new(
-                            sdk_field_string(fields, "identifier", "string"),
-                        )
-                        .expect("sdk remote person key")),
-                )
-                .expect("sdk remote role predicate")
-                .one()
-                .await
-                .expect("sdk remote role result")
-        };
-    let observed_exchange_count = exchange_count.load(Ordering::SeqCst);
-    assert_eq!(
-        observed_exchange_count, 1,
-        "sdk remote terminal must perform exactly one caller-owned exchange"
-    );
-    let (remote_hydration, remote_role) =
-        sdk_role_observations(&remote_relation, &remote_person, membership_record);
-    let remote_model_observation =
-        sdk_model_observation(&remote_person, fields, person_model, updated_nickname);
-
-    assert_eq!(remote_model_observation, direct_model_observation);
-    assert_eq!(remote_hydration, direct_hydration);
-    assert_eq!(remote_role, direct_role);
-
-    db.relations::<Membership>()
-        .delete(&membership_iid)
-        .await
-        .expect("sdk membership delete");
-    assert!(
-        db.relations::<Membership>()
-            .get_by_iid(&membership_iid)
-            .await
-            .expect("sdk deleted membership read")
-            .is_none()
-    );
-    db.entities::<Person>()
-        .delete(&person_iid)
-        .await
-        .expect("sdk person delete");
-    assert!(
-        db.entities::<Person>()
-            .get_by_iid(&person_iid)
-            .await
-            .expect("sdk deleted person read")
-            .is_none()
-    );
-    assert_eq!(
-        db.relations::<Membership>()
-            .count()
-            .await
-            .expect("sdk membership cleanup count"),
-        membership_baseline
-    );
-    assert_eq!(
-        db.entities::<Person>()
-            .count()
-            .await
-            .expect("sdk person cleanup count"),
-        person_baseline
-    );
-
-    let entity_lifecycle = json!({
-        "created": true,
-        "deleted": true,
-        "key": sdk_field_string(fields, "identifier", "string"),
-        "model": person_model,
-        "nickname_after_update": updated_nickname,
-        "read_after_update": true,
-    });
-    let relation_lifecycle = json!({
-        "created": true,
-        "deleted": true,
-        "model": sdk_string(&membership_record["model"], "sdk relation model"),
-        "player_key": sdk_field_string(fields, "identifier", "string"),
-        "role": sdk_string(&membership_record["role"], "sdk relation role"),
-    });
-    let remote_one_exchange = json!({"exchange_count": observed_exchange_count, "terminal": "one"});
-    let actual_observations = BTreeMap::from([
-        ("entity_lifecycle".to_owned(), entity_lifecycle),
-        ("hydrated_role_result".to_owned(), direct_hydration),
-        (
-            "model_values_and_references".to_owned(),
-            direct_model_observation,
-        ),
-        ("relation_lifecycle".to_owned(), relation_lifecycle),
-        ("remote_one_exchange".to_owned(), remote_one_exchange),
-        ("role_traversal".to_owned(), direct_role),
-    ]);
-    let expected_observations = journey["expected_observations"]
-        .as_object()
-        .expect("sdk expected observations must be an object");
-    assert_eq!(actual_observations.len(), expected_observations.len());
-    for (name, actual) in &actual_observations {
-        assert_eq!(
-            actual,
-            expected_observations
-                .get(name)
-                .unwrap_or_else(|| panic!("sdk expected observation is missing: {name}")),
-            "sdk observation diverged: {name}"
-        );
-    }
-
-    let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
-        .expect("generated semantic fingerprint is valid JSON");
-    let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
-        .expect("generated projection fingerprint is valid JSON");
-    assert_eq!(
-        sdk_string(
-            &semantic_fingerprint["semantic_profile"],
-            "semantic fingerprint profile",
-        ),
-        SDK_PROFILE
-    );
-    assert_eq!(
-        sdk_string(
-            &projection_fingerprint["semantic_profile"],
-            "projection fingerprint profile",
-        ),
-        SDK_PROFILE
-    );
-    let report = json!({
-        "format": "typebridge.sdk-conformance-report/v1",
-        "binding": "rust",
-        "manifest": sdk_source_identity(SDK_MANIFEST_PATH, &manifest_bytes),
-        "catalog": sdk_source_identity(SDK_CATALOG_PATH, &catalog_bytes),
-        "fixture": {
-            "id": sdk_string(&journey["fixture_id"], "sdk fixture ID"),
-            "version": journey["version"].clone(),
-            "semantic_profile": SDK_PROFILE,
-            "schema": sdk_source_identity(SDK_SCHEMA_PATH, &schema_bytes),
-            "provider_schema": sdk_source_identity(
-                SDK_PROVIDER_SCHEMA_PATH,
-                &provider_schema_bytes,
-            ),
-            "journey": sdk_source_identity(SDK_JOURNEY_PATH, &journey_bytes),
-            "semantic_fingerprint": semantic_fingerprint,
-            "projection_target": projection_target,
-            "projection_fingerprint": projection_fingerprint,
-        },
-        "results": sdk_results(&catalog, &actual_observations),
-    });
-    publish_sdk_report(&report_path, report);
-}
-
-async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
-    let report_path = sdk_env_path("TYPE_BRIDGE_SDK_REPORT_V2");
-    validate_sdk_report_path(&report_path);
-    require_sdk_server_version().await;
-    let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MANIFEST_V2"))
-        .expect("staged sdk-v2 manifest is readable");
-    let catalog_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_CATALOG_V2"))
-        .expect("staged sdk-v2 catalog is readable");
-    let journey_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_JOURNEY_V2"))
-        .expect("staged sdk-v2 journey is readable");
-    let schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_SCHEMA_V2"))
-        .expect("staged sdk-v2 schema is readable");
-    let provider_schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_PROVIDER_SCHEMA_V2"))
-        .expect("staged sdk-v2 provider schema is readable");
+    let entry = sdk_matrix_entry("queries");
+    let sdk_profile = sdk_matrix_profile(&entry);
+    require_sdk_server_version(&entry).await;
+    let manifest_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_MANIFEST"))
+        .expect("staged queries manifest is readable");
+    let catalog_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_CATALOG"))
+        .expect("staged queries catalog is readable");
+    let journey_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_JOURNEY"))
+        .expect("staged queries journey is readable");
+    let schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_SCHEMA"))
+        .expect("staged queries schema is readable");
+    let provider_schema_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_QUERIES_PROVIDER_SCHEMA"))
+        .expect("staged queries provider schema is readable");
     let catalog: Value =
-        serde_json::from_slice(&catalog_bytes).expect("sdk-v2 catalog is valid JSON");
+        serde_json::from_slice(&catalog_bytes).expect("queries catalog is valid JSON");
     let journey: Value =
-        serde_json::from_slice(&journey_bytes).expect("sdk-v2 journey is valid JSON");
+        serde_json::from_slice(&journey_bytes).expect("queries journey is valid JSON");
     assert_eq!(
-        sdk_string(&journey["format"], "sdk-v2 journey format"),
-        "typebridge.sdk-journey/v2"
+        sdk_string(&journey["format"], "queries journey format"),
+        "typebridge.sdk-queries-journey/v1"
     );
-    assert_eq!(journey["fixture_id"], "sdk-v2");
+    assert_eq!(journey["fixture_id"], "queries");
     assert_eq!(journey["version"], 2);
     assert_eq!(
-        sdk_string(&journey["semantic_profile"], "sdk-v2 semantic profile"),
-        SDK_PROFILE
+        sdk_string(&journey["semantic_profile"], "queries semantic profile"),
+        sdk_string(
+            &catalog["fixture"]["semantic_profile"],
+            "queries catalog profile"
+        )
     );
     assert_eq!(
         env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
             .expect("generated live semantic profile is configured"),
-        SDK_PROFILE
+        sdk_profile
     );
     assert_eq!(
-        sdk_string(&catalog["fixture"]["schema_path"], "sdk-v2 schema path",),
+        sdk_string(&catalog["fixture"]["schema_path"], "queries schema path",),
         SDK_SCHEMA_PATH
     );
     assert_eq!(
         sdk_string(
             &catalog["fixture"]["provider_schema_path"],
-            "sdk-v2 provider schema path",
+            "queries provider schema path",
         ),
         SDK_PROVIDER_SCHEMA_PATH
     );
     assert_eq!(
-        sdk_string(&catalog["journey_path"], "sdk-v2 journey path"),
-        SDK_V2_JOURNEY_PATH
+        sdk_string(&catalog["journey_path"], "queries journey path"),
+        SDK_QUERIES_JOURNEY_PATH
     );
     let projection_target = sdk_string(
         &catalog["projection_targets"]["rust"],
-        "sdk-v2 Rust projection target",
+        "queries Rust projection target",
     );
     assert_eq!(projection_target, "rust");
 
-    let proof_observations = sdk_v2_provider_proofs();
+    let proof_observations = sdk_queries_provider_proofs();
 
     let records = &journey["records"];
     let people_records = records["people"]
         .as_array()
-        .expect("sdk-v2 people records are an array");
+        .expect("queries people records are an array");
     assert_eq!(people_records.len(), 2);
     let ada_key = sdk_field_string(&people_records[0]["fields"], "identifier", "string");
     let dana_key = sdk_field_string(&people_records[1]["fields"], "identifier", "string");
@@ -2693,42 +2390,47 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         .entities::<Person>()
         .count()
         .await
-        .expect("sdk-v2 person baseline");
+        .expect("queries person baseline");
     let employee_baseline = db
         .entities::<Employee>()
         .count()
         .await
-        .expect("sdk-v2 employee baseline");
+        .expect("queries employee baseline");
     let manager_baseline = db
         .entities::<Manager>()
         .count()
         .await
-        .expect("sdk-v2 manager baseline");
+        .expect("queries manager baseline");
     let membership_baseline = db
         .relations::<Membership>()
         .count()
         .await
-        .expect("sdk-v2 membership baseline");
+        .expect("queries membership baseline");
     let network_baseline = db
         .relations::<NetworkLink>()
         .count()
         .await
-        .expect("sdk-v2 network baseline");
+        .expect("queries network baseline");
 
     let people = db
         .entities::<Person>()
-        .insert_many(people_records.iter().map(sdk_v2_person_create).collect())
+        .insert_many(
+            people_records
+                .iter()
+                .map(sdk_queries_person_create)
+                .collect(),
+        )
         .await
-        .expect("sdk-v2 people insert");
+        .expect("queries people insert");
     assert_eq!(people.len(), 2);
-    sdk_v2_assert_person(&people[0], &people_records[0]);
-    sdk_v2_assert_person(&people[1], &people_records[1]);
+    sdk_queries_assert_person(&people[0], &people_records[0]);
+    sdk_queries_assert_person(&people[1], &people_records[1]);
     let person_iids = [people[0].iid().to_owned(), people[1].iid().to_owned()];
     let read_after_create = db
         .entities::<Person>()
         .get_by_iid(&person_iids[0])
         .await
-        .expect("sdk-v2 person read after create")
+        .expect("queries person read after create")
         .is_some();
 
     let employee = db
@@ -2736,66 +2438,66 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         .insert(
             EmployeeCreate::try_new(
                 Identifier::new(sdk_field_string(employee_fields, "identifier", "string"))
-                    .expect("sdk-v2 employee identifier"),
+                    .expect("queries employee identifier"),
                 PartyName::new(sdk_field_string(employee_fields, "party_name", "string"))
-                    .expect("sdk-v2 employee party name"),
-                Rank::new(sdk_field_long(employee_fields, "rank")).expect("sdk-v2 employee rank"),
+                    .expect("queries employee party name"),
+                Rank::new(sdk_field_long(employee_fields, "rank")).expect("queries employee rank"),
             )
-            .expect("sdk-v2 employee create"),
+            .expect("queries employee create"),
         )
         .await
-        .expect("sdk-v2 employee insert");
+        .expect("queries employee insert");
     let employee_iid = employee.iid().to_owned();
     let manager = db
         .entities::<Manager>()
         .insert(
             ManagerCreate::try_new(
                 Identifier::new(sdk_field_string(manager_fields, "identifier", "string"))
-                    .expect("sdk-v2 manager identifier"),
+                    .expect("queries manager identifier"),
                 ManagerNote::new(sdk_field_string(manager_fields, "manager_note", "string"))
-                    .expect("sdk-v2 manager note"),
+                    .expect("queries manager note"),
                 PartyName::new(sdk_field_string(manager_fields, "party_name", "string"))
-                    .expect("sdk-v2 manager party name"),
-                Rank::new(sdk_field_long(manager_fields, "rank")).expect("sdk-v2 manager rank"),
+                    .expect("queries manager party name"),
+                Rank::new(sdk_field_long(manager_fields, "rank")).expect("queries manager rank"),
             )
-            .expect("sdk-v2 manager create"),
+            .expect("queries manager create"),
         )
         .await
-        .expect("sdk-v2 manager insert");
+        .expect("queries manager insert");
     let manager_iid = manager.iid().to_owned();
     let membership = db
         .relations::<Membership>()
         .insert(
             MembershipCreate::new(MembershipMemberRef::Person(people[0].reference()))
-                .expect("sdk-v2 membership create"),
+                .expect("queries membership create"),
         )
         .await
-        .expect("sdk-v2 membership insert");
+        .expect("queries membership insert");
     let membership_iid = membership.iid().to_owned();
     let membership_read_after_create = db
         .relations::<Membership>()
         .get_by_iid(&membership_iid)
         .await
-        .expect("sdk-v2 membership read after create")
+        .expect("queries membership read after create")
         .is_some();
     let network = db
         .relations::<NetworkLink>()
         .insert(
             NetworkLinkCreate::new(
                 Identifier::new(sdk_field_string(network_fields, "identifier", "string"))
-                    .expect("sdk-v2 network identifier"),
+                    .expect("queries network identifier"),
                 Some(
                     Nickname::new(sdk_field_string(network_fields, "nickname", "string"))
-                        .expect("sdk-v2 network nickname"),
+                        .expect("queries network nickname"),
                 ),
                 people[1].reference(),
                 people[0].reference(),
                 vec![people[0].reference(), people[1].reference()],
             )
-            .expect("sdk-v2 network create"),
+            .expect("queries network create"),
         )
         .await
-        .expect("sdk-v2 network insert");
+        .expect("queries network insert");
     let network_iid = network.iid().to_owned();
     let keyed_create_order = [
         people[0].identifier().value().clone(),
@@ -2806,8 +2508,8 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     ];
     let membership_order_key = format!(
         "{}{}",
-        sdk_v2_common_key_prefix(&keyed_create_order),
-        sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
+        sdk_queries_common_key_prefix(&keyed_create_order),
+        sdk_queries_type_label(MembershipType::TOKEN.type_id_json()),
     );
     let actual_create_order = [
         keyed_create_order[0].clone(),
@@ -2820,26 +2522,25 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     assert_eq!(
         journey["create_order"],
         json!(actual_create_order),
-        "sdk-v2 public create operations diverged from journey order"
+        "queries public create operations diverged from journey order"
     );
 
-    let mut direct_session = db.query().expect("sdk-v2 direct query session");
+    let mut direct_session = db.query().expect("queries direct query session");
     let direct_observations =
-        sdk_v2_query_observations(&mut direct_session, records, &person_iids, None).await;
+        sdk_queries_query_observations(&mut direct_session, records, &person_iids, None).await;
 
-    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("sdk-v2 remote URL");
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("queries remote URL");
     let exchange_count = Arc::new(AtomicUsize::new(0));
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            QueryExecutionResourceLimits::default(),
+    let remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
             HttpTransport::recording(remote_url.clone(), Arc::clone(&exchange_count)),
         ))
         .await
-        .expect("sdk-v2 remote database connects")
+        .expect("queries remote database connects")
         .with_schema(SCHEMA)
-        .expect("sdk-v2 remote schema binds");
-    let mut remote_session = remote.query().expect("sdk-v2 remote query session");
-    let remote_observations = sdk_v2_query_observations(
+        .expect("queries remote schema binds");
+    let mut remote_session = remote.query().expect("queries remote query session");
+    let remote_observations = sdk_queries_query_observations(
         &mut remote_session,
         records,
         &person_iids,
@@ -2863,28 +2564,28 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         assert_eq!(
             direct_observations.get(name),
             remote_observations.get(name),
-            "sdk-v2 direct/remote observation differs: {name}"
+            "queries direct/remote observation differs: {name}"
         );
     }
 
     let structured_query_diagnostic = {
-        let mut session = db.query().expect("sdk-v2 structured diagnostic session");
+        let mut session = db.query().expect("queries structured diagnostic session");
         let person = session
             .exact::<Person>()
-            .expect("sdk-v2 structured diagnostic binding");
+            .expect("queries structured diagnostic binding");
         let identifier = person.field(PersonType::identifier);
         let error = session
             .query(person)
-            .expect("sdk-v2 structured diagnostic query")
+            .expect("queries structured diagnostic query")
             .where_(
-                identifier.eq(Identifier::new(ada_key.clone()).expect("sdk-v2 Ada key"))
-                    | identifier.eq(Identifier::new(dana_key.clone()).expect("sdk-v2 Dana key")),
+                identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+                    | identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
             )
-            .expect("sdk-v2 structured diagnostic scope")
+            .expect("queries structured diagnostic scope")
             .one()
             .await
-            .expect_err("sdk-v2 two-row exact-one must fail");
-        sdk_v2_diagnostic(
+            .expect_err("queries two-row exact-one must fail");
+        sdk_queries_diagnostic(
             &error,
             None,
             &[
@@ -2897,12 +2598,12 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     };
 
     let cancellation_remote =
-        sdk_v2_remote_cancellation(&remote, &exchange_count, &remote_url).await;
+        sdk_queries_remote_cancellation(&remote, &exchange_count, &remote_url).await;
     let deterministic_cancellation_remote =
-        &proof_observations[&sdk_v2_observation_key("cancellation_remote", "remote_runtime")];
+        &proof_observations[&sdk_queries_observation_key("cancellation_remote", "remote_runtime")];
     assert_eq!(
         &cancellation_remote, deterministic_cancellation_remote,
-        "sdk-v2 live and deterministic public remote cancellation observations differ"
+        "queries live and deterministic public remote cancellation observations differ"
     );
 
     let limited_dimension = "role_players";
@@ -2913,30 +2614,30 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     let direct_enforced = {
         let mut session = db
             .query_with_resources(limited, AnswerCancellation::default())
-            .expect("sdk-v2 direct limited session");
-        sdk_v2_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
+            .expect("queries direct limited session");
+        sdk_queries_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
     };
     let remote_enforced = {
         let mut session = remote
             .query_with_resources(limited, AnswerCancellation::default())
-            .expect("sdk-v2 remote limited session");
-        sdk_v2_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
+            .expect("queries remote limited session");
+        sdk_queries_enforced_role_player_limit(&mut session, &ada_key, limited_dimension).await
     };
     assert_eq!(direct_enforced, remote_enforced);
-    let mut direct_limits = sdk_v2_resource_limit_base();
+    let mut direct_limits = sdk_queries_resource_limit_base();
     direct_limits["enforced"] = direct_enforced;
-    let mut remote_limits = sdk_v2_resource_limit_base();
+    let mut remote_limits = sdk_queries_resource_limit_base();
     remote_limits["enforced"] = remote_enforced;
 
     let direct_lane = "direct";
     let (direct_lifecycle, direct_result_survives) = {
-        let mut session = db.query().expect("sdk-v2 direct lifecycle session");
-        sdk_v2_lifecycle_lane(&mut session, &ada_key, None).await
+        let mut session = db.query().expect("queries direct lifecycle session");
+        sdk_queries_lifecycle_lane(&mut session, &ada_key, None).await
     };
     let remote_lane = "remote";
     let (remote_lifecycle, remote_result_survives) = {
-        let mut session = remote.query().expect("sdk-v2 remote lifecycle session");
-        sdk_v2_lifecycle_lane(&mut session, &ada_key, Some(&exchange_count)).await
+        let mut session = remote.query().expect("queries remote lifecycle session");
+        sdk_queries_lifecycle_lane(&mut session, &ada_key, Some(&exchange_count)).await
     };
     assert_eq!(direct_lifecycle, remote_lifecycle);
     assert_eq!(direct_result_survives, remote_result_survives);
@@ -2950,96 +2651,96 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     db.relations::<NetworkLink>()
         .delete(&network_iid)
         .await
-        .expect("sdk-v2 network cleanup");
+        .expect("queries network cleanup");
     actual_cleanup_order.push(keyed_create_order[4].clone());
     let network_deleted = db
         .relations::<NetworkLink>()
         .get_by_iid(&network_iid)
         .await
-        .expect("sdk-v2 network cleanup read")
+        .expect("queries network cleanup read")
         .is_none();
     db.relations::<Membership>()
         .delete(&membership_iid)
         .await
-        .expect("sdk-v2 membership cleanup");
+        .expect("queries membership cleanup");
     actual_cleanup_order.push(membership_order_key);
     let membership_deleted = db
         .relations::<Membership>()
         .get_by_iid(&membership_iid)
         .await
-        .expect("sdk-v2 membership cleanup read")
+        .expect("queries membership cleanup read")
         .is_none();
     db.entities::<Manager>()
         .delete(&manager_iid)
         .await
-        .expect("sdk-v2 manager cleanup");
+        .expect("queries manager cleanup");
     actual_cleanup_order.push(keyed_create_order[3].clone());
     db.entities::<Employee>()
         .delete(&employee_iid)
         .await
-        .expect("sdk-v2 employee cleanup");
+        .expect("queries employee cleanup");
     actual_cleanup_order.push(keyed_create_order[2].clone());
     db.entities::<Person>()
         .delete(&person_iids[1])
         .await
-        .expect("sdk-v2 Dana cleanup");
+        .expect("queries Dana cleanup");
     actual_cleanup_order.push(keyed_create_order[1].clone());
     db.entities::<Person>()
         .delete(&person_iids[0])
         .await
-        .expect("sdk-v2 Ada cleanup");
+        .expect("queries Ada cleanup");
     actual_cleanup_order.push(keyed_create_order[0].clone());
     let people_deleted = db
         .entities::<Person>()
         .get_by_iid(&person_iids[0])
         .await
-        .expect("sdk-v2 Ada cleanup read")
+        .expect("queries Ada cleanup read")
         .is_none()
         && db
             .entities::<Person>()
             .get_by_iid(&person_iids[1])
             .await
-            .expect("sdk-v2 Dana cleanup read")
+            .expect("queries Dana cleanup read")
             .is_none();
     assert!(network_deleted && membership_deleted && people_deleted);
     assert_eq!(
         journey["cleanup_order"],
         json!(actual_cleanup_order),
-        "sdk-v2 public cleanup operations diverged from journey order"
+        "queries public cleanup operations diverged from journey order"
     );
     assert_eq!(
         db.relations::<NetworkLink>()
             .count()
             .await
-            .expect("sdk-v2 network cleanup count"),
+            .expect("queries network cleanup count"),
         network_baseline
     );
     assert_eq!(
         db.relations::<Membership>()
             .count()
             .await
-            .expect("sdk-v2 membership cleanup count"),
+            .expect("queries membership cleanup count"),
         membership_baseline
     );
     assert_eq!(
         db.entities::<Manager>()
             .count()
             .await
-            .expect("sdk-v2 manager cleanup count"),
+            .expect("queries manager cleanup count"),
         manager_baseline
     );
     assert_eq!(
         db.entities::<Employee>()
             .count()
             .await
-            .expect("sdk-v2 employee cleanup count"),
+            .expect("queries employee cleanup count"),
         employee_baseline
     );
     assert_eq!(
         db.entities::<Person>()
             .count()
             .await
-            .expect("sdk-v2 person cleanup count"),
+            .expect("queries person cleanup count"),
         person_baseline
     );
 
@@ -3047,33 +2748,33 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         "created": !person_iids[0].is_empty(),
         "deleted": people_deleted,
         "key": ada_key,
-        "model": sdk_v2_type_label(PersonType::TOKEN.type_id_json()),
+        "model": sdk_queries_type_label(PersonType::TOKEN.type_id_json()),
         "read_after_create": read_after_create,
     });
     let membership_player_key = match membership.member() {
         MembershipMemberPlayer::Person(reference) => reference
             .identifier()
-            .expect("sdk-v2 inserted membership player carries its key")
+            .expect("queries inserted membership player carries its key")
             .value()
             .clone(),
         MembershipMemberPlayer::Robot(_) => {
-            panic!("sdk-v2 inserted membership player must be a person")
+            panic!("queries inserted membership player must be a person")
         }
     };
     let relation_lifecycle = json!({
         "created": !membership_iid.is_empty() && membership_read_after_create,
         "deleted": membership_deleted,
-        "model": sdk_v2_type_label(MembershipType::TOKEN.type_id_json()),
+        "model": sdk_queries_type_label(MembershipType::TOKEN.type_id_json()),
         "player_key": membership_player_key,
-        "role": sdk_v2_role_label(MembershipType::member.role_id_json()),
+        "role": sdk_queries_role_label(MembershipType::member.role_id_json()),
     });
 
     let mut actual = BTreeMap::new();
     let mut insert = |observation_ref: &str, proof_kind: &str, observation: Value| {
-        let key = sdk_v2_observation_key(observation_ref, proof_kind);
+        let key = sdk_queries_observation_key(observation_ref, proof_kind);
         assert!(
             actual.insert(key.clone(), observation).is_none(),
-            "sdk-v2 producer duplicated an observation lane: {key:?}"
+            "queries producer duplicated an observation lane: {key:?}"
         );
     };
     insert("entity_lifecycle", "direct_runtime", entity_lifecycle);
@@ -3086,7 +2787,8 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     insert(
         "remote_structured_diagnostic",
         "diagnostic",
-        proof_observations[&sdk_v2_observation_key("remote_structured_diagnostic", "diagnostic")]
+        proof_observations
+            [&sdk_queries_observation_key("remote_structured_diagnostic", "diagnostic")]
             .clone(),
     );
     for name in [
@@ -3108,7 +2810,7 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
             "direct_runtime",
             direct_observations
                 .get(name)
-                .unwrap_or_else(|| panic!("sdk-v2 direct observation is absent: {name}"))
+                .unwrap_or_else(|| panic!("queries direct observation is absent: {name}"))
                 .clone(),
         );
         insert(
@@ -3116,7 +2818,7 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
             "remote_runtime",
             remote_observations
                 .get(name)
-                .unwrap_or_else(|| panic!("sdk-v2 remote observation is absent: {name}"))
+                .unwrap_or_else(|| panic!("queries remote observation is absent: {name}"))
                 .clone(),
         );
     }
@@ -3128,7 +2830,7 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     insert(
         "cancellation_direct",
         "direct_runtime",
-        proof_observations[&sdk_v2_observation_key("cancellation_direct", "direct_runtime")]
+        proof_observations[&sdk_queries_observation_key("cancellation_direct", "direct_runtime")]
             .clone(),
     );
     insert(
@@ -3144,11 +2846,11 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
     insert("resource_limits", "direct_runtime", direct_limits);
     insert("resource_limits", "remote_runtime", remote_limits);
     drop(insert);
-    assert_eq!(actual.len(), 34, "sdk-v2 producer requires 34 rows");
+    assert_eq!(actual.len(), 34, "queries producer requires 34 rows");
 
     let expected_observations = journey["expected_observations"]
         .as_object()
-        .expect("sdk-v2 expected observations must be an object");
+        .expect("queries expected observations must be an object");
     let actual_observation_refs = actual
         .keys()
         .map(|(observation_ref, _)| observation_ref.as_str())
@@ -3159,7 +2861,7 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         actual_observation_refs, expected_observation_refs,
-        "sdk-v2 actual and journey observation coverage differs"
+        "queries actual and journey observation coverage differs"
     );
     for ((observation_ref, proof_kind), observation) in &actual {
         assert_eq!(
@@ -3167,59 +2869,55 @@ async fn run_sdk_v2_journey_inner(db: &Database<AppSchema>) {
             expected_observations
                 .get(observation_ref)
                 .unwrap_or_else(|| {
-                    panic!("sdk-v2 expected observation is absent: {observation_ref}")
+                    panic!("queries expected observation is absent: {observation_ref}")
                 }),
-            "sdk-v2 actual observation diverged: {observation_ref}/{proof_kind}"
+            "queries actual observation diverged: {observation_ref}/{proof_kind}"
         );
     }
 
     let semantic_fingerprint: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
-        .expect("generated sdk-v2 semantic fingerprint is valid JSON");
+        .expect("generated queries semantic fingerprint is valid JSON");
     let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
-        .expect("generated sdk-v2 projection fingerprint is valid JSON");
+        .expect("generated queries projection fingerprint is valid JSON");
     assert_eq!(
         semantic_fingerprint,
-        catalog["expected_fingerprints"]["semantic"]
+        entry["expected_fingerprints"]["semantic"]
     );
     assert_eq!(
         projection_fingerprint,
-        catalog["expected_fingerprints"]["projections"]["rust"]
+        entry["expected_fingerprints"]["projections"]["rust"]
     );
     let report = json!({
-        "format": "typebridge.sdk-conformance-report/v2",
+        "format": "typebridge.sdk-queries-report/v1",
         "binding": "rust",
         "manifest": sdk_source_identity(SDK_MANIFEST_PATH, &manifest_bytes),
-        "catalog": sdk_source_identity(SDK_V2_CATALOG_PATH, &catalog_bytes),
+        "catalog": sdk_source_identity(SDK_QUERIES_CATALOG_PATH, &catalog_bytes),
         "fixture": {
-            "id": sdk_string(&journey["fixture_id"], "sdk-v2 fixture ID"),
+            "id": sdk_string(&journey["fixture_id"], "queries fixture ID"),
             "version": journey["version"].clone(),
-            "semantic_profile": SDK_PROFILE,
+            "semantic_profile": sdk_profile,
             "schema": sdk_source_identity(SDK_SCHEMA_PATH, &schema_bytes),
             "provider_schema": sdk_source_identity(
                 SDK_PROVIDER_SCHEMA_PATH,
                 &provider_schema_bytes,
             ),
-            "journey": sdk_source_identity(SDK_V2_JOURNEY_PATH, &journey_bytes),
+            "journey": sdk_source_identity(SDK_QUERIES_JOURNEY_PATH, &journey_bytes),
             "semantic_fingerprint": semantic_fingerprint,
             "projection_target": projection_target,
             "projection_fingerprint": projection_fingerprint,
         },
-        "results": sdk_v2_results(&catalog, &actual),
+        "results": sdk_queries_results(&catalog, &actual),
     });
     publish_sdk_report(&report_path, report);
 }
 
 #[tokio::test]
 async fn generated_sdk_report_journeys() {
-    let sdk_v1_requested = env::var_os("TYPE_BRIDGE_SDK_REPORT").is_some();
-    let sdk_v2_requested = env::var_os("TYPE_BRIDGE_SDK_REPORT_V2").is_some();
-    if sdk_v1_requested || sdk_v2_requested {
+    let sdk_queries_requested = env::var_os("TYPE_BRIDGE_SDK_QUERIES_REPORT").is_some();
+    if sdk_queries_requested {
         let db = database().await;
-        if sdk_v1_requested {
-            run_sdk_journey(&db).await;
-        }
-        if sdk_v2_requested {
-            run_sdk_v2_journey_inner(&db).await;
+        if sdk_queries_requested {
+            run_sdk_queries_journey_inner(&db).await;
         }
     }
     println!("generated sdk report journeys: passed");
@@ -4864,15 +4562,14 @@ async fn generated_relation_query_and_remote_lifecycle() {
     }
 
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("F4 remote server URL");
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-            HttpTransport::new(remote_url),
-        ))
-        .await
-        .expect("F4 remote database connects")
-        .with_schema(SCHEMA)
-        .expect("F4 remote schema authority binds");
+    let remote: ProxyDatabase<AppSchema> = ProxyDatabase::connect(
+        ProxyConnectionPolicy::new(ProxyEndpoint::new(remote_url))
+            .answer_limits(remote_answer_limits()),
+    )
+    .await
+    .expect("F4 remote database connects")
+    .with_schema(SCHEMA)
+    .expect("F4 remote schema authority binds");
     let mut session = remote.query().expect("F4 remote query session");
     let person_binding = session.exact::<Person>().expect("F4 remote person binding");
     let member_binding = session.exact::<Person>().expect("F4 remote member binding");
@@ -5226,6 +4923,219 @@ async fn generated_relation_query_and_remote_lifecycle() {
         person_baseline
     );
     println!("F2C-03 public generated relation lifecycle: passed");
+}
+
+/// The live database as a direct connection policy.
+fn direct_connection_policy() -> DirectConnectionPolicy {
+    let options = connection_options();
+    let username = env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".to_owned());
+    let password = env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".to_owned());
+    let policy =
+        DirectConnectionPolicy::new(options.address(), options.database(), username, password)
+            .http_port(options.get_http_port());
+    if !options.is_tls() {
+        return policy;
+    }
+    policy.tls(match env::var_os("TYPEDB_TLS_ROOT_CA") {
+        Some(root) => TlsPolicy::custom_root(root).expect("live TLS root CA loads"),
+        None => TlsPolicy::native_roots(),
+    })
+}
+
+/// One query program; the connection is the only thing that differs.
+async fn one_program(connection: &Connection<AppSchema>) -> Value {
+    let mut session = connection.query().expect("one-program session");
+    let person = session.exact::<Person>().expect("one-program person");
+    let member = session.exact::<Person>().expect("one-program member");
+    let employment = session
+        .exact::<Employment>()
+        .expect("one-program employment");
+    let identifier = person.field(PersonType::identifier);
+    let score = person.field(PersonType::score);
+    let people = session
+        .query(person)
+        .expect("one-program people")
+        .where_(identifier.starts_with(Text::new("p-6").expect("one-program prefix")))
+        .expect("one-program prefix predicate");
+    let iids = |values: &[Person]| {
+        values
+            .iter()
+            .map(|value| value.iid().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let rows = people
+        .rows(RowsOptions::new(10).order_by(identifier.asc()))
+        .await
+        .expect("one-program rows");
+    let first = people
+        .first(identifier.asc())
+        .await
+        .expect("one-program first")
+        .expect("one-program first row");
+    let page = people
+        .page_by(
+            person,
+            PageOptions::new(1)
+                .include_total(true)
+                .order_by(identifier.asc()),
+        )
+        .await
+        .expect("one-program page");
+    let totals: (u64, i64) = people
+        .aggregate((aggregate::count(), score.sum()))
+        .await
+        .expect("one-program aggregate");
+    let employed = session
+        .query(employment)
+        .expect("one-program employment query")
+        .match_(member)
+        .expect("one-program employee match")
+        .where_(
+            employment.role(EmploymentType::employee).connects(member)
+                & member
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new("p-600").expect("one-program employee key")),
+        )
+        .expect("one-program employment predicate")
+        .one()
+        .await
+        .expect("one-program employment");
+    let observed = json!({
+        "rows": iids(&rows),
+        "first": first.iid(),
+        "page": [iids(page.items()), page.total()],
+        "count": people.count().await.expect("one-program count"),
+        "exists": people.exists().await.expect("one-program exists"),
+        "aggregate": [totals.0, totals.1],
+        "employment": employed.iid(),
+    });
+    drop(people);
+    drop(session);
+
+    // A limit refusal belongs to the program too: its category, code, path,
+    // and details are the same on every connection.
+    let mut limited = connection
+        .query_with_resources(zero_role_players(), AnswerCancellation::default())
+        .expect("one-program limited session");
+    let mut observed = observed;
+    observed["limit_refusal"] = role_player_refusal(&mut limited, employed.iid()).await;
+    observed
+}
+
+fn zero_role_players() -> QueryExecutionResourceLimits {
+    QueryExecutionResourceLimits {
+        role_players: 0,
+        ..QueryExecutionResourceLimits::default()
+    }
+}
+
+/// The refusal of hydrating one employment under a zero role-player budget.
+async fn role_player_refusal(
+    session: &mut QuerySession<'_, AppSchema>,
+    employment_iid: &str,
+) -> Value {
+    let employment = session
+        .exact::<Employment>()
+        .expect("limited employment binding");
+    let error = session
+        .query(employment)
+        .expect("limited employment query")
+        .where_(employment.iid(employment_iid))
+        .expect("limited employment predicate")
+        .one()
+        .await
+        .expect_err("a zero role-player budget refuses a hydrated relation");
+    assert_eq!(error.category(), ErrorCategory::ResourceLimit);
+    json!({
+        "category": error.category().as_str(),
+        "sdk_category": error.sdk_category(),
+        "code": error.code(),
+        "path": format!("{:?}", error.diagnostic_path()),
+        "details": format!("{:?}", error.details()),
+    })
+}
+
+#[tokio::test]
+async fn generated_one_program_under_direct_and_proxy_connections() {
+    let semantics: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
+        .expect("generated semantic fingerprint JSON");
+    if semantics["semantic_profile"].as_str() == Some("typedb-3.11.5/v1") {
+        eprintln!(
+            "skipping direct/proxy connection parity: TypeDB 3.11 has no direct-connection profile"
+        );
+        return;
+    }
+    let db = database().await;
+    let workers = [
+        db.entities::<Person>()
+            .insert(relation_person_input("p-600", "one-program-a"))
+            .await
+            .expect("one-program person a"),
+        db.entities::<Person>()
+            .insert(relation_person_input("p-601", "one-program-b"))
+            .await
+            .expect("one-program person b"),
+    ];
+    let employment = db
+        .relations::<Employment>()
+        .insert(EmploymentCreate::new(workers[0].reference()).expect("one-program employment"))
+        .await
+        .expect("one-program employment insert");
+
+    let direct = SCHEMA
+        .connect(direct_connection_policy())
+        .await
+        .expect("direct connection opens");
+    assert!(matches!(direct, Connection::Direct(_)));
+    let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("proxy server URL");
+    let proxy_policy = || ProxyConnectionPolicy::new(ProxyEndpoint::new(remote_url.clone()));
+    let proxy = SCHEMA
+        .connect(proxy_policy())
+        .await
+        .expect("proxy connection opens");
+    assert!(matches!(proxy, Connection::Proxy(_)));
+
+    let direct_observed = one_program(&direct).await;
+    assert_eq!(direct_observed["employment"], employment.iid());
+    assert_eq!(direct_observed["count"], 2);
+    assert_eq!(one_program(&proxy).await, direct_observed);
+    drop(proxy);
+    drop(direct);
+
+    // The connection's answer ceiling binds a session that asks for the
+    // defaults: the zero role-player budget, set only on the connection,
+    // refuses the same way on both transports.
+    let ceilinged = [
+        SCHEMA
+            .connect(direct_connection_policy().answer_limits(zero_role_players()))
+            .await
+            .expect("ceilinged direct connection opens"),
+        SCHEMA
+            .connect(proxy_policy().answer_limits(zero_role_players()))
+            .await
+            .expect("ceilinged proxy connection opens"),
+    ];
+    for connection in &ceilinged {
+        let mut session = connection.query().expect("ceilinged session");
+        assert_eq!(
+            role_player_refusal(&mut session, employment.iid()).await,
+            direct_observed["limit_refusal"],
+            "a session must not exceed its connection's answer ceiling"
+        );
+    }
+    drop(ceilinged);
+
+    db.relations::<Employment>()
+        .delete(employment.iid())
+        .await
+        .expect("one-program employment cleanup");
+    for worker in &workers {
+        db.entities::<Person>()
+            .delete(worker.iid())
+            .await
+            .expect("one-program person cleanup");
+    }
+    println!("05.5 one program under direct and proxy connections: passed");
 }
 
 #[tokio::test]
@@ -6002,168 +5912,169 @@ async fn generated_write_transaction_commit_rollback_and_drop() {
 }
 
 #[tokio::test]
-async fn generated_canonical_serialization_v5_live() {
-    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE") else {
-        println!("generated Sdk V5 Rust live evidence: not requested");
+async fn sdk_serialization_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE") else {
+        println!("generated Serialization Rust live evidence: not requested");
         return;
     };
-    require_sdk_server_version().await;
+    require_sdk_server_version(&sdk_matrix_entry("serialization")).await;
     let db = database().await;
     let person = db
         .entities::<Person>()
         .insert(ownership_edge_person_input("v5-live-person", &[], None))
         .await
-        .expect("V5 live person insert");
+        .expect("Serialization live person insert");
     let employment = db
         .relations::<Employment>()
-        .insert(EmploymentCreate::new(person.reference()).expect("V5 employment input"))
+        .insert(EmploymentCreate::new(person.reference()).expect("Serialization employment input"))
         .await
-        .expect("V5 live employment insert");
+        .expect("Serialization live employment insert");
 
     let (direct_employment, direct_person) = {
-        let mut session = db.query().expect("V5 direct query session");
+        let mut session = db.query().expect("Serialization direct query session");
         let relation = session
             .exact::<Employment>()
-            .expect("V5 employment binding");
-        let person_binding = session.exact::<Person>().expect("V5 person binding");
+            .expect("Serialization employment binding");
+        let person_binding = session.exact::<Person>().expect("Serialization person binding");
         session
             .query((relation, person_binding))
-            .expect("V5 direct selection")
+            .expect("Serialization direct selection")
             .where_(
                 relation
                     .role(EmploymentType::employee)
                     .connects(person_binding)
                     & person_binding
                         .field(PersonType::identifier)
-                        .eq(Identifier::new("v5-live-person").expect("V5 direct key")),
+                        .eq(Identifier::new("v5-live-person").expect("Serialization direct key")),
             )
-            .expect("V5 direct predicate")
+            .expect("Serialization direct predicate")
             .one()
             .await
-            .expect("V5 direct result")
+            .expect("Serialization direct result")
     };
     let direct_person_bytes = SCHEMA
         .encode_snapshot(direct_person)
-        .expect("V5 direct person snapshot encodes");
+        .expect("Serialization direct person snapshot encodes");
     let direct_employment_bytes = SCHEMA
         .encode_snapshot(direct_employment)
-        .expect("V5 direct employment snapshot encodes");
+        .expect("Serialization direct employment snapshot encodes");
 
     let exchange_count = Arc::new(AtomicUsize::new(0));
-    let remote: RemoteDatabase<AppSchema> =
-        RemoteDatabase::connect(RemoteConnectionOptions::generated(
-            RemoteQueryLimits::new(100, 8 << 20, 1000, 1000, 1000, 1000).deadline_ms(30_000),
-            HttpTransport::recording(
-                env::var("TYPE_BRIDGE_REMOTE_URL").expect("V5 remote URL"),
+    let remote: ProxyDatabase<AppSchema> =
+        ProxyDatabase::connect(
+            ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
+                env::var("TYPE_BRIDGE_REMOTE_URL").expect("Serialization remote URL"),
                 Arc::clone(&exchange_count),
-            ),
-        ))
+            ))
+            .answer_limits(remote_answer_limits()),
+        )
         .await
-        .expect("V5 remote connects")
+        .expect("Serialization remote connects")
         .with_schema(SCHEMA)
-        .expect("V5 remote schema binds");
+        .expect("Serialization remote schema binds");
     let (remote_employment, remote_person) = {
-        let mut session = remote.query().expect("V5 remote query session");
+        let mut session = remote.query().expect("Serialization remote query session");
         let relation = session
             .exact::<Employment>()
-            .expect("V5 remote employment binding");
-        let person_binding = session.exact::<Person>().expect("V5 remote person binding");
+            .expect("Serialization remote employment binding");
+        let person_binding = session.exact::<Person>().expect("Serialization remote person binding");
         session
             .query((relation, person_binding))
-            .expect("V5 remote selection")
+            .expect("Serialization remote selection")
             .where_(
                 relation
                     .role(EmploymentType::employee)
                     .connects(person_binding)
                     & person_binding
                         .field(PersonType::identifier)
-                        .eq(Identifier::new("v5-live-person").expect("V5 remote key")),
+                        .eq(Identifier::new("v5-live-person").expect("Serialization remote key")),
             )
-            .expect("V5 remote predicate")
+            .expect("Serialization remote predicate")
             .one()
             .await
-            .expect("V5 remote result")
+            .expect("Serialization remote result")
     };
     assert_eq!(exchange_count.load(Ordering::SeqCst), 1);
     let remote_person_bytes = SCHEMA
         .encode_snapshot(remote_person)
-        .expect("V5 remote person snapshot encodes");
+        .expect("Serialization remote person snapshot encodes");
     let remote_employment_bytes = SCHEMA
         .encode_snapshot(remote_employment)
-        .expect("V5 remote employment snapshot encodes");
+        .expect("Serialization remote employment snapshot encodes");
     assert_eq!(direct_person_bytes, remote_person_bytes);
     assert_eq!(direct_employment_bytes, remote_employment_bytes);
 
     let detached: Person = SCHEMA
         .decode_snapshot(&direct_person_bytes)
-        .expect("V5 person snapshot decodes detached");
+        .expect("Serialization person snapshot decodes detached");
     let detached_error = db
         .relations::<Employment>()
         .insert(
             EmploymentCreate::new(detached.reference())
-                .expect("V5 detached employment input is structurally valid"),
+                .expect("Serialization detached employment input is structurally valid"),
         )
         .await
-        .expect_err("V5 detached snapshot cannot authorize mutation");
+        .expect_err("Serialization detached snapshot cannot authorize mutation");
     assert_eq!(detached_error.code(), Some("projected_snapshot_detached"));
 
     let rebound = {
-        let mut session = db.query().expect("V5 rebound query session");
+        let mut session = db.query().expect("Serialization rebound query session");
         let binding = session
             .exact::<Person>()
-            .expect("V5 rebound person binding");
+            .expect("Serialization rebound person binding");
         session
             .query(binding)
-            .expect("V5 rebound selection")
+            .expect("Serialization rebound selection")
             .where_(
                 binding
                     .field(PersonType::identifier)
-                    .eq(Identifier::new("v5-live-person").expect("V5 rebound key")),
+                    .eq(Identifier::new("v5-live-person").expect("Serialization rebound key")),
             )
-            .expect("V5 rebound predicate")
+            .expect("Serialization rebound predicate")
             .one()
             .await
-            .expect("V5 fresh key lookup finds the person")
+            .expect("Serialization fresh key lookup finds the person")
     };
     let rebound_employment = db
         .relations::<Employment>()
         .update(
             employment.iid(),
-            EmploymentCreate::new(rebound.reference()).expect("V5 rebound input"),
+            EmploymentCreate::new(rebound.reference()).expect("Serialization rebound input"),
         )
         .await
-        .expect("V5 rebound mutation succeeds");
+        .expect("Serialization rebound mutation succeeds");
 
     let evidence = json!({
         "binding": "rust",
         "detached_mutation_code": detached_error.code(),
         "direct_remote_equal": true,
         "entity_snapshot_b64": sdk_base64(&direct_person_bytes),
-        "format": "typebridge.sdk-v5-live-codec-evidence/v1",
+        "format": "typebridge.sdk-serialization-live-codec-evidence/v1",
         "relation_snapshot_b64": sdk_base64(&direct_employment_bytes),
         "remote_exchange_count": exchange_count.load(Ordering::SeqCst),
         "rebound_mutation": true,
     });
-    publish_sdk_report(&sdk_env_path("TYPE_BRIDGE_SDK_V5_RUST_EVIDENCE"), evidence);
+    publish_sdk_report(&sdk_env_path("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE"), evidence);
     assert_eq!(rebound_employment.iid(), employment.iid());
     db.relations::<Employment>()
         .delete(employment.iid())
         .await
-        .expect("V5 employment cleanup");
+        .expect("Serialization employment cleanup");
     db.entities::<Person>()
         .delete(person.iid())
         .await
-        .expect("V5 person cleanup");
-    println!("generated Sdk V5 Rust live evidence: passed");
+        .expect("Serialization person cleanup");
+    println!("generated Serialization Rust live evidence: passed");
 }
 
 #[tokio::test]
-async fn generated_data_model_runtime_v3_live() {
-    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT") else {
-        println!("generated Sdk V3 Rust live supplement: not requested");
+async fn sdk_models_data_model_runtime_live() {
+    let Some(_) = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT") else {
+        println!("generated Models Rust live supplement: not requested");
         return;
     };
-    require_sdk_server_version().await;
+    let entry = sdk_matrix_entry("models");
+    require_sdk_server_version(&entry).await;
     let db = database().await;
 
     let person_baseline = db.entities::<Person>().count().await.expect("person count");
@@ -6180,7 +6091,7 @@ async fn generated_data_model_runtime_v3_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Sdk V3 entity batch insert");
+        .expect("Models entity batch insert");
     let inserted_keys = inserted_people
         .iter()
         .map(|person| person.identifier().value().clone())
@@ -6228,7 +6139,7 @@ async fn generated_data_model_runtime_v3_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Sdk V3 entity batch put");
+        .expect("Models entity batch put");
     let put_keys = put_people
         .iter()
         .map(|person| person.identifier().value().clone())
@@ -6445,7 +6356,7 @@ async fn generated_data_model_runtime_v3_live() {
         .entities::<Counter>()
         .count()
         .await
-        .expect("Sdk V3 counter baseline");
+        .expect("Models counter baseline");
     let inserted = db
         .entities::<Counter>()
         .insert_many(vec![
@@ -6455,7 +6366,7 @@ async fn generated_data_model_runtime_v3_live() {
                 .expect("right counter input"),
         ])
         .await
-        .expect("Sdk V3 counter batch insert");
+        .expect("Models counter batch insert");
     assert_eq!(inserted.len(), 2);
     assert_ne!(inserted[0].iid(), inserted[1].iid());
     let left_iid = inserted[0].iid().to_owned();
@@ -6563,7 +6474,7 @@ async fn generated_data_model_runtime_v3_live() {
             ownership_edge_person_input("data-dana", &[], None),
         ])
         .await
-        .expect("Sdk V3 membership people");
+        .expect("Models membership people");
     let robot = db
         .entities::<Robot>()
         .insert(
@@ -6575,7 +6486,7 @@ async fn generated_data_model_runtime_v3_live() {
             .expect("robot input"),
         )
         .await
-        .expect("Sdk V3 membership robot");
+        .expect("Models membership robot");
 
     let network_baseline = db
         .relations::<NetworkLink>()
@@ -6736,7 +6647,7 @@ async fn generated_data_model_runtime_v3_live() {
                 .expect("robot membership input"),
         ])
         .await
-        .expect("Sdk V3 membership insert");
+        .expect("Models membership insert");
     let membership_ada_iid = memberships[0].iid().to_owned();
     let membership_robot_iid = memberships[1].iid().to_owned();
     let updated_memberships = db
@@ -6863,7 +6774,7 @@ async fn generated_data_model_runtime_v3_live() {
                 .expect("robot lifecycle membership input"),
         ])
         .await
-        .expect("Sdk V3 lifecycle membership insert");
+        .expect("Models lifecycle membership insert");
     let membership_ada_iid = memberships[0].iid().to_owned();
     let membership_robot_iid = memberships[1].iid().to_owned();
     let membership_count_after_insert = db
@@ -7064,7 +6975,7 @@ async fn generated_data_model_runtime_v3_live() {
         .expect("outside postcommit read")
         .is_some();
 
-    let rollback_transaction = db.write().await.expect("rollback transaction opens");
+    let mut rollback_transaction = db.write().await.expect("rollback transaction opens");
     let rolled = rollback_transaction
         .entities::<Person>()
         .insert(ownership_edge_person_input(
@@ -7088,7 +6999,7 @@ async fn generated_data_model_runtime_v3_live() {
         .expect("outside prerollback read")
         .is_some();
     rollback_transaction
-        .rollback()
+        .rollback_keep()
         .await
         .expect("borrowed transaction rollback");
     let rollback_outside_after = db
@@ -7097,6 +7008,32 @@ async fn generated_data_model_runtime_v3_live() {
         .await
         .expect("outside postrollback read")
         .is_some();
+
+    let reused = rollback_transaction
+        .entities::<Person>()
+        .insert(ownership_edge_person_input(
+            "data-rollback-reuse",
+            &[],
+            None,
+        ))
+        .await
+        .expect("insert after rollback");
+    let reused_iid = reused.iid().to_owned();
+    rollback_transaction
+        .commit()
+        .await
+        .expect("commit after rollback");
+    assert!(
+        db.entities::<Person>()
+            .get_by_iid(&reused_iid)
+            .await
+            .expect("read reused commit")
+            .is_some()
+    );
+    db.entities::<Person>()
+        .delete(&reused_iid)
+        .await
+        .expect("clean reused commit");
 
     let poison_conflict = db
         .entities::<Person>()
@@ -7117,7 +7054,7 @@ async fn generated_data_model_runtime_v3_live() {
         .await
         .expect_err("borrowed provider failure poisons transaction");
     assert_eq!(first_cause.code(), Some("provider_operation_failed"));
-    let limit = usize::try_from(MAX_QUERY_ITEMS).expect("query item limit fits usize");
+    let limit = usize::try_from(DEFAULT_DIRECT_QUERY_ITEMS).expect("query item limit fits usize");
     let excessive = (0..=limit)
         .map(|index| ownership_edge_person_input(&format!("data-excessive-{index}"), &[], None))
         .collect();
@@ -7199,9 +7136,9 @@ async fn generated_data_model_runtime_v3_live() {
         "post_rollback": {
             "state": "rolled_back",
             "rollback_idempotent": true,
-            "commit_rejected": true,
-            "mutation_rejected": true,
-            "close_state": "closed",
+            "commit_rejected": false,
+            "mutation_rejected": false,
+            "close_state": "committed",
             "close_idempotent": true,
         },
     });
@@ -7271,10 +7208,10 @@ async fn generated_data_model_runtime_v3_live() {
         "projected_value_close_idempotent": true,
         "projected_thing_close_idempotent": true,
     });
-    let journey_bytes =
-        fs::read(sdk_env_path("TYPE_BRIDGE_SDK_V3_JOURNEY")).expect("Sdk V3 journey is readable");
+    let journey_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MODELS_JOURNEY"))
+        .expect("Models journey is readable");
     let journey: Value =
-        serde_json::from_slice(&journey_bytes).expect("Sdk V3 journey is valid JSON");
+        serde_json::from_slice(&journey_bytes).expect("Models journey is valid JSON");
     assert_eq!(
         entity_batch_insert_put,
         journey["expected_observations"]["entity_batch_insert_put"]
@@ -7311,6 +7248,14 @@ async fn generated_data_model_runtime_v3_live() {
         .expect("generated V3 semantic fingerprint is valid JSON");
     let projection_fingerprint: Value = serde_json::from_str(PROJECTION_FINGERPRINT_JSON)
         .expect("generated V3 projection fingerprint is valid JSON");
+    assert_eq!(
+        semantic_fingerprint,
+        entry["expected_fingerprints"]["semantic"]
+    );
+    assert_eq!(
+        projection_fingerprint,
+        entry["expected_fingerprints"]["projections"]["rust"]
+    );
     let results = [
         (
             "borrowed_transaction_lifecycle",
@@ -7364,19 +7309,19 @@ async fn generated_data_model_runtime_v3_live() {
     })
     .collect::<Vec<_>>();
     let supplement = json!({
-        "format": "typebridge.sdk-v3-live-supplement/v1",
+        "format": "typebridge.sdk-models-live-supplement/v1",
         "binding": "rust",
-        "producer": "type-bridge-rust.generated-data-model-runtime-v3-live",
-        "semantic_profile": SDK_PROFILE,
+        "producer": "type-bridge-rust.sdk-models-data-model-runtime-live",
+        "semantic_profile": sdk_matrix_profile(&entry),
         "semantic_fingerprint": semantic_fingerprint,
         "projection_fingerprint": projection_fingerprint,
         "results": results,
     });
     publish_sdk_report(
-        &sdk_env_path("TYPE_BRIDGE_SDK_V3_RUST_SUPPLEMENT"),
+        &sdk_env_path("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT"),
         supplement,
     );
-    println!("generated Sdk V3 Rust live supplement: passed");
+    println!("generated Models Rust live supplement: passed");
 }
 
 fn relation_person_input(identifier: &str, alias: &str) -> PersonCreate {

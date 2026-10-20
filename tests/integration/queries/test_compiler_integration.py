@@ -970,3 +970,15 @@ class TestCompileBatch:
 
         assert len(results) == 1
         assert results[0]["age"] == 30
+
+
+@pytest.mark.integration
+def test_compile_batch_match_patterns_execute(setup_schema, db):
+    """An explicit match batch terminates every pattern before execution."""
+    query = QueryCompiler().compile_batch(
+        [EntityPattern("$p", "test_person"), HasPattern("$p", "person-age", "$age")],
+        "match",
+    )
+    assert query == "match $p isa test_person; $p has person-age $age;"
+    with db.transaction("read") as tx:
+        tx.execute(query)

@@ -43,7 +43,7 @@ def _write_reports(tmp_path: Path) -> list[Path]:
     return paths
 
 
-def test_contract_is_exactly_sdk_v3_bound_without_promoting_catalog() -> None:
+def test_contract_is_exactly_sdk_models_bound_without_promoting_catalog() -> None:
     contract = comparator.load_contract()
 
     assert comparator.REPORT_BINDINGS == ("python", "node", "rust", "c")
@@ -61,7 +61,7 @@ def test_contract_is_exactly_sdk_v3_bound_without_promoting_catalog() -> None:
             == (comparator.SOURCE_SHA256[label])
         )
     source = COMPARATOR_PATH.read_text(encoding="utf-8")
-    assert "catalog-v3.json" not in source
+    assert "catalog.json" not in source
     assert "sdk-conformance-report/v3" not in source
 
 

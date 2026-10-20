@@ -78,8 +78,10 @@ pub fn render_snapshot(request: &SnapshotRenderRequest<'_>) -> crate::Result<Ren
             structs: BTreeMap::new(),
         }
     } else {
-        TypeSchema::from_typeql(&schema_text).map_err(|e| MigrationError::SchemaGeneration {
-            message: format!("snapshot schema failed to parse: {e}"),
+        type_bridge_core_lib::__internal::parse_schema(&schema_text).map_err(|e| {
+            MigrationError::SchemaGeneration {
+                message: format!("snapshot schema failed to parse: {e}"),
+            }
         })?
     };
 

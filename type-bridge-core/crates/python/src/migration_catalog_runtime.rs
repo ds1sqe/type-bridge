@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
+use tracing::Instrument as _;
 use type_bridge_schema::{ManagedDeltaContext, decode_schema_authority};
 use type_bridge_schema_migration::{
     MigrationApplyApproval, MigrationApplyPlanError, MigrationApplyTarget, MigrationSafetyPolicy,
@@ -534,6 +535,8 @@ impl PyMigrationPlan {
         resources: Option<&PyMigrationExecutionResources>,
         cancellation: Option<&PyMigrationCancellation>,
     ) -> PyResult<PyMigrationExecutionReport> {
+        let entry = crate::perf_stages::entry();
+        let _entered = entry.enter();
         let holder = type_bridge_schema_migration::LeaseHolderId::new(holder)
             .map_err(py_catalog_diagnostic)?;
         let deadline = timeout_milliseconds
@@ -566,7 +569,8 @@ impl PyMigrationPlan {
                     &holder,
                     plan,
                     &control,
-                ),
+                )
+                .instrument(entry.clone()),
             )
             .map(type_bridge_schema_migration::MigrationExecutionReport::from_apply)
             .map(python_execution_report)
@@ -580,7 +584,8 @@ impl PyMigrationPlan {
                     &holder,
                     plan,
                     &control,
-                ),
+                )
+                .instrument(entry.clone()),
             )
             .map(type_bridge_schema_migration::MigrationExecutionReport::from_rollback)
             .map(python_execution_report)

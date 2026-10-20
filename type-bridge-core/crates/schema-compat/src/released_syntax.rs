@@ -8,6 +8,7 @@
 //! byte-length preserving, so strict-parser spans still index the caller's
 //! original source.
 
+#![allow(deprecated)] // The released reader deliberately retains its grammar.
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 

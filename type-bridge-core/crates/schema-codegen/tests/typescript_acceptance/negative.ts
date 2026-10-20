@@ -17,12 +17,13 @@ import {
   ValDecimal,
   ValDouble,
   ValDuration,
+  ExchangeConnection,
   QuerySession,
   aggregate,
   qualifyingScore,
 } from "./generated_v2/src/index.js";
 import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
-import type { RustDatabase } from "@type-bridge/node";
+import { Plan, type RustDatabase } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const person = (value: Identifier): Person => Person.create({
@@ -115,3 +116,15 @@ querySession.query(personVar).aggregate(personVar, [
   aggregate.count(), aggregate.count(), aggregate.count(), aggregate.count(),
   aggregate.count(),
 ] as const);
+// @ts-expect-error terminals return promises on every connection kind
+const synchronousCount: bigint = querySession.query(personVar).countBy(personVar);
+// @ts-expect-error QuerySession requires a QueryConnection
+new QuerySession({ advertisement: new Uint8Array() });
+// @ts-expect-error ExchangeConnection answer limits are QueryExecutionResourceLimits
+new ExchangeConnection(new Uint8Array(), async () => new Uint8Array(), { answerLimits: {} });
+const negativePlan = Plan.builder();
+const negativePerson = negativePlan.exact(Person);
+// @ts-expect-error a plan field belongs to the thing's own model
+negativePlan.field(negativePerson, Robot.robotId);
+// @ts-expect-error plan literals are typed: a number is not a long
+negativePlan.field(negativePerson, Person.score).gt(1);

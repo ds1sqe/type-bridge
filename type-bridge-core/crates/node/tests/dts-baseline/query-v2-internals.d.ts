@@ -1,8 +1,10 @@
+import type { NativeQueryLimits } from "./native.js";
 /** Shared, package-private machinery for the prepared and authored V2 facades. */
 declare const nativeQueryV2AuthorityKind: unique symbol;
 /** Opaque N-API authority. Public callers use the stable QueryV2Authority class. */
 export interface NativeQueryV2Authority {
     readonly [nativeQueryV2AuthorityKind]: "query-v2-authority";
+    withQueryLimits(queryLimits: NativeQueryLimits): NativeQueryV2Authority;
 }
 declare const nativeQueryV2BuilderHandleKind: unique symbol;
 interface NativeOpaqueClass<Instance> {
@@ -136,6 +138,16 @@ export type QueryV2ErrorDetail = Readonly<{
     kind: "text_list" | "query_identity_list";
     value: readonly string[];
 }>;
+/** Value-free outcome classified once by the Rust provider runtime. */
+export interface ProviderFailure {
+    readonly phase: "query" | "commit";
+    readonly reason: "conflict" | "cardinality" | "unique" | "constraint" | "other" | null;
+    readonly lock_kind: "exclusive" | "require_deleted_key" | "deleting_required_key" | "unknown" | null;
+    readonly annotation: string | null;
+    readonly op_index: number | null;
+    readonly retry_safe: boolean;
+    readonly code: string | null;
+}
 /** Structured diagnostic preserved from the Rust V2 semantic engine. */
 export declare class QueryV2Error extends Error {
     readonly category: QueryV2ErrorCategory;
@@ -145,8 +157,9 @@ export declare class QueryV2Error extends Error {
     readonly details: Readonly<Record<string, QueryV2ErrorDetail>>;
     readonly sdkCategory: QueryV2ErrorCategory;
     readonly queryCategory: QueryV2ErrorCategory | null;
+    readonly failure?: Readonly<ProviderFailure> | undefined;
     readonly name = "QueryV2Error";
-    constructor(category: QueryV2ErrorCategory, code: string, diagnosticMessage: string, path: readonly QueryV2ErrorPathSegment[], details: Readonly<Record<string, QueryV2ErrorDetail>>, sdkCategory?: QueryV2ErrorCategory, queryCategory?: QueryV2ErrorCategory | null);
+    constructor(category: QueryV2ErrorCategory, code: string, diagnosticMessage: string, path: readonly QueryV2ErrorPathSegment[], details: Readonly<Record<string, QueryV2ErrorDetail>>, sdkCategory?: QueryV2ErrorCategory, queryCategory?: QueryV2ErrorCategory | null, failure?: Readonly<ProviderFailure> | undefined);
 }
 export declare function queryV2NativeCall<Result>(operation: () => Result): Result;
 export declare function queryV2NativePromise<Result>(promise: Promise<Result>): Promise<Result>;

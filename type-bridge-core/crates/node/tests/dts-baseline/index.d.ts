@@ -1,6 +1,9 @@
+import type { QueryLimits } from "./runtime-projection.js";
+import type { NativeStagedTransaction } from "./native.js";
+import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
 export { QueryV2Error } from "./query-v2-internals.js";
-export type { QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
+export type { ProviderFailure, QueryV2ErrorCategory, QueryV2ErrorDetail, QueryV2ErrorPathSegment, } from "./query-v2-internals.js";
 export type ValueType = "string" | "long" | "double" | "boolean" | "date" | "datetime" | "datetime-tz" | "decimal" | "duration";
 export type TransactionType = "read" | "write" | "schema";
 export type AttributeValue = {
@@ -149,6 +152,7 @@ export interface NativeRustDatabase {
     planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeRustTransactionContext;
+    stagedTransaction(kind?: string): NativeStagedTransaction;
 }
 export interface NativeManagedDatabaseDeletionPlan {
     inspectedState(): ManagedDatabasePairState;
@@ -372,6 +376,11 @@ export declare function ensureDatabase(address: string, database: string, option
 export declare class QueryV2Authority {
     #private;
     constructor(declaredSchema: Uint8Array, scope: string, profile: string);
+    /**
+     * Derive an authority over the same schema whose plans are authored,
+     * decoded, and validated under `queryLimits`.
+     */
+    withQueryLimits(queryLimits: QueryLimits): QueryV2Authority;
     static queryOnly(database: RustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
 }
 export interface QueryV2RemoteLimits {
@@ -404,6 +413,12 @@ export declare class RustDatabase {
     planDatabaseDeleteControlled(options?: AdministrationExecutionOptions): ManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): RustTransactionContext;
+    /**
+     * Create a deferred staged transaction; nothing opens until commit. An
+     * omitted kind is inferred from the staged writes. Stage plans from
+     * `PlanBuilder`; TypeScript never commits implicitly.
+     */
+    stagedTransaction(kind?: StagedTransactionKind): StagedTransaction;
 }
 export declare class ManagedDatabaseDeletionPlan {
     #private;
@@ -421,7 +436,10 @@ export declare class RustTransactionContext {
     private constructor();
     query(query: string): unknown[];
     commit(): void;
+    /** Roll back writes and keep this transaction usable. */
     rollback(): void;
     close(): void;
     transactionType(): TransactionType;
 }
+export { PendingPlanAnswer, StagedTransaction, type PlanAnswer, type StagedTransactionKind, } from "./staged-transaction.js";
+export { Plan, PlanBuilder, PlanCondition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanThing, PlanValue, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, } from "./plan.js";

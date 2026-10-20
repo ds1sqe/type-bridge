@@ -1,0 +1,1 @@
+match $x isa person, has name $a; delete has $a of $x;

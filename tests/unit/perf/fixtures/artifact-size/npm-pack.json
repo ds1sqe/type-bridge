@@ -1,0 +1,26 @@
+{
+  "perf-size-fixture": {
+    "id": "perf-size-fixture@1.0.0",
+    "name": "perf-size-fixture",
+    "version": "1.0.0",
+    "size": 219,
+    "unpackedSize": 105,
+    "shasum": "cccc59d459183edce2c9603571088bb6b24ec8bf",
+    "integrity": "sha512-SMBvGBNZL8ohAkWjvfANxquDmq9JXWFW5Rhu3t5hvOykSzedbNRlf4wUQSbSg7S1s4fzlSF+OoJ3baF3qwVq8Q==",
+    "filename": "perf-size-fixture-1.0.0.tgz",
+    "files": [
+      {
+        "path": "index.js",
+        "size": 21,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 84,
+        "mode": 420
+      }
+    ],
+    "entryCount": 2,
+    "bundled": []
+  }
+}

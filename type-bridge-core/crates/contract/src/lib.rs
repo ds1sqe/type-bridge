@@ -14,6 +14,10 @@ pub mod codec;
 pub mod decimal;
 /// Stable binding-neutral structured diagnostics.
 pub mod diagnostic;
+/// One parser per closed enum and the `unknown_enum_value` diagnostic.
+pub mod enum_spelling;
+/// Value-only typed provider failures.
+pub mod failure;
 /// Domain-separated fingerprint algorithms and values.
 pub mod fingerprint;
 /// Validated typed identifier primitives.
@@ -43,6 +47,8 @@ pub mod query_plan;
 pub mod query_remote;
 /// Additive V2 remote envelopes and hydrated model-result evidence.
 pub mod query_remote_v2;
+/// Additive staged transaction envelopes and authenticated replies.
+pub mod query_remote_v3;
 pub mod reserved;
 
 mod query_invocation_wire;
@@ -60,6 +66,8 @@ pub mod schema_lowering;
 pub mod sdk_diagnostic;
 /// Versioned server-semantic defaults shared by resolution and fingerprints.
 pub mod semantic_profile;
+/// The core batch split rule shared by every binding and the proxy.
+pub mod split;
 /// Canonical temporal component values.
 pub mod temporal;
 /// Domain-tagged canonical scalar, cardinality, and annotation values.

@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-server"
-version = "2.2.6"
+version = "2.3.0"
 edition = "2024"
 description = "Query-intercepting proxy server for TypeDB with validation and audit logging"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-server/2.2.6"
+documentation = "https://docs.rs/type-bridge-server/2.3.0"
 rust-version = "1.88"
 
 [lib]
@@ -23,7 +23,7 @@ required-features = ["typedb", "v2-query"]
 
 [features]
 default = ["band8", "band9", "v2-query"]
-typedb = ["dep:type-bridge-typedb-runtime"]
+typedb = ["dep:type-bridge-typedb-runtime", "dep:type-bridge-orm"]
 band8 = [
     "typedb",
     "type-bridge-typedb-runtime/band8",
@@ -41,7 +41,6 @@ axum-transport = [
 ]
 v2-query = [
     "axum-transport",
-    "dep:type-bridge-contract",
     "dep:type-bridge-query",
     "dep:type-bridge-orm",
     "dep:type-bridge-schema",
@@ -49,13 +48,13 @@ v2-query = [
 ]
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "2.2.6" }
-type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.2.6", default-features = false, optional = true }
-type-bridge-contract = { path = "../contract", version = "2.2.6", optional = true }
-type-bridge-query = { path = "../query", version = "2.2.6", optional = true }
-type-bridge-orm = { path = "../orm", version = "2.2.6", default-features = false, optional = true }
-type-bridge-schema = { path = "../schema", version = "2.2.6", optional = true }
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.2.6", optional = true }
+type-bridge-core-lib = { path = "../core", version = "2.3.0" }
+type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.3.0", default-features = false, optional = true }
+type-bridge-contract = { path = "../contract", version = "2.3.0" }
+type-bridge-query = { path = "../query", version = "2.3.0", optional = true }
+type-bridge-orm = { path = "../orm", version = "2.3.0", default-features = false, optional = true }
+type-bridge-schema = { path = "../schema", version = "2.3.0", optional = true }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.3.0", optional = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -96,6 +95,10 @@ required-features = ["axum-transport"]
 
 [[test]]
 name = "v2_query_integration_tests"
+required-features = ["typedb", "v2-query"]
+
+[[test]]
+name = "v3_staged_integration_tests"
 required-features = ["typedb", "v2-query"]
 
 [dev-dependencies]

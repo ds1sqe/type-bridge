@@ -336,6 +336,7 @@ impl Collector {
     fn visit_function_call(&mut self, function: &FunctionCall) {
         match &function.name {
             FunctionName::Builtin(_) => {}
+            FunctionName::Namespaced(_) => self.invalid_reference = true,
             FunctionName::Identifier(identifier) => {
                 match FunctionId::new(identifier.as_str_unchecked()) {
                     Ok(function) => {

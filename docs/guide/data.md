@@ -30,3 +30,8 @@ operations. Queries execute either directly against TypeDB through the embedded
 runtime or remotely through the [TypeBridge server](server-container.md).
 Remote composition performs no I/O; one terminal operation performs one
 caller-owned exchange.
+
+For a write that must happen only if a condition holds, stage a typed plan in
+a staged transaction: the check and the writes commit together or not at all.
+[Concurrency and conditional writes](concurrency.md) shows the pattern and the
+lock rules in every SDK.

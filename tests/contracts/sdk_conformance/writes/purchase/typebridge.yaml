@@ -1,0 +1,19 @@
+format: typebridge.workspace/v1
+schema:
+  root: schema/schema.yaml
+  ownership: exclusive
+  managed-scope: sdk-writes-purchase
+compatibility:
+  semantic-profile: typedb-3.13.6/v1
+migrations:
+  directory: migrations/v2
+  app-label: writes
+bindings:
+  python:
+    output: generated/python
+  typescript:
+    output: generated/typescript
+  rust:
+    output: generated/rust
+  c:
+    output: generated/c

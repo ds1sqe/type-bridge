@@ -1,0 +1,60 @@
+{
+  "format": "perf-result/v1",
+  "run": {
+    "commit": "c7ee52d30dcea6358a8a6a8f1b023f9df7fb5e90",
+    "branch": "master",
+    "version": "2.3.0.dev0",
+    "trigger": "schedule",
+    "runner": {
+      "image": "ubuntu-24.04/20261012.1",
+      "cpu": "AMD EPYC 7763 64-Core Processor",
+      "cores": 4
+    },
+    "toolchains": {
+      "rust": "1.88.0",
+      "python": "3.13.7",
+      "node": "20.19.5",
+      "cc": "gcc 13.3.0"
+    },
+    "typedb": "3.13.6",
+    "started_at": "2026-10-16T02:00:11+00:00"
+  },
+  "metrics": [
+    {
+      "id": "pipeline.python.insert",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 912000,
+      "n": 200,
+      "p50": 912000,
+      "p90": 1104000,
+      "p99": 1530000,
+      "stages": {
+        "tb.sdk.entry": 21000,
+        "tb.orm.plan": 48000,
+        "tb.query.compile": 63000,
+        "tb.runtime.execute": 701000,
+        "tb.decode": 12000
+      }
+    },
+    {
+      "id": "pipeline.python.insert.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 1081.4
+    },
+    {
+      "id": "size.python.wheel",
+      "family": "size",
+      "unit": "bytes",
+      "value": 8812544
+    },
+    {
+      "id": "suite.python.unit",
+      "family": "suite",
+      "unit": "s",
+      "value": 41.7,
+      "samples": [41.2, 41.7, 42.9]
+    }
+  ]
+}

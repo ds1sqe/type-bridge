@@ -164,20 +164,25 @@ pub enum ValueTypeTag {
     Duration,
 }
 
+crate::enum_spellings!(ValueTypeTag, "scalar_domain", canonical {
+    "string" => String,
+    "long" => Long,
+    "double" => Double,
+    "boolean" => Boolean,
+    "date" => Date,
+    "datetime" => DateTime,
+    "datetime_tz" => DateTimeTz,
+    "decimal" => Decimal,
+    "duration" => Duration,
+}, aliases {
+    // Node 2.2 accepted the TypeQL spelling for this scalar domain.
+    "datetime-tz" => DateTimeTz,
+});
+
 impl ValueTypeTag {
     /// Return the stable contract spelling.
     pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::String => "string",
-            Self::Long => "long",
-            Self::Double => "double",
-            Self::Boolean => "boolean",
-            Self::Date => "date",
-            Self::DateTime => "datetime",
-            Self::DateTimeTz => "datetime_tz",
-            Self::Decimal => "decimal",
-            Self::Duration => "duration",
-        }
+        self.spelling()
     }
 }
 

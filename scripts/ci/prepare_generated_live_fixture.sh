@@ -19,13 +19,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CORE_DIR="$ROOT_DIR/type-bridge-core"
 NODE_DIR="$CORE_DIR/crates/node"
 ACCEPTANCE_DIR="$CORE_DIR/crates/schema-codegen/tests/acceptance"
-SDK_V3_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/sdk-v3"
-semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.12.1/v1}"
+SDK_MODELS_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/models"
+# The fixture packages admit exactly the TypeDB server their profile names
+# (typedb-3.12.1/v1 -> 3.12.3, typedb-3.13.6/v1 -> 3.13.6). The default
+# follows the default TypeDB image. The models ordered/projected packages are
+# built for every profile the models version matrix lists.
+semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
 output_dir="$(realpath -m "$requested_output")"
 
 case "$semantic_profile" in
     typedb-3.11.5/v1) schema_source="$ACCEPTANCE_DIR/schema-3.11.5.yaml" ;;
-    typedb-3.12.1/v1) schema_source="$ACCEPTANCE_DIR/schema.yaml" ;;
+    typedb-3.12.1/v1 | typedb-3.13.6/v1) schema_source="$ACCEPTANCE_DIR/schema.yaml" ;;
     *)
         echo "Unsupported generated-fixture semantic profile: $semantic_profile" >&2
         exit 2
@@ -41,6 +45,11 @@ if [[ -e "$output_dir" ]] && [[ -n "$(find "$output_dir" -mindepth 1 -print -qui
     exit 2
 fi
 mkdir -p "$output_dir"
+
+sdk_models_profile="$(
+    python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import sdk_profile_matrix as m; print("yes" if sys.argv[2] in m.supported_profiles("models") else "no")' \
+        "$ROOT_DIR/scripts/ci" "$semantic_profile"
+)"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/type-bridge-generated-live.XXXXXX")"
 ordered_foreign_schema="$scratch/schema-ordered-foreign.yaml"
@@ -96,8 +105,8 @@ generate_workspace() {
 
 sed \
     -e 's/range: { min: 0, max: 80 }/range: { min: 0, max: 79 }/' \
-    "$SDK_V3_DIR/schema-v3.yaml" > "$ordered_foreign_schema"
-if cmp -s "$SDK_V3_DIR/schema-v3.yaml" "$ordered_foreign_schema"; then
+    "$SDK_MODELS_DIR/schema.yaml" > "$ordered_foreign_schema"
+if cmp -s "$SDK_MODELS_DIR/schema.yaml" "$ordered_foreign_schema"; then
     echo "Generated ordered foreign schema did not alter its authority." >&2
     exit 1
 fi
@@ -118,11 +127,11 @@ if [[ "$binding" == python* ]]; then
             "$ACCEPTANCE_DIR/schema-ordered.yaml" no
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
-    elif [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
+    elif [[ "$sdk_models_profile" == "yes" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
             "$ordered" python generated_ordered generated-python-ordered \
-            "$SDK_V3_DIR/schema-v3.yaml" yes
+            "$SDK_MODELS_DIR/schema.yaml" yes
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_projected"
@@ -167,11 +176,11 @@ write_workspace \
 generate_workspace "$foreign"
 cp -R "$foreign/generated/generated_foreign" "$output_dir/generated_foreign"
 
-if [[ "$semantic_profile" == "typedb-3.12.1/v1" ]]; then
+if [[ "$sdk_models_profile" == "yes" ]]; then
     ordered="$scratch/ordered"
     write_workspace \
         "$ordered" typescript generated_ordered generated-node-ordered \
-        "$SDK_V3_DIR/schema-v3.yaml" yes
+        "$SDK_MODELS_DIR/schema.yaml" yes
     generate_workspace "$ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_projected"

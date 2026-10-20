@@ -3,7 +3,6 @@
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from type_bridge.crud.formatting import format_value
 from type_bridge.crud.types import hydrate_attributes, wrap_attribute_value
 
 if TYPE_CHECKING:
@@ -33,30 +32,44 @@ def build_role_player_match(var_name: str, entity: Any, entity_type_name: str) -
         ValueError: If entity has neither _iid nor key attributes
     """
     # Prefer IID-based matching when available (more precise and faster)
+    from type_bridge.query.ast import EntityPattern, HasConstraint, IidConstraint, LiteralValue
+    from type_bridge.query.compiler import QueryCompiler
+
+    variable = f"${var_name}"
+    compiler = QueryCompiler()
     entity_iid = getattr(entity, "_iid", None)
     if entity_iid:
-        return f"${var_name} isa {entity_type_name}, iid {entity_iid}"
-
-    # Fall back to key attribute matching
+        return compiler._compile(
+            EntityPattern(
+                variable=variable,
+                type_name=entity_type_name,
+                constraints=[IidConstraint(iid=entity_iid)],
+            )
+        )
     key_attrs = {
         field_name: attr_info
         for field_name, attr_info in entity.__class__.get_all_attributes().items()
         if attr_info.flags.is_key
     }
-
     for field_name, attr_info in key_attrs.items():
         value = getattr(entity, field_name)
         if value is not None:
-            attr_class = attr_info.typ
-            attr_name = attr_class.get_attribute_name()
-            formatted_value = format_value(value)
-            return f"${var_name} isa {entity_type_name}, has {attr_name} {formatted_value}"
-
-    # Neither IID nor key attributes available
+            return compiler._compile(
+                EntityPattern(
+                    variable=variable,
+                    type_name=entity_type_name,
+                    constraints=[
+                        HasConstraint(
+                            attr_name=attr_info.typ.get_attribute_name(),
+                            value=LiteralValue(value=value, value_type="string"),
+                        )
+                    ],
+                )
+            )
     raise ValueError(
         f"Role player '{var_name}' ({entity.__class__.__name__}) cannot be identified: "
-        f"no _iid set and no @key attributes defined. Either fetch the entity from the "
-        f"database first (to populate _iid) or add Flag(Key) to an attribute."
+        "no _iid set and no @key attributes defined. Either fetch the entity from the "
+        "database first (to populate _iid) or add Flag(Key) to an attribute."
     )
 
 
@@ -102,15 +115,19 @@ def build_role_player_fetch_items(
     Note: The caller must add type variable bindings to the match clause:
         $employee isa $employee_type;
     """
-    fetch_items = []
+    from type_bridge.query.ast import FetchFunction, FetchItem, FetchNestedWildcard
+    from type_bridge.query.compiler import QueryCompiler
+
+    items: list[FetchItem] = []
     for role_name, (role_var, _) in role_info.items():
-        # Fetch IID separately (can't be mixed with .* in nested block)
-        fetch_items.append(f'"{role_name}_iid": iid({role_var})')
-        # Fetch type label for polymorphic role player resolution
-        fetch_items.append(f'"{role_name}_type": label({role_var}_type)')
-        # Fetch all attributes for the role player
-        fetch_items.append(f'"{role_name}": {{\n    {role_var}.*\n  }}')
-    return fetch_items
+        items.extend(
+            [
+                FetchFunction(key=f"{role_name}_iid", func_name="iid", var=role_var),
+                FetchFunction(key=f"{role_name}_type", func_name="label", var=f"{role_var}_type"),
+                FetchNestedWildcard(key=role_name, var=role_var),
+            ]
+        )
+    return QueryCompiler()._compile_fetch_items(items)
 
 
 def group_results_by_iid(results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

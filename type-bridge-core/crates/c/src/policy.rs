@@ -6,9 +6,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::{
-    AnswerCancellation, MAX_QUERY_ATTRIBUTE_VALUES, MAX_QUERY_BYTES, MAX_QUERY_COLLECTION_MEMBERS,
-    MAX_QUERY_GRAPH_NODES, MAX_QUERY_ITEMS, MAX_QUERY_ROLE_PLAYERS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionResourceLimits,
+    AnswerCancellation, AnswerTransport, QueryExecutionDeadline, QueryExecutionResourceLimits,
 };
 
 use crate::abi::TypeBridgeByteView;
@@ -74,28 +72,19 @@ fn invalid_limits() -> SdkExecutionDiagnostic {
     )
 }
 
-fn default_limits_descriptor() -> TypeBridgeQueryExecutionLimitsV1 {
-    TypeBridgeQueryExecutionLimitsV1 {
-        struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
-        version: LIMITS_VERSION,
-        timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-        items: MAX_QUERY_ITEMS,
-        bytes: MAX_QUERY_BYTES,
-        graph_nodes: MAX_QUERY_GRAPH_NODES,
-        attribute_values: MAX_QUERY_ATTRIBUTE_VALUES,
-        collection_members: MAX_QUERY_COLLECTION_MEMBERS,
-        role_players: MAX_QUERY_ROLE_PLAYERS,
-        statements: MAX_QUERY_STATEMENTS,
-        reserved0: 0,
-        reserved: [0; 4],
-    }
-}
-
-/// Parse one optional frozen limits descriptor and clamp it to common ceilings.
+/// Parse one optional frozen limits descriptor.
+///
+/// A missing descriptor takes `transport`'s defaults: a direct database,
+/// transaction, or call the direct defaults, a remote context the proxy
+/// (wire) defaults. A dimension may tighten or raise its default. A value
+/// above a dimension's supported maximum is refused, never clamped.
 pub(crate) fn parse_common_limits(
     value: Option<TypeBridgeQueryExecutionLimitsV1>,
+    transport: AnswerTransport,
 ) -> Result<QueryExecutionResourceLimits, SdkExecutionDiagnostic> {
-    let value = value.unwrap_or_else(default_limits_descriptor);
+    let Some(value) = value else {
+        return Ok(QueryExecutionResourceLimits::default_for(transport));
+    };
     if value.struct_size as usize != size_of::<TypeBridgeQueryExecutionLimitsV1>()
         || value.version != LIMITS_VERSION
         || value.reserved0 != 0
@@ -103,28 +92,28 @@ pub(crate) fn parse_common_limits(
     {
         return Err(invalid_limits());
     }
-    Ok(QueryExecutionResourceLimits::tightened(
-        value.timeout_milliseconds,
-        value.items,
-        value.bytes,
-        value.graph_nodes,
-        value.attribute_values,
-        value.collection_members,
-        value.role_players,
-        value.statements,
-    ))
+    QueryExecutionResourceLimits {
+        timeout_milliseconds: value.timeout_milliseconds,
+        items: value.items,
+        bytes: value.bytes,
+        graph_nodes: value.graph_nodes,
+        attribute_values: value.attribute_values,
+        collection_members: value.collection_members,
+        role_players: value.role_players,
+        statements: value.statements,
+    }
+    .validate()
+    .map_err(|_| invalid_limits())
 }
 
-/// Parse one optional limits descriptor under an immutable enclosing ceiling.
-pub(crate) fn parse_limits_constrained(
+/// Parse one optional per-call limits descriptor and capture its absolute
+/// deadline. A missing descriptor takes the direct defaults; a proxy target
+/// constrains them by its connection ceiling at execution.
+pub(crate) fn parse_limits(
     value: Option<TypeBridgeQueryExecutionLimitsV1>,
     cancellation: &AnswerCancellation,
-    ceiling: Option<QueryExecutionResourceLimits>,
 ) -> Result<ParsedLimits, SdkExecutionDiagnostic> {
-    let mut resources = parse_common_limits(value)?;
-    if let Some(ceiling) = ceiling {
-        resources = resources.constrained_by(ceiling);
-    }
+    let resources = parse_common_limits(value, AnswerTransport::Direct)?;
     let deadline = QueryExecutionDeadline::for_limits(resources);
     deadline.check(cancellation)?;
     Ok(ParsedLimits {
@@ -138,6 +127,21 @@ mod tests {
     use std::mem::{offset_of, size_of};
 
     use super::*;
+
+    #[test]
+    fn a_missing_descriptor_takes_its_transports_defaults() {
+        let direct = parse_common_limits(None, AnswerTransport::Direct).expect("direct defaults");
+        let proxy = parse_common_limits(None, AnswerTransport::Proxy).expect("proxy defaults");
+        assert_eq!(direct, QueryExecutionResourceLimits::default());
+        assert_eq!(direct.items, type_bridge_orm::DEFAULT_DIRECT_QUERY_ITEMS);
+        assert_eq!(direct.bytes, type_bridge_orm::DEFAULT_DIRECT_QUERY_BYTES);
+        assert_eq!(proxy.items, type_bridge_orm::DEFAULT_PROXY_QUERY_ITEMS);
+        assert_eq!(proxy.bytes, type_bridge_orm::DEFAULT_PROXY_QUERY_BYTES);
+        assert_ne!(direct, proxy);
+        // A direct session's per-call limits default to the direct policy.
+        let call = parse_limits(None, &AnswerCancellation::default()).expect("call defaults");
+        assert_eq!(call.resources, direct);
+    }
 
     #[cfg(target_pointer_width = "64")]
     #[test]

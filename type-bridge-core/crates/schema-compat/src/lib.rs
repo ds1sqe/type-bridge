@@ -1019,6 +1019,14 @@ fn typeql_to_declared_with_references_impl(
 
     for definable in &definables {
         match definable {
+            Definable::TypeRename(_) | Definable::RoleTypeRename(_) => {
+                return Err(error(
+                    DiagnosticCategory::InvalidContract,
+                    "expected_typeql_define",
+                    "schema compatibility input must contain only define declarations",
+                    None,
+                ));
+            }
             Definable::TypeDeclaration(_) => {}
             Definable::Struct(structure) => {
                 insert_struct(&mut assembler, structure, &document, source)?;

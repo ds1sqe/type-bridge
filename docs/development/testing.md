@@ -35,15 +35,22 @@ Key evidence:
 - `crates/schema-codegen/tests/rust_acceptance.rs` — external generated Rust crate
 - `crates/schema-codegen/tests/c_emitter.rs` — deterministic internal C package
   and strict installed-compiler checks
-- `tests/contracts/sdk_conformance/manifest-v1.json` — capability,
+- `tests/contracts/sdk_conformance/manifest.json` — capability,
   proof-profile, binding-state, and transition authority
-- `tests/contracts/sdk_conformance/sdk-v*/` — executable catalogs,
+- `tests/contracts/sdk_conformance/<suite>/` — executable catalogs,
   journeys, report schemas, and evidence contracts
 - `tests/fixtures/generated-only-operation-parity-inventory.json` — retained
   generated-only cutover evidence and manifest seed
 - `tests/fixtures/handwritten-operation-removal-map.json` — frozen mapping from
   removed test families to generated successors or separately retained query
   contracts
+
+The five suite directories are `queries`, `models`, `administration`,
+`serialization`, and `artifacts`. Queries includes the former smoke rows.
+Each suite selects a TypeDB profile; administration regenerates a native
+four-migration copy for non-default profiles. Suite producers, report formats
+and predecessor rules are documented in
+`tests/contracts/sdk_conformance/README.md`.
 
 ### Node package checks
 
@@ -98,8 +105,8 @@ siblings, strict identity-first validation, and reusable borrowed reads without
 adding C runtime exports.
 
 The full integration suite runs the ordinary generated C17 CRUD and typed-query
-consumer and strict generated C17/C++17 ABI-1.6 successor consumers against
-exact TypeDB 3.12.3. A focused four-binding lane compares the same generated
+consumer and strict generated C17/C++17 ABI-1.6 successor consumers on the
+3.12.3 and 3.13.6 lanes. A focused four-binding lane compares the same generated
 Python, Node, Rust, and C manager-filter observation. The successor lane leaves
 ordered attributes and ordered role-player lists empty and therefore does not
 claim live list-instance evidence. These checks do not make C a supported SDK
@@ -114,15 +121,43 @@ uv run python scripts/ci/run_generated_live.py manager
 ### Live integration
 
 ```bash
-./test.sh
+./test.sh                          # live tier on TypeDB 3.13.6 (default line)
+./test.sh --typedb 3.12.3          # live tier on one supported line
+./test.sh --typedb all             # every line, then the two-server upgrade lane
+./test.sh --typedb all --tls       # the same, with the TLS lane on each line
 ```
 
-The default lane creates and removes an isolated TypeDB. `--no-integration`
-runs offline Rust, Python, Node, and internal C-foundation tiers.
-`--no-isolated` uses an existing server. The retained live matrix covers TypeDB
-3.11 and 3.12 provider paths; 3.12.3 is the V2 conformance baseline.
+Each live lane creates and removes its own isolated TypeDB and runs under that
+line's semantic profile: 3.11.5 with `typedb-3.11.5/v1`, 3.12.3 with
+`typedb-3.12.1/v1`, and 3.13.6 with `typedb-3.13.6/v1`. The offline tiers run
+once. With `--typedb all`, each line is its own compose project
+(`tb-<worktree>-typedb-<line>`), and the summary lists every lane.
+`--no-integration` runs offline Rust, Python, Node, and internal C-foundation
+tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
-On the exact 3.12.3 lane, a compiled generated C17 consumer independently
+| Live step | 3.11.5 | 3.12.3 | 3.13.6 |
+| --- | --- | --- | --- |
+| Rust ORM, production V2 server, generated Rust | yes | yes | yes |
+| Python and Node integration, generated projections | yes | yes | yes |
+| SDK report fan-in, projected exact-live parity | — | yes | yes |
+| C runtime and generated C CRUD live | — | yes | yes |
+| CLI workspace and migration recovery lifecycles | — | yes | yes |
+| Unsupported-server migration refusal | yes | — | — |
+| TLS lane (`--tls`) | — | yes | yes |
+
+Steps bound to the SDK conformance contracts run where the lane's profile is in
+the SDK version matrix. Connected migrations refuse TypeDB 3.11, so that lane
+proves the refusal instead of the lifecycles. Its TLS lane is skipped too: the
+TLS steps assert the band-9 driver and apply a workspace migration.
+
+The upgrade lane starts a 3.12.3 and a 3.13.6 server together and moves a
+migration history across a profile bridge
+(`live_profile_upgrade` and the CLI `upgrade-profile` test). The tests move
+the databases between the servers with the Rust TypeDB driver's database
+export and import, so the lane needs no TypeDB console and always runs under
+`./test.sh --typedb all`.
+
+On the 3.12.3 and 3.13.6 lanes, a compiled generated C17 consumer independently
 verifies the detected server version and exercises read close, write commit,
 rollback, active-write close, and parent-in-use behavior. A separate generated
 C17 consumer exercises the exact Person and Membership database/read/write
@@ -164,9 +199,9 @@ For an application operation:
 5. Run the equivalent bindings that advertise the operation.
 
 Do not subclass private query-engine classes, build runtime descriptors by
-hand, or widen generated values to `object`/`Any`. The retained V1/raw query
-facades may use private handwritten fixtures only in tests explicitly scoped to
-those unscheduled contracts.
+hand, or widen generated values to `object`/`Any`. The retained raw query
+builders may use private handwritten fixtures only in tests explicitly scoped
+to those contracts.
 
 Historical migration and TOML fixtures are read-only evidence. Tests may load,
 verify, convert, and adopt them, but must not use them as active authoring
