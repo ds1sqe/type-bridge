@@ -126,7 +126,9 @@ def test_only_binding_perf_stages_features_depend_on_the_private_perf_harness() 
     dependents = sorted(
         manifest.parent.name
         for manifest in (workspace / "crates").glob("*/Cargo.toml")
-        if _depends_on(tomllib.loads(manifest.read_text(encoding="utf-8")), "type-bridge-perf-stages")
+        if _depends_on(
+            tomllib.loads(manifest.read_text(encoding="utf-8")), "type-bridge-perf-stages"
+        )
     )
     # The bindings and the pipelines harness, which re-exports the layer.
     assert dependents == ["c", "node", "perf", "python"]
@@ -138,7 +140,9 @@ def test_only_binding_perf_stages_features_depend_on_the_private_perf_harness() 
         and _depends_on(tomllib.loads(manifest.read_text(encoding="utf-8")), "type-bridge-perf")
     ]
     for crate in ("perf", "perf-stages"):
-        manifest = tomllib.loads((workspace / f"crates/{crate}/Cargo.toml").read_text(encoding="utf-8"))
+        manifest = tomllib.loads(
+            (workspace / f"crates/{crate}/Cargo.toml").read_text(encoding="utf-8")
+        )
         assert manifest["package"]["publish"] is False
 
 

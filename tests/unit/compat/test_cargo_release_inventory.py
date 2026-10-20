@@ -225,9 +225,7 @@ def test_tooling_dependency_rule_accepts_the_checked_in_manifests() -> None:
     assert inventory_module.tooling_dependency_violations(inventory, workspace) == []
 
 
-PYTHON_PERF_DEPENDENCY = (
-    'type-bridge-perf-stages = { path = "../perf-stages", default-features = false, optional = true }'
-)
+PYTHON_PERF_DEPENDENCY = 'type-bridge-perf-stages = { path = "../perf-stages", default-features = false, optional = true }'
 
 
 @pytest.mark.parametrize(
