@@ -231,6 +231,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-core",
         "type-bridge-node",
         "type-bridge-perf",
+        "type-bridge-perf-stages",
     ]
     dependency_order = report["cargo_manifest_dependency_order"]
     assert isinstance(dependency_order, dict)
@@ -263,6 +264,7 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-orm",
         "type-bridge-orm-derive",
         "type-bridge-perf",
+        "type-bridge-perf-stages",
         "type-bridge-query",
         "type-bridge-schema",
         "type-bridge-schema-codegen",

@@ -18,8 +18,8 @@ pub(crate) fn entry() -> tracing::Span {
 #[cfg(feature = "perf-stages")]
 #[pyo3::pyfunction]
 fn _perf_stages() -> pyo3::PyResult<std::collections::BTreeMap<&'static str, u64>> {
-    type_bridge_perf::stages::recorder()
-        .map(type_bridge_perf::stages::StageTimes::take)
+    type_bridge_perf_stages::recorder()
+        .map(type_bridge_perf_stages::StageTimes::take)
         .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
 }
 

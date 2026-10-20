@@ -25,7 +25,7 @@ EXPECTED_PRIVATE_BINDINGS = frozenset(
     }
 )
 # Repository tooling that measures the product; never a dependency of it.
-EXPECTED_PRIVATE_TOOLING = frozenset({"type-bridge-perf"})
+EXPECTED_PRIVATE_TOOLING = frozenset({"type-bridge-perf", "type-bridge-perf-stages"})
 # The one way a package may link tooling: a private binding's optional
 # dependency enabled only by this off-by-default feature.
 PERF_STAGES_FEATURE = "perf-stages"

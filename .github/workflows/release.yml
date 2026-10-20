@@ -508,6 +508,9 @@ jobs:
         run: bash scripts/ci/check_pypi_publisher_metadata.sh dist
 
       - name: Prepare generated Python live fixture
+        # The acceptance service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+        env:
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
         run: >-
           scripts/ci/prepare_generated_live_fixture.sh python
           tmp/release-generated-python
@@ -908,6 +911,9 @@ jobs:
         run: npm run typecheck:projection-integration
 
       - name: Prepare generated Node live fixture
+        # The acceptance service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+        env:
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
         run: >-
           "$GITHUB_WORKSPACE/scripts/ci/prepare_generated_live_fixture.sh" node
           "$GITHUB_WORKSPACE/tmp/release-generated-node"
@@ -1304,6 +1310,8 @@ jobs:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: release_rust_projection_live
+          # The service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/release-rust-projection-target
         run: >-
           timeout --foreground 15m
@@ -1552,6 +1560,8 @@ jobs:
       - name: Run exact-wheel generated Python application
         env:
           TYPE_BRIDGE_GENERATED_PARITY_REPORT: ${{ runner.temp }}/release-generated-parity.xml
+          # The service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
         run: |
           cd "$RUNNER_TEMP"
           PATH="$RUNNER_TEMP/release-generated-parity/bin:$PATH" \
@@ -1631,6 +1641,10 @@ jobs:
 
       - name: Run exact-package generated Node application
         working-directory: type-bridge-core/crates/node
+        env:
+          # The service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
+          TYPEDB_VERSION: 3.12.3
         run: >-
           node --test --test-concurrency=1
           "$TYPE_BRIDGE_GENERATED_NODE_STAGE/harness/tests/projection-integration/generated-package-live.test.js"

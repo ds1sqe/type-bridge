@@ -29,6 +29,8 @@ include = [
     # Cargo metadata resolves optional path dependencies even when their feature
     # is disabled. Maturin 1.14 no longer discovers this crate automatically.
     { path = "crates/orm-derive/**/*", format = "sdist" },
+    # The perf-stages feature's optional stage-timing crate, for the same reason.
+    { path = "crates/perf-stages/**/*", format = "sdist" },
 ]
 exclude = [
     "python/**/__pycache__/**",

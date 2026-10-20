@@ -18,7 +18,7 @@ default = []
 contract-test-adapter = []
 # The private `_perfStages()` recorder for the perf drivers. Never enabled
 # for shipped packages.
-perf-stages = ["dep:type-bridge-perf"]
+perf-stages = ["dep:type-bridge-perf-stages"]
 
 [dependencies]
 type-bridge-contract = { path = "../contract", version = "2.3.0" }
@@ -35,7 +35,7 @@ serde_json = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 # Private perf harness; only the off-by-default `perf-stages` feature links it.
-type-bridge-perf = { path = "../perf", default-features = false, optional = true }
+type-bridge-perf-stages = { path = "../perf-stages", default-features = false, optional = true }
 
 [build-dependencies]
 napi-build = "2"
