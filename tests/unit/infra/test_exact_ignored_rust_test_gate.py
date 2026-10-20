@@ -103,24 +103,29 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "control_schema_and_fenced_lease_round_trip_on_3_12_3",
     }
 
+    # The 3.13.6 lane's own selectors: CI runs each once, in live-3-13-6.
+    lane_3_13_6_tests = {
+        "concurrency_guide_snippets_run_on_3_13_6",
+        "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
+        "live_c17_consumer_stages_and_commits_contract_v3_plans",
+        "live_c17_consumer_builds_stages_and_races_the_purchase",
+        "lowering::tests::native_ordered_formatter_exports_and_removes_schema_live",
+        "racing_lease_acquirers_serialize_on_the_control_row",
+    }
+
     # In addition to the CLI/recovery selectors, CI gates the production V2
-    # server, generated Rust, generated C, and C runtime live probes exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 10
+    # server, generated Rust, generated C, C runtime and TLS live probes, and
+    # the 3.13.6 lane's selectors exactly.
+    assert workflow.count(gate_call) == len(positive_tests) + 10 + len(lane_3_13_6_tests)
     for selector in (
         "fetch_write_commit_failure_reaches_driver_and_v1_query",
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
     assert local.count(gate_call) == 20
-    assert local.count("live_c17_consumer_stages_and_commits_contract_v3_plans") == 1
-    assert local.count("live_c17_consumer_builds_stages_and_races_the_purchase") == 1
-    assert local.count("racing_lease_acquirers_serialize_on_the_control_row") == 1
-    assert local.count("staged_plans_race_like_the_concurrency_guide_on_3_13_6") == 1
-    assert local.count("concurrency_guide_snippets_run_on_3_13_6") == 1
-    assert (
-        local.count("lowering::tests::native_ordered_formatter_exports_and_removes_schema_live")
-        == 1
-    )
+    for selector in lane_3_13_6_tests:
+        assert workflow.count(selector) == 1, selector
+        assert local.count(selector) == 1, selector
     assert local.count("fetch_write_commit_failure_reaches_driver_and_v1_query") == 1
     assert (
         local.count("typedb::client::tests::integration_classified_commit_isolation_conflict") == 1
@@ -214,9 +219,6 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
 
     for name, test_name in {
         "Run CLI empty-workspace replay lifecycle": "empty_workspace_to_replayed_history_live",
-        "Apply and verify the unchanged documented initial constraints": (
-            "documented_examples_initial_constraints_apply_and_verify_live"
-        ),
         "Run connected migration rollback and reapply lifecycle": (
             "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3"
         ),
@@ -241,6 +243,90 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
     assert recovery["env"]["TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE"] == (
         "type_bridge_ci_recovery"
     )
+
+
+def test_3_13_6_lane_steps_run_on_their_own_3_13_6_job() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    job = workflow["jobs"]["live-3-13-6"]
+    assert "strategy" not in job
+    assert job["services"]["typedb"]["image"] == "typedb/typedb:3.13.6"
+    assert job["services"]["typedb"]["options"] == "--tmpfs /var/lib/typedb/data:rw"
+    assert job["env"] == {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.13.6/v1"}
+    steps: dict[str, dict[str, Any]] = {step["name"]: step for step in job["steps"]}
+    assert all("if" not in step for step in job["steps"])
+    assert 'test "$version" = 3.13.6' in steps["Wait for TypeDB 3.13.6"]["run"]
+
+    gated = {
+        "Run concurrency guide TypeQL snippets": (
+            "concurrency_guide_snippets_run_on_3_13_6",
+            "-p type-bridge-typedb-runtime --test concurrency_documentation_live",
+        ),
+        "Run concurrency guide races as staged plans": (
+            "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
+            "-p type-bridge-orm --test plan_race_live",
+        ),
+        "Run C ABI 1.7 staged contract plans": (
+            "live_c17_consumer_stages_and_commits_contract_v3_plans",
+            "-p type-bridge-c --test schema_package_abi",
+        ),
+        "Run C ABI 1.7 builder purchase race": (
+            "live_c17_consumer_builds_stages_and_races_the_purchase",
+            "-p type-bridge-c --test schema_package_abi",
+        ),
+        "Apply and verify the unchanged documented initial constraints": (
+            "documented_examples_initial_constraints_apply_and_verify_live",
+            "-p type-bridge-cli --test e2e_workspace_live",
+        ),
+        "Run native ordered schema formatter export and removal": (
+            "lowering::tests::native_ordered_formatter_exports_and_removes_schema_live",
+            "-p type-bridge-schema-migration --lib",
+        ),
+        "Run racing lease acquirers on the control row": (
+            "racing_lease_acquirers_serialize_on_the_control_row",
+            "-p type-bridge-schema-migration-typedb --test live_store",
+        ),
+    }
+    for name, (test_name, target) in gated.items():
+        command = " ".join(steps[name]["run"].replace("\\\n", " ").split())
+        assert command.count("scripts/ci/run_exact_ignored_rust_test.sh") == 1
+        assert command.count(test_name) == 1
+        assert target in command
+        assert steps[name]["env"]["TYPEDB_HTTP_PORT"] == "8000"
+    for name in (
+        "Run C ABI 1.7 staged contract plans",
+        "Run C ABI 1.7 builder purchase race",
+    ):
+        assert steps[name]["env"]["TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER"] == "1"
+    for name in (
+        "Apply and verify the unchanged documented initial constraints",
+        "Run racing lease acquirers on the control row",
+    ):
+        assert steps[name]["env"]["TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"] == "typedb-3.13.6/v1"
+    lease = steps["Run racing lease acquirers on the control row"]
+    assert (
+        lease["env"]["TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE"] == "type_bridge_ci_lease_race"
+    )
+
+    # Plain --ignored runs: every ignored test in the target, no exact gate.
+    for name, target in {
+        "Run staged query-plan/v3 programs at commit": "-p type-bridge-orm --test plan_execute_live",
+        "Run V3 staged server live acceptance": (
+            "-p type-bridge-server --features v2-query --test v3_staged_integration_tests -- --ignored"
+        ),
+        "Run Rust SDK plan builder over the V3 staged proxy": (
+            "-p type-bridge --test plan_builder_live -- --ignored"
+        ),
+    }.items():
+        command = " ".join(steps[name]["run"].split())
+        assert target in command
+        assert "run_exact_ignored_rust_test.sh" not in command
+
+    # The races run last; this job owns the container they pause.
+    races = steps["Run staged writes races across processes"]
+    assert job["steps"][-1] is races
+    assert races["run"] == "uv run pytest tests/live/races -m slow -q -p no:cacheprovider"
+    assert races["env"]["TB_RACE_ROUNDS"] == "5"
+    assert races["env"]["TB_RACE_CONTAINER"] == "${{ job.services.typedb.id }}"
 
 
 @pytest.mark.parametrize(

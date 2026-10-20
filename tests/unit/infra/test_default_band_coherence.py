@@ -71,12 +71,12 @@ def test_single_feature_ci_compiles_each_retained_band() -> None:
             "band": "band8",
             "features": "band8,v2-query",
             "required_driver": "type-bridge-typedb-driver-b8 v3.11.5",
-            "forbidden_driver": "typedb-driver v3.12.3",
+            "forbidden_driver": "typedb-driver v3.13.6",
         },
         {
             "band": "band9",
             "features": "band9,v2-query",
-            "required_driver": "typedb-driver v3.12.3",
+            "required_driver": "typedb-driver v3.13.6",
             "forbidden_driver": "type-bridge-typedb-driver-b8 v3.11.5",
         },
     ]
@@ -98,10 +98,12 @@ def test_python_live_matrix_pairs_each_server_with_its_driver() -> None:
         {
             "typedb-server": "typedb/typedb:3.11.5",
             "python-driver": "3.11.5",
+            "semantic-profile": "typedb-3.11.5/v1",
         },
         {
             "typedb-server": "typedb/typedb:3.12.3",
             "python-driver": "3.12.3",
+            "semantic-profile": "typedb-3.12.1/v1",
         },
     ]
     workflow_text = CI_WORKFLOW.read_text(encoding="utf-8")
@@ -126,7 +128,7 @@ def test_tls_matrix_covers_exactly_the_retained_topologies() -> None:
             "server-version": "3.12.3",
             "semantic-profile": "typedb-3.12.1/v1",
             "driver-band": "9",
-            "driver-version": "3.12.3",
+            "driver-version": "3.13.6",
         },
     ]
 

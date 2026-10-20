@@ -19,13 +19,12 @@ UPLOAD = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 DOWNLOAD = "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
 SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"
 RUNNER_OWNED = {
-    "TYPE_BRIDGE_SDK_REPORT",
-    "TYPE_BRIDGE_SDK_REPORT_V2",
-    "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-    "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS",
-    "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
-    "TYPE_BRIDGE_SDK_V2_VALIDATED_OBSERVATIONS",
-    "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON",
+    "TYPE_BRIDGE_SDK_QUERIES_REPORT",
+    "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+    "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS",
+    "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
+    "TYPE_BRIDGE_SDK_QUERIES_VALIDATED_OBSERVATIONS",
+    "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON",
 }
 
 
@@ -80,70 +79,12 @@ def _step_index(job: dict[str, Any], name: str) -> int:
     return next(index for index, step in enumerate(job["steps"]) if step["name"] == name)
 
 
-def test_v1_exact_312_producers_stay_three_binding_and_step_scoped() -> None:
-    jobs = _jobs()
-    expected = {
-        "test-integration": {
-            "display": "Python",
-            "binding": "python",
-            "condition": (
-                "matrix.test-group == 'schema' && matrix.typedb-server == 'typedb/typedb:3.12.3'"
-            ),
-            "prepare_id": "prepare-python-sdk-v1",
-            "producer": "Run integration tests for ${{ matrix.test-group }}",
-        },
-        "rust-integration": {
-            "display": "Rust",
-            "binding": "rust",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
-            "prepare_id": "prepare-rust-sdk-v1",
-            "producer": "Run generated Rust projection live smoke",
-        },
-        "node-integration": {
-            "display": "Node",
-            "binding": "node",
-            "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
-            "prepare_id": "prepare-node-sdk-v1",
-            "producer": "Run generated projection live smoke",
-        },
-    }
-
-    for job_name, contract in expected.items():
-        steps = _steps(jobs[job_name])
-        display = contract["display"]
-        binding = contract["binding"]
-        condition = contract["condition"]
-        prepare = steps[f"Prepare {display} sdk report output"]
-        producer = steps[contract["producer"]]
-        upload = steps[f"Upload {display} sdk report"]
-
-        assert prepare["id"] == contract["prepare_id"]
-        assert prepare["if"] == condition
-        assert upload["if"] == condition
-        assert 'report_dir="$RUNNER_TEMP/typebridge-sdk"' in prepare["run"]
-        assert f'"$report_dir/{binding}.json"' in prepare["run"]
-        assert "printf 'report=%s\\n'" in prepare["run"]
-        assert "$GITHUB_OUTPUT" in prepare["run"]
-        assert "$GITHUB_ENV" not in prepare["run"]
-        assert producer["env"]["SDK_V1_REPORT_OUTPUT"] == (
-            f"${{{{ steps.{contract['prepare_id']}.outputs.report }}}}"
-        )
-        assert ('sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")') in producer["run"]
-        assert upload["uses"] == UPLOAD
-        assert upload["with"] == {
-            "name": f"sdk-conformance-{binding}",
-            "path": f"${{{{ runner.temp }}}}/typebridge-sdk/{binding}.json",
-            "if-no-files-found": "error",
-            "retention-days": 7,
-        }
-
-
 def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
     jobs = _jobs()
     python_remote = next(
         step
         for step in jobs["test-integration"]["steps"]
-        if step["name"] == "Emit Python generated-remote sdk-v2 proof fragment"
+        if step["name"] == "Emit Python generated-remote queries proof fragment"
     )["run"]
     assert python_remote.index("uv pip install maturin==1.14.1") < python_remote.index(
         "uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py"
@@ -154,68 +95,68 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
             "condition": (
                 "matrix.test-group == 'schema' && matrix.typedb-server == 'typedb/typedb:3.12.3'"
             ),
-            "prepare": "Prepare Python sdk-v2 evidence outputs",
-            "prepare_id": "prepare-python-sdk-v2",
+            "prepare": "Prepare Python queries evidence outputs",
+            "prepare_id": "prepare-python-queries",
             "emitters": {
-                "Emit Python direct-cancellation sdk-v2 proof fragment": (
+                "Emit Python direct-cancellation queries proof fragment": (
                     "direct_fragment",
                     "match_runtime::tests::"
                     "python_direct_cancellation_fragment_is_measured_from_owned_execution",
                 ),
-                "Emit Python generated-remote sdk-v2 proof fragment": (
+                "Emit Python generated-remote queries proof fragment": (
                     "remote_fragment",
                     "schema-codegen/tests/acceptance/check.py",
                 ),
             },
             "producer": "Run integration tests for ${{ matrix.test-group }}",
-            "upload": "Upload Python sdk-v2 report",
+            "upload": "Upload Python queries report",
         },
         "rust": {
             "job": "rust-integration",
             "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
-            "prepare": "Prepare Rust sdk-v2 evidence outputs",
-            "prepare_id": "prepare-rust-sdk-v2",
+            "prepare": "Prepare Rust queries evidence outputs",
+            "prepare_id": "prepare-rust-queries",
             "emitters": {
-                "Emit Rust sdk-v2 deterministic proof fragment": (
+                "Emit Rust queries deterministic proof fragment": (
                     "fragment",
-                    "remote::tests::sdk_v2_rust_deterministic_proof_fragment",
+                    "remote::tests::sdk_queries_rust_deterministic_proof_fragment",
                 ),
             },
             "producer": "Run generated Rust projection live smoke",
-            "upload": "Upload Rust sdk-v2 report",
+            "upload": "Upload Rust queries report",
         },
         "c": {
             "job": "rust-integration",
             "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
-            "prepare": "Prepare C sdk-v2 evidence outputs",
-            "prepare_id": "prepare-c-sdk-v2",
+            "prepare": "Prepare C queries evidence outputs",
+            "prepare_id": "prepare-c-queries",
             "emitters": {
-                "Emit C sdk-v2 deterministic proof fragment": (
+                "Emit C queries deterministic proof fragment": (
                     "fragment",
-                    "query::tests::sdk_v2_c_deterministic_proof_fragment",
+                    "query::tests::sdk_queries_c_deterministic_proof_fragment",
                 ),
             },
             "producer": "Run generated C entity and relation CRUD live smoke",
-            "upload": "Upload C sdk-v2 report",
+            "upload": "Upload C queries report",
         },
         "node": {
             "job": "node-integration",
             "condition": "matrix.typedb-server == 'typedb/typedb:3.12.3'",
-            "prepare": "Prepare Node sdk-v2 evidence outputs",
-            "prepare_id": "prepare-node-sdk-v2",
+            "prepare": "Prepare Node queries evidence outputs",
+            "prepare_id": "prepare-node-queries",
             "emitters": {
-                "Emit Node direct-cancellation sdk-v2 proof fragment": (
+                "Emit Node direct-cancellation queries proof fragment": (
                     "direct_fragment",
                     "match_runtime::tests::"
                     "node_direct_cancellation_fragment_is_measured_from_owned_execution",
                 ),
-                "Emit Node generated-remote sdk-v2 proof fragment": (
+                "Emit Node generated-remote queries proof fragment": (
                     "remote_fragment",
                     "schema-codegen/tests/typescript_acceptance/check.mjs",
                 ),
             },
             "producer": "Run generated projection live smoke",
-            "upload": "Upload Node sdk-v2 report",
+            "upload": "Upload Node queries report",
         },
     }
 
@@ -240,10 +181,10 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
             emitter = steps[emitter_name]
             assert emitter["if"] == condition
             assert emitter["env"] == {
-                "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT": (
+                "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT": (
                     f"${{{{ steps.{prepare_id}.outputs.{fragment_output} }}}}"
                 ),
-                "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE": (
+                "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE": (
                     f"${{{{ steps.{prepare_id}.outputs.run_nonce }}}}"
                 ),
             }
@@ -251,41 +192,41 @@ def test_v2_exact_producer_bound_fragments_precede_each_live_report() -> None:
             assert _step_index(job, emitter_name) < _step_index(job, contract["producer"])
 
         if binding == "c":
-            assert producer["env"]["TYPE_BRIDGE_SDK_REPORT_V2"] == (
-                "${{ steps.prepare-c-sdk-v2.outputs.report }}"
+            assert producer["env"]["TYPE_BRIDGE_SDK_QUERIES_REPORT"] == (
+                "${{ steps.prepare-c-queries.outputs.report }}"
             )
-            assert producer["env"]["TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS"] == (
-                "${{ steps.prepare-c-sdk-v2.outputs.fragment }}"
+            assert producer["env"]["TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS"] == (
+                "${{ steps.prepare-c-queries.outputs.fragment }}"
             )
-            assert producer["env"]["TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE"] == (
-                "${{ steps.prepare-c-sdk-v2.outputs.run_nonce }}"
+            assert producer["env"]["TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE"] == (
+                "${{ steps.prepare-c-queries.outputs.run_nonce }}"
             )
         else:
-            assert producer["env"]["SDK_V2_REPORT_OUTPUT"] == (
+            assert producer["env"]["SDK_QUERIES_REPORT_OUTPUT"] == (
                 f"${{{{ steps.{prepare_id}.outputs.report }}}}"
             )
-            assert "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT" in (producer["run"])
-            assert "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=" in producer["run"]
-            assert "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=" in producer["run"]
+            assert "TYPE_BRIDGE_SDK_QUERIES_REPORT=$SDK_QUERIES_REPORT_OUTPUT" in (producer["run"])
+            assert "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=" in producer["run"]
+            assert "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=" in producer["run"]
 
         assert upload["uses"] == UPLOAD
         assert upload["if"] == condition
         assert upload["with"] == {
-            "name": f"sdk-conformance-v2-{binding}",
-            "path": f"${{{{ runner.temp }}}}/typebridge-sdk-v2/{binding}.json",
+            "name": f"sdk-queries-{binding}",
+            "path": f"${{{{ runner.temp }}}}/typebridge-sdk-queries/{binding}.json",
             "if-no-files-found": "error",
             "retention-days": 7,
         }
 
-    rust_prepare = _steps(jobs["rust-integration"])["Prepare C sdk-v2 evidence outputs"]["run"]
-    assert "steps.prepare-rust-sdk-v2.outputs.run_nonce" in rust_prepare
+    rust_prepare = _steps(jobs["rust-integration"])["Prepare C queries evidence outputs"]["run"]
+    assert "steps.prepare-rust-queries.outputs.run_nonce" in rust_prepare
 
 
 def test_node_v2_validator_is_absolute_and_visible_only_to_the_live_producer() -> None:
     job = _jobs()["node-integration"]
     steps = _steps(job)
-    setup = steps["Set up Python for the Node sdk-v2 validator"]
-    prepare = steps["Prepare Node sdk-v2 evidence outputs"]
+    setup = steps["Set up Python for the Node queries validator"]
+    prepare = steps["Prepare Node queries evidence outputs"]
     producer = steps["Run generated projection live smoke"]
 
     assert setup["uses"] == SETUP_PYTHON
@@ -293,14 +234,15 @@ def test_node_v2_validator_is_absolute_and_visible_only_to_the_live_producer() -
     assert "os.path.realpath(sys.executable)" in prepare["run"]
     assert '[[ "$validator_python" == /* ]]' in prepare["run"]
     assert 'test -x "$validator_python"' in prepare["run"]
-    assert producer["env"]["SDK_V2_VALIDATOR_PYTHON_OUTPUT"] == (
-        "${{ steps.prepare-node-sdk-v2.outputs.validator_python }}"
+    assert producer["env"]["SDK_QUERIES_VALIDATOR_PYTHON_OUTPUT"] == (
+        "${{ steps.prepare-node-queries.outputs.validator_python }}"
     )
-    assert ("TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$SDK_V2_VALIDATOR_PYTHON_OUTPUT") in producer[
-        "run"
-    ]
+    assert (
+        "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON=$SDK_QUERIES_VALIDATOR_PYTHON_OUTPUT"
+    ) in producer["run"]
     assert all(
-        "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON" not in step.get("env", {}) for step in job["steps"]
+        "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON" not in step.get("env", {})
+        for step in job["steps"]
     )
 
 
@@ -314,34 +256,34 @@ def test_runner_owned_report_and_proof_inputs_never_persist_between_ci_steps() -
         )
 
     allowed_step_envs = {
-        "Emit Python direct-cancellation sdk-v2 proof fragment": {
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+        "Emit Python direct-cancellation queries proof fragment": {
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
-        "Emit Python generated-remote sdk-v2 proof fragment": {
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+        "Emit Python generated-remote queries proof fragment": {
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
-        "Emit Rust sdk-v2 deterministic proof fragment": {
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+        "Emit Rust queries deterministic proof fragment": {
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
-        "Emit C sdk-v2 deterministic proof fragment": {
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+        "Emit C queries deterministic proof fragment": {
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
         "Run generated C entity and relation CRUD live smoke": {
-            "TYPE_BRIDGE_SDK_REPORT_V2",
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+            "TYPE_BRIDGE_SDK_QUERIES_REPORT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
-        "Emit Node direct-cancellation sdk-v2 proof fragment": {
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+        "Emit Node direct-cancellation queries proof fragment": {
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
-        "Emit Node generated-remote sdk-v2 proof fragment": {
-            "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT",
-            "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE",
+        "Emit Node generated-remote queries proof fragment": {
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT",
+            "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE",
         },
     }
     observed: dict[str, set[str]] = {}
@@ -354,26 +296,11 @@ def test_runner_owned_report_and_proof_inputs_never_persist_between_ci_steps() -
     assert observed == allowed_step_envs
 
 
-def test_hosted_fan_ins_are_provider_free_and_keep_v1_and_v2_separate() -> None:
+def test_hosted_queries_fan_in_is_provider_free_and_four_binding() -> None:
     jobs = _jobs()
     needs = ["test-integration", "rust-integration", "node-integration"]
 
-    v1 = jobs["sdk-conformance"]
-    assert v1["needs"] == needs
-    assert "services" not in v1
-    v1_steps = _steps(v1)
-    for display, binding in (("Python", "python"), ("Node", "node"), ("Rust", "rust")):
-        download = v1_steps[f"Download {display} sdk report"]
-        assert download["uses"] == DOWNLOAD
-        assert download["with"] == {
-            "name": f"sdk-conformance-{binding}",
-            "path": "${{ runner.temp }}/typebridge-sdk",
-        }
-    v1_compare = v1_steps["Compare generated SDK v1 reports"]["run"]
-    assert v1_compare.startswith("python scripts/ci/compare_sdk_conformance.py ")
-    assert v1_compare.count("$RUNNER_TEMP/typebridge-sdk/") == 3
-
-    v2 = jobs["sdk-conformance-v2"]
+    v2 = jobs["sdk-queries"]
     assert v2["needs"] == needs
     assert "services" not in v2
     v2_steps = _steps(v2)
@@ -385,14 +312,14 @@ def test_hosted_fan_ins_are_provider_free_and_keep_v1_and_v2_separate() -> None:
         ("Rust", "rust"),
         ("C", "c"),
     ):
-        download = v2_steps[f"Download {display} sdk-v2 report"]
+        download = v2_steps[f"Download {display} queries report"]
         assert download["with"] == {
-            "name": f"sdk-conformance-v2-{binding}",
-            "path": "${{ runner.temp }}/typebridge-sdk-v2",
+            "name": f"sdk-queries-{binding}",
+            "path": "${{ runner.temp }}/typebridge-sdk-queries",
         }
-    v2_compare = v2_steps["Compare generated SDK v2 reports"]["run"]
-    assert v2_compare.startswith("python scripts/ci/compare_sdk_conformance_v2.py ")
-    assert v2_compare.count("$RUNNER_TEMP/typebridge-sdk-v2/") == 4
+    v2_compare = v2_steps["Compare generated SDK queries reports"]["run"]
+    assert v2_compare.startswith("python scripts/ci/sdk_queries_compare.py ")
+    assert v2_compare.count("$RUNNER_TEMP/typebridge-sdk-queries/") == 4
     assert all(f'/{binding}.json"' in v2_compare for binding in ("python", "node", "rust", "c"))
     assert "pending_manifest_promotions" not in str(v2)
     assert "sdk_fingerprints" not in str(v2)
@@ -515,6 +442,35 @@ def test_local_3_13_6_lane_runs_the_writes_program_live_in_four_languages() -> N
     assert "--offline" not in step
     assert 'mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk-writes.XXXXXXXXXX"' in lane
     assert 'rm -rf -- "$writes_output"' in step
+
+
+def test_hosted_3_13_6_job_runs_the_writes_program_live_in_four_languages() -> None:
+    job = _jobs()["live-3-13-6"]
+    steps = _steps(job)
+    command = " ".join(steps["Run SDK writes in four languages"]["run"].split())
+    assert command.startswith("uv run python scripts/ci/run_sdk_conformance.py writes ")
+    assert "--semantic-profile typedb-3.13.6/v1" in command
+    assert "--address localhost:1729 --http-port 8000" in command
+    assert '--output "$RUNNER_TEMP/typebridge-sdk-writes"' in command
+    assert "--offline" not in command
+    # The runner builds the Node package, compiles C17 and resolves the Rust
+    # program offline: each needs its toolchain or graph staged first.
+    writes = _step_index(job, "Run SDK writes in four languages")
+    for prerequisite in (
+        "Fetch the locked Rust graph",
+        "Install the source-tree Python product",
+        "Install Node dependencies",
+        "Wait for TypeDB 3.13.6",
+    ):
+        assert _step_index(job, prerequisite) < writes
+    upload = steps["Upload SDK writes reports"]
+    assert upload["uses"] == UPLOAD
+    assert upload["with"] == {
+        "name": "sdk-writes-typedb-3.13.6",
+        "path": "${{ runner.temp }}/typebridge-sdk-writes",
+        "if-no-files-found": "error",
+        "retention-days": 7,
+    }
 
 
 def test_writes_suite_is_listed_and_its_producers_exist() -> None:

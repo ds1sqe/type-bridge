@@ -494,7 +494,7 @@ def stage(verify_run: int, output: Path) -> None:
             "verification_run": verify_run,
             "verification_attempt": 1,
             "artifact_set_id": receipt["artifact_set_id"],
-            "abi": "1.6.0",
+            "abi": policy.ABI,
             "target": policy.TARGET,
             "runner": "ubuntu-24.04",
             "linkage": "shared",

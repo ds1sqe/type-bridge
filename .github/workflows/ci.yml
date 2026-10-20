@@ -62,20 +62,20 @@ jobs:
           python scripts/ci/standalone_cli_artifact.py smoke
           tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
 
-      - name: Generate reproducible Python, Node, and Rust V6 surfaces
+      - name: Generate reproducible Python, Node, and Rust artifacts surfaces
         run: |
           set -euo pipefail
           artifact=tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          python scripts/ci/sdk_v6_surfaces.py build "$artifact" \
-            --output tmp/sdk-v6-surfaces
-          python scripts/ci/sdk_v6_surfaces.py build "$artifact" \
-            --output tmp/sdk-v6-surfaces-repeat
+          python scripts/ci/sdk_artifacts_surfaces.py build "$artifact" \
+            --output tmp/sdk-artifacts-surfaces
+          python scripts/ci/sdk_artifacts_surfaces.py build "$artifact" \
+            --output tmp/sdk-artifacts-surfaces-repeat
           for binding in python node rust; do
-            archive="type-bridge-$binding-generated-sdk-v6.tar.gz"
-            cmp "tmp/sdk-v6-surfaces/$archive" \
-              "tmp/sdk-v6-surfaces-repeat/$archive"
-            python scripts/ci/sdk_v6_surfaces.py validate \
-              "tmp/sdk-v6-surfaces/$archive" --binding "$binding"
+            archive="type-bridge-$binding-generated-sdk-artifacts.tar.gz"
+            cmp "tmp/sdk-artifacts-surfaces/$archive" \
+              "tmp/sdk-artifacts-surfaces-repeat/$archive"
+            python scripts/ci/sdk_artifacts_surfaces.py validate \
+              "tmp/sdk-artifacts-surfaces/$archive" --binding "$binding"
           done
 
       - name: Wait for exact TypeDB fixture
@@ -108,11 +108,11 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload artifact-generated V6 language surfaces
+      - name: Upload artifact-generated artifacts language surfaces
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sdk-v6-generated-surfaces
-          path: tmp/sdk-v6-surfaces/*.tar.gz
+          name: sdk-artifacts-generated-surfaces
+          path: tmp/sdk-artifacts-surfaces/*.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -492,6 +492,26 @@ jobs:
         if: runner.os == 'Linux'
         run: python scripts/ci/validate_c_distribution_contract.py
 
+      # check_internal_eager.py shells out to `rg`; install it rather than
+      # rely on the runner image shipping it.
+      - name: Install ripgrep
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ripgrep
+
+      - name: Check internal eager dependency boundary
+        if: runner.os == 'Linux'
+        run: python3 scripts/ci/check_internal_eager.py
+
+      - name: Check TypeQL text construction boundary
+        if: runner.os == 'Linux'
+        run: python scripts/ci/check_typeql_text.py
+
+      - name: Check private TypeQL AST public API boundary
+        if: runner.os == 'Linux'
+        run: python scripts/ci/check_typeql_public_api.py
+
       - name: Install pinned cargo-audit
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
@@ -811,10 +831,10 @@ jobs:
           - band: band8
             features: band8,v2-query
             required_driver: type-bridge-typedb-driver-b8 v3.11.5
-            forbidden_driver: typedb-driver v3.12.3
+            forbidden_driver: typedb-driver v3.13.6
           - band: band9
             features: band9,v2-query
-            required_driver: typedb-driver v3.12.3
+            required_driver: typedb-driver v3.13.6
             forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
     steps:
       - name: Checkout code
@@ -1246,14 +1266,6 @@ jobs:
       - name: Run pyright on ${{ matrix.target }}
         run: uv run pyright ${{ matrix.target }}/
 
-      - name: Check intentional unified Query typing diagnostics
-        if: matrix.target == 'tests'
-        run: uv run python tests/contracts/typed_query/python/check_negative.py
-
-      - name: Check intentional owner-aware typing diagnostics
-        if: matrix.target == 'tests'
-        run: uv run python tests/unit/typed_query/check_negative.py
-
       - name: Check intentional typed Query API diagnostics
         if: matrix.target == 'tests'
         run: uv run python tests/unit/typed_query/check_query_negative.py
@@ -1338,10 +1350,12 @@ jobs:
         include:
           - typedb-server: "typedb/typedb:3.11.5"
             python-driver: "3.11.5"
+            semantic-profile: "typedb-3.11.5/v1"
           # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
           # server 3.12 accepts it natively.
           - typedb-server: "typedb/typedb:3.12.3"
             python-driver: "3.12.3"
+            semantic-profile: "typedb-3.12.1/v1"
 
     # Start TypeDB as a service container (runs first, before steps)
     services:
@@ -1351,6 +1365,11 @@ jobs:
           - 1729:1729
           # TypeDB HTTP API; the connect-time version gate probes /v1/version.
           - 8000:8000
+
+    # Generated packages default to typedb-3.13.6/v1; pin each lane's
+    # profile as test.sh's LANE_PROFILES does.
+    env:
+      TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
 
     steps:
       - name: Checkout code
@@ -1406,26 +1425,14 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare Python sdk report output
-        id: prepare-python-sdk-v1
+      - name: Prepare Python queries evidence outputs
+        id: prepare-python-queries
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/typebridge-sdk"
-          mkdir -p "$report_dir"
-          test ! -e "$report_dir/python.json"
-          printf 'report=%s\n' "$report_dir/python.json" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Python sdk-v2 evidence outputs
-        id: prepare-python-sdk-v2
-        if: >-
-          matrix.test-group == 'schema' &&
-          matrix.typedb-server == 'typedb/typedb:3.12.3'
-        run: |
-          set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-queries"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/python.json"
           direct_fragment="$evidence_dir/python-direct-proof.json"
@@ -1443,26 +1450,26 @@ jobs:
             printf 'run_nonce=%s\n' "$run_nonce"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit Python direct-cancellation sdk-v2 proof fragment
+      - name: Emit Python direct-cancellation queries proof fragment
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-sdk-v2.outputs.direct_fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-python-queries.outputs.direct_fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-python-queries.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-core --lib
           match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution
           -- --exact
 
-      - name: Emit Python generated-remote sdk-v2 proof fragment
+      - name: Emit Python generated-remote queries proof fragment
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-python-sdk-v2.outputs.remote_fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-python-queries.outputs.remote_fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-python-queries.outputs.run_nonce }}
         run: |
           uv pip install maturin==1.14.1
           uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
@@ -1471,46 +1478,31 @@ jobs:
         env:
           USE_DOCKER: false
           TYPEDB_ADDRESS: localhost:1729
-          SDK_V1_REPORT_OUTPUT: ${{ steps.prepare-python-sdk-v1.outputs.report }}
-          SDK_V2_REPORT_OUTPUT: ${{ steps.prepare-python-sdk-v2.outputs.report }}
-          SDK_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-sdk-v2.outputs.fragments }}
-          SDK_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-sdk-v2.outputs.run_nonce }}
+          SDK_QUERIES_REPORT_OUTPUT: ${{ steps.prepare-python-queries.outputs.report }}
+          SDK_QUERIES_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-queries.outputs.fragments }}
+          SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-queries.outputs.run_nonce }}
         run: |
           set -euo pipefail
           sdk_env=()
-          if [[ -n "$SDK_V1_REPORT_OUTPUT" ]]; then
-            sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")
-          fi
-          if [[ -n "$SDK_V2_REPORT_OUTPUT" ]]; then
+          if [[ -n "$SDK_QUERIES_REPORT_OUTPUT" ]]; then
             sdk_env+=(
-              "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT"
-              "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$SDK_V2_FRAGMENT_OUTPUTS"
-              "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$SDK_V2_RUN_NONCE_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_REPORT=$SDK_QUERIES_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$SDK_QUERIES_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$SDK_QUERIES_RUN_NONCE_OUTPUT"
             )
           fi
           env "${sdk_env[@]}" \
             uv run pytest tests/integration/${{ matrix.test-group }} \
               -m integration -v --tb=short
 
-      - name: Upload Python sdk report
+      - name: Upload Python queries report
         if: >-
           matrix.test-group == 'schema' &&
           matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sdk-conformance-python
-          path: ${{ runner.temp }}/typebridge-sdk/python.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload Python sdk-v2 report
-        if: >-
-          matrix.test-group == 'schema' &&
-          matrix.typedb-server == 'typedb/typedb:3.12.3'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-conformance-v2-python
-          path: ${{ runner.temp }}/typebridge-sdk-v2/python.json
+          name: sdk-queries-python
+          path: ${{ runner.temp }}/typebridge-sdk-queries/python.json
           if-no-files-found: error
           retention-days: 7
 
@@ -1652,22 +1644,12 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-server --features v2-query --lib
 
-      - name: Prepare Rust sdk report output
-        id: prepare-rust-sdk-v1
+      - name: Prepare Rust queries evidence outputs
+        id: prepare-rust-queries
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/typebridge-sdk"
-          mkdir -p "$report_dir"
-          test ! -e "$report_dir/rust.json"
-          printf 'report=%s\n' "$report_dir/rust.json" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Rust sdk-v2 evidence outputs
-        id: prepare-rust-sdk-v2
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        run: |
-          set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-queries"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/rust.json"
           fragment="$evidence_dir/rust-proof.json"
@@ -1681,15 +1663,15 @@ jobs:
             printf 'run_nonce=%s\n' "$run_nonce"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit Rust sdk-v2 deterministic proof fragment
+      - name: Emit Rust queries deterministic proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-rust-sdk-v2.outputs.fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-rust-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-rust-queries.outputs.fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-rust-queries.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge --lib
-          remote::tests::sdk_v2_rust_deterministic_proof_fragment
+          remote::tests::sdk_queries_rust_deterministic_proof_fragment
           -- --exact
 
       - name: Run generated Rust projection live smoke
@@ -1698,21 +1680,17 @@ jobs:
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_live
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
-          SDK_V1_REPORT_OUTPUT: ${{ steps.prepare-rust-sdk-v1.outputs.report }}
-          SDK_V2_REPORT_OUTPUT: ${{ steps.prepare-rust-sdk-v2.outputs.report }}
-          SDK_V2_FRAGMENT_OUTPUT: ${{ steps.prepare-rust-sdk-v2.outputs.fragment }}
-          SDK_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-rust-sdk-v2.outputs.run_nonce }}
+          SDK_QUERIES_REPORT_OUTPUT: ${{ steps.prepare-rust-queries.outputs.report }}
+          SDK_QUERIES_FRAGMENT_OUTPUT: ${{ steps.prepare-rust-queries.outputs.fragment }}
+          SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-rust-queries.outputs.run_nonce }}
         run: |
           set -euo pipefail
           sdk_env=()
-          if [[ -n "$SDK_V1_REPORT_OUTPUT" ]]; then
-            sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")
-          fi
-          if [[ -n "$SDK_V2_REPORT_OUTPUT" ]]; then
+          if [[ -n "$SDK_QUERIES_REPORT_OUTPUT" ]]; then
             sdk_env+=(
-              "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT"
-              "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$SDK_V2_FRAGMENT_OUTPUT"
-              "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$SDK_V2_RUN_NONCE_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_REPORT=$SDK_QUERIES_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$SDK_QUERIES_FRAGMENT_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$SDK_QUERIES_RUN_NONCE_OUTPUT"
             )
           fi
           env "${sdk_env[@]}" \
@@ -1732,16 +1710,16 @@ jobs:
           cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --lib
           bash scripts/ci/run_exact_ignored_rust_test.sh \
-            live_c17_consumer_exercises_exact_3_12_3_transaction_lifecycle \
+            live_c17_consumer_exercises_profile_server_transaction_lifecycle \
             --locked --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-c --test schema_package_abi
 
-      - name: Prepare C sdk-v2 evidence outputs
-        id: prepare-c-sdk-v2
+      - name: Prepare C queries evidence outputs
+        id: prepare-c-queries
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-queries"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/c.json"
           fragment="$evidence_dir/c-proof.json"
@@ -1749,22 +1727,22 @@ jobs:
           test ! -e "$fragment"
           run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
           [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
-          test "$run_nonce" != '${{ steps.prepare-rust-sdk-v2.outputs.run_nonce }}'
+          test "$run_nonce" != '${{ steps.prepare-rust-queries.outputs.run_nonce }}'
           {
             printf 'report=%s\n' "$report"
             printf 'fragment=%s\n' "$fragment"
             printf 'run_nonce=%s\n' "$run_nonce"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit C sdk-v2 deterministic proof fragment
+      - name: Emit C queries deterministic proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-c-sdk-v2.outputs.fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-c-queries.outputs.fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-c-queries.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-c --lib
-          query::tests::sdk_v2_c_deterministic_proof_fragment
+          query::tests::sdk_queries_c_deterministic_proof_fragment
           -- --exact
 
       - name: Run generated C entity and relation CRUD live smoke
@@ -1774,12 +1752,12 @@ jobs:
           TYPEDB_HTTP_PORT: "8000"
           TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE: type_bridge_c_projection_live_${{ github.run_id }}_${{ github.run_attempt }}
           ACCEPTANCE_TARGET_DIR: ${{ runner.temp }}/typebridge-c-projection-live-target
-          TYPE_BRIDGE_SDK_REPORT_V2: ${{ steps.prepare-c-sdk-v2.outputs.report }}
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS: ${{ steps.prepare-c-sdk-v2.outputs.fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-c-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_REPORT: ${{ steps.prepare-c-queries.outputs.report }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS: ${{ steps.prepare-c-queries.outputs.fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-c-queries.outputs.run_nonce }}
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          live_c17_generated_person_and_membership_crud_round_trips_exact_3_12_3
+          live_c17_generated_person_and_membership_crud_round_trips_on_profile_server
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 
@@ -1796,30 +1774,21 @@ jobs:
           --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-schema-codegen --test c_projection_live
 
-      - name: Upload Rust sdk report
+      - name: Upload Rust queries report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sdk-conformance-rust
-          path: ${{ runner.temp }}/typebridge-sdk/rust.json
+          name: sdk-queries-rust
+          path: ${{ runner.temp }}/typebridge-sdk-queries/rust.json
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload Rust sdk-v2 report
+      - name: Upload C queries report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sdk-conformance-v2-rust
-          path: ${{ runner.temp }}/typebridge-sdk-v2/rust.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload C sdk-v2 report
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-conformance-v2-c
-          path: ${{ runner.temp }}/typebridge-sdk-v2/c.json
+          name: sdk-queries-c
+          path: ${{ runner.temp }}/typebridge-sdk-queries/c.json
           if-no-files-found: error
           retention-days: 7
 
@@ -1842,17 +1811,6 @@ jobs:
         run: >-
           bash scripts/ci/run_exact_ignored_rust_test.sh
           empty_workspace_to_replayed_history_live
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
-
-      - name: Apply and verify the unchanged documented initial constraints
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        env:
-          TYPEDB_ADDRESS: localhost:1729
-          TYPEDB_HTTP_PORT: "8000"
-        run: >-
-          bash scripts/ci/run_exact_ignored_rust_test.sh
-          documented_examples_initial_constraints_apply_and_verify_live
           --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-cli --test e2e_workspace_live
 
@@ -1914,6 +1872,240 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-schema-migration-typedb --test live_store
 
+  # TypeDB 3.13.6, the default profile's server: the live steps test.sh's
+  # 3.13.6 lane runs and no 3.11/3.12 leg can (staged query-plan/v3 programs,
+  # pinned race outcomes, the ABI 1.7 C plans, the four-language writes
+  # suites, the 3.13.6-profile migration probes). Commands and env mirror
+  # run_live_lane. The races run last: their paused-server case
+  # `docker pause`s this job's own service container mid-commit.
+  live-3-13-6:
+    name: Staged plans live (typedb/typedb:3.13.6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    services:
+      typedb:
+        image: typedb/typedb:3.13.6
+        ports:
+          - 1729:1729
+          - 8000:8000
+        options: --tmpfs /var/lib/typedb/data:rw
+
+    # As test.sh exports the lane profile for every 3.13.6 step.
+    env:
+      TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.13.6/v1
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
+            type-bridge-core/target
+          key: ${{ runner.os }}-cargo-live-3-13-6-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}
+
+      # The writes suite's Rust program resolves `--offline` from a copy of
+      # the workspace lockfile, so the whole locked graph must be present.
+      - name: Fetch the locked Rust graph
+        run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+
+      - name: Install the source-tree Python product
+        run: uv sync --extra dev
+
+      - name: Install Node dependencies
+        working-directory: type-bridge-core/crates/node
+        run: npm ci
+
+      # test.sh refuses a lane whose server is not the requested line.
+      - name: Wait for TypeDB 3.13.6
+        run: |
+          for i in {1..30}; do
+            body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            version="$(python3 -c '
+          import json, sys
+          try:
+              print(json.loads(sys.argv[1])["version"])
+          except (ValueError, KeyError, TypeError):
+              pass
+          ' "$body")"
+            if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
+              echo "Detected TypeDB $version"
+              test "$version" = 3.13.6
+              exit 0
+            fi
+            echo "Waiting for TypeDB... ($i/30)"
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Run staged query-plan/v3 programs at commit
+        env:
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_TRANSACTION_LIVE_VERSION: "3.13.6"
+          TYPEDB_HTTP_PORT: "8000"
+          TYPEDB_USERNAME: admin
+          TYPEDB_PASSWORD: password
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --test plan_execute_live
+
+      - name: Run concurrency guide TypeQL snippets
+        env:
+          TYPE_BRIDGE_CONCURRENCY_LIVE_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPEDB_USERNAME: admin
+          TYPEDB_PASSWORD: password
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          concurrency_guide_snippets_run_on_3_13_6
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-typedb-runtime --test concurrency_documentation_live
+
+      - name: Run concurrency guide races as staged plans
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPEDB_USERNAME: admin
+          TYPEDB_PASSWORD: password
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          staged_plans_race_like_the_concurrency_guide_on_3_13_6
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --test plan_race_live
+
+      - name: Run C ABI 1.7 staged contract plans
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
+          TYPE_BRIDGE_C_INTG_DATABASE: type_bridge_c_staged_live
+        run: |
+          cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-c --lib
+          bash scripts/ci/run_exact_ignored_rust_test.sh \
+            live_c17_consumer_stages_and_commits_contract_v3_plans \
+            --manifest-path type-bridge-core/Cargo.toml --locked \
+            -p type-bridge-c --test schema_package_abi
+
+      - name: Run C ABI 1.7 builder purchase race
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER: "1"
+          TYPE_BRIDGE_C_INTG_DATABASE: type_bridge_c_builder_live
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          live_c17_consumer_builds_stages_and_races_the_purchase
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-c --test schema_package_abi
+
+      # The writes suites (purchase, constraints) in Python, TypeScript, Rust
+      # and C: identical plan bytes, and identical answers, typed failures and
+      # state directly and over the proxy.
+      - name: Run SDK writes in four languages
+        timeout-minutes: 45
+        run: >-
+          uv run python scripts/ci/run_sdk_conformance.py writes
+          --semantic-profile typedb-3.13.6/v1
+          --address localhost:1729 --http-port 8000
+          --output "$RUNNER_TEMP/typebridge-sdk-writes"
+
+      - name: Upload SDK writes reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdk-writes-typedb-3.13.6
+          path: ${{ runner.temp }}/typebridge-sdk-writes
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Run V3 staged server live acceptance
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-server --features v2-query
+          --test v3_staged_integration_tests -- --ignored
+
+      - name: Run Rust SDK plan builder over the V3 staged proxy
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge --test plan_builder_live -- --ignored
+
+      - name: Apply and verify the unchanged documented initial constraints
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE: typedb-3.13.6/v1
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          documented_examples_initial_constraints_apply_and_verify_live
+          --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-cli --test e2e_workspace_live
+
+      - name: Run native ordered schema formatter export and removal
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          lowering::tests::native_ordered_formatter_exports_and_removes_schema_live
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-migration --lib
+
+      - name: Run racing lease acquirers on the control row
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TYPE_BRIDGE_SCHEMA_MIGRATION_TYPEDB_DATABASE: type_bridge_ci_lease_race
+          TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE: typedb-3.13.6/v1
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          racing_lease_acquirers_serialize_on_the_control_row
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-schema-migration-typedb --test live_store
+
+      # Three processes race staged plans on separate connections. The job
+      # owns its service container, so the paused-server case runs too.
+      - name: Run staged writes races across processes
+        timeout-minutes: 30
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+          TB_RACE_ROUNDS: "5"
+          TB_RACE_CONTAINER: ${{ job.services.typedb.id }}
+        run: uv run pytest tests/live/races -m slow -q -p no:cacheprovider
+
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
   # broader plaintext, binding, CLI, and remote-envelope suites have separate
@@ -1938,7 +2130,7 @@ jobs:
             server-version: "3.12.3"
             semantic-profile: "typedb-3.12.1/v1"
             driver-band: "9"
-            driver-version: "3.12.3"
+            driver-version: "3.13.6"
 
     steps:
       - name: Checkout code
@@ -2159,7 +2351,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Set up Python for the Node sdk-v2 validator
+      - name: Set up Python for the Node queries validator
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -2221,22 +2413,12 @@ jobs:
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
         run: npm run test:integration
 
-      - name: Prepare Node sdk report output
-        id: prepare-node-sdk-v1
+      - name: Prepare Node queries evidence outputs
+        id: prepare-node-queries
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         run: |
           set -euo pipefail
-          report_dir="$RUNNER_TEMP/typebridge-sdk"
-          mkdir -p "$report_dir"
-          test ! -e "$report_dir/node.json"
-          printf 'report=%s\n' "$report_dir/node.json" >> "$GITHUB_OUTPUT"
-
-      - name: Prepare Node sdk-v2 evidence outputs
-        id: prepare-node-sdk-v2
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        run: |
-          set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-sdk-v2"
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-queries"
           mkdir -p "$evidence_dir"
           report="$evidence_dir/node.json"
           direct_fragment="$evidence_dir/node-direct-proof.json"
@@ -2258,24 +2440,24 @@ jobs:
             printf 'validator_python=%s\n' "$validator_python"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Emit Node direct-cancellation sdk-v2 proof fragment
+      - name: Emit Node direct-cancellation queries proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         working-directory: ${{ github.workspace }}
         env:
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-sdk-v2.outputs.direct_fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-node-queries.outputs.direct_fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-node-queries.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
           -p type-bridge-node --lib
           match_runtime::tests::node_direct_cancellation_fragment_is_measured_from_owned_execution
           -- --exact
 
-      - name: Emit Node generated-remote sdk-v2 proof fragment
+      - name: Emit Node generated-remote queries proof fragment
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         working-directory: ${{ github.workspace }}
         env:
-          TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENT: ${{ steps.prepare-node-sdk-v2.outputs.remote_fragment }}
-          TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE: ${{ steps.prepare-node-sdk-v2.outputs.run_nonce }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-node-queries.outputs.remote_fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-node-queries.outputs.run_nonce }}
         run: node type-bridge-core/crates/schema-codegen/tests/typescript_acceptance/check.mjs
 
       - name: Run generated projection live smoke
@@ -2286,50 +2468,37 @@ jobs:
           TYPEDB_VERSION: ${{ matrix.typedb-version }}
           TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
           TYPE_BRIDGE_NODE_INTG_DATABASE: type_bridge_projection_live
-          SDK_V1_REPORT_OUTPUT: ${{ steps.prepare-node-sdk-v1.outputs.report }}
-          SDK_V2_REPORT_OUTPUT: ${{ steps.prepare-node-sdk-v2.outputs.report }}
-          SDK_V2_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-sdk-v2.outputs.fragments }}
-          SDK_V2_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-sdk-v2.outputs.run_nonce }}
-          SDK_V2_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-sdk-v2.outputs.validator_python }}
+          SDK_QUERIES_REPORT_OUTPUT: ${{ steps.prepare-node-queries.outputs.report }}
+          SDK_QUERIES_FRAGMENT_OUTPUTS: ${{ steps.prepare-node-queries.outputs.fragments }}
+          SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-node-queries.outputs.run_nonce }}
+          SDK_QUERIES_VALIDATOR_PYTHON_OUTPUT: ${{ steps.prepare-node-queries.outputs.validator_python }}
         run: |
           set -euo pipefail
           sdk_env=()
-          if [[ -n "$SDK_V1_REPORT_OUTPUT" ]]; then
-            sdk_env+=("TYPE_BRIDGE_SDK_REPORT=$SDK_V1_REPORT_OUTPUT")
-          fi
-          if [[ -n "$SDK_V2_REPORT_OUTPUT" ]]; then
+          if [[ -n "$SDK_QUERIES_REPORT_OUTPUT" ]]; then
             sdk_env+=(
-              "TYPE_BRIDGE_SDK_REPORT_V2=$SDK_V2_REPORT_OUTPUT"
-              "TYPE_BRIDGE_SDK_V2_PROOF_FRAGMENTS=$SDK_V2_FRAGMENT_OUTPUTS"
-              "TYPE_BRIDGE_SDK_V2_PROOF_RUN_NONCE=$SDK_V2_RUN_NONCE_OUTPUT"
-              "TYPE_BRIDGE_SDK_V2_VALIDATOR_PYTHON=$SDK_V2_VALIDATOR_PYTHON_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_REPORT=$SDK_QUERIES_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$SDK_QUERIES_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$SDK_QUERIES_RUN_NONCE_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON=$SDK_QUERIES_VALIDATOR_PYTHON_OUTPUT"
             )
           fi
           env "${sdk_env[@]}" npm run test:projection-integration
 
-      - name: Upload Node sdk report
+      - name: Upload Node queries report
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sdk-conformance-node
-          path: ${{ runner.temp }}/typebridge-sdk/node.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload Node sdk-v2 report
-        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-conformance-v2-node
-          path: ${{ runner.temp }}/typebridge-sdk-v2/node.json
+          name: sdk-queries-node
+          path: ${{ runner.temp }}/typebridge-sdk-queries/node.json
           if-no-files-found: error
           retention-days: 7
 
   # Fan in the three exact 3.12.3 generated-application reports. The producer
   # jobs already own their live TypeDB journeys; this job performs no provider
   # I/O and cannot turn uncovered or known-gap proofs into accepted support.
-  sdk-conformance:
-    name: Shared sdk conformance
+  sdk-queries:
+    name: Shared queries conformance
     runs-on: ubuntu-latest
     needs: [test-integration, rust-integration, node-integration]
     steps:
@@ -2341,78 +2510,37 @@ jobs:
         with:
           python-version: "3.13.5"
 
-      - name: Download Python sdk report
+      - name: Download Python queries report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: sdk-conformance-python
-          path: ${{ runner.temp }}/typebridge-sdk
+          name: sdk-queries-python
+          path: ${{ runner.temp }}/typebridge-sdk-queries
 
-      - name: Download Node sdk report
+      - name: Download Node queries report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: sdk-conformance-node
-          path: ${{ runner.temp }}/typebridge-sdk
+          name: sdk-queries-node
+          path: ${{ runner.temp }}/typebridge-sdk-queries
 
-      - name: Download Rust sdk report
+      - name: Download Rust queries report
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: sdk-conformance-rust
-          path: ${{ runner.temp }}/typebridge-sdk
+          name: sdk-queries-rust
+          path: ${{ runner.temp }}/typebridge-sdk-queries
 
-      - name: Compare generated SDK v1 reports
+      - name: Download C queries report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdk-queries-c
+          path: ${{ runner.temp }}/typebridge-sdk-queries
+
+      - name: Compare generated SDK queries reports
         run: >-
-          python scripts/ci/compare_sdk_conformance.py
-          "$RUNNER_TEMP/typebridge-sdk/python.json"
-          "$RUNNER_TEMP/typebridge-sdk/node.json"
-          "$RUNNER_TEMP/typebridge-sdk/rust.json"
-
-  # Fan in the additive four-binding typed-query reports without provider I/O.
-  # The live jobs publish only after their same-run deterministic fragments
-  # validate; this job neither generates catalogs nor infers missing evidence.
-  sdk-conformance-v2:
-    name: Shared sdk-v2 conformance
-    runs-on: ubuntu-latest
-    needs: [test-integration, rust-integration, node-integration]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Download Python sdk-v2 report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-conformance-v2-python
-          path: ${{ runner.temp }}/typebridge-sdk-v2
-
-      - name: Download Node sdk-v2 report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-conformance-v2-node
-          path: ${{ runner.temp }}/typebridge-sdk-v2
-
-      - name: Download Rust sdk-v2 report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-conformance-v2-rust
-          path: ${{ runner.temp }}/typebridge-sdk-v2
-
-      - name: Download C sdk-v2 report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-conformance-v2-c
-          path: ${{ runner.temp }}/typebridge-sdk-v2
-
-      - name: Compare generated SDK v2 reports
-        run: >-
-          python scripts/ci/compare_sdk_conformance_v2.py
-          "$RUNNER_TEMP/typebridge-sdk-v2/python.json"
-          "$RUNNER_TEMP/typebridge-sdk-v2/node.json"
-          "$RUNNER_TEMP/typebridge-sdk-v2/rust.json"
-          "$RUNNER_TEMP/typebridge-sdk-v2/c.json"
+          python scripts/ci/sdk_queries_compare.py
+          "$RUNNER_TEMP/typebridge-sdk-queries/python.json"
+          "$RUNNER_TEMP/typebridge-sdk-queries/node.json"
+          "$RUNNER_TEMP/typebridge-sdk-queries/rust.json"
+          "$RUNNER_TEMP/typebridge-sdk-queries/c.json"
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.

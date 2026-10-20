@@ -1011,11 +1011,17 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
         "shipped_python_converter_to_native_adoption_live",
     )
     rust_integration = job_block(ci, "rust-integration")
+    # The documented examples pin typedb-3.13.6/v1, so CI runs them on the
+    # 3.13.6 job; test.sh skips them on every other profile.
+    documented = "documented_examples_initial_constraints_apply_and_verify_live"
+    live_3_13_6 = job_block(ci, "live-3-13-6")
     for test in tests:
-        assert f"          {test}\n          --manifest-path" in rust_integration
+        block = live_3_13_6 if test == documented else rust_integration
+        assert f"          {test}\n          --manifest-path" in block
+    assert documented not in rust_integration
     # The same live job also gates the unsupported-version probe, two recovery
     # probes, generated Rust, generated C, and C runtime with exact selection.
-    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) + 9
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 9
     assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration
     assert "control_schema_and_fenced_lease_round_trip_on_3_12_3" in rust_integration

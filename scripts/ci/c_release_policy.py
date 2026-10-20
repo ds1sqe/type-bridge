@@ -11,13 +11,15 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / ".github/release/c-2.2.6.json"
+POLICY = ROOT / ".github/release/c-2.3.0.json"
 CI = ROOT / ".github/workflows/ci.yml"
-VERSION = "2.2.6"
+VERSION = "2.3.0"
+# Runtime ABI; installed pkg-config metadata stays on the frozen 1.6.0 line.
+ABI = "1.7.0"
 TARGET = "x86_64-unknown-linux-gnu"
 CLI = f"type-bridge-cli-artifact-{TARGET}.tar.gz"
 RUNTIME = f"type-bridge-c-runtime-abi-1.6-{TARGET}.tar.gz"
-GENERATED = "tb_sdkv3-c-de6ec4acca4cfc7ba35cfbbd969dce49c7bf3b709532fca43ac41ed482606264.tar.gz"
+GENERATED = "tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz"
 SECURITY_FILES = [
     "artifact-manifest.json",
     "cli.spdx.json",
@@ -46,7 +48,7 @@ PUBLIC_FILES = {
 EVIDENCE = f"type-bridge-c-evidence-{VERSION}.tar.gz"
 RECEIPT = f"type-bridge-c-verification-{VERSION}.json"
 PROMOTION = f"type-bridge-c-promotion-{VERSION}.json"
-VERIFY_ARTIFACT = "c-verified-release-2.2.6"
+VERIFY_ARTIFACT = f"c-verified-release-{VERSION}"
 VERIFY_JOB = "Verify FULL C release artifacts"
 PUBLISH_JOB = "Promote verified C release artifacts"
 WORKFLOW = ".github/workflows/c-release.yml"
@@ -135,7 +137,7 @@ def selected_policy() -> dict[str, Any]:
         "repository": "ds1sqe/type-bridge",
         "repository_id": 1085407082,
         "tag": f"v{VERSION}",
-        "abi": "1.6.0",
+        "abi": ABI,
         "target": TARGET,
         "runner": "ubuntu-24.04",
         "linkage": "shared",
