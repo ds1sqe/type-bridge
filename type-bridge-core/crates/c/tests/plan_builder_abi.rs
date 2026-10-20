@@ -6,6 +6,7 @@ use std::ffi::c_void;
 #[cfg(unix)]
 use std::fs;
 use std::mem::size_of;
+#[cfg(not(windows))]
 use std::path::{Path, PathBuf};
 #[cfg(not(windows))]
 use std::process::Command;
