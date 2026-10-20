@@ -1641,6 +1641,10 @@ jobs:
 
       - name: Run exact-package generated Node application
         working-directory: type-bridge-core/crates/node
+        env:
+          # The service is TypeDB 3.12.3, whose semantic profile is 3.12.1.
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.12.1/v1
+          TYPEDB_VERSION: 3.12.3
         run: >-
           node --test --test-concurrency=1
           "$TYPE_BRIDGE_GENERATED_NODE_STAGE/harness/tests/projection-integration/generated-package-live.test.js"
