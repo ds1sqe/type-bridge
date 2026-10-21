@@ -29,9 +29,10 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from type_bridge_core import ProxyConnection
+from type_bridge_core import MatchRequestError, ProxyConnection
 
-from type_bridge import CommitConflict, Database
+from type_bridge import CommitRejected, Database
+from type_bridge.failure import Failure
 from type_bridge.plan import Count, Exists, Matched, Plan, PlanAnswer, Rows
 
 models: Any = importlib.import_module(
@@ -72,15 +73,17 @@ def checkout(authority: Any, account_id: str, order_id: str, cart: list[tuple[st
     plan.where_(plan.field(buyer, Account.account_id).eq(account_id))
 
     lines = []
-    total = None
+    costs = []
     for sku, quantity in cart:
         item = plan.exact(Item)
         stock = plan.field(item, Item.stock)
         plan.where_(plan.field(item, Item.sku).eq(sku)).where_(stock.ge(quantity))
-        cost = plan.field(item, Item.price) * quantity
-        total = cost if total is None else total + cost
+        costs.append(plan.field(item, Item.price) * quantity)
         lines.append((item, stock, quantity))
-    total = plan.let_("total", total)
+    cart_total = costs[0]
+    for cost in costs[1:]:
+        cart_total = cart_total + cost
+    total = plan.let_("total", cart_total)
     plan.where_(balance.ge(total))
 
     for number, (item, stock, quantity) in enumerate(lines, start=1):
@@ -196,6 +199,12 @@ def run(transaction: Any, plans: dict[str, Plan], names: tuple[str, ...]) -> dic
 # --8<-- [end:stage]
 
 
+def lost_race(error: Exception) -> bool:
+    """True for a retry-safe conflict: another commit won and nothing was stored."""
+    failure = getattr(error, "failure", None)
+    return isinstance(failure, Failure) and failure.reason == "conflict" and failure.retry_safe
+
+
 # --8<-- [start:race]
 def race(open_transaction: Callable[[], Any], plan: Plan) -> list[Any]:
     """BUYERS buyers commit `plan` at once; answer the sum of their matched counts.
@@ -220,8 +229,11 @@ def race(open_transaction: Callable[[], Any], plan: Plan) -> list[Any]:
                             ready.wait()
                     _, matched[index] = answer(bought.result())
                     return
-                except CommitConflict as error:
-                    if not error.failure.retry_safe or attempt + 1 == ATTEMPTS:
+                except (CommitRejected, MatchRequestError) as error:
+                    # A lost race is a typed conflict: CommitConflict on a
+                    # direct commit, a MatchRequestError carrying the same
+                    # failure through the proxy.
+                    if not lost_race(error) or attempt + 1 == ATTEMPTS:
                         raise
                     conflicts.append(index)
         except BaseException as error:  # reported by the main thread
@@ -243,7 +255,7 @@ def race(open_transaction: Callable[[], Any], plan: Plan) -> list[Any]:
 # --8<-- [end:race]
 
 
-def steps(open_transaction: Callable[[str], Any], plans: dict[str, Plan]) -> dict[str, Any]:
+def steps(open_transaction: Callable[..., Any], plans: dict[str, Plan]) -> dict[str, Any]:
     """Run every step; the race step runs its plan once per buyer at once."""
     results: dict[str, Any] = {}
     for step, names in STEPS.items():
