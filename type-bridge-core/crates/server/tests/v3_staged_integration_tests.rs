@@ -623,7 +623,7 @@ struct WritesSuite {
     state: &'static [(&'static str, &'static str)],
 }
 
-const WRITES_SUITES: [(&str, WritesSuite); 2] = [
+const WRITES_SUITES: [(&str, WritesSuite); 3] = [
     (
         "purchase",
         WritesSuite {
@@ -679,7 +679,61 @@ const WRITES_SUITES: [(&str, WritesSuite); 2] = [
             ],
         },
     ),
+    (
+        "shop",
+        WritesSuite {
+            document: "shop.yaml",
+            schema: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/shop/schema/fragments/shop.yaml"
+            ),
+            workspace: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/shop/typebridge.yaml"
+            ),
+            scope: "sdk-writes-shop",
+            typeql: || SHOP_SCHEMA_TYPEQL.to_owned(),
+            state: &[
+                (
+                    "a1_balance_54",
+                    r#"match $a isa account, has account-id "A1", has balance 54; select $a;"#,
+                ),
+                (
+                    "a2_balance_0",
+                    r#"match $a isa account, has account-id "A2", has balance 0; select $a;"#,
+                ),
+                (
+                    "book_stock_0",
+                    r#"match $i isa item, has sku "book", has stock 0; select $i;"#,
+                ),
+                (
+                    "pen_stock_2",
+                    r#"match $i isa item, has sku "pen", has stock 2; select $i;"#,
+                ),
+                (
+                    "mug_stock_4",
+                    r#"match $i isa item, has sku "mug", has stock 4; select $i;"#,
+                ),
+                (
+                    "lamp_stock_0",
+                    r#"match $i isa item, has sku "lamp", has stock 0; select $i;"#,
+                ),
+                (
+                    "r1_balance_90",
+                    r#"match $a isa account, has account-id "R1", has balance 90; select $a;"#,
+                ),
+                ("order_lines", "match $l isa order-line; select $l;"),
+            ],
+        },
+    ),
 ];
+
+/// The live schema of the `shop` writes suite, exactly its `shop.yaml`.
+const SHOP_SCHEMA_TYPEQL: &str = "define
+attribute account-id, value string; attribute balance, value integer;
+attribute sku, value string; attribute price, value integer; attribute stock, value integer;
+attribute order-id, value string; attribute quantity, value integer;
+entity account, owns account-id @key, owns balance @card(0..1), plays order-line:buyer;
+entity item, owns sku @key, owns price @card(0..1), owns stock @card(0..1), plays order-line:item;
+relation order-line, relates buyer, relates item, owns order-id @card(0..1), owns quantity @card(0..1);";
 
 async fn writes_state(
     suite: &WritesSuite,
@@ -788,6 +842,9 @@ async fn sdk_writes_fixture_serves_until_stopped() {
             .lock()
             .expect("commits")
             .iter()
+            // A program retries a commit that lost a race (STC2); how many
+            // attempts lose depends on timing, so they are not recorded.
+            .filter(|(.., failure)| failure.as_deref() != Some("STC2"))
             .map(|(committed, code, ..)| format!("{committed}:{code}"))
             .collect();
         observed.insert(

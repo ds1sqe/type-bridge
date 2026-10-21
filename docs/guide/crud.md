@@ -195,6 +195,8 @@ A lost race fails the commit with `CommitConflict`; run the whole transaction
 again. Reading a value does not protect it from a concurrent change, so write
 what the rule depends on. [Concurrency and conditional writes](concurrency.md)
 has the purchase plan in every SDK, the lock rules, retries and typed failures.
+[Checkout: a whole cart in one query](checkout.md) checks and writes a whole
+shopping cart, stock and balance, in one plan.
 
 ## Language differences
 

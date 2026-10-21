@@ -9,7 +9,9 @@ The TypeQL examples below run on 3.13.6. They describe server behavior;
 transaction and query errors still need handling in your chosen driver.
 
 To run these recipes from TypeBridge in Python, TypeScript, Rust or C, see
-[Using TypeBridge transactions](#using-typebridge-transactions).
+[Using TypeBridge transactions](#using-typebridge-transactions). For a whole
+shopping cart checked and written in one query, see
+[Checkout: a whole cart in one query](checkout.md).
 
 ## What a transaction sees
 

@@ -123,6 +123,7 @@ nav:
       - Overview: guide/data.md
       - CRUD & Transactions: guide/crud.md
       - Concurrency & Conditional Writes: guide/concurrency.md
+      - 'Checkout: a Cart in One Query': guide/checkout.md
       - Queries & Expressions: guide/queries.md
       - Immutable Typed Queries: guide/typed-queries.md
       - Functions: guide/functions.md

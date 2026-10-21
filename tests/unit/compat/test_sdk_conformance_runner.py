@@ -536,7 +536,7 @@ def test_writes_runs_every_suite_in_its_own_directory(
     monkeypatch.setattr(RUNNER, "writes_suite", writes_suite)
     files = RUNNER.writes(tmp_path, {}, live=True)
     assert calls == [(tmp_path / suite, suite, True) for suite in RUNNER.WRITES_SUITES]
-    assert RUNNER.WRITES_SUITES == ("purchase", "constraints")
+    assert RUNNER.WRITES_SUITES == ("purchase", "constraints", "shop")
     assert sorted(files) == sorted(
         f"{suite}/{name}"
         for suite in RUNNER.WRITES_SUITES
@@ -551,21 +551,30 @@ def test_writes_refuses_a_profile_without_staged_plans(tmp_path: Path) -> None:
         RUNNER.writes(tmp_path, environment, live=False)
 
 
+@pytest.mark.parametrize(
+    ("suite", "programs_dir", "package"),
+    [
+        ("purchase", "purchase", "purchase_models"),
+        ("constraints", "purchase", "purchase_models"),
+        ("shop", "shop", "shop_models"),
+    ],
+)
 def test_writes_builds_every_binding_program_from_the_generated_packages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suite: str, programs_dir: str, package: str
 ) -> None:
     generated = tmp_path / "generated"
     for binding in ("python", "typescript/src", "rust", "c"):
         (generated / binding).mkdir(parents=True)
     (tmp_path / "run").mkdir()
     commands = capture(monkeypatch)
-    programs = RUNNER.writes_programs(tmp_path / "run", generated, {})
+    programs = RUNNER.writes_programs(tmp_path / "run", suite, generated, {})
     assert set(programs) == set(RUNNER.BINDINGS)
-    assert programs["python"][0][-1].endswith("examples/purchase/python/program.py")
+    assert programs["python"][0][-1].endswith(f"examples/{programs_dir}/python/program.py")
+    assert (tmp_path / "run/python" / package).is_dir()
     assert programs["node"][0] == ["node", "dist/program.js"]
     assert (generated / "typescript/src/program.ts").is_file()
     assert (tmp_path / "run/rust/src/main.rs").is_file()
     assert "--offline" in programs["rust"][0]
     compile_c = next(command for command in commands if command[0] == "cc")
     assert "-Werror" in compile_c
-    assert any(item.endswith("examples/purchase/c/program.c") for item in compile_c)
+    assert any(item.endswith(f"examples/{programs_dir}/c/program.c") for item in compile_c)

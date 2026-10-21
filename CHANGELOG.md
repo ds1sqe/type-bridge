@@ -362,7 +362,9 @@ differently direct and through a proxy. Each entry says what to do instead.
   true. A condition that matches nothing is not an error: the commit
   succeeds and the plan answers `Matched(0)`, so check the answer. See
   [Concurrency and conditional writes](docs/guide/concurrency.md) for the
-  purchase example in every SDK (#253).
+  purchase example in every SDK, and
+  [Checkout: a whole cart in one query](docs/guide/checkout.md) for a cart
+  whose stock checks, total, balance check and writes are one plan (#253).
 - `query-plan/v3` delete stages gain `DeleteItem::Players { relation, role }`,
   which removes every player of a role, so a relation update can clear a
   role and attach its new players in one plan. `DeleteItem`, `AttachItem`
@@ -938,7 +940,8 @@ carry managers or typed queries.
 - SDK conformance test contracts are named by concern: queries, models,
   administration, serialization and artifacts. The sdk-v1 smoke report is
   folded into queries, and administration runs natively on each TypeDB profile.
-- The `writes` SDK conformance suite runs one staged program in Python,
+- The `writes` SDK conformance suite runs its staged programs (the purchase,
+  key constraints, and the shop checkout of `examples/shop`) in Python,
   TypeScript, Rust and C, directly and through the proxy, and checks that
   plan bytes, answers and stored state are identical, on TypeDB 3.13.6.
 - The SDK conformance sets (`sdk-v1` to `sdk-v6`) run on TypeDB 3.12.3 and
