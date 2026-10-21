@@ -123,6 +123,7 @@ nav:
       - Overview: guide/data.md
       - CRUD & Transactions: guide/crud.md
       - Concurrency & Conditional Writes: guide/concurrency.md
+      - 'Checkout: a Cart in One Query': guide/checkout.md
       - Queries & Expressions: guide/queries.md
       - Immutable Typed Queries: guide/typed-queries.md
       - Functions: guide/functions.md
@@ -138,7 +139,7 @@ nav:
       - Server Container: guide/server-container.md
       - Logging: guide/logging.md
       - Upgrading to 2.3: guide/upgrade-2.3.md
-      - Upgrading to 2.0: guide/upgrade-v2.md
+      - Upgrading to 2.1: guide/upgrade-v2.md
       - V2 Deprecations: guide/v2-deprecations.md
       - 2.0.2 Expanded Notice: guide/v2.0.2-notice.md
   - Query-plan V3: reference/query-plan-v3.md

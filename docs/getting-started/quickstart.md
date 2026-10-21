@@ -17,7 +17,7 @@ schema:
   managed-scope: quickstart
 
 compatibility:
-  semantic-profile: typedb-3.12.1/v1
+  semantic-profile: typedb-3.13.6/v1
 
 migrations:
   directory: migrations/v2
@@ -136,15 +136,19 @@ types and IIDs.
 
 ## 5. Query across types
 
+Query terminals such as `rows` are coroutines. Await them inside async code.
+This script has no event loop, so it wraps the session in `blocking`:
+
 ```python
 from app_models import Employment
+from type_bridge_core import blocking
 
-session = Person.query(db)
+session = blocking(Person.query(db))
 person = session.exact(Person)
 employment = session.exact(Employment)
 
 employee = employment.role(Employment.employee).connects(person)
-rows = await (
+rows = (
     session.query(person, employment)
     .where(employee, person.field(Person.age).gte(Age(18)))
     .rows(limit=100)

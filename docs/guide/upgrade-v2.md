@@ -110,7 +110,7 @@ type-bridge --manifest typebridge.yaml migration verify --environment production
 ```
 
 Read-only recovery, ledger import, and replay remain available after the
-cutover; they cannot reopen the archived writer lane.
+cutover; they cannot reopen the archived write path.
 
 ## Retained query facades
 

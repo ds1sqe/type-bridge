@@ -183,9 +183,7 @@ export interface NativePendingPlanAnswer {
 export interface NativeStagedTransaction {
     stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
     stage(plan: NativePlan): NativePendingPlanAnswer;
-    hasUnknownOutcome(): boolean;
     commit(): Promise<void>;
-    commitRetry(): Promise<void>;
     rollback(): void;
     close(): void;
     dispose(): Promise<void>;

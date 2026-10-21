@@ -1,6 +1,6 @@
 //! Dynamic rows and inputs used by runtime descriptor managers.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};

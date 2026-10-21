@@ -95,7 +95,6 @@ void staged_prototypes(void) {
   proxy_transaction_fn proxy_transaction = &type_bridge_proxy_connection_transaction;
   stage_fn stage = &type_bridge_staged_transaction_stage;
   commit_fn commit = &type_bridge_staged_transaction_commit;
-  commit_fn commit_retry = &type_bridge_staged_transaction_commit_retry;
   rollback_fn rollback = &type_bridge_staged_transaction_rollback;
   close_fn close = &type_bridge_staged_transaction_close;
   answer_fn answer = &type_bridge_pending_answer;
@@ -108,7 +107,6 @@ void staged_prototypes(void) {
   (void)proxy_transaction;
   (void)stage;
   (void)commit;
-  (void)commit_retry;
   (void)rollback;
   (void)close;
   (void)answer;
@@ -116,7 +114,7 @@ void staged_prototypes(void) {
   (void)failure_get;
 }
 
-/* Decode, stage, commit (retrying an unknown outcome once) and read. */
+/* Decode, stage, commit and read. */
 int staged_consume(const type_bridge_database_t *database,
                    const uint8_t *schema, size_t schema_len,
                    const uint8_t *plan_bytes, size_t plan_len,
@@ -155,10 +153,6 @@ int staged_consume(const type_bridge_database_t *database,
     goto done;
   }
   status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
-  if (status == TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN) {
-    (void)type_bridge_execution_diagnostics_close(&diagnostics);
-    status = type_bridge_staged_transaction_commit_retry(transaction, &diagnostics);
-  }
   if (status != TYPE_BRIDGE_STATUS_OK) {
     goto done;
   }

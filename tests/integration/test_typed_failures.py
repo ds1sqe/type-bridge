@@ -27,9 +27,9 @@ def test_python_typed_provider_failure(case: str) -> None:
     container = os.getenv("TYPE_BRIDGE_FAILURE_CONTAINER")
     if not address or not container:
         pytest.skip("requires isolated failure-smoke environment and owned pause container")
-    assert container.startswith("tb-w11b-")
+    assert container.startswith("tb-failure-smoke-")
     db = PyRustDatabase.connect(
-        address, f"tb_w11b_python_{uuid4().hex}", http_port=int(os.environ["TYPEDB_HTTP_PORT"])
+        address, f"tb_failure_python_{uuid4().hex}", http_port=int(os.environ["TYPEDB_HTTP_PORT"])
     )
     contexts = []
     db.create_database()

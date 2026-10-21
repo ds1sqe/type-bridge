@@ -1,7 +1,7 @@
 //! N-API seam for the core staged `Transaction`, direct or over the proxy.
 //!
 //! A [`NodeStagedTransaction`] owns one core transaction. Staging validates
-//! on the JavaScript thread; `commit` and `commitRetry` run on the provider
+//! on the JavaScript thread; `commit` runs on the provider
 //! runtime and settle a Promise. Failures carry the canonical SDK diagnostic
 //! host JSON, so a proxy commit raises the same typed failure as a direct one.
 
@@ -121,17 +121,12 @@ impl NodeStagedTransaction {
         })
     }
 
-    fn settle_commit(&self, env: &Env, retry: bool) -> napi::Result<Object<'static>> {
+    fn settle_commit(&self, env: &Env) -> napi::Result<Object<'static>> {
         let entry = crate::perf_stages::entry();
         let _entered = entry.enter();
         let inner = Arc::clone(&self.inner);
         let work = async move {
-            let mut transaction = inner.lock().await;
-            let result = if retry {
-                transaction.commit_retry().await
-            } else {
-                transaction.commit().await
-            };
+            let result = inner.lock().await.commit().await;
             result.map_err(|error| crate::match_runtime::napi_sdk_diagnostic(error.diagnostic()))
         };
         // The span closes when the provider runtime finishes the commit.
@@ -178,12 +173,6 @@ impl NodeStagedTransaction {
         Ok(NodePendingPlanAnswer { inner })
     }
 
-    /// Whether a proxy commit with an unknown outcome awaits `commitRetry`.
-    #[napi(js_name = "hasUnknownOutcome")]
-    pub fn has_unknown_outcome(&self) -> napi::Result<bool> {
-        Ok(self.lock()?.has_unknown_outcome())
-    }
-
     /// Close without committing once any running commit settles; a closed
     /// transaction stays closed.
     #[napi(ts_return_type = "Promise<void>")]
@@ -200,14 +189,7 @@ impl NodeStagedTransaction {
     /// Fire the staged stack; answers become visible only on success.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn commit(&self, env: Env) -> napi::Result<Object<'static>> {
-        self.settle_commit(&env, false)
-    }
-
-    /// Resend the last proxy commit with its idempotency key after an
-    /// unknown outcome. Any other state rejects with a lifecycle error.
-    #[napi(js_name = "commitRetry", ts_return_type = "Promise<void>")]
-    pub fn commit_retry(&self, env: Env) -> napi::Result<Object<'static>> {
-        self.settle_commit(&env, true)
+        self.settle_commit(&env)
     }
 
     /// Discard staged work and keep the transaction for reuse.

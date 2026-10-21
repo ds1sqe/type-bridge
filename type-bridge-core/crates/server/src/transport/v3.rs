@@ -23,17 +23,15 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use axum::routing::{get, post};
 use type_bridge_contract::capability::CapabilityId;
-use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCode};
+use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::TypeId;
-use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::query_plan::v3::{
     Operation, Pattern, QueryPlanV3, Stage, WriteReturns, query_plan_v3_capability_vocabulary,
 };
 use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteCapabilitiesFingerprint};
 use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_IDEMPOTENCY_V3, CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3,
-    StagedAnswerV3, StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
 };
 use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
@@ -50,21 +48,11 @@ use super::v2::{
     replay_capacity, replay_unavailable, replayed, response_audit_deadline, unavailable,
     v2_request_metadata,
 };
-use crate::idempotency::{
-    IdempotencyAdmission, IdempotencyError, IdempotencyReservation, RetainedOutcome,
-};
 use crate::interceptor::{RequestContext, V2PolicyOutcome, V3CommitOutcome, V3PolicyPlan};
-use crate::pipeline::{QueryPipeline, UNAUTHENTICATED_CLIENT_ID};
+use crate::pipeline::QueryPipeline;
 
 /// Code of the signed failure refusing a staged write no policy admitted.
 pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
-
-/// Code of the signed failure refusing an idempotency key from a caller no
-/// policy vouched for, or one without an authenticated client identity.
-pub const STAGED_IDEMPOTENCY_NOT_AUTHORIZED: &str = "staged_idempotency_not_authorized";
-
-/// Retention reserved for a keyed reply, at least enough for a signed failure.
-const FAILURE_REPLY_ALLOWANCE: usize = 64 * 1024;
 
 struct V3RouterState {
     pipeline: Arc<QueryPipeline>,
@@ -122,11 +110,7 @@ pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilitie
     for capability in query_plan_v3_capability_vocabulary().iter() {
         capabilities.insert(capability.clone());
     }
-    for capability in [
-        CAP_QUERY_REMOTE_STAGED_V3,
-        CAP_QUERY_REMOTE_WRITE_V3,
-        CAP_QUERY_REMOTE_IDEMPOTENCY_V3,
-    ] {
+    for capability in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
         capabilities.insert(CapabilityId::new(capability)?);
     }
     RemoteCapabilities::new(capabilities, v2.executor().clone(), v2.reply_key())
@@ -259,33 +243,23 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
         )
         .await;
     }
-    // Retention is charged to the caller's identity, so a key needs the
-    // same vouched caller a write does, even on a read or when the operator
-    // opened unauthenticated writes.
-    let keyed = staged.idempotency_key().is_some();
     let open_writes = state.query.allow_unauthenticated_staged_writes;
-    let vouched = if keyed || (kind == TransactionKind::Write && !open_writes) {
-        match await_before_deadline(deadline, state.pipeline.authorize_v3_write(&ctx)).await {
-            Some(Ok(vouched)) => vouched,
-            Some(Err(_)) => return refuse(state, deadline, &ctx, request, policy_rejected()).await,
-            None => return refuse(state, deadline, &ctx, request, deadline_exceeded()).await,
+    if kind == TransactionKind::Write && !open_writes {
+        let vouched =
+            match await_before_deadline(deadline, state.pipeline.authorize_v3_write(&ctx)).await {
+                Some(Ok(vouched)) => vouched,
+                Some(Err(_)) => {
+                    return refuse(state, deadline, &ctx, request, policy_rejected()).await;
+                }
+                None => return refuse(state, deadline, &ctx, request, deadline_exceeded()).await,
+            };
+        if !vouched {
+            let failure = sdk_invalid(
+                STAGED_WRITE_NOT_AUTHORIZED,
+                "staged write transactions need an authenticated caller",
+            );
+            return finish_failed(state, deadline, &ctx, &staged, failure).await;
         }
-    } else {
-        false
-    };
-    if kind == TransactionKind::Write && !vouched && !open_writes {
-        let failure = sdk_invalid(
-            STAGED_WRITE_NOT_AUTHORIZED,
-            "staged write transactions need an authenticated caller",
-        );
-        return finish_failed(state, deadline, &ctx, &staged, failure).await;
-    }
-    if keyed && (!vouched || ctx.client_id == UNAUTHENTICATED_CLIENT_ID) {
-        let failure = sdk_invalid(
-            STAGED_IDEMPOTENCY_NOT_AUTHORIZED,
-            "idempotency keys need an authenticated, write-authorized caller",
-        );
-        return finish_failed(state, deadline, &ctx, &staged, failure).await;
     }
 
     // Plan policy authorizes every bound plan before any nonce or key
@@ -315,53 +289,6 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
         }
     }
 
-    // A keyed request first reserves its retained reply; a keyed retry
-    // legitimately repeats the nonce, so retention answers it before the
-    // nonce store is consulted.
-    let retention = match staged.idempotency_key() {
-        Some(key) => {
-            let fingerprint = match staged.fingerprint() {
-                Ok(fingerprint) => fingerprint,
-                Err(diagnostic) => return refuse(state, deadline, &ctx, request, diagnostic).await,
-            };
-            let allowance = reply_allowance(state, &staged);
-            // Clock skew may stretch the request past the store's TTL; the
-            // nonce, held for the full lifetime, covers the difference.
-            let max_ttl = state.query.idempotency.config().max_ttl;
-            let retain_until = Instant::now()
-                .checked_add(lifetime.min(max_ttl))
-                .unwrap_or(expires)
-                .min(expires);
-            match state.query.idempotency.begin(
-                &ctx.client_id,
-                key,
-                &fingerprint,
-                retain_until,
-                allowance,
-                Instant::now(),
-            ) {
-                Ok(IdempotencyAdmission::Reserved(ticket)) => Some(Retention { ticket, allowance }),
-                Ok(IdempotencyAdmission::Replay { reply, outcome }) => {
-                    // Audited and policed as what the first caller received.
-                    let (success, code) = (outcome.success(), outcome.code().as_str());
-                    return match police(state, deadline, &ctx, success, code, reply.len()).await {
-                        None => envelope_response(reply.to_vec()),
-                        // A withheld write replay may hide a commit. The
-                        // retained entry stays.
-                        Some(_) if kind == TransactionKind::Write => {
-                            envelope_response(state.unknown(&staged))
-                        }
-                        Some(refusal) => envelope_response(state.refusal(request, &refusal)),
-                    };
-                }
-                Err(error) => {
-                    return refuse(state, deadline, &ctx, request, error.diagnostic()).await;
-                }
-            }
-        }
-        None => None,
-    };
-
     // From here the outcome is owned by a detached task: a client that goes
     // away mid-commit cannot drop the observers or leave the key in flight.
     let task = tokio::spawn(run_staged(
@@ -371,7 +298,6 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
         plans,
         kind,
         Window { deadline, expires },
-        retention,
     ));
     match task.await {
         Ok(reply) => envelope_response(reply),
@@ -381,12 +307,6 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
     }
 }
 
-/// A keyed request's retention ticket and the reply bytes it reserved.
-struct Retention {
-    ticket: IdempotencyReservation,
-    allowance: usize,
-}
-
 /// When a staged request must finish, and when its nonce may be forgotten.
 #[derive(Clone, Copy)]
 struct Window {
@@ -394,18 +314,8 @@ struct Window {
     expires: Instant,
 }
 
-/// Retention reserved for a keyed reply: the server's answer ceiling,
-/// tightened by the request's own reply budget, never below a signed
-/// failure.
-fn reply_allowance(state: &V3RouterState, staged: &StagedRequestV3) -> usize {
-    let ceiling = state.query.ceilings.answer.max_bytes;
-    usize::try_from(ceiling.min(staged.limits().max_bytes))
-        .unwrap_or(usize::MAX)
-        .clamp(FAILURE_REPLY_ALLOWANCE, MAX_REMOTE_ENVELOPE_BYTES)
-}
-
-/// Reserve the nonce, execute, observe, police and retain one admitted
-/// request; return the bytes to deliver.
+/// Reserve the nonce, execute, observe and police one admitted request;
+/// return the bytes to deliver.
 async fn run_staged(
     shared: Arc<V3RouterState>,
     ctx: RequestContext,
@@ -413,14 +323,11 @@ async fn run_staged(
     plans: Vec<QueryPlanV3>,
     kind: TransactionKind,
     window: Window,
-    retention: Option<Retention>,
 ) -> Vec<u8> {
     let state = shared.as_ref();
     let deadline = window.deadline;
-    let retention = retention.as_ref();
-    // Every executed request holds its nonce for its whole lifetime. A keyed
-    // retry reaches this only once its retention lapsed, so a spent nonce
-    // there means an earlier execution's outcome is lost.
+    // Every executed request holds its nonce for its whole lifetime, so a
+    // replayed request is refused before it can execute again.
     let reserve = state.query.replay_store.reserve(
         state.query.advertisement.executor().epoch(),
         staged.nonce(),
@@ -428,15 +335,12 @@ async fn run_staged(
     );
     let refused = match await_before_deadline(deadline, reserve).await {
         Some(Ok(())) => None,
-        Some(Err(ReplayStoreError::Replayed))
-            if retention.is_some() && kind == TransactionKind::Write =>
-        {
+        // An earlier copy of these exact write bytes ran and may have
+        // committed, so the replay never reads as nothing applied.
+        Some(Err(ReplayStoreError::Replayed)) if kind == TransactionKind::Write => {
             let reply = state.unknown(&staged);
             let code = unknown_code();
-            return settle(
-                state, deadline, &ctx, &staged, retention, reply, false, &code, true,
-            )
-            .await;
+            return settle(state, deadline, &ctx, &staged, reply, false, &code, true).await;
         }
         Some(Err(ReplayStoreError::Replayed)) => Some(replayed()),
         Some(Err(ReplayStoreError::Capacity)) => Some(replay_capacity()),
@@ -446,10 +350,7 @@ async fn run_staged(
     if let Some(diagnostic) = refused {
         let reply = state.refusal(Some(&staged), &diagnostic);
         let code = diagnostic.code().as_str();
-        return settle(
-            state, deadline, &ctx, &staged, retention, reply, false, code, false,
-        )
-        .await;
+        return settle(state, deadline, &ctx, &staged, reply, false, code, false).await;
     }
 
     let executed = execute_staged(state, &staged, &plans, kind, deadline).await;
@@ -492,7 +393,6 @@ async fn run_staged(
         deadline,
         &ctx,
         &staged,
-        retention,
         reply,
         success,
         &code,
@@ -508,66 +408,25 @@ fn unknown_code() -> String {
         .to_owned()
 }
 
-/// Police `reply`, retain exactly what is delivered for a keyed request, and
-/// return it.
+/// Police `reply` and return what is delivered.
 #[allow(clippy::too_many_arguments)]
 async fn settle(
     state: &V3RouterState,
     deadline: Instant,
     ctx: &RequestContext,
     staged: &StagedRequestV3,
-    retention: Option<&Retention>,
-    mut reply: Vec<u8>,
-    mut success: bool,
+    reply: Vec<u8>,
+    success: bool,
     code: &str,
     may_have_committed: bool,
 ) -> Vec<u8> {
-    let mut code = code.to_owned();
-    // Retention covers the server's answer ceiling; a larger reply is
-    // delivered as the bounded failure it can be retained as.
-    if retention.is_some_and(|retention| reply.len() > retention.allowance) {
-        (reply, code) = if may_have_committed {
-            (state.unknown(staged), unknown_code())
-        } else {
-            let diagnostic = IdempotencyError::ReplyTooLarge.diagnostic();
-            let code = diagnostic.code().as_str().to_owned();
-            (state.refusal(Some(staged), &diagnostic), code)
-        };
-        success = false;
+    // The response policy decides: a write it withholds after commit becomes
+    // an unknown outcome, and any other refusal replaces the reply.
+    match police(state, deadline, ctx, success, code, reply.len()).await {
+        None => reply,
+        Some(_) if may_have_committed => state.unknown(staged),
+        Some(refusal) => state.refusal(Some(staged), &refusal),
     }
-    // The response policy decides before retention: a write it withholds
-    // after commit becomes an unknown outcome, and any other refusal replaces
-    // the reply. A keyed retry replays exactly what this caller received,
-    // never the withheld answer.
-    let (reply, success, code) =
-        match police(state, deadline, ctx, success, &code, reply.len()).await {
-            None => (reply, success, code),
-            Some(_) if may_have_committed => (state.unknown(staged), false, unknown_code()),
-            Some(refusal) => {
-                let code = refusal.code().as_str().to_owned();
-                (state.refusal(Some(staged), &refusal), false, code)
-            }
-        };
-    if let Some(retention) = retention {
-        // A replay is audited with the outcome retained here. Every code is
-        // a validated diagnostic code, so the summary always builds; a lost
-        // completion leaves the key in flight until expiry, and the reply
-        // itself is still delivered.
-        let retained = DiagnosticCode::new(code)
-            .map_err(|_| IdempotencyError::Unavailable)
-            .and_then(|code| {
-                state.query.idempotency.complete(
-                    &retention.ticket,
-                    Arc::from(reply.as_slice()),
-                    RetainedOutcome::new(success, code),
-                    Instant::now(),
-                )
-            });
-        if let Err(error) = retained {
-            tracing::warn!(code = error.code(), "staged reply could not be retained");
-        }
-    }
-    reply
 }
 
 /// Stage every policy-authorized bound plan in order on one core

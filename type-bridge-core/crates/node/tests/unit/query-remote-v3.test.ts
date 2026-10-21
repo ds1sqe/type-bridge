@@ -32,6 +32,6 @@ test("query-remote-v3 fixtures and Rust embedded plans", () => {
     const outer = fixtures[name];
     assert.equal(outer.format, "typebridge.query-remote-signed-reply/v1");
     assert.equal(outer.payload.request, fixtures["request-fingerprint.json"].digest);
-    assert.equal(outer.payload.idempotency_key, request.idempotency_key);
+    assert.equal(outer.payload.nonce, request.nonce);
   }
 });

@@ -1,4 +1,4 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::future::Future;
@@ -383,7 +383,7 @@ pub trait Interceptor: Send + Sync {
     /// Authorize one bound plan of a staged V3 request.
     ///
     /// Runs for every plan, in order, after write admission and before any
-    /// nonce or idempotency-key reservation, provider I/O or staging; the
+    /// nonce reservation, provider I/O or staging; the
     /// view is computed from the decoded request alone. `index` is the
     /// plan's position in the request. An error refuses the whole request:
     /// later plans are not consulted, nothing is reserved and nothing opens.

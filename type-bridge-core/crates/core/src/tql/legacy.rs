@@ -1,4 +1,4 @@
-#![allow(deprecated)] // Legacy lowering remains until 11.30 / 3.0.
+#![allow(deprecated)] // Legacy lowering remains until 3.0.
 //! Deprecated front-end lowering; official nodes retain all TypeQL meaning.
 use super::*;
 use crate::ast as old;
@@ -584,7 +584,7 @@ pub fn compile_legacy_node(node: &old::QueryNode) -> Result<String, TqlError> {
     }
 }
 
-// Deprecated caller-owned Raw escape hatches are the explicit 11.30 / 3.0
+// Deprecated caller-owned Raw escape hatches are the explicit 3.0
 // text-building exception. Structured nodes still use official AST Display.
 fn raw_pattern(value: &old::Pattern) -> bool {
     match value {

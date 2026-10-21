@@ -1209,19 +1209,16 @@ type_bridge_write_transaction_close(
  * Staging sends nothing. A staged transaction is a reusable logical
  * transaction: commit sends every staged plan in one provider transaction,
  * and commit and rollback keep the handle usable until close, the only
- * release. After a definite commit outcome (success or a typed failure) the
- * handle stages new work; committing with nothing staged is a no-op success.
- * After an unknown proxy outcome commit_retry resends the identical request,
- * and commit with nothing newly staged is refused until a retry or rollback.
- * A direct provider commit cannot retry: its
- * TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN leaves the handle ready for new
- * work, and commit_retry is refused. Rollback discards staged plans and any
- * unknown outcome. Stage, commit, commit_retry and rollback on a null handle
+ * release. After every commit outcome the handle stages new work;
+ * committing with nothing staged is a no-op success. After
+ * TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN (such as a lost proxy reply) the
+ * writes may have applied, and the caller reads the database to find out.
+ * Rollback discards staged plans. Stage, commit and rollback on a null handle
  * return TYPE_BRIDGE_STATUS_INVALID_ARGUMENT; close and the frees accept a
  * null owner and clear the owner they release. The open handle keeps its
  * database busy (TYPE_BRIDGE_STATUS_IN_USE on database close) until close.
- * A contained panic during commit poisons the handle: stage, commit and
- * commit_retry then return TYPE_BRIDGE_STATUS_EXECUTION_FAILED with
+ * A contained panic during commit poisons the handle: stage and commit
+ * then return TYPE_BRIDGE_STATUS_EXECUTION_FAILED with
  * c_transaction_poisoned; rollback recovers it and close releases it.
  * Pending answers and plans outlive the transaction that staged them.
  *
@@ -1272,10 +1269,6 @@ type_bridge_staged_transaction_stage(
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_commit(
-    type_bridge_staged_transaction_t *transaction,
-    type_bridge_execution_diagnostics_t **out_diagnostics);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_staged_transaction_commit_retry(
     type_bridge_staged_transaction_t *transaction,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1808,9 +1801,8 @@ type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
 /* ABI 1.7: a deferred transaction on the proxy. Open fetches the server's
  * staged advertisement, which must name the connection's executor and reply
  * key; nothing else is sent until commit, one signed exchange carrying every
- * staged plan. An unknown commit outcome keeps the handle for
- * type_bridge_staged_transaction_commit_retry. The transaction may outlive
- * the connection; stage, commit, rollback and close are those of
+ * staged plan. The transaction may outlive the connection; stage, commit,
+ * rollback and close are those of
  * type_bridge_database_transaction. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_proxy_connection_transaction(

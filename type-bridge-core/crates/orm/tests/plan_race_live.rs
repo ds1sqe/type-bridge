@@ -389,7 +389,7 @@ impl Live {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let name = format!("tb_w11e_race_{recipe}_{}_{nonce}", std::process::id());
+        let name = format!("tb_race_{recipe}_{}_{nonce}", std::process::id());
         let plain = Database::with_backend(Box::new(self.backend.clone()), &name);
         plain.create_database().await.unwrap();
         plain

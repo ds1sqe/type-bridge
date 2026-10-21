@@ -1380,7 +1380,7 @@ mod typed_failure_live;
 #[tokio::test]
 #[ignore = "requires an owned TypeDB 3.13.6 container and failure-smoke environment"]
 async fn live_provider_failures_reach_rust_error() {
-    for (case, error) in typed_failure_live::observations("tb_w11b_rust").await {
+    for (case, error) in typed_failure_live::observations("tb_failure_rust").await {
         let error = Error::from_sdk_execution(
             typed_failure_live::diagnostic(error),
             ModelValidationPhase::Input,

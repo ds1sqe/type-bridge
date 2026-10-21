@@ -35,8 +35,8 @@ while detailed reference pages keep their stable URLs.
 
 -   **Operate and upgrade**
 
-    Server deployment, logging, compatibility, deprecations, and 2.1 upgrade
-    sequencing.
+    Server deployment, logging, compatibility, deprecations, and the 2.3 and
+    2.1 upgrades.
 
     [:octicons-arrow-right-24: Operations](operations.md)
 

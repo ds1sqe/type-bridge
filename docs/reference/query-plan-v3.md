@@ -373,8 +373,8 @@ is the V2 vocabulary (which includes `query.pattern.iid`) plus
 `query.plan.v3`, the insert/update/delete/put write capabilities, `query.let`
 and every `query.expr.*` name. The staged advertisement at
 `GET /v3/capabilities` is the V2 advertisement's capabilities, that
-vocabulary, `query.remote.envelope-v3`, `query.remote.write` and
-`query.remote.idempotency`. `query.write.attach` and `query.fetch.thing` are
+vocabulary, `query.remote.envelope-v3` and `query.remote.write`.
+`query.write.attach` and `query.fetch.thing` are
 derived but not advertised yet, so staged requests refuse plans that need
 them.
 
@@ -563,13 +563,9 @@ refused with `query_remote_v3_documents_unsupported`, and a fetch plan fails
 capability admission earlier because `query.fetch.thing` is not advertised
 yet. Execution enforces the
 advertised answer ceilings, tightened by the request's `max_items`,
-`max_bytes` and deadline, while answers are read. An idempotency key needs the
-same vouched caller a write does and a transport policy that set
-`RequestContext::client_id`, even on a read or under
-`allow_unauthenticated_staged_writes`; otherwise the signed reply fails with
-`staged_idempotency_not_authorized`. Once admitted, a request finishes in a
-detached task: a client that disconnects mid-commit still has its outcome
-observed and retained.
+`max_bytes` and deadline, while answers are read. Once admitted, a request
+finishes in a detached task: a client that disconnects mid-commit still has
+its outcome committed and observed.
 
 ### Request
 
@@ -580,12 +576,11 @@ observed and retained.
 | `prepared_at_unix_ms` | Unsigned Unix millisecond timestamp |
 | `expires_at_unix_ms` | Preparation time plus the selected deadline |
 | `nonce` | 16..128 ASCII letters, digits, hyphens or underscores |
-| `idempotency_key` | Optional lowercase hex encoding of 16..64 opaque bytes |
 | `kind` | Optional `read`, `write` or `schema` |
 | `limits` | Complete budget object below |
 | `plans` | Nonempty ordered array of `{"plan_bytes":"...","rows":[...]}` |
 
-Omit absent `kind`/`idempotency_key`; explicit null is not canonical. Each
+Omit an absent `kind`; explicit null is not canonical. Each
 `plan_bytes` is the lowercase hexadecimal encoding of exact canonical V3 plan
 bytes. It is opaque bytes, not TypeQL or a host-reserialized plan object. Rows
 are positional canonical scalar/null arrays under that plan's input columns.
@@ -599,8 +594,8 @@ refuses writes; explicit write permits reads. Schema refuses query plans. The
 request is a stack, not an open transaction or a collection of separately
 committed requests. Its answers resolve together after the transaction outcome.
 
-Every request requires `query.remote.envelope-v3`, every writing stack adds
-`query.remote.write`, and a keyed request adds `query.remote.idempotency`.
+Every request requires `query.remote.envelope-v3`, and every writing stack
+adds `query.remote.write`.
 The union of all plan capabilities is also required. The receiver checks every
 plan under its own schema and the minimum of its query limits and the advertised
 query limits. Sender metadata cannot widen receiver limits.
@@ -609,8 +604,7 @@ Deadline omission means 30,000 ms; explicit deadlines range from 1 to 300,000 ms
 Expiry equals preparation plus that duration, with checked arithmetic. Execution
 must reject an expired request or a preparation timestamp more than 60,000 ms
 in the future. Archival decoding is separate from this wall-clock freshness
-check. Reusing a keyed request means resending its exact original bytes: changing
-nonce, time, rows, budgets, kind or advertisement changes its fingerprint.
+check.
 
 ### Aggregate budgets
 
@@ -645,9 +639,8 @@ budget to receive a diagnostic. Diagnostics remain capped at 65,536 bytes.
 ### Replies and failure vocabulary
 
 The unsigned payload has required `format`, `nonce`, `request`, `outcome` and
-`answers`, plus the same optional `idempotency_key`. Its format is
-`typebridge.query-remote-response/v3`; `request` is the exact request fingerprint
-digest, and nonce/key must equal that request. A successful outcome is
+`answers`. Its format is `typebridge.query-remote-response/v3`; `request` is the
+exact request fingerprint digest, and the nonce must equal that request's. A successful outcome is
 `{"kind":"committed"}`. A failed outcome is
 `{"kind":"failed","diagnostic":SDK_DIAGNOSTIC_JSON}` and has `answers:[]`.
 No partial answers escape a rejected or indeterminate transaction. A successful
@@ -694,7 +687,7 @@ The request uses the same framed SHA-256 algorithm as plan fingerprints, with
 domain `typebridge.query.remote-request`, canonicalization
 `typebridge.query-remote-request/v3`, no semantic profile and the complete
 canonical request bytes. This binds all plans, rows, limits, times, kind,
-advertisement, nonce and idempotency key.
+advertisement and nonce.
 
 Replies use the unchanged `typebridge.query-remote-signed-reply/v1` outer object:
 `advertisement`, `format`, `key`, `key_id`, `payload`, `signature`. Advertisement
@@ -712,59 +705,19 @@ Rust's genuine Ed25519 golden fixtures are in
 request, request fingerprint, committed reply and failed reply. Existing V2
 envelope and V2/V3 plan fixtures remain byte-for-byte unchanged.
 
-### Bounded idempotency retention
+### Replays and unknown outcomes
 
-The server's standalone `IdempotencyStore` is an in-memory map keyed by the
-**authenticated client identity and opaque key**. Client identity comes from
-transport/policy, never from this unsigned request body. Each entry keeps the
-exact request fingerprint, fixed expiry and either an in-flight reservation or
-the complete signed reply bytes, including failed or indeterminate replies,
-with a value-free summary of their outcome (success flag and diagnostic code).
+The server keeps no replies. `POST /v3/staged` authenticates the transport,
+decodes against the advertisement, checks freshness, authorizes the write and
+runs plan policy; it then reserves the request's nonce for the request's whole
+lifetime, executes once, signs and replies. The same bytes again never execute
+again: a read is refused with `query_remote_replay`, and a write answers
+`commit_outcome_unknown`, because its first copy may have committed. Every
+other signed refusal applied nothing.
 
-| Live client/key state | Same fingerprint | Different fingerprint |
-| --- | --- | --- |
-| In flight | `retry_later` | `idempotency_key_reused` |
-| Completed | Replay identical signed bytes | `idempotency_key_reused` |
-
-A retry does not extend expiry. Only expired entries are removed, lazily at the
-next admission/completion. Neither an in-flight entry nor a completed unexpired
-reply is evicted under pressure: a new keyed request receives
-`idempotency_capacity` before execution instead.
-
-`IdempotencyConfig` defaults to 100,000 live entries, 256 MiB of retained plus
-reserved reply bytes, and a maximum remaining TTL of five minutes. Capacity and
-byte quota must be positive; TTL may be tightened but never exceed five minutes.
-One client holds at most `1 / client_share` of the entries and of the bytes
-(default 1/4: one full 32 MiB envelope allowance in flight beside up to 32 MiB
-of retained replies); past its share a new keyed request receives
-`idempotency_client_capacity` while other clients keep theirs.
-The route reserves its largest possible signed success/failure byte allowance
-before executing: the server's answer byte ceiling, tightened by the request's
-`max_bytes`, and never below 64 KiB. A reply that would not fit is delivered
-and retained as the bounded failure (`commit_outcome_unknown` after a write).
-A reply the response policy withholds is retained as that refusal, so a retry
-never receives the withheld answer. A replay passes the response/audit policy
-again with the retained outcome, so a replayed failure is audited as that
-failure. Retention is clamped to the store's TTL
-when clock skew stretches a request past it; every executed request also holds
-its nonce for its whole lifetime, so a retry after retention lapsed is refused
-(as `commit_outcome_unknown` for a write) instead of executing again. Completion releases unused allowance and stores the exact
-opaque signed bytes. This prevents a transaction that committed from losing
-its reply because another request filled the byte quota during execution.
-Completion must fit the allowance; expiry, duplicate completion or a ticket
-from another store cannot overwrite a newer reservation. Dropping a ticket
-leaves it in flight until expiry because the execution might have committed.
-
-The store itself installs no route and opens no transaction. `POST /v3/staged`
-drives it in this order: authenticate the transport, decode against the
-advertisement, check freshness, authorize the write and the key, run plan
-policy, then `begin` the retention entry. A keyed retry legitimately repeats
-the nonce, so retention answers it before the nonce store is consulted; only
-then does the route reserve the nonce, execute once, sign and complete.
-
-Retention is **not durable**. A server restart loses the store, and its executor
-epoch/advertisement must change. A retry may return an indeterminate outcome;
-a restart is not proof that a previous request did not commit. Expired keys and
-lost entries cannot establish exactly-once execution beyond the original
-request lifetime. Do not silently reprepare and execute a lost-reply write under
-a new advertisement as if it were the same idempotent request.
+A reply that is lost or fails verification leaves the outcome unknown; the
+application reconciles by reading the database, as after a lost direct commit.
+A server restart forgets spent nonces, and its executor epoch and
+advertisement change, so a request bound to the old advertisement is refused.
+TypeBridge reports the outcome; retries, locks and concurrency limits are the
+application's policy.

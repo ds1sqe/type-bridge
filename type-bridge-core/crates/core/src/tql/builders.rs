@@ -1,4 +1,4 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use super::{Query, TqlError};
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use typeql::{

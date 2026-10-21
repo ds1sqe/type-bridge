@@ -9,7 +9,7 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v3::{
-    IdempotencyKey, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
+    StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
     VerifiedStagedReplyV3,
 };
 use type_bridge_contract::schema::DeclaredSchema;
@@ -71,7 +71,7 @@ impl ProxyStaging {
         &self.declared
     }
 
-    /// Build one request with a fresh nonce and a fresh 16-byte key.
+    /// Build one request with a fresh nonce.
     pub(crate) fn request(
         &self,
         plans: Vec<StagedPlanV3>,
@@ -79,8 +79,6 @@ impl ProxyStaging {
         deadline_ms: Option<u64>,
     ) -> Result<StagedRequestV3, Diagnostic> {
         use type_bridge_contract::query_remote_v3::StagedKindV3;
-        let mut key = [0u8; 16];
-        OsRng.fill_bytes(&mut key);
         let mut nonce = [0u8; 16];
         OsRng.fill_bytes(&mut nonce);
         let nonce = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -97,7 +95,6 @@ impl ProxyStaging {
         StagedRequestV3::new(
             StagedRequestSpecV3 {
                 nonce,
-                idempotency_key: Some(IdempotencyKey::new(key.to_vec())?),
                 kind: Some(kind),
                 limits: StagedLimitsV3 {
                     deadline_ms,

@@ -66,29 +66,10 @@ impl<S: Schema> Transaction<S> {
     /// # Errors
     ///
     /// Returns the failing plan's index and its typed failure; nothing was
-    /// stored unless the failure says the outcome is unknown. Over the
-    /// proxy, an unknown outcome keeps the request for [`Self::commit_retry`].
+    /// stored unless the failure says the outcome is unknown, as with a
+    /// lost proxy reply; then the caller reads the database to find out.
     pub async fn commit(&mut self) -> Result<(), CommitError> {
         self.inner.commit().await
-    }
-
-    /// Resend the last proxy commit whose outcome is unknown, with the same
-    /// idempotency key, so it applies at most once. Answers resolve into the
-    /// handles the original [`Self::stage`] calls returned.
-    ///
-    /// # Errors
-    ///
-    /// Refuses when no unknown outcome is pending (always on a direct
-    /// transaction), and otherwise fails as [`Self::commit`].
-    pub async fn commit_retry(&mut self) -> Result<(), CommitError> {
-        self.inner.commit_retry().await
-    }
-
-    /// Whether the last proxy commit's outcome is unknown and
-    /// [`Self::commit_retry`] may resend it.
-    #[must_use]
-    pub fn has_unknown_outcome(&self) -> bool {
-        self.inner.has_unknown_outcome()
     }
 
     /// Discard the staged plans and keep the transaction usable. Their

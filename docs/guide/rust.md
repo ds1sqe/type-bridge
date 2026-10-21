@@ -336,8 +336,8 @@ first invalid call; nothing is checked against TypeDB until commit.
   `close` ends it. Dropping it never commits.
 
 `ProxyDatabase::transaction` returns the same `Transaction`. Its commit is
-one signed request with a fresh idempotency key; after an unknown outcome,
-`commit_retry` resends the same request so the plans apply at most once.
+one signed request; a lost reply is `commit_outcome_unknown`, and the caller
+reads the database to learn whether the plans applied.
 
 Building is deterministic: handles are numbered in creation order, match
 terms keep their call order, consecutive writes of one kind share a stage,

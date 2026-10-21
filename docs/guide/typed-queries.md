@@ -337,14 +337,12 @@ package's `schema_authority()` is its embedded, verified authority.
 
 `Database.staged_transaction(kind=None, *, commit_on_exit=True)` (and
 `RustDatabase.staged_transaction`) returns the core staged transaction:
-`stage(plan)`, `commit()`, `commit_retry()`, `has_unknown_outcome()`,
-`rollback()` and `close()`. Nothing opens before `commit()`; an omitted kind
+`stage(plan)`, `commit()`, `rollback()` and `close()`. Nothing opens before `commit()`; an omitted kind
 is inferred from the staged plans. `Pending.result()` answers `Rows(rows)`,
 `Count(count)`, `Exists(exists)` or `Matched(count)`, raises the commit's
 typed failure (`.code`, `.failure`), or raises `RuntimeError` before commit.
 A `with` block commits on a clean exit unless `commit_on_exit=False`,
-discards on an exception, and always closes, except that a commit whose
-outcome is unknown raises and stays open for `commit_retry()`.
+discards on an exception, and always closes.
 `Database.transaction()` keeps its released eager context.
 
 ### Replacing `update_with`
@@ -385,19 +383,13 @@ runs it on one TypeDB transaction and returns a signed reply that the SDK
 verifies before resolving any answer. Answers and typed failures are the same
 as direct execution, and `commit_outcome_unknown` stays an unknown outcome.
 
-Each commit attempt carries a fresh random 16-byte idempotency key. After an
-unknown outcome, such as a dropped reply, `tx.commit_retry()` resends the same
-request with the same key before it expires; the server replays the stored
-reply instead of running it again, so the writes apply at most once. A plain
-`commit()` never reuses a key. Because every attempt is keyed, any refusal
-other than a verified definite outcome (`commit_definitely_aborted`) may answer
-an attempt that already committed: it keeps the server's code but stays
-unknown, and `commit_retry()` stays available. A cancelled commit is likewise
-retryable. `has_unknown_outcome()` reports whether a retry is pending, and an
-empty `commit()` refuses while one is. In Python, a `with` block whose commit
-outcome is unknown raises and leaves the transaction open for
-`commit_retry()`. Raw TypeQL and typed match reads are not staged over the
-proxy; they are refused at stage time.
+Each commit is one request under a fresh nonce, and the proxy keeps no
+replies. A dropped or unverifiable reply, and a cancelled commit, leave the
+outcome unknown (`commit_outcome_unknown`): the writes may have applied, and
+the caller reads the database to find out, as after a lost direct commit.
+Every other signed refusal keeps the server's code and applied nothing. Raw
+TypeQL and typed match reads are not staged over the proxy; they are refused
+at stage time.
 
 The SDK verifies staged replies only under the signer it already trusts: the
 `/v3/capabilities` advertisement must name the same executor and reply key as
@@ -407,12 +399,10 @@ or pinned out of band (Rust `ProxyConnectionPolicy::staged_advertisement`,
 Python `staged_advertisement=`, TypeScript `stagedAdvertisement`).
 
 The server admits a staged write only from a caller an interceptor vouches for
-(`on_v3_write_authority`); otherwise the commit fails with the typed
-`staged_write_not_authorized` failure. Every SDK commit carries an idempotency
-key, and the server accepts keys only from a vouched caller, so
-`[v2] allow_unauthenticated_staged_writes` alone does not admit SDK commits
-(they fail with `staged_idempotency_not_authorized`). The [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3)
-defines the wire format and idempotency retention.
+(`on_v3_write_authority`), or from any caller when the operator sets
+`[v2] allow_unauthenticated_staged_writes`; otherwise the commit fails with the
+typed `staged_write_not_authorized` failure. The [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3)
+defines the wire format.
 
 ## Query limits
 

@@ -21,7 +21,21 @@ proxy.
   `[kind, value]` (rows report their count, exists 0 or 1), the provider state
   and the proxy's commit outcomes.
 
-The programs are `examples/purchase/{python,ts,rust,c}/`. Each builds its
+`constraints/` inserts a doctor twice; the key rejects the second commit with
+a typed failure.
+
+`shop/` is the checkout example of `docs/guide/checkout.md`: a whole cart (its
+stock checks, total, balance check, stock and balance updates and order lines)
+is one plan. `program.json` checks out a cart, then a cart with a sold-out line
+and a cart over the balance (both `Matched(0)`, nothing written), two carts in
+one transaction (the second sees the first's charge), and a `race` step: eight
+buyers commit the same checkout of the last lamp at once, each retrying a
+retry-safe conflict, and the step answers the sum of their matched counts (1).
+The live fixture leaves out of its proxy commit log the attempts that lost the
+race (STC2), since their number depends on timing.
+
+The purchase and constraints programs are `examples/purchase/{python,ts,rust,c}/`;
+the shop programs are `examples/shop/{python,ts,rust,c}/`. Each builds its
 plans from the generated package's tokens and authority and prints one JSON
 report; with `TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE` and
 `TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT` set it also runs the program on both

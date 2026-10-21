@@ -86,7 +86,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     assert not any(key.startswith("parent_") for key in contract)
     exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", header.read_text()))
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 395
+    assert len(exports) == 394
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
@@ -114,7 +114,6 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "type_bridge_proxy_connection_transaction",
         "type_bridge_staged_transaction_stage",
         "type_bridge_staged_transaction_commit",
-        "type_bridge_staged_transaction_commit_retry",
         "type_bridge_staged_transaction_rollback",
         "type_bridge_staged_transaction_close",
         "type_bridge_pending_answer",

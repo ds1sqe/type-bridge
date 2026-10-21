@@ -1,0 +1,32 @@
+format: typebridge.schema/v2
+attributes:
+  account-id: { value: string }
+  balance: { value: integer }
+  sku: { value: string }
+  price: { value: integer }
+  stock: { value: integer }
+  order-id: { value: string }
+  quantity: { value: integer }
+entities:
+  account:
+    owns:
+      account-id: { key: true }
+      balance: { card: { min: 0, max: 1 } }
+  item:
+    owns:
+      sku: { key: true }
+      price: { card: { min: 0, max: 1 } }
+      stock: { card: { min: 0, max: 1 } }
+relations:
+  order-line:
+    relates: { buyer: {}, item: {} }
+    owns:
+      order-id: { card: { min: 0, max: 1 } }
+      quantity: { card: { min: 0, max: 1 } }
+plays:
+  account:
+    order-line:
+      buyer: {}
+  item:
+    order-line:
+      item: {}

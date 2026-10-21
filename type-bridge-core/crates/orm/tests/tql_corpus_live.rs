@@ -10,7 +10,7 @@ async fn official_ast_corpus_data_stages_execute_live() {
         .expect("TYPEDB_HTTP_PORT")
         .parse()
         .unwrap();
-    let database_name = format!("tb_w11c_ast_corpus_{}", std::process::id());
+    let database_name = format!("tb_ast_corpus_{}", std::process::id());
     let db = Database::connect_with_options(
         &address,
         &database_name,

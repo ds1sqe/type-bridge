@@ -723,8 +723,8 @@ request format it accepts.
 A transaction on a proxy connection is the same core `Transaction` as a
 direct one, with a proxy backend. Staging stays local; `commit` serializes the
 ordered stack into one `typebridge.query-remote-request/v3` envelope (exact
-canonical V3 plan bytes, given rows, kind, limits, nonce, expiry and an
-idempotency key) and sends it to `POST /v3/staged`. The server runs the stack
+canonical V3 plan bytes, given rows, kind, limits, nonce and expiry) and
+sends it to `POST /v3/staged`. The server runs the stack
 on one TypeDB transaction and returns a `typebridge.query-remote-response/v3`
 reply signed with the key from `GET /v3/capabilities`. The SDK verifies the
 signature and the request binding, then resolves each answer through the same
@@ -733,22 +733,19 @@ failure, and `commit_outcome_unknown` stays indeterminate rather than "not
 applied". Raw TypeQL and typed match reads have no V3 plan, so the proxy
 backend refuses them at stage time.
 
-Each commit attempt draws a fresh random 16-byte idempotency key. A key is
-reused only through the explicit retry API (`commit_retry`, `commitRetry` in
-TypeScript), which resends the identical request after an indeterminate
-outcome; the server's idempotency store replays the stored signed reply for a
-completed request, so the writes apply at most once. Since every attempt is
-keyed, only a verified `commit_definitely_aborted` ends an attempt; any other
-verified refusal (`retry_later` while the first attempt is in flight, a lost
-reservation, an authorization refusal) keeps its code but stays
-indeterminate and retryable, as does a cancelled commit. The staged
-advertisement is trusted only when its executor binding and reply key equal
-the connection's advertisement (`query_remote_v3_advertisement_mismatch`
-otherwise); it is pinned or fetched once per connection. The server admits writes
-and idempotency keys only from a caller an interceptor vouches for
-(`on_v3_write_authority`); `[v2] allow_unauthenticated_staged_writes` admits
-unkeyed writes only, and SDK commits are always keyed. The wire format, failure vocabulary and
-retention bounds are in the
+Each commit is one request under a fresh random nonce, and the server keeps
+no replies. A lost or unverifiable reply, a cancelled commit, and the server's
+own `commit_outcome_unknown` are indeterminate: the writes may have applied,
+and the application reconciles by reading the database, as after a lost
+direct commit. Every other verified signed refusal applied nothing and keeps
+its code. TypeBridge reports outcomes; retries, locking and concurrency limits
+are application policy. The staged advertisement is trusted only when its
+executor binding and reply key equal the connection's advertisement
+(`query_remote_v3_advertisement_mismatch` otherwise); it is pinned or fetched
+once per connection. The server admits writes only from a caller an
+interceptor vouches for (`on_v3_write_authority`), or from any caller under
+`[v2] allow_unauthenticated_staged_writes`. The wire format and failure
+vocabulary are in the
 [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
 ## Stable Error Categories

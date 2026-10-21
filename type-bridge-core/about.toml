@@ -9,7 +9,6 @@ accepted = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "CDLA-Permissive-2.0",
     "Apache-2.0 WITH LLVM-exception",
 ]
 

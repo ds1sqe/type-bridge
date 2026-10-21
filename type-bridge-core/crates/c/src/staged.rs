@@ -452,9 +452,8 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
 /// Open one deferred transaction on a proxy connection. The server's staged
 /// advertisement is fetched now and must name the connection's executor and
 /// reply key; nothing else is sent until commit, which is one signed
-/// exchange carrying every staged plan. An unknown commit outcome keeps the
-/// handle for `type_bridge_staged_transaction_commit_retry`. The transaction
-/// may outlive the connection.
+/// exchange carrying every staged plan. The transaction may outlive the
+/// connection.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
     proxy: *const TypeBridgeProxyConnection,
@@ -545,33 +544,21 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
 }
 
 /// Commit every staged plan in one provider transaction. The handle stays
-/// usable on every outcome: after a definite outcome it stages new work;
-/// after an unknown proxy outcome
-/// [`type_bridge_staged_transaction_commit_retry`] resends the same request.
-/// Nothing staged is a no-op success.
+/// usable for new work on every outcome; after an unknown outcome (such as a
+/// lost proxy reply) the caller reads the database to learn whether it
+/// applied. Nothing staged is a no-op success.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_staged_transaction_commit(
     transaction: *mut TypeBridgeStagedTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
     // SAFETY: forwarded caller contract.
-    unsafe { finish_commit(transaction, out_diagnostics, false) }
-}
-
-/// Resend the exact request of a commit whose outcome is unknown.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn type_bridge_staged_transaction_commit_retry(
-    transaction: *mut TypeBridgeStagedTransaction,
-    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-) -> TypeBridgeStatus {
-    // SAFETY: forwarded caller contract.
-    unsafe { finish_commit(transaction, out_diagnostics, true) }
+    unsafe { finish_commit(transaction, out_diagnostics) }
 }
 
 unsafe fn finish_commit(
     transaction: *mut TypeBridgeStagedTransaction,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
-    retry: bool,
 ) -> TypeBridgeStatus {
     let entry = crate::perf_stages::entry();
     let _entered = entry.enter();
@@ -588,14 +575,8 @@ unsafe fn finish_commit(
         handle.poisoned = true;
         let tx = &mut handle.transaction;
         let outcome = handle.owner.block_on(
-            async {
-                if retry {
-                    tx.commit_retry().await
-                } else {
-                    tx.commit().await
-                }
-            }
-            // The provider may poll on another thread; the span follows it.
+            tx.commit()
+                // The provider may poll on another thread; the span follows it.
             .instrument(entry.clone()),
         );
         handle.poisoned = false;
@@ -606,7 +587,7 @@ unsafe fn finish_commit(
     })
 }
 
-/// Discard every staged plan and any unknown commit outcome; the handle stays
+/// Discard every staged plan; the handle stays
 /// usable and a poisoned handle recovers. A null handle is `INVALID_ARGUMENT`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_staged_transaction_rollback(
@@ -739,7 +720,7 @@ mod tests {
         RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
     };
     use type_bridge_contract::query_remote_v3::{
-        CAP_QUERY_REMOTE_IDEMPOTENCY_V3, CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3,
+        CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3,
     };
     use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkProviderOperation};
     use type_bridge_orm::session::backend::QueryResult;
@@ -1160,16 +1141,9 @@ mod tests {
         let pending = stage(transaction, plan);
 
         // Commit with diagnostics over the live handle.
-        for retry in [false, true] {
-            let status = unsafe {
-                if retry {
-                    type_bridge_staged_transaction_commit_retry(transaction, transaction.cast())
-                } else {
-                    type_bridge_staged_transaction_commit(transaction, transaction.cast())
-                }
-            };
-            assert_eq!(status, TypeBridgeStatus::InvalidArgument);
-        }
+        let status =
+            unsafe { type_bridge_staged_transaction_commit(transaction, transaction.cast()) };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
         assert_eq!(fixture.state.query_count(), 0);
 
         // pending_answer: overlapping outputs, or outputs over the handle.
@@ -1380,31 +1354,17 @@ mod tests {
         assert_eq!(state.opened_transactions(), vec![TxType::Read]);
         // The committed handle stays open and keeps the database busy.
         assert_eq!(close_database(&mut database), TypeBridgeStatus::InUse);
-        // Nothing staged: commit is a no-op success, and there is no unknown
-        // outcome for commit_retry to resend.
+        // Nothing staged: commit is a no-op success.
         let (status, diagnostics) = commit(transaction);
         assert_eq!(status, TypeBridgeStatus::Ok);
         assert!(diagnostics.is_null());
         assert_eq!(state.opened_transactions(), vec![TxType::Read]);
-        let mut diagnostics = ptr::dangling_mut();
-        assert_ne!(
-            unsafe { type_bridge_staged_transaction_commit_retry(transaction, &mut diagnostics) },
-            TypeBridgeStatus::Ok
-        );
-        close_diagnostics(&mut diagnostics);
         // Null handles and outputs are rejected; the diagnostics output is cleared.
-        for retry in [false, true] {
-            let mut diagnostics = ptr::dangling_mut();
-            let status = unsafe {
-                if retry {
-                    type_bridge_staged_transaction_commit_retry(ptr::null_mut(), &mut diagnostics)
-                } else {
-                    type_bridge_staged_transaction_commit(ptr::null_mut(), &mut diagnostics)
-                }
-            };
-            assert_eq!(status, TypeBridgeStatus::InvalidArgument);
-            assert!(diagnostics.is_null(), "the diagnostics output is cleared");
-        }
+        let mut diagnostics = ptr::dangling_mut();
+        let status =
+            unsafe { type_bridge_staged_transaction_commit(ptr::null_mut(), &mut diagnostics) };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+        assert!(diagnostics.is_null(), "the diagnostics output is cleared");
         assert_eq!(
             unsafe { type_bridge_staged_transaction_commit(transaction, ptr::null_mut()) },
             TypeBridgeStatus::InvalidArgument
@@ -1446,8 +1406,7 @@ mod tests {
 
     #[test]
     fn commit_failures_keep_the_handle_and_the_released_detail_set() {
-        // A direct provider commit cannot retry: an unknown outcome leaves
-        // the handle for new work, and commit_retry is refused.
+        // An unknown outcome leaves the handle for new work.
         let fixture_unknown = fixture(vec![rows(1)], COMMIT_UNKNOWN);
         let plan = decode(BATCH);
         let mut transaction = open(&fixture_unknown, TYPE_BRIDGE_TRANSACTION_WRITE);
@@ -1459,12 +1418,6 @@ mod tests {
         close_diagnostics(&mut diagnostics);
         assert_eq!(read(pending), (TypeBridgeStatus::ExecutionFailed, 0, 0));
         unsafe { type_bridge_pending_free(&mut pending) };
-        let mut diagnostics = ptr::dangling_mut();
-        assert_ne!(
-            unsafe { type_bridge_staged_transaction_commit_retry(transaction, &mut diagnostics) },
-            TypeBridgeStatus::Ok
-        );
-        close_diagnostics(&mut diagnostics);
         assert_eq!(fixture_unknown.state.opened_transactions().len(), 1);
         unsafe { type_bridge_staged_transaction_close(&mut transaction) };
         assert!(transaction.is_null() && !original.is_null());
@@ -1645,7 +1598,7 @@ mod tests {
     }
 
     #[test]
-    fn retryable_unknown_outcome_keeps_the_handle_for_commit_retry() {
+    fn unknown_proxy_outcome_keeps_the_handle_for_new_work() {
         let Fixture { database, .. } = fixture(vec![], COMMIT_SUCCESS);
         let mut database = Box::into_raw(database);
         let mut transaction = ptr::dangling_mut();
@@ -1661,7 +1614,7 @@ mod tests {
             },
             TypeBridgeStatus::Ok
         );
-        // Every reply is lost, so each attempt's outcome stays unknown.
+        // Every reply is lost, so each commit's outcome is unknown.
         let sent = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let log = Arc::clone(&sent);
         let exchange: type_bridge_orm::session::StagedExchangeFn = Arc::new(move |bytes| {
@@ -1673,11 +1626,7 @@ mod tests {
             })
         });
         let mut capabilities = query_plan_v3_capability_vocabulary();
-        for capability in [
-            CAP_QUERY_REMOTE_STAGED_V3,
-            CAP_QUERY_REMOTE_WRITE_V3,
-            CAP_QUERY_REMOTE_IDEMPOTENCY_V3,
-        ] {
+        for capability in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
             capabilities.insert(CapabilityId::new(capability).unwrap());
         }
         let advertisement = RemoteCapabilities::new(
@@ -1701,51 +1650,28 @@ mod tests {
 
         let (status, mut diagnostics) = commit(transaction);
         assert_eq!(status, TypeBridgeStatus::CommitOutcomeUnknown);
-        assert_eq!(transaction, original, "a retryable outcome keeps the owner");
+        assert_eq!(transaction, original, "an unknown outcome keeps the owner");
         close_diagnostics(&mut diagnostics);
         assert_eq!(read(pending), (TypeBridgeStatus::ExecutionFailed, 0, 0));
         assert_eq!(close_database(&mut database), TypeBridgeStatus::InUse);
-        // A plain commit cannot abandon the unknown attempt.
-        let (status, mut diagnostics) = commit(transaction);
-        assert_ne!(status, TypeBridgeStatus::Ok);
-        assert_eq!(transaction, original);
-        close_diagnostics(&mut diagnostics);
 
-        let mut diagnostics = ptr::dangling_mut();
-        assert_eq!(
-            unsafe { type_bridge_staged_transaction_commit_retry(transaction, &mut diagnostics) },
-            TypeBridgeStatus::CommitOutcomeUnknown
-        );
+        // New work is a new request under a fresh nonce.
+        let mut again = stage(transaction, plan);
+        let (status, mut diagnostics) = commit(transaction);
+        assert_eq!(status, TypeBridgeStatus::CommitOutcomeUnknown);
         assert_eq!(transaction, original);
         close_diagnostics(&mut diagnostics);
         {
             let sent = sent.lock().unwrap();
-            assert_eq!(sent.len(), 2, "only commit and commit_retry send");
-            assert_eq!(sent[0], sent[1], "the retry resends the identical request");
+            assert_eq!(sent.len(), 2);
+            assert_ne!(sent[0], sent[1], "each commit is its own request");
         }
-
-        // Rollback abandons the unknown attempt and keeps the handle.
-        assert_eq!(
-            unsafe { type_bridge_staged_transaction_rollback(transaction) },
-            TypeBridgeStatus::Ok
-        );
-        assert_eq!(transaction, original);
-        let mut diagnostics = ptr::dangling_mut();
-        assert_ne!(
-            unsafe { type_bridge_staged_transaction_commit_retry(transaction, &mut diagnostics) },
-            TypeBridgeStatus::Ok
-        );
-        close_diagnostics(&mut diagnostics);
-        assert_eq!(
-            sent.lock().unwrap().len(),
-            2,
-            "rollback left nothing to retry"
-        );
         unsafe { type_bridge_staged_transaction_close(&mut transaction) };
         assert!(transaction.is_null());
         assert_eq!(close_database(&mut database), TypeBridgeStatus::Ok);
         unsafe {
             type_bridge_pending_free(&mut pending);
+            type_bridge_pending_free(&mut again);
             type_bridge_plan_free(&mut plan);
         }
     }

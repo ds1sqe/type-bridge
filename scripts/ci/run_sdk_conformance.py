@@ -39,8 +39,14 @@ SUITES = tuple(profile_matrix.SUITES)
 STAGED_SUITES = ("writes",)
 WRITES = ROOT / "tests/contracts/sdk_conformance/writes"
 # Each suite directory: its own schema and generated packages, one program per SDK.
-WRITES_SUITES = ("purchase", "constraints")
-WRITES_PROGRAMS = ROOT / "examples/purchase"
+WRITES_SUITES = ("purchase", "constraints", "shop")
+# The program directory each suite runs and the module name its programs
+# import the generated Python package under.
+WRITES_PROGRAMS = {
+    "purchase": (ROOT / "examples/purchase", "purchase_models"),
+    "constraints": (ROOT / "examples/purchase", "purchase_models"),
+    "shop": (ROOT / "examples/shop", "shop_models"),
+}
 WRITES_FIXTURE_TIMEOUT = 600.0
 PYTHON_PROVIDER = ROOT / "tests/integration/schema/test_sdk_serialization_codec.py"
 NODE_PROVIDER = CORE / "crates/schema-codegen/tests/typescript_acceptance/codec_check.py"
@@ -962,15 +968,16 @@ def writes_rust_manifest(generated: Path) -> str:
 
 
 def writes_programs(
-    directory: Path, generated: Path, environment: dict[str, str]
+    directory: Path, suite: str, generated: Path, environment: dict[str, str]
 ) -> dict[str, tuple[list[str], Path, dict[str, str]]]:
     """Build each binding's program; return its command, directory and environment."""
 
+    programs, package = WRITES_PROGRAMS[suite]
     python_path = directory / "python"
     python_path.mkdir()
-    shutil.copytree(generated / "python", python_path / "purchase_models")
+    shutil.copytree(generated / "python", python_path / package)
     python = (
-        ["uv", "run", "python", str(WRITES_PROGRAMS / "python/program.py")],
+        ["uv", "run", "python", str(programs / "python/program.py")],
         ROOT,
         {"PYTHONPATH": str(python_path)},
     )
@@ -990,7 +997,7 @@ def writes_programs(
         cwd=typescript,
         env=environment,
     )
-    shutil.copy2(WRITES_PROGRAMS / "ts/program.ts", typescript / "src/program.ts")
+    shutil.copy2(programs / "ts/program.ts", typescript / "src/program.ts")
     run(
         ["node", str(NODE / "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"],
         cwd=typescript,
@@ -1001,7 +1008,7 @@ def writes_programs(
     # The consumer resolves offline from the workspace lockfile's versions.
     consumer = directory / "rust"
     (consumer / "src").mkdir(parents=True)
-    shutil.copy2(WRITES_PROGRAMS / "rust/main.rs", consumer / "src/main.rs")
+    shutil.copy2(programs / "rust/main.rs", consumer / "src/main.rs")
     shutil.copy2(CORE / "Cargo.lock", consumer / "Cargo.lock")
     (consumer / "Cargo.toml").write_text(writes_rust_manifest(generated / "rust"))
     manifest = ["--quiet", "--offline", "--manifest-path", str(consumer / "Cargo.toml")]
@@ -1035,7 +1042,7 @@ def writes_programs(
             str(generated / "c/include"),
             "-I",
             str(CORE / "crates/c/include"),
-            str(WRITES_PROGRAMS / "c/program.c"),
+            str(programs / "c/program.c"),
             str(generated / "c/src/models.c"),
             "-L",
             str(library),
@@ -1118,9 +1125,14 @@ def writes_run(
     environment: dict[str, str],
     targets: Mapping[str, Mapping[str, str]],
 ) -> dict[str, Any]:
-    """Run every program once, against its binding's live target when given."""
+    """Run every program once, against its binding's live target when given.
+
+    A failing program does not stop the others: every binding runs, and the
+    failures are reported together.
+    """
 
     outputs = {}
+    failures = []
     for binding in BINDINGS:
         command, cwd, extra = programs[binding]
         target = targets.get(binding, {})
@@ -1135,10 +1147,16 @@ def writes_run(
                 "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE": target["direct_database"],
                 "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT": target["proxy_endpoint"],
             }
-        output = json.loads(run(command, cwd=cwd, env=program_env, capture=True))
+        try:
+            output = json.loads(run(command, cwd=cwd, env=program_env, capture=True))
+        except RunnerError as error:
+            failures.append(f"{binding}: {error}")
+            continue
         if type(output) is not dict or output.get("binding") != binding:
             raise RunnerError(f"{binding} program reported another binding")
         outputs[binding] = output
+    if failures:
+        raise RunnerError("; ".join(failures))
     return outputs
 
 
@@ -1179,7 +1197,7 @@ def writes_suite(
     if profile != expected_profile:
         raise RunnerError(f"the writes suite runs on {expected_profile}, not {profile}")
     generated = writes_packages(directory, suite, environment)
-    programs = writes_programs(directory, generated, environment)
+    programs = writes_programs(directory, suite, generated, environment)
     observed = None
     if live:
         with writes_fixture(directory, suite, environment) as fixture:

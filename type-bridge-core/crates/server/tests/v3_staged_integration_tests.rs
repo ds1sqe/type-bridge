@@ -19,7 +19,7 @@ use type_bridge_contract::query_plan::InputRow;
 use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v3::{
-    IdempotencyKey, StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3,
+    StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3,
     StagedRequestV3, VerifiedStagedReplyV3,
 };
 use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
@@ -49,7 +49,7 @@ fn plain_entry(proxy: &Proxy, plan: &QueryPlanV3) -> StagedPlanV3 {
     StagedPlanV3::new(plan, vec![], &proxy.declared).expect("entry")
 }
 
-fn request(proxy: &Proxy, plans: Vec<StagedPlanV3>, key: Option<u8>) -> StagedRequestV3 {
+fn request(proxy: &Proxy, plans: Vec<StagedPlanV3>) -> StagedRequestV3 {
     let nonce = format!(
         "tb-live-staged-nonce-{}-{:06}",
         std::process::id(),
@@ -57,7 +57,6 @@ fn request(proxy: &Proxy, plans: Vec<StagedPlanV3>, key: Option<u8>) -> StagedRe
     );
     let spec = StagedRequestSpecV3 {
         nonce,
-        idempotency_key: key.map(|byte| IdempotencyKey::new(vec![byte; 16]).expect("key")),
         kind: None,
         limits: StagedLimitsV3::default(),
         plans,
@@ -153,13 +152,13 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
     }
 
     let mut proxy_answers: Vec<StagedAnswerV3> = Vec::new();
-    let first_request = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")], None);
+    let first_request = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")]);
     let reply = verify(&proxy, &first_request, &post(&proxy, &first_request).await);
     assert!(reply.committed(), "{:?}", reply.diagnostic());
     proxy_answers.extend_from_slice(reply.answers());
     let mut entries = vec![purchase_entry(&proxy, "O2", "I1", "A1")];
     entries.extend(reads.iter().map(|plan| plain_entry(&proxy, plan)));
-    let second_request = request(&proxy, entries, None);
+    let second_request = request(&proxy, entries);
     let reply = verify(
         &proxy,
         &second_request,
@@ -192,7 +191,7 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
 async fn unauthenticated_staged_write_is_refused_and_writes_nothing() {
     let (name, db) = seeded("unauthenticated").await;
     let proxy = proxy(&name, LivePolicy::default(), false).await;
-    let staged = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")], None);
+    let staged = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")]);
     let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "staged_write_not_authorized");
@@ -203,13 +202,13 @@ async fn unauthenticated_staged_write_is_refused_and_writes_nothing() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
-async fn dropped_reply_retry_with_the_same_key_applies_once() {
-    if !staged_live::given_rows_supported("dropped_reply_retry_with_the_same_key_applies_once")
+async fn resent_write_bytes_apply_once_and_read_as_unknown() {
+    if !staged_live::given_rows_supported("resent_write_bytes_apply_once_and_read_as_unknown")
         .await
     {
         return;
     }
-    let (name, db) = seeded("idempotent").await;
+    let (name, db) = seeded("resent").await;
     let policy = LivePolicy {
         vouch: true,
         ..LivePolicy::default()
@@ -222,21 +221,14 @@ async fn dropped_reply_retry_with_the_same_key_applies_once() {
     )
     .await
     .expect("restock");
-    let staged = request(
-        &proxy,
-        vec![purchase_entry(&proxy, "O1", "I1", "A1")],
-        Some(7),
-    );
-    // The first reply is lost on the way back; the client resends the bytes.
-    let dropped = post(&proxy, &staged).await;
-    let retried = post(&proxy, &staged).await;
-    assert_eq!(
-        retried, dropped,
-        "the retry replays the retained signed bytes"
-    );
-    let reply = verify(&proxy, &staged, &retried);
-    assert!(reply.committed(), "{:?}", reply.diagnostic());
-    assert_eq!(reply.answers(), [StagedAnswerV3::Matched { value: 1 }]);
+    let staged = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")]);
+    let first = verify(&proxy, &staged, &post(&proxy, &staged).await);
+    assert!(first.committed(), "{:?}", first.diagnostic());
+    // The same bytes again: the spent nonce refuses them, and the earlier
+    // copy committed, so the refusal reads as unknown, never as nothing
+    // applied.
+    let resent = verify(&proxy, &staged, &post(&proxy, &staged).await);
+    assert_eq!(failure_code(&resent), "commit_outcome_unknown");
     assert_eq!(row_count(&db, "match $p isa purchase; select $p;").await, 1);
     assert_eq!(
         row_count(
@@ -246,7 +238,6 @@ async fn dropped_reply_retry_with_the_same_key_applies_once() {
         .await,
         1
     );
-    // The commit hook ran once: the replay never re-executed.
     assert_eq!(proxy.commits.lock().expect("commits").len(), 1);
     drop(proxy);
     drop_database(db).await;
@@ -254,11 +245,9 @@ async fn dropped_reply_retry_with_the_same_key_applies_once() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
-async fn reply_withheld_after_commit_reports_an_unknown_outcome_and_replays_it() {
-    if !staged_live::given_rows_supported(
-        "reply_withheld_after_commit_reports_an_unknown_outcome_and_replays_it",
-    )
-    .await
+async fn reply_withheld_after_commit_reports_an_unknown_outcome() {
+    if !staged_live::given_rows_supported("reply_withheld_after_commit_reports_an_unknown_outcome")
+        .await
     {
         return;
     }
@@ -271,45 +260,14 @@ async fn reply_withheld_after_commit_reports_an_unknown_outcome_and_replays_it()
     };
     let proxy = proxy(&name, policy, false).await;
     withhold.store(true, Ordering::SeqCst);
-    let staged = request(
-        &proxy,
-        vec![purchase_entry(&proxy, "O1", "I1", "A1")],
-        Some(9),
-    );
-    let first = post(&proxy, &staged).await;
-    let reply = verify(&proxy, &staged, &first);
+    let staged = request(&proxy, vec![purchase_entry(&proxy, "O1", "I1", "A1")]);
+    let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
     // The purchase committed, so the withheld reply must not read as a
     // safe-to-retry policy refusal.
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "commit_outcome_unknown");
     assert_eq!(row_count(&db, "match $p isa purchase; select $p;").await, 1);
-    // The keyed retry replays the same bytes and applies nothing more.
-    assert_eq!(post(&proxy, &staged).await, first);
-    assert_eq!(row_count(&db, "match $p isa purchase; select $p;").await, 1);
     assert_eq!(proxy.commits.lock().expect("commits").len(), 1);
-
-    // A committed reply delivered, then withheld on replay: still an
-    // unknown outcome, identical on every withheld replay, and the retained
-    // committed reply survives.
-    seed(&db, "I2", "A2").await;
-    let staged = request(
-        &proxy,
-        vec![purchase_entry(&proxy, "O2", "I2", "A2")],
-        Some(10),
-    );
-    let committed = post(&proxy, &staged).await;
-    assert!(verify(&proxy, &staged, &committed).committed());
-    withhold.store(true, Ordering::SeqCst);
-    let withheld = post(&proxy, &staged).await;
-    assert_eq!(
-        failure_code(&verify(&proxy, &staged, &withheld)),
-        "commit_outcome_unknown"
-    );
-    withhold.store(true, Ordering::SeqCst);
-    assert_eq!(post(&proxy, &staged).await, withheld);
-    assert_eq!(post(&proxy, &staged).await, committed);
-    assert_eq!(row_count(&db, "match $p isa purchase; select $p;").await, 2);
-    assert_eq!(proxy.commits.lock().expect("commits").len(), 2);
     drop(proxy);
     drop_database(db).await;
 }
@@ -329,7 +287,7 @@ async fn plan_policy_refuses_a_staged_delete_and_nothing_commits() {
         purchase_entry(&proxy, "O1", "I1", "A1"),
         plain_entry(&proxy, &race::drop_price()),
     ];
-    let staged = request(&proxy, entries, None);
+    let staged = request(&proxy, entries);
     let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "query_remote_policy_rejected");
@@ -371,9 +329,7 @@ async fn commit_hook_observes_an_stc2_conflict_between_racing_staged_purchases()
             tokio::spawn(async move {
                 let staged = request(
                     &proxy,
-                    vec![purchase_entry(&proxy, &order, &item, &account)],
-                    None,
-                );
+                    vec![purchase_entry(&proxy, &order, &item, &account)]);
                 let body = staged.encode().expect("request bytes");
                 barrier.wait().await;
                 let reply = call(&proxy.router, "POST", "/v3/staged", body).await;
@@ -523,24 +479,18 @@ async fn sdk_staged_purchase_over_the_proxy_matches_direct() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
-async fn sdk_dropped_reply_then_commit_retry_applies_once() {
-    if !staged_live::given_rows_supported("sdk_dropped_reply_then_commit_retry_applies_once").await
+async fn sdk_dropped_reply_is_unknown_and_the_database_tells() {
+    if !staged_live::given_rows_supported("sdk_dropped_reply_is_unknown_and_the_database_tells")
+        .await
     {
         return;
     }
-    use type_bridge_orm::session::staged::PlanAnswer;
-    let (name, db) = seeded("sdk-retry").await;
+    let (name, db) = seeded("sdk-lost-reply").await;
     let policy = LivePolicy {
         vouch: true,
         ..LivePolicy::default()
     };
     let proxy = proxy(&name, policy, false).await;
-    db.execute_raw(
-        r#"match $i isa item, has item-id "I1", has stock $s; update $i has stock 5;"#,
-        TxType::Write,
-    )
-    .await
-    .expect("restock");
     let (mut tx, sent) = sdk_transaction(&proxy, true);
     let bought = tx
         .stage_plan(&race::purchase("O1", "I1", "A1"))
@@ -551,23 +501,10 @@ async fn sdk_dropped_reply_then_commit_retry_applies_once() {
         bought.get().is_err(),
         "an unknown outcome publishes nothing"
     );
-    tx.commit_retry()
-        .await
-        .expect("retry replays the committed reply");
-    assert_eq!(*bought.get().expect("answer"), PlanAnswer::Matched(1));
-    assert_eq!(sent.load(Ordering::SeqCst), 2);
+    // The caller reads the database: the purchase applied once.
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
     assert_eq!(row_count(&db, "match $p isa purchase; select $p;").await, 1);
-    assert_eq!(
-        row_count(
-            &db,
-            r#"match $i isa item, has item-id "I1", has stock 4; select $i;"#
-        )
-        .await,
-        1
-    );
     assert_eq!(proxy.commits.lock().expect("commits").len(), 1);
-    // Nothing is left to retry.
-    assert!(tx.commit_retry().await.is_err());
     drop(proxy);
     drop_database(db).await;
 }
@@ -582,22 +519,16 @@ async fn sdk_unauthenticated_write_is_refused_with_a_typed_error() {
         .stage_plan(&race::purchase("O1", "I1", "A1"))
         .expect("stage");
     let error = tx.commit().await.expect_err("refused");
-    // A keyed refusal keeps its code but proves nothing about an earlier
-    // attempt, so it stays unknown and retryable; the retry is refused too.
+    // The signed refusal keeps its code and applied nothing.
     assert_eq!(
         error.error.commit_failure_certainty(),
-        Some(type_bridge_orm::error::CommitFailureCertainty::Unknown)
+        Some(type_bridge_orm::error::CommitFailureCertainty::DefinitelyAborted)
     );
     assert_eq!(
         error.diagnostic().code().as_str(),
         "staged_write_not_authorized"
     );
     assert!(bought.get().is_err());
-    let retry = tx.commit_retry().await.expect_err("refused again");
-    assert_eq!(
-        retry.diagnostic().code().as_str(),
-        "staged_write_not_authorized"
-    );
     assert_eq!(state(&db).await, (0, 0, 0, 1));
     drop(proxy);
     drop_database(db).await;
@@ -623,7 +554,7 @@ struct WritesSuite {
     state: &'static [(&'static str, &'static str)],
 }
 
-const WRITES_SUITES: [(&str, WritesSuite); 2] = [
+const WRITES_SUITES: [(&str, WritesSuite); 3] = [
     (
         "purchase",
         WritesSuite {
@@ -679,7 +610,61 @@ const WRITES_SUITES: [(&str, WritesSuite); 2] = [
             ],
         },
     ),
+    (
+        "shop",
+        WritesSuite {
+            document: "shop.yaml",
+            schema: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/shop/schema/fragments/shop.yaml"
+            ),
+            workspace: include_str!(
+                "../../../../tests/contracts/sdk_conformance/writes/shop/typebridge.yaml"
+            ),
+            scope: "sdk-writes-shop",
+            typeql: || SHOP_SCHEMA_TYPEQL.to_owned(),
+            state: &[
+                (
+                    "a1_balance_54",
+                    r#"match $a isa account, has account-id "A1", has balance 54; select $a;"#,
+                ),
+                (
+                    "a2_balance_0",
+                    r#"match $a isa account, has account-id "A2", has balance 0; select $a;"#,
+                ),
+                (
+                    "book_stock_0",
+                    r#"match $i isa item, has sku "book", has stock 0; select $i;"#,
+                ),
+                (
+                    "pen_stock_2",
+                    r#"match $i isa item, has sku "pen", has stock 2; select $i;"#,
+                ),
+                (
+                    "mug_stock_4",
+                    r#"match $i isa item, has sku "mug", has stock 4; select $i;"#,
+                ),
+                (
+                    "lamp_stock_0",
+                    r#"match $i isa item, has sku "lamp", has stock 0; select $i;"#,
+                ),
+                (
+                    "r1_balance_90",
+                    r#"match $a isa account, has account-id "R1", has balance 90; select $a;"#,
+                ),
+                ("order_lines", "match $l isa order-line; select $l;"),
+            ],
+        },
+    ),
 ];
+
+/// The live schema of the `shop` writes suite, exactly its `shop.yaml`.
+const SHOP_SCHEMA_TYPEQL: &str = "define
+attribute account-id, value string; attribute balance, value integer;
+attribute sku, value string; attribute price, value integer; attribute stock, value integer;
+attribute order-id, value string; attribute quantity, value integer;
+entity account, owns account-id @key, owns balance @card(0..1), plays order-line:buyer;
+entity item, owns sku @key, owns price @card(0..1), owns stock @card(0..1), plays order-line:item;
+relation order-line, relates buyer, relates item, owns order-id @card(0..1), owns quantity @card(0..1);";
 
 async fn writes_state(
     suite: &WritesSuite,
@@ -788,6 +773,9 @@ async fn sdk_writes_fixture_serves_until_stopped() {
             .lock()
             .expect("commits")
             .iter()
+            // A program retries a commit that lost a race (STC2); how many
+            // attempts lose depends on timing, so they are not recorded.
+            .filter(|(.., failure)| failure.as_deref() != Some("STC2"))
             .map(|(committed, code, ..)| format!("{committed}:{code}"))
             .collect();
         observed.insert(
@@ -846,7 +834,7 @@ async fn serve(proxy: &Proxy) -> u16 {
 /// Not a test: the live fixture the Node and Python SDK suites stage
 /// against. With `TB_STAGED_FIXTURE_DIR` set it seeds four databases,
 /// serves a vouching proxy (purchase), a vouching proxy that loses one
-/// reply on request (retry) and a non-vouching proxy (refusal), writes
+/// reply on request (lost_reply) and a non-vouching proxy (refusal), writes
 /// `fixture.json` there and serves until a `stop` file appears.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "SDK live fixture; requires TB_STAGED_FIXTURE_DIR and a live TypeDB"]
@@ -858,7 +846,7 @@ async fn sdk_staged_fixture_serves_until_stopped() {
     let (direct_name, direct) = seeded("fixture-direct").await;
     let mut proxies = serde_json::Map::new();
     let mut held = Vec::new();
-    for (role, vouch) in [("purchase", true), ("retry", true), ("refused", false)] {
+    for (role, vouch) in [("purchase", true), ("lost_reply", true), ("refused", false)] {
         let (name, db) = seeded(&format!("fixture-{role}")).await;
         let policy = LivePolicy {
             vouch,

@@ -24,4 +24,4 @@ def test_query_remote_v3_fixtures() -> None:
         outer = fixtures[name]
         assert outer["format"] == "typebridge.query-remote-signed-reply/v1"
         assert outer["payload"]["request"] == fixtures["request-fingerprint.json"]["digest"]
-        assert outer["payload"]["idempotency_key"] == request["idempotency_key"]
+        assert outer["payload"]["nonce"] == request["nonce"]

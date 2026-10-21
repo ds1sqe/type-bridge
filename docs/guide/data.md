@@ -34,4 +34,5 @@ caller-owned exchange.
 For a write that must happen only if a condition holds, stage a typed plan in
 a staged transaction: the check and the writes commit together or not at all.
 [Concurrency and conditional writes](concurrency.md) shows the pattern and the
-lock rules in every SDK.
+lock rules in every SDK, and [Checkout](checkout.md) applies it to a whole
+shopping cart.

@@ -36,7 +36,7 @@ RUNTIME_LIBRARY = "libtype_bridge_c.so"
 # generator emits the tb_sdkv3 prefix this name and the release record use.
 PACKAGE_NAME = "tb_sdkv3"
 PACKAGE_VERSION = "1.0.0"
-# Milestone 11.36 keeps installed package metadata at 1.6 while runtime ABI is 1.7.
+# Installed package metadata stays at ABI 1.6 while the runtime ABI is 1.7.
 ABI_VERSION = "1.6.0"
 PUBLICATION_DISPOSITION = "artifact-only-unpublished-unsupported"
 RUNTIME_FORMAT = "typebridge.c-runtime-artifact/v1"

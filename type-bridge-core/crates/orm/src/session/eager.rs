@@ -1,4 +1,4 @@
-//! Internal eager execution for schema migrations and legacy helpers until 11.30.
+//! Internal eager execution for schema migrations and legacy helpers until 3.0.
 
 use super::backend::{
     AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,

@@ -108,7 +108,6 @@ def test_the_python_purchase_commits_directly_and_over_the_proxy(live: dict[str,
     try:
         direct = db.staged_transaction()
         direct_answers = [direct.stage(plan) for plan in plans]
-        assert not direct.has_unknown_outcome()
         direct.commit()
         connection = ProxyConnection.connect(authority, live["proxies"]["purchase"]["endpoint"])
         remote = connection.transaction()
@@ -129,7 +128,7 @@ def test_the_python_purchase_commits_directly_and_over_the_proxy(live: dict[str,
 
 def test_with_discards_on_an_exception_and_commits_on_a_clean_exit(live: dict[str, Any]) -> None:
     authority = _authority(live)
-    db = _connect(live["proxies"]["retry"]["database"])
+    db = _connect(live["proxies"]["lost_reply"]["database"])
     try:
         tx = db.staged_transaction()
         discarded = tx.stage(_purchase(authority, "O-discarded"))

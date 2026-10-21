@@ -19,7 +19,7 @@ fn pre_ast_schema_fixtures_keep_official_ast_semantics() {
         let schema: SchemaInfo =
             serde_json::from_value(case["schema"].clone()).expect("schema fixture");
         let new = schema.to_typeql().expect("emit schema");
-        // Explicit old-invalid-output correction approved for 11.14:
+        // Case 58: the old emitter repeated inherited plays, which is invalid:
         // TypeDB SVL42 rejects unchanged inherited plays on assembly.
         if index == 58 {
             let mut corrected = old.to_owned();

@@ -17,6 +17,9 @@ replaces it, and the behaviour changes you may notice. The
 | Migrations on profile `typedb-3.12.1/v1` | exactly 3.12.3 |
 | Migrations on profile `typedb-3.13.6/v1` | exactly 3.13.6 |
 
+TypeDB 3.11 support is deprecated in 2.3 and removed in 2.4.0; move 3.11
+servers to 3.12 or 3.13 before upgrading to 2.4.
+
 The Python `typedb-driver` extra accepts `>=3.11,<3.14` (`>=3.12.3,<3.14` on
 CPython 3.14). Existing workspaces keep the semantic profile they declare.
 To move a migration history from 3.12.3 to 3.13.6, move the databases, set
@@ -32,10 +35,10 @@ See [Move a history to a new TypeDB line](migrations.md#move-a-history-to-a-new-
 
 ## Before you upgrade
 
-1. **Upgrade clients and servers together.** A 2.3 server refuses V1-format
-   requests, a 2.3 client sends authored plans only to a server that
-   advertises the V2 envelope, and a 2.2 client cannot decode the
-   advertisement of a server configured with non-default limits.
+1. **Upgrade clients and servers together.** A 2.3 server refuses a V1-format
+   query envelope on its V2 query route, a 2.3 client sends authored plans
+   only to a server that advertises the V2 envelope, and a 2.2 client cannot
+   decode the advertisement of a server configured with non-default limits.
 2. **Regenerate generated packages.** A package without embedded schema
    authority is refused with `schema_authority_required` (every generator
    since 2.1.0 embeds it). Older Python stubs still run, but a type checker
@@ -242,8 +245,8 @@ them.
   TypeDB before `commit`, and each staged answer resolves after it.
 - A plan builder in all four languages that gives the same canonical bytes
   in each; see the [Query-plan V3 reference](../reference/query-plan-v3.md).
-- Staged transactions over a TypeBridge server (`POST /v3/staged`) with
-  idempotent `commit_retry` after an unknown outcome.
+- Staged transactions over a TypeBridge server (`POST /v3/staged`), one
+  signed request per commit.
 - C ABI 1.7. Existing 1.6 consumers keep working against the 1.7 runtime;
   see [Require ABI 1.7](c.md#require-abi-17).
 

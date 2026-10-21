@@ -15,8 +15,8 @@ for (const scenario of ["stc2", "cnt5", "cnt9", "paused"] as const) {
     const address = process.env["TYPEDB_ADDRESS"];
     const container = process.env["TYPE_BRIDGE_FAILURE_CONTAINER"];
     assert.ok(address && container, "requires the isolated failure-smoke environment");
-    assert.ok(container.startsWith("tb-w11b-"), "only the owned server may be paused");
-    const db = RustDatabase.connect(address, `tb_w11b_node_${randomUUID().replaceAll("-", "")}`, {
+    assert.ok(container.startsWith("tb-failure-smoke-"), "only the owned server may be paused");
+    const db = RustDatabase.connect(address, `tb_failure_node_${randomUUID().replaceAll("-", "")}`, {
       httpPort: Number(process.env["TYPEDB_HTTP_PORT"]),
     });
     const contexts: RustTransactionContext[] = [];

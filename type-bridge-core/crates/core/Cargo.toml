@@ -29,9 +29,10 @@ winnow = "0.7"
 cap-fs-ext = "4.0"
 cap-std = "4.0"
 # Minimal blocking HTTP client for the server-version probe (GET /v1/version).
-# The explicit rustls dependencies pin native-root and custom-PEM semantics;
-# ureq's default HTTPS client uses webpki roots and is not used for typed TLS.
-ureq = "2"
+# The explicit rustls dependencies pin native-root and custom-PEM semantics.
+# ureq's `tls` feature links webpki roots; HTTPS goes through our own rustls
+# connector instead (version.rs `RustlsConnector`).
+ureq = { version = "2", default-features = false, features = ["gzip"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 rustls-pemfile = "2"

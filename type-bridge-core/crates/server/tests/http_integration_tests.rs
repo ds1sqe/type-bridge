@@ -3,7 +3,7 @@
 //! Tests the full HTTP request/response flow through the router with
 //! various pipeline configurations.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 mod support;
 
 use std::future::Future;

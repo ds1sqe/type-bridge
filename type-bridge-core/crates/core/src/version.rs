@@ -1360,10 +1360,64 @@ pub(crate) fn tls_agent(
     .with_root_certificates(roots)
     .with_no_client_auth();
     Ok(ureq::builder()
-        .tls_config(Arc::new(config))
+        .tls_connector(Arc::new(RustlsConnector(Arc::new(config))))
         .redirects(0)
         .try_proxy_from_env(false)
         .build())
+}
+
+/// ureq's TLS hook over our rustls client configuration.
+///
+/// ureq's own rustls support is its `tls` feature, which also links
+/// webpki-roots; this connector keeps the root store the caller chose.
+struct RustlsConnector(Arc<rustls::ClientConfig>);
+
+impl ureq::TlsConnector for RustlsConnector {
+    fn connect(
+        &self,
+        dns_name: &str,
+        mut io: Box<dyn ureq::ReadWrite>,
+    ) -> Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
+        // URL hosts keep IPv6 brackets; server names do not.
+        let host = dns_name
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(dns_name);
+        let name = rustls::pki_types::ServerName::try_from(host)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
+            .to_owned();
+        let mut connection = rustls::ClientConnection::new(Arc::clone(&self.0), name)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        connection.complete_io(&mut io)?;
+        Ok(Box::new(RustlsStream(rustls::StreamOwned::new(
+            connection, io,
+        ))))
+    }
+}
+
+#[derive(Debug)]
+struct RustlsStream(rustls::StreamOwned<rustls::ClientConnection, Box<dyn ureq::ReadWrite>>);
+
+impl ureq::ReadWrite for RustlsStream {
+    fn socket(&self) -> Option<&std::net::TcpStream> {
+        self.0.get_ref().socket()
+    }
+}
+
+impl std::io::Read for RustlsStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Write for RustlsStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
 }
 
 pub(crate) fn plaintext_agent() -> ureq::Agent {
@@ -1897,6 +1951,93 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TLS_TEMP_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+
+    // -- HTTPS through the rustls connector ------------------------------------
+
+    const TEST_ROOT: &[u8] = include_bytes!("../../../../tests/fixtures/tls/root-ca.pem");
+    const TEST_SERVER_CERT: &[u8] =
+        include_bytes!("../../../../tests/fixtures/tls/server-cert.pem");
+    const TEST_SERVER_KEY: &[u8] = include_bytes!("../../../../tests/fixtures/tls/server-key.pem");
+
+    fn pem_roots(pem: &[u8]) -> rustls::RootCertStore {
+        let mut roots = rustls::RootCertStore::empty();
+        for cert in rustls_pemfile::certs(&mut &pem[..]) {
+            roots
+                .add(cert.expect("fixture certificate"))
+                .expect("fixture root");
+        }
+        roots
+    }
+
+    /// Serve one HTTPS request on loopback with the test PKI's server
+    /// certificate (valid for `localhost` and `127.0.0.1`); answer `ok`.
+    fn serve_one_https_request() -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let certs = rustls_pemfile::certs(&mut &TEST_SERVER_CERT[..])
+            .collect::<Result<Vec<_>, _>>()
+            .expect("fixture server certificate");
+        let key = rustls_pemfile::private_key(&mut &TEST_SERVER_KEY[..])
+            .expect("fixture server key")
+            .expect("one key");
+        let config = rustls::ServerConfig::builder_with_provider(
+            rustls::crypto::ring::default_provider().into(),
+        )
+        .with_safe_default_protocol_versions()
+        .expect("server protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("server certificate");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local address").port();
+        let server = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().expect("accept");
+            let connection = rustls::ServerConnection::new(Arc::new(config)).expect("session");
+            let mut stream = rustls::StreamOwned::new(connection, socket);
+            let mut request = Vec::new();
+            let mut byte = [0u8; 1];
+            // A client that refuses the certificate ends the handshake here.
+            while !request.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut byte) {
+                    Ok(1) => request.push(byte[0]),
+                    _ => return,
+                }
+            }
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            stream.conn.send_close_notify();
+            let _ = stream.flush();
+        });
+        (port, server)
+    }
+
+    #[test]
+    fn tls_agent_reaches_https_with_the_configured_root() {
+        for host in ["localhost", "127.0.0.1"] {
+            let (port, server) = serve_one_https_request();
+            let agent = tls_agent(pem_roots(TEST_ROOT)).expect("TLS agent");
+            let response = agent
+                .get(&format!("https://{host}:{port}/"))
+                .call()
+                .expect("HTTPS request through the rustls connector");
+            assert_eq!(response.into_string().expect("body"), "ok");
+            server.join().expect("server thread");
+        }
+    }
+
+    #[test]
+    fn tls_agent_refuses_a_server_outside_the_configured_root() {
+        let (port, server) = serve_one_https_request();
+        // Another CA: the agent trusts only what it was given, never a
+        // bundled or platform root.
+        let other = include_bytes!("../tests/fixtures/valid-root.pem");
+        let agent = tls_agent(pem_roots(other)).expect("TLS agent");
+        let error = agent
+            .get(&format!("https://localhost:{port}/"))
+            .call()
+            .expect_err("an untrusted server certificate is refused");
+        assert_eq!(http_transport_kind(&error), TransportKind::Tls);
+        server.join().expect("server thread");
+    }
 
     // -- FromStr / Display ---------------------------------------------------
 

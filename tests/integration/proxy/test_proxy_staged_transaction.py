@@ -68,16 +68,18 @@ def test_staged_purchase_over_the_proxy_answers_like_direct(live: dict[str, Any]
     assert answers == [Matched(1), Count(1), Exists(True)]
 
 
-def test_a_lost_reply_stays_unknown_and_commit_retry_applies_once(live: dict[str, Any]) -> None:
-    tx = _transaction(live, "retry", [("x-tb-drop-reply", "1")])
-    (purchase,) = [tx.stage(bytes.fromhex(live["plans_hex"]["purchase"]))]
+def test_a_lost_reply_is_unknown_and_the_database_tells(live: dict[str, Any]) -> None:
+    tx = _transaction(live, "lost_reply", [("x-tb-drop-reply", "1")])
+    tx.stage(bytes.fromhex(live["plans_hex"]["purchase"]))
     with pytest.raises(Exception) as unknown:
         tx.commit()
     assert getattr(unknown.value, "code", None) == "commit_outcome_unknown"
-    tx.commit_retry()
-    assert purchase.result() == Matched(1)
-    with pytest.raises(Exception):
-        tx.commit_retry()
+    # The purchase is conditional on stock, so running it again is safe: it
+    # matches nothing because the lost commit applied.
+    again = _transaction(live, "lost_reply")
+    (purchase,) = [again.stage(bytes.fromhex(live["plans_hex"]["purchase"]))]
+    again.commit()
+    assert purchase.result() == Matched(0)
 
 
 def test_an_unauthenticated_write_is_refused_with_a_typed_error(live: dict[str, Any]) -> None:
@@ -88,5 +90,3 @@ def test_an_unauthenticated_write_is_refused_with_a_typed_error(live: dict[str, 
     assert getattr(refused.value, "code", None) == "staged_write_not_authorized"
     with pytest.raises(Exception):
         purchase.result()
-    with pytest.raises(Exception):
-        tx.commit_retry()

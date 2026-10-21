@@ -3,7 +3,7 @@
 //! Constructs AST clauses from entity trait methods and compiles them
 //! to TypeQL strings ready for execution.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::collections::HashSet;
 
 use type_bridge_contract::id::TypeKind;

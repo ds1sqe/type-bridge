@@ -16,7 +16,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from type_bridge_core import Matched
+from type_bridge_core import Exists, Matched
 
 from tests.unit.typed_query import test_plan_builder as golden
 from type_bridge import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
@@ -117,27 +117,20 @@ def _unknown() -> CommitOutcomeUnknown:
 class Transaction:
     """A staged transaction whose commits fail as scripted, then succeed."""
 
-    def __init__(self, failures: list[BaseException], answer: int, unknown: bool) -> None:
-        self.failures, self.answer, self.unknown = failures, answer, unknown
+    def __init__(self, failures: list[BaseException], result: object) -> None:
+        self.failures, self.result = failures, result
         self.staged: list[object] = []
-        self.commits = self.retries = 0
+        self.commits = 0
         self.closed = False
 
     def stage(self, plan: object) -> SimpleNamespace:
         self.staged.append(plan)
-        return SimpleNamespace(result=lambda: Matched(self.answer))
+        return SimpleNamespace(result=lambda: self.result)
 
     def commit(self) -> None:
         self.commits += 1
         if self.failures:
             raise self.failures.pop(0)
-
-    def has_unknown_outcome(self) -> bool:
-        return self.unknown
-
-    def commit_retry(self) -> None:
-        assert self.unknown
-        self.retries += 1
 
     def close(self) -> None:
         self.closed = True
@@ -163,7 +156,7 @@ class Database:
     def staged_transaction(self, kind: str) -> Transaction:
         assert kind == "write"
         failures = [self.failures.pop(0)] if self.failures else []
-        self.opened.append(Transaction(failures, self.answer, unknown=False))
+        self.opened.append(Transaction(failures, Matched(self.answer)))
         return self.opened[-1]
 
 
@@ -202,19 +195,30 @@ def test_buy_raises_the_last_conflict(
     assert len(db.opened) == 3
 
 
-def _proxy(tx: Transaction) -> Any:
-    return SimpleNamespace(transaction=lambda kind: tx)
+def _proxy(tx: Transaction, check: Transaction | None = None) -> Any:
+    return SimpleNamespace(transaction=lambda kind: tx if kind == "write" else check)
 
 
-def test_buy_over_proxy_resends_an_unknown_outcome_once(recovery: ModuleType) -> None:
-    lost = RuntimeError("commit_outcome_unknown")
-    tx = Transaction([lost], answer=1, unknown=True)
-    assert recovery.buy_over_proxy(_proxy(tx), object()) is True
-    assert (tx.commits, tx.retries, tx.closed) == (1, 1, True)
+def _lost_reply() -> RuntimeError:
+    error = RuntimeError("the proxy reply was not received")
+    error.code = "commit_outcome_unknown"  # type: ignore[attr-defined]
+    return error
+
+
+@pytest.mark.parametrize("applied", [True, False])
+def test_buy_over_proxy_reads_the_database_after_a_lost_reply(
+    recovery: ModuleType, applied: bool
+) -> None:
+    tx = Transaction([_lost_reply()], Matched(1))
+    check = Transaction([], Exists(applied))
+    placed = object()
+    assert recovery.buy_over_proxy(_proxy(tx, check), object(), placed) is applied
+    assert (tx.commits, tx.closed) == (1, True)
+    assert (check.staged, check.commits, check.closed) == ([placed], 1, True)
 
 
 def test_buy_over_proxy_raises_a_definite_failure(recovery: ModuleType) -> None:
-    tx = Transaction([_conflict()], answer=1, unknown=False)
+    tx = Transaction([_conflict()], Matched(1))
     with pytest.raises(CommitConflict):
-        recovery.buy_over_proxy(_proxy(tx), object())
-    assert (tx.retries, tx.closed) == (0, True)
+        recovery.buy_over_proxy(_proxy(tx), object(), object())
+    assert tx.closed

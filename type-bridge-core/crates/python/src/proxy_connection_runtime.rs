@@ -145,7 +145,7 @@ impl PyProxyConnection {
 
     /// Open a staged transaction over this connection. Nothing is sent
     /// until commit, which posts the staged plans as one signed
-    /// `query-remote/v3` request with a fresh idempotency key. The
+    /// `query-remote/v3` request with a fresh nonce. The
     /// `/v3/capabilities` advertisement is fetched now.
     #[pyo3(signature = (kind=None, *, cancellation=None, commit_on_exit=true))]
     fn transaction(

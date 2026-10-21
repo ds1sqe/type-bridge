@@ -87,7 +87,7 @@ treats them as active authority. Canonical V2 `migration make`, `plan`,
 
 Readers for frozen histories, original checksum verification, applied-ledger
 import, snapshots, metadata, and the one-way frontier bridge remain read-only.
-They can recover and adopt old history; they cannot reopen its writer lane.
+They can recover and adopt old history; they cannot reopen its write path.
 
 ## Retained query contracts
 

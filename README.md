@@ -71,12 +71,16 @@ Person.manager(db).put(ada)
 people = Person.manager(db).filter(age__gte=18).all()
 ```
 
-Use its package-local query session when a query spans types:
+Use its package-local query session when a query spans types. Query
+terminals are coroutines; a script without an event loop wraps the session in
+`blocking`:
 
 ```python
-session = Person.query(db)
+from type_bridge_core import blocking
+
+session = blocking(Person.query(db))
 person = session.exact(Person)
-adults = await (
+adults = (
     session.query(person)
     .where(person.field(Person.age).gte(Age(18)))
     .rows(limit=100)
@@ -130,7 +134,7 @@ for generation, direct execution, transactions, and remote queries.
 
 ## C
 
-TypeBridge 2.2.5 ships a C ABI 1.6.0 shared runtime and standalone CLI for
+TypeBridge 2.3 ships a C ABI 1.7 shared runtime and standalone CLI for
 Ubuntu 24.04 on x86_64 GNU/Linux. Generate an application schema package from
 Split-YAML, then link C17 or C++17 consumers with CMake or pkg-config.
 

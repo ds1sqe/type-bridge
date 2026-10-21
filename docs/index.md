@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/typebridge-hero.svg" alt="TypeBridge connects typed Python, TypeScript, and Rust applications to TypeDB through one semantic engine.">
+  <img src="assets/typebridge-hero.svg" alt="TypeBridge connects typed Python, TypeScript, Rust, and C applications to TypeDB through one semantic engine.">
 </p>
 
 # Build typed TypeDB applications
@@ -42,7 +42,7 @@ through the TypeBridge server.
 
     ---
 
-    Generated nominal models and ABI 1.6.0 shared runtime for C17/C++17
+    Generated nominal models and ABI 1.7 shared runtime for C17/C++17
     applications on Ubuntu 24.04 x86_64.
 
     [:octicons-arrow-right-24: C SDK](guide/c.md)
@@ -86,7 +86,8 @@ migration behavior aligned.
 - Building reads and writes? Use the [data workflows](guide/data.md).
 - Owning schema evolution? Follow [schema and migration workflows](guide/schema-workflows.md).
 - Evaluating languages and deployment shapes? [Compare the SDKs](guide/sdks.md).
-- Upgrading an application? Read [Upgrading to 2.1](guide/upgrade-v2.md) and
+- Upgrading an application? Read [Upgrading to 2.3](guide/upgrade-2.3.md),
+  [Upgrading to 2.1](guide/upgrade-v2.md) for 2.0.x applications, and
   the exact [deprecation inventory](guide/v2-deprecations.md).
 - Contributing? Start with the [development guide](development/index.md).
 

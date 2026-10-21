@@ -28,7 +28,7 @@ def test_staged_transaction_types_are_exported_and_not_constructible() -> None:
         cls = getattr(type_bridge_core, name)
         with pytest.raises(TypeError):
             cls()
-    for method in ("stage", "commit", "commit_retry", "rollback", "close"):
+    for method in ("stage", "commit", "rollback", "close"):
         assert callable(getattr(type_bridge_core.Transaction, method))
 
 

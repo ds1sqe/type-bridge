@@ -186,9 +186,8 @@ pub enum PendingError {
         /// Schema identities from the staged item.
         context: Box<FailureContext>,
     },
-    /// A proxy commit the server refused under its own stable code. The
-    /// refusal may have followed an earlier attempt that committed, so
-    /// its outcome stays unknown until a retry replays a verified reply.
+    /// A proxy commit the server refused under its own stable code;
+    /// nothing it staged applied.
     #[error("Transaction execution failed{index}: the server refused the staged transaction ({code})", index = format_op_index(*op_index), code = .diagnostic.code())]
     Refused {
         /// Failing statement index, or none for the whole request.
@@ -291,10 +290,6 @@ impl PendingError {
 
 type AnswerState<T> = Arc<Mutex<Result<Arc<T>, PendingError>>>;
 /// An answer made visible only after its whole execution succeeds.
-///
-/// On a proxy transaction a handle can read `Failed` with an unknown
-/// outcome (or `Refused`) after `commit`, then resolve `Ok` after a
-/// [`Transaction::commit_retry`] replays the committed reply.
 pub struct Pending<T> {
     state: AnswerState<T>,
 }
@@ -554,17 +549,17 @@ fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
         Some(code) => format!("[{code}] {message}"),
         None => message.to_owned(),
     };
-    // Every attempt carries a key, so a refusal may answer a retry of an
-    // attempt that already committed (an in-flight window, a lost
-    // reservation): only a definite commit outcome proves nothing applied.
-    let definite = projection.code() == "commit_definitely_aborted";
+    // The server signs `commit_outcome_unknown` for anything that may have
+    // committed, so every other signed failure applied nothing.
+    let unknown = projection.code() == "commit_outcome_unknown";
+    let definite = !unknown;
     let error = ClassifiedCommitError::Driver {
         certainty: if definite {
             crate::error::CommitFailureCertainty::DefinitelyAborted
         } else {
             crate::error::CommitFailureCertainty::Unknown
         },
-        message: if definite || projection.code() == "commit_outcome_unknown" {
+        message: if unknown || projection.code() == "commit_definitely_aborted" {
             rendered
         } else {
             format!("[{}] {rendered}", projection.code())
@@ -576,7 +571,7 @@ fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
         .and_then(|path| path.iter().find_map(serde_json::Value::as_u64))
         .and_then(|index| usize::try_from(index).ok());
     let mut commit = CommitError::new(error, op_index, Default::default());
-    if !definite && projection.code() != "commit_outcome_unknown" {
+    if !unknown && projection.code() != "commit_definitely_aborted" {
         commit.remote = remote_refusal(projection.code(), field("sdk_category")).map(Box::new);
     }
     // The signed details carry the failure the server classified, so a
@@ -620,18 +615,10 @@ pub struct Transaction {
     options: TransactionOptions,
     stack: Execution,
     closed: bool,
-    /// The last proxy attempt whose outcome is unknown, kept for
-    /// [`Self::commit_retry`].
-    retry: Option<RetryAttempt>,
 }
 enum Backend {
     Local(Arc<dyn DriverBackend>),
     Proxy(Arc<ProxyStaging>),
-}
-struct RetryAttempt {
-    request: StagedRequestV3,
-    bytes: Vec<u8>,
-    execution: Execution,
 }
 impl std::fmt::Debug for Transaction {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -661,8 +648,8 @@ impl Transaction {
     /// `declared` the schema the plans validate under.
     ///
     /// Only [`Self::stage_plan`] stages on it. Each [`Self::commit`] sends
-    /// one envelope with a fresh random 16-byte idempotency key;
-    /// [`Self::commit_retry`] is the only way to resend a key.
+    /// one envelope with a fresh nonce; a commit whose reply is lost has an
+    /// unknown outcome, and the caller checks the database.
     ///
     /// # Errors
     ///
@@ -693,7 +680,6 @@ impl Transaction {
             options,
             stack: Execution(Vec::new()),
             closed: false,
-            retry: None,
         }
     }
     fn local(&self) -> Result<&Arc<dyn DriverBackend>, PendingError> {
@@ -848,16 +834,10 @@ impl Transaction {
         if self.closed {
             return Err(CommitError::lifecycle(PendingError::Closed));
         }
-        if self.stack.0.is_empty() && self.retry.is_some() {
-            return Err(CommitError::lifecycle(PendingError::InvalidPlan(Box::new(
-                proxy_refusal("a commit with an unknown outcome is pending; call commit_retry"),
-            ))));
-        }
         let mut execution = std::mem::replace(&mut self.stack, Execution(Vec::new()));
         if execution.0.is_empty() {
             return Ok(());
         }
-        self.retry = None;
         let backend = match &self.backend {
             Backend::Local(backend) => Arc::clone(backend),
             Backend::Proxy(proxy) => return self.commit_proxy(Arc::clone(proxy), execution).await,
@@ -984,35 +964,6 @@ impl Transaction {
             }
         }
     }
-    /// Resend the last proxy commit with the same request bytes and
-    /// idempotency key.
-    ///
-    /// Allowed only after a proxy commit whose outcome is unknown (a
-    /// dropped reply, an unverifiable reply, or `commit_outcome_unknown`).
-    /// The server replays its retained reply when the first attempt
-    /// committed, so the stack applies at most once; the original pending
-    /// answers resolve from that reply. Every other state, and a local
-    /// transaction, refuses with a lifecycle error.
-    pub async fn commit_retry(&mut self) -> Result<(), CommitError> {
-        if self.closed {
-            return Err(CommitError::lifecycle(PendingError::Closed));
-        }
-        let (Backend::Proxy(proxy), Some(attempt)) = (&self.backend, self.retry.take()) else {
-            return Err(CommitError::lifecycle(PendingError::InvalidPlan(Box::new(
-                proxy_refusal("no proxy commit with an unknown outcome to retry"),
-            ))));
-        };
-        let proxy = Arc::clone(proxy);
-        let timeout = self.commit_timeout();
-        self.attempt(&proxy, attempt, timeout).await
-    }
-    /// Whether a proxy commit with an unknown outcome awaits
-    /// [`Self::commit_retry`]: its writes may have applied, and only a
-    /// retry with the same key can tell.
-    #[must_use]
-    pub fn has_unknown_outcome(&self) -> bool {
-        self.retry.is_some()
-    }
     async fn commit_proxy(
         &mut self,
         proxy: Arc<ProxyStaging>,
@@ -1048,16 +999,7 @@ impl Transaction {
                 return Err(error);
             }
         };
-        self.attempt(
-            &proxy,
-            RetryAttempt {
-                request,
-                bytes,
-                execution,
-            },
-            timeout,
-        )
-        .await
+        Self::attempt(&proxy, &request, bytes, execution, timeout).await
     }
     fn commit_timeout(&self) -> Option<Duration> {
         match (self.options.deadline, self.options.answer_timeout) {
@@ -1066,12 +1008,13 @@ impl Transaction {
         }
     }
     async fn attempt(
-        &mut self,
         proxy: &ProxyStaging,
-        attempt: RetryAttempt,
+        request: &StagedRequestV3,
+        bytes: Vec<u8>,
+        mut execution: Execution,
         timeout: Option<Duration>,
     ) -> Result<(), CommitError> {
-        // Anything short of a verified definite outcome may have committed.
+        // Anything short of a verified reply may have committed.
         let unknown = |message: &str| {
             CommitError::new(
                 ClassifiedCommitError::Driver {
@@ -1082,27 +1025,16 @@ impl Transaction {
                 Default::default(),
             )
         };
-        // The attempt is retryable from before the first byte is sent: a
-        // cancelled commit leaves its handles unknown and `commit_retry`
-        // available.
-        attempt
-            .execution
-            .fail(unknown("the proxy commit outcome is not known").pending());
-        let bytes = attempt.bytes.clone();
-        self.retry = Some(attempt);
-        let sent = proxy.send(bytes, timeout).await;
-        let attempt = self
-            .retry
-            .as_mut()
-            .unwrap_or_else(|| unreachable!("held across send"));
-        let outcome = match sent {
+        // Unknown from before the first byte is sent: a cancelled commit
+        // leaves its handles unknown.
+        execution.fail(unknown("the proxy commit outcome is not known").pending());
+        let outcome = match proxy.send(bytes, timeout).await {
             Err(_) => Err(unknown("the proxy reply was not received")),
-            Ok(reply) => match proxy.verify(&reply, &attempt.request) {
+            Ok(reply) => match proxy.verify(&reply, request) {
                 Err(_) => Err(unknown("the proxy reply could not be verified")),
                 Ok(verified) => match verified.diagnostic() {
                     Some(projection) => Err(proxy_failure(projection)),
-                    None => attempt
-                        .execution
+                    None => execution
                         .0
                         .iter()
                         .zip(verified.answers())
@@ -1125,19 +1057,13 @@ impl Transaction {
         };
         match outcome {
             Ok(answers) => {
-                let mut attempt = self.retry.take().expect("held across send");
-                for (item, answer) in attempt.execution.0.iter_mut().zip(answers) {
+                for (item, answer) in execution.0.iter_mut().zip(answers) {
                     item.slot.publish(answer);
                 }
                 Ok(())
             }
             Err(error) => {
-                attempt.execution.fail(error.pending());
-                if error.error.commit_failure_certainty()
-                    != Some(crate::error::CommitFailureCertainty::Unknown)
-                {
-                    self.retry = None;
-                }
+                execution.fail(error.pending());
                 Err(error)
             }
         }
@@ -1149,7 +1075,6 @@ impl Transaction {
         }
         self.stack.fail(PendingError::RolledBack);
         self.stack.0.clear();
-        self.retry = None;
         Ok(())
     }
     /// Discard queued work and make this logical transaction terminal.
@@ -1159,7 +1084,6 @@ impl Transaction {
         }
         self.stack.fail(PendingError::Closed);
         self.stack.0.clear();
-        self.retry = None;
         self.closed = true;
         Ok(())
     }

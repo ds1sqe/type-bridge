@@ -1,0 +1,247 @@
+{
+  "format": "typebridge.sdk-writes-program/v1",
+  "program": "shop",
+  "semantic_profile": "typedb-3.13.6/v1",
+  "workspace": "typebridge.yaml",
+  "steps": [
+    {
+      "name": "seed",
+      "kind": "write",
+      "plans": [
+        "seed_accounts",
+        "seed_items"
+      ]
+    },
+    {
+      "name": "checkout",
+      "kind": "write",
+      "plans": [
+        "checkout_a1"
+      ]
+    },
+    {
+      "name": "checked_out",
+      "kind": "read",
+      "plans": [
+        "a1_paid",
+        "book_sold_out",
+        "pens_left",
+        "lines"
+      ]
+    },
+    {
+      "name": "sold_out",
+      "kind": "write",
+      "plans": [
+        "checkout_a2"
+      ]
+    },
+    {
+      "name": "short",
+      "kind": "write",
+      "plans": [
+        "checkout_short"
+      ]
+    },
+    {
+      "name": "unchanged",
+      "kind": "read",
+      "plans": [
+        "mugs_kept",
+        "a2_kept",
+        "lines"
+      ]
+    },
+    {
+      "name": "two_carts",
+      "kind": "write",
+      "plans": [
+        "checkout_a2_mug",
+        "checkout_a2_pens"
+      ]
+    },
+    {
+      "name": "final",
+      "kind": "read",
+      "plans": [
+        "a2_spent",
+        "pens_final",
+        "mugs_final",
+        "lines"
+      ]
+    },
+    {
+      "name": "race",
+      "kind": "race",
+      "plans": [
+        "race_lamp"
+      ],
+      "buyers": 8,
+      "note": "eight buyers commit the same checkout of the last lamp at once, each in its own transaction, retrying a retry-safe conflict; the answer is the sum of their matched counts, so exactly one buyer took it"
+    },
+    {
+      "name": "raced",
+      "kind": "read",
+      "plans": [
+        "lamp_sold_out",
+        "r1_paid_once",
+        "lines"
+      ]
+    }
+  ],
+  "plans": {
+    "seed_accounts": {
+      "insert": [
+        "account"
+      ],
+      "rows": [
+        {
+          "account_id": "A1",
+          "balance": 100
+        },
+        {
+          "account_id": "A2",
+          "balance": 30
+        },
+        {
+          "account_id": "R1",
+          "balance": 100
+        }
+      ]
+    },
+    "seed_items": {
+      "insert": [
+        "item"
+      ],
+      "rows": [
+        {
+          "sku": "pen",
+          "price": 3,
+          "stock": 10
+        },
+        {
+          "sku": "book",
+          "price": 40,
+          "stock": 1
+        },
+        {
+          "sku": "mug",
+          "price": 12,
+          "stock": 5
+        },
+        {
+          "sku": "lamp",
+          "price": 10,
+          "stock": 1
+        }
+      ]
+    },
+    "checkout_a1": {
+      "note": "the whole cart in one query: every line in stock and the balance covers the total (46); take the stock, charge the total, record the lines",
+      "account": "A1",
+      "order": "O1",
+      "lines": [
+        {
+          "sku": "pen",
+          "quantity": 2
+        },
+        {
+          "sku": "book",
+          "quantity": 1
+        }
+      ]
+    },
+    "a1_paid": {
+      "count": "account A1 with balance 54"
+    },
+    "book_sold_out": {
+      "count": "item book with stock 0"
+    },
+    "pens_left": {
+      "count": "item pen with stock 8"
+    },
+    "lines": {
+      "count": "order lines"
+    },
+    "checkout_a2": {
+      "note": "the book is sold out, so the match is empty and nothing is written, not even the mug",
+      "account": "A2",
+      "order": "O2",
+      "lines": [
+        {
+          "sku": "mug",
+          "quantity": 1
+        },
+        {
+          "sku": "book",
+          "quantity": 1
+        }
+      ]
+    },
+    "checkout_short": {
+      "note": "the total (36) is more than A2's balance (30): nothing is written",
+      "account": "A2",
+      "order": "O3",
+      "lines": [
+        {
+          "sku": "mug",
+          "quantity": 3
+        }
+      ]
+    },
+    "mugs_kept": {
+      "count": "item mug with stock 5"
+    },
+    "a2_kept": {
+      "count": "account A2 with balance 30"
+    },
+    "checkout_a2_mug": {
+      "note": "the first of two carts staged in one transaction (12)",
+      "account": "A2",
+      "order": "O4",
+      "lines": [
+        {
+          "sku": "mug",
+          "quantity": 1
+        }
+      ]
+    },
+    "checkout_a2_pens": {
+      "note": "the second cart sees the first one's charge: 18 left, the total is 18",
+      "account": "A2",
+      "order": "O5",
+      "lines": [
+        {
+          "sku": "pen",
+          "quantity": 6
+        }
+      ]
+    },
+    "a2_spent": {
+      "count": "account A2 with balance 0"
+    },
+    "pens_final": {
+      "count": "item pen with stock 2"
+    },
+    "mugs_final": {
+      "count": "item mug with stock 4"
+    },
+    "race_lamp": {
+      "note": "R1 checks out the last lamp (10)",
+      "account": "R1",
+      "order": "L1",
+      "lines": [
+        {
+          "sku": "lamp",
+          "quantity": 1
+        }
+      ]
+    },
+    "lamp_sold_out": {
+      "count": "item lamp with stock 0"
+    },
+    "r1_paid_once": {
+      "count": "account R1 with balance 90"
+    }
+  }
+}

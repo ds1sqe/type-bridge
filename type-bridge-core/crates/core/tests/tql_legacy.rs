@@ -1,4 +1,4 @@
-//! Compatibility lowering remains until 11.30 / 3.0.
+//! Compatibility lowering remains until 3.0.
 #![allow(deprecated)]
 use type_bridge_core_lib::{__internal as tql, ast::*};
 

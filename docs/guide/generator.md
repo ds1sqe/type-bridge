@@ -15,7 +15,7 @@ schema:
   managed-scope: application
 
 compatibility:
-  semantic-profile: typedb-3.12.1/v1
+  semantic-profile: typedb-3.13.6/v1
 
 migrations:
   directory: migrations/v2

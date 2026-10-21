@@ -10,7 +10,7 @@ async fn staged_atomicity_and_rollback_reuse() {
         return;
     };
     let name = format!(
-        "tb_w11a_staged_{}_{}",
+        "tb_staged_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
