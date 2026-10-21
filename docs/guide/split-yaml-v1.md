@@ -33,7 +33,7 @@ but these wires never parse a future key and ignore it.
 | 6 | Fact-local extensions | Rejected and deferred to a later document format. |
 | 7 | Schema extensions | Dot-namespaced capability ID with requirement-only `{required}`; no payload or data. |
 | 8 | Structs | Flat, ordered fields with built-in value types; no nesting or user-defined field types. |
-| 9 | Semantic profile | Exactly `typedb-3.11.5/v1` or `typedb-3.12.1/v1`. |
+| 9 | Semantic profile | Exactly `typedb-3.11.5/v1`, `typedb-3.12.1/v1` or `typedb-3.13.6/v1` (the default for new workspaces). Migrations accept only `typedb-3.12.1/v1` and `typedb-3.13.6/v1`. |
 | 10 | Migration directory | A workspace path ending directly in `v2`, such as `migrations/v2`. |
 | 11 | Schema lockfile key | Unsupported. Workspace V1 owns its fixed lock internally. |
 | 12 | TypeDB version range | Unsupported. The exact semantic profile is authoritative. |
@@ -227,7 +227,7 @@ schema:
   managed-scope: example-schema
 
 compatibility:
-  semantic-profile: typedb-3.12.1/v1
+  semantic-profile: typedb-3.13.6/v1
   require: [schema.doc-meta]
 
 migrations:

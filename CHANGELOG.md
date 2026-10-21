@@ -4,11 +4,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
-## [2.3.0] - 2026-10-19
+## [2.3.0] - 2026-10-21
 
 2.3.0 runs every query, direct or through a proxy, on one Rust pipeline, and
-adds staged transactions over typed `query-plan/v3` programs in every SDK.
-See the "Upgrading to 2.3" guide for the steps from 2.2.
+adds staged transactions over typed `query-plan/v3` programs in every SDK
+(#253). See the "Upgrading to 2.3" guide for the steps from 2.2.
 
 ### Breaking changes
 
@@ -131,11 +131,12 @@ differently direct and through a proxy. Each entry says what to do instead.
   `BoundField`, `BoundRole`, `Collected`, `Predicate`, `QueryOrder`,
   `Selection`, `FieldRef`, `RoleRef`, `TypedQueryCapabilityError`,
   `TypedQueryConnectionError`, `TypedQueryMaterializationError`, and
-  `TypedQueryWindowError`. Use the generated package's own `QuerySession`,
-  `Query`, and tokens (`from your_generated_package import Query,
-  QuerySession`); every terminal is awaited, and a script without an event
-  loop wraps the session in `type_bridge_core.blocking(session)`. Generated
-  model stubs import their static descriptor protocols from
+  `TypedQueryWindowError`. The generated packages' 2.2 remote names stay as
+  deprecated aliases (see Deprecated). Use the generated package's own
+  `QuerySession`, `Query`, and tokens (`from your_generated_package import
+  Query, QuerySession`); every terminal is awaited, and a script without an
+  event loop wraps the session in `type_bridge_core.blocking(session)`.
+  Generated model stubs import their static descriptor protocols from
   `type_bridge.fields._generated_descriptors`; a package generated earlier
   still runs, but a type checker reports the missing module until it is
   regenerated. Removed with it, from
@@ -259,6 +260,7 @@ differently direct and through a proxy. Each entry says what to do instead.
   - Rust and C are unchanged: the C ABI keeps its typed accessors, and its
     contract diagnostic JSON is the same serde form Python and Node give a
     `QueryV2Error`.
+
   The cases in `tests/contracts/diagnostic-json.json` are checked to be
   identical in Rust, Python, Node, and C (for the cases C can produce).
 - Generated Python and TypeScript packages no longer check a model member's
@@ -352,6 +354,15 @@ differently direct and through a proxy. Each entry says what to do instead.
 - `query-plan/v3` gains an `attach` write stage that adds an ownership
   value or a role player to an already bound thing, keeping the existing
   ones (`query.write.attach`, not yet advertised by proxies).
+- Conditional writes in one transaction. A `query-plan/v3` write plan puts
+  its checks (`where` comparisons, `let` values) and its writes in one
+  TypeQL pipeline, and a staged transaction commits all its staged plans
+  atomically: a failing plan stores nothing, and a lost race is a typed
+  conflict failure (Python `CommitConflict`) to rerun when `retry_safe` is
+  true. A condition that matches nothing is not an error: the commit
+  succeeds and the plan answers `Matched(0)`, so check the answer. See
+  [Concurrency and conditional writes](docs/guide/concurrency.md) for the
+  purchase example in every SDK (#253).
 - `query-plan/v3` delete stages gain `DeleteItem::Players { relation, role }`,
   which removes every player of a role, so a relation update can clear a
   role and attach its new players in one plan. `DeleteItem`, `AttachItem`
@@ -559,12 +570,13 @@ differently direct and through a proxy. Each entry says what to do instead.
   it instead of their own list. The cases in
   `tests/contracts/enum-spellings.json` are checked in Rust, Python, and
   Node; C checks that its integer constants spell the same enums.
-- The core's TypeQL compiler renders any single node:
-  `QueryCompiler::compile_node` over the new `ast::QueryNode`, with
+- The core's TypeQL compiler renders any single legacy node:
+  `QueryCompiler::try_compile_node` over the new `ast::QueryNode`, and a raw
+  fetch entry `ast::FetchItem::Raw`. The String-returning `compile_node`,
   `compile_pattern`, `compile_statement`, `compile_constraint`, and
-  `compile_value` public, and a raw fetch entry `ast::FetchItem::Raw`.
-  Python's native `QueryCompiler.compile_node(dict)` takes the tagged node
-  form.
+  `compile_value` are public for bridging only and deprecated on arrival
+  (see Deprecated). Python's native `QueryCompiler.compile_node(dict)` takes
+  the tagged node form.
 - `type_bridge_core.blocking(obj)`: a blocking view of an object with
   coroutine methods, such as a generated session, for code without an event
   loop.
@@ -723,7 +735,7 @@ differently direct and through a proxy. Each entry says what to do instead.
   refused through a proxy as a wire limit (`limit` `items` or `bytes`,
   `source` `default`).
   - C: a direct database, transaction, call, or batch without a limits
-    descriptor now gets the direct defaults, looser than 2.2.4's 65,536
+    descriptor now gets the direct defaults, looser than 2.2's 65,536
     items; a proxy connection or remote context gets the proxy defaults. ABI
     1.7 adds `TYPE_BRIDGE_QUERY_DIRECT_DEFAULT_*` and
     `TYPE_BRIDGE_QUERY_PROXY_DEFAULT_*`; the released
@@ -768,9 +780,9 @@ differently direct and through a proxy. Each entry says what to do instead.
 
 ### Deprecated
 
-Each name below keeps working until it is removed in 3.0; the deprecated
-aliases build their replacement. 2.2 remote terminals were already awaited,
-so 2.2 remote-session code runs unchanged.
+Unless an entry says otherwise, each name below keeps working until it is
+removed in 3.0; the deprecated aliases build their replacement. 2.2 remote
+terminals were already awaited, so 2.2 remote-session code runs unchanged.
 
 The released transaction entry points (Python `Database.transaction()`,
 TypeScript `RustDatabase.transaction()`, Rust `ReadTransaction` and
@@ -778,6 +790,9 @@ TypeScript `RustDatabase.transaction()`, Rust `ReadTransaction` and
 write paths are not deprecated in 2.3: the staged transaction does not yet
 carry managers or typed queries.
 
+- TypeDB 3.11 support is deprecated in 2.3.0 and removed in 2.4.0. 2.3 still
+  runs queries and CRUD on 3.11 servers; move to TypeDB 3.12 or 3.13 (3.13.6
+  recommended) before upgrading to 2.4.
 - Python `update_with(func)` on filtered queries and generated managers is
   deprecated since 2.3.0 for removal in 3.0 and emits a
   `DeprecationWarning`. It runs a host callback over rows it read; compute
@@ -785,8 +800,10 @@ carry managers or typed queries.
   transaction instead (see the typed-queries guide).
 - Python `type_bridge.session.Transaction`, the direct-driver transaction
   wrapper, emits a `DeprecationWarning`; use `Database.transaction()`.
-- Rust String schema-generation and fragment helpers are deprecated since
-  2.3.0 for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
+- Rust String schema-generation and fragment helpers (the ORM's
+  `schema::generator` functions such as `generate_define_block`,
+  `attribute_definition` and `card_annotation`) are deprecated since 2.3.0
+  for removal in 3.0. Use checked `SchemaInfo::to_typeql` or adapter
   builders. Python schema generation propagates checked errors as `ValueError`.
 - Legacy query nodes and String-returning compiler methods are deprecated
   since 2.3.0 for removal in 3.0: the `ast` types (`Clause`, `Pattern`,
@@ -910,11 +927,11 @@ carry managers or typed queries.
 - Generated manager filters in every binding now stop at the connection
   ceiling's timeout. They tightened resources to the ceiling but kept the
   deadline captured before it.
-- Build repeated `where` clauses and chained `and`/`or` predicates as one flat
-  conjunction or disjunction in every language binding. A query with more than
-  about thirty clauses previously nested past the canonical JSON depth of 64,
-  so remote sessions refused it and direct sessions silently used the V1
-  executor.
+- Repeated `where` clauses and chained `and`/`or` predicates build one flat
+  conjunction or disjunction in every binding. A query with more than about
+  thirty clauses used to nest past the canonical JSON depth of 64, so remote
+  sessions refused it with `canonical_json_too_deep` and direct sessions ran
+  it on a separate fallback path.
 
 ### Tests and tooling
 
@@ -930,7 +947,7 @@ carry managers or typed queries.
   share one profile.
 - `./test.sh --typedb <line|all>` runs the live tier on one supported TypeDB
   line (3.11.5, 3.12.3, or 3.13.6; default 3.13.6), or on every line followed
-  by the two-server profile-upgrade lane. Each line runs under its own
+  by the two-server profile-upgrade run. Each line runs under its own
   semantic profile.
 - Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`
   (default `typedb-3.13.6/v1`) and require the exact server their profile

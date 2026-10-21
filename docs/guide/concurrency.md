@@ -8,6 +8,9 @@ constraints or a deliberate write to the shared record that guards the rule.
 The TypeQL examples below run on 3.13.6. They describe server behavior;
 transaction and query errors still need handling in your chosen driver.
 
+To run these recipes from TypeBridge in Python, TypeScript, Rust or C, see
+[Using TypeBridge transactions](#using-typebridge-transactions).
+
 ## What a transaction sees
 
 A transaction opens on a snapshot of committed data. Later commits do not
@@ -432,7 +435,7 @@ others are refused with `staged_idempotency_not_authorized`.
 | --- | --- | --- | --- | --- |
 | Plan builder | `type_bridge.plan.Plan.builder()` | `Plan.builder()` | `type_bridge::plan::Plan::builder()` | `type_bridge_plan_builder_new`, `type_bridge_plan_builder_*` |
 | Direct transaction | `db.staged_transaction("write")` | `db.stagedTransaction("write")` | `db.transaction(TransactionOptions::default().with_kind(TransactionKind::Write))` | `type_bridge_database_transaction(db, TYPE_BRIDGE_TRANSACTION_WRITE, ...)` |
-| Proxy transaction | `proxy.transaction("write")`, `proxy` from `ProxyConnection.connect` | `await proxy.transaction("write")`, `proxy` from `ProxyConnection.connect` | `proxy.transaction(options).await`, `proxy` from `ProxyDatabase::connect` | `type_bridge_proxy_connection_transaction` |
+| Proxy transaction | `proxy.transaction("write")`, `proxy` from the generated package's `connect_proxy(url)` | `await proxy.transaction("write")`, `proxy` from the generated package's `await connectProxy(url)` | `proxy.transaction(options).await`, `proxy` from `ProxyDatabase::connect` | `type_bridge_proxy_connection_transaction` |
 | Stage, commit | `tx.stage(plan)`, `tx.commit()` | `tx.stage(plan)`, `await tx.commit()` | `tx.stage(&plan)`, `tx.commit().await` | `type_bridge_staged_transaction_stage`, `type_bridge_staged_transaction_commit` |
 | Answer | `pending.result()` | `pending.get()` | `pending.get()` | `type_bridge_pending_answer` |
 | Typed failure | `error.failure` | `QueryV2Error.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |

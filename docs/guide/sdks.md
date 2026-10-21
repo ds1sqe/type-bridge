@@ -9,7 +9,7 @@ application boundary, not on different database semantics.
 | [Python](../getting-started/quickstart.md) | Generated model/value classes | Embedded native runtime | Python services, scripts, data applications |
 | [TypeScript / Node](typescript.md) | Generated branded model/value classes | Embedded N-API runtime | Node services with compile-time model safety |
 | [Rust](rust.md) | Generated schema crate | Native async client | Rust services that bind models to a canonical schema |
-| [C](c.md) | Generated nominal models and typed handles | ABI 1.6.0 shared runtime | C17/C++17 applications on Ubuntu 24.04 x86_64 |
+| [C](c.md) | Generated nominal models and typed handles | ABI 1.7 shared runtime | C17/C++17 applications on Ubuntu 24.04 x86_64 |
 | [Server](server-container.md) | Canonical request and schema contracts | Remote one-exchange execution | Centralized execution with caller-owned transport |
 
 ## Shared behavior
