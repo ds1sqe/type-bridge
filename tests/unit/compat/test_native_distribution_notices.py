@@ -97,6 +97,9 @@ def test_generated_notice_covers_locked_compound_and_platform_licenses() -> None
     assert notice.count("<!-- END GENERATED RUST DEPENDENCY NOTICE -->") == 1
     generated = notice.split("<!-- BEGIN GENERATED RUST DEPENDENCY NOTICE -->", 1)[1]
 
+    # RUSTSEC-2026-0381: webpki roots are not linked; HTTPS uses the caller's roots.
+    assert "`webpki-roots`" not in generated
+    assert "CDLA-Permissive-2.0" not in generated
     for contract in (
         "`cargo-about 0.9.1`",
         "under Rust `1.94.1`",
@@ -107,9 +110,7 @@ def test_generated_notice_covers_locked_compound_and_platform_licenses() -> None
         "`MIT AND BSD-3-Clause`",
         "`unicode-ident` | `1.0.24`",
         "`(MIT OR Apache-2.0) AND Unicode-3.0`",
-        "`webpki-roots` | `1.0.7`",
-        "`CDLA-Permissive-2.0`",
-        "`rustls-webpki` | `0.103.15`",
+        "`rustls-webpki` | `0.103.16`",
         "`pyo3` | `0.29.2`",
         "`untrusted` | `0.9.0`",
         "`subtle` | `2.6.1`",
@@ -131,7 +132,6 @@ def test_generated_notice_covers_locked_compound_and_platform_licenses() -> None
         "BSD-3-Clause",
         "ISC",
         "Unicode-3.0",
-        "CDLA-Permissive-2.0",
         "Apache-2.0 WITH LLVM-exception",
     ]
     assert policy["targets"] == [

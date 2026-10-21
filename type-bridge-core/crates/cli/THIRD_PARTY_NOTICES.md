@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:fc507725adb5b41fd9e6da9dc32d10a321b2631a949d3fcbe8e2c9889fe2966b`
+- Closure fingerprint: `sha256:55aec17b655579956732dc5616918e7d556cebbeaa3c6ee5a6e525ebeb36738c`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -963,7 +963,7 @@ bytes actually reproduced in this notice.
 | `rustls-native-certs` | `0.8.3` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-pemfile` | `2.2.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR ISC OR MIT` | `MIT@sha256:709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c` |
 | `rustls-pki-types` | `1.14.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:9117d922e667125508dde62b02c1f57ed22f5ad21eb536aa2e2d99e1c796e639` |
-| `rustls-webpki` | `0.103.15` | Python, Node, CLI, C | `crates.io` | `ISC` | `ISC@sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a` |
+| `rustls-webpki` | `0.103.16` | Python, Node, CLI, C | `crates.io` | `ISC` | `ISC@sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a` |
 | `rustversion` | `1.0.22` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `schannel` | `0.1.29` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:aa72991ac35b4de0034da0afe943e62b48c4092fc2ba13ae47806d8e9a4ad551` |
 | `scopeguard` | `1.2.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:fb77f0a9c53e473abe5103c8632ef9f0f2874d4fb3f17cb2d8c661aab9cee9d7` |
@@ -1053,8 +1053,6 @@ bytes actually reproduced in this notice.
 | `utf8parse` | `0.2.2` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:e4c9b06fa850cb9b540a5e400e9f6394cf15efcf4098144de477d1d3dae10150` |
 | `uuid` | `1.23.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:436bc5a105d8e57dcd8778730f3754f7bf39c14d2f530e4cde4bd2d17a83ec3d` |
 | `want` | `0.3.1` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:a65f5d0a945d267751344c95665945b90c030ea107faf5c85d518929886187da` |
-| `webpki-roots` | `0.26.11` | Python, Node, CLI, C | `crates.io` | `CDLA-Permissive-2.0` | `CDLA-Permissive-2.0@sha256:e271993808fec50ab29350b39539cdec611a9103f827e0aa26d61da70e2d33f8` |
-| `webpki-roots` | `1.0.7` | Python, Node, CLI, C | `crates.io` | `CDLA-Permissive-2.0` | `CDLA-Permissive-2.0@sha256:e271993808fec50ab29350b39539cdec611a9103f827e0aa26d61da70e2d33f8` |
 | `winapi` | `0.3.9` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b` |
 | `windows-core` | `0.62.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `windows-implement` | `0.60.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
@@ -1767,72 +1765,6 @@ PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
 LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
 NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
-~~~~
-
-#### `CDLA-Permissive-2.0` — `sha256:e271993808fec50ab29350b39539cdec611a9103f827e0aa26d61da70e2d33f8`
-
-~~~~text
-# Community Data License Agreement - Permissive - Version 2.0
-
-This is the Community Data License Agreement - Permissive, Version
-2.0 (the "agreement"). Data Provider(s) and Data Recipient(s) agree
-as follows:
-
-## 1. Provision of the Data
-
-1.1. A Data Recipient may use, modify, and share the Data made
-available by Data Provider(s) under this agreement if that Data
-Recipient follows the terms of this agreement.
-
-1.2. This agreement does not impose any restriction on a Data
-Recipient's use, modification, or sharing of any portions of the
-Data that are in the public domain or that may be used, modified,
-or shared under any other legal exception or limitation.
-
-## 2. Conditions for Sharing Data
-
-2.1. A Data Recipient may share Data, with or without modifications, so
-long as the Data Recipient makes available the text of this agreement
-with the shared Data.
-
-## 3. No Restrictions on Results
-
-3.1. This agreement does not impose any restriction or obligations
-with respect to the use, modification, or sharing of Results.
-
-## 4. No Warranty; Limitation of Liability
-
-4.1. All Data Recipients receive the Data subject to the following
-terms:
-
-THE DATA IS PROVIDED ON AN "AS IS" BASIS, WITHOUT REPRESENTATIONS,
-WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED
-INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE,
-NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
-
-NO DATA PROVIDER SHALL HAVE ANY LIABILITY FOR ANY DIRECT, INDIRECT,
-INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING
-WITHOUT LIMITATION LOST PROFITS), HOWEVER CAUSED AND ON ANY THEORY OF
-LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
-NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE DATA OR RESULTS,
-EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
-
-## 5. Definitions
-
-5.1. "Data" means the material received by a Data Recipient under
-this agreement.
-
-5.2. "Data Provider" means any person who is the source of Data
-provided under this agreement and in reliance on a Data Recipient's
-agreement to its terms.
-
-5.3. "Data Recipient" means any person who receives Data directly
-or indirectly from a Data Provider and agrees to the terms of this
-agreement.
-
-5.4. "Results" means any outcome obtained by computational analysis
-of Data, including for example machine learning models and models'
-insights.
 ~~~~
 
 #### `ISC` — `sha256:5b698ca13897be3afdb7174256fa1574f8c6892b8bea1a66dd6469d3fe27885a`

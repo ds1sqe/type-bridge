@@ -935,6 +935,18 @@ carry managers or typed queries.
   sessions refused it with `canonical_json_too_deep` and direct sessions ran
   it on a separate fallback path.
 
+### Security
+
+- Prebuilt distributions use rustls-webpki 0.103.16, which fixes
+  RUSTSEC-2026-0382 (certificate verification could accept distrusted
+  intermediates).
+- No distribution bundles the webpki root store any more
+  (RUSTSEC-2026-0381, distrusted emSign intermediates in webpki-roots).
+  The HTTP version probe and the proxy client already trusted only the
+  operating-system roots or the configured PEM bundle; they now reach
+  HTTPS through their own rustls connector instead of ureq's `tls`
+  feature, which linked webpki-roots.
+
 ### Tests and tooling
 
 - SDK conformance test contracts are named by concern: queries, models,

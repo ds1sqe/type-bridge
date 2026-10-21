@@ -1360,10 +1360,64 @@ pub(crate) fn tls_agent(
     .with_root_certificates(roots)
     .with_no_client_auth();
     Ok(ureq::builder()
-        .tls_config(Arc::new(config))
+        .tls_connector(Arc::new(RustlsConnector(Arc::new(config))))
         .redirects(0)
         .try_proxy_from_env(false)
         .build())
+}
+
+/// ureq's TLS hook over our rustls client configuration.
+///
+/// ureq's own rustls support is its `tls` feature, which also links
+/// webpki-roots; this connector keeps the root store the caller chose.
+struct RustlsConnector(Arc<rustls::ClientConfig>);
+
+impl ureq::TlsConnector for RustlsConnector {
+    fn connect(
+        &self,
+        dns_name: &str,
+        mut io: Box<dyn ureq::ReadWrite>,
+    ) -> Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
+        // URL hosts keep IPv6 brackets; server names do not.
+        let host = dns_name
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(dns_name);
+        let name = rustls::pki_types::ServerName::try_from(host)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
+            .to_owned();
+        let mut connection = rustls::ClientConnection::new(Arc::clone(&self.0), name)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        connection.complete_io(&mut io)?;
+        Ok(Box::new(RustlsStream(rustls::StreamOwned::new(
+            connection, io,
+        ))))
+    }
+}
+
+#[derive(Debug)]
+struct RustlsStream(rustls::StreamOwned<rustls::ClientConnection, Box<dyn ureq::ReadWrite>>);
+
+impl ureq::ReadWrite for RustlsStream {
+    fn socket(&self) -> Option<&std::net::TcpStream> {
+        self.0.get_ref().socket()
+    }
+}
+
+impl std::io::Read for RustlsStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl std::io::Write for RustlsStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
 }
 
 pub(crate) fn plaintext_agent() -> ureq::Agent {
