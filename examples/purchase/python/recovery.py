@@ -1,8 +1,9 @@
 """Commit the purchase plan and recover from its typed failures.
 
 The concurrency guide (docs/guide/concurrency.md) shows these functions;
-tests/unit/docs/test_concurrency_guide.py runs them. `plan` is the
-purchase built by `program.purchase`.
+tests/unit/docs/test_docs_concurrency_guide.py runs them. `plan` is the
+purchase built by `program.purchase`; `placed` reads whether its order
+exists, as `program.removed` does for order O1.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import time
 from type_bridge_core import ProxyConnection
 
 from type_bridge import CommitConflict, Database
-from type_bridge.plan import Matched, Plan
+from type_bridge.plan import Exists, Matched, Plan
 
 
 # --8<-- [start:direct]
@@ -39,19 +40,21 @@ def buy(db: Database, plan: Plan, *, attempts: int = 5) -> bool:
 
 
 # --8<-- [start:proxy]
-def buy_over_proxy(proxy: ProxyConnection, plan: Plan) -> bool:
-    """Commit once over the proxy; resend the same request if the reply is lost."""
+def buy_over_proxy(proxy: ProxyConnection, plan: Plan, placed: Plan) -> bool:
+    """Commit once over the proxy; after a lost reply, read whether it applied."""
     tx = proxy.transaction("write")
     try:
         bought = tx.stage(plan)
         try:
             tx.commit()
-        except Exception:
-            if not tx.has_unknown_outcome():
+        except Exception as error:
+            if getattr(error, "code", None) != "commit_outcome_unknown":
                 raise
-            # Same request, same idempotency key: the server replays the
-            # reply it kept, so the purchase applies at most once.
-            tx.commit_retry()
+            # The reply was lost and the purchase may have applied: the
+            # database decides, by whether the order now exists.
+            with proxy.transaction("read") as check:
+                found = check.stage(placed)
+            return found.result() == Exists(True)
         return bought.result() == Matched(1)
     finally:
         tx.close()

@@ -245,8 +245,8 @@ them.
   TypeDB before `commit`, and each staged answer resolves after it.
 - A plan builder in all four languages that gives the same canonical bytes
   in each; see the [Query-plan V3 reference](../reference/query-plan-v3.md).
-- Staged transactions over a TypeBridge server (`POST /v3/staged`) with
-  idempotent `commit_retry` after an unknown outcome.
+- Staged transactions over a TypeBridge server (`POST /v3/staged`), one
+  signed request per commit.
 - C ABI 1.7. Existing 1.6 consumers keep working against the 1.7 runtime;
   see [Require ABI 1.7](c.md#require-abi-17).
 

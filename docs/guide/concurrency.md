@@ -412,24 +412,21 @@ visible key), is not one of these classes, but it carries the same
 
 ### An unknown outcome over the proxy
 
-A direct transaction cannot learn an unknown outcome; reconcile by the order
-key. Over the TypeBridge proxy, each commit is one signed `query-remote/v3`
-request with a fresh random idempotency key. The server keeps its signed
-reply until the request expires, within its store's TTL. `commit_retry()`
-resends the same request and key, so the purchase applies at most once, and
-the original pending answers resolve from the reply:
+Over the TypeBridge proxy, each commit is one signed `query-remote/v3`
+request. The proxy keeps no replies, so a reply lost on the way back or one
+that cannot be verified is `commit_outcome_unknown`, as a lost direct commit
+is. The purchase may have applied: read the database by the order key before
+buying again.
 
 ```python title="Python"
 --8<-- "examples/purchase/python/recovery.py:proxy"
 ```
 
-`has_unknown_outcome()` is true only after a proxy commit whose reply was
-lost or unverifiable, or whose server answered `commit_outcome_unknown`;
-test it rather than the exception class. `commit_retry()` refuses in every
-other state, and always on a direct transaction. A `with` block leaves such
-a transaction open, so the retry stays possible after it. The proxy accepts
-idempotency keys only from an authenticated, write-authorized caller;
-others are refused with `staged_idempotency_not_authorized`.
+The server never runs the same request twice. It holds each request's nonce
+for the request's lifetime and refuses the same bytes again; a write refused
+that way also reads as unknown, because the first copy may have committed.
+Every other signed refusal applied nothing. When and how to retry, and how
+many transactions run at once, is the application's policy.
 
 ### The same names in each SDK
 
@@ -443,8 +440,7 @@ others are refused with `staged_idempotency_not_authorized`.
 | Typed failure | `error.failure` | `QueryV2Error.failure` (`ProviderFailure`) | `CommitError.failure` (`type_bridge::failure::Failure`) | `type_bridge_execution_diagnostics_failure_get_v1` |
 | Conflict | `CommitConflict` | `failure.reason === "conflict"` | `Failure::Rejected { reason: Reason::Conflict { .. }, .. }` | `reason == TYPE_BRIDGE_FAILURE_REASON_CONFLICT` |
 | Retry safe | `failure.retry_safe` | `failure.retry_safe` | `failure.retry_safe()` | `failure.retry_safe` |
-| Unknown outcome | `CommitOutcomeUnknown`, `tx.has_unknown_outcome()` | `error.code === "commit_outcome_unknown"`, `tx.hasUnknownOutcome()` | `Failure::Indeterminate { .. }`, `tx.has_unknown_outcome()` | `outcome == TYPE_BRIDGE_FAILURE_OUTCOME_INDETERMINATE` (`TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN`) |
-| Resend | `tx.commit_retry()` | `await tx.commitRetry()` | `tx.commit_retry().await` | `type_bridge_staged_transaction_commit_retry` |
+| Unknown outcome | `CommitOutcomeUnknown`; over the proxy `error.code == "commit_outcome_unknown"` | `error.code === "commit_outcome_unknown"` | `error.diagnostic().code().as_str() == "commit_outcome_unknown"` | `TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` |
 | Discard, keep the transaction | `tx.rollback()` | `tx.rollback()` | `tx.rollback()` | `type_bridge_staged_transaction_rollback(tx)` |
 | Release | `tx.close()` | `tx.close()` | `tx.close()` | `type_bridge_staged_transaction_close(&tx)` |
 

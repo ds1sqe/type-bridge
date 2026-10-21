@@ -294,19 +294,17 @@ The handle is a reusable logical transaction, as in the other SDKs: commit and
 `type_bridge_staged_transaction_rollback(tx)` keep it usable, and
 `type_bridge_staged_transaction_close(&tx)` is the only release. After a
 commit, successful or a typed failure, the handle stages new work; rollback
-discards the staged plans. After an unknown proxy outcome
-`type_bridge_staged_transaction_commit_retry` resends the identical request. A
-direct provider commit cannot retry: its
-`TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN` leaves the handle ready for new
-work. The open handle keeps its database busy until close. Reading an answer
+discards the staged plans. After
+`TYPE_BRIDGE_STATUS_COMMIT_OUTCOME_UNKNOWN`, direct or over the proxy, the
+writes may have applied: the caller reads the database to find out, and the
+handle stages new work. The open handle keeps its database busy until close. Reading an answer
 before commit returns `TYPE_BRIDGE_STATUS_IN_USE`; after a failed commit,
 rollback or close it returns `TYPE_BRIDGE_STATUS_EXECUTION_FAILED`.
 
 `type_bridge_proxy_connection_transaction(proxy, kind, &tx, &diagnostics)`
 opens the same transaction on a proxy connection. It fetches the server's
 staged advertisement at open; commit is one signed exchange that carries every
-staged plan. An unknown outcome keeps the handle for `commit_retry`, which
-resends the identical request. The transaction may outlive the connection.
+staged plan. The transaction may outlive the connection.
 
 ### Typed failures
 

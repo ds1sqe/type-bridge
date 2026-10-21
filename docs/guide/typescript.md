@@ -375,19 +375,16 @@ queues canonical plan bytes), and
 `await tx.commit()` sends the staged stack as one
 `typebridge.query-remote-request/v3` envelope to `POST /v3/staged`. The reply
 is signed and verified before any answer resolves; answers and typed failures
-match direct execution, and `commit_outcome_unknown` stays unknown. Each commit
-attempt carries a fresh random 16-byte idempotency key. After an unknown
-outcome, such as a dropped reply (`tx.hasUnknownOutcome()` is `true`),
-`await tx.commitRetry()` resends the same
-request with the same key and the server replays its stored reply, so the
-writes apply at most once. Any refusal other than a verified
-`commit_definitely_aborted` (for example `retry_later` while the first attempt
-is still committing) keeps its code but stays unknown, so `commitRetry()`
-stays available. The `/v3/capabilities` advertisement must name the same
+match direct execution, and `commit_outcome_unknown` stays unknown. The proxy
+keeps no replies: a dropped or unverifiable reply rejects with
+`commit_outcome_unknown`, the writes may have applied, and the caller reads the
+database to find out. Every other signed refusal keeps its code and applied
+nothing. The `/v3/capabilities` advertisement must name the same
 executor and reply key as the connection's advertisement
 (`query_remote_v3_advertisement_mismatch` otherwise); pin it with the
-`stagedAdvertisement` connect option. Writes need a caller the server's interceptor vouches for; otherwise the commit
-fails with `staged_write_not_authorized`. See the
+`stagedAdvertisement` connect option. Writes need a caller the server's
+interceptor vouches for, or a server that allows unauthenticated staged writes;
+otherwise the commit fails with `staged_write_not_authorized`. See the
 [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
 ## Runtime boundary

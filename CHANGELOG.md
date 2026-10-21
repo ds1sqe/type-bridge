@@ -385,8 +385,8 @@ differently direct and through a proxy. Each entry says what to do instead.
   from generated model, field and role tokens, then `update`, `insert`,
   `put` and `delete` writes; `build(&SCHEMA)` validates it against the
   generated package. `Database::transaction(TransactionOptions)` returns
-  `type_bridge::staged::Transaction` with `stage`, `commit`,
-  `commit_retry`, `rollback` and `close`; nothing opens before `commit`.
+  `type_bridge::staged::Transaction` with `stage`, `commit`, `rollback`
+  and `close`; nothing opens before `commit`.
   `ProxyDatabase::transaction` returns the same type, and commit and
   pending-answer errors convert into `type_bridge::Error`. The rules that
   number handles, order terms and name variables live in the contract's
@@ -398,7 +398,7 @@ differently direct and through a proxy. Each entry says what to do instead.
   `Database.staged_transaction(kind=None, *, commit_on_exit=True)` and
   `RustDatabase.staged_transaction` open a direct staged transaction beside
   the released `transaction()`; it and `ProxyConnection.transaction` stage
-  built plans, report `has_unknown_outcome()`, and answer typed
+  built plans and answer typed
   `Rows`, `Count`, `Exists` or `Matched` values from `Pending.result()`.
 - TypeScript builds the same plans with `Plan.builder()` from
   `@type-bridge/node` (`exact`, `subtypes`, `field`, `input`,
@@ -407,8 +407,8 @@ differently direct and through a proxy. Each entry says what to do instead.
   `returning`, `count`, `exists`, then `build(authority)`) from generated
   model, field and role tokens; a token of another model is a type error.
   `RustDatabase.stagedTransaction(kind)` opens a direct staged transaction
-  with `stage(plan)`, `commit`, `commitRetry`, `rollback`, `close`,
-  `hasUnknownOutcome()`, and an async dispose that closes without
+  with `stage(plan)`, `commit`, `rollback`, `close`, and an async
+  dispose that closes without
   committing (`await using`). Generated packages export `schemaAuthority()`.
   `RustDatabase.transaction(kind)` keeps its released eager context.
 - C ABI 1.7, a strict superset of 1.6: every 1.6 symbol keeps its
@@ -417,11 +417,10 @@ differently direct and through a proxy. Each entry says what to do instead.
     `type_bridge_plan_v3_decode` (canonical plan bytes under declared
     schema bytes), `type_bridge_database_transaction`,
     `type_bridge_proxy_connection_transaction`,
-    `type_bridge_staged_transaction_{stage,commit,commit_retry,rollback,close}`
-    and `type_bridge_pending_answer`. As in the other SDKs, the handle is a
+    `type_bridge_staged_transaction_{stage,commit,rollback,close}` and
+    `type_bridge_pending_answer`. As in the other SDKs, the handle is a
     reusable logical transaction: commit and rollback take it by pointer
-    and keep it usable (after an unknown proxy outcome `commit_retry`
-    resends the same request), and `close` is the only release;
+    and keep it usable, and `close` is the only release;
   - the plan builder (`type_bridge_plan_builder_*`), which forwards to the
     core builder, so a C program has the same plan bytes as any other SDK;
   - `type_bridge_execution_diagnostics_failure_get_v1`, which reads a typed
@@ -443,12 +442,11 @@ differently direct and through a proxy. Each entry says what to do instead.
   transaction: commit sends every staged plan in one
   `typebridge.query-remote-request/v3` envelope to `POST /v3/staged`,
   verifies the signed reply, and resolves the answers and typed failures
-  direct execution gives. Each commit attempt carries a fresh random
-  16-byte idempotency key. When the outcome is unknown (a lost or
-  unverifiable reply), the transaction keeps the exact request, and
-  `commit_retry` (`commitRetry`) resends the same bytes, so the server
-  replays its stored reply instead of applying the writes twice. Only
-  plans stage over the proxy; raw TypeQL and `stage_match` are refused
+  direct execution gives. The server keeps no replies: a lost or
+  unverifiable reply is `commit_outcome_unknown`, as a lost direct commit
+  is, and the application reads the database to learn whether it applied.
+  The server runs each request at most once; resent bytes are refused, as
+  `commit_outcome_unknown` for a write. Only plans stage over the proxy; raw TypeQL and `stage_match` are refused
   with `staged_proxy_unsupported`.
 - The TypeBridge server runs staged `query-plan/v3` transactions at
   `POST /v3/staged` and advertises them at `GET /v3/capabilities`. Every
@@ -457,10 +455,6 @@ differently direct and through a proxy. Each entry says what to do instead.
   interceptor to vouch for the caller through `on_v3_write_authority`,
   unless `[v2] allow_unauthenticated_staged_writes = true` (default
   `false`); otherwise it is refused with `staged_write_not_authorized`.
-- Keyed staged requests retain their signed reply for retries, and one
-  client holds at most `1 / IdempotencyConfig::client_share` (default 4) of
-  the retained entries and bytes; past it, a new keyed request is refused
-  with `idempotency_client_capacity`.
 - Server interceptors can authorize each staged plan with `on_v3_plan`,
   which sees a redacted `V3PolicyPlan` (capabilities, touched types,
   operation, writes; input rows only when `wants_v3_plan_rows` opts in) and
