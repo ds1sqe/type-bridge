@@ -1125,9 +1125,14 @@ def writes_run(
     environment: dict[str, str],
     targets: Mapping[str, Mapping[str, str]],
 ) -> dict[str, Any]:
-    """Run every program once, against its binding's live target when given."""
+    """Run every program once, against its binding's live target when given.
+
+    A failing program does not stop the others: every binding runs, and the
+    failures are reported together.
+    """
 
     outputs = {}
+    failures = []
     for binding in BINDINGS:
         command, cwd, extra = programs[binding]
         target = targets.get(binding, {})
@@ -1142,10 +1147,16 @@ def writes_run(
                 "TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE": target["direct_database"],
                 "TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT": target["proxy_endpoint"],
             }
-        output = json.loads(run(command, cwd=cwd, env=program_env, capture=True))
+        try:
+            output = json.loads(run(command, cwd=cwd, env=program_env, capture=True))
+        except RunnerError as error:
+            failures.append(f"{binding}: {error}")
+            continue
         if type(output) is not dict or output.get("binding") != binding:
             raise RunnerError(f"{binding} program reported another binding")
         outputs[binding] = output
+    if failures:
+        raise RunnerError("; ".join(failures))
     return outputs
 
 

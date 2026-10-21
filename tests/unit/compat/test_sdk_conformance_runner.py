@@ -545,6 +545,28 @@ def test_writes_runs_every_suite_in_its_own_directory(
     assert files["constraints/python.json"] == tmp_path / "constraints/python.json"
 
 
+def test_writes_run_runs_every_binding_and_reports_each_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = []
+
+    def run(command: list[str], **_: object) -> str:
+        (binding,) = command
+        ran.append(binding)
+        if binding in ("python", "rust"):
+            raise RUNNER.RunnerError(f"command failed with exit 1: {binding}")
+        return json.dumps({"binding": binding})
+
+    monkeypatch.setattr(RUNNER, "run", run)
+    programs = {binding: ([binding], tmp_path, {}) for binding in RUNNER.BINDINGS}
+    with pytest.raises(RUNNER.RunnerError) as failed:
+        RUNNER.writes_run(programs, "purchase", {}, {})
+    assert ran == list(RUNNER.BINDINGS)
+    assert str(failed.value) == (
+        "python: command failed with exit 1: python; rust: command failed with exit 1: rust"
+    )
+
+
 def test_writes_refuses_a_profile_without_staged_plans(tmp_path: Path) -> None:
     environment = {RUNNER.profile_matrix.SEMANTIC_PROFILE_ENV: "typedb-3.12.1/v1"}
     with pytest.raises(RUNNER.RunnerError, match="typedb-3.13.6/v1"):
