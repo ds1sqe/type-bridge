@@ -290,7 +290,6 @@ impl PendingError {
 
 type AnswerState<T> = Arc<Mutex<Result<Arc<T>, PendingError>>>;
 /// An answer made visible only after its whole execution succeeds.
-
 pub struct Pending<T> {
     state: AnswerState<T>,
 }
