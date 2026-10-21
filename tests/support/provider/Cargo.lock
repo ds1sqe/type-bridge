@@ -2210,11 +2210,11 @@ dependencies = [
  "sha2",
  "tempfile",
  "type-bridge-contract",
+ "typeql",
  "unicode-ident",
  "ureq",
  "winnow",
  "winx",
- "typeql",
 ]
 
 [[package]]
@@ -2616,15 +2616,6 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap 2.13.1",
  "semver",
-]
-
-[[package]]
-name = "webpki-roots"
-version = "1.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
