@@ -613,3 +613,65 @@ fn schema_generate_rejects_hostile_c_target_before_publishing_any_new_output() {
         "schema authority was published despite an earlier batch rejection",
     );
 }
+
+#[test]
+fn kotlin_jvm_generation_is_deterministic_and_atomic_with_other_bindings() {
+    let workspace = tempfile::tempdir().unwrap();
+    let root = workspace.path();
+    fs::create_dir_all(root.join("schema")).unwrap();
+    let manifest = "format: typebridge.workspace/v1\nschema:\n  root: schema/schema.yaml\n  ownership: exclusive\n  managed-scope: kotlin-test\ncompatibility:\n  semantic-profile: typedb-3.12.1/v1\nmigrations:\n  directory: migrations/v2\n  app-label: kotlinexample\nbindings:\n  python:\n    output: generated/python\n  kotlin-jvm:\n    output: generated/kotlin\n    package: example.people\n";
+    fs::write(root.join("typebridge.yaml"), manifest).unwrap();
+    fs::write(
+        root.join("schema/schema.yaml"),
+        "format: typebridge.schema-set/v1\nsources: [application.yaml]\n",
+    )
+    .unwrap();
+    let schema = "format: typebridge.schema/v2\nentities:\n  person: {}\n";
+    fs::write(root.join("schema/application.yaml"), schema).unwrap();
+    assert_success(
+        &run_cli(root, &["schema", "generate"]),
+        "Kotlin/JVM generation",
+    );
+    let source_path =
+        root.join("generated/kotlin/src/main/kotlin/example/people/TypeBridgeSchema.kt");
+    assert!(
+        fs::read_to_string(source_path)
+            .unwrap()
+            .contains("package example.people")
+    );
+    let resource = root.join(
+        "generated/kotlin/src/main/resources/example/people/typebridge/schema-authority.json",
+    );
+    decode_schema_authority(
+        &fs::read(resource).unwrap(),
+        &schema_authority_capability_vocabulary(),
+    )
+    .unwrap();
+    let first = snapshot(&root.join("generated"));
+    assert_success(
+        &run_cli(root, &["schema", "generate"]),
+        "Kotlin/JVM regeneration",
+    );
+    assert_eq!(first, snapshot(&root.join("generated")));
+
+    fs::write(
+        root.join("schema/application.yaml"),
+        format!("{schema}  other-person: {{}}\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("typebridge.yaml"),
+        format!("{manifest}    type-names:\n      entity:\n        person: TypeBridgeSchema\n"),
+    )
+    .unwrap();
+    let failed = run_cli(root, &["schema", "generate"]);
+    assert!(
+        !failed.status.success(),
+        "colliding Kotlin projection was accepted"
+    );
+    assert_eq!(
+        first,
+        snapshot(&root.join("generated")),
+        "failed Kotlin emission changed a configured output"
+    );
+}

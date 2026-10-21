@@ -136,6 +136,7 @@ struct BindingWire {
     target: BindingTarget,
     output: SpannedString,
     names: Vec<(TypeId, SpannedString)>,
+    package_name: Option<SpannedString>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -342,6 +343,7 @@ impl LocatedConfigSpec {
             target,
             output,
             names,
+            package_name,
         } in wire.outputs
         {
             let field = output_field(target)?;
@@ -349,6 +351,20 @@ impl LocatedConfigSpec {
             let directory = OutputDirectory::new(path)
                 .map_err(|error| sourced(error, &origin, &output.span))?;
             builder = builder.output(target, directory);
+            if let Some(name) = package_name {
+                let name_value =
+                    type_bridge_contract::projection::KotlinJvmPackageName::new(name.value)
+                        .map_err(|error| {
+                            contract_value(
+                                error,
+                                "bindings.kotlin-jvm.package",
+                                &name.span,
+                                &origin,
+                            )
+                        })?;
+                builder = builder.kotlin_jvm_package_name(name_value);
+            }
+
             for (type_id, name) in names {
                 builder = builder.type_name_override(target, type_id, name.value);
             }
@@ -526,6 +542,7 @@ fn output_field(target: BindingTarget) -> Result<&'static str, WorkspaceConfigEr
         BindingTarget::TypeScript => Ok("bindings.typescript.output"),
         BindingTarget::Rust => Ok("bindings.rust.output"),
         BindingTarget::C => Ok("bindings.c.output"),
+        BindingTarget::KotlinJvm => Ok("bindings.kotlin-jvm.output"),
         _ => Err(unsupported_binding_target(target)),
     }
 }
@@ -536,6 +553,7 @@ fn output_name(target: BindingTarget) -> Result<&'static str, WorkspaceConfigErr
         BindingTarget::TypeScript => Ok("output.typescript"),
         BindingTarget::Rust => Ok("output.rust"),
         BindingTarget::C => Ok("output.c"),
+        BindingTarget::KotlinJvm => Ok("output.kotlin-jvm"),
         _ => Err(unsupported_binding_target(target)),
     }
 }
@@ -1094,15 +1112,20 @@ fn parse_bindings(
             "typescript" => BindingTarget::TypeScript,
             "rust" => BindingTarget::Rust,
             "c" => BindingTarget::C,
+            "kotlin-jvm" => BindingTarget::KotlinJvm,
             unknown => return Err(unknown_key("bindings", unknown, entry.key().span(), origin)),
         };
         let field_name = output_field(target)?;
         let binding = mapping(entry.value(), field_name, origin)?;
         let mut output = None;
         let mut names = Vec::new();
+        let mut package_name = None;
         for field in binding.entries() {
             match field.key().value() {
                 "output" => output = Some(field.value()),
+                "package" if target == BindingTarget::KotlinJvm => {
+                    package_name = Some(field.value())
+                }
                 "type-names" => {
                     for kind_entry in mapping(field.value(), "type-names", origin)?.entries() {
                         let kind = match kind_entry.key().value() {
@@ -1139,6 +1162,15 @@ fn parse_bindings(
                 origin,
             )?,
             names,
+            package_name: if target == BindingTarget::KotlinJvm {
+                Some(scalar(
+                    required(package_name, "bindings.kotlin-jvm.package", binding, origin)?,
+                    "bindings.kotlin-jvm.package",
+                    origin,
+                )?)
+            } else {
+                None
+            },
         });
     }
     Ok(outputs)

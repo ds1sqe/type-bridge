@@ -22,7 +22,7 @@ use type_bridge_contract::managed_scope::{
     ManagedScopeBinding, ManagedScopeId, ManagedScopeProfileId,
 };
 use type_bridge_contract::migration::MigrationAppLabel;
-use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix};
+use type_bridge_contract::projection::{BindingTarget, CSymbolPrefix, KotlinJvmPackageName};
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::SourceSpan;
 use type_bridge_contract::semantic_profile::SemanticProfile;
@@ -635,6 +635,7 @@ fn output_field_name(target: BindingTarget) -> Result<&'static str, WorkspaceCon
         BindingTarget::TypeScript => Ok("output.typescript"),
         BindingTarget::Rust => Ok("output.rust"),
         BindingTarget::C => Ok("output.c"),
+        BindingTarget::KotlinJvm => Ok("output.kotlin-jvm"),
         _ => Err(unsupported_binding_target(target)),
     }
 }
@@ -1113,6 +1114,7 @@ pub struct TypeBridgeConfig {
     migration_v2_directory: MigrationV2Directory,
     outputs: BTreeMap<BindingTarget, OutputDirectory>,
     type_names: BTreeMap<BindingTarget, Vec<type_bridge_contract::projection::TypeNameOverride>>,
+    kotlin_jvm_package_name: Option<KotlinJvmPackageName>,
     required_capabilities: CapabilitySet,
     schema_authority_output: Option<SchemaAuthorityOutputPath>,
     schema_set: SchemaSetPath,
@@ -1211,7 +1213,7 @@ impl TypeBridgeConfig {
         &self.required_capabilities
     }
 
-    /// Return independently configured shipped output targets.
+    /// Return independently configured binding output targets.
     #[must_use]
     pub const fn outputs(&self) -> &BTreeMap<BindingTarget, OutputDirectory> {
         &self.outputs
@@ -1224,6 +1226,12 @@ impl TypeBridgeConfig {
         target: BindingTarget,
     ) -> &[type_bridge_contract::projection::TypeNameOverride] {
         self.type_names.get(&target).map_or(&[], Vec::as_slice)
+    }
+
+    /// Return the explicit namespace for the Kotlin/JVM output.
+    #[must_use]
+    pub const fn kotlin_jvm_package_name(&self) -> Option<&KotlinJvmPackageName> {
+        self.kotlin_jvm_package_name.as_ref()
     }
 
     /// Return the configured generated server-authority artifact path.
@@ -1260,6 +1268,7 @@ pub struct TypeBridgeConfigBuilder {
     migration_v2_directory: Option<MigrationV2Directory>,
     outputs: Vec<(BindingTarget, OutputDirectory)>,
     type_names: Vec<(BindingTarget, type_bridge_contract::id::TypeId, String)>,
+    kotlin_jvm_package_name: Option<KotlinJvmPackageName>,
     required_capabilities: CapabilitySet,
     schema_authority_output: Option<SchemaAuthorityOutputPath>,
     schema_set: Option<SchemaSetPath>,
@@ -1280,6 +1289,7 @@ impl TypeBridgeConfigBuilder {
             migration_v2_directory: None,
             outputs: Vec::new(),
             type_names: Vec::new(),
+            kotlin_jvm_package_name: None,
             required_capabilities: CapabilitySet::new(),
             schema_authority_output: None,
             schema_set: None,
@@ -1298,6 +1308,18 @@ impl TypeBridgeConfigBuilder {
         if slot.replace(value).is_some() {
             duplicates.insert(field);
         }
+    }
+
+    /// Set the namespace required by a configured Kotlin/JVM output.
+    #[must_use]
+    pub fn kotlin_jvm_package_name(mut self, name: KotlinJvmPackageName) -> Self {
+        Self::mark_duplicate(
+            &mut self.kotlin_jvm_package_name,
+            name,
+            "kotlin_jvm_package_name",
+            &mut self.duplicate_required_fields,
+        );
+        self
     }
 
     /// Select the portable schema-set manifest.
@@ -1530,6 +1552,14 @@ impl TypeBridgeConfigBuilder {
             }
         }
 
+        if outputs.contains_key(&BindingTarget::KotlinJvm) != self.kotlin_jvm_package_name.is_some()
+        {
+            return Err(WorkspaceConfigError::new(
+                WorkspaceConfigErrorCode::InvalidWorkspaceValue,
+                "Kotlin/JVM output and package namespace must be configured together",
+            ));
+        }
+
         let mut name_configs = BTreeMap::new();
         for (target, type_id, name) in self.type_names {
             use type_bridge_contract::projection::{CSymbolPrefix, ProjectionConfig};
@@ -1545,6 +1575,11 @@ impl TypeBridgeConfigBuilder {
                     BindingTarget::Python => ProjectionConfig::python(),
                     BindingTarget::TypeScript => ProjectionConfig::typescript(),
                     BindingTarget::Rust => ProjectionConfig::rust(),
+                    BindingTarget::KotlinJvm => ProjectionConfig::kotlin_jvm(
+                        self.kotlin_jvm_package_name
+                            .clone()
+                            .expect("Kotlin output namespace validated"),
+                    ),
                     // Only names are retained; CLI generation owns the actual C prefix.
                     _ => ProjectionConfig::c(CSymbolPrefix::new("tb").expect("static C prefix")),
                 });
@@ -1731,6 +1766,7 @@ impl TypeBridgeConfigBuilder {
             migration_v2_directory,
             outputs,
             type_names,
+            kotlin_jvm_package_name: self.kotlin_jvm_package_name,
             required_capabilities: self.required_capabilities,
             schema_authority_output,
             schema_set,

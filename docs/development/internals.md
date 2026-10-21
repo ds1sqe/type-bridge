@@ -49,6 +49,44 @@ Generated integration uses a projection-owned nominal contract. It does not
 route values through the retained V1 `TypeDBType` nominal boundary, and that
 boundary must never be widened to `object`, `Any`, or structural detection.
 
+## Kotlin/JVM development
+
+The Kotlin/JVM expansion starts with a distinct `kotlin-jvm` projection target.
+Its package namespace, naming policy and explicit type-name overrides contribute
+to the binding fingerprint; they do not change canonical schema identities.
+The projection rejects Kotlin keywords, collisions with generated names, and
+foreign target configuration or generator evidence. Existing target identities
+are unchanged.
+
+The development emitter writes authority and projection evidence as bounded
+JAR resources. The private JNI runtime verifies them in Rust and provides
+explicitly closeable package handles with operation leases. Kotlin/JVM has no
+shipped runtime package yet and remains planned in the shared SDK conformance
+manifest.
+Package admission, generated consumers and native distribution must each pass
+their own Kotlin/JVM acceptance before support is advertised. C projection
+admission remains C-only.
+
+A development workspace can select Kotlin/JVM output with:
+
+```yaml
+bindings:
+  kotlin-jvm:
+    output: generated/kotlin
+    package: example.people
+```
+
+`schema generate` validates the namespace and prepares this output in the same
+atomic batch as other bindings. The current Kotlin output provides verified
+package admission and nominal integer, Boolean, double and String attributes.
+Sealed interfaces preserve attribute inheritance; factories invoke shared Rust
+validation and return immutable values. String input is decoded strictly from
+JVM UTF-16, rejecting unpaired surrogates and enforcing the canonical UTF-8 byte
+limit. Shared execution failures retain typed diagnostic paths and details.
+Other model facades and data operations are still under development. Generated
+source pins authority and binding fingerprints, so replacing the resource set
+with another valid schema or managed scope is rejected.
+
 ## Rust ownership
 
 The principal layers are:

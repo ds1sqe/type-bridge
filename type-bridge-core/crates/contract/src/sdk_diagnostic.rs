@@ -119,6 +119,8 @@ pub enum SdkDiagnosticBuildError {
     PathLimitExceeded,
     /// The detail map exceeded [`MAX_SDK_DIAGNOSTIC_DETAILS`].
     DetailLimitExceeded,
+    /// An identity-list detail exceeded [`MAX_SDK_QUERY_DIAGNOSTIC_IDENTITY_LIST`].
+    IdentityListLimitExceeded,
     /// The same stable detail key was attached more than once.
     DuplicateDetail,
 }
@@ -137,6 +139,9 @@ impl fmt::Display for SdkDiagnosticBuildError {
             }
             Self::PathLimitExceeded => "SDK diagnostic path exceeds its segment ceiling",
             Self::DetailLimitExceeded => "SDK diagnostic details exceed their entry ceiling",
+            Self::IdentityListLimitExceeded => {
+                "SDK diagnostic identity list exceeds its entry ceiling"
+            }
             Self::DuplicateDetail => "SDK diagnostic detail key is duplicated",
         };
         formatter.write_str(message)
@@ -958,6 +963,10 @@ impl SdkExecutionDiagnostic {
         if self.details.len() == MAX_SDK_DIAGNOSTIC_DETAILS {
             return Err(SdkDiagnosticBuildError::DetailLimitExceeded);
         }
+        if matches!(&value, SdkDiagnosticDetailValue::QueryIdentityList(values) if values.len() > MAX_SDK_QUERY_DIAGNOSTIC_IDENTITY_LIST)
+        {
+            return Err(SdkDiagnosticBuildError::IdentityListLimitExceeded);
+        }
         self.details.insert(key, value);
         Ok(self)
     }
@@ -1036,6 +1045,33 @@ fn static_name(value: &'static str) -> SdkDiagnosticName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_list_details_enforce_the_shared_bound() {
+        for length in [
+            0,
+            MAX_SDK_QUERY_DIAGNOSTIC_IDENTITY_LIST,
+            MAX_SDK_QUERY_DIAGNOSTIC_IDENTITY_LIST + 1,
+        ] {
+            let values = (0..length)
+                .map(|index| {
+                    SdkQueryDiagnosticIdentity::new(format!("entity:person{index}")).unwrap()
+                })
+                .collect();
+            let result = SdkExecutionDiagnostic::internal_failure().try_with_detail(
+                SdkDiagnosticName::new("identities").unwrap(),
+                SdkDiagnosticDetailValue::QueryIdentityList(values),
+            );
+            if length <= MAX_SDK_QUERY_DIAGNOSTIC_IDENTITY_LIST {
+                assert!(result.is_ok());
+            } else {
+                assert_eq!(
+                    result.unwrap_err(),
+                    SdkDiagnosticBuildError::IdentityListLimitExceeded
+                );
+            }
+        }
+    }
 
     #[test]
     fn generated_package_diagnostics_have_fixed_binding_neutral_vocabulary() {

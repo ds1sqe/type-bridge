@@ -595,3 +595,60 @@ fn binding_type_names_preserve_canonical_identity_and_validate_names() {
     let unknown_kind = yaml.replace("      attribute:", "      unknown:");
     assert!(TypeBridgeConfigSpec::parse_yaml(unknown_kind, origin()).is_err());
 }
+
+#[test]
+fn kotlin_jvm_namespace_is_required_validated_and_target_specific() {
+    let source = CanonicalSource(Cell::new(0));
+    let secrets = AcceptSecrets(Cell::new(0));
+    let extensions = AcceptExtensions(Cell::new(0));
+    let service_set = services(&source, &secrets, &extensions);
+    let original = "  c:\n    output: ../generated/c";
+    let kotlin = "  kotlin-jvm:\n    output: ../generated/kotlin\n    package: example.people";
+    let text = WORKSPACE_YAML.replace(original, kotlin);
+    let config = TypeBridgeConfigSpec::parse_yaml(&text, origin())
+        .unwrap()
+        .resolve(&service_set)
+        .unwrap();
+    assert_eq!(
+        config.kotlin_jvm_package_name().unwrap().as_str(),
+        "example.people"
+    );
+    assert_eq!(
+        config.outputs()[&BindingTarget::KotlinJvm].as_path(),
+        Path::new("generated/kotlin")
+    );
+    for replacement in [
+        "example.class",
+        "java.people",
+        "example/people",
+        "example..people",
+    ] {
+        assert!(
+            TypeBridgeConfigSpec::parse_yaml(text.replace("example.people", replacement), origin())
+                .unwrap()
+                .resolve(&service_set)
+                .is_err()
+        );
+    }
+    let missing = TypeBridgeConfigSpec::parse_yaml(
+        text.replace("    package: example.people\n", ""),
+        origin(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        missing.code(),
+        WorkspaceConfigErrorCode::MissingWorkspaceField
+    );
+    assert_eq!(missing.detail(), Some("bindings.kotlin-jvm.package"));
+    assert!(missing.source_span().is_some());
+    assert!(
+        TypeBridgeConfigSpec::parse_yaml(
+            WORKSPACE_YAML.replace(
+                original,
+                "  c:\n    output: ../generated/c\n    package: example.people"
+            ),
+            origin()
+        )
+        .is_err()
+    );
+}

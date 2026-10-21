@@ -75,6 +75,7 @@ fn target_name(target: BindingTarget, value: String) -> Result<TargetIdentifier,
         BindingTarget::TypeScript => TargetIdentifier::typescript(value),
         BindingTarget::Rust => TargetIdentifier::rust(value),
         BindingTarget::C => TargetIdentifier::c(value),
+        BindingTarget::KotlinJvm => TargetIdentifier::kotlin_jvm(value),
     }
 }
 
@@ -101,6 +102,8 @@ where
 #[derive(Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum BindingTargetWire {
+    #[serde(rename = "kotlin-jvm")]
+    KotlinJvm,
     Python,
     #[serde(rename = "typescript")]
     TypeScript,
@@ -115,6 +118,7 @@ impl From<BindingTargetWire> for BindingTarget {
             BindingTargetWire::TypeScript => Self::TypeScript,
             BindingTargetWire::Rust => Self::Rust,
             BindingTargetWire::C => Self::C,
+            BindingTargetWire::KotlinJvm => Self::KotlinJvm,
         }
     }
 }
@@ -122,6 +126,13 @@ impl From<BindingTargetWire> for BindingTarget {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "binding")]
 enum ProjectionConfigWire {
+    #[serde(rename = "kotlin-jvm")]
+    KotlinJvm {
+        naming_policy: KotlinJvmNamingPolicyWire,
+        package_name: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverrideWire>,
+    },
     #[serde(rename = "python")]
     Python {
         naming_policy: PythonNamingPolicyWire,
@@ -182,6 +193,12 @@ enum RustCreatePolicyWire {
 }
 
 #[derive(Deserialize, Serialize)]
+enum KotlinJvmNamingPolicyWire {
+    #[serde(rename = "typebridge.kotlin-jvm/v1")]
+    TypeBridgeV1,
+}
+
+#[derive(Deserialize, Serialize)]
 enum CNamingPolicyWire {
     #[serde(rename = "typebridge.c/v1")]
     TypeBridgeV1,
@@ -190,6 +207,16 @@ enum CNamingPolicyWire {
 impl ProjectionConfigWire {
     fn rebuild(self) -> Result<ProjectionConfig, Diagnostic> {
         let (mut config, overrides) = match self {
+            Self::KotlinJvm {
+                package_name,
+                type_name_overrides,
+                ..
+            } => (
+                ProjectionConfig::kotlin_jvm(crate::projection::KotlinJvmPackageName::new(
+                    package_name,
+                )?),
+                type_name_overrides,
+            ),
             Self::Python {
                 type_name_overrides,
                 ..

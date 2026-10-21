@@ -23,6 +23,7 @@ const MAX_PROJECTION_COMPONENT_ID_BYTES: usize = 255;
 const PYTHON_GENERATOR_HANDLER_ID: &str = "typebridge.generator.python";
 const TYPESCRIPT_GENERATOR_HANDLER_ID: &str = "typebridge.generator.typescript";
 const RUST_GENERATOR_HANDLER_ID: &str = "typebridge.generator.rust";
+const KOTLIN_JVM_GENERATOR_HANDLER_ID: &str = "typebridge.generator.kotlin-jvm";
 const C_GENERATOR_HANDLER_ID: &str = "typebridge.generator.c";
 const CODE_RESOURCE_DOMAIN: &str = "typebridge.binding.code-resource";
 const RAW_BYTES_CANONICALIZATION: &str = "typebridge.raw-bytes/v1";
@@ -187,6 +188,9 @@ pub enum BindingTarget {
     TypeScript,
     /// Generated native Rust types and schema tokens.
     Rust,
+    /// Generated Kotlin/JVM source and package resources.
+    #[serde(rename = "kotlin-jvm")]
+    KotlinJvm,
     /// Generated C source, headers, and schema-package metadata.
     C,
 }
@@ -200,6 +204,7 @@ impl BindingTarget {
             Self::TypeScript => "typescript",
             Self::Rust => "rust",
             Self::C => "c",
+            Self::KotlinJvm => "kotlin-jvm",
         }
     }
 
@@ -209,6 +214,7 @@ impl BindingTarget {
             Self::TypeScript => TYPESCRIPT_GENERATOR_HANDLER_ID,
             Self::Rust => RUST_GENERATOR_HANDLER_ID,
             Self::C => C_GENERATOR_HANDLER_ID,
+            Self::KotlinJvm => KOTLIN_JVM_GENERATOR_HANDLER_ID,
         }
     }
 }
@@ -296,6 +302,56 @@ impl fmt::Display for CSymbolPrefix {
     }
 }
 
+/// The label-to-Kotlin-name transformation consumed by the JVM emitter.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+pub enum KotlinJvmNamingPolicy {
+    /// The initial collision-checked Kotlin/JVM naming policy.
+    #[serde(rename = "typebridge.kotlin-jvm/v1")]
+    TypeBridgeV1,
+}
+
+/// A portable package namespace embedded in a generated Kotlin/JVM projection.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(transparent)]
+pub struct KotlinJvmPackageName(String);
+
+impl KotlinJvmPackageName {
+    /// Validate a bounded dot-separated namespace with unescaped ASCII segments.
+    pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        if value.len() > MAX_TARGET_IDENTIFIER_BYTES
+            || value.split('.').any(|segment| {
+                TargetIdentifier::kotlin_jvm(segment).is_err()
+                    || !segment
+                        .bytes()
+                        .next()
+                        .is_some_and(|b| b.is_ascii_lowercase())
+                    || !segment
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            })
+            || value == "kotlin"
+            || value.starts_with("kotlin.")
+            || value == "java"
+            || value.starts_with("java.")
+            || value == "io.github.ds1sqe.typebridge"
+            || value.starts_with("io.github.ds1sqe.typebridge.")
+        {
+            return Err(invalid_projection(
+                "invalid_kotlin_jvm_package_name",
+                "Kotlin/JVM package must be a bounded lowercase namespace outside reserved runtime packages",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Return the exact package name committed by the projection configuration.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One exact canonical model identity and its language-facing type name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct TypeNameOverride {
@@ -317,7 +373,7 @@ impl TypeNameOverride {
     }
 }
 
-/// Target-specific options that are consumed by a shipped emitter.
+/// Target-specific options committed to a generated projection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "binding")]
 #[non_exhaustive]
@@ -353,6 +409,18 @@ pub enum ProjectionConfig {
         type_name_overrides: Vec<TypeNameOverride>,
         /// Versioned checked construction surface generated for constructible models.
         create_policy: RustCreatePolicy,
+    },
+    /// Kotlin/JVM projection options.
+    #[serde(rename = "kotlin-jvm")]
+    #[non_exhaustive]
+    KotlinJvm {
+        /// Versioned Kotlin/JVM naming behavior.
+        naming_policy: KotlinJvmNamingPolicy,
+        /// Application package namespace.
+        package_name: KotlinJvmPackageName,
+        /// Explicit model names, sorted by canonical type identity.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        type_name_overrides: Vec<TypeNameOverride>,
     },
     /// C projection options.
     #[serde(rename = "c")]
@@ -397,6 +465,25 @@ impl ProjectionConfig {
         }
     }
 
+    /// Construct the initial Kotlin/JVM projection configuration.
+    #[must_use]
+    pub fn kotlin_jvm(package_name: KotlinJvmPackageName) -> Self {
+        Self::KotlinJvm {
+            naming_policy: KotlinJvmNamingPolicy::TypeBridgeV1,
+            package_name,
+            type_name_overrides: Vec::new(),
+        }
+    }
+
+    /// Return the Kotlin/JVM namespace when this is a Kotlin/JVM config.
+    #[must_use]
+    pub const fn kotlin_jvm_package_name(&self) -> Option<&KotlinJvmPackageName> {
+        match self {
+            Self::KotlinJvm { package_name, .. } => Some(package_name),
+            _ => None,
+        }
+    }
+
     /// Construct the initial C projection configuration.
     #[must_use]
     pub fn c(symbol_prefix: CSymbolPrefix) -> Self {
@@ -421,6 +508,7 @@ impl ProjectionConfig {
             BindingTarget::TypeScript => TargetIdentifier::typescript(name)?,
             BindingTarget::Rust => TargetIdentifier::rust(name)?,
             BindingTarget::C => TargetIdentifier::c(name)?,
+            BindingTarget::KotlinJvm => TargetIdentifier::kotlin_jvm(name)?,
         };
         let overrides = match &mut self {
             Self::Python {
@@ -432,6 +520,10 @@ impl ProjectionConfig {
                 ..
             }
             | Self::Rust {
+                type_name_overrides,
+                ..
+            }
+            | Self::KotlinJvm {
                 type_name_overrides,
                 ..
             }
@@ -461,6 +553,7 @@ impl ProjectionConfig {
             Self::TypeScript { .. } => Self::typescript(),
             Self::Rust { .. } => Self::rust(),
             Self::C { symbol_prefix, .. } => Self::c(symbol_prefix.clone()),
+            Self::KotlinJvm { package_name, .. } => Self::kotlin_jvm(package_name.clone()),
         };
         for item in self.type_name_overrides() {
             validated =
@@ -491,6 +584,10 @@ impl ProjectionConfig {
                 type_name_overrides,
                 ..
             }
+            | Self::KotlinJvm {
+                type_name_overrides,
+                ..
+            }
             | Self::C {
                 type_name_overrides,
                 ..
@@ -506,6 +603,7 @@ impl ProjectionConfig {
             Self::TypeScript { .. } => BindingTarget::TypeScript,
             Self::Rust { .. } => BindingTarget::Rust,
             Self::C { .. } => BindingTarget::C,
+            Self::KotlinJvm { .. } => BindingTarget::KotlinJvm,
         }
     }
 
@@ -514,7 +612,10 @@ impl ProjectionConfig {
     pub const fn python_naming_policy(&self) -> Option<PythonNamingPolicy> {
         match self {
             Self::Python { naming_policy, .. } => Some(*naming_policy),
-            Self::TypeScript { .. } | Self::Rust { .. } | Self::C { .. } => None,
+            Self::TypeScript { .. }
+            | Self::Rust { .. }
+            | Self::C { .. }
+            | Self::KotlinJvm { .. } => None,
         }
     }
 
@@ -523,7 +624,9 @@ impl ProjectionConfig {
     pub const fn typescript_naming_policy(&self) -> Option<TypeScriptNamingPolicy> {
         match self {
             Self::TypeScript { naming_policy, .. } => Some(*naming_policy),
-            Self::Python { .. } | Self::Rust { .. } | Self::C { .. } => None,
+            Self::Python { .. } | Self::Rust { .. } | Self::C { .. } | Self::KotlinJvm { .. } => {
+                None
+            }
         }
     }
 
@@ -532,7 +635,10 @@ impl ProjectionConfig {
     pub const fn rust_naming_policy(&self) -> Option<RustNamingPolicy> {
         match self {
             Self::Rust { naming_policy, .. } => Some(*naming_policy),
-            Self::Python { .. } | Self::TypeScript { .. } | Self::C { .. } => None,
+            Self::Python { .. }
+            | Self::TypeScript { .. }
+            | Self::C { .. }
+            | Self::KotlinJvm { .. } => None,
         }
     }
 
@@ -541,7 +647,10 @@ impl ProjectionConfig {
     pub const fn rust_create_policy(&self) -> Option<RustCreatePolicy> {
         match self {
             Self::Rust { create_policy, .. } => Some(*create_policy),
-            Self::Python { .. } | Self::TypeScript { .. } | Self::C { .. } => None,
+            Self::Python { .. }
+            | Self::TypeScript { .. }
+            | Self::C { .. }
+            | Self::KotlinJvm { .. } => None,
         }
     }
 
@@ -550,7 +659,10 @@ impl ProjectionConfig {
     pub const fn c_naming_policy(&self) -> Option<CNamingPolicy> {
         match self {
             Self::C { naming_policy, .. } => Some(*naming_policy),
-            Self::Python { .. } | Self::TypeScript { .. } | Self::Rust { .. } => None,
+            Self::Python { .. }
+            | Self::TypeScript { .. }
+            | Self::Rust { .. }
+            | Self::KotlinJvm { .. } => None,
         }
     }
 
@@ -559,7 +671,10 @@ impl ProjectionConfig {
     pub const fn c_symbol_prefix(&self) -> Option<&CSymbolPrefix> {
         match self {
             Self::C { symbol_prefix, .. } => Some(symbol_prefix),
-            Self::Python { .. } | Self::TypeScript { .. } | Self::Rust { .. } => None,
+            Self::Python { .. }
+            | Self::TypeScript { .. }
+            | Self::Rust { .. }
+            | Self::KotlinJvm { .. } => None,
         }
     }
 }
@@ -738,6 +853,16 @@ impl ProjectionHandler {
             id: ProjectionHandlerId::new(RUST_GENERATOR_HANDLER_ID)
                 .expect("built-in Rust projection handler ID is valid"),
             version: ProjectionHandlerVersion::V2,
+        }
+    }
+
+    /// Construct the initial Kotlin/JVM generator identity.
+    #[must_use]
+    pub fn kotlin_jvm_v1() -> Self {
+        Self {
+            id: ProjectionHandlerId::new(KOTLIN_JVM_GENERATOR_HANDLER_ID)
+                .expect("built-in Kotlin/JVM projection handler ID is valid"),
+            version: ProjectionHandlerVersion::V1,
         }
     }
 
@@ -1138,6 +1263,55 @@ impl TargetIdentifier {
             return Err(invalid_projection(
                 "invalid_rust_projection_identifier",
                 "projected Rust name is not a bounded non-keyword ASCII identifier",
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Validate a portable, unescaped Kotlin/JVM identifier.
+    pub fn kotlin_jvm(value: impl Into<String>) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        let mut bytes = value.bytes();
+        if value.len() > MAX_TARGET_IDENTIFIER_BYTES
+            || !bytes
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || value.bytes().all(|b| b == b'_')
+            || matches!(
+                value.as_str(),
+                "as" | "break"
+                    | "class"
+                    | "continue"
+                    | "do"
+                    | "else"
+                    | "false"
+                    | "for"
+                    | "fun"
+                    | "if"
+                    | "in"
+                    | "interface"
+                    | "is"
+                    | "null"
+                    | "object"
+                    | "package"
+                    | "return"
+                    | "super"
+                    | "this"
+                    | "throw"
+                    | "true"
+                    | "try"
+                    | "typealias"
+                    | "typeof"
+                    | "val"
+                    | "var"
+                    | "when"
+                    | "while"
+            )
+        {
+            return Err(invalid_projection(
+                "invalid_kotlin_jvm_projection_identifier",
+                "projected Kotlin/JVM name is not a bounded non-keyword ASCII identifier",
             ));
         }
         Ok(Self(value))
@@ -3056,7 +3230,10 @@ impl RuntimeProjection {
         if target == BindingTarget::C {
             validate_c_create_limits(&models)?;
         }
-        if matches!(target, BindingTarget::Rust | BindingTarget::C) {
+        if matches!(
+            target,
+            BindingTarget::Rust | BindingTarget::C | BindingTarget::KotlinJvm
+        ) {
             let native_names_complete = models.values().all(|model| {
                 model.create().enabled() == model.create().target_name().is_some()
                     && model.query_tokens().target_name().is_some()
@@ -3079,6 +3256,10 @@ impl RuntimeProjection {
                     BindingTarget::C => (
                         "missing_c_projection_identifier",
                         "C projection omits a required create, reference, query-token, player-union, or plays identifier",
+                    ),
+                    BindingTarget::KotlinJvm => (
+                        "missing_kotlin_jvm_projection_identifier",
+                        "Kotlin/JVM projection omits a required generated identifier",
                     ),
                     BindingTarget::Python | BindingTarget::TypeScript => unreachable!(),
                 };
@@ -3283,7 +3464,10 @@ impl RuntimeProjection {
                 && role_exists(playing.role())
                 && (!matches!(
                     target,
-                    BindingTarget::TypeScript | BindingTarget::Rust | BindingTarget::C
+                    BindingTarget::TypeScript
+                        | BindingTarget::Rust
+                        | BindingTarget::C
+                        | BindingTarget::KotlinJvm
                 ) || playing.target_name().is_some())
         });
         let closed_functions = functions.values().all(|function| {

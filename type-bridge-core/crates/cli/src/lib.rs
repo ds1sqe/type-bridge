@@ -624,6 +624,7 @@ fn run_schema_generate(workspace: &TypeBridgeWorkspace) -> Result<(), String> {
             authority,
             workspace.config().app_label(),
             workspace.config().type_name_overrides(target),
+            workspace.config().kotlin_jvm_package_name(),
         )
     })
 }
@@ -634,10 +635,13 @@ fn generate_binding_package(
     authority: &type_bridge_schema::VerifiedSchemaAuthority,
     app_label: &type_bridge_contract::migration::MigrationAppLabel,
     type_names: &[type_bridge_contract::projection::TypeNameOverride],
+    kotlin_jvm_package_name: Option<&type_bridge_contract::projection::KotlinJvmPackageName>,
 ) -> Result<type_bridge_schema_codegen::GeneratedPackage, String> {
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
     use type_bridge_schema::project;
-    use type_bridge_schema_codegen::{CEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter};
+    use type_bridge_schema_codegen::{
+        CEmitter, KotlinJvmEmitter, PythonEmitter, RustEmitter, TypeScriptEmitter,
+    };
 
     let configure = |mut config: ProjectionConfig| -> Result<ProjectionConfig, String> {
         for item in type_names {
@@ -687,6 +691,21 @@ fn generate_binding_package(
                 &configure(ProjectionConfig::rust())?,
                 &handlers,
                 &resources,
+            )
+            .map_err(display)?;
+            emitter.emit(&projection, authority)
+        }
+        BindingTarget::KotlinJvm => {
+            let emitter = KotlinJvmEmitter::new();
+            let namespace = kotlin_jvm_package_name
+                .ok_or("Kotlin/JVM output requires an explicit package namespace")?;
+            let config = configure(ProjectionConfig::kotlin_jvm(namespace.clone()))?;
+            let projection = project(
+                resolved,
+                target,
+                &config,
+                &emitter.generator_handlers_for(resolved),
+                &emitter.code_resources_for(resolved).map_err(display)?,
             )
             .map_err(display)?;
             emitter.emit(&projection, authority)
@@ -1025,6 +1044,7 @@ mod schema_generation_atomicity_tests {
                 authority,
                 changed.config().app_label(),
                 changed.config().type_name_overrides(target),
+                changed.config().kotlin_jvm_package_name(),
             )
         })
         .expect_err("injected C emitter failure rejects the transaction");

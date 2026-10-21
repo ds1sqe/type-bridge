@@ -5,10 +5,10 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, StructId, TypeId, TypeKind};
 use type_bridge_contract::projection::{
-    BindingTarget, CSymbolPrefix, ProjectedContainer, ProjectedModelForm, ProjectedTokenIdentity,
-    ProjectedTokenKind, ProjectionConfig, ProjectionHandler, ReferenceConstructionPolicy,
-    TYPE_BRIDGE_C_CREATE_FIELD_MAX, TYPE_BRIDGE_C_CREATE_MEMBER_MAX, TYPE_BRIDGE_C_CREATE_ROLE_MAX,
-    TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
+    BindingTarget, CSymbolPrefix, KotlinJvmPackageName, ProjectedContainer, ProjectedModelForm,
+    ProjectedTokenIdentity, ProjectedTokenKind, ProjectionConfig, ProjectionHandler,
+    ReferenceConstructionPolicy, TYPE_BRIDGE_C_CREATE_FIELD_MAX, TYPE_BRIDGE_C_CREATE_MEMBER_MAX,
+    TYPE_BRIDGE_C_CREATE_ROLE_MAX, TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::{
@@ -224,6 +224,11 @@ entities:
             BindingTarget::C,
             ProjectionConfig::c(CSymbolPrefix::new("acme").unwrap()),
             ProjectionHandler::c_v2(),
+        ),
+        (
+            BindingTarget::KotlinJvm,
+            ProjectionConfig::kotlin_jvm(KotlinJvmPackageName::new("example.inheritance").unwrap()),
+            ProjectionHandler::kotlin_jvm_v1(),
         ),
     ] {
         let projected = projection_for(source, target, config, handler);
@@ -1320,8 +1325,7 @@ plays:
 
 #[test]
 fn projects_relation_player_cycles_structs_and_typed_function_refs() {
-    let projected = projection(
-        r#"format: typebridge.schema/v2
+    let source = r#"format: typebridge.schema/v2
 relations:
   container:
     relates: [item]
@@ -1345,28 +1349,41 @@ functions:
         match
           $event isa event;
         return { $event };
-"#,
-    );
-    let container = TypeId::new(TypeKind::Relation, "container").unwrap();
-    let event = TypeId::new(TypeKind::Relation, "event").unwrap();
-    assert!(
-        projected
-            .emission()
-            .model_link_components()
-            .iter()
-            .any(|component| component == &BTreeSet::from([container.clone(), event.clone()]))
-    );
-    let role = RoleId::new("container", "item").unwrap();
-    let read_player = projected.models()[&container].complete_read().roles()[&role]
-        .players()
-        .first()
-        .expect("relation player is projected");
-    assert_eq!(read_player.form(), ProjectedModelForm::Reference);
-    let structure = &projected.structs()[&StructId::new("player-stats").unwrap()];
-    assert_eq!(structure.fields()[0].name().as_str(), "wins");
-    assert!(structure.fields()[1].optional());
-    let function = &projected.functions()[&FunctionId::new("events").unwrap()];
-    assert_eq!(function.parameters()[0].target_name().as_str(), "event");
+"#;
+    for (target, config, handler) in [
+        (
+            BindingTarget::Python,
+            ProjectionConfig::python(),
+            ProjectionHandler::python_v1(),
+        ),
+        (
+            BindingTarget::KotlinJvm,
+            ProjectionConfig::kotlin_jvm(KotlinJvmPackageName::new("example.cycles").unwrap()),
+            ProjectionHandler::kotlin_jvm_v1(),
+        ),
+    ] {
+        let projected = projection_for(source, target, config, handler);
+        let container = TypeId::new(TypeKind::Relation, "container").unwrap();
+        let event = TypeId::new(TypeKind::Relation, "event").unwrap();
+        assert!(
+            projected
+                .emission()
+                .model_link_components()
+                .iter()
+                .any(|component| component == &BTreeSet::from([container.clone(), event.clone()]))
+        );
+        let role = RoleId::new("container", "item").unwrap();
+        let read_player = projected.models()[&container].complete_read().roles()[&role]
+            .players()
+            .first()
+            .expect("relation player is projected");
+        assert_eq!(read_player.form(), ProjectedModelForm::Reference);
+        let structure = &projected.structs()[&StructId::new("player-stats").unwrap()];
+        assert_eq!(structure.fields()[0].name().as_str(), "wins");
+        assert!(structure.fields()[1].optional());
+        let function = &projected.functions()[&FunctionId::new("events").unwrap()];
+        assert_eq!(function.parameters()[0].target_name().as_str(), "event");
+    }
 }
 
 #[test]
@@ -1555,4 +1572,114 @@ entities:
         decode_runtime_projection_verified(&bytes, &semantic, &binding).unwrap(),
         first
     );
+}
+
+#[test]
+fn kotlin_jvm_projection_has_independent_identity_and_collision_overrides() {
+    let source = r#"format: typebridge.schema/v2
+attributes:
+  engine_ref: { value: string }
+entities:
+  engine:
+    owns:
+      engine_ref: { card: 1 }
+"#;
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("kotlin.yaml").unwrap(), source)]).unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let resolved = resolve(
+        &declared,
+        &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+    )
+    .unwrap();
+    let config = ProjectionConfig::kotlin_jvm(KotlinJvmPackageName::new("example.engine").unwrap());
+    let handlers = [ProjectionHandler::kotlin_jvm_v1()];
+    assert!(project(&resolved, BindingTarget::KotlinJvm, &config, &handlers, &[]).is_err());
+    let config = config
+        .with_type_name_override(
+            TypeId::new(TypeKind::Attribute, "engine_ref").unwrap(),
+            "EngineReferenceValue",
+        )
+        .unwrap();
+    let projected = project(&resolved, BindingTarget::KotlinJvm, &config, &handlers, &[]).unwrap();
+    assert_eq!(projected.target().as_str(), "kotlin-jvm");
+    let bytes = to_canonical_json(&projected).unwrap();
+    let semantic = to_canonical_json(projected.semantic_fingerprint()).unwrap();
+    let binding = to_canonical_json(projected.projection_fingerprint()).unwrap();
+    assert_eq!(
+        decode_runtime_projection_verified(&bytes, &semantic, &binding).unwrap(),
+        projected
+    );
+    let other_config =
+        ProjectionConfig::kotlin_jvm(KotlinJvmPackageName::new("example.other").unwrap())
+            .with_type_name_override(
+                TypeId::new(TypeKind::Attribute, "engine_ref").unwrap(),
+                "EngineReferenceValue",
+            )
+            .unwrap();
+    let other = project(
+        &resolved,
+        BindingTarget::KotlinJvm,
+        &other_config,
+        &handlers,
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        projected.semantic_fingerprint(),
+        other.semantic_fingerprint()
+    );
+    assert_ne!(
+        projected.projection_fingerprint(),
+        other.projection_fingerprint()
+    );
+    assert!(
+        decode_runtime_projection_verified(
+            &bytes,
+            &semantic,
+            &to_canonical_json(other.projection_fingerprint()).unwrap()
+        )
+        .is_err()
+    );
+    assert!(project(&resolved, BindingTarget::C, &config, &handlers, &[]).is_err());
+    assert!(
+        project(
+            &resolved,
+            BindingTarget::KotlinJvm,
+            &config,
+            &[ProjectionHandler::c_v3()],
+            &[]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn kotlin_jvm_member_names_escape_keywords_and_generated_members() {
+    let source = r#"format: typebridge.schema/v2
+attributes:
+  when: { value: string }
+  component1: { value: string }
+  copy: { value: string }
+entities:
+  record:
+    owns:
+      when: { card: 1 }
+      component1: { card: 1 }
+      copy: { card: 1 }
+"#;
+    let projected = projection_for(
+        source,
+        BindingTarget::KotlinJvm,
+        ProjectionConfig::kotlin_jvm(KotlinJvmPackageName::new("example.records").unwrap()),
+        ProjectionHandler::kotlin_jvm_v1(),
+    );
+    let model = &projected.models()[&TypeId::new(TypeKind::Entity, "record").unwrap()];
+    let names = model
+        .query_tokens()
+        .fields()
+        .values()
+        .map(|f| f.target_name().as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, BTreeSet::from(["when_", "component1_", "copy_"]));
 }

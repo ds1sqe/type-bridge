@@ -146,6 +146,34 @@ fn typescript_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagno
     TargetIdentifier::typescript(value).map_err(no_source)
 }
 
+fn kotlin_jvm_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
+    TargetIdentifier::kotlin_jvm(value).map_err(no_source)
+}
+
+fn kotlin_jvm_member_name(label: &str) -> String {
+    let mut value = typescript_member_name(label);
+    if TargetIdentifier::kotlin_jvm(&value).is_err()
+        || matches!(
+            value.as_str(),
+            "copy"
+                | "equals"
+                | "hashCode"
+                | "toString"
+                | "javaClass"
+                | "iid"
+                | "manager"
+                | "reference"
+                | "schemaPackage"
+        )
+        || value
+            .strip_prefix("component")
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+    {
+        value.push('_');
+    }
+    value
+}
+
 fn rust_identifier(value: String) -> Result<TargetIdentifier, SchemaDiagnostics> {
     TargetIdentifier::rust(value).map_err(no_source)
 }
@@ -203,6 +231,8 @@ impl<'a> ProjectionNamer<'a> {
             rust_identifier(value)
         } else if self.target == BindingTarget::C {
             self.c_label_identifier(label)
+        } else if self.target == BindingTarget::KotlinJvm {
+            kotlin_jvm_identifier(value)
         } else {
             Err(projection_error(
                 "unsupported_binding_projection_target",
@@ -220,6 +250,8 @@ impl<'a> ProjectionNamer<'a> {
             rust_identifier(rust_member_name(label))
         } else if self.target == BindingTarget::C {
             self.c_label_identifier(label)
+        } else if self.target == BindingTarget::KotlinJvm {
+            kotlin_jvm_identifier(kotlin_jvm_member_name(label))
         } else {
             Err(projection_error(
                 "unsupported_binding_projection_target",
@@ -254,6 +286,8 @@ impl<'a> ProjectionNamer<'a> {
             rust_identifier(format!("{}Ref", name.as_str()))
         } else if self.target == BindingTarget::C {
             c_identifier(format!("{}_ref", name.as_str()))
+        } else if self.target == BindingTarget::KotlinJvm {
+            kotlin_jvm_identifier(format!("{}Ref", name.as_str()))
         } else {
             Err(projection_error(
                 "unsupported_binding_projection_target",
@@ -268,6 +302,8 @@ impl<'a> ProjectionNamer<'a> {
     ) -> Result<Option<TargetIdentifier>, SchemaDiagnostics> {
         if self.target == BindingTarget::Rust {
             rust_identifier(format!("{}Type", model_name.as_str())).map(Some)
+        } else if self.target == BindingTarget::KotlinJvm {
+            kotlin_jvm_identifier(format!("{}Type", model_name.as_str())).map(Some)
         } else if self.target == BindingTarget::C {
             c_identifier(format!("{}_type", model_name.as_str())).map(Some)
         } else {
@@ -285,6 +321,13 @@ impl<'a> ProjectionNamer<'a> {
                 "{}{}Player",
                 model_name.as_str(),
                 python_class_name(role_label),
+            ))
+            .map(Some)
+        } else if self.target == BindingTarget::KotlinJvm {
+            kotlin_jvm_identifier(format!(
+                "{}{}Player",
+                model_name.as_str(),
+                python_class_name(role_label)
             ))
             .map(Some)
         } else if self.target == BindingTarget::C {
@@ -305,6 +348,8 @@ impl<'a> ProjectionNamer<'a> {
     ) -> Result<Option<TargetIdentifier>, SchemaDiagnostics> {
         if self.target == BindingTarget::Rust {
             rust_identifier(format!("{}Create", model_name.as_str())).map(Some)
+        } else if self.target == BindingTarget::KotlinJvm {
+            kotlin_jvm_identifier(format!("{}Create", model_name.as_str())).map(Some)
         } else if self.target == BindingTarget::C {
             c_identifier(format!("{}_create", model_name.as_str())).map(Some)
         } else {
@@ -654,6 +699,15 @@ pub fn project(
     let mut names = NameRegistry::default();
     if let Some(descriptor_name) = namer.c_schema_package_identifier()? {
         names.insert("root", &descriptor_name, "runtime:c-schema-package-open")?;
+    }
+    if target == BindingTarget::KotlinJvm {
+        for name in ["TypeBridgeSchema", "kotlin", "io", "java"] {
+            names.insert(
+                "root",
+                &TargetIdentifier::kotlin_jvm(name).map_err(no_source)?,
+                format!("runtime:kotlin-jvm:{name}"),
+            )?;
+        }
     }
     let mut models = BTreeMap::new();
     let mut playing_facts = BTreeMap::new();

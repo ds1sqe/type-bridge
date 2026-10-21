@@ -11,6 +11,7 @@ members = [
     "crates/workspace",
     "crates/cli",
     "crates/c",
+    "crates/jvm",
     "crates/core",
     "crates/migration",
     "crates/python",

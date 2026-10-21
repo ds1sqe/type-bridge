@@ -5,12 +5,14 @@
 use std::collections::BTreeMap;
 
 mod c;
+mod kotlin_jvm;
 mod package;
 mod python;
 mod rust;
 mod typescript;
 
 pub use c::CEmitter;
+pub use kotlin_jvm::KotlinJvmEmitter;
 pub use package::{GeneratedPackage, MIGRATION_HISTORY_BUNDLE_RESOURCE};
 pub use python::PythonEmitter;
 pub use rust::RustEmitter;
@@ -97,6 +99,20 @@ pub fn verify_projection_evidence(
             let emitter = RustEmitter::new();
             reproject(
                 BindingTarget::Rust,
+                &emitter.generator_handlers_for(schema),
+                &emitter.code_resources_for(schema)?,
+            )?
+        }
+        BindingTarget::KotlinJvm => {
+            if projection.config().kotlin_jvm_package_name().is_none() {
+                return Err(invalid(
+                    "schema_codegen_projection_evidence_mismatch",
+                    "Kotlin/JVM runtime projection omits its package namespace",
+                ));
+            }
+            let emitter = KotlinJvmEmitter::new();
+            reproject(
+                BindingTarget::KotlinJvm,
                 &emitter.generator_handlers_for(schema),
                 &emitter.code_resources_for(schema)?,
             )?
