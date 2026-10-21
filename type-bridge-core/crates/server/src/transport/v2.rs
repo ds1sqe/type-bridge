@@ -45,7 +45,6 @@ use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
-use crate::idempotency::{IdempotencyConfig, IdempotencyStore};
 use crate::interceptor::{RequestContext, V2PolicyOutcome, V2PolicyRequest};
 use crate::pipeline::QueryPipeline;
 
@@ -197,7 +196,6 @@ pub struct V2QueryState {
     pub(super) replay_store: Arc<dyn RemoteReplayStore>,
     pub(super) signer: RemoteReplySigningKey,
     control_policy: V2QueryControlPolicy,
-    pub(super) idempotency: Arc<IdempotencyStore>,
     pub(super) allow_unauthenticated_staged_writes: bool,
 }
 
@@ -294,10 +292,6 @@ impl V2QueryState {
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
             control_policy,
-            idempotency: Arc::new(
-                IdempotencyStore::new(IdempotencyConfig::default())
-                    .expect("default idempotency configuration is valid"),
-            ),
             allow_unauthenticated_staged_writes: false,
         })
     }
@@ -386,13 +380,6 @@ impl V2QueryState {
             .query_limits()
             .remote_request_bytes
             .saturating_add(V2_BODY_FRAMING_SLACK_BYTES)
-    }
-
-    /// Replace the retained-reply store for keyed `/v3/staged` requests.
-    #[must_use]
-    pub fn with_idempotency_store(mut self, store: Arc<IdempotencyStore>) -> Self {
-        self.idempotency = store;
-        self
     }
 
     /// Admit staged write transactions that no interceptor vouches for.

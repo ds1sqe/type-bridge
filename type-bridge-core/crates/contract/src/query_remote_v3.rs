@@ -32,8 +32,6 @@ pub const QUERY_REMOTE_REPLY_FORMAT_V3: &str = "typebridge.query-remote-response
 pub const CAP_QUERY_REMOTE_STAGED_V3: &str = "query.remote.envelope-v3";
 /// Admission capability for authenticated write staging.
 pub const CAP_QUERY_REMOTE_WRITE_V3: &str = "query.remote.write";
-/// Admission capability for retained idempotent replies.
-pub const CAP_QUERY_REMOTE_IDEMPOTENCY_V3: &str = "query.remote.idempotency";
 
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::stable(DiagnosticCategory::InvalidContract, code, message)
@@ -49,45 +47,6 @@ fn mismatch() -> Diagnostic {
     )
 }
 
-/// Opaque 16..64-byte client key; wire spelling is lowercase hexadecimal.
-#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct IdempotencyKey(Vec<u8>);
-impl std::fmt::Debug for IdempotencyKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("IdempotencyKey(..)")
-    }
-}
-impl IdempotencyKey {
-    /// Validate an exact opaque byte key without retaining a printable value.
-    pub fn new(bytes: Vec<u8>) -> Result<Self, Diagnostic> {
-        if !(16..=64).contains(&bytes.len()) {
-            return Err(invalid(
-                "query_remote_v3_idempotency_key",
-                "idempotency keys require 16 through 64 bytes",
-            ));
-        }
-        Ok(Self(bytes))
-    }
-    /// Borrow the opaque key bytes for a bounded server store.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-impl Serialize for IdempotencyKey {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&hex(&self.0))
-    }
-}
-impl<'de> Deserialize<'de> for IdempotencyKey {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(d)?;
-        if !(32..=128).contains(&value.len()) {
-            return Err(serde::de::Error::custom("invalid idempotency key length"));
-        }
-        Self::new(unhex(&value).map_err(serde::de::Error::custom)?)
-            .map_err(|_| serde::de::Error::custom("invalid idempotency key"))
-    }
-}
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -280,8 +239,6 @@ impl StagedPlanV3 {
 pub struct StagedRequestSpecV3 {
     /// Caller nonce, 16..128 ASCII letters, digits, hyphens or underscores.
     pub nonce: String,
-    /// Optional opaque retained-reply key.
-    pub idempotency_key: Option<IdempotencyKey>,
     /// Optional kind, otherwise inferred from all plan operations.
     pub kind: Option<StagedKindV3>,
     /// Aggregate execution budgets.
@@ -297,8 +254,6 @@ struct RequestWire {
     advertisement: String,
     expires_at_unix_ms: u64,
     format: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    idempotency_key: Option<IdempotencyKey>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     kind: Option<StagedKindV3>,
     limits: StagedLimitsV3,
@@ -328,7 +283,6 @@ impl StagedRequestV3 {
             advertisement: advertisement.fingerprint()?.digest_hex(),
             expires_at_unix_ms: expires,
             format: QUERY_REMOTE_REQUEST_FORMAT_V3.into(),
-            idempotency_key: spec.idempotency_key,
             kind: spec.kind,
             limits,
             nonce: spec.nonce,
@@ -431,9 +385,6 @@ impl StagedRequestV3 {
         if writes > 0 {
             capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_WRITE_V3)?);
         }
-        if wire.idempotency_key.is_some() {
-            capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_IDEMPOTENCY_V3)?);
-        }
         for plan in &plans {
             for capability in plan.plan.required_capabilities().iter() {
                 capabilities.insert(capability.clone());
@@ -513,10 +464,6 @@ impl StagedRequestV3 {
     /// Exact caller nonce.
     pub fn nonce(&self) -> &str {
         &self.wire.nonce
-    }
-    /// Optional retained-reply key.
-    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
-        self.wire.idempotency_key.as_ref()
     }
     /// Absolute expiry in Unix milliseconds.
     pub fn expires_at_unix_ms(&self) -> u64 {
@@ -853,8 +800,6 @@ enum OutcomeWire {
 struct ReplyWire {
     answers: Vec<StagedAnswerV3>,
     format: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    idempotency_key: Option<IdempotencyKey>,
     nonce: String,
     outcome: OutcomeWire,
     request: String,
@@ -880,7 +825,6 @@ impl StagedReplyV3 {
         let wire = ReplyWire {
             answers,
             format: QUERY_REMOTE_REPLY_FORMAT_V3.into(),
-            idempotency_key: request.idempotency_key().cloned(),
             nonce: request.nonce().into(),
             outcome,
             request: request.fingerprint()?.digest().to_hex(),
@@ -994,7 +938,6 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
     if wire.format != QUERY_REMOTE_REPLY_FORMAT_V3
         || wire.nonce != request.nonce()
         || wire.request != request.fingerprint()?.digest().to_hex()
-        || wire.idempotency_key.as_ref() != request.idempotency_key()
     {
         return Err(mismatch());
     }
@@ -1128,8 +1071,6 @@ fn preflight_reply_payload(
         #[serde(borrow)]
         request: &'a str,
         #[serde(borrow)]
-        idempotency_key: Option<&'a str>,
-        #[serde(borrow)]
         outcome: &'a serde_json::value::RawValue,
         #[serde(borrow)]
         answers: &'a serde_json::value::RawValue,
@@ -1147,11 +1088,9 @@ fn preflight_reply_payload(
             "staged reply has an invalid framing shape",
         )
     })?;
-    let key = request.idempotency_key().map(|key| hex(key.as_bytes()));
     if peek.format != QUERY_REMOTE_REPLY_FORMAT_V3
         || peek.nonce != request.nonce()
         || peek.request != request.fingerprint()?.digest().to_hex()
-        || peek.idempotency_key != key.as_deref()
     {
         return Err(mismatch());
     }

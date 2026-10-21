@@ -114,7 +114,6 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "type_bridge_proxy_connection_transaction",
         "type_bridge_staged_transaction_stage",
         "type_bridge_staged_transaction_commit",
-        "type_bridge_staged_transaction_commit_retry",
         "type_bridge_staged_transaction_rollback",
         "type_bridge_staged_transaction_close",
         "type_bridge_pending_answer",

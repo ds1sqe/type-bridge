@@ -88,8 +88,7 @@ impl Interceptor for LivePolicy {
         true
     }
 
-    /// A vouching policy authenticates its caller: idempotency retention is
-    /// charged to that identity.
+    /// A vouching policy authenticates its caller.
     fn on_v2_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,

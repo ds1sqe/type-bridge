@@ -347,10 +347,9 @@ impl<S: Schema> ProxyDatabase<S> {
     /// It has the same API as a direct
     /// [`Database::transaction`](crate::Database::transaction): `stage`
     /// queues [`Plan`](crate::plan::Plan)s, and `commit` sends them as one
-    /// signed `query-remote/v3` envelope with a fresh random 16-byte
-    /// idempotency key and verifies the signed reply. After an unknown outcome (`commit_outcome_unknown`,
-    /// such as a lost reply), `commit_retry` resends the same envelope and
-    /// key, so the stack applies at most once. The staged advertisement is
+    /// signed `query-remote/v3` envelope with a fresh nonce and verifies the
+    /// signed reply. A lost reply is `commit_outcome_unknown`: the stack may
+    /// have applied, and the caller reads the database. The staged advertisement is
     /// pinned on the policy, or fetched on first use and verified against
     /// the connection's executor and reply key, then reused; nothing else is
     /// sent until commit.

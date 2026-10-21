@@ -29,7 +29,7 @@ interface Fixture {
   readonly direct_database: string;
   readonly profile: string;
   readonly declared_hex: string;
-  readonly proxies: Record<"purchase" | "retry" | "refused", {
+  readonly proxies: Record<"purchase" | "lost_reply" | "refused", {
     readonly database: string;
     readonly endpoint: string;
     readonly scope: string;
@@ -115,7 +115,6 @@ test("the TypeScript purchase commits directly and over the proxy with the same 
   const db = connect(live.direct_database);
   const direct = db.stagedTransaction();
   const directAnswers = plans.map((plan) => direct.stage(plan));
-  assert.equal(direct.hasUnknownOutcome(), false);
   await direct.commit();
 
   const connection = await ProxyConnection.connect(authority, live.proxies.purchase.endpoint);
@@ -138,7 +137,7 @@ test("the TypeScript purchase commits directly and over the proxy with the same 
 
 test("await using closes without committing", { skip }, async () => {
   const live = fixture();
-  const db = connect(live.proxies.retry.database);
+  const db = connect(live.proxies.lost_reply.database);
   const plan = purchase(authorityFor(live), "O-disposed");
   {
     await using tx = db.stagedTransaction();

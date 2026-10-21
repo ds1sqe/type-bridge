@@ -24,7 +24,7 @@ interface Fixture {
   readonly profile: string;
   readonly declared_hex: string;
   readonly plans_hex: Record<"purchase" | "count" | "exists", string>;
-  readonly proxies: Record<"purchase" | "retry" | "refused", {
+  readonly proxies: Record<"purchase" | "lost_reply" | "refused", {
     readonly database: string;
     readonly endpoint: string;
     readonly scope: string;
@@ -46,7 +46,7 @@ function bytes(hex: string): Uint8Array {
 
 async function proxyTransaction(
   live: Fixture,
-  role: "purchase" | "retry" | "refused",
+  role: "purchase" | "lost_reply" | "refused",
   headers: [string, string][] = [],
 ): Promise<StagedTransaction> {
   const proxy = live.proxies[role];
@@ -90,20 +90,20 @@ test("a staged purchase over the proxy answers exactly as direct", { skip }, asy
   await remote.commit();
   assert.deepEqual(remoteAnswers.map((get) => get()), directAnswers.map((get) => get()));
   assert.deepEqual(remoteAnswers[0]?.(), { kind: "matched", value: 1 });
-  // A direct transaction has no unknown outcome to retry.
-  await assert.rejects(direct.commitRetry());
   db.close();
 });
 
-test("a lost reply stays unknown and commitRetry applies the purchase once", { skip }, async () => {
+test("a lost reply is unknown and the database tells", { skip }, async () => {
   const live = fixture();
-  const tx = await proxyTransaction(live, "retry", [["x-tb-drop-reply", "1"]]);
-  const [purchase] = stagePurchaseProgram(live, tx);
+  const tx = await proxyTransaction(live, "lost_reply", [["x-tb-drop-reply", "1"]]);
+  stagePurchaseProgram(live, tx);
   assert.equal(await failureCode(tx.commit()), "commit_outcome_unknown");
-  await tx.commitRetry();
-  assert.deepEqual(purchase?.(), { kind: "matched", value: 1 });
-  // The retry state is spent once the outcome is known.
-  await assert.rejects(tx.commitRetry());
+  // The purchase is conditional on stock, so running it again is safe: it
+  // matches nothing because the lost commit applied.
+  const again = await proxyTransaction(live, "lost_reply");
+  const [purchase] = stagePurchaseProgram(live, again);
+  await again.commit();
+  assert.deepEqual(purchase?.(), { kind: "matched", value: 0 });
 });
 
 test("an unauthenticated staged write is refused with the typed failure", { skip }, async () => {
@@ -113,7 +113,6 @@ test("an unauthenticated staged write is refused with the typed failure", { skip
   const refused = await failure(tx.commit());
   assert.equal(refused.code, "staged_write_not_authorized");
   assert.throws(() => purchase?.());
-  await assert.rejects(tx.commitRetry());
 });
 
 test("the native staged transaction takes Uint8Array bytes and refuses shared storage", { skip }, () => {

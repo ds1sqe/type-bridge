@@ -797,7 +797,7 @@ class Database:
         answers ``Rows``, ``Count``, ``Exists`` or ``Matched``. As a context
         manager it commits on a clean exit (unless ``commit_on_exit=False``),
         discards on an exception, and closes; a commit whose outcome is
-        unknown raises and stays open for ``tx.commit_retry()``. An omitted
+        unknown raises, and the caller reads the database. An omitted
         ``kind`` is inferred from the staged plans. ``transaction()`` keeps
         its eager context.
         """

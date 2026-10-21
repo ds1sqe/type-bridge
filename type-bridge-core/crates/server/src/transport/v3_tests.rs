@@ -8,8 +8,7 @@ use type_bridge_contract::query_plan::v3::{
     DeleteItem, InsertThing, Operation, PlanSpec, QueryPlanV3, Stage, WriteReturns,
 };
 use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_IDEMPOTENCY_V3, CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3,
-    IdempotencyKey, StagedAnswerV3, StagedKindV3, StagedLimitsV3, StagedPlanV3,
+    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3, StagedLimitsV3, StagedPlanV3,
     StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
 };
 use type_bridge_contract::schema::OwnsFactId;
@@ -19,11 +18,7 @@ use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 
 use super::*;
 use crate::interceptor::{StagedWriteAuthority, V3CommitOutcome, V3PolicyPlan};
-use crate::idempotency::MAX_IDEMPOTENCY_TTL;
-use crate::transport::v3::{
-    STAGED_IDEMPOTENCY_NOT_AUTHORIZED, STAGED_WRITE_NOT_AUTHORIZED, staged_advertisement,
-};
-use type_bridge_contract::query_remote::MAX_REMOTE_DEADLINE_MS;
+use crate::transport::v3::{STAGED_WRITE_NOT_AUTHORIZED, staged_advertisement};
 
 struct V3Fixture {
     advertisement: RemoteCapabilities,
@@ -47,7 +42,6 @@ fn timed_v3_fixture(
         allow_unauthenticated_writes,
         timeout,
         QueryV2AnswerLimits::default(),
-        None,
     )
 }
 
@@ -56,7 +50,6 @@ fn configured_v3_fixture(
     allow_unauthenticated_writes: bool,
     timeout: Option<Duration>,
     ceilings: QueryV2AnswerLimits,
-    store: Option<IdempotencyConfig>,
 ) -> V3Fixture {
     let authority = authority_fixture(false);
     let declared = authority.declared.clone();
@@ -76,12 +69,6 @@ fn configured_v3_fixture(
     )
     .expect("executor advertisement is canonical")
     .with_unauthenticated_staged_writes(allow_unauthenticated_writes);
-    let query = match store {
-        Some(config) => query.with_idempotency_store(Arc::new(
-            IdempotencyStore::new(config).expect("idempotency configuration"),
-        )),
-        None => query,
-    };
     let query = Arc::new(match timeout {
         Some(timeout) => query.with_execution_timeout(timeout),
         None => query,
@@ -240,12 +227,10 @@ fn now_ms() -> u64 {
 fn staged(
     fixture: &V3Fixture,
     plans: &[QueryPlanV3],
-    key: Option<u8>,
     nonce: &str,
 ) -> StagedRequestV3 {
     let spec = StagedRequestSpecV3 {
         nonce: nonce.into(),
-        idempotency_key: key.map(|byte| IdempotencyKey::new(vec![byte; 16]).expect("key")),
         kind: None,
         limits: StagedLimitsV3::default(),
         plans: plans
@@ -309,7 +294,6 @@ async fn staged_capabilities_extend_without_changing_the_v2_advertisement() {
     for capability in [
         CAP_QUERY_REMOTE_STAGED_V3,
         CAP_QUERY_REMOTE_WRITE_V3,
-        CAP_QUERY_REMOTE_IDEMPOTENCY_V3,
     ] {
         assert!(
             v3.capabilities()
@@ -324,7 +308,7 @@ async fn staged_capabilities_extend_without_changing_the_v2_advertisement() {
 #[tokio::test]
 async fn staged_read_commits_and_signs_its_reply() {
     let fixture = v3_fixture(default_pipeline(), false);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(reply.committed());
     assert_eq!(reply.answers(), [StagedAnswerV3::Count { value: 0 }]);
@@ -339,7 +323,7 @@ async fn staged_read_commits_and_signs_its_reply() {
 #[tokio::test]
 async fn unauthenticated_staged_write_is_refused_before_anything_opens() {
     let fixture = v3_fixture(default_pipeline(), false);
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), STAGED_WRITE_NOT_AUTHORIZED);
@@ -465,7 +449,7 @@ fn gate_pipeline(gate: &Arc<StagedGate>) -> QueryPipeline {
 async fn v2_request_policy_without_v3_coverage_refuses_every_staged_request() {
     let gate = StagedGate::new(false, WriteVouch::Vouch);
     let fixture = v3_fixture(gate_pipeline(&gate), false);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let reply = post(&fixture, &request).await;
     assert_eq!(unbound_code(&fixture, &reply), "query_remote_policy_rejected");
     let capabilities = call(&fixture.router, "GET", "/v3/capabilities", Vec::new()).await;
@@ -484,7 +468,7 @@ async fn v2_request_policy_without_v3_coverage_refuses_every_staged_request() {
 async fn v2_request_policy_declaring_v3_coverage_is_admitted() {
     let gate = StagedGate::new(true, WriteVouch::Vouch);
     let fixture = v3_fixture(gate_pipeline(&gate), false);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(reply.committed());
     assert_eq!(gate.transports.load(Ordering::SeqCst), 1);
@@ -495,7 +479,7 @@ async fn v2_request_policy_declaring_v3_coverage_is_admitted() {
 async fn failing_write_authority_refuses_before_anything_opens() {
     let gate = StagedGate::new(true, WriteVouch::Fail);
     let fixture = v3_fixture(gate_pipeline(&gate), false);
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "query_remote_policy_rejected");
@@ -512,7 +496,7 @@ async fn hanging_write_authority_times_out_before_anything_opens() {
         false,
         Some(Duration::from_millis(200)),
     );
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "transaction_deadline_exceeded");
@@ -528,7 +512,7 @@ async fn vouched_or_explicitly_allowed_staged_writes_commit() {
         v3_fixture(default_pipeline(), true),
     ] {
         let plans = [insert_plan(&fixture.declared), count_plan(&fixture.declared)];
-        let request = staged(&fixture, &plans, None, TEST_NONCE);
+        let request = staged(&fixture, &plans, TEST_NONCE);
         let reply = verify(&fixture, &request, &post(&fixture, &request).await);
         assert!(reply.committed());
         assert_eq!(
@@ -549,7 +533,6 @@ async fn unsignable_reply_after_a_committed_write_reports_an_unknown_outcome() {
     // A budget below any signed reply: the write commits, then cannot sign.
     let spec = StagedRequestSpecV3 {
         nonce: TEST_NONCE.into(),
-        idempotency_key: None,
         kind: None,
         limits: StagedLimitsV3 {
             max_bytes: 1,
@@ -641,7 +624,7 @@ fn withholding_fixture() -> (Arc<WithholdsReplies>, V3Fixture) {
 #[tokio::test]
 async fn reply_withheld_after_a_committed_write_reports_an_unknown_outcome() {
     let (policy, fixture) = withholding_fixture();
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], Some(9), TEST_NONCE);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
     policy.withhold.store(true, Ordering::SeqCst);
     let first = post(&fixture, &request).await;
     policy.withhold.store(false, Ordering::SeqCst);
@@ -651,47 +634,15 @@ async fn reply_withheld_after_a_committed_write_reports_an_unknown_outcome() {
     assert_eq!(failure_code(&reply), "commit_outcome_unknown");
     let projected = reply.diagnostic().expect("failed reply").host_json().expect("json");
     assert_eq!(projected["details"]["commit_outcome"]["value"], "unknown");
-    // The keyed retry replays those exact bytes and commits nothing more.
-    assert_eq!(post(&fixture, &request).await, first);
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 
     // A withheld read stays the policy refusal.
     let (policy, fixture) = withholding_fixture();
     policy.withhold.store(true, Ordering::SeqCst);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert_eq!(failure_code(&reply), "query_remote_policy_rejected");
-}
-
-#[tokio::test]
-async fn withheld_replay_of_a_committed_write_reports_an_unknown_outcome() {
-    let (policy, fixture) = withholding_fixture();
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], Some(10), TEST_NONCE);
-    let committed = post(&fixture, &request).await;
-    assert!(verify(&fixture, &request, &committed).committed());
-    // The retained bytes are opaque, so a withheld write replay reads as
-    // possibly committed, identically on every attempt.
-    policy.withhold.store(true, Ordering::SeqCst);
-    let withheld = post(&fixture, &request).await;
-    let reply = verify(&fixture, &request, &withheld);
-    assert!(!reply.committed());
-    assert_eq!(failure_code(&reply), "commit_outcome_unknown");
-    assert_eq!(post(&fixture, &request).await, withheld);
-    // The retained committed reply was not overwritten.
-    policy.withhold.store(false, Ordering::SeqCst);
-    assert_eq!(post(&fixture, &request).await, committed);
-    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
-
-    // A withheld read replay stays the policy refusal.
-    let (policy, fixture) = withholding_fixture();
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], Some(11), TEST_NONCE);
-    assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
-    policy.withhold.store(true, Ordering::SeqCst);
-    let reply = verify(&fixture, &request, &post(&fixture, &request).await);
-    assert_eq!(failure_code(&reply), "query_remote_policy_rejected");
-    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -702,20 +653,18 @@ async fn unmappable_answers_after_a_committed_write_report_an_unknown_outcome() 
     *fixture.metrics.rows.lock().expect("rows lock") = vec![serde_json::json!({})];
     let binding = BindingId::new(0).expect("binding");
     let plan = insert_returning(&fixture.declared, WriteReturns::Rows, vec![binding]);
-    let request = staged(&fixture, &[plan], Some(12), TEST_NONCE);
+    let request = staged(&fixture, &[plan], TEST_NONCE);
     let first = post(&fixture, &request).await;
     let reply = verify(&fixture, &request, &first);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "commit_outcome_unknown");
-    // The keyed retry replays those exact bytes and commits nothing more.
-    assert_eq!(post(&fixture, &request).await, first);
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 
     // A read keeps its mapping diagnostic.
     let fixture = v3_fixture(default_pipeline(), true);
     *fixture.metrics.rows.lock().expect("rows lock") = vec![serde_json::json!({})];
-    let request = staged(&fixture, &[rows_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[rows_plan(&fixture.declared)], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert_eq!(failure_code(&reply), "query_remote_v3_answer_concept");
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
@@ -724,7 +673,7 @@ async fn unmappable_answers_after_a_committed_write_report_an_unknown_outcome() 
 #[tokio::test]
 async fn schema_kind_is_refused_before_anything_opens() {
     let fixture = v3_fixture(default_pipeline(), true);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let mut wire: serde_json::Value =
         serde_json::from_slice(&request.encode().expect("bytes")).expect("json");
     wire["kind"] = serde_json::json!("schema");
@@ -735,27 +684,56 @@ async fn schema_kind_is_refused_before_anything_opens() {
 }
 
 #[tokio::test]
-async fn keyed_retry_after_a_dropped_reply_replays_identical_bytes_once() {
+async fn a_replayed_request_never_executes_twice() {
     let fixture = v3_fixture(vouching_pipeline(), false);
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], Some(7), TEST_NONCE);
-    // Fault injection: the first reply is lost on the way to the caller.
-    let dropped = post(&fixture, &request).await;
-    let retried = post(&fixture, &request).await;
-    assert_eq!(retried, dropped);
-    assert!(verify(&fixture, &request, &retried).committed());
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
+    assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
+    // The spent nonce refuses re-execution; the first copy of these write
+    // bytes may have committed, so the replay reads as unknown.
+    let replay = verify(&fixture, &request, &post(&fixture, &request).await);
+    assert_eq!(failure_code(&replay), "commit_outcome_unknown");
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 
-    // The same key over different request bytes is refused, unexecuted.
-    let other = staged(
+    // A replayed read is the replay refusal.
+    let request = staged(
         &fixture,
-        &[insert_plan(&fixture.declared)],
-        Some(7),
+        &[count_plan(&fixture.declared)],
         "server-route-nonce-000002",
     );
-    let reused = verify(&fixture, &other, &post(&fixture, &other).await);
-    assert_eq!(failure_code(&reused), "idempotency_key_reused");
-    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
+    assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
+    let replay = verify(&fixture, &request, &post(&fixture, &request).await);
+    assert_eq!(failure_code(&replay), "query_remote_replay");
+    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn concurrent_writes_from_one_caller_are_all_in_flight_at_once() {
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    fixture.metrics.hold_commit.store(true, Ordering::SeqCst);
+    let mut writes = tokio::task::JoinSet::new();
+    let mut requests = Vec::new();
+    for index in 0..8 {
+        let request = staged(
+            &fixture,
+            &[insert_plan(&fixture.declared)],
+            &format!("server-route-concurrent-{index:04}"),
+        );
+        let body = request.encode().expect("request bytes");
+        let router = fixture.router.clone();
+        writes.spawn(async move { (index, call(&router, "POST", "/v3/staged", body).await) });
+        requests.push(request);
+    }
+    // Every write executed and waits at its commit: none was refused for
+    // another being in flight.
+    let metrics = Arc::clone(&fixture.metrics);
+    eventually(|| metrics.query_executions.load(Ordering::SeqCst) == 8).await;
+    fixture.metrics.release_commit.notify_waiters();
+    while let Some(done) = writes.join_next().await {
+        let (index, reply) = done.expect("write task");
+        assert!(verify(&fixture, &requests[index], &reply).committed());
+    }
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 8);
 }
 
 /// What one plan policy saw: index, capabilities, types and row count.
@@ -956,7 +934,7 @@ async fn plan_policy_refuses_a_staged_delete_before_reservation_or_io() {
         delete_plan(&fixture.declared),
         count_plan(&fixture.declared),
     ];
-    let request = staged(&fixture, &plans, Some(9), TEST_NONCE);
+    let request = staged(&fixture, &plans, TEST_NONCE);
     let reply = post(&fixture, &request).await;
     let verified = verify(&fixture, &request, &reply);
     assert!(!verified.committed());
@@ -978,7 +956,7 @@ async fn plan_policy_refuses_a_staged_delete_before_reservation_or_io() {
     assert_eq!(failure_code(&retried), "query_remote_policy_rejected");
     assert_eq!(policy.plans.lock().expect("plans").len(), 4);
     // ... and the same key and nonce still admit a different request.
-    let admitted = staged(&fixture, &plans[..1], Some(9), TEST_NONCE);
+    let admitted = staged(&fixture, &plans[..1], TEST_NONCE);
     assert!(verify(&fixture, &admitted, &post(&fixture, &admitted).await).committed());
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
     // Live authority export is the I/O the refusals above skipped.
@@ -996,7 +974,6 @@ async fn plan_policy_sees_capabilities_and_types_but_rows_only_on_request() {
     let fixture = v3_fixture(hook_pipeline(&[&blind, &sighted]), false);
     let spec = StagedRequestSpecV3 {
         nonce: TEST_NONCE.into(),
-        idempotency_key: None,
         kind: None,
         limits: StagedLimitsV3::default(),
         plans: vec![insert_input_entry(&fixture.declared)],
@@ -1026,13 +1003,13 @@ async fn commit_observer_sees_commits_and_stc2_conflicts() {
     let policy = Arc::new(HookPolicy::default());
     let fixture = v3_fixture(hook_pipeline(&[&policy]), false);
     let plans = [insert_plan(&fixture.declared)];
-    let request = staged(&fixture, &plans, None, TEST_NONCE);
+    let request = staged(&fixture, &plans, TEST_NONCE);
     // The observer's own error never changes the committed reply.
     assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
 
     fixture.metrics.fail_commit.store(true, Ordering::SeqCst);
-    let request = staged(&fixture, &plans, None, "server-route-nonce-000002");
+    let request = staged(&fixture, &plans, "server-route-nonce-000002");
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "commit_definitely_aborted");
@@ -1041,7 +1018,6 @@ async fn commit_observer_sees_commits_and_stc2_conflicts() {
     let read = staged(
         &fixture,
         &[count_plan(&fixture.declared)],
-        None,
         "server-route-nonce-000003",
     );
     assert!(verify(&fixture, &read, &post(&fixture, &read).await).committed());
@@ -1066,14 +1042,12 @@ async fn commit_observer_sees_commits_and_stc2_conflicts() {
 fn staged_with(
     fixture: &V3Fixture,
     plans: &[QueryPlanV3],
-    key: Option<u8>,
     nonce: &str,
     limits: StagedLimitsV3,
     prepared_at_unix_ms: u64,
 ) -> StagedRequestV3 {
     let spec = StagedRequestSpecV3 {
         nonce: nonce.into(),
-        idempotency_key: key.map(|byte| IdempotencyKey::new(vec![byte; 16]).expect("key")),
         kind: None,
         limits,
         plans: plans
@@ -1094,17 +1068,11 @@ fn ceilings(max_items: u64, max_bytes: u64) -> QueryV2AnswerLimits {
 
 #[tokio::test]
 async fn staged_reads_enforce_the_advertised_answer_ceilings() {
-    let fixture = configured_v3_fixture(
-        default_pipeline(),
-        false,
-        None,
-        ceilings(2, 1 << 20),
-        None,
-    );
+    let fixture = configured_v3_fixture(default_pipeline(), false, None, ceilings(2, 1 << 20));
     let row = serde_json::json!({"person": {"kind": "entity", "type": "transport-person", "iid": "0x1e"}});
     *fixture.metrics.rows.lock().expect("rows lock") = vec![row; 3];
     // The request allows far more items than the server's ceiling.
-    let request = staged(&fixture, &[rows_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[rows_plan(&fixture.declared)], TEST_NONCE);
     assert!(request.limits().max_items > 2);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
@@ -1118,82 +1086,9 @@ async fn staged_reads_enforce_the_advertised_answer_ceilings() {
         ..StagedLimitsV3::default()
     };
     let plans = [rows_plan(&fixture.declared)];
-    let request = staged_with(&fixture, &plans, None, TEST_NONCE, limits, now_ms());
+    let request = staged_with(&fixture, &plans, TEST_NONCE, limits, now_ms());
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert_eq!(failure_code(&reply), "processed_item_limit");
-}
-
-#[tokio::test]
-async fn keyed_requests_need_a_vouched_identified_caller() {
-    // Open unauthenticated writes do not open retention, for writes or reads.
-    let fixture = v3_fixture(default_pipeline(), true);
-    for plan in [insert_plan(&fixture.declared), count_plan(&fixture.declared)] {
-        let request = staged(&fixture, &[plan], Some(1), TEST_NONCE);
-        let reply = verify(&fixture, &request, &post(&fixture, &request).await);
-        assert_eq!(failure_code(&reply), STAGED_IDEMPOTENCY_NOT_AUTHORIZED);
-    }
-    // A vouching policy that never identified its caller is not enough.
-    let gate = StagedGate::new(true, WriteVouch::Vouch);
-    let fixture = v3_fixture(gate_pipeline(&gate), false);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], Some(2), TEST_NONCE);
-    let reply = verify(&fixture, &request, &post(&fixture, &request).await);
-    assert_eq!(failure_code(&reply), STAGED_IDEMPOTENCY_NOT_AUTHORIZED);
-    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
-
-    // An identified, vouched caller may key a read.
-    let fixture = v3_fixture(vouching_pipeline(), false);
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], Some(3), TEST_NONCE);
-    assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
-}
-
-#[tokio::test]
-async fn retention_is_sized_by_the_server_ceiling_and_bounded_per_client() {
-    // A 1 MiB store fits a 512 KiB ceiling's allowance, though the request
-    // asks for the full envelope.
-    let store = IdempotencyConfig::new(4, 1 << 20, MAX_IDEMPOTENCY_TTL).with_client_share(1);
-    let fixture = configured_v3_fixture(
-        vouching_pipeline(),
-        false,
-        None,
-        ceilings(100, 512 << 10),
-        Some(store),
-    );
-    // Each completion releases its unused allowance for the next.
-    for (key, nonce) in [(1, TEST_NONCE), (2, "server-route-nonce-000002")] {
-        let request = staged(&fixture, &[insert_plan(&fixture.declared)], Some(key), nonce);
-        assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
-    }
-
-    // Store-wide capacity, then the per-client share, surface their codes.
-    let store = IdempotencyConfig::new(1, 1 << 20, MAX_IDEMPOTENCY_TTL).with_client_share(1);
-    let fixture = configured_v3_fixture(
-        vouching_pipeline(),
-        false,
-        None,
-        ceilings(100, 64 << 10),
-        Some(store),
-    );
-    let plans = [count_plan(&fixture.declared)];
-    let first = staged(&fixture, &plans, Some(1), TEST_NONCE);
-    assert!(verify(&fixture, &first, &post(&fixture, &first).await).committed());
-    let second = staged(&fixture, &plans, Some(2), "server-route-nonce-000002");
-    let reply = verify(&fixture, &second, &post(&fixture, &second).await);
-    assert_eq!(failure_code(&reply), "idempotency_capacity");
-
-    let store = IdempotencyConfig::new(4, 1 << 20, MAX_IDEMPOTENCY_TTL).with_client_share(4);
-    let fixture = configured_v3_fixture(
-        vouching_pipeline(),
-        false,
-        None,
-        ceilings(100, 64 << 10),
-        Some(store),
-    );
-    let first = staged(&fixture, &plans, Some(1), TEST_NONCE);
-    assert!(verify(&fixture, &first, &post(&fixture, &first).await).committed());
-    let second = staged(&fixture, &plans, Some(2), "server-route-nonce-000002");
-    let reply = verify(&fixture, &second, &post(&fixture, &second).await);
-    assert_eq!(failure_code(&reply), "idempotency_client_capacity");
-    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 }
 
 /// Poll `done` until it holds, failing after five seconds.
@@ -1208,10 +1103,10 @@ async fn eventually(mut done: impl FnMut() -> bool) {
 }
 
 #[tokio::test]
-async fn client_disconnect_mid_commit_still_retains_and_observes_the_outcome() {
+async fn client_disconnect_mid_commit_still_commits_and_observes_the_outcome() {
     let policy = Arc::new(HookPolicy::default());
     let fixture = v3_fixture(hook_pipeline(&[&policy]), false);
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], Some(5), TEST_NONCE);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
     let body = request.encode().expect("request bytes");
     fixture.metrics.hold_commit.store(true, Ordering::SeqCst);
     let router = fixture.router.clone();
@@ -1219,30 +1114,12 @@ async fn client_disconnect_mid_commit_still_retains_and_observes_the_outcome() {
     let metrics = Arc::clone(&fixture.metrics);
     eventually(|| metrics.query_executions.load(Ordering::SeqCst) == 1).await;
 
-    // The commit is in flight: a retry waits, and the client goes away.
-    let retry = verify(&fixture, &request, &post(&fixture, &request).await);
-    assert_eq!(failure_code(&retry), "retry_later");
+    // The commit is in flight and the client goes away.
     handler.abort();
     assert!(handler.await.is_err_and(|error| error.is_cancelled()));
     fixture.metrics.release_commit.notify_one();
     eventually(|| policy.commits.lock().expect("commits").len() == 1).await;
-
-    // The detached outcome was retained: the retry replays the commit.
-    let mut replay = None;
-    for _ in 0..500 {
-        let bytes = post(&fixture, &request).await;
-        let reply = verify(&fixture, &request, &bytes);
-        if reply.committed() {
-            replay = Some(bytes);
-            break;
-        }
-        assert_eq!(failure_code(&reply), "retry_later");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let replay = replay.expect("the committed reply is retained");
-    assert_eq!(post(&fixture, &request).await, replay);
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
     let commits = policy.commits.lock().expect("commits").clone();
     assert_eq!(
         commits,
@@ -1257,90 +1134,12 @@ async fn hanging_commit_observer_times_out_without_blocking_the_reply() {
         ..HookPolicy::default()
     });
     let fixture = v3_fixture(hook_pipeline(&[&policy]), false);
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], None, TEST_NONCE);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
     let reply = tokio::time::timeout(Duration::from_secs(5), post(&fixture, &request))
         .await
         .expect("the reply does not wait for the observer");
     assert!(verify(&fixture, &request, &reply).committed());
     assert_eq!(policy.commits.lock().expect("commits").len(), 1);
-}
-
-#[tokio::test]
-async fn withheld_keyed_read_is_retained_as_its_refusal() {
-    let (policy, fixture) = withholding_fixture();
-    let request = staged(&fixture, &[count_plan(&fixture.declared)], Some(13), TEST_NONCE);
-    policy.withhold.store(true, Ordering::SeqCst);
-    let refused = post(&fixture, &request).await;
-    assert_eq!(
-        failure_code(&verify(&fixture, &request, &refused)),
-        "query_remote_policy_rejected"
-    );
-    // Once the policy relents, the retry still gets the refusal, never the
-    // withheld answer, and nothing re-executes.
-    policy.withhold.store(false, Ordering::SeqCst);
-    assert_eq!(post(&fixture, &request).await, refused);
-    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn retained_failure_replays_with_its_failure_outcome() {
-    let (policy, fixture) = withholding_fixture();
-    fixture.metrics.fail_commit.store(true, Ordering::SeqCst);
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], Some(14), TEST_NONCE);
-    let failed = post(&fixture, &request).await;
-    assert_eq!(
-        failure_code(&verify(&fixture, &request, &failed)),
-        "commit_definitely_aborted"
-    );
-    // The replay is the retained failure, and the response/audit policy
-    // sees it as that failure, not as a success.
-    fixture.metrics.fail_commit.store(false, Ordering::SeqCst);
-    assert_eq!(post(&fixture, &request).await, failed);
-    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
-    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
-    let failure = (false, "commit_definitely_aborted".to_owned());
-    assert_eq!(
-        *policy.audited.lock().expect("audited"),
-        [failure.clone(), failure]
-    );
-}
-
-#[tokio::test]
-async fn skewed_keyed_request_is_retained_within_the_store_ttl() {
-    let fixture = v3_fixture(vouching_pipeline(), false);
-    // Prepared 50 s ahead (inside the skew allowance) with the longest
-    // deadline: its lifetime exceeds the store's five-minute TTL.
-    let limits = StagedLimitsV3 {
-        deadline_ms: Some(MAX_REMOTE_DEADLINE_MS),
-        ..StagedLimitsV3::default()
-    };
-    let plans = [insert_plan(&fixture.declared)];
-    let request = staged_with(&fixture, &plans, Some(4), TEST_NONCE, limits, now_ms() + 50_000);
-    let first = post(&fixture, &request).await;
-    assert!(verify(&fixture, &request, &first).committed());
-    assert_eq!(post(&fixture, &request).await, first);
-
-    // Once a short retention lapses, the spent nonce still refuses a
-    // re-execution, as an unknown outcome for a write.
-    let store = IdempotencyConfig::new(16, 1 << 20, Duration::from_millis(150));
-    let fixture = configured_v3_fixture(
-        vouching_pipeline(),
-        false,
-        None,
-        ceilings(100, 64 << 10),
-        Some(store),
-    );
-    let plans = [insert_plan(&fixture.declared)];
-    let request = staged(&fixture, &plans, Some(4), TEST_NONCE);
-    assert!(verify(&fixture, &request, &post(&fixture, &request).await).committed());
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let lapsed = post(&fixture, &request).await;
-    assert_eq!(
-        failure_code(&verify(&fixture, &request, &lapsed)),
-        "commit_outcome_unknown"
-    );
-    assert_eq!(post(&fixture, &request).await, lapsed);
-    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -1370,7 +1169,7 @@ async fn malformed_staged_requests_are_refused_before_anything_opens() {
         )],
     };
     let plan = QueryPlanV3::new(plan, &fixture.declared).expect("documents plan");
-    let request = staged(&fixture, &[plan], None, TEST_NONCE);
+    let request = staged(&fixture, &[plan], TEST_NONCE);
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert_eq!(failure_code(&reply), "query_remote_v3_documents_unsupported");
 
@@ -1378,9 +1177,7 @@ async fn malformed_staged_requests_are_refused_before_anything_opens() {
     let plans = [count_plan(&fixture.declared)];
     let stale = staged_with(
         &fixture,
-        &plans,
-        None,
-        TEST_NONCE,
+        &plans, TEST_NONCE,
         StagedLimitsV3::default(),
         now_ms() - 10 * 60 * 1_000,
     );
@@ -1431,12 +1228,8 @@ fn sdk_transaction(
     (tx, sent)
 }
 
-fn sent_key(bytes: &[u8]) -> serde_json::Value {
-    serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["idempotency_key"].clone()
-}
-
 #[tokio::test]
-async fn sdk_proxy_commit_resolves_answers_with_a_fresh_key_per_commit() {
+async fn sdk_proxy_commit_resolves_answers_with_a_fresh_nonce_per_commit() {
     use type_bridge_orm::session::staged::PlanAnswer;
     let fixture = v3_fixture(vouching_pipeline(), false);
     let (mut tx, sent) = sdk_transaction(&fixture, false);
@@ -1448,12 +1241,11 @@ async fn sdk_proxy_commit_resolves_answers_with_a_fresh_key_per_commit() {
     assert_eq!(*counted.get().unwrap(), PlanAnswer::Count(0));
     tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
     tx.commit().await.expect("second commit");
-    assert!(tx.commit_retry().await.is_err());
     let sent = sent.lock().unwrap().clone();
+    let nonce = |bytes: &[u8]| serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["nonce"].clone();
     assert_eq!(sent.len(), 2);
-    assert!(sent_key(&sent[0]).is_string());
-    assert_ne!(sent_key(&sent[0]), sent_key(&sent[1]));
-    // Raw TypeQL and the retry API without an unknown outcome refuse.
+    assert_ne!(nonce(&sent[0]), nonce(&sent[1]));
+    // Raw TypeQL does not stage on a proxy transaction.
     assert!(
         tx.stage(type_bridge_orm::session::staged::StagedQuery::new("match $x isa person;", false))
             .is_err()
@@ -1461,147 +1253,58 @@ async fn sdk_proxy_commit_resolves_answers_with_a_fresh_key_per_commit() {
 }
 
 #[tokio::test]
-async fn sdk_unverifiable_reply_is_unknown_and_commit_retry_resends_the_same_bytes() {
-    use type_bridge_orm::session::staged::PlanAnswer;
+async fn sdk_unverifiable_reply_is_an_unknown_outcome() {
     let fixture = v3_fixture(vouching_pipeline(), false);
     let (mut tx, sent) = sdk_transaction(&fixture, true);
     let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
     let error = tx.commit().await.expect_err("garbled reply");
     assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
     assert!(inserted.get().is_err());
-    tx.commit_retry().await.expect("the retained reply replays");
-    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
-    let sent = sent.lock().unwrap();
-    assert_eq!(sent.len(), 2);
-    assert_eq!(sent[0], sent[1], "the retry resends the exact envelope");
-    // One execution: the second post was a replay.
-    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
+    // The write did commit; only the caller's own read can tell.
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(sent.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
-async fn sdk_refused_write_keeps_its_code_and_stays_retryable() {
+async fn sdk_refused_write_keeps_its_code_and_applied_nothing() {
     use type_bridge_orm::session::staged::PendingError;
     let fixture = v3_fixture(default_pipeline(), false);
     let (mut tx, sent) = sdk_transaction(&fixture, false);
     let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
     let error = tx.commit().await.expect_err("refused");
-    // A keyed refusal may answer an attempt that already committed, so it
-    // stays unknown and retryable, under the server's own code.
+    // A signed refusal other than an unknown outcome applied nothing.
     assert_eq!(
         error.error.commit_failure_certainty(),
-        Some(type_bridge_orm::error::CommitFailureCertainty::Unknown)
+        Some(type_bridge_orm::error::CommitFailureCertainty::DefinitelyAborted)
     );
     assert_eq!(error.diagnostic().code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
     let Err(PendingError::Refused { diagnostic, .. }) = inserted.get() else {
         panic!("the handle keeps the refusal");
     };
     assert_eq!(diagnostic.code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
-    assert!(tx.has_unknown_outcome());
-    // An empty commit cannot abandon the unknown attempt.
-    assert!(tx.commit().await.is_err());
-    let retry = tx.commit_retry().await.expect_err("refused again");
-    assert_eq!(retry.diagnostic().code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
-    let sent = sent.lock().unwrap();
-    assert_eq!(sent.len(), 2);
-    assert_eq!(sent[0], sent[1]);
+    // The transaction stays usable: an empty commit is a no-op.
+    tx.commit().await.expect("empty commit");
+    assert_eq!(sent.lock().unwrap().len(), 1);
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
 }
 
-/// An exchange whose first request runs detached: the caller sees a lost
-/// reply while the server is still committing it.
-fn sdk_detached_transaction(fixture: &V3Fixture) -> type_bridge_orm::session::staged::Transaction {
-    let router = fixture.router.clone();
-    let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let exchange: type_bridge_orm::session::StagedExchangeFn = Arc::new(move |bytes: Vec<u8>| {
-        let router = router.clone();
-        let first = Arc::clone(&first);
-        Box::pin(async move {
-            if first.swap(false, Ordering::SeqCst) {
-                tokio::spawn(async move { call(&router, "POST", "/v3/staged", bytes).await });
-                return Err(type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
-                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                ));
-            }
-            Ok(call(&router, "POST", "/v3/staged", bytes).await)
-        })
-    });
-    type_bridge_orm::session::staged::Transaction::over_proxy(
-        fixture.declared.clone(),
-        &fixture.advertisement.encode().unwrap(),
-        exchange,
-        type_bridge_orm::session::staged::TransactionOptions::default(),
-    )
-    .expect("proxy transaction")
-}
-
 #[tokio::test]
-async fn sdk_retry_inside_the_in_flight_window_stays_unknown_and_retryable() {
-    use type_bridge_orm::session::staged::PlanAnswer;
+async fn sdk_cancelled_commit_leaves_its_answers_unknown() {
     let fixture = v3_fixture(vouching_pipeline(), false);
     fixture.metrics.hold_commit.store(true, Ordering::SeqCst);
-    let mut tx = sdk_detached_transaction(&fixture);
-    let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
-    let lost = tx.commit().await.expect_err("lost reply");
-    assert_eq!(lost.diagnostic().code().as_str(), "commit_outcome_unknown");
-    let metrics = Arc::clone(&fixture.metrics);
-    eventually(|| metrics.query_executions.load(Ordering::SeqCst) == 1).await;
-
-    // The first attempt is still committing: the server says retry later,
-    // which proves nothing about the writes.
-    let busy = tx.commit_retry().await.expect_err("in flight");
-    assert_eq!(busy.diagnostic().code().as_str(), "retry_later");
-    assert_eq!(
-        busy.error.commit_failure_certainty(),
-        Some(type_bridge_orm::error::CommitFailureCertainty::Unknown)
-    );
-    assert!(tx.has_unknown_outcome());
-
-    fixture.metrics.release_commit.notify_one();
-    let mut replayed = false;
-    for _ in 0..500 {
-        match tx.commit_retry().await {
-            Ok(()) => {
-                replayed = true;
-                break;
-            }
-            Err(error) => {
-                assert_eq!(error.diagnostic().code().as_str(), "retry_later");
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        }
-    }
-    assert!(replayed, "the committed reply replays");
-    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
-    assert!(!tx.has_unknown_outcome());
-    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test]
-async fn sdk_cancelled_commit_keeps_the_attempt_retryable() {
-    use type_bridge_orm::session::staged::PlanAnswer;
-    let fixture = v3_fixture(vouching_pipeline(), false);
-    fixture.metrics.hold_commit.store(true, Ordering::SeqCst);
-    let (mut tx, sent) = sdk_transaction(&fixture, false);
+    let (mut tx, _sent) = sdk_transaction(&fixture, false);
     let inserted = tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
     let cancelled = tokio::time::timeout(Duration::from_millis(200), tx.commit()).await;
     assert!(cancelled.is_err(), "the commit is cancelled mid-send");
-    assert!(tx.has_unknown_outcome());
-    assert!(inserted.get().is_err());
+    let Err(error) = inserted.get() else {
+        panic!("a cancelled commit resolves nothing");
+    };
+    assert!(error.to_string().contains("not known"), "{error}");
 
+    // The server still commits the detached request.
     fixture.metrics.release_commit.notify_one();
-    let mut replayed = false;
-    for _ in 0..500 {
-        if tx.commit_retry().await.is_ok() {
-            replayed = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(replayed, "the detached commit's reply replays");
-    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
-    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
-    let sent = sent.lock().unwrap();
-    assert!(sent.iter().all(|bytes| *bytes == sent[0]));
+    let metrics = Arc::clone(&fixture.metrics);
+    eventually(|| metrics.commits.load(Ordering::SeqCst) == 1).await;
 }
 
 #[test]

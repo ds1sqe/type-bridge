@@ -5,8 +5,7 @@
 //! schema; nothing reaches the provider until commit.
 //! A transaction opens directly on a `RustDatabase` (`staged_transaction`)
 //! or over a proxy connection, where commit is one signed
-//! `query-remote/v3` exchange and `commit_retry` resends the last attempt
-//! after an unknown outcome.
+//! `query-remote/v3` exchange.
 
 use std::sync::{Arc, Mutex};
 
@@ -112,7 +111,7 @@ impl PyStagedTransaction {
         operation(transaction)
     }
 
-    fn drive(&self, py: Python<'_>, retry: bool) -> PyResult<()> {
+    fn drive(&self, py: Python<'_>) -> PyResult<()> {
         let entry = crate::perf_stages::entry();
         let _entered = entry.enter();
         let mut transaction = self
@@ -127,11 +126,7 @@ impl PyStagedTransaction {
             py,
             self.runtime.as_ref(),
             async {
-                let result = if retry {
-                    transaction.commit_retry().await
-                } else {
-                    transaction.commit().await
-                };
+                let result = transaction.commit().await;
                 (transaction, result)
             }
             // The provider may poll on another thread; the span follows it.
@@ -175,22 +170,9 @@ impl PyStagedTransaction {
         Ok(PyPending { pending })
     }
 
-    /// Whether the last commit's outcome is unknown; `commit_retry()` then
-    /// learns it without applying the writes twice.
-    fn has_unknown_outcome(&self) -> PyResult<bool> {
-        self.with(|transaction| Ok(transaction.has_unknown_outcome()))
-    }
-
     /// Fire the staged plans as one transaction and resolve their answers.
     fn commit(&self, py: Python<'_>) -> PyResult<()> {
-        self.drive(py, false)
-    }
-
-    /// Resend the last commit attempt, with the same idempotency key, after
-    /// its outcome was unknown. The server replays a stored reply, so the
-    /// writes apply at most once.
-    fn commit_retry(&self, py: Python<'_>) -> PyResult<()> {
-        self.drive(py, true)
+        self.drive(py)
     }
 
     /// Discard staged work; the transaction stays usable.
@@ -212,10 +194,8 @@ impl PyStagedTransaction {
     }
 
     /// Commit on a clean exit (unless opened with `commit_on_exit=False`),
-    /// discard on an exception, and close. A commit whose outcome is
-    /// unknown raises and leaves the transaction open, so the caller can
-    /// call `commit_retry()`; closing would lose the only way to learn
-    /// whether the writes applied.
+    /// discard on an exception, and close. A failed commit raises after the
+    /// close; an unknown outcome means the caller reads the database.
     fn __exit__(
         &self,
         py: Python<'_>,
@@ -224,13 +204,10 @@ impl PyStagedTransaction {
         _traceback: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<bool> {
         let committed = if exc_type.is_none() && self.commit_on_exit {
-            self.drive(py, false)
+            self.drive(py)
         } else {
             Ok(())
         };
-        if committed.is_err() && self.with(|transaction| Ok(transaction.has_unknown_outcome()))? {
-            return committed.map(|()| false);
-        }
         let closed = self.close();
         committed?;
         // Closing an already-closed transaction is not an error on exit.

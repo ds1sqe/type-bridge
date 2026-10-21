@@ -54,7 +54,6 @@ fn advertisement() -> RemoteCapabilities {
     for cap in [
         CAP_QUERY_REMOTE_STAGED_V3,
         CAP_QUERY_REMOTE_WRITE_V3,
-        CAP_QUERY_REMOTE_IDEMPOTENCY_V3,
     ] {
         caps.insert(CapabilityId::new(cap).unwrap());
     }
@@ -71,7 +70,6 @@ fn entry(plan: QueryPlanV3) -> StagedPlanV3 {
 fn spec() -> StagedRequestSpecV3 {
     StagedRequestSpecV3 {
         nonce: "fixture-nonce-0000000000000001".into(),
-        idempotency_key: Some(IdempotencyKey::new(vec![3; 16]).unwrap()),
         kind: None,
         limits: StagedLimitsV3::default(),
         plans: vec![
@@ -132,10 +130,9 @@ fn request_round_trip_lifetime_kind_and_fingerprint_bind_every_field() {
     assert!(request.validate_at(1_000_000).is_ok());
     assert!(request.validate_at(1_030_000).is_err());
     assert!(request.validate_at(900_000).is_err());
-    for field in ["nonce", "idempotency_key", "kind", "prepared_at_unix_ms"] {
+    for field in ["nonce", "kind", "prepared_at_unix_ms"] {
         let changed = mutate_request(|v| match field {
             "nonce" => v[field] = json!("another-nonce-00000000001"),
-            "idempotency_key" => v[field] = json!("04040404040404040404040404040404"),
             "kind" => v[field] = json!("write"),
             _ => {
                 v[field] = json!(1_000_001);
@@ -217,11 +214,6 @@ fn tampering_wrong_key_and_foreign_request_fail_before_projection() {
     assert_eq!(error.code().as_str(), "query_remote_signature_invalid");
     assert!(!format!("{error:?}").contains("SECRET_SENTINEL"));
     for (outer, field, value) in [
-        (
-            false,
-            "idempotency_key",
-            json!("04040404040404040404040404040404"),
-        ),
         (false, "request", json!("00".repeat(32))),
         (false, "nonce", json!("changed-nonce")),
         (false, "answers", json!([])),
@@ -256,9 +248,7 @@ fn tampering_wrong_key_and_foreign_request_fail_before_projection() {
         )
         .is_err()
     );
-    let foreign =
-        mutate_request(|v| v["idempotency_key"] = json!("04040404040404040404040404040404"))
-            .unwrap();
+    let foreign = mutate_request(|v| v["nonce"] = json!("another-nonce-00000000001")).unwrap();
     assert!(
         VerifiedStagedReplyV3::decode(&bytes, &foreign, &ad, keys.public_key(), &keys).is_err()
     );
@@ -270,7 +260,6 @@ fn request_refuses_unknown_fields_bad_times_kinds_and_keys() {
         json!({"format":"typebridge.query-remote-request/v2"}),
         json!({"nonce":"SECRET_SENTINEL!"}),
         json!({"expires_at_unix_ms":1_500_000}),
-        json!({"idempotency_key":"AA"}),
         json!({"kind":"read"}),
         json!({"kind":"schema"}),
         json!({"plans":[]}),
@@ -504,23 +493,15 @@ fn authenticated_payload_preflights_budgets_before_owned_evidence() {
 }
 
 #[test]
-fn read_kind_optional_keys_and_template_rows_remain_explicit() {
-    for length in [15, 16, 64, 65] {
-        assert_eq!(
-            IdempotencyKey::new(vec![8; length]).is_ok(),
-            (16..=64).contains(&length)
-        );
-    }
+fn read_kind_and_template_rows_remain_explicit() {
     let mut spec = spec();
     let read = spec.plans.pop().unwrap();
     spec.plans = vec![read];
-    spec.idempotency_key = None;
     let read = StagedRequestV3::new(spec, &support::schema(), &advertisement()).unwrap();
     assert_eq!(read.kind(), StagedKindV3::Read);
     let bytes = read.encode().unwrap();
     let value: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(value.get("kind").is_none());
-    assert!(value.get("idempotency_key").is_none());
     let batch = examples::batch();
     let rows = batch.given_rows().unwrap().to_vec();
     let mut wire: Value = serde_json::from_slice(&batch.canonical_bytes().unwrap()).unwrap();

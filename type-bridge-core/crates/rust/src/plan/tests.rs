@@ -190,11 +190,6 @@ async fn direct_transaction_stages_until_commit_and_rollback_keeps_it() {
     let events = log.lock().unwrap().0.clone();
     assert_eq!(events.first().map(String::as_str), Some("open Write"));
     assert!(events.iter().any(|event| event == "commit"));
-    assert!(!tx.has_unknown_outcome());
-    assert!(
-        tx.commit_retry().await.is_err(),
-        "a direct commit has no retry"
-    );
 
     tx.close().unwrap();
     assert_eq!(tx.stage(&restock()).unwrap_err(), PendingError::Closed);

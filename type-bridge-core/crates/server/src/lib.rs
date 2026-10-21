@@ -57,9 +57,6 @@ pub mod config;
 pub mod error;
 /// Provider-independent query execution interfaces.
 pub mod executor;
-#[cfg(feature = "v2-query")]
-/// Standalone bounded retention for idempotent staged replies.
-pub mod idempotency;
 /// Request, response, audit, and CRUD interceptor APIs.
 pub mod interceptor;
 /// The transport-independent query execution pipeline.
