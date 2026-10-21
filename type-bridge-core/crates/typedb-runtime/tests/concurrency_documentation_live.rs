@@ -66,7 +66,7 @@ async fn seeded_database(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let database = format!("tb_w11i_docs_{}_{nonce}", std::process::id());
+    let database = format!("tb_docs_{}_{nonce}", std::process::id());
     runtime.create_database(&database).await.unwrap();
     databases.push(database.clone());
     let mut tx = runtime

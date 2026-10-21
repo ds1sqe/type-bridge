@@ -13,7 +13,7 @@
 
 // Database one-shot calls await the deeper staged::Transaction::commit future.
 #![recursion_limit = "256"]
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 #![warn(missing_docs)]
 
 pub mod ast;

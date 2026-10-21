@@ -1,7 +1,7 @@
 //! TypeQL query compiler — converts AST nodes ([`QueryNode`](crate::ast::QueryNode),
 //! usually [`Clause`](crate::ast::Clause)s) into TypeQL query strings.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use crate::ast::{
     Clause, Constraint, Pattern, QueryNode, Statement, TypedComparisonOperator, TypedFetchRows,
     TypedFunctionArgument, TypedHydrateThings, TypedLiteral, TypedMatchPredicate, TypedMatchTarget,
@@ -218,7 +218,7 @@ impl QueryCompiler {
     /// `Raw` text is emitted verbatim. Use [`Self::try_compile`] to receive errors.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile(&self, clauses: &[Clause]) -> String {
         tql::compile_legacy_released(clauses)
@@ -869,7 +869,7 @@ impl QueryCompiler {
     /// Non-Has relation attributes are dropped; other invalid shapes return empty output.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile_node(&self, node: &QueryNode) -> String {
         tql::compile_legacy_node_released(node)
@@ -878,7 +878,7 @@ impl QueryCompiler {
     /// Compile one legacy clause. Invalid shapes use the released compatibility behavior.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile_clause(&self, clause: &Clause) -> String {
         self.compile(std::slice::from_ref(clause))
@@ -887,7 +887,7 @@ impl QueryCompiler {
     /// Compile one legacy pattern. Invalid shapes use the released compatibility behavior.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile_pattern(&self, pattern: &Pattern) -> String {
         self.compile_node(&QueryNode::Pattern(pattern.clone()))
@@ -896,7 +896,7 @@ impl QueryCompiler {
     /// Compile one legacy statement. Invalid shapes use the released compatibility behavior.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile_statement(&self, statement: &Statement) -> String {
         self.compile_node(&QueryNode::Statement(statement.clone()))
@@ -905,7 +905,7 @@ impl QueryCompiler {
     /// Compile one legacy constraint. Invalid shapes use the released compatibility behavior.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile_constraint(&self, constraint: &Constraint) -> String {
         self.compile_node(&QueryNode::Constraint(constraint.clone()))
@@ -914,7 +914,7 @@ impl QueryCompiler {
     /// Compile one legacy value. Invalid shapes use the released compatibility behavior.
     #[deprecated(
         since = "2.3.0",
-        note = "Use typed query plans or try_compile; removed in 3.0 (11.30)."
+        note = "Use typed query plans or try_compile; removed in 3.0."
     )]
     pub fn compile_value(&self, value: &Value) -> String {
         self.compile_node(&QueryNode::Value(value.clone()))

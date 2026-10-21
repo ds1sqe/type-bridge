@@ -1,5 +1,5 @@
 //! Compatibility projection of the official TypeQL parser onto legacy clauses.
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use crate::ast::Clause;
 use std::fmt;
 

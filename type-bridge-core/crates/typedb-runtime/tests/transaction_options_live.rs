@@ -32,7 +32,7 @@ async fn fixture() -> Option<(TypeDBRuntime, String)> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let database = format!("tb_w11a_transaction_{}_{nonce}", std::process::id());
+    let database = format!("tb_transaction_{}_{nonce}", std::process::id());
     runtime.create_database(&database).await.unwrap();
     let mut schema = runtime
         .open_transaction(&database, TxType::Schema)

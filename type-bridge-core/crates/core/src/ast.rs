@@ -1,4 +1,4 @@
-#![allow(deprecated)] // Legacy self-references remain until 11.30 / 3.0.
+#![allow(deprecated)] // Legacy self-references remain until 3.0.
 use serde::{Deserialize, Serialize};
 use type_bridge_contract::value::CanonicalValue;
 
@@ -11,7 +11,7 @@ use type_bridge_contract::value::CanonicalValue;
 #[serde(tag = "type", content = "data")]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum Value {
     /// A typed literal value (e.g. `"Alice"`, `30`, `true`).
@@ -32,7 +32,7 @@ pub enum Value {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct LiteralValue {
     /// The literal value as a JSON-compatible representation.
@@ -48,7 +48,7 @@ pub struct LiteralValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct FunctionCallValue {
     /// The name of the function being called (e.g. `"count"`, `"max"`, `"min"`).
@@ -65,7 +65,7 @@ pub struct FunctionCallValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct ArithmeticValue {
     /// The left-hand operand of the arithmetic expression.
@@ -83,7 +83,7 @@ pub struct ArithmeticValue {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct RolePlayer {
     /// The role name within the relation (e.g. `"friend"`, `"employee"`).
@@ -101,7 +101,7 @@ pub struct RolePlayer {
 #[serde(tag = "type", content = "data")]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum Constraint {
     /// An internal identifier (IID) lookup constraint.
@@ -133,7 +133,7 @@ pub enum Constraint {
 #[serde(tag = "type", content = "data")]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum Pattern {
     /// An entity pattern matching a typed entity with optional constraints.
@@ -222,7 +222,7 @@ pub enum Pattern {
 #[serde(tag = "type", content = "data")]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum Statement {
     /// A has-attribute statement assigning an attribute value to a subject.
@@ -268,7 +268,7 @@ pub enum Statement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum Clause {
     /// A match clause containing patterns to match against the database.
@@ -310,7 +310,7 @@ pub enum Clause {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct LetAssignment {
     /// The variable names to bind the expression result to.
@@ -328,7 +328,7 @@ pub struct LetAssignment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum FetchItem {
     /// Fetch a single attribute value from a variable, keyed in the response.
@@ -391,7 +391,7 @@ pub enum FetchItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub enum QueryNode {
     /// A top-level clause.
@@ -412,7 +412,7 @@ pub enum QueryNode {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct SortField {
     /// The variable to sort by (e.g. `"$age"`, `"$name"`).
@@ -428,7 +428,7 @@ pub struct SortField {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[deprecated(
     since = "2.3.0",
-    note = "Use generated typed query plans; legacy nodes will be removed in 3.0 (11.30)."
+    note = "Use generated typed query plans; legacy nodes will be removed in 3.0."
 )]
 pub struct ReduceAssignment {
     /// The variable name to bind the aggregation result to.

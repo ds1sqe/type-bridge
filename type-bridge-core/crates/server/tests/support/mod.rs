@@ -1,6 +1,6 @@
 //! Shared fixtures for external server integration tests.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};

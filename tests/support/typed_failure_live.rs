@@ -9,7 +9,7 @@ pub struct Unpause(String);
 /// Pause only the explicitly assigned failure-smoke container.
 pub fn pause_owned_server() -> Unpause {
     let container = std::env::var("TYPE_BRIDGE_FAILURE_CONTAINER").unwrap();
-    assert!(container.starts_with("tb-w11b-"));
+    assert!(container.starts_with("tb-failure-smoke-"));
     assert!(
         std::process::Command::new("docker")
             .args(["pause", &container])
@@ -39,7 +39,7 @@ pub async fn observations(prefix: &str) -> Vec<(&'static str, ClassifiedCommitEr
     let http_port = std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap();
     let container = std::env::var("TYPE_BRIDGE_FAILURE_CONTAINER").unwrap();
     assert!(
-        container.starts_with("tb-w11b-"),
+        container.starts_with("tb-failure-smoke-"),
         "only the owned failure-smoke container may be paused"
     );
     let db = Database::connect_with_options(

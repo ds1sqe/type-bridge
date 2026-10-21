@@ -68,7 +68,7 @@ async fn live_database(stem: &str) -> Option<Database> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_query_purchase_and_write_plans_resolve_at_commit() {
-    let Some(db) = live_database("tb_w11e_plans").await else {
+    let Some(db) = live_database("tb_plans").await else {
         return;
     };
     db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
@@ -261,7 +261,7 @@ fn key_reference(
 /// write's own pipeline; a missing reference writes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_relation_inserts_resolve_references_inside_the_write() {
-    let Some(db) = live_database("tb_w11f_references").await else {
+    let Some(db) = live_database("tb_plan_references").await else {
         return;
     };
     db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
@@ -477,7 +477,7 @@ fn texts(thing: &type_bridge_orm::ProjectedThing, field: &str) -> Vec<String> {
 /// and two puts racing on one new key serialize on its `@key` lock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_put_is_one_plan_with_replace_semantics_and_key_races() {
-    let Some(db) = live_database("tb_w11f_put").await else {
+    let Some(db) = live_database("tb_plan_put").await else {
         return;
     };
     db.execute_raw(PERSON_SCHEMA_TYPEQL, TxType::Schema)
@@ -614,7 +614,7 @@ fn sorted(mut values: Vec<String>) -> Vec<String> {
 /// complete-replacement semantics, multi-valued fields and relation roles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_single_writes_are_one_plan_each() {
-    let Some(db) = live_database("tb_w11f_single").await else {
+    let Some(db) = live_database("tb_plan_single").await else {
         return;
     };
     db.execute_raw(PERSON_SCHEMA_TYPEQL, TxType::Schema)
@@ -695,7 +695,7 @@ async fn helper_single_writes_are_one_plan_each() {
     );
     db.delete_database().await.unwrap();
 
-    let Some(db) = live_database("tb_w11f_single_rel").await else {
+    let Some(db) = live_database("tb_plan_single_rel").await else {
         return;
     };
     db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
@@ -781,7 +781,7 @@ plays:
 /// with no players runs the released path, which refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_relation_updates_with_many_players_and_none() {
-    let Some(db) = live_database("tb_w11f_rel_update").await else {
+    let Some(db) = live_database("tb_plan_rel_update").await else {
         return;
     };
     db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
@@ -830,7 +830,7 @@ async fn helper_relation_updates_with_many_players_and_none() {
     assert_eq!(updated.roles()[&member].len(), 2);
     db.delete_database().await.unwrap();
 
-    let Some(db) = live_database("tb_w11f_rel_empty").await else {
+    let Some(db) = live_database("tb_plan_rel_empty").await else {
         return;
     };
     db.execute_raw(

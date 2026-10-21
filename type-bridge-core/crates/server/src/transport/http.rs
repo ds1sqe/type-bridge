@@ -1,4 +1,4 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -813,7 +813,7 @@ mod typed_failure_live;
 #[ignore = "requires an owned TypeDB 3.13.6 container and failure-smoke environment"]
 async fn live_provider_failures_reach_http_details() {
     use http_body_util::BodyExt;
-    for (case, error) in typed_failure_live::observations("tb_w11b_http").await {
+    for (case, error) in typed_failure_live::observations("tb_failure_http").await {
         let error = crate::typedb::ExecuteError::from(error);
         let failure = error.failure().expect("classification retained");
         let response = error.into_response();
@@ -842,7 +842,7 @@ async fn live_http_requests_report_typed_failures() {
         "../../../../../tests/contracts/typed-failure-scenarios.json"
     ))
     .unwrap();
-    let name = format!("tb_w11b_http_request_{}", std::process::id());
+    let name = format!("tb_failure_http_request_{}", std::process::id());
     let config = crate::config::TypeDBSection {
         address: std::env::var("TYPEDB_ADDRESS").unwrap(),
         database: name.clone(),

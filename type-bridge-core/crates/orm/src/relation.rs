@@ -1,6 +1,6 @@
 //! TypeDB relation trait with default AST generation methods.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use type_bridge_core_lib::ast::{Clause, Constraint, FetchItem, Pattern, RolePlayer, Statement};
 
 use serde::Serialize;

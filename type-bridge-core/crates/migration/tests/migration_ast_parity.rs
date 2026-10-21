@@ -217,7 +217,7 @@ async fn live_database() -> std::sync::Arc<type_bridge_orm::Database> {
         http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
         ..ConnectOptions::default()
     };
-    let name = format!("tb_w11c_migration_ast_{}", uuid::Uuid::new_v4().simple());
+    let name = format!("tb_migration_ast_{}", uuid::Uuid::new_v4().simple());
     type_bridge_orm::ensure_database_exists(&address, &name, "admin", "password", options)
         .await
         .unwrap();

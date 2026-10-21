@@ -1709,7 +1709,7 @@ mod typed_failure_live;
 #[tokio::test]
 #[ignore = "requires an owned TypeDB 3.13.6 container and failure-smoke environment"]
 async fn live_provider_failures_reach_c_status() {
-    for (case, error) in typed_failure_live::observations("tb_w11b_c").await {
+    for (case, error) in typed_failure_live::observations("tb_failure_c").await {
         let diagnostic = typed_failure_live::diagnostic(error);
         let expected = if case == "paused" {
             TypeBridgeStatus::CommitOutcomeUnknown

@@ -1,4 +1,4 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use crate::_schema::TypeSchema;
 use crate::ast::{Clause, Constraint, FetchItem, Pattern, Statement, Value};
 use crate::reserved_words::is_reserved_word;

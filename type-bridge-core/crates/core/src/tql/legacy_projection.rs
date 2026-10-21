@@ -1,4 +1,4 @@
-//! Lossless projections onto the deprecated node vocabulary (11.30 / 3.0).
+//! Lossless projections onto the deprecated node vocabulary (3.0).
 #![allow(deprecated)]
 use super::{Query, TqlError, UnsupportedConstruct};
 use crate::ast as old;

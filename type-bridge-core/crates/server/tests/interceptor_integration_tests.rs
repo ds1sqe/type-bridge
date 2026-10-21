@@ -3,7 +3,7 @@
 //! Tests interceptor ordering, metadata propagation, audit log behavior,
 //! and multi-interceptor interactions via `QueryPipeline`.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 11.30 / 3.0.
+#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 mod support;
 
 use std::collections::HashMap;
