@@ -55,7 +55,7 @@ def _run(*arguments: str, **pins: str) -> subprocess.CompletedProcess[str]:
 def test_unknown_line_is_refused_with_usage() -> None:
     result = _run("--typedb", "3.10.0")
     assert result.returncode == 1
-    assert "--typedb must be one of 3.11.5 3.12.3 3.13.6 or all, got 3.10.0" in result.stderr
+    assert "--typedb must be one of 3.11.5 3.12.3 3.13.6 3.14.0 or all, got 3.10.0" in result.stderr
     assert "--typedb LINE" in result.stdout
 
 

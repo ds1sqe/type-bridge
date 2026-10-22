@@ -69,7 +69,7 @@ pytest_args=()
 usage() {
     cat <<'EOF'
 Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
-                 [--typedb <3.11.5|3.12.3|3.13.6|all>] [-- <pytest args>]
+                 [--typedb <3.11.5|3.12.3|3.13.6|3.14.0|all>] [-- <pytest args>]
 
   --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
                     and the internal C foundation).
@@ -78,7 +78,7 @@ Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
                     mode this starts a test-only TLS endpoint in front of TypeDB.
   --no-isolated     Use an already-running TypeDB (USE_DOCKER=false) instead of
                     managing a container. Default is isolated: test.sh owns a TypeDB.
-  --typedb LINE     Run the live tier on one supported TypeDB line (default 3.13.6),
+  --typedb LINE     Run the live tier on one supported TypeDB line (default 3.14.0),
                     or on each line with `all`; `all` then runs the two-server
                     3.12.3 -> 3.13.6 profile-upgrade lane. The offline tiers run once.
                     Each line runs on its own isolated server and semantic profile.
@@ -170,14 +170,15 @@ CALLER_ACCEPTANCE_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}"
 
 # ── TypeDB lanes ─────────────────────────────────────────────────────────────
 # Each supported TypeDB line and the semantic profile its live tier runs under.
-# 3.13.6 is the default line.
-TYPEDB_LANES=(3.11.5 3.12.3 3.13.6)
+# 3.14.0 is the default line; 3.14 shares the 3.13 profile.
+TYPEDB_LANES=(3.11.5 3.12.3 3.13.6 3.14.0)
 declare -A LANE_PROFILES=(
     [3.11.5]=typedb-3.11.5/v1
     [3.12.3]=typedb-3.12.1/v1
     [3.13.6]=typedb-3.13.6/v1
+    [3.14.0]=typedb-3.13.6/v1
 )
-default_lane="3.13.6"
+default_lane="3.14.0"
 
 # ── Step runner (mirrors scripts/check.sh) ───────────────────────────────────
 pass=0
@@ -716,7 +717,7 @@ run_live_lane() {
     fi
     # Steps bound to the SDK conformance contracts (report fan-in, projected
     # exact-live parity, C live, TLS) run where the profile is in the SDK
-    # version matrix and pairs with this server: 3.12.3 and 3.13.6.
+    # version matrix and pairs with this server (its live_server_version).
     lane_in_sdk_matrix=0
     if [[ -n "$lane_profile" ]] \
         && lane_matrix_server="$(profile_server_version "$lane_profile" 2>/dev/null)" \
@@ -849,10 +850,12 @@ run_live_lane() {
             TYPEDB_PASSWORD="${TYPEDB_PASSWORD-password}" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
             -p type-bridge-typedb-runtime -p type-bridge-orm \
-            --test transaction_options_live --test staged_transaction_live
+            --test transaction_options_live --test staged_transaction_live \
+            --test exact_integer_live
 
-    if [[ "$typedb_server_version" == "3.13.6" ]]; then
-        run_step "staged query-plan/v3 programs resolve at commit (TypeDB 3.13.6)" \
+    # The staged V3 suites run on every server of the typedb-3.13.6/v1 profile.
+    if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
+        run_step "staged query-plan/v3 programs resolve at commit (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
             env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
                 TYPE_BRIDGE_TRANSACTION_LIVE_VERSION="$typedb_server_version" \
@@ -861,6 +864,8 @@ run_live_lane() {
                 TYPEDB_PASSWORD="${TYPEDB_PASSWORD-password}" \
             cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-orm --test plan_execute_live
+        # The concurrency guide's snippets and race outcomes are pinned to 3.13.6.
+        if [[ "$typedb_server_version" == "3.13.6" ]]; then
         run_step "concurrency guide TypeQL snippets (TypeDB 3.13.6)" \
             run_with_timeout 5m \
             env TYPE_BRIDGE_CONCURRENCY_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
@@ -880,7 +885,8 @@ run_live_lane() {
                 staged_plans_race_like_the_concurrency_guide_on_3_13_6 \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-orm --test plan_race_live
-        run_step "C ABI 1.7 staged contract plans (TypeDB 3.13.6)" \
+        fi
+        run_step "C ABI 1.7 staged contract plans (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
@@ -889,7 +895,7 @@ run_live_lane() {
                 live_c17_consumer_stages_and_commits_contract_v3_plans \
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-c --test schema_package_abi
-        run_step "C ABI 1.7 builder purchase race (TypeDB 3.13.6)" \
+        run_step "C ABI 1.7 builder purchase race (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
@@ -902,7 +908,7 @@ run_live_lane() {
         # and C: identical plan bytes, and identical answers, typed failures
         # and state directly and over the proxy.
         writes_output="$(mktemp -d "${TMPDIR:-/tmp}/typebridge-sdk-writes.XXXXXXXXXX")"
-        run_step "SDK writes: one staged program in four languages (TypeDB 3.13.6)" \
+        run_step "SDK writes: one staged program in four languages (TypeDB $typedb_server_version)" \
             run_with_timeout 30m \
             uv run python scripts/ci/run_sdk_conformance.py writes \
                 --semantic-profile "$lane_profile" \
@@ -912,7 +918,7 @@ run_live_lane() {
         # Three processes race staged plans on separate connections. The
         # paused-server case runs only when TB_RACE_CONTAINER names a TypeDB
         # container this run alone owns; it is `docker pause`d mid-commit.
-        run_step "staged writes race across processes (TypeDB 3.13.6)" \
+        run_step "staged writes race across processes (TypeDB $typedb_server_version)" \
             run_with_timeout 30m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
                 TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE="$lane_profile" \
@@ -1217,7 +1223,7 @@ run_tls_transport_steps() {
                 TYPE_BRIDGE_TLS_NATIVE_ROOTS=1 \
                 TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION="$lane_server" \
                 TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND=9 \
-                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.13.6 \
+                TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION=3.14.0 \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
                 -p type-bridge-typedb-runtime --test tls_live \
                 -- --nocapture --test-threads=1

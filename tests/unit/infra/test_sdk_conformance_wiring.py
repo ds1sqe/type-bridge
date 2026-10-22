@@ -427,10 +427,12 @@ def test_local_full_suite_emits_fragments_then_compares_queries() -> None:
         assert f'"$sdk_report_dir/queries/{fragment}"' in source
 
 
-def test_local_3_13_6_lane_runs_the_writes_program_live_in_four_languages() -> None:
+def test_local_profile_lanes_run_the_writes_program_live_in_four_languages() -> None:
     source = LOCAL.read_text(encoding="utf-8")
     lane = source[
-        source.index('if [[ "$typedb_server_version" == "3.13.6" ]]; then') : source.index(
+        source.index(
+            "# The staged V3 suites run on every server of the typedb-3.13.6/v1 profile."
+        ) : source.index(
             'run_step "cargo test -p type-bridge-orm --features integration-tests --test integration"'
         )
     ]
@@ -444,7 +446,7 @@ def test_local_3_13_6_lane_runs_the_writes_program_live_in_four_languages() -> N
     assert 'rm -rf -- "$writes_output"' in step
 
 
-def test_hosted_3_13_6_job_runs_the_writes_program_live_in_four_languages() -> None:
+def test_hosted_profile_job_runs_the_writes_program_live_in_four_languages() -> None:
     job = _jobs()["live-3-13-6"]
     steps = _steps(job)
     command = " ".join(steps["Run SDK writes in four languages"]["run"].split())
@@ -460,13 +462,13 @@ def test_hosted_3_13_6_job_runs_the_writes_program_live_in_four_languages() -> N
         "Fetch the locked Rust graph",
         "Install the source-tree Python product",
         "Install Node dependencies",
-        "Wait for TypeDB 3.13.6",
+        "Wait for TypeDB ${{ matrix.typedb }}",
     ):
         assert _step_index(job, prerequisite) < writes
     upload = steps["Upload SDK writes reports"]
     assert upload["uses"] == UPLOAD
     assert upload["with"] == {
-        "name": "sdk-writes-typedb-3.13.6",
+        "name": "sdk-writes-typedb-${{ matrix.typedb }}",
         "path": "${{ runner.temp }}/typebridge-sdk-writes",
         "if-no-files-found": "error",
         "retention-days": 7,

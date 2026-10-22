@@ -103,7 +103,7 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "control_schema_and_fenced_lease_round_trip_on_3_12_3",
     }
 
-    # The 3.13.6 lane's own selectors: CI runs each once, in live-3-13-6.
+    # The typedb-3.13.6/v1 lanes' own selectors: CI runs each once, in live-3-13-6.
     lane_3_13_6_tests = {
         "concurrency_guide_snippets_run_on_3_13_6",
         "staged_plans_race_like_the_concurrency_guide_on_3_13_6",
@@ -245,16 +245,22 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
     )
 
 
-def test_3_13_6_lane_steps_run_on_their_own_3_13_6_job() -> None:
+def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
     workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
     job = workflow["jobs"]["live-3-13-6"]
-    assert "strategy" not in job
-    assert job["services"]["typedb"]["image"] == "typedb/typedb:3.13.6"
+    # One leg per server of the typedb-3.13.6/v1 profile.
+    assert job["strategy"]["matrix"] == {"typedb": ["3.13.6", "3.14.0"]}
+    assert job["services"]["typedb"]["image"] == "typedb/typedb:${{ matrix.typedb }}"
     assert job["services"]["typedb"]["options"] == "--tmpfs /var/lib/typedb/data:rw"
     assert job["env"] == {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.13.6/v1"}
     steps: dict[str, dict[str, Any]] = {step["name"]: step for step in job["steps"]}
-    assert all("if" not in step for step in job["steps"])
-    assert 'test "$version" = 3.13.6' in steps["Wait for TypeDB 3.13.6"]["run"]
+    # The concurrency guide's pinned outcomes run on 3.13.6 only.
+    assert {step["name"]: step["if"] for step in job["steps"] if "if" in step} == {
+        "Run concurrency guide TypeQL snippets": "matrix.typedb == '3.13.6'",
+        "Run concurrency guide races as staged plans": "matrix.typedb == '3.13.6'",
+    }
+    wait = steps["Wait for TypeDB ${{ matrix.typedb }}"]["run"]
+    assert 'test "$version" = "${{ matrix.typedb }}"' in wait
 
     gated = {
         "Run concurrency guide TypeQL snippets": (

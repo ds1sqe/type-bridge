@@ -61,12 +61,19 @@ def run_snapshot() -> dict[str, Any]:
 def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     selected = policy.selected_policy()
     assert json.loads(policy.POLICY.read_text()) == selected
-    assert len(selected["ci_jobs"]) == 59
+    assert len(selected["ci_jobs"]) == 60
+    for server in ("3.13.6", "3.14.0"):
+        assert (
+            selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
+                "Run staged writes races across processes"
+            ]
+            == "success"
+        )
     assert (
-        selected["ci_jobs"]["Staged plans live (typedb/typedb:3.13.6)"][
-            "Run staged writes races across processes"
+        selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][
+            "Run concurrency guide races as staged plans"
         ]
-        == "success"
+        == "skipped"
     )
     assert (
         selected["ci_jobs"]["Rust docs and MSRV 1.88"]["Check C foundation on MSRV 1.88"]
