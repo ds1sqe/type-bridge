@@ -40,4 +40,4 @@ tempfile = "3"
 type-bridge-typedb-runtime = { path = "../typedb-runtime", version = "2.3.0" }
 # The live profile-upgrade test moves databases between TypeDB servers with
 # the driver's export and import; same pin as type-bridge-typedb-runtime.
-typedb-driver = "=3.13.6"
+typedb-driver = "=3.14.0"

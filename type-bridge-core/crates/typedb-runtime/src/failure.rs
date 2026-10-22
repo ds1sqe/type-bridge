@@ -202,10 +202,12 @@ pub(crate) fn redacted_commit_failure(failure: &Failure, error: &impl ProviderEr
     }
     message
 }
-// Driver 3.13.6 (band 9) stringifies tonic transport errors into Other; only entire pinned
+// Driver 3.14.0 (band 9) stringifies tonic transport errors into Other; only entire pinned
 // templates are trusted. Band 8 has no pinned templates, so its Other is always opaque.
+// Reviewed for 3.14.0: the driver changed only its concept-document and JSON
+// value rendering since 3.13.6; its transport stack (tonic, h2, rustls) is unchanged.
 #[cfg(feature = "band9")]
-const DRIVER_3_13_6_TRANSPORT_TEMPLATES: &[(&str, TransportKind)] = &[
+const DRIVER_3_14_0_TRANSPORT_TEMPLATES: &[(&str, TransportKind)] = &[
     (
         "http2 error: transport error: http2 error: keep-alive timed out: operation timed out",
         TransportKind::Timeout,
@@ -226,7 +228,7 @@ const DRIVER_3_13_6_TRANSPORT_TEMPLATES: &[(&str, TransportKind)] = &[
 
 #[cfg(feature = "band9")]
 fn other_transport_kind(message: &str) -> TransportKind {
-    DRIVER_3_13_6_TRANSPORT_TEMPLATES
+    DRIVER_3_14_0_TRANSPORT_TEMPLATES
         .iter()
         .find_map(|(template, kind)| (*template == message).then_some(*kind))
         .unwrap_or(TransportKind::Other)
@@ -551,7 +553,7 @@ mod tests {
         ($name:ident, $index:expr) => {
             #[test]
             fn $name() {
-                let (template, kind) = DRIVER_3_13_6_TRANSPORT_TEMPLATES[$index];
+                let (template, kind) = DRIVER_3_14_0_TRANSPORT_TEMPLATES[$index];
                 assert_eq!(other_transport_kind(template), kind);
                 assert_eq!(
                     other_transport_kind(&format!("{template} SECRET_SENTINEL")),
@@ -622,7 +624,7 @@ mod tests {
 
     #[test]
     fn transport_templates_require_review_on_driver_upgrade() {
-        assert!(include_str!("../Cargo.toml").contains("typedb-driver = { version = \"=3.13.6\""));
+        assert!(include_str!("../Cargo.toml").contains("typedb-driver = { version = \"=3.14.0\""));
     }
 
     #[test]

@@ -38,7 +38,7 @@ repository = "https://github.com/ds1sqe/type-bridge"
 authors = ["ds1sqe"]
 
 [workspace.dependencies]
-typeql = "=3.13.4"
+typeql = "=3.14.0"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)'] }

@@ -1,4 +1,4 @@
-"""Band 9 must consume the latest stable official TypeDB 3.13 driver."""
+"""Band 9 must consume the latest stable official TypeDB 3.14 driver, and typeql its line."""
 
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ def _run_validator(
         candidate
         if len(candidate.split(".")) == 3
         and all(component.isdigit() for component in candidate.split("."))
-        else "3.13.0"
+        else "3.14.0"
     )
     if lock_entries is None:
         lock_entries = [
@@ -177,31 +177,31 @@ def _protocol_version(
 def test_accepts_the_exact_latest_non_yanked_stable_patch(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.1",
-        [_version("3.13.0"), _version("3.13.1"), _version("3.12.9")],
+        "=3.14.1",
+        [_version("3.14.0"), _version("3.14.1"), _version("3.13.9")],
     )
 
     assert result.returncode == 0, result.stderr
-    assert "=3.13.1" in result.stdout
+    assert "=3.14.1" in result.stdout
 
 
 def test_rejects_a_stable_driver_on_a_newer_minor_line(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.1",
-        [_version("3.13.1"), _version("3.14.0"), _version("3.14.2"), _version("4.0.0-rc.1")],
+        "=3.14.1",
+        [_version("3.14.1"), _version("3.15.0"), _version("3.15.2"), _version("4.0.0-rc.1")],
     )
 
     assert result.returncode == 1
-    assert "typedb-driver 3.14.2 on the 3.14 line" in result.stderr
-    assert "newer than the supported 3.13 series" in result.stderr
+    assert "typedb-driver 3.15.2 on the 3.15 line" in result.stderr
+    assert "newer than the supported 3.14 series" in result.stderr
 
 
 def test_ignores_yanked_and_prerelease_drivers_on_a_newer_minor_line(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.1",
-        [_version("3.13.1"), _version("3.14.0", yanked=True), _version("3.14.1-rc.1")],
+        "=3.14.1",
+        [_version("3.14.1"), _version("3.15.0", yanked=True), _version("3.15.1-rc.1")],
     )
 
     assert result.returncode == 0, result.stderr
@@ -210,8 +210,8 @@ def test_ignores_yanked_and_prerelease_drivers_on_a_newer_minor_line(tmp_path: P
 def test_committed_cutoff_tolerates_a_newer_minor_line(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.1",
-        [_version("3.13.1"), _version("3.14.0")],
+        "=3.14.1",
+        [_version("3.14.1"), _version("3.15.0")],
         committed_cutoff=True,
     )
 
@@ -221,8 +221,8 @@ def test_committed_cutoff_tolerates_a_newer_minor_line(tmp_path: Path) -> None:
 def test_committed_cutoff_accepts_an_older_official_non_yanked_patch(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0"), _version("3.13.1")],
+        "=3.14.0",
+        [_version("3.14.0"), _version("3.14.1")],
         committed_cutoff=True,
     )
 
@@ -233,25 +233,25 @@ def test_committed_cutoff_accepts_an_older_official_non_yanked_patch(tmp_path: P
 def test_committed_cutoff_still_rejects_a_yanked_selected_driver(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0", yanked=True), _version("3.13.1")],
+        "=3.14.0",
+        [_version("3.14.0", yanked=True), _version("3.14.1")],
         committed_cutoff=True,
     )
 
     assert result.returncode == 1
-    assert "typedb-driver =3.13.0 as yanked" in result.stderr
+    assert "typedb-driver =3.14.0 as yanked" in result.stderr
 
 
 @pytest.mark.parametrize(
     ("version", "message"),
     [
         (
-            _version("3.13.0", license_value="MIT"),
+            _version("3.14.0", license_value="MIT"),
             "expected Apache-2.0",
         ),
         (
-            _version("3.13.0", checksum="not-a-canonical-sha256"),
-            "no canonical SHA-256 checksum for typedb-driver =3.13.0",
+            _version("3.14.0", checksum="not-a-canonical-sha256"),
+            "no canonical SHA-256 checksum for typedb-driver =3.14.0",
         ),
     ],
 )
@@ -260,7 +260,7 @@ def test_rejects_driver_license_or_checksum_metadata_drift(
     version: dict[str, object],
     message: str,
 ) -> None:
-    result = _run_validator(tmp_path, "=3.13.0", [version])
+    result = _run_validator(tmp_path, "=3.14.0", [version])
 
     assert result.returncode == 1
     assert message in result.stderr
@@ -269,32 +269,32 @@ def test_rejects_driver_license_or_checksum_metadata_drift(
 def test_rejects_driver_checksum_drift_from_the_official_lock_row(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0", checksum="3" * 64)],
+        "=3.14.0",
+        [_version("3.14.0", checksum="3" * 64)],
     )
 
     assert result.returncode == 1
-    assert "checksum for typedb-driver =3.13.0" in result.stderr
+    assert "checksum for typedb-driver =3.14.0" in result.stderr
     assert "canonical crates.io checksum" in result.stderr
 
 
 def test_rejects_an_exact_pin_when_a_newer_patch_has_been_released(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0"), _version("3.13.1")],
+        "=3.14.0",
+        [_version("3.14.0"), _version("3.14.1")],
     )
 
     assert result.returncode == 1
-    assert "newest non-yanked stable 3.13.x release is 3.13.1" in result.stderr
+    assert "newest non-yanked stable 3.14.x release is 3.14.1" in result.stderr
 
 
-@pytest.mark.parametrize("requirement", ["3.13.0", "=3.13.x", "^3.13.0", "=3.13.0-rc.1"])
+@pytest.mark.parametrize("requirement", ["3.14.0", "=3.14.x", "^3.14.0", "=3.14.0-rc.1"])
 def test_rejects_floating_or_non_stable_requirements(
     tmp_path: Path,
     requirement: str,
 ) -> None:
-    result = _run_validator(tmp_path, requirement, [_version("3.13.0")])
+    result = _run_validator(tmp_path, requirement, [_version("3.14.0")])
 
     assert result.returncode == 1
     assert "pin" in result.stderr
@@ -303,11 +303,11 @@ def test_rejects_floating_or_non_stable_requirements(
 def test_ignores_yanked_and_prerelease_versions(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
+        "=3.14.0",
         [
-            _version("3.13.0"),
-            _version("3.13.1", yanked=True),
-            _version("3.13.2-rc.1"),
+            _version("3.14.0"),
+            _version("3.14.1", yanked=True),
+            _version("3.14.2-rc.1"),
         ],
     )
 
@@ -319,23 +319,23 @@ def test_ignores_yanked_and_prerelease_versions(tmp_path: Path) -> None:
     [
         ([], "exactly one typedb-protocol dependency, found 0"),
         (
-            [_dependency("=3.13.0"), _dependency("=3.13.0")],
+            [_dependency("=3.14.0"), _dependency("=3.14.0")],
             "exactly one typedb-protocol dependency, found 2",
         ),
         (
-            [_dependency("=3.13.0", optional=True)],
+            [_dependency("=3.14.0", optional=True)],
             "one nonoptional normal dependency",
         ),
         (
-            [_dependency("=3.13.0", kind="dev")],
+            [_dependency("=3.14.0", kind="dev")],
             "one nonoptional normal dependency",
         ),
         (
-            [_dependency("^3.13.0")],
+            [_dependency("^3.14.0")],
             "must exact-pin typedb-protocol",
         ),
         (
-            [_dependency("=3.13.0-rc.1")],
+            [_dependency("=3.14.0-rc.1")],
             "must exact-pin a stable typedb-protocol release",
         ),
     ],
@@ -347,8 +347,8 @@ def test_rejects_noncanonical_driver_protocol_dependency_metadata(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         driver_dependencies=dependencies,
     )
 
@@ -360,24 +360,24 @@ def test_rejects_noncanonical_driver_protocol_dependency_metadata(
     ("versions", "message"),
     [
         (
-            [_protocol_version("3.13.0", yanked=True)],
-            "typedb-protocol =3.13.0 as yanked",
+            [_protocol_version("3.14.0", yanked=True)],
+            "typedb-protocol =3.14.0 as yanked",
         ),
         (
-            [_protocol_version("3.13.0", license_value="Apache-2.0")],
+            [_protocol_version("3.14.0", license_value="Apache-2.0")],
             "expected MPL-2.0",
         ),
         (
-            [_protocol_version("3.13.0", checksum="short")],
-            "no canonical SHA-256 checksum for typedb-protocol =3.13.0",
+            [_protocol_version("3.14.0", checksum="short")],
+            "no canonical SHA-256 checksum for typedb-protocol =3.14.0",
         ),
         (
-            [_protocol_version("3.13.1")],
-            "typedb-protocol =3.13.0 record, found 0",
+            [_protocol_version("3.14.1")],
+            "typedb-protocol =3.14.0 record, found 0",
         ),
         (
-            [_protocol_version("3.13.0"), _protocol_version("3.13.0")],
-            "typedb-protocol =3.13.0 record, found 2",
+            [_protocol_version("3.14.0"), _protocol_version("3.14.0")],
+            "typedb-protocol =3.14.0 record, found 2",
         ),
     ],
 )
@@ -388,8 +388,8 @@ def test_rejects_protocol_registry_metadata_drift(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         protocol_versions=versions,
     )
 
@@ -414,12 +414,12 @@ def test_rejects_non_registry_dependency_selectors(
     field: str,
     value: str,
 ) -> None:
-    dependency = f'typedb-driver = {{ version = "=3.13.0", optional = true, {field} = {value} }}'
+    dependency = f'typedb-driver = {{ version = "=3.14.0", optional = true, {field} = {value} }}'
 
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         dependency=dependency,
     )
 
@@ -430,10 +430,10 @@ def test_rejects_non_registry_dependency_selectors(
 def test_rejects_a_package_alias_instead_of_the_exact_dependency_key(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         dependency=(
-            'official-driver = { package = "typedb-driver", version = "=3.13.0", optional = true }'
+            'official-driver = { package = "typedb-driver", version = "=3.14.0", optional = true }'
         ),
     )
 
@@ -444,11 +444,11 @@ def test_rejects_a_package_alias_instead_of_the_exact_dependency_key(tmp_path: P
 def test_rejects_a_package_alias_beside_the_exact_dependency_key(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         dependency=(
-            'typedb-driver = { version = "=3.13.0", optional = true }\n'
-            'driver-alias = { package = "typedb-driver", version = "=3.13.0" }'
+            'typedb-driver = { version = "=3.14.0", optional = true }\n'
+            'driver-alias = { package = "typedb-driver", version = "=3.14.0" }'
         ),
     )
 
@@ -459,8 +459,8 @@ def test_rejects_a_package_alias_beside_the_exact_dependency_key(tmp_path: Path)
 def test_rejects_default_features_that_do_not_include_band9(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         feature_block=(
             '[features]\ndefault = ["band8"]\nband8 = []\nband9 = ["dep:typedb-driver"]\n'
         ),
@@ -473,10 +473,10 @@ def test_rejects_default_features_that_do_not_include_band9(tmp_path: Path) -> N
 def test_rejects_band9_without_a_direct_official_driver_activation(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         dependency=(
-            'typedb-driver = { version = "=3.13.0", optional = true }\n'
+            'typedb-driver = { version = "=3.14.0", optional = true }\n'
             'type-bridge-typedb-driver-b8 = { version = "=3.11.5", optional = true }'
         ),
         feature_block=(
@@ -491,10 +491,10 @@ def test_rejects_band9_without_a_direct_official_driver_activation(tmp_path: Pat
 def test_rejects_a_transitive_legacy_driver_activation_from_band9(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         dependency=(
-            'typedb-driver = { version = "=3.13.0", optional = true }\n'
+            'typedb-driver = { version = "=3.14.0", optional = true }\n'
             'type-bridge-typedb-driver-b8 = { version = "=3.11.5", optional = true }'
         ),
         feature_block=(
@@ -511,13 +511,13 @@ def test_rejects_a_transitive_legacy_driver_activation_from_band9(tmp_path: Path
 def test_rejects_a_lockfile_version_that_does_not_match_the_pin(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
-        lock_entries=[_lock_entry("3.13.1")],
+        "=3.14.0",
+        [_version("3.14.0")],
+        lock_entries=[_lock_entry("3.14.1")],
     )
 
     assert result.returncode == 1
-    assert "resolves typedb-driver '3.13.1', but band 9 pins =3.13.0" in result.stderr
+    assert "resolves typedb-driver '3.14.1', but band 9 pins =3.14.0" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -530,9 +530,9 @@ def test_rejects_a_lockfile_version_that_does_not_match_the_pin(tmp_path: Path) 
 def test_rejects_a_non_crates_io_lock_source(tmp_path: Path, source: str) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
-        lock_entries=[_lock_entry("3.13.0", source=source)],
+        "=3.14.0",
+        [_version("3.14.0")],
+        lock_entries=[_lock_entry("3.14.0", source=source)],
     )
 
     assert result.returncode == 1
@@ -543,9 +543,9 @@ def test_rejects_a_non_crates_io_lock_source(tmp_path: Path, source: str) -> Non
 def test_rejects_a_missing_lock_checksum(tmp_path: Path, checksum: str | None) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
-        lock_entries=[_lock_entry("3.13.0", checksum=checksum)],
+        "=3.14.0",
+        [_version("3.14.0")],
+        lock_entries=[_lock_entry("3.14.0", checksum=checksum)],
     )
 
     assert result.returncode == 1
@@ -555,9 +555,9 @@ def test_rejects_a_missing_lock_checksum(tmp_path: Path, checksum: str | None) -
 def test_rejects_a_noncanonical_driver_lock_checksum(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
-        lock_entries=[_lock_entry("3.13.0", checksum="ABCDEF")],
+        "=3.14.0",
+        [_version("3.14.0")],
+        lock_entries=[_lock_entry("3.14.0", checksum="ABCDEF")],
     )
 
     assert result.returncode == 1
@@ -566,7 +566,7 @@ def test_rejects_a_noncanonical_driver_lock_checksum(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "entries",
-    [[], [_lock_entry("3.13.0"), _lock_entry("3.13.0")]],
+    [[], [_lock_entry("3.14.0"), _lock_entry("3.14.0")]],
 )
 def test_rejects_missing_or_duplicate_driver_lock_entries(
     tmp_path: Path,
@@ -574,8 +574,8 @@ def test_rejects_missing_or_duplicate_driver_lock_entries(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         lock_entries=entries,
     )
 
@@ -588,7 +588,7 @@ def test_rejects_missing_or_duplicate_driver_lock_entries(
     [
         (
             _lock_entry(
-                "3.13.0",
+                "3.14.0",
                 name="typedb-protocol",
                 source="registry+https://example.invalid/index",
                 checksum=PROTOCOL_CHECKSUM,
@@ -597,15 +597,15 @@ def test_rejects_missing_or_duplicate_driver_lock_entries(
         ),
         (
             _lock_entry(
-                "3.13.1",
+                "3.14.1",
                 name="typedb-protocol",
                 checksum=PROTOCOL_CHECKSUM,
             ),
-            "official typedb-driver selects =3.13.0",
+            "official typedb-driver selects =3.14.0",
         ),
         (
             _lock_entry(
-                "3.13.0",
+                "3.14.0",
                 name="typedb-protocol",
                 checksum="4" * 64,
             ),
@@ -613,7 +613,7 @@ def test_rejects_missing_or_duplicate_driver_lock_entries(
         ),
         (
             _lock_entry(
-                "3.13.0",
+                "3.14.0",
                 name="typedb-protocol",
                 checksum="not-canonical",
             ),
@@ -628,9 +628,9 @@ def test_rejects_protocol_lock_source_version_or_checksum_drift(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
-        lock_entries=[_lock_entry("3.13.0"), protocol_entry],
+        "=3.14.0",
+        [_version("3.14.0")],
+        lock_entries=[_lock_entry("3.14.0"), protocol_entry],
     )
 
     assert result.returncode == 1
@@ -643,12 +643,12 @@ def test_rejects_protocol_lock_source_version_or_checksum_drift(
         [],
         [
             _lock_entry(
-                "3.13.0",
+                "3.14.0",
                 name="typedb-protocol",
                 checksum=PROTOCOL_CHECKSUM,
             ),
             _lock_entry(
-                "3.13.0",
+                "3.14.0",
                 name="typedb-protocol",
                 checksum=PROTOCOL_CHECKSUM,
             ),
@@ -661,9 +661,9 @@ def test_rejects_missing_or_duplicate_protocol_lock_entries(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
-        lock_entries=[_lock_entry("3.13.0"), *protocol_entries],
+        "=3.14.0",
+        [_version("3.14.0")],
+        lock_entries=[_lock_entry("3.14.0"), *protocol_entries],
     )
 
     assert result.returncode == 1
@@ -679,8 +679,8 @@ def test_rejects_missing_or_duplicate_protocol_lock_entries(
             "exactly one typedb-protocol dependency edge, found 2",
         ),
         (
-            ["typedb-protocol 3.13.0 (registry+https://example.invalid/crates.io-index)"],
-            "does not resolve the official typedb-protocol =3.13.0 row",
+            ["typedb-protocol 3.14.0 (registry+https://example.invalid/crates.io-index)"],
+            "does not resolve the official typedb-protocol =3.14.0 row",
         ),
     ],
 )
@@ -691,12 +691,12 @@ def test_rejects_a_missing_duplicate_or_forged_driver_protocol_lock_edge(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         lock_entries=[
-            _lock_entry("3.13.0", dependencies=dependencies),
+            _lock_entry("3.14.0", dependencies=dependencies),
             _lock_entry(
-                "3.13.0",
+                "3.14.0",
                 name="typedb-protocol",
                 checksum=PROTOCOL_CHECKSUM,
             ),
@@ -724,8 +724,8 @@ def test_rejects_workspace_driver_patches(
 ) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         manifest_suffix=f"\n[{patch_table}]\n{patch}\n",
     )
 
@@ -736,11 +736,11 @@ def test_rejects_workspace_driver_patches(
 def test_rejects_fully_qualified_workspace_replacement_keys(tmp_path: Path) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         manifest_suffix=(
             '\n[replace]\n"registry+https://github.com/rust-lang/'
-            'crates.io-index#typedb-driver@3.13.0" = { path = "../fork" }\n'
+            'crates.io-index#typedb-driver@3.14.0" = { path = "../fork" }\n'
         ),
     )
 
@@ -765,8 +765,8 @@ def test_rejects_fully_qualified_workspace_replacement_keys(tmp_path: Path) -> N
 def test_rejects_cargo_source_overrides(tmp_path: Path, config: str) -> None:
     result = _run_validator(
         tmp_path,
-        "=3.13.0",
-        [_version("3.13.0")],
+        "=3.14.0",
+        [_version("3.14.0")],
         cargo_config=config,
     )
 
@@ -809,7 +809,7 @@ def test_release_workflow_binds_the_driver_cutoff_before_cargo_publication() -> 
 @pytest.mark.parametrize(
     ("declaration", "message"),
     [
-        ("pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 12);", "top line is 3.12"),
+        ("pub const MAX_SUPPORTED_LINE: (u32, u32) = (3, 13);", "top line is 3.13"),
         ("// no window here", "exactly one MAX_SUPPORTED_LINE"),
     ],
 )
@@ -819,7 +819,41 @@ def test_band9_series_must_equal_the_window_top_line(
     window_source = tmp_path / "version.rs"
     window_source.write_text(declaration + "\n", encoding="utf-8")
 
-    result = _run_validator(tmp_path, "=3.13.0", [_version("3.13.0")], window_source=window_source)
+    result = _run_validator(tmp_path, "=3.14.0", [_version("3.14.0")], window_source=window_source)
 
     assert result.returncode == 1
     assert message in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("typeql_versions", "message"),
+    [
+        (["3.14.0"], None),
+        (["3.13.4"], "resolves typeql 3.13.4, but the support window's top line is 3.14"),
+        (["3.14.0", "3.13.4"], "exactly one typeql package, found 2"),
+        ([], "exactly one typeql package, found 0"),
+    ],
+)
+def test_typeql_must_be_on_the_window_top_line(
+    tmp_path: Path, typeql_versions: list[str], message: str | None
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pin_validator", VALIDATOR)
+    assert spec is not None and spec.loader is not None
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    lock = tmp_path / "Cargo.lock"
+    lock.write_text(
+        "version = 4\n\n"
+        + "\n".join(
+            _lock_entry(version, name="typeql", dependencies=[]) for version in typeql_versions
+        ),
+        encoding="utf-8",
+    )
+
+    if message is None:
+        validator._require_typeql_on_series(lock)
+    else:
+        with pytest.raises(validator.ValidationError, match=message):
+            validator._require_typeql_on_series(lock)
