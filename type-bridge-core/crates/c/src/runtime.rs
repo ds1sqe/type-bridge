@@ -5532,10 +5532,11 @@ entities:
                 .map(|release| release.server()),
             Some(Version::new(3, 12, 3))
         );
+        let release = GeneratedPackageRelease::for_profile("typedb-3.13.6/v1").unwrap();
+        assert_eq!(release.server(), Version::new(3, 14, 0));
         assert_eq!(
-            GeneratedPackageRelease::for_profile("typedb-3.13.6/v1")
-                .map(|release| release.server()),
-            Some(Version::new(3, 13, 6))
+            release.servers(),
+            &[Version::new(3, 13, 6), Version::new(3, 14, 0)]
         );
         let limits = QueryExecutionResourceLimits::tightened(
             type_bridge_orm::DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS + 1,

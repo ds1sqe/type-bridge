@@ -532,7 +532,7 @@ def embedded_driver_versions() -> dict[int, str]:
 
     Returns a dict mapping ``int`` band → ``str`` version for every band
     feature compiled into this build.  The default build returns
-    ``{8: "3.11.5", 9: "3.13.6"}``.
+    ``{8: "3.11.5", 9: "3.14.0"}``.
     """
     ...
 

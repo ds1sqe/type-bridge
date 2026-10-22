@@ -706,10 +706,10 @@ async fn finish_provider_data_guard<T>(
 /// The pairing is the generated-package release map, so a workspace's
 /// migrations and its generated packages always target the same server:
 ///
-/// | Semantic profile | Required server |
-/// |------------------|-----------------|
+/// | Semantic profile | Admitted servers (newest returned) |
+/// |------------------|------------------------------------|
 /// | `typedb-3.12.1/v1` | `3.12.3` |
-/// | `typedb-3.13.6/v1` | `3.13.6` |
+/// | `typedb-3.13.6/v1` | `3.13.6`, `3.14.0` |
 #[must_use]
 pub fn migration_server_for_profile(semantic_profile: &SemanticProfileId) -> Option<Version> {
     GeneratedPackageRelease::for_profile(semantic_profile.as_str())
@@ -717,13 +717,20 @@ pub fn migration_server_for_profile(semantic_profile: &SemanticProfileId) -> Opt
 }
 
 /// Require a semantic profile that connected migrations support and return
-/// the exact server release it pairs with.
+/// the newest exact server release it pairs with.
 ///
 /// This check is pure: it performs no credential, filesystem, or database work.
 pub fn require_supported_migration_profile(
     semantic_profile: &SemanticProfileId,
 ) -> Result<Version, Diagnostic> {
-    migration_server_for_profile(semantic_profile).ok_or_else(|| {
+    migration_release(semantic_profile).map(GeneratedPackageRelease::server)
+}
+
+/// The exact server releases a semantic profile's migrations run on.
+fn migration_release(
+    semantic_profile: &SemanticProfileId,
+) -> Result<GeneratedPackageRelease, Diagnostic> {
+    GeneratedPackageRelease::for_profile(semantic_profile.as_str()).ok_or_else(|| {
         let supported = supported_migration_profiles().join(", ");
         failure(
             DiagnosticCategory::InvalidContract,
@@ -757,7 +764,7 @@ pub fn require_supported_migration_server_for_profile(
     database: &Database,
     semantic_profile: &SemanticProfileId,
 ) -> Result<(), Diagnostic> {
-    let expected = require_supported_migration_profile(semantic_profile)?;
+    let expected = migration_release(semantic_profile)?;
     require_supported_server_version(
         semantic_profile,
         expected,
@@ -789,7 +796,7 @@ pub fn require_supported_migration_execution_binding(
     journal_database: &Database,
     context: &ManagedDeltaContext,
 ) -> Result<(), Diagnostic> {
-    let expected = require_supported_migration_profile(context.semantic_profile())?;
+    let expected = migration_release(context.semantic_profile())?;
     require_migration_database_pair_identity(managed_database, journal_database)?;
     require_supported_pair_server_versions(
         context.semantic_profile(),
@@ -877,7 +884,7 @@ fn negotiated_server_version(database: &Database) -> Option<Version> {
 
 fn require_supported_pair_server_versions(
     semantic_profile: &SemanticProfileId,
-    expected: Version,
+    expected: GeneratedPackageRelease,
     managed_version: Option<Version>,
     journal_version: Option<Version>,
 ) -> Result<(), Diagnostic> {
@@ -889,7 +896,7 @@ fn require_supported_pair_server_versions(
 
 fn require_supported_server_version(
     semantic_profile: &SemanticProfileId,
-    expected: Version,
+    expected: GeneratedPackageRelease,
     version: Option<Version>,
 ) -> Result<(), Diagnostic> {
     let version = version.ok_or_else(|| {
@@ -899,17 +906,18 @@ fn require_supported_server_version(
             "migration execution requires a negotiated TypeDB server version",
         )
     })?;
-    if version != expected {
+    if !expected.admits(&version) {
+        let admitted = expected.to_string();
         return Err(failure(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_server_version_unsupported",
             format!(
-                "migration execution on semantic profile {} requires exactly TypeDB {expected}",
+                "migration execution on semantic profile {} requires exactly TypeDB {admitted}",
                 semantic_profile.as_str()
             ),
         )
         .with_detail("server_version", version.to_string())
-        .with_detail("expected_server_version", expected.to_string())
+        .with_detail("expected_server_version", admitted)
         .with_detail("semantic_profile", semantic_profile.as_str().to_owned()));
     }
     Ok(())
@@ -1064,14 +1072,14 @@ mod tests {
     }
 
     #[test]
-    fn migration_profiles_pair_with_exactly_one_server() {
+    fn migration_profiles_pair_with_their_newest_server() {
         assert_eq!(
             migration_server_for_profile(&profile("typedb-3.12.1/v1")),
             Some(Version::new(3, 12, 3))
         );
         assert_eq!(
             migration_server_for_profile(&profile("typedb-3.13.6/v1")),
-            Some(Version::new(3, 13, 6))
+            Some(Version::new(3, 14, 0))
         );
         for unsupported in ["typedb-3.11.5/v1", "typedb-3.12.3/v1", "typedb-3.14.0/v1"] {
             assert_eq!(migration_server_for_profile(&profile(unsupported)), None);
@@ -1100,11 +1108,11 @@ mod tests {
         let accepted = [
             ("typedb-3.12.1/v1", (3, 12, 3)),
             ("typedb-3.13.6/v1", (3, 13, 6)),
+            ("typedb-3.13.6/v1", (3, 14, 0)),
         ];
         for (id, (major, minor, patch)) in accepted {
             let semantic_profile = profile(id);
-            let expected =
-                require_supported_migration_profile(&semantic_profile).expect("paired profile");
+            let expected = migration_release(&semantic_profile).expect("paired profile");
             require_supported_server_version(
                 &semantic_profile,
                 expected,
@@ -1127,11 +1135,13 @@ mod tests {
             ("typedb-3.13.6/v1", (3, 11, 5)),
             ("typedb-3.12.1/v1", (3, 12, 2)),
             ("typedb-3.13.6/v1", (3, 13, 5)),
+            ("typedb-3.12.1/v1", (3, 14, 0)),
+            ("typedb-3.13.6/v1", (3, 15, 0)),
         ];
         for (id, (major, minor, patch)) in refused {
             let semantic_profile = profile(id);
-            let expected =
-                require_supported_migration_profile(&semantic_profile).expect("paired profile");
+            let expected = migration_release(&semantic_profile).expect("paired profile");
+            let admitted = expected.to_string();
             let error = require_supported_server_version(
                 &semantic_profile,
                 expected,
@@ -1143,22 +1153,18 @@ mod tests {
                 "migration_typedb_server_version_unsupported"
             );
             assert!(
-                error.message().contains(&expected.to_string()),
-                "the refusal names the profile's server: {}",
+                error.message().contains(&admitted),
+                "the refusal names the profile's servers: {}",
                 error.message()
             );
             assert_eq!(
                 error.details().get("expected_server_version"),
-                Some(
-                    &type_bridge_contract::diagnostic::DiagnosticDetailValue::Text(
-                        expected.to_string()
-                    )
-                )
+                Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Text(admitted))
             );
         }
 
         let semantic_profile = profile("typedb-3.12.1/v1");
-        let expected = Version::new(3, 12, 3);
+        let expected = migration_release(&semantic_profile).expect("paired profile");
         let managed = require_supported_pair_server_versions(
             &semantic_profile,
             expected,

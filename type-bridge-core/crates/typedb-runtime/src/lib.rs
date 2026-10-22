@@ -838,7 +838,7 @@ pub const PINNED_DRIVER_VERSION: &str = "3.11.5";
 ///
 /// The upstream driver line may run ahead of the support window: driver 3.13
 /// speaks the same band-9 wire protocol that TypeDB 3.12 servers accept.
-pub const PINNED_DRIVER_VERSION_B9: &str = "3.13.6";
+pub const PINNED_DRIVER_VERSION_B9: &str = "3.14.0";
 
 /// Protocol bands this build embeds a driver for, derived from the compiled-in
 /// band features.  This is the `embedded_bands` argument to
@@ -860,7 +860,7 @@ const EMBEDDED_BANDS: &[u8] = &[
 /// Each entry is `(band, version_string)` and is individually cfg-gated so only
 /// compiled-in bands appear in the slice (master-plan I6 — no hardcoded
 /// band-set literal).  The default build embeds both retained bands and returns
-/// `[(8, "3.11.5"), (9, "3.13.6")]`.
+/// `[(8, "3.11.5"), (9, "3.14.0")]`.
 ///
 /// This is the Rust-side source of truth for the Python `embedded_driver_versions()`
 /// binding — `crates/python/src/version.rs` wraps this function and exposes it
@@ -1263,7 +1263,7 @@ enum ResolvedTlsProbeMode {
 pub struct PreparedSecureConnectOptions {
     http_port: u16,
     server_version: Option<core_version::Version>,
-    required_server_version: Option<core_version::Version>,
+    required_server_version: Option<core_version::GeneratedPackageRelease>,
     resolved_tls: ResolvedTlsMode,
     connection_control: Option<RuntimeConnectionControl>,
 }
@@ -1280,8 +1280,8 @@ impl PreparedSecureConnectOptions {
         self
     }
 
-    /// Require the exact provider release owned by a generated package's
-    /// semantic profile.
+    /// Require one of the exact provider releases owned by a generated
+    /// package's semantic profile.
     ///
     /// This is deliberately not an arbitrary version-taking lane: the release
     /// comes only from the closed [`core_version::GeneratedPackageRelease`]
@@ -1295,7 +1295,7 @@ impl PreparedSecureConnectOptions {
         release: core_version::GeneratedPackageRelease,
     ) -> Self {
         self.server_version = None;
-        self.required_server_version = Some(release.server());
+        self.required_server_version = Some(release);
         self
     }
 }
@@ -2008,14 +2008,15 @@ where
 
 fn require_generated_server_version(
     observed: core_version::Version,
-    required: Option<core_version::Version>,
+    required: Option<core_version::GeneratedPackageRelease>,
 ) -> Result<()> {
-    let Some(required) = required else {
+    let Some(release) = required else {
         return Ok(());
     };
-    if observed == required {
+    if release.admits(&observed) {
         return Ok(());
     }
+    let required = release.server();
     Err(RuntimeError::UnsupportedVersion(
         core_version::VersionError::FeatureUnsupported {
             feature: "generated-package exact provider compatibility",
@@ -2136,7 +2137,7 @@ async fn grpc_fallback_driver(
     http_error: core_version::VersionError,
     tls: &ResolvedTlsMode,
     meter: &mut ConnectionMeter,
-    required_server_version: Option<core_version::Version>,
+    required_server_version: Option<core_version::GeneratedPackageRelease>,
 ) -> SecureResult<(DriverHandle, Option<core_version::Version>)> {
     #[cfg(not(feature = "band8"))]
     let _ = (
@@ -2155,7 +2156,7 @@ async fn grpc_fallback_driver(
     // Band 9 is deliberately NOT probed blindly: a band-9 connection attempt
     // against a 3.11 server crashes the server outright (measured live on
     // 3.11.5).  The fallback therefore discovers the server through band 8 —
-    // usable for version discovery on 3.11–3.13 servers — and only upgrades
+    // usable for version discovery on servers that accept band 8 — and only upgrades
     // to band 9 once the reported version proves the server accepts it.
     #[cfg(feature = "band8")]
     {
@@ -4554,14 +4555,14 @@ mod tests {
         let error = SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
             core_version::VersionError::Unsupported {
                 component: "server",
-                found: core_version::Version::new(3, 14, 0),
+                found: core_version::Version::new(3, 15, 0),
             },
         ));
         let diagnostic = error
             .credential_safe_diagnostic()
             .expect("closed version diagnostics remain actionable");
-        assert!(diagnostic.contains("server version 3.14.0"), "{diagnostic}");
-        assert!(diagnostic.contains("3.11.0–3.13.x"), "{diagnostic}");
+        assert!(diagnostic.contains("server version 3.15.0"), "{diagnostic}");
+        assert!(diagnostic.contains("3.11.0–3.14.x"), "{diagnostic}");
     }
 
     #[test]
@@ -5580,10 +5581,11 @@ mod tests {
                 core_version::Version::new(3, 12, 0),
                 core_version::Version::new(3, 12, 3),
             ),
+            // The refusal names the profile's newest admitted release.
             (
                 core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
                 core_version::Version::new(3, 12, 3),
-                core_version::Version::new(3, 13, 6),
+                core_version::Version::new(3, 14, 0),
             ),
         ] {
             let release = core_version::GeneratedPackageRelease::for_profile(profile)
@@ -6312,7 +6314,9 @@ mod tests {
     #[cfg(all(feature = "band8", feature = "band9"))]
     #[test]
     fn band8_discovery_negotiates_the_accepted_embedded_band() {
-        for (reported, expected_band) in [("3.11.5", 8), ("3.12.3", 9), ("3.13.6", 9)] {
+        for (reported, expected_band) in
+            [("3.11.5", 8), ("3.12.3", 9), ("3.13.6", 9), ("3.14.0", 9)]
+        {
             let Band8GrpcVersion::Validated(version) =
                 classify_band8_grpc_version("localhost:1729", Ok(reported.to_owned()))
                     .expect("supported discovery version must validate")
@@ -6322,7 +6326,7 @@ mod tests {
             assert_eq!(validate_server_band(&version).unwrap(), expected_band);
         }
         assert!(matches!(
-            classify_band8_grpc_version("localhost:1729", Ok("3.14.0".to_owned())),
+            classify_band8_grpc_version("localhost:1729", Ok("3.15.0".to_owned())),
             Err(RuntimeError::UnsupportedVersion(
                 core_version::VersionError::Unsupported { .. }
             ))
