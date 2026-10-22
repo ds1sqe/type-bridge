@@ -78,6 +78,11 @@ pub enum RemoteValue {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoteFieldValue {
+    /// Nested named fields of a V3 thing document.
+    Document {
+        /// Schema-checked members.
+        fields: BTreeMap<String, RemoteFieldValue>,
+    },
     /// One exact typed scalar.
     Scalar {
         /// The exact typed scalar value.

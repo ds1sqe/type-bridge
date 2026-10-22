@@ -977,6 +977,15 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
             "staged evidence does not match its plan operation and output",
         )
     };
+    if let Some(shape) = plan.fetch_document_shape() {
+        let StagedAnswerV3::Documents { documents } = answer else {
+            return Err(bad());
+        };
+        for document in documents {
+            shape.validate(document)?;
+        }
+        return Ok(documents.len() as u64);
+    }
     match (answer, plan.operation(), plan.output()) {
         (StagedAnswerV3::Count { .. }, Operation::Count, _)
         | (StagedAnswerV3::Exists { .. }, Operation::Exists, _)
@@ -1030,6 +1039,12 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
             QueryOutput::Documents { fields },
         ) => {
             for document in documents {
+                if document
+                    .values()
+                    .any(|value| matches!(value, RemoteFieldValue::Document { .. }))
+                {
+                    return Err(bad());
+                }
                 if document.len() != fields.len()
                     || fields
                         .iter()

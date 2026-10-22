@@ -2234,6 +2234,11 @@ fn validate_outcome_evidence_v2(
                     ));
                 }
                 for field in document {
+                    if matches!(field, RemoteFieldValue::Document { .. }) {
+                        return Err(remote_evidence_mismatch_v2(
+                            "V2 documents cannot contain nested fields",
+                        ));
+                    }
                     if let RemoteFieldValue::List { values } = field {
                         add_budgeted(
                             &mut members,
