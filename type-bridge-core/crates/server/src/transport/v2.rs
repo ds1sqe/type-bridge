@@ -1582,6 +1582,7 @@ mod tests {
         release_commit: tokio::sync::Notify,
         /// Rows every query answers with; empty by default.
         rows: Mutex<Vec<serde_json::Value>>,
+        documents: AtomicBool,
     }
 
     struct CountingBackend {
@@ -1675,11 +1676,16 @@ mod tests {
             self.metrics.query_executions.fetch_add(1, Ordering::SeqCst);
             let fail = self.metrics.fail_query.load(Ordering::SeqCst);
             let rows = self.metrics.rows.lock().expect("rows lock").clone();
+            let documents = self.metrics.documents.load(Ordering::SeqCst);
             Box::pin(async move {
                 if fail {
                     Err(OrmError::QueryExecution("masked query fixture".into()))
                 } else {
-                    Ok(QueryResult::Rows(rows))
+                    Ok(if documents {
+                        QueryResult::Documents(rows)
+                    } else {
+                        QueryResult::Rows(rows)
+                    })
                 }
             })
         }
