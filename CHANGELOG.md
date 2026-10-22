@@ -4,7 +4,7 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
-## [2.3.0] - 2026-10-21
+## [2.3.0] - 2026-10-22
 
 2.3.0 runs every query, direct or through a proxy, on one Rust pipeline, and
 adds staged transactions over typed `query-plan/v3` programs in every SDK
