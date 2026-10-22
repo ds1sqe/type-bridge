@@ -3,22 +3,23 @@
 // private backend, authority and pipeline fixtures.
 
 use type_bridge_contract::codec::to_canonical_json;
-use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
 use type_bridge_contract::query_plan::v3::{
     DeleteItem, InsertThing, Operation, PlanSpec, QueryPlanV3, Stage, WriteReturns,
 };
+use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
 use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3, StagedLimitsV3, StagedPlanV3,
-    StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
+    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3,
+    StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
 };
 use type_bridge_contract::schema::OwnsFactId;
-use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 
 use super::*;
 use crate::interceptor::{StagedWriteAuthority, V3CommitOutcome, V3PolicyPlan};
 use crate::transport::v3::{STAGED_WRITE_NOT_AUTHORIZED, staged_advertisement};
+use type_bridge_orm::session::backend::BoundedAnswerLimits;
 
 struct V3Fixture {
     advertisement: RemoteCapabilities,
@@ -224,11 +225,7 @@ fn now_ms() -> u64 {
     .expect("millis")
 }
 
-fn staged(
-    fixture: &V3Fixture,
-    plans: &[QueryPlanV3],
-    nonce: &str,
-) -> StagedRequestV3 {
+fn staged(fixture: &V3Fixture, plans: &[QueryPlanV3], nonce: &str) -> StagedRequestV3 {
     let spec = StagedRequestSpecV3 {
         nonce: nonce.into(),
         kind: None,
@@ -294,6 +291,8 @@ async fn staged_capabilities_extend_without_changing_the_v2_advertisement() {
     for capability in [
         CAP_QUERY_REMOTE_STAGED_V3,
         CAP_QUERY_REMOTE_WRITE_V3,
+        "query.fetch.thing",
+        "query.write.attach",
     ] {
         assert!(
             v3.capabilities()
@@ -451,7 +450,10 @@ async fn v2_request_policy_without_v3_coverage_refuses_every_staged_request() {
     let fixture = v3_fixture(gate_pipeline(&gate), false);
     let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
     let reply = post(&fixture, &request).await;
-    assert_eq!(unbound_code(&fixture, &reply), "query_remote_policy_rejected");
+    assert_eq!(
+        unbound_code(&fixture, &reply),
+        "query_remote_policy_rejected"
+    );
     let capabilities = call(&fixture.router, "GET", "/v3/capabilities", Vec::new()).await;
     assert_eq!(
         unbound_code(&fixture, &capabilities),
@@ -511,7 +513,10 @@ async fn vouched_or_explicitly_allowed_staged_writes_commit() {
         v3_fixture(vouching_pipeline(), false),
         v3_fixture(default_pipeline(), true),
     ] {
-        let plans = [insert_plan(&fixture.declared), count_plan(&fixture.declared)];
+        let plans = [
+            insert_plan(&fixture.declared),
+            count_plan(&fixture.declared),
+        ];
         let request = staged(&fixture, &plans, TEST_NONCE);
         let reply = verify(&fixture, &request, &post(&fixture, &request).await);
         assert!(reply.committed());
@@ -632,7 +637,11 @@ async fn reply_withheld_after_a_committed_write_reports_an_unknown_outcome() {
     // Committed but withheld: never the safe-to-retry policy refusal.
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "commit_outcome_unknown");
-    let projected = reply.diagnostic().expect("failed reply").host_json().expect("json");
+    let projected = reply
+        .diagnostic()
+        .expect("failed reply")
+        .host_json()
+        .expect("json");
     assert_eq!(projected["details"]["commit_outcome"]["value"], "unknown");
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
@@ -816,8 +825,14 @@ impl Interceptor for Arc<HookPolicy> {
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         self.plans.lock().expect("plans").push((
             index,
-            plan.capabilities().iter().map(|cap| cap.to_string()).collect(),
-            plan.types().iter().map(|ty| ty.label().to_string()).collect(),
+            plan.capabilities()
+                .iter()
+                .map(|cap| cap.to_string())
+                .collect(),
+            plan.types()
+                .iter()
+                .map(|ty| ty.label().to_string())
+                .collect(),
             plan.rows().map(<[InputRow]>::len),
         ));
         self.debug.lock().expect("debug").push(format!("{plan:?}"));
@@ -850,7 +865,9 @@ impl Interceptor for Arc<HookPolicy> {
         }
         // Observer errors are logged only; they never change the reply.
         Box::pin(async {
-            Err(InterceptError::Internal("observer failure is ignored".into()))
+            Err(InterceptError::Internal(
+                "observer failure is ignored".into(),
+            ))
         })
     }
 }
@@ -1145,39 +1162,12 @@ async fn hanging_commit_observer_times_out_without_blocking_the_reply() {
 #[tokio::test]
 async fn malformed_staged_requests_are_refused_before_anything_opens() {
     let fixture = v3_fixture(default_pipeline(), false);
-    // Documents are not yet carried by staged replies.
-    let mut plan = spec(
-        Operation::Rows,
-        vec![Stage::Match {
-            patterns: vec![
-                QueryPattern::Isa {
-                    binding: BindingId::new(0).expect("binding"),
-                    include_subtypes: false,
-                    type_id: person(),
-                }
-                .into(),
-            ],
-        }],
-        vec![],
-    );
-    plan.output = QueryOutput::Documents {
-        fields: vec![DocumentField::new(
-            QueryVariable::new("person").expect("document key"),
-            DocumentSource::Binding {
-                binding: BindingId::new(0).expect("binding"),
-            },
-        )],
-    };
-    let plan = QueryPlanV3::new(plan, &fixture.declared).expect("documents plan");
-    let request = staged(&fixture, &[plan], TEST_NONCE);
-    let reply = verify(&fixture, &request, &post(&fixture, &request).await);
-    assert_eq!(failure_code(&reply), "query_remote_v3_documents_unsupported");
-
     // An expired request.
     let plans = [count_plan(&fixture.declared)];
     let stale = staged_with(
         &fixture,
-        &plans, TEST_NONCE,
+        &plans,
+        TEST_NONCE,
         StagedLimitsV3::default(),
         now_ms() - 10 * 60 * 1_000,
     );
@@ -1187,7 +1177,10 @@ async fn malformed_staged_requests_are_refused_before_anything_opens() {
     // A body over the transport limit, refused before it decodes.
     let oversized = vec![b' '; fixture.query.body_limit_bytes() + 1];
     let reply = call(&fixture.router, "POST", "/v3/staged", oversized).await;
-    assert_eq!(unbound_code(&fixture, &reply), "query_remote_envelope_oversized");
+    assert_eq!(
+        unbound_code(&fixture, &reply),
+        "query_remote_envelope_oversized"
+    );
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
 }
 
@@ -1242,13 +1235,17 @@ async fn sdk_proxy_commit_resolves_answers_with_a_fresh_nonce_per_commit() {
     tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
     tx.commit().await.expect("second commit");
     let sent = sent.lock().unwrap().clone();
-    let nonce = |bytes: &[u8]| serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["nonce"].clone();
+    let nonce =
+        |bytes: &[u8]| serde_json::from_slice::<serde_json::Value>(bytes).unwrap()["nonce"].clone();
     assert_eq!(sent.len(), 2);
     assert_ne!(nonce(&sent[0]), nonce(&sent[1]));
     // Raw TypeQL does not stage on a proxy transaction.
     assert!(
-        tx.stage(type_bridge_orm::session::staged::StagedQuery::new("match $x isa person;", false))
-            .is_err()
+        tx.stage(type_bridge_orm::session::staged::StagedQuery::new(
+            "match $x isa person;",
+            false
+        ))
+        .is_err()
     );
 }
 
@@ -1277,7 +1274,10 @@ async fn sdk_refused_write_keeps_its_code_and_applied_nothing() {
         error.error.commit_failure_certainty(),
         Some(type_bridge_orm::error::CommitFailureCertainty::DefinitelyAborted)
     );
-    assert_eq!(error.diagnostic().code().as_str(), STAGED_WRITE_NOT_AUTHORIZED);
+    assert_eq!(
+        error.diagnostic().code().as_str(),
+        STAGED_WRITE_NOT_AUTHORIZED
+    );
     let Err(PendingError::Refused { diagnostic, .. }) = inserted.get() else {
         panic!("the handle keeps the refusal");
     };
@@ -1335,7 +1335,10 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
     let refused = connection()
         .with_staged_advertisement(foreign.clone())
         .expect_err("a foreign signer is refused");
-    assert_eq!(refused.code().as_str(), "query_remote_v3_advertisement_mismatch");
+    assert_eq!(
+        refused.code().as_str(),
+        "query_remote_v3_advertisement_mismatch"
+    );
 
     let exchange: type_bridge_orm::session::StagedExchangeFn =
         Arc::new(|_| Box::pin(async { Ok(Vec::new()) }));
@@ -1350,5 +1353,71 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
             type_bridge_orm::session::staged::TransactionOptions::default(),
         )
         .expect_err("a fetched foreign advertisement is refused");
-    assert_eq!(refused.code().as_str(), "query_remote_v3_advertisement_mismatch");
+    assert_eq!(
+        refused.code().as_str(),
+        "query_remote_v3_advertisement_mismatch"
+    );
+}
+
+fn fetch_plan(declared: &DeclaredSchema) -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::v3::ThingDocument;
+    QueryPlanV3::new(
+        spec(
+            Operation::Rows,
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Isa {
+                            binding: BindingId::new(0).unwrap(),
+                            include_subtypes: false,
+                            type_id: person(),
+                        }
+                        .into(),
+                    ],
+                },
+                Stage::Fetch(ThingDocument::new(BindingId::new(0).unwrap(), vec![])),
+            ],
+            vec![],
+        ),
+        declared,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn staged_fetch_documents_are_validated_and_metered_before_signing() {
+    let document = serde_json::json!({"_iid":"0x01", "_type":"transport-person", "attributes":{"transport-name":"Ada"}});
+    for (max_items, max_bytes, expected) in [
+        (10, 4096, None),
+        (0, 4096, Some("processed_item_limit")),
+        (10, 1, Some("response_byte_limit")),
+    ] {
+        let fixture = configured_v3_fixture(
+            default_pipeline(),
+            false,
+            None,
+            AnswerLimits {
+                answer: BoundedAnswerLimits {
+                    max_items,
+                    max_bytes,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        fixture.metrics.documents.store(true, Ordering::SeqCst);
+        *fixture.metrics.rows.lock().unwrap() = vec![document.clone()];
+        let plan = fetch_plan(&fixture.declared);
+        let request = staged(&fixture, &[plan], TEST_NONCE);
+        let reply = verify(&fixture, &request, &post(&fixture, &request).await);
+        match expected {
+            Some(code) => assert_eq!(failure_code(&reply), code),
+            None => {
+                assert!(reply.committed());
+                assert!(
+                    matches!(&reply.answers()[0], StagedAnswerV3::Documents { documents } if documents.len() == 1)
+                );
+            }
+        }
+    }
 }

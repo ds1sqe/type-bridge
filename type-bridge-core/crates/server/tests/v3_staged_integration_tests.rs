@@ -19,8 +19,8 @@ use type_bridge_contract::query_plan::InputRow;
 use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v3::{
-    StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3,
-    StagedRequestV3, VerifiedStagedReplyV3,
+    StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
+    VerifiedStagedReplyV3,
 };
 use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -203,8 +203,7 @@ async fn unauthenticated_staged_write_is_refused_and_writes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn resent_write_bytes_apply_once_and_read_as_unknown() {
-    if !staged_live::given_rows_supported("resent_write_bytes_apply_once_and_read_as_unknown")
-        .await
+    if !staged_live::given_rows_supported("resent_write_bytes_apply_once_and_read_as_unknown").await
     {
         return;
     }
@@ -329,7 +328,8 @@ async fn commit_hook_observes_an_stc2_conflict_between_racing_staged_purchases()
             tokio::spawn(async move {
                 let staged = request(
                     &proxy,
-                    vec![purchase_entry(&proxy, &order, &item, &account)]);
+                    vec![purchase_entry(&proxy, &order, &item, &account)],
+                );
                 let body = staged.encode().expect("request bytes");
                 barrier.wait().await;
                 let reply = call(&proxy.router, "POST", "/v3/staged", body).await;
@@ -912,4 +912,95 @@ async fn sdk_staged_fixture_serves_until_stopped() {
         drop_database(db).await;
     }
     drop_database(direct).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
+    let (name, db) = seeded("fetch_docs").await;
+    let proxy = proxy(&name, LivePolicy::default(), true).await;
+    let mut tx = db.transaction(TransactionOptions::default());
+    tx.stage_plan(&race::purchase("O1", "I1", "A1")).unwrap();
+    tx.commit().await.unwrap();
+    let insert = race::insert_doctor_fetch("bob");
+    let inserted_request = request(&proxy, vec![plain_entry(&proxy, &insert)]);
+    let inserted_reply = verify(
+        &proxy,
+        &inserted_request,
+        &post(&proxy, &inserted_request).await,
+    );
+    assert!(
+        inserted_reply.committed(),
+        "{:?}",
+        inserted_reply.diagnostic()
+    );
+    assert!(
+        matches!(&inserted_reply.answers()[0], StagedAnswerV3::Documents { documents } if documents.len() == 1)
+    );
+    // Reading the same persisted things preserves their exact identities.
+    for plan in [race::touch_fetch(), race::purchase_fetch()] {
+        let pending = tx.stage_plan(&plan).unwrap();
+        tx.commit().await.unwrap();
+        let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+        assert!(
+            matches!(&expected, StagedAnswerV3::Documents { documents } if !documents.is_empty())
+        );
+        let request = request(&proxy, vec![plain_entry(&proxy, &plan)]);
+        let reply = verify(&proxy, &request, &post(&proxy, &request).await);
+        assert!(reply.committed(), "{:?}", reply.diagnostic());
+        assert_eq!(reply.answers(), [expected]);
+    }
+    db.execute_raw(
+        "match $p isa purchase, links (item: $i); delete links (item: $i) of $p;",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let plan = race::purchase_fetch();
+    let pending = tx.stage_plan(&plan).unwrap();
+    tx.commit().await.unwrap();
+    let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+    let optional_request = request(&proxy, vec![plain_entry(&proxy, &plan)]);
+    let reply = verify(
+        &proxy,
+        &optional_request,
+        &post(&proxy, &optional_request).await,
+    );
+    assert!(reply.committed(), "{:?}", reply.diagnostic());
+    assert_eq!(reply.answers(), [expected]);
+
+    let large_name = "x".repeat(10_000);
+    db.execute_raw(
+        &format!("insert $d isa doctor, has name \"{large_name}\", has on-call true;"),
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let plan = race::touch_fetch();
+    let mut bounded = db.transaction(TransactionOptions::default().with_answer_limits(
+        type_bridge_orm::session::backend::BoundedAnswerLimits {
+            max_bytes: 4096,
+            ..Default::default()
+        },
+    ));
+    bounded.stage_plan(&plan).unwrap();
+    let direct_failure = bounded.commit().await.unwrap_err().diagnostic();
+    let mut bounded_spec = request(&proxy, vec![plain_entry(&proxy, &plan)])
+        .encode()
+        .unwrap();
+    let mut wire: serde_json::Value = serde_json::from_slice(&bounded_spec).unwrap();
+    wire["limits"]["max_bytes"] = 4096.into();
+    bounded_spec = type_bridge_contract::codec::to_canonical_json(&wire).unwrap();
+    let bounded_request =
+        StagedRequestV3::decode(&bounded_spec, &proxy.declared, &proxy.advertisement).unwrap();
+    let reply = verify(
+        &proxy,
+        &bounded_request,
+        &post(&proxy, &bounded_request).await,
+    );
+    assert_eq!(failure_code(&reply), "response_byte_limit");
+    let remote_failure = reply.diagnostic().unwrap().host_json().unwrap();
+    let direct_failure = serde_json::to_value(direct_failure.host_json()).unwrap();
+    assert_eq!(remote_failure["details"], direct_failure["details"]);
+    drop_database(db).await;
 }
