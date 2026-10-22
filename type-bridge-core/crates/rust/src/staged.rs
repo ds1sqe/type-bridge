@@ -127,3 +127,19 @@ impl From<PendingError> for crate::Error {
         }
     }
 }
+
+#[cfg(test)]
+mod document_answers {
+    use super::PlanAnswer;
+
+    #[test]
+    fn documents_are_part_of_the_public_answer_enum() {
+        let answer = PlanAnswer::Documents(vec![serde_json::json!({
+            "_iid": "0x01", "_type": "person", "attributes": {"name": ["Ada"]}
+        })]);
+        match answer {
+            PlanAnswer::Documents(documents) => assert_eq!(documents[0]["_type"], "person"),
+            other => panic!("expected documents, got {other:?}"),
+        }
+    }
+}

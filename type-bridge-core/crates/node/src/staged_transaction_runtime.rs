@@ -65,6 +65,9 @@ fn pending_error(error: &PendingError) -> napi::Error {
 fn answer_json(answer: &PlanAnswer) -> napi::Result<String> {
     let value = match answer {
         PlanAnswer::Rows(rows) => serde_json::json!({ "kind": "rows", "rows": rows }),
+        PlanAnswer::Documents(documents) => {
+            serde_json::json!({ "kind": "documents", "documents": documents })
+        }
         PlanAnswer::Count(count) => serde_json::json!({ "kind": "count", "value": count }),
         PlanAnswer::Exists(exists) => serde_json::json!({ "kind": "exists", "value": exists }),
         PlanAnswer::Matched(matched) => serde_json::json!({ "kind": "matched", "value": matched }),
@@ -204,5 +207,21 @@ impl NodeStagedTransaction {
     #[napi]
     pub fn close(&self) -> napi::Result<()> {
         self.lock()?.close().map_err(|error| pending_error(&error))
+    }
+}
+
+#[cfg(test)]
+mod document_answer_tests {
+    use super::*;
+
+    #[test]
+    fn document_answer_json_preserves_nested_values() {
+        let documents =
+            vec![serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Ada"}})];
+        let encoded = answer_json(&PlanAnswer::Documents(documents.clone())).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+            serde_json::json!({"kind":"documents", "documents":documents})
+        );
     }
 }

@@ -35,3 +35,13 @@ test("query-remote-v3 fixtures and Rust embedded plans", () => {
     assert.equal(outer.payload.nonce, request.nonce);
   }
 });
+
+import { PendingPlanAnswer } from "../../typescript/staged-transaction.js";
+
+test("pending fetch documents retain nested attributes", () => {
+  const documents = [{ _iid: "0x01", _type: "person", attributes: { name: ["Ada"] } }];
+  const pending = new PendingPlanAnswer({ getJson: () => JSON.stringify({ kind: "documents", documents }) });
+  const answer = pending.get();
+  assert.equal(answer.kind, "documents");
+  if (answer.kind === "documents") assert.deepEqual(answer.documents, documents);
+});

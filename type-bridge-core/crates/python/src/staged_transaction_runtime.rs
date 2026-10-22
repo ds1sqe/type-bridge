@@ -224,39 +224,49 @@ pub(crate) struct PyPending {
 
 #[pymethods]
 impl PyPending {
-    /// The resolved answer: `Rows`, `Count`, `Exists` or `Matched`. Raises
+    /// The resolved answer: `Rows`, `Documents`, `Count`, `Exists` or `Matched`. Raises
     /// the commit's typed failure, or a lifecycle error before commit.
     fn result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let _entry = crate::perf_stages::entry().entered();
         let answer = self.pending.get().map_err(|error| pending_error(&error))?;
-        let base = PyClassInitializer::from(PyPlanAnswer);
-        let object = match answer.as_ref() {
-            PlanAnswer::Rows(rows) => {
-                let rows = pythonize(py, rows)
-                    .map_err(|error| PyValueError::new_err(error.to_string()))?
-                    .unbind();
-                Py::new(py, base.add_subclass(PyRows { rows }))?.into_any()
-            }
-            PlanAnswer::Count(count) => {
-                Py::new(py, base.add_subclass(PyCount { count: *count }))?.into_any()
-            }
-            PlanAnswer::Exists(exists) => {
-                Py::new(py, base.add_subclass(PyExists { exists: *exists }))?.into_any()
-            }
-            PlanAnswer::Matched(count) => {
-                Py::new(py, base.add_subclass(PyMatched { count: *count }))?.into_any()
-            }
-            _ => {
-                return Err(PyRuntimeError::new_err(
-                    "plan answer kind is not supported by this binding",
-                ));
-            }
-        };
-        Ok(object)
+        answer_object(py, answer.as_ref())
     }
 }
 
-/// The answer of one staged plan: `Rows`, `Count`, `Exists` or `Matched`.
+fn answer_object(py: Python<'_>, answer: &PlanAnswer) -> PyResult<Py<PyAny>> {
+    let base = PyClassInitializer::from(PyPlanAnswer);
+    let object = match answer {
+        PlanAnswer::Rows(rows) => {
+            let rows = pythonize(py, rows)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?
+                .unbind();
+            Py::new(py, base.add_subclass(PyRows { rows }))?.into_any()
+        }
+        PlanAnswer::Documents(documents) => {
+            let documents = pythonize(py, documents)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?
+                .unbind();
+            Py::new(py, base.add_subclass(PyDocuments { documents }))?.into_any()
+        }
+        PlanAnswer::Count(count) => {
+            Py::new(py, base.add_subclass(PyCount { count: *count }))?.into_any()
+        }
+        PlanAnswer::Exists(exists) => {
+            Py::new(py, base.add_subclass(PyExists { exists: *exists }))?.into_any()
+        }
+        PlanAnswer::Matched(count) => {
+            Py::new(py, base.add_subclass(PyMatched { count: *count }))?.into_any()
+        }
+        _ => {
+            return Err(PyRuntimeError::new_err(
+                "plan answer kind is not supported by this binding",
+            ));
+        }
+    };
+    Ok(object)
+}
+
+/// The answer of one staged plan: `Rows`, `Documents`, `Count`, `Exists` or `Matched`.
 #[pyclass(name = "PlanAnswer", subclass, frozen)]
 pub(crate) struct PyPlanAnswer;
 
@@ -291,6 +301,40 @@ impl PyRows {
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         Ok(format!("Rows({})", self.rows.bind(py).repr()?))
+    }
+}
+
+/// Schema-validated fetch documents; model hydration belongs to the typed facade.
+#[pyclass(name = "Documents", extends = PyPlanAnswer, frozen)]
+pub(crate) struct PyDocuments {
+    #[pyo3(get)]
+    documents: Py<PyAny>,
+}
+
+#[pymethods]
+impl PyDocuments {
+    #[new]
+    fn new(documents: Py<PyAny>) -> (Self, PyPlanAnswer) {
+        (Self { documents }, PyPlanAnswer)
+    }
+
+    #[classattr]
+    fn __match_args__() -> (&'static str,) {
+        ("documents",)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>) -> PyResult<bool> {
+        match other.cast::<Self>() {
+            Ok(other) => self
+                .documents
+                .bind(other.py())
+                .eq(other.get().documents.bind(other.py())),
+            Err(_) => Ok(false),
+        }
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!("Documents({})", self.documents.bind(py).repr()?))
     }
 }
 
@@ -333,8 +377,28 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPending>()?;
     module.add_class::<PyPlanAnswer>()?;
     module.add_class::<PyRows>()?;
+    module.add_class::<PyDocuments>()?;
     module.add_class::<PyCount>()?;
     module.add_class::<PyExists>()?;
     module.add_class::<PyMatched>()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod document_answer_tests {
+    use super::*;
+
+    #[test]
+    fn pending_conversion_returns_a_documents_instance() {
+        Python::initialize();
+        Python::attach(|py| {
+            let documents = vec![
+                serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Ada"}}),
+            ];
+            let answer = answer_object(py, &PlanAnswer::Documents(documents.clone())).unwrap();
+            let instance = answer.bind(py).cast::<PyDocuments>().unwrap();
+            let expected = pythonize(py, &documents).unwrap();
+            assert!(instance.get().documents.bind(py).eq(expected).unwrap());
+        });
+    }
 }

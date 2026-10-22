@@ -7,6 +7,9 @@ export type PlanAnswer = {
     readonly kind: "rows";
     readonly rows: readonly unknown[];
 } | {
+    readonly kind: "documents";
+    readonly documents: readonly Record<string, unknown>[];
+} | {
     readonly kind: "count";
     readonly value: number;
 } | {
