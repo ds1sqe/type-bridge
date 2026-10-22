@@ -12,6 +12,7 @@ export type StagedTransactionKind = "read" | "write" | "schema";
 /** The answer a committed `query-plan/v3` program resolves to. */
 export type PlanAnswer =
   | { readonly kind: "rows"; readonly rows: readonly unknown[] }
+  | { readonly kind: "documents"; readonly documents: readonly Record<string, unknown>[] }
   | { readonly kind: "count"; readonly value: number }
   | { readonly kind: "exists"; readonly value: boolean }
   | { readonly kind: "matched"; readonly value: number };

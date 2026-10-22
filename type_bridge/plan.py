@@ -31,6 +31,7 @@ from typing import Any, Final, Literal, Protocol
 
 from type_bridge_core import (
     Count,
+    Documents,
     Exists,
     Matched,
     Pending,
@@ -44,6 +45,7 @@ from type_bridge_core import (
 
 __all__ = [
     "Count",
+    "Documents",
     "Exists",
     "Matched",
     "Pending",
