@@ -977,10 +977,10 @@ jobs:
           - band: band8
             features: band8,v2-query
             required_driver: type-bridge-typedb-driver-b8 v3.11.5
-            forbidden_driver: typedb-driver v3.13.6
+            forbidden_driver: typedb-driver v3.14.0
           - band: band9
             features: band9,v2-query
-            required_driver: typedb-driver v3.13.6
+            required_driver: typedb-driver v3.14.0
             forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
     steps:
       - name: Checkout code
@@ -1735,6 +1735,16 @@ jobs:
           -p type-bridge-orm --features integration-tests
           --test integration -- --nocapture --test-threads=1
 
+      # Integers beyond 2^53 stay exact in rows and fetch documents on every
+      # supported server, including the band-8 3.11.5 leg.
+      - name: Run exact integer round trip
+        env:
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-typedb-runtime --test exact_integer_live
+
       - name: Run production V1 + V2 server live smoke
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
@@ -2009,26 +2019,31 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-schema-migration-typedb --test live_store
 
-  # TypeDB 3.13.6, the default profile's server: the live steps test.sh's
-  # 3.13.6 lane runs and no 3.11/3.12 leg can (staged query-plan/v3 programs,
-  # pinned race outcomes, the ABI 1.7 C plans, the four-language writes
-  # suites, the 3.13.6-profile migration probes). Commands and env mirror
-  # run_live_lane. The races run last: their paused-server case
+  # Every server of the default profile typedb-3.13.6/v1 (3.13.6, 3.14.0):
+  # the live steps test.sh's lanes on that profile run and no 3.11/3.12 leg
+  # can (staged query-plan/v3 programs, the ABI 1.7 C plans, the
+  # four-language writes suites, the profile's migration probes; the
+  # concurrency guide's pinned outcomes on 3.13.6 only). Commands and env
+  # mirror run_live_lane. The races run last: their paused-server case
   # `docker pause`s this job's own service container mid-commit.
   live-3-13-6:
-    name: Staged plans live (typedb/typedb:3.13.6)
+    name: Staged plans live (typedb/typedb:${{ matrix.typedb }})
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        typedb: ["3.13.6", "3.14.0"]
 
     services:
       typedb:
-        image: typedb/typedb:3.13.6
+        image: typedb/typedb:${{ matrix.typedb }}
         ports:
           - 1729:1729
           - 8000:8000
         options: --tmpfs /var/lib/typedb/data:rw
 
-    # As test.sh exports the lane profile for every 3.13.6 step.
+    # As test.sh exports the lane profile for every step on this profile.
     env:
       TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: typedb-3.13.6/v1
 
@@ -2080,7 +2095,7 @@ jobs:
         run: npm ci
 
       # test.sh refuses a lane whose server is not the requested line.
-      - name: Wait for TypeDB 3.13.6
+      - name: Wait for TypeDB ${{ matrix.typedb }}
         run: |
           for i in {1..30}; do
             body="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
@@ -2093,7 +2108,7 @@ jobs:
           ' "$body")"
             if nc -z localhost 1729 2>/dev/null && [ -n "$version" ]; then
               echo "Detected TypeDB $version"
-              test "$version" = 3.13.6
+              test "$version" = "${{ matrix.typedb }}"
               exit 0
             fi
             echo "Waiting for TypeDB... ($i/30)"
@@ -2105,7 +2120,7 @@ jobs:
       - name: Run staged query-plan/v3 programs at commit
         env:
           TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
-          TYPE_BRIDGE_TRANSACTION_LIVE_VERSION: "3.13.6"
+          TYPE_BRIDGE_TRANSACTION_LIVE_VERSION: ${{ matrix.typedb }}
           TYPEDB_HTTP_PORT: "8000"
           TYPEDB_USERNAME: admin
           TYPEDB_PASSWORD: password
@@ -2113,7 +2128,23 @@ jobs:
           cargo test --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-orm --test plan_execute_live
 
+      # Integers beyond 2^53 stay exact in rows and fetch documents on every
+      # supported server: the runtime reads typed concept values, not the
+      # driver's JSON rendering.
+      - name: Run exact integer round trip
+        env:
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_TRANSACTION_LIVE_VERSION: ${{ matrix.typedb }}
+          TYPEDB_HTTP_PORT: "8000"
+          TYPEDB_USERNAME: admin
+          TYPEDB_PASSWORD: password
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-typedb-runtime --test exact_integer_live
+
+      # The guide's snippets and race outcomes are pinned to TypeDB 3.13.6.
       - name: Run concurrency guide TypeQL snippets
+        if: matrix.typedb == '3.13.6'
         env:
           TYPE_BRIDGE_CONCURRENCY_LIVE_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -2125,7 +2156,9 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-typedb-runtime --test concurrency_documentation_live
 
+      # The guide's snippets and race outcomes are pinned to TypeDB 3.13.6.
       - name: Run concurrency guide races as staged plans
+        if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -2137,7 +2170,10 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-orm --test plan_race_live
 
+      # The C staged plans and the four-language writes emit SDK conformance
+      # reports, which the profile matrix pairs with TypeDB 3.13.6 only.
       - name: Run C ABI 1.7 staged contract plans
+        if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -2152,6 +2188,7 @@ jobs:
             -p type-bridge-c --test schema_package_abi
 
       - name: Run C ABI 1.7 builder purchase race
+        if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -2167,6 +2204,7 @@ jobs:
       # and C: identical plan bytes, and identical answers, typed failures and
       # state directly and over the proxy.
       - name: Run SDK writes in four languages
+        if: matrix.typedb == '3.13.6'
         timeout-minutes: 45
         run: >-
           uv run python scripts/ci/run_sdk_conformance.py writes
@@ -2175,9 +2213,10 @@ jobs:
           --output "$RUNNER_TEMP/typebridge-sdk-writes"
 
       - name: Upload SDK writes reports
+        if: matrix.typedb == '3.13.6'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sdk-writes-typedb-3.13.6
+          name: sdk-writes-typedb-${{ matrix.typedb }}
           path: ${{ runner.temp }}/typebridge-sdk-writes
           if-no-files-found: error
           retention-days: 7
@@ -2267,7 +2306,7 @@ jobs:
             server-version: "3.12.3"
             semantic-profile: "typedb-3.12.1/v1"
             driver-band: "9"
-            driver-version: "3.13.6"
+            driver-version: "3.14.0"
 
     steps:
       - name: Checkout code

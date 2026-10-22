@@ -22,7 +22,7 @@ authoring source; emitted authority artifacts are generated outputs.
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.3.0 and requires Rust 1.88+. Resolution accepts the frozen TypeDB 3.11.5,
 3.12.1, and 3.13.6 V2 semantic profiles; database-facing TypeBridge components
-support TypeDB 3.11.x–3.13.x.
+support TypeDB 3.11.x–3.14.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-schema/2.3.0) ·

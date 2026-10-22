@@ -22,7 +22,7 @@ from typing import Any
 
 CRATE_NAME = "typedb-driver"
 PROTOCOL_CRATE_NAME = "typedb-protocol"
-EXPECTED_SERIES = (3, 13)
+EXPECTED_SERIES = (3, 14)
 SERIES_TEXT = f"{EXPECTED_SERIES[0]}.{EXPECTED_SERIES[1]}.x"
 DEFAULT_WINDOW_SOURCE = (
     Path(__file__).resolve().parents[2] / "type-bridge-core/crates/core/src/version.rs"
@@ -461,6 +461,32 @@ def _require_series_is_window_top(window_source: Path) -> None:
         )
 
 
+def _require_typeql_on_series(lock_path: Path) -> None:
+    """Fail unless the workspace resolves exactly one ``typeql`` on the series.
+
+    ``typeql`` pins its own dependencies exactly (``chrono``, ``regex``), so
+    two ``typeql`` versions never resolve in one graph. An application that
+    links TypeBridge beside the TypeDB server of the window's top line needs
+    TypeBridge on that line's ``typeql``.
+    """
+    lock = _read_toml(lock_path, "workspace Cargo.lock")
+    versions = [
+        package.get("version")
+        for package in lock.get("package", [])
+        if isinstance(package, dict) and package.get("name") == "typeql"
+    ]
+    if len(versions) != 1:
+        raise ValidationError(
+            f"{lock_path} must resolve exactly one typeql package, found {len(versions)}"
+        )
+    parsed = _stable_tuple(versions[0])
+    if parsed is None or parsed[:2] != EXPECTED_SERIES:
+        raise ValidationError(
+            f"{lock_path} resolves typeql {versions[0]}, but the support window's top line "
+            f"is {EXPECTED_SERIES[0]}.{EXPECTED_SERIES[1]}; move typeql with the window"
+        )
+
+
 def _reject_newer_upstream_line(metadata: object) -> None:
     """Fail when crates.io has a stable driver on a minor line past the series.
 
@@ -688,6 +714,12 @@ def main(argv: list[str] | None = None) -> int:
         help="core version module whose MAX_SUPPORTED_LINE must equal the band-9 series",
     )
     parser.add_argument(
+        "--typeql-lock",
+        type=Path,
+        default=Path("type-bridge-core/Cargo.lock"),
+        help="workspace Cargo.lock whose typeql must be on the band-9 series",
+    )
+    parser.add_argument(
         "--committed-cutoff",
         action="store_true",
         help=(
@@ -698,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     try:
         _require_series_is_window_top(arguments.window_source)
+        _require_typeql_on_series(arguments.typeql_lock)
         selected_pin, _ = _manifest_pin(arguments.manifest)
         driver_metadata, dependency_metadata, protocol_metadata = _metadata_documents(
             arguments.metadata,

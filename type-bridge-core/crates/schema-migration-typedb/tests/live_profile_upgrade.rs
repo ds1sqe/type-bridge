@@ -29,6 +29,7 @@ use type_bridge_contract::migration::{
 use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, TypeFact,
 };
+use type_bridge_core_lib::version::GeneratedPackageRelease;
 use type_bridge_orm::{ConnectOptions, Database};
 use type_bridge_schema::{ManagedDeltaContext, diff_managed, inverse_delta};
 use type_bridge_schema_migration::{
@@ -39,7 +40,7 @@ use type_bridge_schema_migration::{
 };
 use type_bridge_schema_migration_typedb::{
     MigrationDirectoryApplyOutcome, TypeDbMigrationRunner, derived_journal_database_name,
-    execution_capability_vocabulary, migration_server_for_profile,
+    execution_capability_vocabulary,
 };
 
 #[path = "../../../../tests/support/typedb_database_move.rs"]
@@ -127,10 +128,14 @@ async fn connect(address: &str, name: &str, profile: MigrationProfile) -> Arc<Da
     let database = Database::connect_with_options(address, name, &username, &password, options)
         .await
         .expect("connect isolated database");
-    assert_eq!(
-        database.server_version(),
-        migration_server_for_profile(&profile.semantic_profile_id()),
-        "{address} must run the TypeDB server paired with {}",
+    let release = GeneratedPackageRelease::for_profile(profile.semantic_profile_id().as_str())
+        .expect("the upgrade lane's profiles run connected migrations");
+    let server = database
+        .server_version()
+        .expect("negotiated server version");
+    assert!(
+        release.admits(&server),
+        "{address} must run a TypeDB server paired with {} ({release}), got {server}",
         profile.semantic_profile_id().as_str()
     );
     Arc::new(database)

@@ -11,17 +11,17 @@ replaces it, and the behaviour changes you may notice. The
 
 | Use | TypeDB |
 | --- | --- |
-| Queries and CRUD | 3.11.0 to 3.13.x; 3.14 and newer are refused |
-| Recommended server, default in `docker-compose.yml` and `test.sh` | 3.13.6 |
+| Queries and CRUD | 3.11.0 to 3.14.x from 2.3.1 (3.11.0 to 3.13.x in 2.3.0); newer lines are refused |
+| Recommended server, default in `docker-compose.yml` and `test.sh` | 3.14.0 (3.13.6 in 2.3.0) |
 | Staged plans with input rows (the `given` stage) | 3.12 or newer |
 | Migrations on profile `typedb-3.12.1/v1` | exactly 3.12.3 |
-| Migrations on profile `typedb-3.13.6/v1` | exactly 3.13.6 |
+| Migrations on profile `typedb-3.13.6/v1` | exactly 3.13.6, or 3.14.0 from 2.3.1 |
 
 TypeDB 3.11 support is deprecated in 2.3 and removed in 2.4.0; move 3.11
-servers to 3.12 or 3.13 before upgrading to 2.4.
+servers to 3.12, 3.13 or 3.14 before upgrading to 2.4.
 
-The Python `typedb-driver` extra accepts `>=3.11,<3.14` (`>=3.12.3,<3.14` on
-CPython 3.14). Existing workspaces keep the semantic profile they declare.
+The Python `typedb-driver` extra accepts `>=3.11,<3.15` (`>=3.12.3,<3.15` on
+CPython 3.14) from 2.3.1; 2.3.0 capped it at `<3.14`. Existing workspaces keep the semantic profile they declare.
 To move a migration history from 3.12.3 to 3.13.6, move the databases, set
 `compatibility.semantic-profile` to `typedb-3.13.6/v1`, and run once per
 environment:

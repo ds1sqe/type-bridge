@@ -19,7 +19,7 @@ are not a TypeBridge schema-authoring path.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.3.0 and requires Rust 1.88+. Generated clients target TypeDB
-3.11.x–3.13.x.
+3.11.x–3.14.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-orm-derive/2.3.0) ·

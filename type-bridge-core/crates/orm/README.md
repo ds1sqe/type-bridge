@@ -27,7 +27,7 @@ execute generated projections rather than handwritten descriptors.
 | `integration-tests` | no | Exposes the repository's live parity test seam |
 
 The crate is released in lockstep with TypeBridge 2.3.0, requires Rust 1.88+,
-and supports TypeDB 3.11.x–3.13.x.
+and supports TypeDB 3.11.x–3.14.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-orm/2.3.0) ·

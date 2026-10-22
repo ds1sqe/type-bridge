@@ -2,10 +2,10 @@
 
 TypeBridge's default/native band-9 path consumes the official upstream
 `typedb-driver` and `typedb-protocol` crates directly. The source manifest is
-exact-pinned to the newest non-yanked stable 3.13.x driver selected for the
-release; currently that is 3.13.6, exercised against the TypeDB 3.12.3 server
-baseline. Driver 3.13.6 and its exact `typedb-protocol` 3.13.4 speak band 9
-to TypeDB 3.12 servers. The pin check also fails when crates.io publishes a
+exact-pinned to the newest non-yanked stable 3.14.x driver selected for the
+release; currently that is 3.14.0, exercised against the TypeDB 3.12.3 server
+baseline. Driver 3.14.0 and its exact `typedb-protocol` 3.14.0 speak band 9
+to TypeDB 3.12, 3.13 and 3.14 servers. The pin check also fails when crates.io publishes a
 stable driver on a newer minor line, so a new TypeDB minor is reviewed rather
 than missed.
 There is no active, consumed, or release-input TypeBridge band-9 fork.
@@ -26,9 +26,9 @@ names or packaging metadata.
 | Band | Runtime packages | Upstream source | Registry disposition |
 | --- | --- | --- | --- |
 | 8 | `type-bridge-typedb-driver-b8` 3.11.5 and `type-bridge-typedb-protocol-b8` 3.11.0 | driver 3.11.5, protocol 3.11.0 | owner-authorized Cargo distribution uses the exact source-unmodified protocol-before-driver packages |
-| 9 | official `typedb-driver` 3.13.6 and `typedb-protocol` 3.13.4 | official crates.io packages | consume upstream directly; never publish a TypeBridge fork |
+| 9 | official `typedb-driver` and `typedb-protocol` 3.14.0 | official crates.io packages | consume upstream directly; never publish a TypeBridge fork |
 
-Cargo treats the upstream 3.11 and 3.13 protocol requirements as one
+Cargo treats the upstream 3.11 and 3.14 protocol requirements as one
 semver-compatible package identity, so they cannot be resolved at different
 exact versions in one graph. Renaming the band-8 protocol crate lets both
 retained bands coexist without changing generated wire definitions or driver
@@ -88,6 +88,6 @@ only the namespaced packaging metadata and disclosure, then proves the source
 trees remain upstream-identical. Band 9 changes only the official upstream
 exact pin. Before the first immutable release-graph package is published, the
 release workflow refuses publication unless that pin is the newest non-yanked
-stable 3.13.x release. A retry after that cutoff retains and revalidates the
+stable 3.14.x release. A retry after that cutoff retains and revalidates the
 already-started exact graph even if a newer upstream patch appears. The
 selected driver must also pass the TypeDB 3.12.3 conformance lane.

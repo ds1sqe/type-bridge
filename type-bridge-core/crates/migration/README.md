@@ -19,7 +19,7 @@ or recovery gates with raw database queries.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
 2.3.0, requires Rust 1.88+, and uses the shared runtime for supported TypeDB
-3.11.x–3.13.x servers.
+3.11.x–3.14.x servers.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-migration/2.3.0) ·

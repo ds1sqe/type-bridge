@@ -123,7 +123,7 @@ multi-operation work. Native database, transaction, prepared-request, and
 reply handles are one-shot/lease-aware and reject use after close or consume.
 
 Provider selection first obtains or accepts an exact server version, validates
-the 3.11–3.13 support window, and then chooses band 8 or 9. Unknown and retired
+the 3.11–3.14 support window, and then chooses band 8 or 9. Unknown and retired
 versions fail before application data work. See [TypeDB integration](typedb.md).
 
 ## Migration and archive separation

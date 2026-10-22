@@ -55,7 +55,7 @@ def _run(*arguments: str, **pins: str) -> subprocess.CompletedProcess[str]:
 def test_unknown_line_is_refused_with_usage() -> None:
     result = _run("--typedb", "3.10.0")
     assert result.returncode == 1
-    assert "--typedb must be one of 3.11.5 3.12.3 3.13.6 or all, got 3.10.0" in result.stderr
+    assert "--typedb must be one of 3.11.5 3.12.3 3.13.6 3.14.0 or all, got 3.10.0" in result.stderr
     assert "--typedb LINE" in result.stdout
 
 
@@ -103,8 +103,9 @@ def test_live_step_gates_follow_the_lane_not_a_pinned_server() -> None:
     source = TEST_SH.read_text(encoding="utf-8")
     assert '"$typedb_server_version" == "3.12.3"' not in source
     lane = source[source.index("run_live_lane() {") : source.index("finish_sdk_evidence() {")]
-    # Projected exact-live parity, C live, and the fan-in skip notice.
-    assert lane.count('if [[ "$lane_in_sdk_matrix" == 1 ]]; then') == 3
+    # Projected exact-live parity, C live, the fan-in skip notice, and the
+    # staged C ABI plans with the four-language writes.
+    assert lane.count('if [[ "$lane_in_sdk_matrix" == 1 ]]; then') == 4
     assert 'if [[ "$lane_migrations" == 1 ]]; then\n        run_live_migration_steps' in lane
     assert '[[ "$typedb_server_version" == 3.11.* ]]' in lane
     tls = source[source.index("run_lane_tls() {") :]

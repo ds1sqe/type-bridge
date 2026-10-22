@@ -23,8 +23,8 @@ for the downstream package names or packaging metadata.
 | --- | --- | --- | --- |
 | 8 | `type-bridge-typedb-driver-b8` 3.11.5 | TypeDB `typedb-driver` tag [3.11.5](https://github.com/typedb/typedb-driver/tree/7e669e41d9fee22fde8d5e60be7edbf00c6ec64b) (commit `7e669e41d9fee22fde8d5e60be7edbf00c6ec64b`) | Apache-2.0 namespaced packaging-only package; source behavior unchanged; owner-authorized for TypeBridge Cargo distribution |
 | 8 | `type-bridge-typedb-protocol-b8` 3.11.0 | TypeDB `typedb-protocol` tag [3.11.0](https://github.com/typedb/typedb-protocol/tree/1db5bdd6579352d31343da28be41844ed07da1b5) (commit `1db5bdd6579352d31343da28be41844ed07da1b5`) | MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; owner-authorized for TypeBridge Cargo distribution |
-| 9 (default) | official `typedb-driver` 3.13.6 | TypeDB official crates.io package [3.13.6](https://crates.io/crates/typedb-driver/3.13.6) | Apache-2.0, unmodified official package |
-| 9 (default) | official `typedb-protocol` 3.13.4 | TypeDB official crates.io package [3.13.4](https://crates.io/crates/typedb-protocol/3.13.4) | MPL-2.0, unmodified official package |
+| 9 (default) | official `typedb-driver` 3.14.0 | TypeDB official crates.io package [3.14.0](https://crates.io/crates/typedb-driver/3.14.0) | Apache-2.0, unmodified official package |
+| 9 (default) | official `typedb-protocol` 3.14.0 | TypeDB official crates.io package [3.14.0](https://crates.io/crates/typedb-protocol/3.14.0) | MPL-2.0, unmodified official package |
 
 ## Included cryptography components
 
@@ -33,8 +33,8 @@ for the downstream package names or packaging metadata.
 | `ed25519-dalek` | 2.2.0 | BSD-3-Clause; exact upstream license text reproduced below |
 | `curve25519-dalek` | 4.1.3 | BSD-3-Clause; exact upstream license text, including the original Go-derived portions notice, reproduced below |
 
-The official 3.13.6 Rust driver is currently the newest non-yanked stable
-3.13.x release and is exercised against TypeDB Server 3.12.3. There is no
+The official 3.14.0 Rust driver is currently the newest non-yanked stable
+3.14.x release and is exercised against TypeDB Server 3.12.3. There is no
 active, consumed, or release-input TypeBridge band-9 driver or protocol fork.
 Band 9 consumes the exact official upstream packages listed above.
 
@@ -68,8 +68,8 @@ official band-9 archives, are:
 | --- | --- |
 | <https://static.crates.io/crates/typedb-driver/typedb-driver-3.11.5.crate> | `71c456fc6fb8f9112236fc088569cbe47f620443629ef8c81b1d79aec7b49fc6` |
 | <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.11.0.crate> | `f051694ab18c9fb31f15e4567421b55a70e7dddbc1af60a6a1c4cf73ffe8d5e8` |
-| <https://static.crates.io/crates/typedb-driver/typedb-driver-3.13.6.crate> | `cd7eb7cce9def748f4436b8047890e39bab25ce9f8314a3bf72b19f9baadb0c9` |
-| <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.13.4.crate> | `055a7816df94fbf63be32c095202a62e9fc9f2de2c9134768858b3056f76b2fa` |
+| <https://static.crates.io/crates/typedb-driver/typedb-driver-3.14.0.crate> | `dc7d34c9252d3d1ff047ad5e33bd1a4cf35207340c8f6a158e17ad807e0e4960` |
+| <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.14.0.crate> | `f1035e56786c61fe39c662d270fb5a6243ec87ba2302810486bd95a87465f810` |
 
 The MPL-2.0 protocol source form is therefore available at the exact upstream
 commits, exact crates.io archives, and the TypeBridge v2.0.0 source locations
@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:55aec17b655579956732dc5616918e7d556cebbeaa3c6ee5a6e525ebeb36738c`
+- Closure fingerprint: `sha256:87f1d54f7cf98f09ff4f5274f4b32da5e170c03674091473634dcccb19be218c`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -816,7 +816,7 @@ bytes actually reproduced in this notice.
 | `cap-std` | `4.0.2` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `cfg-if` | `1.0.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397` |
 | `chacha20` | `0.10.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b8c6939380a400f53e11923d50fcc4dd2fa1ba8339fd9d04cda38a0251b6c9b0` |
-| `chrono` | `0.4.44` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:7f62263ee3860c67a16082f48472ccc4446c576f7ac2daa2264d019e7ad44d68` |
+| `chrono` | `0.4.45` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:7f62263ee3860c67a16082f48472ccc4446c576f7ac2daa2264d019e7ad44d68` |
 | `chrono-tz` | `0.9.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `clap` | `4.6.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
 | `clap_builder` | `4.6.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6` |
@@ -926,10 +926,10 @@ bytes actually reproduced in this notice.
 | `parking_lot` | `0.12.5` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:c9a75f18b9ab2927829a208fc6aa2cf4e63b8420887ba29cdb265d6619ae82d5` |
 | `parking_lot_core` | `0.9.12` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:c9a75f18b9ab2927829a208fc6aa2cf4e63b8420887ba29cdb265d6619ae82d5` |
 | `percent-encoding` | `2.3.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b38f11f6096706e6de553dabe2a7ed142d59b6fa8c97e290c67496154745cdd5` |
-| `pest` | `2.8.6` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `pest_derive` | `2.8.6` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `pest_generator` | `2.8.6` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
-| `pest_meta` | `2.8.6` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `pest` | `2.9.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `pest_derive` | `2.9.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `pest_generator` | `2.9.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
+| `pest_meta` | `2.9.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `phf` | `0.11.3` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:0ab4d106b6faac07fb6a051815fd1b4d862d730895e2d7d7358c2f13565e7a38` |
 | `phf_shared` | `0.11.3` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:0ab4d106b6faac07fb6a051815fd1b4d862d730895e2d7d7358c2f13565e7a38` |
 | `pin-project` | `1.1.11` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
@@ -952,9 +952,9 @@ bytes actually reproduced in this notice.
 | `rand_chacha` | `0.3.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
 | `rand_core` | `0.10.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:8b6e9feec03e7c9a5facb26855cecd31662bf989b636bcfe79521bdf8ac863f0` |
 | `rand_core` | `0.6.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:209fbbe0ad52d9235e37badf9cadfe4dbdc87203179c0899e738b39ade42177b` |
-| `regex` | `1.12.3` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
-| `regex-automata` | `0.4.14` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
-| `regex-syntax` | `0.8.10` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
+| `regex` | `1.13.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
+| `regex-automata` | `0.4.18` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
+| `regex-syntax` | `0.8.11` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb` |
 | `ring` | `0.17.14` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 AND ISC` | `Apache-2.0@sha256:a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`, `ISC@sha256:f025ccfb7dfb6bdfedc75ca0f67acc69e6fb4998143d834f7c2f38a29989680f` |
 | `rustc-hash` | `2.1.3` | Node | `crates.io` | `Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
 | `rustix` | `1.1.4` | Python, Node, CLI, C | `crates.io` | `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT` | `MIT@sha256:23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3` |
@@ -1035,10 +1035,10 @@ bytes actually reproduced in this notice.
 | `type-bridge-typedb-protocol-b8` | `3.11.0` | Python, Node, CLI, C | `workspace:vendor/typedb-protocol-b8/Cargo.toml` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `type-bridge-typedb-runtime` | `2.3.0` | Python, Node, CLI, C | `workspace:crates/typedb-runtime/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-workspace` | `2.3.0` | Python, CLI | `workspace:crates/workspace/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `typedb-driver` | `3.13.6` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
-| `typedb-protocol` | `3.13.4` | Python, Node, CLI, C | `crates.io` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
+| `typedb-driver` | `3.14.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
+| `typedb-protocol` | `3.14.0` | Python, Node, CLI, C | `crates.io` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `typenum` | `1.20.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:a825bd853ab71619a4923d7b4311221427848070ff44d990da39b0b274c1683f` |
-| `typeql` | `3.13.4` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
+| `typeql` | `3.14.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
 | `ucd-trie` | `0.1.7` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f` |
 | `uncased` | `0.9.10` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:361df454e66f5cd7f4d4f2ded7045dfec007580c6d8833ebf7db7a21fe461ab1` |
 | `unicase` | `2.9.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:4f6bd11a0f17fe5b085ace1daaedb7b002a08316850dd9577c246c6a68a68e8c` |

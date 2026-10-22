@@ -2019,9 +2019,15 @@ mod tests {
         let live = database.clone();
         // Join before cleanup so assertion failures still delete this test's database.
         let result = tokio::spawn(async move {
-            assert_eq!(
-                live.server_version(),
-                Some(type_bridge_core_lib::version::Version::new(3, 13, 6))
+            // The lane runs on a server of the typedb-3.13.6/v1 profile.
+            let release = type_bridge_core_lib::version::GeneratedPackageRelease::for_profile(
+                type_bridge_core_lib::version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+            )
+            .unwrap();
+            let server = live.server_version().expect("negotiated server version");
+            assert!(
+                release.admits(&server),
+                "TypeDB {server} is not one of {release}"
             );
             let mut transaction = live.schema_transaction().await.unwrap();
             transaction.query(baseline_text).await.unwrap();
