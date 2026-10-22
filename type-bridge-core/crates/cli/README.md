@@ -54,8 +54,8 @@ The crate has no optional features. It is released in lockstep with TypeBridge
 authoring, and planning accept the frozen TypeDB 3.11.5, 3.12.1, and 3.13.6
 semantic profiles. Connected migration commands run on exactly two profile/server
 pairs: `typedb-3.12.1/v1` with TypeDB 3.12.3 and `typedb-3.13.6/v1` with
-TypeDB 3.13.6. `migration upgrade-profile` moves a history from the first
-to the second.
+TypeDB 3.13.6 or 3.14.0. `migration upgrade-profile` moves a history from the
+first to the second.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-cli/2.3.0) ·

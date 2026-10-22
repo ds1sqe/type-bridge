@@ -21,13 +21,14 @@ semantic engine.
 
 ## TypeDB versions
 
-Run the newest supported TypeDB, currently 3.13.6. TypeBridge adds each new
+Run the newest supported TypeDB, currently 3.14.0. TypeBridge adds each new
 TypeDB minor line in its next release. The current window, verified tags,
 protocol bands, and migration pairs are in
 [TypeDB integration](../development/typedb.md#server-and-driver-compatibility).
 
 | TypeBridge | TypeDB servers | Protocol bands |
 | --- | --- | --- |
+| 2.3.1 | 3.11–3.14 | 8, 9 (3.14 shares profile `typedb-3.13.6/v1`) |
 | 2.3.0 | 3.11–3.13 | 8, 9 |
 | 2.1.0–2.2.6 | 3.11–3.12 | 8, 9 (3.8 and 3.10 removed in 2.1.0) |
 | 2.0.0–2.0.2 | 3.8–3.12 | 7, 8, 9 (3.8 and 3.10 with a deprecation notice) |
@@ -40,8 +41,8 @@ protocol bands, and migration pairs are in
 Requirements:
 
 - CPython 3.12–3.14
-- TypeDB 3.11–3.13 for generated CRUD/query operations; exactly 3.12.3 or
-  3.13.6, matching the workspace semantic profile, for connected V2 migration
+- TypeDB 3.11–3.14 for generated CRUD/query operations; exactly 3.12.3,
+  3.13.6 or 3.14.0, matching the workspace semantic profile, for connected V2 migration
   apply/verify/adopt
 
 ```bash

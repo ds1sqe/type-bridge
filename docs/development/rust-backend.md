@@ -16,7 +16,7 @@ The backend supports the exact operation set recorded in
 - concise filters and immutable multi-model direct/remote queries;
 - rows, pages, count/existence, reducers, and grouping;
 - caller-owned transactions and exact generated hydration;
-- TypeDB 3.11–3.13 provider selection and fail-closed version checks.
+- TypeDB 3.11–3.14 provider selection and fail-closed version checks.
 
 Private dynamic managers and descriptors are execution machinery for verified
 generated projections. They are not a public target-language declaration API.

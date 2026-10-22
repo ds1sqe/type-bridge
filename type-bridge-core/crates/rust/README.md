@@ -32,7 +32,7 @@ generic-server authority artifact.
 | `test-harness` | no | Enables generated-package acceptance fixtures |
 
 The SDK is released in lockstep with the TypeBridge 2.3.0 crate graph, requires
-Rust 1.88+, and supports TypeDB 3.11.x–3.13.x.
+Rust 1.88+, and supports TypeDB 3.11.x–3.14.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge/2.3.0) ·

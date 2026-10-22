@@ -4,6 +4,40 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [2.3.1] - Unreleased
+
+2.3.1 adds TypeDB 3.14 to the supported matrix (#268). Applications and
+generated packages need no change.
+
+### Added
+
+- TypeDB 3.14 is supported: the window is 3.11–3.14, and 3.14.0 is the
+  recommended server and the default `test.sh` lane. A 3.14 server speaks
+  band 9 natively and also accepts band 8, so version discovery is unchanged.
+- TypeDB 3.14 shares semantic profile `typedb-3.13.6/v1`: it changed no
+  schema syntax, default or lowering. Generated packages and connected
+  migrations on that profile run on TypeDB 3.13.6 or 3.14.0, and profile
+  names, generated files and migration histories stay as they are.
+
+### Changed
+
+- Band 9 runs the official `typedb-driver` 3.14.0 (protocol 3.14.0), which
+  serves TypeDB 3.12, 3.13 and 3.14. Band 8 keeps the namespaced 3.11.5
+  driver.
+- TypeBridge depends on `typeql =3.14.0` and `chrono =0.4.45`. `typeql` pins
+  its own `chrono` and `regex` exactly, so an application that links the
+  TypeDB 3.14 server crates could not resolve beside TypeBridge 2.3.0
+  (`typeql =3.13.4`). The driver pin check now also requires `typeql` on the
+  support window's newest line.
+- The Python `typedb-driver` extra accepts `>=3.11,<3.15`
+  (`>=3.12.3,<3.15` on CPython 3.14).
+
+### Fixed
+
+- Fetched integers beyond 2^53 stay exact on every supported server; a live
+  test now checks it. TypeBridge reads typed concept values, not the
+  driver's JSON rendering, which rounds them in drivers before 3.14.
+
 ## [2.3.0] - 2026-10-22
 
 2.3.0 runs every query, direct or through a proxy, on one Rust pipeline, and

@@ -350,7 +350,7 @@ cargo test -p type-bridge-server
 ```
 
 The crate is released in lockstep with TypeBridge 2.3.0, requires Rust 1.88+,
-and supports TypeDB 3.11.x–3.13.x through provider bands 8 and 9.
+and supports TypeDB 3.11.x–3.14.x through provider bands 8 and 9.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-server/2.3.0) ·

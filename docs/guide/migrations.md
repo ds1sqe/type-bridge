@@ -37,11 +37,11 @@ environments:
 `migration make` and `migration plan` are offline. Connected commands resolve
 one named environment and enforce its `migrate` policy. TypeDB-backed
 `migration apply`, `migration verify`, `migration rollback --execute`,
-`migration adopt`, and `migration upgrade-profile` run on exactly two
+`migration adopt`, and `migration upgrade-profile` run only on these
 profile/server pairs: workspace semantic profile `typedb-3.12.1/v1` with a
-negotiated TypeDB 3.12.3 server, or `typedb-3.13.6/v1` with TypeDB 3.13.6.
-Any other pair is refused. Generated applications and offline authoring retain
-the wider 3.11–3.13 support window.
+negotiated TypeDB 3.12.3 server, or `typedb-3.13.6/v1` with TypeDB 3.13.6 or
+3.14.0. Any other pair is refused. Generated applications and offline
+authoring retain the wider 3.11–3.14 support window.
 
 ## Author and apply a change
 
@@ -134,8 +134,10 @@ root history, update an applied ledger, or write a historical snapshot.
 
 ## Move a history to a new TypeDB line
 
-A migration history is bound to the semantic profile it was authored on. To
-continue a `typedb-3.12.1/v1` history on TypeDB 3.13.6, record one profile
+A migration history is bound to the semantic profile it was authored on. A
+`typedb-3.13.6/v1` history moves between TypeDB 3.13.6 and 3.14.0 without a
+bridge, since both lines share that profile. To continue a `typedb-3.12.1/v1`
+history on TypeDB 3.13.6 or 3.14.0, record one profile
 bridge per history:
 
 1. Quiesce writers and move the managed database and its migration journal
