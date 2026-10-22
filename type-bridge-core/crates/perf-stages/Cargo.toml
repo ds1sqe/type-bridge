@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-perf-stages"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Private perf harness: exclusive wall time per TypeBridge stage span"

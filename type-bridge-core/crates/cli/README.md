@@ -9,7 +9,7 @@ environment.
 ## Install and start
 
 ```bash
-cargo install type-bridge-cli --version 2.3.0 --locked
+cargo install type-bridge-cli --version 2.3.1 --locked
 type-bridge --help
 type-bridge schema check
 type-bridge schema generate
@@ -50,7 +50,7 @@ serializes discovery, parsing, generation, and no-overwrite publication under
 one directory lock.
 
 The crate has no optional features. It is released in lockstep with TypeBridge
-2.3.0 and requires Rust 1.88+. Offline schema checking, generation, migration
+2.3.1 and requires Rust 1.88+. Offline schema checking, generation, migration
 authoring, and planning accept the frozen TypeDB 3.11.5, 3.12.1, and 3.13.6
 semantic profiles. Connected migration commands run on exactly two profile/server
 pairs: `typedb-3.12.1/v1` with TypeDB 3.12.3 and `typedb-3.13.6/v1` with
@@ -58,5 +58,5 @@ TypeDB 3.13.6 or 3.14.0. `migration upgrade-profile` moves a history from the
 first to the second.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-cli/2.3.0) ·
+[API documentation](https://docs.rs/type-bridge-cli/2.3.1) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

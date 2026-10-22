@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from type_bridge.migration.exceptions import SchemaConflictError, SchemaValidationError
     from type_bridge.migration.introspection import SchemaIntrospector
 
-__version__ = "2.3.0"
+__version__ = "2.3.1"
 
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
