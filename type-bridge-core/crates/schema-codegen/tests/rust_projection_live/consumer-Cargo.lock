@@ -333,7 +333,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -1464,7 +1463,7 @@ dependencies = [
  "pest_meta",
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -2825,7 +2824,7 @@ dependencies = [
  "crossbeam",
  "futures",
  "http",
- "itertools 0.14.0",
+ "itertools",
  "maybe-async",
  "prost",
  "serde",
@@ -2862,7 +2861,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ce4686e09b33b1720ae6302ff98b85bf217e885b30c9402ca72138d7e24abff3"
 dependencies = [
  "chrono",
- "itertools 0.14.0",
+ "itertools",
  "pest",
  "pest_derive",
  "regex",

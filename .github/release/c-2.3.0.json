@@ -739,10 +739,10 @@
       "Install the source-tree Python product": "success",
       "Install uv": "success",
       "Restore cargo build cache": "success",
-      "Run C ABI 1.7 builder purchase race": "success",
-      "Run C ABI 1.7 staged contract plans": "success",
+      "Run C ABI 1.7 builder purchase race": "skipped",
+      "Run C ABI 1.7 staged contract plans": "skipped",
       "Run Rust SDK plan builder over the V3 staged proxy": "success",
-      "Run SDK writes in four languages": "success",
+      "Run SDK writes in four languages": "skipped",
       "Run V3 staged server live acceptance": "success",
       "Run concurrency guide TypeQL snippets": "skipped",
       "Run concurrency guide races as staged plans": "skipped",
@@ -753,7 +753,7 @@
       "Run staged writes races across processes": "success",
       "Set up Node.js": "success",
       "Set up Python": "success",
-      "Upload SDK writes reports": "success",
+      "Upload SDK writes reports": "skipped",
       "Wait for TypeDB 3.14.0": "success"
     },
     "Standalone CLI artifact (Linux x86_64 GNU)": {
@@ -841,7 +841,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "855ce1994e9d1a74ac33e2693f201660ab36184d39fde1e0bb4d01cf6087de8a",
+  "ci_workflow_sha256": "53d44afc496593d979bc8d1a125c957d3beedcc48db6b9d073e0e8796a591d34",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.0.tar.gz",
   "format": "typebridge.c-release-policy/v1",

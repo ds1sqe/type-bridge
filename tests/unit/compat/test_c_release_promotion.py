@@ -69,12 +69,12 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
             ]
             == "success"
         )
-    assert (
-        selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][
-            "Run concurrency guide races as staged plans"
-        ]
-        == "skipped"
-    )
+    for step in (
+        "Run concurrency guide races as staged plans",
+        "Run C ABI 1.7 staged contract plans",
+        "Run SDK writes in four languages",
+    ):
+        assert selected["ci_jobs"]["Staged plans live (typedb/typedb:3.14.0)"][step] == "skipped"
     assert (
         selected["ci_jobs"]["Rust docs and MSRV 1.88"]["Check C foundation on MSRV 1.88"]
         == "success"

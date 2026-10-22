@@ -254,10 +254,19 @@ def test_profile_lane_steps_run_on_their_own_profile_job() -> None:
     assert job["services"]["typedb"]["options"] == "--tmpfs /var/lib/typedb/data:rw"
     assert job["env"] == {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.13.6/v1"}
     steps: dict[str, dict[str, Any]] = {step["name"]: step for step in job["steps"]}
-    # The concurrency guide's pinned outcomes run on 3.13.6 only.
+    # The concurrency guide's pinned outcomes, and the steps that emit SDK
+    # conformance reports (the profile matrix pairs typedb-3.13.6/v1 with
+    # 3.13.6), run on 3.13.6 only.
     assert {step["name"]: step["if"] for step in job["steps"] if "if" in step} == {
-        "Run concurrency guide TypeQL snippets": "matrix.typedb == '3.13.6'",
-        "Run concurrency guide races as staged plans": "matrix.typedb == '3.13.6'",
+        name: "matrix.typedb == '3.13.6'"
+        for name in (
+            "Run concurrency guide TypeQL snippets",
+            "Run concurrency guide races as staged plans",
+            "Run C ABI 1.7 staged contract plans",
+            "Run C ABI 1.7 builder purchase race",
+            "Run SDK writes in four languages",
+            "Upload SDK writes reports",
+        )
     }
     wait = steps["Wait for TypeDB ${{ matrix.typedb }}"]["run"]
     assert 'test "$version" = "${{ matrix.typedb }}"' in wait

@@ -147,7 +147,8 @@ tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
 Steps bound to the SDK conformance contracts run where the lane's profile is in
 the SDK version matrix and pairs with the lane's server; the matrix pairs
-`typedb-3.13.6/v1` with 3.13.6, so the 3.14.0 lane skips them. Connected migrations refuse TypeDB 3.11, so that lane
+`typedb-3.13.6/v1` with 3.13.6, so the 3.14.0 lane skips them, as well as
+the staged C ABI plans and the four-language writes suites. Connected migrations refuse TypeDB 3.11, so that lane
 proves the refusal instead of the lifecycles. Its TLS lane is skipped too: the
 TLS steps assert the band-9 driver and apply a workspace migration.
 

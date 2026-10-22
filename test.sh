@@ -886,6 +886,9 @@ run_live_lane() {
                 --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-orm --test plan_race_live
         fi
+        # The C staged plans and the four-language writes emit SDK conformance
+        # reports, which the profile matrix pairs with one server per profile.
+        if [[ "$lane_in_sdk_matrix" == 1 ]]; then
         run_step "C ABI 1.7 staged contract plans (TypeDB $typedb_server_version)" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
@@ -915,6 +918,10 @@ run_live_lane() {
                 --address "$TYPEDB_ADDRESS" --http-port "$TYPEDB_HTTP_PORT" \
                 --output "$writes_output/reports"
         rm -rf -- "$writes_output"
+        else
+            printf "${CYAN}C staged plans and SDK writes need a profile in the SDK matrix; skipping TypeDB %s.${RESET}\n\n" \
+                "$typedb_server_version"
+        fi
         # Three processes race staged plans on separate connections. The
         # paused-server case runs only when TB_RACE_CONTAINER names a TypeDB
         # container this run alone owns; it is `docker pause`d mid-commit.

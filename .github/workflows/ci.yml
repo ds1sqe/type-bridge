@@ -2170,7 +2170,10 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-orm --test plan_race_live
 
+      # The C staged plans and the four-language writes emit SDK conformance
+      # reports, which the profile matrix pairs with TypeDB 3.13.6 only.
       - name: Run C ABI 1.7 staged contract plans
+        if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -2185,6 +2188,7 @@ jobs:
             -p type-bridge-c --test schema_package_abi
 
       - name: Run C ABI 1.7 builder purchase race
+        if: matrix.typedb == '3.13.6'
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -2200,6 +2204,7 @@ jobs:
       # and C: identical plan bytes, and identical answers, typed failures and
       # state directly and over the proxy.
       - name: Run SDK writes in four languages
+        if: matrix.typedb == '3.13.6'
         timeout-minutes: 45
         run: >-
           uv run python scripts/ci/run_sdk_conformance.py writes
@@ -2208,6 +2213,7 @@ jobs:
           --output "$RUNNER_TEMP/typebridge-sdk-writes"
 
       - name: Upload SDK writes reports
+        if: matrix.typedb == '3.13.6'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sdk-writes-typedb-${{ matrix.typedb }}
