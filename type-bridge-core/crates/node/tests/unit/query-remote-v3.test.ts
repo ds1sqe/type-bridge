@@ -18,7 +18,7 @@ test("query-remote-v3 fixtures and Rust embedded plans", () => {
   const fixtures = Object.fromEntries(fs.readdirSync(root)
     .filter(name => name.endsWith(".json"))
     .map(name => [name, JSON.parse(fs.readFileSync(path.join(root, name), "utf8"))]));
-  assert.equal(Object.keys(fixtures).length, 5);
+  assert.equal(Object.keys(fixtures).length, 7);
   const request = fixtures["request.json"];
   assert.equal(request.format, "typebridge.query-remote-request/v3");
   const schema = fs.readFileSync("../../../tests/contracts/plan_v3/schema.json");

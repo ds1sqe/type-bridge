@@ -5,6 +5,8 @@ mod examples;
 #[allow(dead_code)]
 mod support;
 
+use std::collections::BTreeMap;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde_json::{Value, json};
 use type_bridge_contract::capability::CapabilityId;
@@ -51,10 +53,7 @@ impl RemoteReplyVerifier for Keys {
 }
 fn advertisement() -> RemoteCapabilities {
     let mut caps = query_plan_v3_capability_vocabulary();
-    for cap in [
-        CAP_QUERY_REMOTE_STAGED_V3,
-        CAP_QUERY_REMOTE_WRITE_V3,
-    ] {
+    for cap in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
         caps.insert(CapabilityId::new(cap).unwrap());
     }
     RemoteCapabilities::new(
@@ -422,6 +421,44 @@ fn staged_envelope_goldens_are_exact_and_sdk_readable() {
         "request-fingerprint.json",
         to_canonical_json(&request.fingerprint().unwrap()).unwrap(),
     );
+    let mut document_spec = spec();
+    document_spec.plans = vec![
+        entry(examples::fetch_written(false)),
+        entry(examples::fetch_written(true)),
+    ];
+    let document_request = StagedRequestV3::new(document_spec, &support::schema(), &ad).unwrap();
+    let (_, mut entities) = fetch_documents(false);
+    let mut second = entities[0].clone();
+    second.insert(
+        "_iid".into(),
+        RemoteFieldValue::Scalar {
+            value: type_bridge_contract::value::CanonicalValue::String(
+                type_bridge_contract::value::CanonicalString::new("0x03").unwrap(),
+            ),
+        },
+    );
+    entities.push(second);
+    let (_, relations) = fetch_documents(true);
+    let documents = StagedReplyV3::new(
+        &document_request,
+        StagedOutcomeV3::Committed,
+        vec![
+            StagedAnswerV3::Documents {
+                documents: entities,
+            },
+            StagedAnswerV3::Documents {
+                documents: relations,
+            },
+        ],
+    )
+    .unwrap();
+    fixtures.insert("request-documents.json", document_request.encode().unwrap());
+    fixtures.insert(
+        "reply-documents.json",
+        documents
+            .encode_signed(&document_request, &ad, &keys)
+            .unwrap(),
+    );
     if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
         std::fs::create_dir_all(&root).unwrap();
     }
@@ -551,18 +588,274 @@ fn opaque_plan_bytes_do_not_inherit_the_scalar_string_ceiling() {
 }
 
 #[test]
-fn staged_requests_carrying_unadvertised_terms_are_refused_at_admission() {
-    // Proxies do not advertise `query.fetch.thing` yet.
-    // Nor `query.write.attach`.
+fn staged_requests_admit_fetch_and_attach_capabilities() {
     for plan in [examples::fetch_written(false), examples::attach()] {
         let mut request = spec();
         request.plans = vec![entry(plan)];
-        let error =
-            StagedRequestV3::new(request, &support::schema(), &advertisement()).unwrap_err();
-        assert_eq!(error.code().as_str(), "unsupported_required_capability");
+        StagedRequestV3::new(request, &support::schema(), &advertisement()).unwrap();
+    }
+    let mut unknown = type_bridge_contract::capability::CapabilitySet::new();
+    unknown.insert(CapabilityId::new("query.fetch.future").unwrap());
+    assert_eq!(
+        unknown
+            .ensure_supported_by(advertisement().capabilities())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "unsupported_required_capability"
+    );
+}
+
+fn fetch_documents(relation: bool) -> (StagedRequestV3, Vec<BTreeMap<String, RemoteFieldValue>>) {
+    let mut spec = spec();
+    spec.plans = vec![entry(examples::fetch_written(relation))];
+    let request = StagedRequestV3::new(spec, &support::schema(), &advertisement()).unwrap();
+    let document = if relation {
+        json!({
+            "_iid": {"kind":"scalar","value":{"kind":"string","value":"0x02"}},
+            "_type": {"kind":"scalar","value":{"kind":"string","value":"membership"}},
+            "attributes": {"kind":"document","fields":{}},
+            "_role_0_iid": {"kind":"scalar","value":{"kind":"string","value":"0x01"}},
+            "_role_0_type": {"kind":"scalar","value":{"kind":"string","value":"account"}},
+            "_role_0_attributes": {"kind":"document","fields":{
+                "id":{"kind":"scalar","value":{"kind":"string","value":"alice"}}
+            }}
+        })
+    } else {
+        json!({
+            "_iid": {"kind":"scalar","value":{"kind":"string","value":"0x01"}},
+            "_type": {"kind":"scalar","value":{"kind":"string","value":"account"}},
+            "attributes": {"kind":"document","fields":{
+                "id":{"kind":"scalar","value":{"kind":"string","value":"alice"}},
+                "score":{"kind":"scalar","value":{"kind":"long","value":"7"}}
+            }}
+        })
+    };
+    (request, vec![serde_json::from_value(document).unwrap()])
+}
+
+#[test]
+fn fetch_documents_validate_before_signing_and_after_signature_verification() {
+    for relation in [false, true] {
+        let (request, documents) = fetch_documents(relation);
+        let reply = StagedReplyV3::new(
+            &request,
+            StagedOutcomeV3::Committed,
+            vec![StagedAnswerV3::Documents { documents }],
+        )
+        .unwrap();
+        let keys = Keys::new();
+        let bytes = reply
+            .encode_signed(&request, &advertisement(), &keys)
+            .unwrap();
+        VerifiedStagedReplyV3::decode(&bytes, &request, &advertisement(), keys.public_key(), &keys)
+            .unwrap();
+    }
+}
+
+#[test]
+fn fetch_document_refusals_name_the_invalid_evidence() {
+    for (field, replacement, code) in [
+        ("extra", json!({"kind":"absent"}), "key"),
+        (
+            "_type",
+            json!({"kind":"scalar","value":{"kind":"string","value":"other"}}),
+            "type",
+        ),
+        (
+            "attributes",
+            json!({"kind":"document","fields":{"foreign":{"kind":"list","values":[]}}}),
+            "attribute",
+        ),
+        (
+            "attributes",
+            json!({"kind":"document","fields":{"id":{"kind":"scalar","value":{"kind":"long","value":"3"}}}}),
+            "value",
+        ),
+        ("_iid", json!({"kind":"absent"}), "value"),
+    ] {
+        let (request, mut documents) = fetch_documents(false);
+        documents[0].insert(field.into(), serde_json::from_value(replacement).unwrap());
+        let error = StagedReplyV3::new(
+            &request,
+            StagedOutcomeV3::Committed,
+            vec![StagedAnswerV3::Documents { documents }],
+        )
+        .unwrap_err();
         assert_eq!(
-            error.category(),
-            type_bridge_contract::diagnostic::DiagnosticCategory::UnsupportedCapability
+            error.code().as_str(),
+            format!("query_remote_v3_document_{code}")
         );
     }
+    let (request, mut documents) = fetch_documents(true);
+    documents[0].remove("_role_0_iid");
+    let error = StagedReplyV3::new(
+        &request,
+        StagedOutcomeV3::Committed,
+        vec![StagedAnswerV3::Documents { documents }],
+    )
+    .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_remote_v3_document_role");
+}
+
+#[test]
+fn fetch_document_optional_roles_require_complete_evidence() {
+    use type_bridge_contract::query_plan::v3::{DocumentRole, Stage, ThingDocument};
+    let plan = QueryPlanV3::new(
+        support::spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![support::isa(0, support::relation()).into()],
+                },
+                Stage::Fetch(ThingDocument::new(
+                    support::id(0),
+                    vec![DocumentRole::new(support::role(), false)],
+                )),
+            ],
+            vec![],
+        ),
+        &support::schema(),
+    )
+    .unwrap();
+    let shape = plan.fetch_document_shape().unwrap();
+    let (_, mut documents) = fetch_documents(true);
+    let document = &mut documents[0];
+    shape.validate(document).unwrap();
+    for suffix in ["iid", "type", "attributes"] {
+        document.remove(&format!("_role_0_{suffix}"));
+    }
+    shape.validate(document).unwrap();
+    document.insert("_role_0_iid".into(), RemoteFieldValue::Absent);
+    assert_eq!(
+        shape.validate(document).unwrap_err().code().as_str(),
+        "query_remote_v3_document_role"
+    );
+    for suffix in ["iid", "type", "attributes"] {
+        document.insert(format!("_role_0_{suffix}"), RemoteFieldValue::Absent);
+    }
+    shape.validate(document).unwrap();
+    document.insert(
+        "_role_0_type".into(),
+        serde_json::from_value(json!({
+            "kind":"scalar", "value":{"kind":"string", "value":"account"}
+        }))
+        .unwrap(),
+    );
+    assert_eq!(
+        shape.validate(document).unwrap_err().code().as_str(),
+        "query_remote_v3_document_role"
+    );
+}
+
+#[test]
+fn fetch_document_inherited_attributes_require_an_admitted_exact_type() {
+    use type_bridge_contract::query_plan::v3::{Stage, ThingDocument};
+    let plan = QueryPlanV3::new(
+        support::spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![support::isa(0, support::entity("child_account")).into()],
+                },
+                Stage::Fetch(ThingDocument::new(support::id(0), vec![])),
+            ],
+            vec![],
+        ),
+        &support::schema(),
+    )
+    .unwrap();
+    let shape = plan.fetch_document_shape().unwrap();
+    let (_, mut documents) = fetch_documents(false);
+    let document = &mut documents[0];
+    assert_eq!(
+        shape.validate(document).unwrap_err().code().as_str(),
+        "query_remote_v3_document_type"
+    );
+    document.insert(
+        "_type".into(),
+        serde_json::from_value(json!({
+            "kind":"scalar", "value":{"kind":"string", "value":"child_account"}
+        }))
+        .unwrap(),
+    );
+    shape.validate(document).unwrap();
+    let RemoteFieldValue::Document { fields } = document.get_mut("attributes").unwrap() else {
+        panic!()
+    };
+    fields.remove("id");
+    assert_eq!(
+        shape.validate(document).unwrap_err().code().as_str(),
+        "query_remote_v3_document_value"
+    );
+}
+
+#[test]
+fn fetch_documents_distinguish_scalar_and_collection_ownerships() {
+    use type_bridge_contract::codec::FormatVersion;
+    use type_bridge_contract::query_plan::v3::{Stage, ThingDocument};
+    use type_bridge_contract::schema::*;
+    use type_bridge_contract::value::Cardinality;
+    let mut facts = support::schema().facts().cloned().collect::<Vec<_>>();
+    facts.push(SchemaFact::Annotation(
+        AnnotationFact::new(
+            AnnotationFactId::new(
+                AnnotationSubjectId::Owns(support::field("score")),
+                AnnotationKindId::Card,
+            ),
+            SchemaAnnotationValue::Cardinality(Cardinality::new(0, Some(2)).unwrap()),
+        )
+        .unwrap(),
+    ));
+    let schema = DeclaredSchema::from_facts(
+        FormatVersion::V1,
+        Default::default(),
+        facts.into_iter().enumerate().map(|(index, fact)| {
+            SourcedSchemaFact::new(
+                fact,
+                SourceSpan::new(
+                    DocumentId::new("fetch.yaml").unwrap(),
+                    index as u64,
+                    index as u64 + 1,
+                    index as u32 + 1,
+                    1,
+                    index as u32 + 1,
+                    2,
+                )
+                .unwrap(),
+            )
+        }),
+    )
+    .unwrap();
+    let plan = QueryPlanV3::new(
+        support::spec(
+            vec![
+                support::matched(),
+                Stage::Fetch(ThingDocument::new(support::id(0), vec![])),
+            ],
+            vec![],
+        ),
+        &schema,
+    )
+    .unwrap();
+    let shape = plan.fetch_document_shape().unwrap();
+    let (_, mut documents) = fetch_documents(false);
+    assert_eq!(
+        shape.validate(&documents[0]).unwrap_err().code().as_str(),
+        "query_remote_v3_document_value"
+    );
+    let RemoteFieldValue::Document { fields } = documents[0].get_mut("attributes").unwrap() else {
+        panic!()
+    };
+    fields.insert("score".into(), serde_json::from_value(json!({"kind":"list", "values":[{"kind":"long","value":"7"},{"kind":"long","value":"8"}]})).unwrap());
+    shape.validate(&documents[0]).unwrap();
+    let RemoteFieldValue::Document { fields } = documents[0].get_mut("attributes").unwrap() else {
+        panic!()
+    };
+    let RemoteFieldValue::List { values } = fields.get_mut("score").unwrap() else {
+        panic!()
+    };
+    values.push(type_bridge_contract::value::CanonicalValue::Long(9));
+    assert_eq!(
+        shape.validate(&documents[0]).unwrap_err().code().as_str(),
+        "query_remote_v3_document_value"
+    );
 }

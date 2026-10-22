@@ -23,8 +23,11 @@ pub const QUERY_PLAN_FORMAT_V3: &str = "typebridge.query-plan/v3";
 /// Canonicalization version separating V3 fingerprints from frozen V2.
 pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3";
 
+#[path = "query_plan_v3_document.rs"]
+mod document;
 #[path = "query_plan_v3_expr.rs"]
 mod expression;
+pub use document::FetchDocumentShape;
 pub use expression::{ArithOp, Builtin, Expr};
 use expression::{ExprWire, operand_type};
 
@@ -124,9 +127,6 @@ pub enum WriteReturns {
 /// Every capability derivable from closed V3 syntax that a staged
 /// endpoint advertises.
 ///
-/// `query.fetch.thing` (a [`Stage::Fetch`]) is derived but not advertised
-/// yet: proxies refuse fetch plans at capability admission until they are
-/// served remotely.
 #[must_use]
 pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
     query_plan_v2_capability_vocabulary()
@@ -138,6 +138,8 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
                 "query.write.update",
                 "query.write.delete",
                 "query.write.put",
+                "query.fetch.thing",
+                "query.write.attach",
                 "query.let",
                 "query.expr.add",
                 "query.expr.sub",
@@ -486,9 +488,16 @@ pub struct QueryPlanV3 {
     output: QueryOutput,
     pipeline: Vec<Stage>,
     required_capabilities: CapabilitySet,
+    #[serde(skip)]
+    fetch_document_shape: Option<FetchDocumentShape>,
 }
 
 impl QueryPlanV3 {
+    /// Schema-derived evidence for a terminal thing fetch; absent on other plans.
+    pub fn fetch_document_shape(&self) -> Option<&FetchDocumentShape> {
+        self.fetch_document_shape.as_ref()
+    }
+
     /// Validate one program against declared schema authority and fixed limits.
     pub fn new(spec: PlanSpec, schema: &DeclaredSchema) -> Result<Self, Diagnostic> {
         Self::new_with_limits(spec, schema, QueryLimits::CANONICAL)
@@ -528,7 +537,7 @@ impl QueryPlanV3 {
         }
         let mut nodes = 0;
         validate_local_functions(&spec.functions, limits.structural, &mut nodes)?;
-        validate_stages(&spec, schema, limits, &mut nodes)?;
+        let fetch_document_shape = validate_stages(&spec, schema, limits, &mut nodes)?;
         if let Some(compatibility) = &spec.compatibility {
             compatibility.validate(spec.bindings.len(), limits)?;
         }
@@ -617,6 +626,7 @@ impl QueryPlanV3 {
             output: spec.output,
             pipeline: spec.pipeline,
             required_capabilities,
+            fetch_document_shape,
         };
         plan.canonical_bytes()?;
         Ok(plan)
@@ -765,7 +775,7 @@ fn validate_stages(
     schema: &DeclaredSchema,
     limits: QueryLimits,
     nodes: &mut usize,
-) -> Result<(), Diagnostic> {
+) -> Result<Option<FetchDocumentShape>, Diagnostic> {
     let Some(first) = spec.pipeline.first() else {
         return Err(invalid(
             "query_plan_empty_pipeline",
@@ -1109,11 +1119,20 @@ fn validate_stages(
     }
     if let Some(document) = fetched {
         index.thing_document(document, &mandatory, &optional, &types)?;
+        let profile = crate::semantic_profile::SemanticProfile::resolve(
+            spec.managed_semantics
+                .as_fingerprint()
+                .semantic_profile()
+                .expect("managed schema fingerprints carry a profile"),
+        )?;
+        return Ok(Some(FetchDocumentShape::new(
+            &index, document, &types, &profile,
+        )));
     } else if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
     {
         validate_output(&spec.output, &mandatory, &optional, limits.structural)?;
     }
-    Ok(())
+    Ok(None)
 }
 
 fn nonempty(count: usize, limits: QueryLimits, nodes: &mut usize) -> Result<(), Diagnostic> {
