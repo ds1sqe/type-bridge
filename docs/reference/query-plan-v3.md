@@ -228,11 +228,9 @@ the row); an optional role's keys are absent when it is unfilled; several
 players of a role give one document per player combination. A fetch adds
 `query.fetch.thing`.
 
-`query.write.attach` and `query.fetch.thing` are derived from the plan but
-not advertised yet: they are absent from the V3 capability vocabulary that
-the staged advertisement publishes (see [Capabilities](#capabilities)), so a
-staged request carrying an attach or a fetch fails capability admission with
-`unsupported_required_capability`. The fixtures `attach.json`,
+`query.write.attach` and `query.fetch.thing` are advertised by
+`GET /v3/capabilities` and admitted on the staged route. Fetch answers use
+schema-validated document evidence. The fixtures `attach.json`,
 `replace_players.json` (players deletion then attach), `fetch_entity.json`
 and `fetch_relation.json` in `tests/contracts/plan_v3` show their canonical
 bytes.
@@ -374,9 +372,7 @@ is the V2 vocabulary (which includes `query.pattern.iid`) plus
 and every `query.expr.*` name. The staged advertisement at
 `GET /v3/capabilities` is the V2 advertisement's capabilities, that
 vocabulary, `query.remote.envelope-v3` and `query.remote.write`.
-`query.write.attach` and `query.fetch.thing` are
-derived but not advertised yet, so staged requests refuse plans that need
-them.
+`query.write.attach` and `query.fetch.thing` are included in that vocabulary.
 
 ## Plan builder
 
@@ -477,10 +473,12 @@ released object containing `allowed_cross_joins`, nullable `model_query` and
 nullable `predicate` under the [V2 contract](../development/typed-query-contract.md).
 V3 does not reinterpret those model-query predicates or terminal shapes.
 
-A changed tag, required field, validation meaning, canonical encoding, numeric
-promotion, capability derivation or stage semantics requires a new format and
-canonicalization version. New closed constructs require V4; a V3 receiver
-rejects unknown syntax instead of silently losing meaning.
+New constructs may extend `query-plan/v3` in place when each is fenced by a
+required capability. Plans that do not use an added construct retain their
+canonical bytes and fingerprints. A receiver lacking that capability refuses
+admission; unknown syntax is rejected during decoding. Changes to existing
+construct semantics, canonical encoding or numeric promotion still require a
+new format and canonicalization version.
 
 ## Worked canonical examples
 
@@ -557,13 +555,23 @@ types and operation, but no row values unless the policy returns `true` from
 `query_remote_policy_rejected`, stages nothing further and commits nothing.
 Once the outcome is known, the observe-only `Interceptor::on_v3_commit` sees
 `committed`, the diagnostic code, the commit certainty and the typed provider
-failure (such as an `STC2` conflict). Staged replies carry no documents: a
-plan whose `rows` or write-`rows` operation projects documents output is
-refused with `query_remote_v3_documents_unsupported`, and a fetch plan fails
-capability admission earlier because `query.fetch.thing` is not advertised
-yet. Execution enforces the
-advertised answer ceilings, tightened by the request's `max_items`,
-`max_bytes` and deadline, while answers are read. Once admitted, a request
+failure (such as an `STC2` conflict). Staged replies carry fetch documents with the same
+shape as direct answers. Rust validates exact types, inherited ownership,
+attribute value domains and cardinalities, and required/optional role evidence
+before commit and again when verifying the signed reply. Unknown keys, types,
+attributes, values and roles fail with `query_remote_v3_document_key`,
+`query_remote_v3_document_type`, `query_remote_v3_document_attribute`,
+`query_remote_v3_document_value` and `query_remote_v3_document_role`.
+
+Wire attributes are nested `RemoteFieldValue::Document` maps; each attribute
+contains a canonical scalar or list according to its ownership cardinality
+and collection mode. SDK documents expose ordinary
+nested values. Optional players may omit their triple or carry three explicit
+absences. Partial triples are refused. Execution charges each row/document
+against the shared `AnswerLimits` policy while reading, tightened by the
+request's `max_items`, `max_bytes` and deadline. Item and byte overflows report
+`processed_item_limit` and `response_byte_limit` on direct and staged paths.
+Once admitted, a request
 finishes in a detached task: a client that disconnects mid-commit still has
 its outcome committed and observed.
 

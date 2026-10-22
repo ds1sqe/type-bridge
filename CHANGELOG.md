@@ -4,6 +4,23 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+## [3.0.0] - Unreleased
+
+### Added
+
+- Fetch documents on direct and staged query-plan execution, with schema-derived
+  validation, bounded answers, and Python, TypeScript and Rust answer variants.
+- The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.
+
+### Breaking
+
+- Rename Rust `QueryV2AnswerLimits` to `AnswerLimits`, shared by query paths.
+  Transaction options and the materialized provider seam use this policy.
+  Native runtime answer-limit errors now carry measured `actual` and `maximum`
+  counters in `RuntimeError::AnswerLimit`.
+- Remove `query_remote_v3_documents_unsupported`: fetch plans now return
+  document evidence, with specific document-validation diagnostics.
+
 ## [2.3.1] - Unreleased
 
 2.3.1 adds TypeDB 3.14 to the supported matrix (#268). Applications and

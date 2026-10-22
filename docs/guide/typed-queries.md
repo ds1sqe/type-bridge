@@ -339,11 +339,31 @@ package's `schema_authority()` is its embedded, verified authority.
 `RustDatabase.staged_transaction`) returns the core staged transaction:
 `stage(plan)`, `commit()`, `rollback()` and `close()`. Nothing opens before `commit()`; an omitted kind
 is inferred from the staged plans. `Pending.result()` answers `Rows(rows)`,
-`Count(count)`, `Exists(exists)` or `Matched(count)`, raises the commit's
+`Documents(documents)`, `Count(count)`, `Exists(exists)` or `Matched(count)`, raises the commit's
 typed failure (`.code`, `.failure`), or raises `RuntimeError` before commit.
 A `with` block commits on a clean exit unless `commit_on_exit=False`,
 discards on an exception, and always closes.
 `Database.transaction()` keeps its released eager context.
+
+### Fetch documents from a staged write
+
+A hand-authored plan can end its insert pipeline with a fetch:
+
+```json
+[
+  {"kind":"insert","things":[{"binding":0,"type_id":{"kind":"entity","label":"person"},"fields":[],"players":[]}]},
+  {"kind":"fetch","thing":0,"roles":[]}
+]
+```
+
+This pipeline belongs to a validated plan with `write` returning `rows`, empty
+row columns, and a schema declaring `person` without required attributes.
+Stage it through the normal transaction API. Python returns
+`Documents(documents)`, TypeScript returns `{ kind: "documents", documents }`,
+and Rust returns `PlanAnswer::Documents`. Each document has `_iid`, `_type`
+and an `attributes` map; relation fetches also contain listed role players.
+These are schema-validated documents; generated model hydration is provided
+by the typed facade. The plan builder does not yet expose a fetch terminal.
 
 ### Replacing `update_with`
 
