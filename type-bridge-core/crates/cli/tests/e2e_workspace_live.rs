@@ -29,7 +29,7 @@ use type_bridge_contract::schema::{
 use type_bridge_contract::value::ValueTypeTag;
 use type_bridge_orm::TxType;
 use type_bridge_orm::query_v2_prepared::{QueryAuthority, execute_prepared_local};
-use type_bridge_orm::session::backend::QueryV2AnswerLimits;
+use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::{ConnectOptions, SecureConnectOptions, TlsMode};
 
@@ -384,7 +384,7 @@ async fn empty_workspace_to_replayed_history_live() {
         &authority,
         &plan,
         invocation,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
     )
     .await
     .expect("typed query");
@@ -437,7 +437,7 @@ async fn empty_workspace_to_replayed_history_live() {
         &evolved_authority,
         &evolved_plan,
         invocation,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
     )
     .await
     .expect("evolved typed query");
@@ -473,7 +473,7 @@ async fn empty_workspace_to_replayed_history_live() {
         &evolved_authority,
         &evolved_plan,
         invocation,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
     )
     .await
     .expect("replayed typed query");

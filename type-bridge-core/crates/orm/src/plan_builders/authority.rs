@@ -36,7 +36,7 @@ impl PlanAuthority {
 
     /// Rebuild the declarations the plan validator reads from a projection
     /// installed without a verified authority: types, subtypes, value types,
-    /// ownerships, roles, plays, and the `@abstract` and `@key` annotations.
+    /// ownerships, roles, plays, and abstract, key and cardinality annotations.
     /// Plans are identified by the projection's semantic fingerprint.
     pub(crate) fn from_projection(projection: &RuntimeProjection) -> Result<Self, Diagnostic> {
         let mut facts = BTreeMap::<SchemaFactId, SchemaFact>::new();
@@ -44,7 +44,10 @@ impl PlanAuthority {
             facts.entry(fact.id()).or_insert(fact);
         };
         let wanted = |kind: &AnnotationKindId| {
-            matches!(kind, AnnotationKindId::Abstract | AnnotationKindId::Key)
+            matches!(
+                kind,
+                AnnotationKindId::Abstract | AnnotationKindId::Key | AnnotationKindId::Card
+            )
         };
         for (type_id, model) in projection.models() {
             let declaration = model.declaration();
@@ -61,7 +64,15 @@ impl PlanAuthority {
                 )));
             }
             for field in declaration.direct_fields() {
-                add(SchemaFact::Owns(OwnsFact::new(field.clone())));
+                let token = model
+                    .query_tokens()
+                    .fields()
+                    .get(field)
+                    .ok_or_else(unavailable)?;
+                add(SchemaFact::Owns(OwnsFact::new_with_collection_mode(
+                    field.clone(),
+                    token.multiplicity().collection_mode(),
+                )));
             }
             for (role, declared) in declaration.direct_roles() {
                 add(SchemaFact::Relates(RelatesFact::new(

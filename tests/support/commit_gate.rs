@@ -168,7 +168,7 @@ impl TransactionOps for GatedTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: type_bridge_orm::session::backend::AnswerLimits,
         canonical: bool,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         self.inner

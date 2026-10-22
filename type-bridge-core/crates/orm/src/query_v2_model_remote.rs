@@ -790,7 +790,7 @@ functions:
             pending.request_bytes(),
             &authority.context(),
             &advertisement,
-            crate::session::backend::QueryV2AnswerLimits {
+            crate::session::backend::AnswerLimits {
                 answer: crate::session::backend::BoundedAnswerLimits {
                     max_items: 100,
                     max_bytes: 1 << 20,

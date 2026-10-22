@@ -905,3 +905,48 @@ async fn helper_relation_updates_with_many_players_and_none() {
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fetch_documents_resolve_and_enforce_answer_limits_before_commit() {
+    use type_bridge_orm::session::backend::BoundedAnswerLimits;
+    let Some(db) = live_database("tb_fetch_documents").await else {
+        return;
+    };
+    db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let plan = race::insert_doctor_fetch("alice");
+    let mut tx = db.transaction(TransactionOptions::default());
+    let pending = tx.stage_plan(&plan).unwrap();
+    tx.commit().await.unwrap();
+    let answer = pending.get().unwrap();
+    let PlanAnswer::Documents(documents) = answer.as_ref() else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0]["_type"], "doctor");
+    assert_eq!(
+        documents[0]["attributes"]["name"],
+        serde_json::json!("alice")
+    );
+    let wire = answer.to_staged_v3(&plan).unwrap();
+    assert_eq!(PlanAnswer::from_staged_v3(&wire, &plan).unwrap(), *answer);
+    for (max_items, max_bytes, code) in [
+        (0, 4096, "processed_item_limit"),
+        (10, 1, "response_byte_limit"),
+    ] {
+        let mut tx = db.transaction(TransactionOptions::default().with_answer_limits(
+            BoundedAnswerLimits {
+                max_items,
+                max_bytes,
+                ..Default::default()
+            },
+        ));
+        tx.stage_plan(&race::touch_fetch()).unwrap();
+        assert_eq!(
+            tx.commit().await.unwrap_err().diagnostic().code().as_str(),
+            code
+        );
+    }
+    db.delete_database().await.unwrap();
+}

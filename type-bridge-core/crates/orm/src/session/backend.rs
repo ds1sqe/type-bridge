@@ -157,24 +157,29 @@ impl Default for BoundedAnswerLimits {
     }
 }
 
-/// V2-only answer limits layered over the released bounded-answer shape.
-///
-/// Keeping the collection ceiling in this additive wrapper preserves source
-/// compatibility for 1.5.x callers that construct or destructure
-/// [`BoundedAnswerLimits`] exhaustively.
+/// Shared answer policy for plans and typed queries.
 #[derive(Debug, Clone)]
-pub struct QueryV2AnswerLimits {
+pub struct AnswerLimits {
     /// Released row/document, byte, deadline, and cancellation limits.
     pub answer: BoundedAnswerLimits,
     /// Maximum aggregate list members decoded across fetched documents.
     pub max_collection_members: u64,
 }
 
-impl Default for QueryV2AnswerLimits {
+impl Default for AnswerLimits {
     fn default() -> Self {
         Self {
             answer: BoundedAnswerLimits::default(),
             max_collection_members: 65_536,
+        }
+    }
+}
+
+impl From<BoundedAnswerLimits> for AnswerLimits {
+    fn from(answer: BoundedAnswerLimits) -> Self {
+        Self {
+            answer,
+            ..Self::default()
         }
     }
 }
@@ -194,12 +199,14 @@ pub struct BoundedAnswerStats {
 pub struct BoundedAnswerReader {
     limits: BoundedAnswerLimits,
     stats: BoundedAnswerStats,
+    meter: crate::answer_meter::AnswerMeter,
 }
 
 impl BoundedAnswerReader {
     /// Create a reader with executor/session hard limits.
     pub fn new(limits: BoundedAnswerLimits) -> Self {
         Self {
+            meter: crate::answer_meter::AnswerMeter::new(&limits),
             limits,
             stats: BoundedAnswerStats::default(),
         }
@@ -231,36 +238,9 @@ impl BoundedAnswerReader {
         consumer: &mut dyn AnswerConsumer,
     ) -> Result<AnswerControl, OrmError> {
         self.check_before_read()?;
-        let next_items = self.stats.processed_items.checked_add(1).ok_or_else(|| {
-            resource_error(
-                "processed_item_counter_overflow",
-                "processed provider item counter overflowed",
-            )
-        })?;
-        if next_items > self.limits.max_items {
-            return Err(resource_error(
-                "processed_item_limit",
-                "provider answer exceeded the processed-item ceiling",
-            ));
-        }
-        let next_bytes = self
-            .stats
-            .response_bytes
-            .checked_add(item.encoded_bytes()?)
-            .ok_or_else(|| {
-                resource_error(
-                    "answer_byte_counter_overflow",
-                    "provider answer byte counter overflowed",
-                )
-            })?;
-        if next_bytes > self.limits.max_bytes {
-            return Err(resource_error(
-                "response_byte_limit",
-                "provider answer exceeded the response-byte ceiling",
-            ));
-        }
-        self.stats.processed_items = next_items;
-        self.stats.response_bytes = next_bytes;
+        self.meter.accept(&item)?;
+        self.stats.processed_items = self.meter.items();
+        self.stats.response_bytes = self.meter.bytes();
         let control = consumer.accept(item);
         self.check_before_read()?;
         let control = control?;
@@ -680,11 +660,11 @@ pub trait TransactionOps: Send {
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: AnswerLimits,
         canonical: bool,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
-            let mut reader = BoundedAnswerReader::new(limits);
+            let mut reader = BoundedAnswerReader::new(limits.answer);
             reader.check_before_read()?;
             let result = match rows {
                 Some(rows) => self.query_with_rows(typeql, rows).await?,
@@ -752,7 +732,7 @@ pub trait TransactionOps: Send {
     fn query_v2_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_bounded(typeql, limits.answer, consumer)
@@ -763,7 +743,7 @@ pub trait TransactionOps: Send {
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_with_rows_bounded(typeql, rows, limits.answer, consumer)

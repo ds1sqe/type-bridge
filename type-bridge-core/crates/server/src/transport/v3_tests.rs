@@ -46,7 +46,7 @@ fn timed_v3_fixture(
         pipeline,
         allow_unauthenticated_writes,
         timeout,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
     )
 }
 
@@ -54,7 +54,7 @@ fn configured_v3_fixture(
     pipeline: QueryPipeline,
     allow_unauthenticated_writes: bool,
     timeout: Option<Duration>,
-    ceilings: QueryV2AnswerLimits,
+    ceilings: AnswerLimits,
 ) -> V3Fixture {
     let authority = authority_fixture(false);
     let declared = authority.declared.clone();
@@ -1091,8 +1091,8 @@ fn staged_with(
     StagedRequestV3::new(spec, &fixture.declared, &fixture.advertisement).expect("request")
 }
 
-fn ceilings(max_items: u64, max_bytes: u64) -> QueryV2AnswerLimits {
-    let mut ceilings = QueryV2AnswerLimits::default();
+fn ceilings(max_items: u64, max_bytes: u64) -> AnswerLimits {
+    let mut ceilings = AnswerLimits::default();
     ceilings.answer.max_items = max_items;
     ceilings.answer.max_bytes = max_bytes;
     ceilings

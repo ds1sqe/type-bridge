@@ -30,9 +30,7 @@ use crate::query_v2::{
 use crate::query_v2_adapter::{
     AdaptedMatchRequest, MatchRequestAdapterAuthority, adapt_match_request,
 };
-use crate::session::backend::{
-    AnswerCancellation, BoundedAnswerLimits, QueryV2AnswerLimits, TxType,
-};
+use crate::session::backend::{AnswerCancellation, AnswerLimits, BoundedAnswerLimits, TxType};
 use crate::session::{Database, OwnedTransaction as Transaction, TransactionContext};
 
 const OWNED_TRANSACTION_CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -679,9 +677,9 @@ impl<'a> SelectedResultExecutor<'a> {
     fn compatibility_limits(
         &self,
         deadline: Option<Instant>,
-    ) -> (QueryV2AnswerLimits, RemoteReplyDecodeLimitsV2) {
+    ) -> (AnswerLimits, RemoteReplyDecodeLimitsV2) {
         (
-            QueryV2AnswerLimits {
+            AnswerLimits {
                 answer: BoundedAnswerLimits {
                     max_items: self.limits.policy.items,
                     max_bytes: self.limits.policy.bytes,

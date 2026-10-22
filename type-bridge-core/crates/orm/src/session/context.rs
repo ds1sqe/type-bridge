@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::backend::{
-    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec, QueryResult,
-    QueryV2AnswerLimits, TransactionOps, TxType,
+    AnswerConsumer, AnswerLimits, BoundedAnswerLimits, BoundedAnswerStats, GivenRowsSpec,
+    QueryResult, TransactionOps, TxType,
 };
 use super::database::DatabaseExecutionIdentity;
 use crate::_registry::DescriptorRegistry;
@@ -117,7 +117,7 @@ impl TransactionContextMutationLease {
         &mut self,
         typeql: &str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &mut dyn AnswerConsumer,
     ) -> Result<BoundedAnswerStats> {
         if self.phase != MutationLeasePhase::PreDispatch {
@@ -137,7 +137,7 @@ impl TransactionContextMutationLease {
         &mut self,
         typeql: &str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &mut dyn AnswerConsumer,
     ) -> Result<BoundedAnswerStats> {
         if self.phase == MutationLeasePhase::Finished {
@@ -294,7 +294,7 @@ impl TransactionContext {
     pub(crate) async fn query_v2_bounded(
         &self,
         typeql: &str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &mut dyn AnswerConsumer,
     ) -> Result<BoundedAnswerStats> {
         self.check_schema_annotation_support(typeql)?;
@@ -328,13 +328,16 @@ impl TransactionContext {
     ) -> Result<QueryResult> {
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
-        tx.query_materialized_bounded(
-            &query.typeql,
-            query.rows,
-            BoundedAnswerLimits::default(),
-            query.canonical,
-        )
-        .await
+        let answer = tx
+            .query_materialized_bounded(
+                &query.typeql,
+                query.rows,
+                super::backend::AnswerLimits::default(),
+                query.canonical,
+            )
+            .await?;
+        crate::answer_meter::meter_result(&answer, &BoundedAnswerLimits::default())?;
+        Ok(answer)
     }
 
     /// Resolve a dispatched plan answer.
@@ -342,7 +345,7 @@ impl TransactionContext {
         plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
         answer: QueryResult,
     ) -> Result<crate::query_plan_exec::PlanAnswer> {
-        crate::query_plan_exec::resolve(plan.operation(), answer).map_err(plan_diagnostic_error)
+        crate::query_plan_exec::resolve_plan(plan, answer).map_err(plan_diagnostic_error)
     }
 
     /// Export the schema under this transaction's provider-side schema fence,
@@ -1254,7 +1257,7 @@ mod tests {
         let error = context
             .query_v2_bounded(
                 "match $x isa thing; fetch { iid: iid($x) };",
-                QueryV2AnswerLimits {
+                AnswerLimits {
                     answer: BoundedAnswerLimits {
                         cancellation,
                         ..BoundedAnswerLimits::default()
@@ -1276,7 +1279,7 @@ mod tests {
         let stats = context
             .query_v2_bounded(
                 "match $x isa thing; fetch { iid: iid($x) };",
-                QueryV2AnswerLimits::default(),
+                AnswerLimits::default(),
                 &mut consumer,
             )
             .await

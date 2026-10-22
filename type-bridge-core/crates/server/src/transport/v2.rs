@@ -39,7 +39,7 @@ use type_bridge_orm::query_v2_remote::{
     RemoteReplySigningKey, encode_unbound_remote_failure_v2, execute_admitted_remote_request_v2,
     preflight_remote_request_v2,
 };
-use type_bridge_orm::session::backend::{MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryV2AnswerLimits};
+use type_bridge_orm::session::backend::{AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION};
 use type_bridge_orm::session::database::Database;
 use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
@@ -186,7 +186,7 @@ impl RemoteReplayStore for InMemoryReplayStore {
 pub struct V2QueryState {
     pub(super) advertisement: RemoteCapabilities,
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
-    pub(super) ceilings: QueryV2AnswerLimits,
+    pub(super) ceilings: AnswerLimits,
     pub(super) database: Database,
     pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
@@ -209,7 +209,7 @@ impl V2QueryState {
     /// Construct fail-closed V2 state with mandatory execution/replay bounds.
     pub fn new(
         advertised: CapabilitySet,
-        ceilings: QueryV2AnswerLimits,
+        ceilings: AnswerLimits,
         database: Database,
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
@@ -234,7 +234,7 @@ impl V2QueryState {
     /// cannot be inferred from missing control facts on a managed database.
     pub fn new_query_only(
         advertised: CapabilitySet,
-        ceilings: QueryV2AnswerLimits,
+        ceilings: AnswerLimits,
         database: Database,
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
@@ -256,7 +256,7 @@ impl V2QueryState {
     #[allow(clippy::too_many_arguments)]
     fn new_with_control_policy(
         mut advertised: CapabilitySet,
-        ceilings: QueryV2AnswerLimits,
+        ceilings: AnswerLimits,
         database: Database,
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
@@ -2273,7 +2273,7 @@ mod tests {
         let query = Arc::new(
             V2QueryState::new_query_only(
                 advertised,
-                QueryV2AnswerLimits::default(),
+                AnswerLimits::default(),
                 database,
                 authority.declared,
                 authority.delta_context,
@@ -2306,7 +2306,7 @@ mod tests {
         let database = Database::with_backend(Box::new(backend), "server-v2-profile-patch");
         let state = V2QueryState::new_query_only(
             CapabilitySet::new(),
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             authority.declared,
             authority.delta_context,
@@ -3538,7 +3538,7 @@ mod tests {
 
         let error = match V2QueryState::new_query_only(
             advertised,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             authority.declared,
             authority.delta_context,

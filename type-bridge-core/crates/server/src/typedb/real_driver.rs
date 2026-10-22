@@ -237,9 +237,8 @@ impl From<runtime::RuntimeError> for PipelineError {
             runtime::RuntimeError::Connection(message) => Self::Connection(message),
             runtime::RuntimeError::QueryExecution(message) => Self::QueryExecution(message),
             runtime::RuntimeError::Transaction(message) => Self::QueryExecution(message),
-            error @ runtime::RuntimeError::ResourceLimit { .. } => {
-                Self::QueryExecution(error.to_string())
-            }
+            error @ (runtime::RuntimeError::ResourceLimit { .. }
+            | runtime::RuntimeError::AnswerLimit { .. }) => Self::QueryExecution(error.to_string()),
             error @ runtime::RuntimeError::AnswerConsumer => Self::Internal(error.to_string()),
         }
     }

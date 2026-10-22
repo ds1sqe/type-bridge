@@ -31,7 +31,7 @@ use type_bridge_orm::query_v2_prepared::{
     PendingRemoteQueryV2, QueryAuthority, decode_remote_capabilities, execute_prepared_local,
     prepare_remote_query_v2, query_v2_host_string_unicode_error,
 };
-use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
+use type_bridge_orm::session::backend::{AnswerLimits, BoundedAnswerLimits};
 use type_bridge_schema::{
     MAX_SCHEMA_AUTHORITY_BYTES, SchemaAuthorityError, SchemaAuthorityErrorCode,
     decode_schema_authority, schema_authority_capability_vocabulary,
@@ -436,7 +436,7 @@ pub(crate) fn python_optional_limit(
     value.map(python_limit).transpose()
 }
 
-fn local_limits(deadline_ms: Option<&Bound<'_, PyAny>>) -> PyResult<QueryV2AnswerLimits> {
+fn local_limits(deadline_ms: Option<&Bound<'_, PyAny>>) -> PyResult<AnswerLimits> {
     let deadline = checked_remote_deadline(
         python_optional_limit(deadline_ms).map_err(|diagnostic| value_error(&diagnostic))?,
     )
@@ -448,12 +448,12 @@ fn local_limits(deadline_ms: Option<&Bound<'_, PyAny>>) -> PyResult<QueryV2Answe
     })
     .transpose()
     .map_err(|diagnostic| value_error(&diagnostic))?;
-    Ok(QueryV2AnswerLimits {
+    Ok(AnswerLimits {
         answer: BoundedAnswerLimits {
             deadline,
             ..BoundedAnswerLimits::default()
         },
-        ..QueryV2AnswerLimits::default()
+        ..AnswerLimits::default()
     })
 }
 

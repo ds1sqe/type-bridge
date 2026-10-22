@@ -47,8 +47,8 @@ use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResour
 use crate::query_plan_exec::PlanAnswer;
 use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::{
-    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
-    BoundedAnswerReader, BoundedAnswerStats, QueryResult, QueryV2AnswerLimits,
+    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits,
+    BoundedAnswerLimits, BoundedAnswerReader, BoundedAnswerStats, QueryResult,
 };
 use crate::session::database::DatabaseExecutionIdentity;
 use crate::session::{Database, TransactionContext, TxType};
@@ -2690,7 +2690,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<QueryResult, SdkExecutionDiagnostic> {
         control.check(type_id)?;
         ledger.charge_statement(u64::try_from(query.len()).unwrap_or(u64::MAX))?;
-        let limits = QueryV2AnswerLimits {
+        let limits = AnswerLimits {
             answer: BoundedAnswerLimits {
                 max_items: ledger.remaining_items(),
                 max_bytes: ledger.remaining_bytes(),
@@ -5306,7 +5306,7 @@ async fn execute_write_rows(
         .and_then(|answer| TransactionContext::resolve_plan(plan, answer))
         .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id))
         .and_then(|answer| match answer {
-            PlanAnswer::Rows(rows) => Ok(rows),
+            PlanAnswer::Documents(rows) => Ok(rows),
             _ => Err(integrity_at_type(
                 "provider_identity_answer_invalid",
                 "The provider identity query returned an unexpected answer kind",
@@ -5871,7 +5871,7 @@ mod tests {
         fn query_v2_bounded<'a>(
             &'a mut self,
             _typeql: &'a str,
-            limits: QueryV2AnswerLimits,
+            limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, crate::Result<BoundedAnswerStats>> {
             self.state.lock().unwrap().bounded_reads += 1;
@@ -5882,7 +5882,7 @@ mod tests {
             &'a mut self,
             _typeql: &'a str,
             _rows: GivenRowsSpec,
-            limits: QueryV2AnswerLimits,
+            limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, crate::Result<BoundedAnswerStats>> {
             self.state.lock().unwrap().bounded_given += 1;
