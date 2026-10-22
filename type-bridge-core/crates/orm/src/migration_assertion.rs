@@ -23,8 +23,8 @@ use type_bridge_query::{BindingDomain, RowSchema, ValidatedMigrationAssertionPla
 use crate::error::OrmError;
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::session::backend::{
-    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits,
-    BoundedAnswerStats, BoxFuture, QueryV2AnswerLimits, TransactionOps,
+    AnswerCancellation, AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits,
+    BoundedAnswerLimits, BoundedAnswerStats, BoxFuture, TransactionOps,
 };
 use crate::session::transaction::OwnedTransaction as Transaction;
 
@@ -240,7 +240,7 @@ pub(crate) trait AssertionProviderCall: Send {
     fn query_v2_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_bounded(typeql, limits.answer, consumer)
@@ -250,7 +250,7 @@ pub(crate) trait AssertionProviderCall: Send {
         &'a mut self,
         typeql: &'a str,
         rows: crate::session::backend::GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.query_with_rows_bounded(typeql, rows, limits.answer, consumer)
@@ -289,7 +289,7 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
     fn query_v2_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.transaction.query_v2_bounded(typeql, limits, consumer)
@@ -299,7 +299,7 @@ impl<T: TransactionOps + ?Sized> AssertionProviderCall for TransactionAssertionP
         &'a mut self,
         typeql: &'a str,
         rows: crate::session::backend::GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.transaction
@@ -383,7 +383,7 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
     let provider_result = provider
         .query_v2_bounded(
             lowered.typeql(),
-            QueryV2AnswerLimits {
+            AnswerLimits {
                 answer: BoundedAnswerLimits {
                     max_items: 1,
                     // `limit 1` owns the finite provider ceiling. Keep the
@@ -1260,7 +1260,7 @@ mod tests {
         fn query_v2_bounded<'a>(
             &'a mut self,
             typeql: &'a str,
-            limits: QueryV2AnswerLimits,
+            limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
             self.v2_calls += 1;

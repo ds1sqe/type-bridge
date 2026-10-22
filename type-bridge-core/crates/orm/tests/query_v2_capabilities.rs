@@ -36,7 +36,7 @@ use type_bridge_orm::query_v2_remote::{
     RemoteReplySigningKey, decode_remote_outcome_v2, encode_remote_request_v2,
     encode_remote_request_v2_at, preflight_remote_request_v2, preflight_remote_request_v2_at,
 };
-use type_bridge_orm::session::backend::QueryV2AnswerLimits;
+use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_query::MigrationAssertionValidationContext;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
 
@@ -400,7 +400,7 @@ fn admission_rejects_expiry_and_restarted_epoch_before_provider_construction() {
         &request,
         &context,
         &advertisement,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW_MS,
     )
     .map(|_| ())
@@ -409,7 +409,7 @@ fn admission_rejects_expiry_and_restarted_epoch_before_provider_construction() {
         &request,
         &context,
         &advertisement,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW_MS - MAX_REMOTE_CLOCK_SKEW_MS,
     )
     .expect("maximum documented skew is admitted");
@@ -424,7 +424,7 @@ fn admission_rejects_expiry_and_restarted_epoch_before_provider_construction() {
         &request,
         &context,
         &advertisement,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW_MS + 1_000,
     )
     .map(|_| ())
@@ -444,7 +444,7 @@ fn admission_rejects_expiry_and_restarted_epoch_before_provider_construction() {
         &request,
         &context,
         &restarted,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW_MS,
     )
     .map(|_| ())
@@ -572,14 +572,10 @@ fn preflight_rejects_multi_row_batches_the_executor_cannot_transport() {
     let second = rows[0].clone();
     rows.push(second);
     let forged = serde_json::to_vec(&forged).expect("forged request bytes");
-    let rejection = preflight_remote_request_v2(
-        &forged,
-        &context,
-        &without_given,
-        QueryV2AnswerLimits::default(),
-    )
-    .map(|_| ())
-    .expect_err("admission must fail without the transport capability");
+    let rejection =
+        preflight_remote_request_v2(&forged, &context, &without_given, AnswerLimits::default())
+            .map(|_| ())
+            .expect_err("admission must fail without the transport capability");
     assert_eq!(
         rejection.diagnostic_code(),
         "unsupported_required_capability"
@@ -601,7 +597,7 @@ fn preflight_rejects_multi_row_batches_the_executor_cannot_transport() {
         pending.request_bytes(),
         &context,
         &advertised,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
     )
     .map(|_| ())
     .expect("advertised transport admits the request");
@@ -666,7 +662,7 @@ fn temporal_batches_admit_and_provider_invalid_values_reject_on_both_remote_pref
         &temporal_request,
         &context,
         &advertised,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW,
     )
     .map(|_| ())
@@ -702,7 +698,7 @@ fn temporal_batches_admit_and_provider_invalid_values_reject_on_both_remote_pref
         &duration_request,
         &context,
         &advertised,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW,
     )
     .map(|_| ())
@@ -748,7 +744,7 @@ fn temporal_batches_admit_and_provider_invalid_values_reject_on_both_remote_pref
         &forged,
         &context,
         &advertised,
-        QueryV2AnswerLimits::default(),
+        AnswerLimits::default(),
         NOW,
     )
     .map(|_| ())

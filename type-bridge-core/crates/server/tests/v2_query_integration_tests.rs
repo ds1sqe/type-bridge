@@ -44,7 +44,7 @@ use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_orm::TxType;
 use type_bridge_orm::query_v2_remote::{decode_remote_outcome_v2, encode_remote_request_v2};
-use type_bridge_orm::session::backend::QueryV2AnswerLimits;
+use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::{
     ConnectOptions, SecureConnectOptions, delete_database_secure, ensure_database_exists,
@@ -547,7 +547,7 @@ async fn v2_envelope_endpoints_serve_beside_v1() {
     let state = Arc::new(
         V2QueryState::new_query_only(
             query_plan_v2_capability_vocabulary(),
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             declared,
             delta_context,

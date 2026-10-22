@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::backend::{
-    BoundedAnswerLimits, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TxType,
+    AnswerLimits, BoundedAnswerLimits, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TxType,
 };
 use super::eager::EagerTransaction;
 use super::staged_proxy::ProxyStaging;
@@ -16,10 +16,10 @@ use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorPathSegment, MatchExecutionLimits,
     ValidatedMatchRequest, ValidatedMatchResult,
 };
-pub use crate::query_plan_exec::{PlanAnswer, staged_documents_unsupported};
+pub use crate::query_plan_exec::PlanAnswer;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::failure::Failure;
-use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
+use type_bridge_contract::query_plan::v3::QueryPlanV3;
 use type_bridge_contract::query_remote_v3::{
     SdkDiagnosticProjectionV3, StagedPlanV3, StagedRequestV3,
 };
@@ -64,7 +64,7 @@ pub struct TransactionOptions {
     pub kind: Option<TransactionKind>,
     /// Limits enforced while reading each answer. An absolute deadline supplied
     /// here is captured as a relative timeout when this transaction is created.
-    pub answer_limits: BoundedAnswerLimits,
+    pub answer_limits: AnswerLimits,
     /// Server-side transaction lifetime and schema-lock acquisition timeout.
     pub deadline: Option<Duration>,
     /// Close without committing, retaining answers only.
@@ -79,18 +79,17 @@ impl TransactionOptions {
         self
     }
     /// Set answer limits.
-    pub fn with_answer_limits(mut self, limits: BoundedAnswerLimits) -> Self {
-        if let Some(deadline) = limits.deadline {
+    pub fn with_answer_limits(mut self, limits: impl Into<AnswerLimits>) -> Self {
+        let mut limits = limits.into();
+        if let Some(deadline) = limits.answer.deadline {
             let timeout = deadline.saturating_duration_since(Instant::now());
             self.answer_timeout = Some(
                 self.answer_timeout
                     .map_or(timeout, |existing| existing.min(timeout)),
             );
         }
-        self.answer_limits = BoundedAnswerLimits {
-            deadline: None,
-            ..limits
-        };
+        limits.answer.deadline = None;
+        self.answer_limits = limits;
         self
     }
     /// Set a relative local answer timeout for each atomic execution.
@@ -393,7 +392,7 @@ enum Slot {
     Query(AnswerState<QueryResult>),
     Plan {
         state: AnswerState<PlanAnswer>,
-        operation: Operation,
+        plan: Box<QueryPlanV3>,
     },
     Program(Box<dyn StagedProgram>),
 }
@@ -422,8 +421,8 @@ impl Slot {
     fn resolve(&self, answer: QueryResult) -> Result<Resolved, Diagnostic> {
         match self {
             Self::Query(_) => Ok(Resolved::Query(answer)),
-            Self::Plan { operation, .. } => {
-                crate::query_plan_exec::resolve(*operation, answer).map(Resolved::Plan)
+            Self::Plan { plan, .. } => {
+                crate::query_plan_exec::resolve_plan(plan, answer).map(Resolved::Plan)
             }
             Self::Program(_) => unreachable!("programs resolve their own answers"),
         }
@@ -478,7 +477,7 @@ impl Drop for Execution {
 }
 
 /// Keep a malformed plan answer's structured code in the commit error.
-fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
+pub(crate) fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
     MatchError::new(
         MatchErrorCategory::ResultDecode,
         diagnostic.code().as_str(),
@@ -666,7 +665,7 @@ impl Transaction {
         Ok(Self::new_proxy(proxy, options))
     }
     fn with_backend(backend: Backend, database: String, mut options: TransactionOptions) -> Self {
-        if let Some(deadline) = options.answer_limits.deadline.take() {
+        if let Some(deadline) = options.answer_limits.answer.deadline.take() {
             let timeout = deadline.saturating_duration_since(Instant::now());
             options.answer_timeout = Some(
                 options
@@ -744,7 +743,7 @@ impl Transaction {
             remote,
             slot: Slot::Plan {
                 state: Arc::clone(&state),
-                operation: plan.operation(),
+                plan: Box::new(plan.clone()),
             },
         });
         Ok(Pending { state })
@@ -853,104 +852,110 @@ impl Transaction {
             (Some(left), Some(right)) => Some(left.min(right)),
             (left, right) => left.or(right),
         };
-        let mut answer_limits = self.options.answer_limits.clone();
-        let result = async {
-            answer_limits.deadline = timeout
-                .map(|timeout| {
-                    Instant::now().checked_add(timeout).ok_or_else(|| {
-                        CommitError::lifecycle(PendingError::Failed {
-                            op_index: None,
-                            message: "Transaction deadline exceeds the supported range".into(),
-                            failure: None,
-                            context: Default::default(),
+        let mut answer_limits = self.options.answer_limits.answer.clone();
+        let result =
+            async {
+                answer_limits.deadline = timeout
+                    .map(|timeout| {
+                        Instant::now().checked_add(timeout).ok_or_else(|| {
+                            CommitError::lifecycle(PendingError::Failed {
+                                op_index: None,
+                                message: "Transaction deadline exceeds the supported range".into(),
+                                failure: None,
+                                context: Default::default(),
+                            })
                         })
                     })
-                })
-                .transpose()?;
-            let opened = backend
-                .open_with_options(&self.database, kind.into(), &self.options)
-                .await
-                .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
-            // A program borrows the provider as an owned transaction and
-            // hands it back; `None` means it was consumed.
-            let mut provider = Some(opened);
-            let server_version = backend.server_version();
-            let mut answers = Vec::with_capacity(execution.0.len());
-            for (index, item) in execution.0.iter_mut().enumerate() {
-                let resolved = match (&item.query, provider.as_mut()) {
-                    (_, None) => Err(provider_consumed()),
-                    (Some(query), Some(ops)) => {
-                        let result = ops
-                            .query_materialized_bounded(
-                                &query.typeql,
-                                query.rows.clone(),
-                                answer_limits.clone(),
-                                query.canonical,
-                            )
-                            .await;
-                        // Plan answers resolve before the provider commit, so a
-                        // malformed answer aborts instead of surfacing after writes.
-                        result
-                            .and_then(|answer| item.slot.resolve(answer).map_err(plan_answer_error))
-                    }
-                    (None, Some(_)) => {
-                        let Slot::Program(program) = &mut item.slot else {
-                            unreachable!("only programs stage without a query")
-                        };
-                        let ops = provider.take().expect("the provider was just matched");
-                        let mut owned = OwnedTransaction::from_eager(EagerTransaction::new(
-                            ops,
-                            kind.into(),
-                            server_version,
-                        ));
-                        // The program's own budget reports precise limits; this
-                        // race keeps the commit's cancellation and deadline
-                        // binding between its statements too.
-                        let ran = bounded(
-                            &answer_limits,
-                            program.run(&mut owned, answer_limits.clone()),
-                        )
-                        .await;
-                        provider = owned.into_provider();
-                        ran.map(|()| Resolved::Program)
-                    }
-                };
-                match resolved {
-                    Ok(answer) => answers.push(answer),
-                    Err(error) => {
-                        if let Some(ops) = provider.as_mut() {
-                            if kind != TransactionKind::Read {
-                                let _ = ops.rollback().await;
-                            }
-                            let _ = ops.close().await;
-                        }
-                        return Err(CommitError::new(
-                            error.into(),
-                            Some(index),
-                            item.failure_context(),
-                        ));
-                    }
-                }
-            }
-            let provider = provider.as_mut().ok_or_else(|| {
-                CommitError::new(provider_consumed().into(), None, Default::default())
-            })?;
-            if self.options.never_commit || kind == TransactionKind::Read {
-                provider
-                    .close()
+                    .transpose()?;
+                let opened = backend
+                    .open_with_options(&self.database, kind.into(), &self.options)
                     .await
                     .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
-            } else {
-                let commit = provider.commit_classified().await;
-                let close = provider.close().await;
-                commit.map_err(|error| CommitError::new(error, None, Default::default()))?;
-                if close.is_err() {
-                    tracing::warn!(code = "transaction_close_failed");
+                // A program borrows the provider as an owned transaction and
+                // hands it back; `None` means it was consumed.
+                let mut provider = Some(opened);
+                let server_version = backend.server_version();
+                let mut answers = Vec::with_capacity(execution.0.len());
+                for (index, item) in execution.0.iter_mut().enumerate() {
+                    let resolved =
+                        match (&item.query, provider.as_mut()) {
+                            (_, None) => Err(provider_consumed()),
+                            (Some(query), Some(ops)) => {
+                                let result = ops
+                                    .query_materialized_bounded(
+                                        &query.typeql,
+                                        query.rows.clone(),
+                                        AnswerLimits {
+                                            answer: answer_limits.clone(),
+                                            ..self.options.answer_limits.clone()
+                                        },
+                                        query.canonical,
+                                    )
+                                    .await;
+                                // Plan answers resolve before the provider commit, so a
+                                // malformed answer aborts instead of surfacing after writes.
+                                result.and_then(|answer| {
+                                    if matches!(item.slot, Slot::Plan { .. }) {
+                                        crate::answer_meter::meter_result(&answer, &answer_limits)?;
+                                    }
+                                    item.slot.resolve(answer).map_err(plan_answer_error)
+                                })
+                            }
+                            (None, Some(_)) => {
+                                let Slot::Program(program) = &mut item.slot else {
+                                    unreachable!("only programs stage without a query")
+                                };
+                                let ops = provider.take().expect("the provider was just matched");
+                                let mut owned = OwnedTransaction::from_eager(
+                                    EagerTransaction::new(ops, kind.into(), server_version),
+                                );
+                                // The program's own budget reports precise limits; this
+                                // race keeps the commit's cancellation and deadline
+                                // binding between its statements too.
+                                let ran = bounded(
+                                    &answer_limits,
+                                    program.run(&mut owned, answer_limits.clone()),
+                                )
+                                .await;
+                                provider = owned.into_provider();
+                                ran.map(|()| Resolved::Program)
+                            }
+                        };
+                    match resolved {
+                        Ok(answer) => answers.push(answer),
+                        Err(error) => {
+                            if let Some(ops) = provider.as_mut() {
+                                if kind != TransactionKind::Read {
+                                    let _ = ops.rollback().await;
+                                }
+                                let _ = ops.close().await;
+                            }
+                            return Err(CommitError::new(
+                                error.into(),
+                                Some(index),
+                                item.failure_context(),
+                            ));
+                        }
+                    }
                 }
+                let provider = provider.as_mut().ok_or_else(|| {
+                    CommitError::new(provider_consumed().into(), None, Default::default())
+                })?;
+                if self.options.never_commit || kind == TransactionKind::Read {
+                    provider.close().await.map_err(|error| {
+                        CommitError::new(error.into(), None, Default::default())
+                    })?;
+                } else {
+                    let commit = provider.commit_classified().await;
+                    let close = provider.close().await;
+                    commit.map_err(|error| CommitError::new(error, None, Default::default()))?;
+                    if close.is_err() {
+                        tracing::warn!(code = "transaction_close_failed");
+                    }
+                }
+                Ok(answers)
             }
-            Ok(answers)
-        }
-        .await;
+            .await;
         match result {
             Ok(answers) => {
                 for (item, answer) in execution.0.iter_mut().zip(answers) {
@@ -1093,6 +1098,7 @@ impl Transaction {
 mod tests {
     use super::super::backend::{BoxFuture, TransactionOps};
     use super::*;
+    use type_bridge_contract::query_plan::v3::Operation;
 
     fn signed(diagnostic: &SdkExecutionDiagnostic) -> SdkDiagnosticProjectionV3 {
         let host = serde_json::to_value(diagnostic.host_json()).expect("host json");

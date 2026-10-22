@@ -43,7 +43,7 @@ use crate::query_v2::{
     QueryV2ValidatedItemObserver, execute_with_provider_observer, failure,
     preflight_invocation_transport,
 };
-use crate::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
+use crate::session::backend::{AnswerLimits, BoundedAnswerLimits};
 
 /// Process- or deployment-epoch Ed25519 key used only for V2 reply authentication.
 #[derive(Clone)]
@@ -321,7 +321,7 @@ pub struct AdmittedRemoteRequestV2 {
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
     byte_budget: u64,
     invocation: QueryInvocation,
-    limits: QueryV2AnswerLimits,
+    limits: AnswerLimits,
     max_statements: u8,
     nonce: String,
     plan_fingerprint: QueryPlanFingerprint,
@@ -523,7 +523,7 @@ pub fn preflight_remote_request_v2(
     request_bytes: &[u8],
     context: &MigrationAssertionValidationContext<'_>,
     advertisement: &RemoteCapabilities,
-    ceilings: QueryV2AnswerLimits,
+    ceilings: AnswerLimits,
 ) -> Result<AdmittedRemoteRequestV2, RemoteRejectionV2> {
     let clock = PreflightClockSample::now()
         .map_err(|diagnostic| RemoteRejectionV2::new(None, diagnostic))?;
@@ -539,7 +539,7 @@ pub fn preflight_remote_request_v2_at(
     request_bytes: &[u8],
     context: &MigrationAssertionValidationContext<'_>,
     advertisement: &RemoteCapabilities,
-    ceilings: QueryV2AnswerLimits,
+    ceilings: AnswerLimits,
     now_unix_ms: u64,
 ) -> Result<AdmittedRemoteRequestV2, RemoteRejectionV2> {
     preflight_remote_request_v2_with_clock(
@@ -562,7 +562,7 @@ fn preflight_remote_request_v2_with_clock(
     request_bytes: &[u8],
     context: &MigrationAssertionValidationContext<'_>,
     advertisement: &RemoteCapabilities,
-    ceilings: QueryV2AnswerLimits,
+    ceilings: AnswerLimits,
     clock: PreflightClockSample,
 ) -> Result<AdmittedRemoteRequestV2, RemoteRejectionV2> {
     // The advertisement is this executor's statement of its limits, so it
@@ -966,10 +966,10 @@ fn minimum_signed_success_response_len_v2(
 // ceilings of the hosting process.
 fn tighten_limits_v2(
     caller: RemoteLimitsV2,
-    ceilings: QueryV2AnswerLimits,
+    ceilings: AnswerLimits,
     advertised: QueryExecutionResourceLimits,
     request_expiry: Instant,
-) -> (QueryV2AnswerLimits, RemoteReplyDecodeLimitsV2) {
+) -> (AnswerLimits, RemoteReplyDecodeLimitsV2) {
     let max_items = ceilings
         .answer
         .max_items
@@ -984,7 +984,7 @@ fn tighten_limits_v2(
         .max_bytes
         .min(caller.max_bytes)
         .min(advertised.bytes);
-    let limits = QueryV2AnswerLimits {
+    let limits = AnswerLimits {
         answer: BoundedAnswerLimits {
             max_items,
             max_bytes,
@@ -1119,8 +1119,8 @@ mod tests {
     use crate::session::backend::AnswerCancellation;
     use type_bridge_contract::limits::{MAX_CANONICAL_COLLECTION_LEN, MAX_REMOTE_ENVELOPE_BYTES};
 
-    fn unbounded_ceiling() -> QueryV2AnswerLimits {
-        QueryV2AnswerLimits {
+    fn unbounded_ceiling() -> AnswerLimits {
+        AnswerLimits {
             answer: BoundedAnswerLimits {
                 max_items: u64::MAX,
                 max_bytes: u64::MAX,
@@ -1139,7 +1139,7 @@ mod tests {
         let now = Instant::now();
         let ceiling_deadline = now + Duration::from_millis(250);
         let request_expiry = now + Duration::from_secs(1);
-        let ceilings = QueryV2AnswerLimits {
+        let ceilings = AnswerLimits {
             answer: BoundedAnswerLimits {
                 max_items: 23,
                 max_bytes: 29,

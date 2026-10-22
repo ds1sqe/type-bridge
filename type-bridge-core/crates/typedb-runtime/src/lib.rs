@@ -108,6 +108,19 @@ pub enum RuntimeError {
         message: &'static str,
     },
 
+    /// A row or byte ceiling with its measured counter.
+    #[error("Resource limit [{code}]: {message}")]
+    AnswerLimit {
+        /// Stable resource code.
+        code: &'static str,
+        /// Human-readable diagnostic.
+        message: &'static str,
+        /// Counter including the refused item.
+        actual: u64,
+        /// Configured ceiling.
+        maximum: u64,
+    },
+
     /// The higher-level answer decoder rejected one streamed item.
     #[error("Answer consumer rejected a streamed provider item")]
     AnswerConsumer,
@@ -1107,6 +1120,7 @@ impl SecureConnectError {
                 | RuntimeError::QueryExecution(_)
                 | RuntimeError::Transaction(_)
                 | RuntimeError::ResourceLimit { .. }
+                | RuntimeError::AnswerLimit { .. }
                 | RuntimeError::AnswerConsumer,
             ) => None,
         }
@@ -1138,7 +1152,9 @@ fn runtime_trace_failure_code(error: &RuntimeError) -> &'static str {
         RuntimeError::Connection(_) => "typedb_runtime_connection_failed",
         RuntimeError::QueryExecution(_) => "typedb_runtime_query_failed",
         RuntimeError::Transaction(_) => "typedb_runtime_transaction_failed",
-        RuntimeError::ResourceLimit { .. } => "typedb_runtime_resource_limit",
+        RuntimeError::ResourceLimit { .. } | RuntimeError::AnswerLimit { .. } => {
+            "typedb_runtime_resource_limit"
+        }
         RuntimeError::AnswerConsumer => "typedb_runtime_answer_consumer_failed",
     }
 }
@@ -2965,7 +2981,9 @@ fn runtime_accept(
             message: "processed provider item counter overflowed",
         })?;
     if next_items > limits.max_items {
-        return Err(RuntimeError::ResourceLimit {
+        return Err(RuntimeError::AnswerLimit {
+            actual: next_items,
+            maximum: limits.max_items,
             code: "processed_item_limit",
             message: "provider answer exceeded the processed-item ceiling",
         });
@@ -2991,7 +3009,9 @@ fn runtime_accept(
                 message: "provider answer byte counter overflowed",
             })?;
     if next_bytes > limits.max_bytes {
-        return Err(RuntimeError::ResourceLimit {
+        return Err(RuntimeError::AnswerLimit {
+            actual: next_bytes,
+            maximum: limits.max_bytes,
             code: "response_byte_limit",
             message: "provider answer exceeded the response-byte ceiling",
         });
@@ -3151,7 +3171,7 @@ impl RuntimeTransaction {
         &mut self,
         typeql: &str,
         rows: Option<GivenRowsSpec>,
-        limits: RuntimeAnswerLimits,
+        limits: QueryV2RuntimeAnswerLimits,
         canonical: bool,
     ) -> Result<QueryResult> {
         let mut items = Vec::new();
@@ -3160,33 +3180,18 @@ impl RuntimeTransaction {
             Ok(RuntimeAnswerControl::Continue)
         };
         let stats = match (rows, canonical) {
-            (None, false) => self.query_bounded(typeql, limits, &mut consumer).await?,
-            (Some(rows), false) => {
-                self.query_with_rows_bounded(typeql, rows, limits, &mut consumer)
+            (None, false) => {
+                self.query_bounded(typeql, limits.answer, &mut consumer)
                     .await?
             }
-            (None, true) => {
-                self.query_v2_bounded(
-                    typeql,
-                    QueryV2RuntimeAnswerLimits {
-                        answer: limits,
-                        max_collection_members: u64::MAX,
-                    },
-                    &mut consumer,
-                )
-                .await?
+            (Some(rows), false) => {
+                self.query_with_rows_bounded(typeql, rows, limits.answer, &mut consumer)
+                    .await?
             }
+            (None, true) => self.query_v2_bounded(typeql, limits, &mut consumer).await?,
             (Some(rows), true) => {
-                self.query_v2_with_rows_bounded(
-                    typeql,
-                    rows,
-                    QueryV2RuntimeAnswerLimits {
-                        answer: limits,
-                        max_collection_members: u64::MAX,
-                    },
-                    &mut consumer,
-                )
-                .await?
+                self.query_v2_with_rows_bounded(typeql, rows, limits, &mut consumer)
+                    .await?
             }
         };
         Ok(materialize_runtime_answer(stats, items))
@@ -5212,7 +5217,7 @@ mod tests {
         .unwrap_err();
         assert!(matches!(
             error,
-            RuntimeError::ResourceLimit {
+            RuntimeError::AnswerLimit {
                 code: "processed_item_limit",
                 ..
             }
@@ -5269,7 +5274,7 @@ mod tests {
         assert_eq!(accepted, 1);
         assert!(matches!(
             error,
-            RuntimeError::ResourceLimit {
+            RuntimeError::AnswerLimit {
                 code: "processed_item_limit",
                 ..
             }

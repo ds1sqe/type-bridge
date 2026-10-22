@@ -33,8 +33,8 @@ use crate::projected_model::{
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::runtime_projection::InstalledRuntimeProjection;
 use crate::session::backend::{
-    AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
-    BoundedAnswerStats, GivenRowsSpec, GivenValue, QueryV2AnswerLimits,
+    AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits, BoundedAnswerLimits,
+    BoundedAnswerReader, BoundedAnswerStats, GivenRowsSpec, GivenValue,
 };
 use crate::session::context::TransactionContextMutationLease;
 use crate::session::database::DatabaseExecutionIdentity;
@@ -2046,7 +2046,7 @@ async fn dispatch_rows(
     max_bytes: u64,
 ) -> std::result::Result<BoundedAnswerStats, SdkExecutionDiagnostic> {
     prepared.check_control()?;
-    let limits = QueryV2AnswerLimits {
+    let limits = AnswerLimits {
         answer: BoundedAnswerLimits {
             max_items: max_items.min(prepared.limits().items),
             max_bytes,

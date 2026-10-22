@@ -48,7 +48,7 @@ use crate::query_v2_remote::{
     remote_outcome_v2,
 };
 use crate::session::backend::{
-    AnswerCancellation, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult, QueryV2AnswerLimits,
+    AnswerCancellation, AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION, QueryResult,
 };
 use crate::session::database::{Database, DatabaseExecutionIdentity};
 
@@ -502,7 +502,7 @@ pub async fn execute_prepared_local(
     authority: &QueryAuthority,
     plan_bytes: &[u8],
     invocation_json: &str,
-    limits: QueryV2AnswerLimits,
+    limits: AnswerLimits,
 ) -> Result<String, Diagnostic> {
     let deadline = limits.answer.deadline;
     let cancellation = limits.answer.cancellation.clone();
@@ -2107,7 +2107,7 @@ mod tests {
             &local_authority,
             &plan,
             &oversized,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("local preparation rejects oversized invocation bytes");
@@ -2206,7 +2206,7 @@ mod tests {
             &local_authority,
             &plan,
             &invocation,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("local no-given provider rejects before authority or transaction work");
@@ -2261,7 +2261,7 @@ mod tests {
             &local_authority,
             &plan,
             &invocation,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("provider-invalid duration must fail before local provider work");
@@ -2299,7 +2299,7 @@ mod tests {
             &authority,
             &plan,
             invocation,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect("close failure must not replace prepared success");
@@ -2320,7 +2320,7 @@ mod tests {
             &authority,
             &plan,
             invocation,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("provider failure remains the primary diagnostic");
@@ -2345,7 +2345,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("foreign live schema must fail before transaction admission");
@@ -2374,7 +2374,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("schema drift after transaction open must stop execution");
@@ -2399,7 +2399,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("malformed live export must fail closed");
@@ -2432,12 +2432,12 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits {
+            AnswerLimits {
                 answer: crate::session::backend::BoundedAnswerLimits {
                     deadline: Some(std::time::Instant::now() + Duration::from_millis(10)),
                     ..crate::session::backend::BoundedAnswerLimits::default()
                 },
-                ..QueryV2AnswerLimits::default()
+                ..AnswerLimits::default()
             },
         )
         .await
@@ -2522,7 +2522,7 @@ mod tests {
                 &authority,
                 &plan,
                 r#"{"operation":"rows","rows":[]}"#,
-                QueryV2AnswerLimits::default(),
+                AnswerLimits::default(),
             )
             .await
             .expect_err(name);
@@ -2571,7 +2571,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect("an exact free control row admits the user query");
@@ -2606,7 +2606,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("a 3.12 authority must not execute against a 3.11 provider");
@@ -2636,7 +2636,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("query-only authority must bind the exact database name");
@@ -2670,7 +2670,7 @@ mod tests {
             &authority,
             &plan,
             r#"{"operation":"rows","rows":[]}"#,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
         )
         .await
         .expect_err("the default backend must fail closed at fenced admission");

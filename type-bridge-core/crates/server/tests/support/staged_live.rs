@@ -28,7 +28,7 @@ use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_core_lib::version::semantic_profile_id;
 use type_bridge_orm::TxType;
-use type_bridge_orm::session::backend::{QueryResult, QueryV2AnswerLimits};
+use type_bridge_orm::session::backend::{AnswerLimits, QueryResult};
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::ConnectOptions;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
@@ -297,7 +297,7 @@ pub async fn proxy_with(
     let state = Arc::new(
         V2QueryState::new_query_only(
             CapabilitySet::new(),
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             declared.clone(),
             delta_context,

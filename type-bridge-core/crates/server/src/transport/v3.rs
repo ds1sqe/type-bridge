@@ -25,22 +25,21 @@ use axum::routing::{get, post};
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::id::TypeId;
+use type_bridge_contract::query_plan::QueryPattern;
 use type_bridge_contract::query_plan::v3::{
-    Operation, Pattern, QueryPlanV3, Stage, WriteReturns, query_plan_v3_capability_vocabulary,
+    Pattern, QueryPlanV3, Stage, query_plan_v3_capability_vocabulary,
 };
-use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteCapabilitiesFingerprint};
 use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3,
+    StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
 };
 use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::lower_remote_query_diagnostic;
 use type_bridge_orm::query_v2_remote::encode_unbound_remote_failure_v2;
-use type_bridge_orm::session::staged::{
-    PendingError, TransactionKind, TransactionOptions, staged_documents_unsupported,
-};
+use type_bridge_orm::session::staged::{PendingError, TransactionKind, TransactionOptions};
 
 use super::v2::{
     ReplayStoreError, V2_PREFLIGHT_SLOTS, V2QueryState, await_before_deadline, body_oversized,
@@ -229,20 +228,6 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
             return finish_failed(state, deadline, &ctx, &staged, failure).await;
         }
     };
-    if staged
-        .plans()
-        .iter()
-        .any(|entry| returns_documents(entry.plan()))
-    {
-        return refuse(
-            state,
-            deadline,
-            &ctx,
-            request,
-            staged_documents_unsupported(),
-        )
-        .await;
-    }
     let open_writes = state.query.allow_unauthenticated_staged_writes;
     if kind == TransactionKind::Write && !open_writes {
         let vouched =
@@ -451,10 +436,15 @@ async fn execute_staged(
     // reply is built. The deadline binds as the answer timeout: a provider
     // transaction lifetime is not something every backend supports.
     let requested = staged.limits();
-    let mut limits = state.query.ceilings.answer.clone();
-    limits.max_items = limits.max_items.min(requested.max_items);
-    limits.max_bytes = limits.max_bytes.min(requested.max_bytes);
-    limits.deadline = Some(limits.deadline.map_or(deadline, |own| own.min(deadline)));
+    let mut limits = state.query.ceilings.clone();
+    limits.answer.max_items = limits.answer.max_items.min(requested.max_items);
+    limits.answer.max_bytes = limits.answer.max_bytes.min(requested.max_bytes);
+    limits.answer.deadline = Some(
+        limits
+            .answer
+            .deadline
+            .map_or(deadline, |own| own.min(deadline)),
+    );
     let options = TransactionOptions::default()
         .with_kind(kind)
         .with_answer_limits(limits);
@@ -545,17 +535,6 @@ fn touched_types(plan: &QueryPlanV3) -> Vec<TypeId> {
         }
     }
     types.into_iter().collect()
-}
-
-fn returns_documents(plan: &QueryPlanV3) -> bool {
-    matches!(plan.output(), QueryOutput::Documents { .. })
-        && matches!(
-            plan.operation(),
-            Operation::Rows
-                | Operation::Write {
-                    returns: WriteReturns::Rows
-                }
-        )
 }
 
 fn sdk_invalid(code: &'static str, message: &'static str) -> SdkExecutionDiagnostic {

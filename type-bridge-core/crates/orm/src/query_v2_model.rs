@@ -58,8 +58,8 @@ use crate::query_v2_compatibility::{
     CompatibilityProviderPlan, lower_validated_compatibility_query,
 };
 use crate::session::backend::{
-    AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerStats,
-    MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS, QueryV2AnswerLimits,
+    AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits, BoundedAnswerLimits,
+    BoundedAnswerStats, MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS,
 };
 use crate::session::context::TransactionContext;
 use crate::session::transaction::OwnedTransaction as Transaction;
@@ -184,7 +184,7 @@ pub(crate) async fn execute_validated_model_query_with_statement_limit(
     transaction: &mut Transaction,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: QueryV2AnswerLimits,
+    limits: AnswerLimits,
     reply_limits: RemoteReplyDecodeLimitsV2,
     max_statements: u8,
 ) -> ExecResult<RemoteOutcomeV2> {
@@ -203,7 +203,7 @@ pub(crate) async fn execute_validated_model_query_borrowed(
     context: &TransactionContext,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: QueryV2AnswerLimits,
+    limits: AnswerLimits,
     reply_limits: RemoteReplyDecodeLimitsV2,
     max_statements: u8,
 ) -> ExecResult<RemoteOutcomeV2> {
@@ -222,7 +222,7 @@ async fn execute_validated_model_query_in_target(
     mut transaction: ModelExecutionTarget<'_>,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: QueryV2AnswerLimits,
+    limits: AnswerLimits,
     reply_limits: RemoteReplyDecodeLimitsV2,
     max_statements: u8,
 ) -> ExecResult<RemoteOutcomeV2> {
@@ -380,7 +380,7 @@ struct ExecutionBudget {
 
 impl ExecutionBudget {
     fn new(
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         reply_limits: RemoteReplyDecodeLimitsV2,
         max_statements: u8,
     ) -> Self {

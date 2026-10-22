@@ -18,9 +18,9 @@ pub use runtime::{
 };
 
 use super::backend::{
-    AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerStats, BoxFuture,
-    DriverBackend, GivenRowsSpec, GivenValue, MAX_ERROR_DRAIN_BYTES, MAX_ERROR_DRAIN_ITEMS,
-    QueryResult, QueryV2AnswerLimits, SchemaFencedReadTransaction, TransactionOps, TxType,
+    AnswerConsumer, AnswerControl, AnswerItem, AnswerLimits, BoundedAnswerLimits,
+    BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, GivenValue, MAX_ERROR_DRAIN_BYTES,
+    MAX_ERROR_DRAIN_ITEMS, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
     execute_typed_provider_statement, typed_fetch_provider_statement,
     typed_root_provider_statement, typed_tuple_provider_statement,
 };
@@ -395,17 +395,20 @@ impl TransactionOps for RealTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: AnswerLimits,
         canonical: bool,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
-            let limits = runtime::RuntimeAnswerLimits {
-                max_items: limits.max_items,
-                max_bytes: limits.max_bytes,
-                deadline: limits.deadline,
-                cancellation: runtime::RuntimeAnswerCancellation::from_shared(
-                    limits.cancellation.shared(),
-                ),
+            let limits = runtime::QueryV2RuntimeAnswerLimits {
+                max_collection_members: limits.max_collection_members,
+                answer: runtime::RuntimeAnswerLimits {
+                    max_items: limits.answer.max_items,
+                    max_bytes: limits.answer.max_bytes,
+                    deadline: limits.answer.deadline,
+                    cancellation: runtime::RuntimeAnswerCancellation::from_shared(
+                        limits.answer.cancellation.shared(),
+                    ),
+                },
             };
             self.inner
                 .query_materialized_bounded(typeql, rows.map(runtime_given_rows), limits, canonical)
@@ -469,10 +472,10 @@ impl TransactionOps for RealTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        let QueryV2AnswerLimits {
+        let AnswerLimits {
             answer: limits,
             max_collection_members,
         } = limits;
@@ -573,10 +576,10 @@ impl TransactionOps for RealTransaction {
     fn query_v2_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        let QueryV2AnswerLimits {
+        let AnswerLimits {
             answer: limits,
             max_collection_members,
         } = limits;
@@ -1064,6 +1067,16 @@ impl From<runtime::RuntimeError> for OrmError {
                     .at(MatchErrorPathSegment::ProviderEvidence)
                     .into()
             }
+            runtime::RuntimeError::AnswerLimit {
+                code,
+                message,
+                actual,
+                maximum,
+            } => MatchError::new(MatchErrorCategory::ResourceLimit, code, message)
+                .at(MatchErrorPathSegment::ProviderEvidence)
+                .with_detail("actual", actual)
+                .with_detail("maximum", maximum)
+                .into(),
             runtime::RuntimeError::AnswerConsumer => {
                 Self::QueryExecution("answer consumer rejected provider data".into())
             }

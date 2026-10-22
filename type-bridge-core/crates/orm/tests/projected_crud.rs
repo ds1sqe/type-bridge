@@ -442,8 +442,8 @@ fn person_document(iid: &str) -> serde_json::Value {
         "_iid": iid,
         "_type": "person",
         "attributes": {
-            "identifier": [{"value": "ada"}],
-            "email": [{"value": "ada@example.test"}]
+            "identifier": "ada",
+            "email": "ada@example.test"
         }
     })
 }
@@ -452,11 +452,12 @@ fn membership_document(iid: &str) -> serde_json::Value {
     serde_json::json!({
         "_iid": iid,
         "_type": "membership",
+        "attributes": {},
         "_role_0_iid": "0x10",
         "_role_0_type": "person",
         "_role_0_attributes": {
-            "identifier": [{"value": "ada"}],
-            "email": [{"value": "ada@example.test"}]
+            "identifier": "ada",
+            "email": "ada@example.test"
         }
     })
 }
@@ -465,11 +466,12 @@ fn membership_with_relation_player_document(iid: &str) -> serde_json::Value {
     serde_json::json!({
         "_iid": iid,
         "_type": "membership",
+        "attributes": {},
         "_role_0_iid": "0x11",
         "_role_0_type": "event",
         "_role_0_attributes": {
-            "identifier": [{"value": "event-key"}],
-            "email": [{"value": "event@example.test"}]
+            "identifier": "event-key",
+            "email": "event@example.test"
         }
     })
 }
@@ -479,8 +481,8 @@ fn event_document(iid: &str) -> serde_json::Value {
         "_iid": iid,
         "_type": "event",
         "attributes": {
-            "identifier": [{"value": "event-key"}],
-            "email": [{"value": "event@example.test"}]
+            "identifier": "event-key",
+            "email": "event@example.test"
         }
     })
 }
@@ -603,9 +605,20 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
     let installed = installed_ordered();
     let create = ordered_collaboration_create(&installed).unwrap();
     let (backend, state) = RecordingBackend::new(
-        vec![documents(vec![ordered_collaboration_document(&[
-            "0x10", "0x11",
-        ])])],
+        vec![documents(
+            ["0x10", "0x11"]
+                .map(|iid| {
+                    serde_json::json!({
+                        "_iid": "0x20",
+                        "_type": "collaboration",
+                        "attributes": {},
+                        "_role_0_iid": iid,
+                        "_role_0_type": "person",
+                        "_role_0_attributes": {"identifier": format!("person-{iid}")}
+                    })
+                })
+                .to_vec(),
+        )],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -711,7 +724,7 @@ async fn hydration_failure_after_insert_rolls_back_and_redacts_provider_shape() 
         vec![documents(vec![serde_json::json!({
             "_iid": "0x10",
             "_type": "person",
-            "attributes": {"identifier": [{"value": "ada"}]}
+            "attributes": {"identifier": "ada"}
         })])],
         CommitBehavior::Success,
     );
@@ -723,7 +736,7 @@ async fn hydration_failure_after_insert_rolls_back_and_redacts_provider_shape() 
         .unwrap_err();
 
     assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-    assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_value");
     let rendered = format!("{diagnostic:?} {diagnostic}");
     assert!(!rendered.contains("email"));
     let state = state.lock().unwrap();
@@ -1422,10 +1435,7 @@ async fn polymorphic_key_reference_is_one_disjunctive_write_without_a_lookup() {
 async fn missing_reference_writes_nothing_and_keeps_the_released_diagnostic() {
     let installed = installed_polymorphic();
     let create = party_key_membership(&installed, "absent");
-    let (backend, state) = RecordingBackend::new(
-        vec![RecordingResponse::Result(QueryResult::Rows(vec![]))],
-        CommitBehavior::Success,
-    );
+    let (backend, state) = RecordingBackend::new(vec![documents(vec![])], CommitBehavior::Success);
     let database = Database::with_backend(Box::new(backend), "test");
 
     let diagnostic = ProjectedCrudExecutor::new(&installed)
@@ -1450,10 +1460,18 @@ async fn a_reference_matching_several_things_poisons_the_borrowed_transaction() 
     let installed = installed_polymorphic();
     let create = party_key_membership(&installed, "shared");
     let (backend, state) = RecordingBackend::new(
-        vec![documents(vec![
-            membership_document("0x20"),
-            membership_document("0x21"),
-        ])],
+        vec![documents(
+            ["0x20", "0x21"]
+                .map(|iid| {
+                    let mut document = membership_document(iid);
+                    document["_role_0_attributes"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("email");
+                    document
+                })
+                .to_vec(),
+        )],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -1510,7 +1528,7 @@ async fn two_references_resolving_to_one_player_are_refused_and_poison_the_trans
             "attributes": {},
             "_role_0_iid": "0x10",
             "_role_0_type": "person",
-            "_role_0_attributes": {}
+            "_role_0_attributes": {"identifier": "ada"}
         })])],
         CommitBehavior::Success,
     );
@@ -1553,7 +1571,7 @@ async fn a_failed_hydration_after_a_put_poisons_the_borrowed_transaction() {
         .await
         .unwrap_err();
 
-    assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_type");
     assert_eq!(
         transaction.lifecycle_state().await,
         type_bridge_orm::session::TransactionContextState::RollbackOnly

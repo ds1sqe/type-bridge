@@ -14,8 +14,8 @@ use type_bridge_core_lib::ast::{
     TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
 };
 use type_bridge_orm::session::backend::{
-    AnswerConsumer, BoundedAnswerLimits, BoundedAnswerStats, BoxFuture, DriverBackend,
-    GivenRowsSpec, QueryResult, QueryV2AnswerLimits, SchemaFencedReadTransaction, TransactionOps,
+    AnswerConsumer, AnswerLimits, BoundedAnswerLimits, BoundedAnswerStats, BoxFuture,
+    DriverBackend, GivenRowsSpec, QueryResult, SchemaFencedReadTransaction, TransactionOps,
 };
 use type_bridge_orm::session::real_driver::RealBackend;
 use type_bridge_orm::session::staged::TransactionOptions;
@@ -947,7 +947,7 @@ impl TransactionOps for CountingTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
-        limits: BoundedAnswerLimits,
+        limits: type_bridge_orm::session::backend::AnswerLimits,
         canonical: bool,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         if let Some(rows) = &rows {
@@ -967,7 +967,7 @@ impl TransactionOps for CountingTransaction {
     fn query_v2_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.inner.query_v2_bounded(typeql, limits, consumer)
@@ -976,7 +976,7 @@ impl TransactionOps for CountingTransaction {
         &'a mut self,
         typeql: &'a str,
         rows: GivenRowsSpec,
-        limits: QueryV2AnswerLimits,
+        limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.record(typeql, &rows);

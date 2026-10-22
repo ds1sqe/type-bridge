@@ -546,3 +546,44 @@ pub fn stock_read(operation: Operation) -> QueryPlanV3 {
     )
     .unwrap()
 }
+
+/// Insert a doctor and fetch its document in the same provider statement.
+pub fn insert_doctor_fetch(name: &str) -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["doctor"],
+            vec![
+                Stage::Insert {
+                    things: vec![InsertThing {
+                        binding: id(0),
+                        type_id: entity("doctor"),
+                        players: vec![],
+                        fields: vec![
+                            (
+                                owns(entity("doctor"), "name"),
+                                QueryOperand::Literal {
+                                    value: CanonicalValue::String(
+                                        CanonicalString::new(name).unwrap(),
+                                    ),
+                                },
+                            ),
+                            (
+                                owns(entity("doctor"), "on-call"),
+                                QueryOperand::Literal {
+                                    value: CanonicalValue::Boolean(true),
+                                },
+                            ),
+                        ],
+                    }],
+                },
+                Stage::Fetch(ThingDocument::new(id(0), vec![])),
+            ],
+            Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}

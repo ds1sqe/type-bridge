@@ -34,7 +34,7 @@ use crate::match_request::{
 use crate::query_v2_model_remote::prepare_remote_model_query_v2;
 use crate::query_v2_prepared::QueryAuthority;
 use crate::query_v2_remote::{RemoteReplySigningKey, preflight_remote_request_v2};
-use crate::session::backend::{AnswerCancellation, BoundedAnswerLimits, QueryV2AnswerLimits};
+use crate::session::backend::{AnswerCancellation, AnswerLimits, BoundedAnswerLimits};
 
 const PART_KINDS: [&str; 6] = [
     "camshaft",
@@ -458,7 +458,7 @@ fn prepares_and_is_admitted(evidence: bool) {
         pending.request_bytes(),
         &authority.context(),
         &advertisement,
-        QueryV2AnswerLimits {
+        AnswerLimits {
             answer: BoundedAnswerLimits {
                 max_items: 500,
                 max_bytes: 1 << 22,

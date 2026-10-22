@@ -1091,7 +1091,7 @@ pub async fn execute_validated_query(
     transaction: &mut crate::session::transaction::OwnedTransaction,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: crate::session::backend::QueryV2AnswerLimits,
+    limits: crate::session::backend::AnswerLimits,
 ) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
     preflight_invocation_transport(validated.plan(), invocation)
         .map_err(QueryV2ExecutionError::Validation)?;
@@ -1108,7 +1108,7 @@ pub(crate) async fn execute_with_provider<
     provider: &mut P,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: crate::session::backend::QueryV2AnswerLimits,
+    limits: crate::session::backend::AnswerLimits,
 ) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
     execute_with_provider_observer(provider, validated, invocation, limits, None).await
 }
@@ -1119,7 +1119,7 @@ pub(crate) async fn execute_with_provider_observer<
     provider: &mut P,
     validated: &ValidatedQuery,
     invocation: &QueryInvocation,
-    limits: crate::session::backend::QueryV2AnswerLimits,
+    limits: crate::session::backend::AnswerLimits,
     mut observer: Option<&mut dyn QueryV2ValidatedItemObserver>,
 ) -> Result<QueryV2Outcome, QueryV2ExecutionError> {
     let mut semantic_limits = limits;
@@ -1151,11 +1151,8 @@ pub(crate) async fn execute_with_provider_observer<
 
     let mut rows: Vec<QueryResultRow> = Vec::new();
     let mut documents: Vec<QueryResultDocument> = Vec::new();
-    let max_items = semantic_limits.answer.max_items;
-    let max_bytes = semantic_limits.answer.max_bytes;
+    let mut meter = crate::answer_meter::AnswerMeter::new(&semantic_limits.answer);
     let max_collection_members = semantic_limits.max_collection_members;
-    let mut processed_items = 0_u64;
-    let mut response_bytes = 0_u64;
     let mut collection_members = 0_u64;
     let mut deferred_error: Option<QueryV2ExecutionError> = None;
     let mut consumer = |item| {
@@ -1165,67 +1162,10 @@ pub(crate) async fn execute_with_provider_observer<
             return Ok(crate::session::backend::AnswerControl::Continue);
         }
 
-        let Some(next_items) = processed_items.checked_add(1) else {
-            deferred_error = Some(QueryV2ExecutionError::Provider(
-                query_v2_provider_resource_error(
-                    "processed_item_counter_overflow",
-                    "processed provider item counter overflowed",
-                ),
-            ));
-            return Ok(crate::session::backend::AnswerControl::Continue);
-        };
-        if next_items > max_items {
-            deferred_error = Some(QueryV2ExecutionError::Provider(
-                query_v2_provider_resource_error(
-                    "processed_item_limit",
-                    "provider answer exceeded the processed-item ceiling",
-                ),
-            ));
+        if let Err(error) = meter.accept(&item) {
+            deferred_error = Some(QueryV2ExecutionError::Provider(error));
             return Ok(crate::session::backend::AnswerControl::Continue);
         }
-
-        let value = match &item {
-            crate::session::backend::AnswerItem::Row(value)
-            | crate::session::backend::AnswerItem::Document(value) => value,
-        };
-        let encoded = match serde_json::to_vec(value) {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                deferred_error = Some(QueryV2ExecutionError::Provider(
-                    crate::error::OrmError::QueryExecution(format!("Answer encode: {error}")),
-                ));
-                return Ok(crate::session::backend::AnswerControl::Continue);
-            }
-        };
-        let Ok(encoded_bytes) = u64::try_from(encoded.len()) else {
-            deferred_error = Some(QueryV2ExecutionError::Provider(
-                query_v2_provider_resource_error(
-                    "answer_byte_counter_overflow",
-                    "encoded provider answer length exceeds the counter range",
-                ),
-            ));
-            return Ok(crate::session::backend::AnswerControl::Continue);
-        };
-        let Some(next_bytes) = response_bytes.checked_add(encoded_bytes) else {
-            deferred_error = Some(QueryV2ExecutionError::Provider(
-                query_v2_provider_resource_error(
-                    "answer_byte_counter_overflow",
-                    "provider answer byte counter overflowed",
-                ),
-            ));
-            return Ok(crate::session::backend::AnswerControl::Continue);
-        };
-        if next_bytes > max_bytes {
-            deferred_error = Some(QueryV2ExecutionError::Provider(
-                query_v2_provider_resource_error(
-                    "response_byte_limit",
-                    "provider answer exceeded the response-byte ceiling",
-                ),
-            ));
-            return Ok(crate::session::backend::AnswerControl::Continue);
-        }
-        processed_items = next_items;
-        response_bytes = next_bytes;
 
         let validated_item = match (validated.output_schema(), item) {
             (OutputSchema::Rows(schema), crate::session::backend::AnswerItem::Row(row)) => {
@@ -1748,8 +1688,8 @@ mod tests {
     use super::*;
     use crate::migration_assertion::AssertionProviderCall;
     use crate::session::backend::{
-        AnswerCancellation, AnswerConsumer, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
-        BoundedAnswerStats, BoxFuture, QueryV2AnswerLimits,
+        AnswerCancellation, AnswerConsumer, AnswerItem, AnswerLimits, BoundedAnswerLimits,
+        BoundedAnswerReader, BoundedAnswerStats, BoxFuture,
     };
 
     struct ScriptedProvider {
@@ -1833,7 +1773,7 @@ mod tests {
         fn query_v2_bounded<'a>(
             &'a mut self,
             typeql: &'a str,
-            limits: QueryV2AnswerLimits,
+            limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
             Box::pin(async move {
@@ -1892,7 +1832,7 @@ mod tests {
         fn query_v2_bounded<'a>(
             &'a mut self,
             _typeql: &'a str,
-            limits: QueryV2AnswerLimits,
+            limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, Result<BoundedAnswerStats, crate::error::OrmError>> {
             Box::pin(async move {
@@ -2082,8 +2022,8 @@ mod tests {
             .expect("given lowerings may echo their driver-bound input columns");
     }
 
-    fn limits() -> QueryV2AnswerLimits {
-        QueryV2AnswerLimits {
+    fn limits() -> AnswerLimits {
+        AnswerLimits {
             answer: BoundedAnswerLimits {
                 max_items: 100,
                 max_bytes: 1 << 20,

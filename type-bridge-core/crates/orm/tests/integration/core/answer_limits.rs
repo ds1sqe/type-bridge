@@ -21,7 +21,7 @@ use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::query_v2_remote::{
     RemoteReplySigningKey, execute_admitted_remote_request_v2, preflight_remote_request_v2,
 };
-use type_bridge_orm::session::backend::{BoundedAnswerLimits, QueryV2AnswerLimits};
+use type_bridge_orm::session::backend::{AnswerLimits, BoundedAnswerLimits};
 use type_bridge_orm::*;
 use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
@@ -88,9 +88,9 @@ fn advertisement() -> RemoteCapabilities {
 }
 
 /// The provider ceilings of a default-configured server.
-fn server_ceilings() -> QueryV2AnswerLimits {
+fn server_ceilings() -> AnswerLimits {
     let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
-    QueryV2AnswerLimits {
+    AnswerLimits {
         answer: BoundedAnswerLimits {
             max_items: proxy.items,
             max_bytes: proxy.bytes,

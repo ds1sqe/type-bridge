@@ -9,6 +9,7 @@
 
 use type_bridge_core_lib::__internal as tql;
 
+use std::collections::BTreeMap;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
@@ -19,7 +20,7 @@ use type_bridge_contract::query_plan::v3::{
 use type_bridge_contract::query_plan::{
     DocumentSource, InputColumn, OrderDirection, QueryOperand, QueryOutput, QueryPattern,
 };
-use type_bridge_contract::query_remote::RemoteValue;
+use type_bridge_contract::query_remote::{RemoteFieldValue, RemoteValue};
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::sdk_diagnostic::FailureContext;
 
@@ -34,8 +35,10 @@ use crate::session::staged::StagedQuery;
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PlanAnswer {
-    /// Provider rows, or fetched documents, in provider order.
+    /// Provider rows in provider order.
     Rows(Vec<serde_json::Value>),
+    /// Schema-validated fetch documents in provider order.
+    Documents(Vec<serde_json::Value>),
     /// Number of rows a read matched.
     ///
     /// The count is taken over the fully loaded answer stream, so the
@@ -57,21 +60,26 @@ impl PlanAnswer {
     /// Project this answer onto the staged V3 wire evidence of `plan`.
     ///
     /// Rows carry one provider concept per output binding, keyed by the
-    /// binding's variable. Fetched documents carry untyped scalars, so they
-    /// are refused here rather than guessed.
+    /// binding's variable. Fetch scalars use the validated schema domains.
     pub fn to_staged_v3(&self, plan: &QueryPlanV3) -> Result<StagedAnswerV3, Diagnostic> {
         Ok(match self {
             Self::Count(value) => StagedAnswerV3::Count { value: *value },
             Self::Exists(value) => StagedAnswerV3::Exists { value: *value },
             Self::Matched(value) => StagedAnswerV3::Matched { value: *value },
+            Self::Documents(documents) => StagedAnswerV3::Documents {
+                documents: documents
+                    .iter()
+                    .map(|document| remote_document(document, plan))
+                    .collect::<Result<_, _>>()?,
+            },
             Self::Rows(rows) => {
                 // A thing fetch answers documents under an empty row
                 // output; projecting them as rows would drop every value.
                 if matches!(plan.pipeline().last(), Some(Stage::Fetch(_))) {
-                    return Err(staged_documents_unsupported());
+                    return Err(staged_answer_shape());
                 }
                 let QueryOutput::Rows { columns } = plan.output() else {
-                    return Err(staged_documents_unsupported());
+                    return Err(staged_answer_shape());
                 };
                 let names = columns
                     .iter()
@@ -88,16 +96,29 @@ impl PlanAnswer {
 
     /// Resolve one answer of a verified staged V3 reply. Rows become
     /// objects keyed by the projected variable, holding the typed remote
-    /// value; fetched documents are refused like on the server.
+    /// value; fetched documents retain their validated scalar domains.
     pub fn from_staged_v3(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<Self, Diagnostic> {
         Ok(match answer {
             StagedAnswerV3::Count { value } => Self::Count(*value),
             StagedAnswerV3::Exists { value } => Self::Exists(*value),
             StagedAnswerV3::Matched { value } => Self::Matched(*value),
-            StagedAnswerV3::Documents { .. } => return Err(staged_documents_unsupported()),
+            StagedAnswerV3::Documents { documents } => {
+                let shape = plan
+                    .fetch_document_shape()
+                    .ok_or_else(staged_answer_shape)?;
+                for document in documents {
+                    shape.validate(document)?;
+                }
+                Self::Documents(
+                    documents
+                        .iter()
+                        .map(document_json)
+                        .collect::<Result<_, _>>()?,
+                )
+            }
             StagedAnswerV3::Rows { rows } => {
                 let QueryOutput::Rows { columns } = plan.output() else {
-                    return Err(staged_documents_unsupported());
+                    return Err(staged_answer_shape());
                 };
                 let names = columns
                     .iter()
@@ -135,12 +156,12 @@ fn staged_value_unserializable() -> Diagnostic {
     )
 }
 
-/// Staged V3 replies cannot yet carry typed fetched documents.
-pub fn staged_documents_unsupported() -> Diagnostic {
+/// An answer kind must match the validated plan.
+fn staged_answer_shape() -> Diagnostic {
     failure(
-        DiagnosticCategory::UnsupportedCapability,
-        "query_remote_v3_documents_unsupported",
-        "staged replies do not carry fetched documents",
+        DiagnosticCategory::Integrity,
+        "query_remote_v3_answer_kind",
+        "answer kind does not match its validated plan",
     )
 }
 
@@ -363,6 +384,144 @@ pub(crate) fn staged_query(
         staged = staged.with_rows(rows);
     }
     Ok(staged)
+}
+
+/// Validate document evidence before a transaction can commit.
+pub(crate) fn resolve_plan(
+    plan: &QueryPlanV3,
+    result: QueryResult,
+) -> Result<PlanAnswer, Diagnostic> {
+    if plan.fetch_document_shape().is_some() {
+        let QueryResult::Documents(documents) = result else {
+            return Err(staged_answer_shape());
+        };
+        let documents = documents
+            .iter()
+            .map(|document| document_json(&remote_document(document, plan)?))
+            .collect::<Result<_, _>>()?;
+        return Ok(PlanAnswer::Documents(documents));
+    }
+    if matches!(result, QueryResult::Documents(_)) {
+        return Err(staged_answer_shape());
+    }
+    resolve(plan.operation(), result)
+}
+
+fn remote_document(
+    document: &serde_json::Value,
+    plan: &QueryPlanV3,
+) -> Result<BTreeMap<String, RemoteFieldValue>, Diagnostic> {
+    use type_bridge_contract::value::ValueTypeTag;
+    let shape = plan
+        .fetch_document_shape()
+        .ok_or_else(staged_answer_shape)?;
+    let object = document.as_object().ok_or_else(staged_answer_shape)?;
+    let fields = object
+        .iter()
+        .map(|(key, value)| {
+            let field = if value.is_null() {
+                RemoteFieldValue::Absent
+            } else if key == "attributes" || key.ends_with("_attributes") {
+                let role = if key == "attributes" {
+                    None
+                } else {
+                    Some(
+                        key.strip_prefix("_role_")
+                            .and_then(|s| s.strip_suffix("_attributes"))
+                            .and_then(|s| s.parse::<usize>().ok())
+                            .ok_or_else(staged_answer_shape)?,
+                    )
+                };
+                let type_key =
+                    role.map_or_else(|| "_type".to_owned(), |i| format!("_role_{i}_type"));
+                let type_label = object
+                    .get(&type_key)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(staged_answer_shape)?;
+                let attributes = value.as_object().ok_or_else(staged_answer_shape)?;
+                let fields = attributes
+                    .iter()
+                    .map(|(name, values)| {
+                        let domain = shape
+                            .attribute_domain(role, type_label, name)
+                            .ok_or_else(staged_answer_shape)?;
+                        let value = if let Some(values) = values.as_array() {
+                            RemoteFieldValue::List {
+                                values: values
+                                    .iter()
+                                    .map(|value| {
+                                        crate::migration_assertion::parse_provider_value(
+                                            value, domain,
+                                        )
+                                    })
+                                    .collect::<Result<_, _>>()?,
+                            }
+                        } else if values.is_null() {
+                            RemoteFieldValue::Absent
+                        } else {
+                            RemoteFieldValue::Scalar {
+                                value: crate::migration_assertion::parse_provider_value(
+                                    values, domain,
+                                )?,
+                            }
+                        };
+                        Ok((name.clone(), value))
+                    })
+                    .collect::<Result<_, Diagnostic>>()?;
+                RemoteFieldValue::Document { fields }
+            } else {
+                RemoteFieldValue::Scalar {
+                    value: crate::migration_assertion::parse_provider_value(
+                        value,
+                        ValueTypeTag::String,
+                    )?,
+                }
+            };
+            Ok((key.clone(), field))
+        })
+        .collect::<Result<_, Diagnostic>>()?;
+    shape.validate(&fields)?;
+    Ok(fields)
+}
+
+fn document_json(
+    fields: &BTreeMap<String, RemoteFieldValue>,
+) -> Result<serde_json::Value, Diagnostic> {
+    fields
+        .iter()
+        .map(|(key, field)| {
+            let value = match field {
+                RemoteFieldValue::Absent => serde_json::Value::Null,
+                RemoteFieldValue::Scalar { value } => scalar_json(value)?,
+                RemoteFieldValue::List { values } => serde_json::Value::Array(
+                    values.iter().map(scalar_json).collect::<Result<_, _>>()?,
+                ),
+                RemoteFieldValue::Document { fields } => document_json(fields)?,
+            };
+            Ok((key.clone(), value))
+        })
+        .collect::<Result<serde_json::Map<_, _>, _>>()
+        .map(serde_json::Value::Object)
+}
+
+fn scalar_json(
+    value: &type_bridge_contract::value::CanonicalValue,
+) -> Result<serde_json::Value, Diagnostic> {
+    use crate::value::AttributeValue;
+    let value = crate::runtime_projection::attribute_value_from_canonical(value);
+    Ok(match value {
+        AttributeValue::Long(value) => value.into(),
+        AttributeValue::Double(value) => serde_json::Number::from_f64(value)
+            .ok_or_else(staged_answer_shape)?
+            .into(),
+        AttributeValue::Boolean(value) => value.into(),
+        AttributeValue::String(value)
+        | AttributeValue::Date(value)
+        | AttributeValue::DateTime(value)
+        | AttributeValue::DateTimeTZ(value)
+        | AttributeValue::Decimal(value)
+        | AttributeValue::Duration(value) => value.into(),
+    })
 }
 
 /// Resolve the provider answer of one executed plan.

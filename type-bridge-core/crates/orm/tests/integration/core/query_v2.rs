@@ -33,9 +33,7 @@ use type_bridge_contract::schema::{
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2::{QueryRowValue, QueryV2Outcome, execute_validated_query};
 use type_bridge_orm::query_v2_remote::{Ed25519RemoteReplyVerifier, RemoteReplySigningKey};
-use type_bridge_orm::session::backend::{
-    AnswerCancellation, BoundedAnswerLimits, QueryV2AnswerLimits,
-};
+use type_bridge_orm::session::backend::{AnswerCancellation, AnswerLimits, BoundedAnswerLimits};
 use type_bridge_orm::{Database, TxType};
 use type_bridge_query::{MigrationAssertionValidationContext, ValidatedQuery, validate_query_plan};
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema, managed_schema_state, resolve};
@@ -277,8 +275,8 @@ fn string_row(value: &str) -> InputRow {
     ))])
 }
 
-fn limits() -> QueryV2AnswerLimits {
-    QueryV2AnswerLimits {
+fn limits() -> AnswerLimits {
+    AnswerLimits {
         answer: BoundedAnswerLimits {
             max_items: 100,
             max_bytes: 1 << 20,
@@ -2726,7 +2724,7 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
 
     // Local: an already-expired deadline rejects before streaming.
     let mut transaction = db.read_transaction().await.expect("read transaction");
-    let expired = QueryV2AnswerLimits {
+    let expired = AnswerLimits {
         answer: BoundedAnswerLimits {
             max_items: 100,
             max_bytes: 1 << 20,

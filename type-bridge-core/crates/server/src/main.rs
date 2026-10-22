@@ -229,7 +229,7 @@ async fn build_v2_state(
 ) -> Result<transport::v2::V2QueryState, Box<dyn std::error::Error>> {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
-    use type_bridge_orm::session::backend::QueryV2AnswerLimits;
+    use type_bridge_orm::session::backend::AnswerLimits;
     use type_bridge_schema::{
         ManagedDeltaContext, decode_schema_authority, schema_authority_capability_vocabulary,
     };
@@ -293,7 +293,7 @@ async fn build_v2_state(
     let state = match config.v2.authority_mode {
         V2AuthorityMode::Managed => transport::v2::V2QueryState::new(
             advertised,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             declared,
             delta_context,
@@ -302,7 +302,7 @@ async fn build_v2_state(
         ),
         V2AuthorityMode::QueryOnly => transport::v2::V2QueryState::new_query_only(
             advertised,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             declared,
             delta_context,

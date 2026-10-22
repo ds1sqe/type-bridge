@@ -23,7 +23,7 @@ use std::sync::Arc;
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
-use type_bridge_orm::session::backend::QueryV2AnswerLimits;
+use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, decode_schema_authority,
 };
@@ -194,7 +194,7 @@ async fn main() {
     let state = Arc::new(
         V2QueryState::new_query_only(
             advertised,
-            QueryV2AnswerLimits::default(),
+            AnswerLimits::default(),
             database,
             declared,
             delta_context,
