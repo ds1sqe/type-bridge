@@ -10,20 +10,20 @@ applications normally use generated models through
 
 ```toml
 [dependencies]
-type-bridge-schema = "2.3.0"
+type-bridge-schema = "2.3.1"
 ```
 
 Use the staged APIs documented at
-[`type_bridge_schema`](https://docs.rs/type-bridge-schema/2.3.0): load a schema
+[`type_bridge_schema`](https://docs.rs/type-bridge-schema/2.3.1): load a schema
 set from an explicitly bounded source, normalize and resolve it, then project
 or compare only the resulting verified schema values. Split YAML remains the
 authoring source; emitted authority artifacts are generated outputs.
 
 This crate has no optional features. It is released in lockstep with TypeBridge
-2.3.0 and requires Rust 1.88+. Resolution accepts the frozen TypeDB 3.11.5,
+2.3.1 and requires Rust 1.88+. Resolution accepts the frozen TypeDB 3.11.5,
 3.12.1, and 3.13.6 V2 semantic profiles; database-facing TypeBridge components
 support TypeDB 3.11.x–3.14.x.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-schema/2.3.0) ·
+[API documentation](https://docs.rs/type-bridge-schema/2.3.1) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)
