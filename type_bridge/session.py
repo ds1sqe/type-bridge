@@ -794,7 +794,7 @@ class Database:
 
         Plans staged with ``tx.stage(plan)`` reach TypeDB only at
         ``tx.commit()``, as one transaction; each ``Pending.result()`` then
-        answers ``Rows``, ``Count``, ``Exists`` or ``Matched``. As a context
+        answers ``Rows``, ``Documents``, ``Count``, ``Exists`` or ``Matched``. As a context
         manager it commits on a clean exit (unless ``commit_on_exit=False``),
         discards on an exception, and closes; a commit whose outcome is
         unknown raises, and the caller reads the database. An omitted

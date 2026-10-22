@@ -748,6 +748,13 @@ interceptor vouches for (`on_v3_write_authority`), or from any caller under
 vocabulary are in the
 [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
+Fetch plans return a distinct `Documents` answer directly and remotely. The
+shared Rust verifier checks the document against the plan's possible exact
+types, owned attributes and listed roles. `AnswerLimits` bounds rows and
+documents under one policy before commit. Python exposes `Documents.documents`,
+TypeScript the `documents` answer variant, and Rust `PlanAnswer::Documents`.
+
+
 ### Hosting the staged executor in-process
 
 A host that embeds `type-bridge-server` as a library runs the staged route
