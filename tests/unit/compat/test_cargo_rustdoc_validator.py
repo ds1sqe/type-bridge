@@ -297,7 +297,8 @@ def test_ci_release_and_local_rust_checks_share_the_closed_rustdoc_gate() -> Non
         return jobs[header.start() : end]
 
     assert ci.count(VALIDATOR_COMMAND) == 2
-    assert job_block(ci, "rust-docs-msrv").count(VALIDATOR_COMMAND) == 2
+    assert job_block(ci, "rust-docs").count(VALIDATOR_COMMAND) == 1
+    assert job_block(ci, "rust-msrv").count(f"{VALIDATOR_COMMAND} --toolchain 1.88.0") == 1
     assert ci.count(f"{VALIDATOR_COMMAND} --toolchain 1.88.0") == 1
     assert release.count(VALIDATOR_COMMAND) == 1
     assert job_block(release, "validate-release-identity").count(VALIDATOR_COMMAND) == 1
