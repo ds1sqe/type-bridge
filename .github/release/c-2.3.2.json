@@ -267,6 +267,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for expressions": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -281,6 +282,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for expressions": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -295,6 +297,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for queries": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -309,6 +312,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for queries": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -323,6 +327,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for schema": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -337,6 +342,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "success",
+      "Restore cargo build cache": "success",
       "Run integration tests for schema": "success",
       "Set up Python": "success",
       "Upload Python queries report": "success",
@@ -351,6 +357,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for session": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -365,6 +372,7 @@
       "Install the band's Python driver": "success",
       "Install uv": "success",
       "Prepare Python queries evidence outputs": "skipped",
+      "Restore cargo build cache": "success",
       "Run integration tests for session": "success",
       "Set up Python": "success",
       "Upload Python queries report": "skipped",
@@ -380,6 +388,7 @@
       "Install maturin": "skipped",
       "Install pyright": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run pyright on examples": "success",
       "Set up Python": "success"
     },
@@ -393,6 +402,7 @@
       "Install maturin": "success",
       "Install pyright": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run pyright on tests": "success",
       "Set up Python": "success"
     },
@@ -406,6 +416,7 @@
       "Install maturin": "skipped",
       "Install pyright": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run pyright on type_bridge": "success",
       "Set up Python": "success"
     },
@@ -415,6 +426,7 @@
       "Install dependencies": "success",
       "Install pytest-xdist for parallel execution": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run unit tests with coverage": "success",
       "Set up Python 3.12": "success",
       "Upload Python coverage to Codecov": "success"
@@ -425,6 +437,7 @@
       "Install dependencies": "success",
       "Install pytest-xdist for parallel execution": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run unit tests with coverage": "success",
       "Set up Python 3.13.5": "success",
       "Upload Python coverage to Codecov": "success"
@@ -435,6 +448,7 @@
       "Install dependencies": "success",
       "Install pytest-xdist for parallel execution": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run unit tests with coverage": "success",
       "Set up Python 3.14": "success",
       "Upload Python coverage to Codecov": "success"
@@ -444,6 +458,7 @@
       "Install Rust toolchain": "success",
       "Install dependencies": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run ruff format check": "success",
       "Run ruff lint check": "skipped",
       "Set up Python": "success"
@@ -453,6 +468,7 @@
       "Install Rust toolchain": "success",
       "Install dependencies": "success",
       "Install uv": "success",
+      "Restore cargo build cache": "success",
       "Run ruff format check": "skipped",
       "Run ruff lint check": "success",
       "Set up Python": "success"
@@ -855,7 +871,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "ae279dc993d5d9c5428942078990a35d0fce947b1a9d95de9f7fed650ea61d27",
+  "ci_workflow_sha256": "adc0aaf9b789e5ae356b1505cc34d7990b361ff0f7d2f7fa1ab3839cefdf6075",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.2.tar.gz",
   "format": "typebridge.c-release-policy/v1",

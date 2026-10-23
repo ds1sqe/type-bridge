@@ -332,6 +332,10 @@ jobs:
 
       - name: Install the source-tree Python product
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --no-dev
 
       - name: Wait for TypeDB server to be ready
@@ -712,6 +716,10 @@ jobs:
         run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
 
       - name: Install the source-tree Python product
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install Node dependencies
@@ -1200,6 +1208,10 @@ jobs:
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
       - name: Install Python and Node dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: |
           uv sync --extra dev
           uv pip install maturin==1.14.1
@@ -1275,6 +1287,10 @@ jobs:
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
       - name: Install Python and Node dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: |
           uv sync --extra dev
           uv pip install maturin==1.14.1
@@ -1350,7 +1366,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install the band's Python driver
@@ -1723,6 +1752,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install the cell's Python driver
@@ -1999,6 +2032,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Audit generated successors and removed-source mapping
@@ -2168,7 +2205,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install pytest-xdist for parallel execution
@@ -2216,7 +2266,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install pyright
@@ -2269,7 +2332,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Run ruff lint check
