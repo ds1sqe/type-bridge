@@ -4,7 +4,7 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
-## [2.3.2] - Unreleased
+## [2.3.2] - 2026-10-23
 
 ### Added
 
