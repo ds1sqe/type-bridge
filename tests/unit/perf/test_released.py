@@ -241,6 +241,9 @@ def test_the_released_job_runs_every_sdk_and_version_into_the_store() -> None:
         "types": ["completed"],
         "branches": ["master"],
     }
+    # Only push runs of CI: a dispatched run re-checks a measured commit.
+    gate = workflow["jobs"]["metadata"]["if"]
+    assert "github.event.workflow_run.event == 'push'" in gate
     service = job["services"]["typedb"]
     assert service["image"] == "typedb/typedb:3.12.3"
     assert service["options"] == "--tmpfs /var/lib/typedb/data:rw"
