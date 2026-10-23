@@ -23,6 +23,95 @@ env:
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
 jobs:
+  # Rustdoc validation, defined first: the longest Linux checks start
+  # before the account's job slots fill.
+  rust-docs:
+    name: Rust docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      # Generated consumers build with --offline against the workspace lock,
+      # so every locked crate must be downloaded first.
+      - name: Fetch every locked crate
+        working-directory: type-bridge-core
+        run: cargo fetch --locked
+
+      - name: Validate first-party public Cargo docs
+        run: python scripts/ci/validate_cargo_rustdoc.py
+
+  # The MSRV 1.88 checks, apart from rustdoc so the two run in parallel.
+  rust-msrv:
+    name: Rust MSRV 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      # Generated consumers build with --offline against the workspace lock,
+      # so every locked crate must be downloaded first.
+      - name: Fetch every locked crate
+        working-directory: type-bridge-core
+        run: cargo fetch --locked
+
+      - name: Install generated Rust MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check C foundation on MSRV 1.88
+        working-directory: type-bridge-core
+        run: cargo +1.88.0 check --locked -p type-bridge-c --all-targets
+
+      - name: Validate first-party public Cargo docs on MSRV 1.88
+        run: python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
+
+      - name: Check generated Rust projection on MSRV 1.88
+        working-directory: type-bridge-core
+        run: >-
+          cargo +1.88.0 test --locked
+          -p type-bridge-schema-codegen --test rust_acceptance
+          generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
+
   rust-check:
     name: Rust ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -989,60 +1078,6 @@ jobs:
           TB_RACE_ROUNDS: "5"
           TB_RACE_CONTAINER: ${{ job.services.typedb.id }}
         run: uv run pytest tests/live/races -m slow -q -p no:cacheprovider
-
-  # Rustdoc validation and the MSRV checks, beside the Linux tests.
-  rust-docs-msrv:
-    name: Rust docs and MSRV 1.88
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-          components: clippy
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      # Generated consumers build with --offline against the workspace lock,
-      # so every locked crate must be downloaded first.
-      - name: Fetch every locked crate
-        working-directory: type-bridge-core
-        run: cargo fetch --locked
-
-      - name: Validate first-party public Cargo docs
-        run: python scripts/ci/validate_cargo_rustdoc.py
-
-      - name: Install generated Rust MSRV
-        run: rustup toolchain install 1.88.0 --profile minimal
-
-      - name: Check C foundation on MSRV 1.88
-        working-directory: type-bridge-core
-        run: cargo +1.88.0 check --locked -p type-bridge-c --all-targets
-
-      - name: Validate first-party public Cargo docs on MSRV 1.88
-        run: python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
-
-      - name: Check generated Rust projection on MSRV 1.88
-        working-directory: type-bridge-core
-        run: >-
-          cargo +1.88.0 test --locked
-          -p type-bridge-schema-codegen --test rust_acceptance
-          generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
 
   # schema-codegen holds most of the Rust test time (rust_acceptance compiles
   # generated packages with a nested cargo), so it runs in two parallel shards.
