@@ -61,7 +61,7 @@ def run_snapshot() -> dict[str, Any]:
 def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     selected = policy.selected_policy()
     assert json.loads(policy.POLICY.read_text()) == selected
-    assert len(selected["ci_jobs"]) == 60
+    assert len(selected["ci_jobs"]) == 61
     for server in ("3.13.6", "3.14.0"):
         assert (
             selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
@@ -81,6 +81,13 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
     )
     # The accepted run is a master push, so master-only cache saves run.
     assert selected["ci_jobs"]["Rust windows-latest"]["Save cargo build cache"] == "success"
+    # The Windows C evidence runs in its own job, beside the Windows Rust tests.
+    windows_c = selected["ci_jobs"]["C evidence windows-latest"]
+    assert windows_c["Build C ABI and check strict headers and consumer on Windows"] == "success"
+    assert (
+        "Build C ABI and check strict headers and consumer on Windows"
+        not in selected["ci_jobs"]["Rust windows-latest"]
+    )
     assert (
         selected["ci_jobs"]["Rust schema-codegen acceptance windows-latest"][
             "Initialize MSVC and require clang-cl for Windows C tests"

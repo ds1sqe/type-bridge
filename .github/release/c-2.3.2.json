@@ -118,6 +118,17 @@
       "Set up Python": "success",
       "Upload immutable non-publishing supply-chain evidence": "success"
     },
+    "C evidence windows-latest": {
+      "Build C ABI and check strict headers and consumer on Windows": "success",
+      "Check C runtime, transaction, and cancellation ABI": "success",
+      "Check C typed-query, diagnostic, function, and remote ABI": "success",
+      "Check generated C package and strict public headers": "success",
+      "Checkout code": "success",
+      "Initialize MSVC and require clang-cl for every Windows C evidence step": "success",
+      "Install Rust toolchain": "success",
+      "Restore cargo build cache": "success",
+      "Set up Python": "success"
+    },
     "C runtime and generated package artifacts (Linux x86_64 GNU)": {
       "Build and validate separate deterministic C artifacts": "success",
       "Checkout code": "success",
@@ -558,8 +569,8 @@
     },
     "Rust macos-latest": {
       "Audit all maintained Rust lockfiles": "skipped",
-      "Build C ABI and check strict headers and consumer on Windows": "skipped",
       "Build C ABI shared library": "success",
+      "Build Rust tests": "success",
       "Check C ABI and standalone consumer": "success",
       "Check C ABI header, exports, and package": "success",
       "Check C provider-free Projected parity producer": "success",
@@ -584,15 +595,16 @@
       "Require Clang for the macOS C gate": "success",
       "Require GCC and Clang for the Linux C gate": "skipped",
       "Restore cargo build cache": "success",
+      "Run Rust tests": "success",
       "Save cargo build cache": "success",
       "Set up Python": "success",
       "Validate frozen C distribution contract": "skipped",
       "Verify locked native dependency notice": "skipped",
       "cargo check": "success",
-      "cargo clippy": "success",
-      "cargo test": "success"
+      "cargo clippy": "success"
     },
     "Rust schema-codegen acceptance macos-latest": {
+      "Build schema-codegen acceptance tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
@@ -603,6 +615,7 @@
       "cargo test (schema-codegen acceptance)": "success"
     },
     "Rust schema-codegen acceptance ubuntu-latest": {
+      "Build schema-codegen acceptance tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
@@ -613,6 +626,7 @@
       "cargo test (schema-codegen acceptance)": "success"
     },
     "Rust schema-codegen acceptance windows-latest": {
+      "Build schema-codegen acceptance tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "success",
@@ -623,6 +637,7 @@
       "cargo test (schema-codegen acceptance)": "success"
     },
     "Rust schema-codegen rest macos-latest": {
+      "Build schema-codegen rest tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
@@ -633,6 +648,7 @@
       "cargo test (schema-codegen rest)": "success"
     },
     "Rust schema-codegen rest ubuntu-latest": {
+      "Build schema-codegen rest tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
@@ -643,6 +659,7 @@
       "cargo test (schema-codegen rest)": "success"
     },
     "Rust schema-codegen rest windows-latest": {
+      "Build schema-codegen rest tests": "success",
       "Checkout code": "success",
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "success",
@@ -654,8 +671,8 @@
     },
     "Rust ubuntu-latest": {
       "Audit all maintained Rust lockfiles": "success",
-      "Build C ABI and check strict headers and consumer on Windows": "skipped",
       "Build C ABI shared library": "success",
+      "Build Rust tests": "success",
       "Check C ABI and standalone consumer": "success",
       "Check C ABI header, exports, and package": "success",
       "Check C provider-free Projected parity producer": "success",
@@ -680,27 +697,27 @@
       "Require Clang for the macOS C gate": "skipped",
       "Require GCC and Clang for the Linux C gate": "success",
       "Restore cargo build cache": "success",
+      "Run Rust tests": "success",
       "Save cargo build cache": "success",
       "Set up Python": "success",
       "Validate frozen C distribution contract": "success",
       "Verify locked native dependency notice": "success",
       "cargo check": "success",
-      "cargo clippy": "success",
-      "cargo test": "success"
+      "cargo clippy": "success"
     },
     "Rust windows-latest": {
       "Audit all maintained Rust lockfiles": "skipped",
-      "Build C ABI and check strict headers and consumer on Windows": "success",
       "Build C ABI shared library": "skipped",
+      "Build Rust tests": "success",
       "Check C ABI and standalone consumer": "skipped",
       "Check C ABI header, exports, and package": "skipped",
       "Check C provider-free Projected parity producer": "skipped",
-      "Check C runtime, transaction, and cancellation ABI": "success",
-      "Check C typed-query, diagnostic, function, and remote ABI": "success",
+      "Check C runtime, transaction, and cancellation ABI": "skipped",
+      "Check C typed-query, diagnostic, function, and remote ABI": "skipped",
       "Check TypeQL text construction boundary": "skipped",
       "Check alternate serde_json backends": "success",
       "Check generated C entity and relation CRUD strict C17 consumer": "skipped",
-      "Check generated C package and strict public headers": "success",
+      "Check generated C package and strict public headers": "skipped",
       "Check generated ordered C17 and C++17 consumers": "skipped",
       "Check internal eager dependency boundary": "skipped",
       "Check private TypeQL AST public API boundary": "skipped",
@@ -716,13 +733,13 @@
       "Require Clang for the macOS C gate": "skipped",
       "Require GCC and Clang for the Linux C gate": "skipped",
       "Restore cargo build cache": "success",
+      "Run Rust tests": "success",
       "Save cargo build cache": "success",
       "Set up Python": "success",
       "Validate frozen C distribution contract": "skipped",
       "Verify locked native dependency notice": "skipped",
       "cargo check": "success",
-      "cargo clippy": "success",
-      "cargo test": "success"
+      "cargo clippy": "success"
     },
     "Shared queries conformance": {
       "Checkout code": "success",
@@ -871,7 +888,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "adc0aaf9b789e5ae356b1505cc34d7990b361ff0f7d2f7fa1ab3839cefdf6075",
+  "ci_workflow_sha256": "3328fd054416762a31666efe4003248c910673525f404e80fac203b8ceaaf8e5",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.2.tar.gz",
   "format": "typebridge.c-release-policy/v1",
