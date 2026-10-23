@@ -253,6 +253,12 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
+      # The next build rebuilds the workspace's own crates anyway; keep only
+      # the compiled dependencies so the entry stays small.
+      - name: Prune cargo target
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: python scripts/ci/prune_cargo_target.py type-bridge-core/target --manifest-path type-bridge-core/Cargo.toml
+
       # Only master writes caches; pull requests restore master's.
       - name: Save cargo build cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -2494,6 +2500,12 @@ jobs:
         if: failure()
         run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
 
+      # The next build rebuilds the workspace's own crates anyway; keep only
+      # the compiled dependencies so the entry stays small.
+      - name: Prune cargo target
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: python scripts/ci/prune_cargo_target.py tmp/standalone-cli-artifact/build --manifest-path type-bridge-core/Cargo.toml
+
       # Only master writes caches; pull requests restore master's.
       - name: Save cargo build cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -2559,6 +2571,12 @@ jobs:
             tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
           if-no-files-found: error
           retention-days: 7
+
+      # The next build rebuilds the workspace's own crates anyway; keep only
+      # the compiled dependencies so the entry stays small.
+      - name: Prune cargo target
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: python scripts/ci/prune_cargo_target.py tmp/c-package-artifacts/build/cargo --manifest-path type-bridge-core/Cargo.toml
 
       # Only master writes caches; pull requests restore master's.
       - name: Save cargo build cache
