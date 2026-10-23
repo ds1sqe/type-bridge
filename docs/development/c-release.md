@@ -10,7 +10,9 @@ independent public verification on 2026-10-07. The 2.2.4 artifacts completed
 promotion and independent public verification on 2026-10-11. The 2.2.5
 artifacts completed promotion and independent public verification on
 2026-10-15. The 2.2.6 artifacts completed promotion and independent public
-verification on 2026-10-20.
+verification on 2026-10-20. The 2.3.0 artifacts completed promotion and
+independent public verification on 2026-10-22, and the 2.3.1 artifacts on
+2026-10-23.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -203,3 +205,27 @@ Sigstore bundles. Public archive signatures, provenance, and the CMake,
 pkg-config, relocation and runtime-range checks passed against the downloaded
 bytes. This release keeps C ABI 1.6.0 and includes the #251 commit certainty
 fix.
+
+The 2.3.0 public artifacts were independently verified on 2026-10-22.
+They bind source `5426d0626135d39fa0b88efc3f91feff58348d22`,
+[CI run 39704608332](https://github.com/ds1sqe/type-bridge/actions/runs/39704608332),
+[C verification run 39709533884](https://github.com/ds1sqe/type-bridge/actions/runs/39709533884),
+and [promotion run 39724654551](https://github.com/ds1sqe/type-bridge/actions/runs/39724654551).
+The [2.3.0 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.3.0)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. This release moves the runtime to C ABI 1.7.0 (the proxy
+connection and the typed query session with limits) while the installed
+pkg-config metadata stays on the 1.6.0 line, and drops the staged proxy's
+reply retention.
+
+The 2.3.1 public artifacts were independently verified on 2026-10-23.
+They bind source `f3515e7d3490c4fe0ef16253d47d8c0558e91d39`,
+[CI run 39877937439](https://github.com/ds1sqe/type-bridge/actions/runs/39877937439),
+[C verification run 39883877535](https://github.com/ds1sqe/type-bridge/actions/runs/39883877535),
+and [promotion run 39900571351](https://github.com/ds1sqe/type-bridge/actions/runs/39900571351).
+The [2.3.1 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.3.1)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. The downloaded archives and records bind to the promotion
+record's digests and the CLI archive's Sigstore bundle verifies against the
+tag identity. This release keeps C ABI 1.7.0 and adds TypeDB 3.14 to the
+support window.
