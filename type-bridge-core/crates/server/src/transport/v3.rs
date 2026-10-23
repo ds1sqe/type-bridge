@@ -134,6 +134,11 @@ impl StagedExecutor {
         &self.advertisement
     }
 
+    /// The policy pipeline that admits callers for this executor.
+    pub fn pipeline(&self) -> &Arc<QueryPipeline> {
+        &self.pipeline
+    }
+
     fn unbound(&self, diagnostic: &Diagnostic) -> Vec<u8> {
         encode_unbound_remote_failure_v2(None, diagnostic, &self.fingerprint, &self.query.signer)
     }

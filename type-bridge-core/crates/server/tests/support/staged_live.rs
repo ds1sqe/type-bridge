@@ -40,6 +40,7 @@ use type_bridge_server::interceptor::{
 };
 use type_bridge_server::pipeline::PipelineBuilder;
 use type_bridge_server::transport::v2::{V2QueryState, create_router_with_v2};
+use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcome};
 
 pub static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -266,6 +267,29 @@ pub struct Proxy {
     pub advertisement: RemoteCapabilities,
     pub declared: DeclaredSchema,
     pub commits: Arc<Mutex<Vec<CommitRecord>>>,
+    /// The library entry over the same pipeline and state as the router.
+    pub executor: Arc<StagedExecutor>,
+}
+
+impl Proxy {
+    /// Run signed request bytes through the library entry as an embedding
+    /// host would: admit the caller through the pipeline, then execute.
+    pub async fn execute_direct(&self, body: Vec<u8>) -> StagedOutcome {
+        let pipeline = self.executor.pipeline();
+        let metadata = std::collections::HashMap::from([
+            ("transport".to_owned(), serde_json::json!("v3")),
+            ("v3_endpoint".to_owned(), serde_json::json!("staged")),
+        ]);
+        let mut ctx = pipeline.v3_request_context(metadata).expect("v3 context");
+        pipeline
+            .begin_v2_request(&mut ctx)
+            .await
+            .expect("transport admission");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        self.executor
+            .execute_staged_request(ctx, body.into(), deadline)
+            .await
+    }
 }
 
 pub async fn proxy(name: &str, policy: LivePolicy, allow_unauthenticated: bool) -> Proxy {
@@ -313,7 +337,12 @@ pub async fn proxy_with(
         .with_interceptor(policy)
         .build()
         .expect("pipeline");
-    let router = create_router_with_v2(Arc::new(pipeline), state);
+    let pipeline = Arc::new(pipeline);
+    let executor = Arc::new(StagedExecutor::new(
+        Arc::clone(&pipeline),
+        Arc::clone(&state),
+    ));
+    let router = create_router_with_v2(pipeline, state);
     let bytes = call(&router, "GET", "/v3/capabilities", Vec::new()).await;
     let advertisement = RemoteCapabilities::decode(&bytes).expect("v3 advertisement");
     Proxy {
@@ -321,6 +350,7 @@ pub async fn proxy_with(
         advertisement,
         declared,
         commits,
+        executor,
     }
 }
 

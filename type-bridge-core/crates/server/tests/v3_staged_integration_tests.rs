@@ -19,8 +19,8 @@ use type_bridge_contract::query_plan::InputRow;
 use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v3::{
-    StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3,
-    StagedRequestV3, VerifiedStagedReplyV3,
+    StagedAnswerV3, StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
+    VerifiedStagedReplyV3,
 };
 use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
@@ -188,6 +188,70 @@ async fn staged_purchase_matches_direct_transaction_answers_and_state() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn library_entry_purchase_matches_the_router() {
+    if !staged_live::given_rows_supported("library_entry_purchase_matches_the_router").await {
+        return;
+    }
+    let (routed_name, routed) = seeded("routed").await;
+    let (entered_name, entered) = seeded("entered").await;
+    let through_router = proxy(&routed_name, LivePolicy::default(), true).await;
+    let through_entry = proxy(&entered_name, LivePolicy::default(), true).await;
+
+    let reads = [
+        race::stock_read(Operation::Count),
+        race::stock_read(Operation::Exists),
+    ];
+    let mut entries = vec![purchase_entry(&through_router, "O1", "I1", "A1")];
+    entries.extend(reads.iter().map(|plan| plain_entry(&through_router, plan)));
+    let routed_request = request(&through_router, entries);
+    let routed_reply = verify(
+        &through_router,
+        &routed_request,
+        &post(&through_router, &routed_request).await,
+    );
+    assert!(routed_reply.committed(), "{:?}", routed_reply.diagnostic());
+
+    let mut entries = vec![purchase_entry(&through_entry, "O1", "I1", "A1")];
+    entries.extend(reads.iter().map(|plan| plain_entry(&through_entry, plan)));
+    let entered_request = request(&through_entry, entries);
+    let outcome = through_entry
+        .execute_direct(entered_request.encode().expect("request bytes"))
+        .await;
+    assert_eq!(
+        outcome.kind,
+        type_bridge_server::transport::v3::StagedOutcomeKind::Committed
+    );
+    assert_eq!(outcome.code, "ok");
+    let entered_reply = verify(&through_entry, &entered_request, &outcome.reply);
+    assert!(
+        entered_reply.committed(),
+        "{:?}",
+        entered_reply.diagnostic()
+    );
+
+    assert_eq!(entered_reply.answers(), routed_reply.answers());
+    assert_eq!(
+        entered_reply.answers(),
+        [
+            StagedAnswerV3::Matched { value: 1 },
+            StagedAnswerV3::Count { value: 1 },
+            StagedAnswerV3::Exists { value: true },
+        ]
+    );
+    assert_eq!(state(&entered).await, state(&routed).await);
+    assert_eq!(
+        through_entry.commits.lock().expect("commits").len(),
+        through_router.commits.lock().expect("commits").len()
+    );
+
+    drop(through_router);
+    drop(through_entry);
+    drop_database(routed).await;
+    drop_database(entered).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn unauthenticated_staged_write_is_refused_and_writes_nothing() {
     let (name, db) = seeded("unauthenticated").await;
     let proxy = proxy(&name, LivePolicy::default(), false).await;
@@ -203,8 +267,7 @@ async fn unauthenticated_staged_write_is_refused_and_writes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn resent_write_bytes_apply_once_and_read_as_unknown() {
-    if !staged_live::given_rows_supported("resent_write_bytes_apply_once_and_read_as_unknown")
-        .await
+    if !staged_live::given_rows_supported("resent_write_bytes_apply_once_and_read_as_unknown").await
     {
         return;
     }
@@ -329,7 +392,8 @@ async fn commit_hook_observes_an_stc2_conflict_between_racing_staged_purchases()
             tokio::spawn(async move {
                 let staged = request(
                     &proxy,
-                    vec![purchase_entry(&proxy, &order, &item, &account)]);
+                    vec![purchase_entry(&proxy, &order, &item, &account)],
+                );
                 let body = staged.encode().expect("request bytes");
                 barrier.wait().await;
                 let reply = call(&proxy.router, "POST", "/v3/staged", body).await;
