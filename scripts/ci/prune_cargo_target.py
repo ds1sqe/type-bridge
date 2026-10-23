@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 """Shrink a cargo target directory before CI saves it as a cache.
 
-The bulk of a test build is its executables: one per test, bench and
-example target, with their debug info. They are relinked whenever a crate
-they depend on changes, so they cost upload and restore time for little
-reuse. Libraries are what make the next build incremental: a change
-touches a few of the workspace's crates, and the others, like every
-dependency, stay fresh. This removes per profile directory (any directory
-holding a ``deps`` folder):
+The next run rebuilds the workspace's own crates anyway (their sources
+change), so their artifacts only cost upload and restore time. This keeps
+the compiled dependencies, which make the next build incremental, and
+removes per profile directory (any directory holding a ``deps`` folder):
 
-- every non-library unit of a workspace package (test, bench, example and
-  bin targets): its ``.fingerprint/<pkg>-<hash>`` directory and every
-  ``deps`` file carrying that ``-<hash>`` (executables, debug info);
+- every unit of a workspace package: its ``.fingerprint/<pkg>-<hash>`` and
+  ``build/<pkg>-<hash>`` directories and every ``deps`` file carrying that
+  ``-<hash>`` (libraries, test and bench executables, debug info);
 - ``incremental/`` and ``examples/``;
-- the files directly in the profile directory (uplifted copies, which
-  cargo links again on the next build).
-
-Libraries, build scripts and their ``build/`` outputs stay, for workspace
-packages and dependencies alike.
+- the files directly in the profile directory (uplifted copies).
 
 Usage: prune_cargo_target.py TARGET_DIR [--manifest-path Cargo.toml] [--dry-run]
 """
@@ -26,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 from collections.abc import Iterable
@@ -50,23 +42,18 @@ def profile_dirs(target: Path, depth: int = 4) -> list[Path]:
     return sorted(set(found))
 
 
-def kept(unit: Path) -> bool:
-    """A library or build-script unit, by the target kinds its fingerprint names."""
-    return any(
-        name.startswith(("lib-", "build-script-", "run-build-script-")) for name in os.listdir(unit)
-    )
-
-
 def doomed(profile: Path, packages: Iterable[str]) -> list[Path]:
     """What to remove from one profile directory."""
     packages = set(packages)
     paths: list[Path] = []
     hashes = set()
-    fingerprints = profile / ".fingerprint"
-    if fingerprints.is_dir():
-        for unit in fingerprints.iterdir():
+    for kind in (".fingerprint", "build"):
+        root = profile / kind
+        if not root.is_dir():
+            continue
+        for unit in root.iterdir():
             package, _, unit_hash = unit.name.rpartition("-")
-            if package in packages and not kept(unit):
+            if package in packages:
                 paths.append(unit)
                 hashes.add(unit_hash)
     for artifact in (profile / "deps").iterdir():

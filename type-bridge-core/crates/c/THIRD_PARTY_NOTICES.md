@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:e85f57552e366f7e9dbfa61a4bea6e4261b358c8a26234ba1410d7a10e2c8782`
+- Closure fingerprint: `sha256:b04c290dea4da4dbe4c9f03b8a60bba6c8f31b13f708d6dfdb281d5fa2b3cd5b`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -998,7 +998,7 @@ bytes actually reproduced in this notice.
 | `tinystr` | `0.8.3` | Python, Node, CLI, C | `crates.io` | `Unicode-3.0` | `Unicode-3.0@sha256:f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2` |
 | `tinyvec` | `1.12.0` | Python, Node, CLI, C | `crates.io` | `Zlib OR Apache-2.0 OR MIT` | `MIT@sha256:fd80a26fbb3f644af1fa994134446702932968519797227e07a1368dea80f0bc` |
 | `tinyvec_macros` | `0.1.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0 OR Zlib` | `MIT@sha256:1dd8eca0f83669e75fa119e34fb9e1be9d16e3e9b6368962b8019db6e8ae5f7b` |
-| `tokio` | `1.52.3` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552` |
+| `tokio` | `1.53.3` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552` |
 | `tokio-macros` | `2.7.0` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:0b83dc40cba89b9922bb84b0a9c7d2768ce37c1d7e138b7424fd4549915778c9` |
 | `tokio-rustls` | `0.26.4` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:e20fa2b8e0a2565f24a792b94b4bf4b6c2b9d36f781d8a9516e218a036e6677a` |
 | `tokio-stream` | `0.1.18` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552` |
