@@ -1,11 +1,13 @@
 //! Lowering and answer resolution for trusted `query-plan/v3` programs.
 //!
-//! A plan lowers to exactly one TypeQL pipeline: a `given` stage carrying
+//! A plain plan lowers to one TypeQL pipeline: a `given` stage carrying
 //! every input row when the plan declares inputs, the plan's stages in
 //! order, and the projection its operation needs. Plan constants render as
 //! literals; caller values reach TypeDB only through `given`. A write's
 //! `Matched` answer is the number of rows its pipeline produced, counted from
 //! the same answer stream, so a conditional write needs no extra query.
+//! Opt-in deletion snapshots first run a read-only capture pipeline with the
+//! same prefix and inputs, then delete within that same transaction.
 
 use type_bridge_core_lib::__internal as tql;
 
@@ -205,7 +207,14 @@ fn remote_value(row: &serde_json::Value, variable: &str) -> Result<RemoteValue, 
 }
 
 /// Lower one trusted plan into the official AST plus its `given` rows.
-pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsSpec>), Diagnostic> {
+#[derive(Debug)]
+pub(crate) struct LoweredPlan {
+    pub(crate) query: tql::Query,
+    pub(crate) snapshot: Option<tql::Query>,
+    pub(crate) given: Option<GivenRowsSpec>,
+}
+
+pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
     // A lifted V2 plan keeps its released predicate and model terminal as
     // frozen compatibility evidence beside the pipeline. Only the pipeline
     // lowers here, so running such a plan would drop its filter and its
@@ -245,6 +254,7 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
         Some(given_rows_spec(inputs, rows)?)
     };
     let scope = Scope { bindings, inputs };
+    let mut snapshot = None;
     for (index, stage) in plan.pipeline().iter().enumerate() {
         match stage {
             Stage::Match { patterns } => stages.push(tql::match_stage(scope.patterns(patterns)?)),
@@ -298,7 +308,24 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
             }
             Stage::Offset { rows } => stages.push(tql::offset(*rows)),
             Stage::Limit { rows } => stages.push(tql::limit(*rows)),
-            Stage::Fetch(document) => scope.fetch(document, &mut stages)?,
+            Stage::Fetch(document) => {
+                if matches!(plan.pipeline().last(), Some(Stage::Delete { .. })) {
+                    let mut captured = stages.clone();
+                    let mut complete = document.clone();
+                    // Do not let role expansion remove a root from the snapshot
+                    // while the deletion statement still selects that root.
+                    for role in &mut complete.roles {
+                        role.required = false;
+                    }
+                    scope.fetch(&complete, &mut captured)?;
+                    snapshot = Some(tql::pipeline_with_functions(
+                        lower_functions(inputs, plan.functions())?,
+                        captured,
+                    ));
+                } else {
+                    scope.fetch(document, &mut stages)?;
+                }
+            }
             // Additions to bound things are an insert stage over existing
             // variables; nothing fresh is created.
             Stage::Attach { items } => stages.push(tql::insert(
@@ -352,7 +379,11 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<(tql::Query, Option<GivenRowsS
         _ => {}
     }
     let functions = lower_functions(inputs, plan.functions())?;
-    Ok((tql::pipeline_with_functions(functions, stages), given))
+    Ok(LoweredPlan {
+        query: tql::pipeline_with_functions(functions, stages),
+        snapshot,
+        given,
+    })
 }
 
 /// Lower, render and bound one plan as a staged provider query.
@@ -361,7 +392,11 @@ pub(crate) fn staged_query(
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
     let _stage = tracing::info_span!("tb.query.compile").entered();
-    let (query, given) = lower(plan)?;
+    let LoweredPlan {
+        query,
+        snapshot,
+        given,
+    } = lower(plan)?;
     if given.is_some() && !supports_given_rows {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -380,10 +415,35 @@ pub(crate) fn staged_query(
     let mut staged = StagedQuery::new(typeql, plan.writes())
         .canonical()
         .with_failure_context(failure_context(plan));
+    if let Some(snapshot) = snapshot {
+        let snapshot = ast(tql::render(&snapshot))?;
+        if snapshot.len() > plan.limits().codec.max_bytes {
+            return Err(plan.limits().annotate(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_lowered_typeql_byte_limit",
+                "lowered snapshot TypeQL exceeds the canonical protocol byte ceiling",
+            )));
+        }
+        staged.snapshot = Some((snapshot, plan.clone()));
+    }
     if let Some(rows) = given {
         staged = staged.with_rows(rows);
     }
     Ok(staged)
+}
+
+/// Validate capture evidence before dispatching the destructive statement.
+pub(crate) fn validate_snapshot(
+    plan: &QueryPlanV3,
+    result: &QueryResult,
+) -> Result<(), Diagnostic> {
+    let QueryResult::Documents(documents) = result else {
+        return Err(staged_answer_shape());
+    };
+    for document in documents {
+        remote_document(document, plan)?;
+    }
+    Ok(())
 }
 
 /// Validate document evidence before a transaction can commit.
@@ -898,14 +958,55 @@ mod tests {
     use super::*;
 
     fn typeql(plan: &QueryPlanV3) -> (String, Option<GivenRowsSpec>) {
-        let (query, given) = lower(plan).unwrap();
-        (tql::render(&query).unwrap(), given)
+        let lowered = lower(plan).unwrap();
+        (tql::render(&lowered.query).unwrap(), lowered.given)
     }
 
     fn assert_same_ast(actual: &str, expected: &str) {
         assert!(
             tql::equivalent(actual, expected).unwrap(),
             "lowered:\n{actual}\nexpected:\n{expected}"
+        );
+    }
+
+    #[test]
+    fn deletion_snapshot_lowers_to_two_statements_from_the_same_prefix() {
+        let lowered = lower(&race::delete_doctors_returning()).unwrap();
+        assert_same_ast(
+            &tql::render(&lowered.query).unwrap(),
+            "match $doctor isa! doctor; delete $doctor;",
+        );
+        assert_same_ast(&tql::render(&lowered.snapshot.unwrap()).unwrap(),
+            "match $doctor isa! doctor; match $doctor isa! $PlanFetchType;
+             fetch { \"_iid\": iid($doctor), \"_type\": label($PlanFetchType), \"attributes\": { $doctor.* } };"
+        );
+    }
+
+    #[test]
+    fn deletion_snapshot_captures_required_roles_without_filtering_deleted_roots() {
+        let lowered = lower(&race::delete_purchases_returning(true)).unwrap();
+        assert_same_ast(
+            &tql::render(&lowered.query).unwrap(),
+            "match $purchase isa! purchase; delete $purchase;",
+        );
+        assert_same_ast(
+            &tql::render(&lowered.snapshot.unwrap()).unwrap(),
+            r#"match $purchase isa! purchase;
+               match $purchase isa! $PlanFetchType;
+                 try { $purchase links (buyer: $PlanFetchRole0);
+                       $PlanFetchRole0 isa! $PlanFetchRole0Type; };
+                 try { $purchase links (item: $PlanFetchRole1);
+                       $PlanFetchRole1 isa! $PlanFetchRole1Type; };
+               fetch {
+                 "_iid": iid($purchase), "_type": label($PlanFetchType),
+                 "attributes": { $purchase.* },
+                 "_role_0_iid": iid($PlanFetchRole0),
+                 "_role_0_type": label($PlanFetchRole0Type),
+                 "_role_0_attributes": { $PlanFetchRole0.* },
+                 "_role_1_iid": iid($PlanFetchRole1),
+                 "_role_1_type": label($PlanFetchRole1Type),
+                 "_role_1_attributes": { $PlanFetchRole1.* }
+               };"#,
         );
     }
 

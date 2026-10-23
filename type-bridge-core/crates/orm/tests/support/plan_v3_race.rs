@@ -587,3 +587,94 @@ pub fn insert_doctor_fetch(name: &str) -> QueryPlanV3 {
     )
     .unwrap()
 }
+
+/// Capture all doctors before deleting them in the same write transaction.
+pub fn delete_doctors_returning() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["doctor"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, entity("doctor"))],
+                },
+                Stage::Fetch(ThingDocument::new(id(0), vec![])),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Delete purchases, retaining both role slots and optionally requiring a buyer.
+pub fn delete_purchases_returning(require_buyer: bool) -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["purchase"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, purchase_type())],
+                },
+                Stage::Fetch(ThingDocument::new(
+                    id(0),
+                    vec![
+                        DocumentRole::new(role("buyer"), require_buyer),
+                        DocumentRole::new(role("item"), false),
+                    ],
+                )),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Capture and delete only doctors selected by supplied given-row names.
+pub fn delete_named_doctors_returning(names: &[&str]) -> QueryPlanV3 {
+    let mut plan = spec(
+        &["doctor", "name"],
+        vec![
+            Stage::Match {
+                patterns: vec![
+                    isa(0, entity("doctor")),
+                    has(0, 1, "name"),
+                    compare(ValueComparator::Equal, binding(1), input(0)),
+                ],
+            },
+            Stage::Fetch(ThingDocument::new(id(0), vec![])),
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding: id(0) }],
+            },
+        ],
+        Operation::Write {
+            returns: WriteReturns::Rows,
+        },
+        vec![],
+    );
+    plan.inputs = vec![InputColumn::new(
+        InputColumnId::new(0),
+        QueryVariable::new("selected_name").unwrap(),
+        ValueTypeTag::String,
+        false,
+    )];
+    plan.given_rows = Some(
+        names
+            .iter()
+            .map(|name| InputRow::new(vec![Some(text(name))]))
+            .collect(),
+    );
+    QueryPlanV3::new(plan, &schema()).unwrap()
+}
