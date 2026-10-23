@@ -429,3 +429,34 @@ pub fn plans() -> BTreeMap<&'static str, QueryPlanV3> {
     result.insert("write_rows", matched);
     result
 }
+
+/// Capture an existing entity or relation immediately before deleting it.
+pub fn delete_returning(relation_players: bool) -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+    let root = if relation_players {
+        relation()
+    } else {
+        entity("account")
+    };
+    let roles = if relation_players {
+        vec![DocumentRole::new(role(), false)]
+    } else {
+        vec![]
+    };
+    let mut plan = spec(
+        vec![
+            Stage::Match {
+                patterns: vec![pat(0, root)],
+            },
+            Stage::Fetch(ThingDocument::new(id(0), roles)),
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding: id(0) }],
+            },
+        ],
+        vec![],
+    );
+    plan.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    QueryPlanV3::new(plan, &schema()).unwrap()
+}

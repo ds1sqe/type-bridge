@@ -870,6 +870,11 @@ fn shared_plan_v3_fixtures() {
     // they derive is not advertised by proxies yet.
     plans.insert("fetch_entity", examples::fetch_written(false));
     plans.insert("fetch_relation", examples::fetch_written(true));
+    plans.insert("delete_returning_entity", examples::delete_returning(false));
+    plans.insert(
+        "delete_returning_relation",
+        examples::delete_returning(true),
+    );
     plans.insert("attach", examples::attach());
     plans.insert("replace_players", examples::replace_players());
     let mut manifest = BTreeMap::new();
@@ -1261,5 +1266,127 @@ fn removing_every_player_of_a_role_needs_a_declared_role_of_the_relation() {
             .code()
             .as_str(),
         "query_plan_wrong_role_owner"
+    );
+}
+
+#[test]
+fn deletion_snapshot_keeps_pre_delete_authority_and_requires_write_rows() {
+    use type_bridge_contract::query_plan::v3::{Operation, ThingDocument, WriteReturns};
+    let pipeline = vec![
+        matched(),
+        Stage::Fetch(ThingDocument::new(id(0), vec![])),
+        Stage::Delete {
+            items: vec![DeleteItem::Thing { binding: id(0) }],
+        },
+    ];
+    let mut candidate = spec(pipeline.clone(), vec![]);
+    candidate.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    let plan = QueryPlanV3::new(candidate, &schema()).unwrap();
+    assert!(plan.fetch_document_shape().is_some());
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|c| c.as_str() == "query.write.delete-snapshot")
+    );
+    assert_eq!(
+        decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        plan
+    );
+    for operation in [
+        Operation::Rows,
+        Operation::Count,
+        Operation::Write {
+            returns: WriteReturns::Matched,
+        },
+    ] {
+        let mut candidate = spec(pipeline.clone(), vec![]);
+        candidate.operation = operation;
+        assert_eq!(
+            QueryPlanV3::new(candidate, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_fetch_delete_operation"
+        );
+    }
+    let mut wrong_target = pipeline;
+    wrong_target[2] = Stage::Delete {
+        items: vec![DeleteItem::Has {
+            owner: id(0),
+            field: field("score"),
+        }],
+    };
+    let mut candidate = spec(wrong_target, vec![]);
+    candidate.operation = Operation::Write {
+        returns: WriteReturns::Rows,
+    };
+    assert_eq!(
+        QueryPlanV3::new(candidate, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_fetch_delete_target"
+    );
+}
+
+#[test]
+fn deletion_snapshot_refuses_replayed_mutations_and_nonterminal_fetches() {
+    use type_bridge_contract::query_plan::v3::{Operation, ThingDocument, WriteReturns};
+    let fetch = Stage::Fetch(ThingDocument::new(id(0), vec![]));
+    let delete = Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: id(0) }],
+    };
+    for (pipeline, code) in [
+        (
+            vec![
+                Stage::Insert {
+                    things: vec![thing(0)],
+                },
+                fetch.clone(),
+                delete.clone(),
+            ],
+            "query_plan_fetch_delete_prefix",
+        ),
+        (
+            vec![matched(), fetch.clone(), delete.clone(), Stage::Distinct],
+            "query_plan_fetch_not_last",
+        ),
+        (
+            vec![matched(), fetch, Stage::Distinct, delete],
+            "query_plan_fetch_not_last",
+        ),
+    ] {
+        let mut candidate = spec(pipeline, vec![]);
+        candidate.operation = Operation::Write {
+            returns: WriteReturns::Rows,
+        };
+        assert_eq!(
+            QueryPlanV3::new(candidate, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            code
+        );
+    }
+    let ordinary = QueryPlanV3::new(
+        spec(
+            vec![
+                matched(),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap();
+    assert!(
+        !ordinary
+            .required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.write.delete-snapshot")
     );
 }

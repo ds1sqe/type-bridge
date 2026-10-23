@@ -137,6 +137,7 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
                 "query.write.insert",
                 "query.write.update",
                 "query.write.delete",
+                "query.write.delete-snapshot",
                 "query.write.put",
                 "query.fetch.thing",
                 "query.write.attach",
@@ -613,6 +614,13 @@ impl QueryPlanV3 {
             };
             insert_capability(&mut required_capabilities, capability)?;
         }
+        if spec
+            .pipeline
+            .windows(2)
+            .any(|pair| matches!(pair, [Stage::Fetch(_), Stage::Delete { .. }]))
+        {
+            insert_capability(&mut required_capabilities, "query.write.delete-snapshot")?;
+        }
         let plan = Self {
             bindings: spec.bindings,
             compatibility: spec.compatibility,
@@ -791,6 +799,7 @@ fn validate_stages(
     let mut read_tail = Vec::new();
     let mut reading = false;
     let mut fetched: Option<&ThingDocument> = None;
+    let mut captured_environment = None;
     if !matches!(
         first,
         Stage::Match { .. } | Stage::Insert { .. } | Stage::Put { .. }
@@ -1059,11 +1068,43 @@ fn validate_stages(
                 }
             }
             Stage::Fetch(document) => {
-                if stage_index + 1 != spec.pipeline.len() {
+                let snapshot = stage_index + 2 == spec.pipeline.len()
+                    && matches!(spec.pipeline.last(), Some(Stage::Delete { .. }));
+                if stage_index + 1 != spec.pipeline.len() && !snapshot {
                     return Err(invalid(
                         "query_plan_fetch_not_last",
-                        "a thing fetch is the last stage",
+                        "a thing fetch is terminal or immediately precedes a terminal delete",
                     ));
+                }
+                if snapshot {
+                    // Replaying a write prefix would apply mutations twice.
+                    if spec.pipeline[..stage_index].iter().any(|stage| {
+                        matches!(
+                            stage,
+                            Stage::Insert { .. }
+                                | Stage::Put { .. }
+                                | Stage::Update { .. }
+                                | Stage::Attach { .. }
+                                | Stage::Delete { .. }
+                        )
+                    }) {
+                        return Err(invalid(
+                            "query_plan_fetch_delete_prefix",
+                            "a deletion snapshot requires a read-only prefix",
+                        ));
+                    }
+                    let Some(Stage::Delete { items }) = spec.pipeline.last() else {
+                        unreachable!()
+                    };
+                    if !matches!(items.as_slice(), [DeleteItem::Thing { binding }] if *binding == document.thing)
+                    {
+                        return Err(invalid(
+                            "query_plan_fetch_delete_target",
+                            "a deletion snapshot captures exactly the thing being deleted",
+                        ));
+                    }
+                    // The answer retains authority from before its root is deleted.
+                    captured_environment = Some((mandatory.clone(), optional.clone()));
                 }
                 if !matches!(
                     spec.operation,
@@ -1118,7 +1159,12 @@ fn validate_stages(
         ));
     }
     if let Some(document) = fetched {
-        index.thing_document(document, &mandatory, &optional, &types)?;
+        let (answer_mandatory, answer_optional) = captured_environment
+            .as_ref()
+            .map_or((&mandatory, &optional), |(mandatory, optional)| {
+                (mandatory, optional)
+            });
+        index.thing_document(document, answer_mandatory, answer_optional, &types)?;
         let profile = crate::semantic_profile::SemanticProfile::resolve(
             spec.managed_semantics
                 .as_fingerprint()
@@ -1889,6 +1935,20 @@ pub fn decode_query_plan_v3_with_limits(
 }
 
 fn validate_operation(spec: &PlanSpec) -> Result<(), Diagnostic> {
+    if matches!(
+        spec.pipeline.as_slice(),
+        [.., Stage::Fetch(_), Stage::Delete { .. }]
+    ) && !matches!(
+        spec.operation,
+        Operation::Write {
+            returns: WriteReturns::Rows
+        }
+    ) {
+        return Err(invalid(
+            "query_plan_fetch_delete_operation",
+            "a deletion snapshot requires write returning rows",
+        ));
+    }
     let writes = spec.pipeline.iter().any(Stage::is_write);
     if writes != matches!(spec.operation, Operation::Write { .. }) {
         return Err(invalid(

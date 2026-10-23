@@ -215,7 +215,7 @@ ownerships and roles. Key ownerships cannot be attached. Targets, operands
 and roles are checked as for update. An attach adds `query.write.attach`.
 
 A fetch is `{"kind":"fetch","thing":B,"roles":[{"required":true,"role":R},...]}`
-and must be the last stage. It answers one hydration document per row for a
+and is normally the last stage. It answers one hydration document per row for a
 present (mandatory, not optional) binding typed only as entities or
 relations, so the operation is `rows` or `write` returning `rows`, and the
 declared output is `{"kind":"rows","columns":[]}`. Each listed role must be
@@ -227,6 +227,15 @@ and for the role at position `N`: `_role_N_iid`, `_role_N_type`,
 the row); an optional role's keys are absent when it is unfilled; several
 players of a role give one document per player combination. A fetch adds
 `query.fetch.thing`.
+
+An opt-in deletion snapshot permits a fetch immediately before a terminal
+`delete`, with `write` returning `rows` and empty output columns. It requires
+`query.write.delete-snapshot` in addition to the ordinary fetch/delete
+capabilities. Its answer is validated against the environment before deletion;
+the deleted binding remains unavailable afterward. The delete must remove
+exactly the fetched thing. Write prefixes are refused because executing the
+prefix for both capture and deletion would repeat mutations. Existing plain
+delete plans, answers and fingerprints are unchanged.
 
 `query.write.attach` and `query.fetch.thing` are advertised by
 `GET /v3/capabilities` and admitted on the staged route. Fetch answers use

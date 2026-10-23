@@ -52,7 +52,12 @@ impl RemoteReplyVerifier for Keys {
     }
 }
 fn advertisement() -> RemoteCapabilities {
-    let mut caps = query_plan_v3_capability_vocabulary();
+    // Freeze the advertisement used by the released signed fixtures.
+    let mut caps: type_bridge_contract::capability::CapabilitySet =
+        query_plan_v3_capability_vocabulary()
+            .into_iter()
+            .filter(|cap| cap.as_str() != "query.write.delete-snapshot")
+            .collect();
     for cap in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
         caps.insert(CapabilityId::new(cap).unwrap());
     }
@@ -858,4 +863,61 @@ fn fetch_documents_distinguish_scalar_and_collection_ownerships() {
         shape.validate(&documents[0]).unwrap_err().code().as_str(),
         "query_remote_v3_document_value"
     );
+}
+
+#[test]
+fn deletion_snapshots_require_capability_and_verify_signed_pre_images() {
+    let old = advertisement();
+    let mut caps = old.capabilities().clone();
+    caps.insert(CapabilityId::new("query.write.delete-snapshot").unwrap());
+    let ad = RemoteCapabilities::new(
+        caps,
+        RemoteExecutorBinding::new("fixture-executor-0001", "fixture-epoch-0000001").unwrap(),
+        Keys::new().public_key(),
+    );
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/query-remote-v3");
+    let mut fixtures = BTreeMap::new();
+    fixtures.insert("advertisement-delete-snapshot.json", ad.encode().unwrap());
+    for relation in [false, true] {
+        let make_spec = || {
+            let mut spec = spec();
+            spec.plans = vec![entry(examples::delete_returning(relation))];
+            spec
+        };
+        assert_eq!(
+            StagedRequestV3::new(make_spec(), &support::schema(), &old)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "unsupported_required_capability"
+        );
+        let request = StagedRequestV3::new(make_spec(), &support::schema(), &ad).unwrap();
+        let (_, documents) = fetch_documents(relation);
+        let reply = StagedReplyV3::new(
+            &request,
+            StagedOutcomeV3::Committed,
+            vec![StagedAnswerV3::Documents { documents }],
+        )
+        .unwrap();
+        let bytes = reply.encode_signed(&request, &ad, &Keys::new()).unwrap();
+        VerifiedStagedReplyV3::decode(
+            &bytes,
+            &request,
+            &ad,
+            Keys::new().public_key(),
+            &Keys::new(),
+        )
+        .unwrap();
+        if relation {
+            fixtures.insert("request-delete-snapshot.json", request.encode().unwrap());
+            fixtures.insert("reply-delete-snapshot.json", bytes);
+        }
+    }
+    for (name, bytes) in fixtures {
+        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+            std::fs::write(root.join(name), &bytes).unwrap();
+        }
+        assert_eq!(std::fs::read(root.join(name)).unwrap(), bytes);
+    }
 }
