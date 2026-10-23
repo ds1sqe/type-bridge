@@ -120,10 +120,21 @@ jobs:
         working-directory: type-bridge-core
         run: cargo check --all-targets
 
-      # schema-codegen's tests run in parallel in rust-codegen-tests.
+      - name: Install pinned cargo-nextest
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-nextest@0.9.140
+
+      # schema-codegen's tests run in parallel in rust-codegen-tests. nextest
+      # runs the test binaries in parallel; the benches (harness = false, which
+      # nextest cannot list) stay on cargo test, which runs each once.
       - name: cargo test
         working-directory: type-bridge-core
-        run: cargo test --all-targets --no-fail-fast --workspace --exclude type-bridge-schema-codegen
+        shell: pwsh
+        run: |
+          cargo nextest run --no-fail-fast --workspace --exclude type-bridge-schema-codegen --lib --bins --tests --examples
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --no-fail-fast --workspace --exclude type-bridge-schema-codegen --benches
 
       - name: Check alternate serde_json backends
         working-directory: type-bridge-core
@@ -242,6 +253,12 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
+      # The next build rebuilds the workspace's own crates anyway; keep only
+      # the compiled dependencies so the entry stays small.
+      - name: Prune cargo target
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: python scripts/ci/prune_cargo_target.py type-bridge-core/target --manifest-path type-bridge-core/Cargo.toml
+
       # Only master writes caches; pull requests restore master's.
       - name: Save cargo build cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -315,6 +332,10 @@ jobs:
 
       - name: Install the source-tree Python product
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --no-dev
 
       - name: Wait for TypeDB server to be ready
@@ -695,6 +716,10 @@ jobs:
         run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
 
       - name: Install the source-tree Python product
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install Node dependencies
@@ -1001,6 +1026,12 @@ jobs:
         working-directory: type-bridge-core
         run: cargo fetch --locked
 
+      - name: Install pinned cargo-nextest
+        if: matrix.shard == 'rest'
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-nextest@0.9.140
+
       - name: cargo test (schema-codegen ${{ matrix.shard }})
         working-directory: type-bridge-core
         # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
@@ -1016,7 +1047,7 @@ jobs:
             foreach ($file in Get-ChildItem crates/schema-codegen/tests -Filter *.rs) {
               if ($file.BaseName -ne 'rust_acceptance') { $targets += @('--test', $file.BaseName) }
             }
-            cargo test --no-fail-fast -p type-bridge-schema-codegen @targets
+            cargo nextest run --no-fail-fast -p type-bridge-schema-codegen @targets
           }
           exit $LASTEXITCODE
 
@@ -1177,6 +1208,10 @@ jobs:
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
       - name: Install Python and Node dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: |
           uv sync --extra dev
           uv pip install maturin==1.14.1
@@ -1252,6 +1287,10 @@ jobs:
           cache-dependency-path: type-bridge-core/crates/node/package-lock.json
 
       - name: Install Python and Node dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: |
           uv sync --extra dev
           uv pip install maturin==1.14.1
@@ -1327,7 +1366,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install the band's Python driver
@@ -1700,6 +1752,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install the cell's Python driver
@@ -1976,6 +2032,10 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Audit generated successors and removed-source mapping
@@ -2145,7 +2205,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install pytest-xdist for parallel execution
@@ -2193,7 +2266,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Install pyright
@@ -2246,7 +2332,20 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
       - name: Install dependencies
+        # A dev-profile build links the dependencies rust-check compiled and
+        # master cached; the release profile would compile all of them.
+        env:
+          MATURIN_PEP517_ARGS: --profile dev
         run: uv sync --extra dev
 
       - name: Run ruff lint check
@@ -2477,6 +2576,12 @@ jobs:
         if: failure()
         run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
 
+      # The next build rebuilds the workspace's own crates anyway; keep only
+      # the compiled dependencies so the entry stays small.
+      - name: Prune cargo target
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: python scripts/ci/prune_cargo_target.py tmp/standalone-cli-artifact/build --manifest-path type-bridge-core/Cargo.toml
+
       # Only master writes caches; pull requests restore master's.
       - name: Save cargo build cache
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -2542,6 +2647,12 @@ jobs:
             tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
           if-no-files-found: error
           retention-days: 7
+
+      # The next build rebuilds the workspace's own crates anyway; keep only
+      # the compiled dependencies so the entry stays small.
+      - name: Prune cargo target
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: python scripts/ci/prune_cargo_target.py tmp/c-package-artifacts/build/cargo --manifest-path type-bridge-core/Cargo.toml
 
       # Only master writes caches; pull requests restore master's.
       - name: Save cargo build cache

@@ -50,9 +50,11 @@ env:
 jobs:
   metadata:
     name: Shared run identity
-    # Every other job needs this one, so this gate skips the whole run.
+    # Every other job needs this one, so this gate skips the whole run. A
+    # dispatched CI run re-checks a commit Perf already measured.
     if: >-
-      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      (github.event_name != 'workflow_run'
+        || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'))
       && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf'))
     runs-on: ubuntu-latest
     outputs:
@@ -898,7 +900,8 @@ jobs:
       !cancelled()
       && !contains(needs.*.result, 'failure')
       && !contains(needs.*.result, 'cancelled')
-      && ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+      && ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.event == 'push')
         || github.event_name == 'release'
         || github.event_name == 'schedule'
         || github.event_name == 'workflow_dispatch')

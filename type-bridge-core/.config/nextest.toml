@@ -1,0 +1,11 @@
+# nextest runs every test in its own process, many at once. These tests
+# bound wall time (busy-wait stage timing, a 40 ms answer deadline),
+# which a test running beside them can stretch, so each takes every test
+# slot. An injected clock would remove the need; see #263.
+[[profile.default.overrides]]
+filter = """
+package(type-bridge-perf-stages)
+| (package(type-bridge-orm)
+   & test(=session::staged::tests::answer_timeout_refreshes_on_commit_reuse_and_debug_redacts_queries))
+"""
+threads-required = "num-test-threads"
