@@ -4,7 +4,7 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
-## [2.3.1] - 2026-10-22
+## [2.3.1] - 2026-10-23
 
 2.3.1 adds TypeDB 3.14 to the supported matrix (#268). Applications and
 generated packages need no change. TypeDB 3.14's stricter query rules
