@@ -39,7 +39,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def collect_run(env: Mapping[str, str], *, started_at: str | None = None) -> Run:
     """The ``run`` block shared by producers on this host."""
     return Run(
-        commit=env.get("GITHUB_SHA") or _git("rev-parse", "HEAD"),
+        # PERF_COMMIT and PERF_TRIGGER are the workflow's view of the measured
+        # commit: a workflow_run measures the CI run's head as a master push.
+        commit=env.get("PERF_COMMIT") or env.get("GITHUB_SHA") or _git("rev-parse", "HEAD"),
         # GITHUB_HEAD_REF is set only on pull requests, where GITHUB_REF_NAME
         # is the synthetic merge ref.
         branch=env.get("GITHUB_HEAD_REF")
@@ -77,7 +79,7 @@ def build(
 
 
 def _trigger(env: Mapping[str, str]) -> Trigger:
-    event = env.get("GITHUB_EVENT_NAME") or "local"
+    event = env.get("PERF_TRIGGER") or env.get("GITHUB_EVENT_NAME") or "local"
     if event not in TRIGGERS:
         raise ValueError(f"GITHUB_EVENT_NAME {event!r} is not one of {', '.join(TRIGGERS)}")
     return cast(Trigger, event)

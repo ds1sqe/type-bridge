@@ -1,9 +1,15 @@
 name: Perf
 
 on:
-  push:
+  # A master commit is measured after its CI run, so Perf's jobs do not
+  # compete with CI for the account's runner slots.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [master]
+  # Pull requests are measured only while they carry the `perf` label.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   # A published release runs everything, and the released matrix adds it to
   # the version comparison once PyPI and npm both serve it.
   release:
@@ -25,8 +31,8 @@ permissions:
 # a group of its own: GitHub keeps one pending run per group and cancels the
 # rest, which would drop their results.
 concurrency:
-  group: perf-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: perf-${{ github.event_name == 'pull_request' && format('pr-{0}', github.ref) || github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf') }}
 
 env:
   CARGO_HOME: ${{ github.workspace }}/../.cargo-home
@@ -36,10 +42,18 @@ env:
   GUNGRAUN_RUNNER_VERSION: "0.20.0"
   GUNGRAUN_RUNNER_ROOT: ${{ github.workspace }}/../.gungraun-runner
   PERF_DIR: ${{ github.workspace }}/perf-out
+  # The measured commit and its trigger as the history records them: a
+  # workflow_run measures the CI run's head commit as a master push.
+  PERF_COMMIT: ${{ github.event.workflow_run.head_sha || github.sha }}
+  PERF_TRIGGER: ${{ github.event_name == 'workflow_run' && 'push' || github.event_name }}
 
 jobs:
   metadata:
     name: Shared run identity
+    # Every other job needs this one, so this gate skips the whole run.
+    if: >-
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'perf'))
     runs-on: ubuntu-latest
     outputs:
       started_at: ${{ steps.clock.outputs.started_at }}
@@ -58,6 +72,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -163,6 +179,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -200,6 +218,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -318,6 +338,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -389,6 +411,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -518,6 +542,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -606,6 +632,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -650,6 +678,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -809,8 +839,8 @@ jobs:
             (
               cd "$GITHUB_WORKSPACE/$side"
               export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/tmp/compare-$side"
-              export GITHUB_SHA
-              GITHUB_SHA=$(git rev-parse HEAD)
+              export PERF_COMMIT
+              PERF_COMMIT=$(git rev-parse HEAD)
               export GITHUB_HEAD_REF="$side"
               for spec in 'core:type-bridge-core-lib:validation compilation schema' 'orm:type-bridge-orm:serde query_building staged'; do
                 IFS=: read -r group package benches <<< "$spec"
@@ -855,20 +885,20 @@ jobs:
           if-no-files-found: error
 
   # Appends this run's results to the history branch. Runs only for master
-  # pushes, the nightly schedule and manual dispatch, never for pull
+  # CI runs, releases, the nightly schedule and manual dispatch, never for pull
   # requests; it is the only job with write access, and it writes only the
   # data branch. It has no concurrency group: GitHub keeps one pending job
   # per group and cancels the rest, which would drop their results.
   # Concurrent stores are serialized by the push retry below instead.
   store:
     name: Store perf history
-    # versions and released are skipped on master pushes; any failed or cancelled producer
+    # versions and released are skipped on master runs; any failed or cancelled producer
     # still stores nothing.
     if: >-
       !cancelled()
       && !contains(needs.*.result, 'failure')
       && !contains(needs.*.result, 'cancelled')
-      && ((github.event_name == 'push' && github.ref == 'refs/heads/master')
+      && ((github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
         || github.event_name == 'release'
         || github.event_name == 'schedule'
         || github.event_name == 'workflow_dispatch')
@@ -884,6 +914,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.PERF_COMMIT }}
 
       - name: Set up Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -930,7 +962,7 @@ jobs:
               exit 0
             fi
             git -C "$DATA_DIR" commit --quiet \
-              -m "perf: store ${GITHUB_SHA::12} (${GITHUB_EVENT_NAME})"
+              -m "perf: store ${PERF_COMMIT::12} (${PERF_TRIGGER})"
           }
           store_and_commit
           for attempt in $(seq 1 "$attempts"); do

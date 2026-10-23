@@ -23,456 +23,6 @@ env:
   RUST_STABLE_TOOLCHAIN: "1.94.1"
 
 jobs:
-  standalone-cli-artifact:
-    name: Standalone CLI artifact (Linux x86_64 GNU)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    services:
-      typedb:
-        image: typedb/typedb:3.12.3
-        ports:
-          - 1729:1729
-          - 8000:8000
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install exact artifact Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: tmp/standalone-cli-artifact/build
-          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            linux-cli-artifact-v1-
-
-      - name: Require native archive and binary inspectors
-        run: |
-          test "$(uname -m)" = x86_64
-          readelf --version
-          sha256sum --version
-
-      - name: Build and validate the deterministic standalone CLI artifact
-        run: >-
-          python scripts/ci/standalone_cli_artifact.py build
-          --output tmp/standalone-cli-artifact
-
-      - name: Consume the relocated artifact without language toolchains
-        run: >-
-          python scripts/ci/standalone_cli_artifact.py smoke
-          tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-
-      - name: Generate reproducible Python, Node, and Rust artifacts surfaces
-        run: |
-          set -euo pipefail
-          artifact=tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          python scripts/ci/sdk_artifacts_surfaces.py build "$artifact" \
-            --output tmp/sdk-artifacts-surfaces
-          python scripts/ci/sdk_artifacts_surfaces.py build "$artifact" \
-            --output tmp/sdk-artifacts-surfaces-repeat
-          for binding in python node rust; do
-            archive="type-bridge-$binding-generated-sdk-artifacts.tar.gz"
-            cmp "tmp/sdk-artifacts-surfaces/$archive" \
-              "tmp/sdk-artifacts-surfaces-repeat/$archive"
-            python scripts/ci/sdk_artifacts_surfaces.py validate \
-              "tmp/sdk-artifacts-surfaces/$archive" --binding "$binding"
-          done
-
-      - name: Wait for exact TypeDB fixture
-        run: |
-          for i in {1..30}; do
-            version="$(curl --fail --silent --max-time 3 \
-              http://localhost:8000/v1/version 2>/dev/null || true)"
-            if nc -z localhost 1729 2>/dev/null \
-              && python3 -c \
-                'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if isinstance(value,dict) and value.get("version")=="3.12.3" else 1)' \
-                "$version"; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs ${{ job.services.typedb.id }} 2>&1 || true
-          exit 1
-
-      - name: Apply, verify, roll back, and reapply exact sdk history
-        run: >-
-          python scripts/ci/standalone_cli_artifact.py connected-smoke
-          tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          --database sdk_cli_${{ github.run_id }}_${{ github.run_attempt }}
-
-      - name: Upload immutable non-publishing artifact evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: standalone-cli-artifact-linux-x86_64-gnu
-          path: tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload artifact-generated artifacts language surfaces
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-artifacts-generated-surfaces
-          path: tmp/sdk-artifacts-surfaces/*.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Show TypeDB logs after failure
-        if: failure()
-        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
-
-      # Only master writes caches; pull requests restore master's.
-      - name: Save cargo build cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: tmp/standalone-cli-artifact/build
-          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-
-  c-package-artifacts:
-    name: C runtime and generated package artifacts (Linux x86_64 GNU)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install exact artifact Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: tmp/c-package-artifacts/build/cargo
-          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            linux-c-package-artifacts-v1-
-
-      - name: Require native packaging and consumer tools
-        run: |
-          test "$(uname -m)" = x86_64
-          cmake --version
-          pkg-config --version
-          cc --version
-          c++ --version
-          readelf --version
-          nm --version
-
-      - name: Build and validate separate deterministic C artifacts
-        run: >-
-          python scripts/ci/c_package_artifacts.py build
-          --output tmp/c-package-artifacts
-
-      - name: Consume relocated CMake and pkg-config packages
-        run: >-
-          python scripts/ci/c_package_artifacts.py smoke
-          tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-
-      - name: Upload immutable non-publishing C artifact evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: c-package-artifacts-linux-x86_64-gnu
-          path: |
-            tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-            tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      # Only master writes caches; pull requests restore master's.
-      - name: Save cargo build cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: tmp/c-package-artifacts/build/cargo
-          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-
-  c-distribution-security:
-    name: C distribution supply-chain artifact gate
-    needs: [standalone-cli-artifact, c-package-artifacts]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout exact artifact source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install exact artifact Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Install pinned RustSec scanner
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
-        with:
-          tool: cargo-audit@0.22.2
-
-      - name: Download immutable standalone CLI artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: standalone-cli-artifact-linux-x86_64-gnu
-          path: tmp/c-distribution-input/cli
-
-      - name: Download immutable C package artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: c-package-artifacts-linux-x86_64-gnu
-          path: tmp/c-distribution-input/c
-
-      - name: Scan only the shipped CLI and C runtime dependency closure
-        run: |
-          python scripts/ci/c_distribution_security.py prune-lock \
-            --output tmp/c-distribution-input/Cargo.lock
-          cargo audit --json \
-            --file tmp/c-distribution-input/Cargo.lock \
-            > tmp/c-distribution-input/rustsec-report.json
-
-      - name: Assemble and hostile-validate exact supply-chain evidence
-        run: >-
-          python scripts/ci/c_distribution_security.py assemble
-          --cli tmp/c-distribution-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          --generated tmp/c-distribution-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-          --audit-report tmp/c-distribution-input/rustsec-report.json
-          --output tmp/c-distribution-evidence
-
-      - name: Upload immutable non-publishing supply-chain evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: c-distribution-security-linux-x86_64-gnu
-          path: tmp/c-distribution-evidence
-          if-no-files-found: error
-          retention-days: 7
-
-  c-artifact-clean-consumer:
-    name: C artifact-only clean consumer (Linux x86_64 GNU)
-    needs: [standalone-cli-artifact, c-package-artifacts, c-distribution-security]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout exact artifact source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Require the exact clean-consumer compiler matrix
-        run: |
-          test "$(uname -m)" = x86_64
-          gcc --version
-          clang --version
-          g++ --version
-          clang++ --version
-          cmake --version
-          pkg-config --version
-
-      - name: Download immutable standalone CLI artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: standalone-cli-artifact-linux-x86_64-gnu
-          path: tmp/c-artifact-input/cli
-
-      - name: Download immutable C package artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: c-package-artifacts-linux-x86_64-gnu
-          path: tmp/c-artifact-input/c
-
-      - name: Run provider-free, negative, sanitizer, and unload journey
-        run: >-
-          python scripts/ci/c_artifact_journey.py provider-free
-          tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-          > tmp/c-artifact-clean-consumer.json
-
-      - name: Independently revalidate the exact artifact-bound report
-        run: >-
-          python scripts/ci/c_artifact_journey.py validate-report
-          tmp/c-artifact-clean-consumer.json
-          tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-
-      - name: Upload immutable non-publishing clean-consumer evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: c-artifact-clean-consumer-linux-x86_64-gnu
-          path: tmp/c-artifact-clean-consumer.json
-          if-no-files-found: error
-          retention-days: 7
-
-  c-artifact-live-consumer:
-    name: C artifact-only live journey (Linux x86_64 GNU)
-    needs: [standalone-cli-artifact, c-package-artifacts, c-artifact-clean-consumer]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout exact artifact source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install exact fixture Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ runner.temp }}/typebridge-c-artifact-infra
-          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            linux-c-artifact-live-v1-
-
-      - name: Download immutable standalone CLI artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: standalone-cli-artifact-linux-x86_64-gnu
-          path: tmp/c-artifact-live-input/cli
-
-      - name: Download immutable C package artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: c-package-artifacts-linux-x86_64-gnu
-          path: tmp/c-artifact-live-input/c
-
-      - name: Download provider-free clean-consumer evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: c-artifact-clean-consumer-linux-x86_64-gnu
-          path: tmp/c-artifact-live-input/provider-free
-
-      - name: Start isolated plaintext and TLS TypeDB fixture
-        env:
-          TYPEDB_IMAGE: typedb/typedb:3.12.3
-          TYPEDB_PORT: "1729"
-          TYPEDB_HTTP_PORT: "8000"
-          TYPEDB_TLS_PORT: "1730"
-          TYPEDB_TLS_HTTP_PORT: "8001"
-        run: >-
-          docker compose -f docker-compose.yml -p type-bridge-c-artifact-live
-          up -d typedb typedb-tls
-
-      - name: Wait for exact TypeDB fixture
-        run: |
-          for attempt in {1..45}; do
-            version="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
-            tls_version="$(curl --fail --silent --max-time 3 \
-              --cacert tests/fixtures/tls/root-ca.pem \
-              https://localhost:8001/v1/version || true)"
-            if python3 -c \
-              'import json,sys; values=[json.loads(value) for value in sys.argv[1:]]; raise SystemExit(0 if all(value.get("version")=="3.12.3" for value in values) else 1)' \
-              "$version" "$tls_version"; then
-              exit 0
-            fi
-            sleep 2
-          done
-          exit 1
-
-      - name: Run artifact-only direct, remote, migration, and cleanup journey
-        run: >-
-          python scripts/ci/c_artifact_journey.py live
-          tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-          --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
-          --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
-          --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
-          --tls-address localhost:1730
-          --tls-http-port 8001
-          --tls-root-ca tests/fixtures/tls/root-ca.pem
-          > tmp/c-artifact-live-journey.json
-
-      - name: Independently revalidate exact live artifact evidence
-        run: >-
-          python scripts/ci/c_artifact_journey.py validate-live
-          tmp/c-artifact-live-journey.json
-          tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
-          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-
-      - name: Assemble and independently validate all 14 canonical steps
-        run: |
-          python scripts/ci/c_artifact_journey.py assemble-acceptance \
-            tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
-            tmp/c-artifact-live-journey.json \
-            tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz \
-            > tmp/c-artifact-acceptance-report.json
-          python scripts/ci/c_artifact_journey.py validate-acceptance \
-            tmp/c-artifact-acceptance-report.json \
-            tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
-            tmp/c-artifact-live-journey.json \
-            tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
-            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
-
-      - name: Upload immutable non-publishing live artifact evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: c-artifact-live-consumer-linux-x86_64-gnu
-          path: |
-            tmp/c-artifact-live-journey.json
-            tmp/c-artifact-acceptance-report.json
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Show fixture logs after failure
-        if: failure()
-        run: docker compose -f docker-compose.yml -p type-bridge-c-artifact-live logs
-
-      - name: Remove isolated plaintext and TLS fixture
-        if: always()
-        run: >-
-          docker compose -f docker-compose.yml -p type-bridge-c-artifact-live
-          down --volumes --remove-orphans
-
-  # Rust crate: compile, test, lint (parallel with Python jobs)
-
-      # Only master writes caches; pull requests restore master's.
-      - name: Save cargo build cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: ${{ runner.temp }}/typebridge-c-artifact-infra
-          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-
   rust-check:
     name: Rust ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -699,949 +249,6 @@ jobs:
         with:
           path: type-bridge-core/target
           key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-
-  # schema-codegen holds most of the Rust test time (rust_acceptance compiles
-  # generated packages with a nested cargo), so it runs in two parallel shards.
-  rust-codegen-tests:
-    name: Rust schema-codegen ${{ matrix.shard }} ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        shard: [acceptance, rest]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-          components: clippy
-
-      - name: Initialize MSVC and require clang-cl for Windows C tests
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $installation) { throw 'Visual Studio C++ tools were not found' }
-          $devcmd = Join-Path $installation.Trim() 'Common7\Tools\VsDevCmd.bat'
-          $environment = & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && set"
-          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
-          foreach ($line in $environment) {
-            if ($line -match '^([^=]+)=(.*)$') {
-              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            }
-          }
-          & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && where cl && where clang-cl && clang-cl --version"
-          if ($LASTEXITCODE -ne 0) { throw 'MSVC cl or clang-cl is unavailable after VsDevCmd' }
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      # Generated consumers build with --offline against the workspace lock,
-      # so every locked crate must be downloaded first.
-      - name: Fetch every locked crate
-        working-directory: type-bridge-core
-        run: cargo fetch --locked
-
-      - name: cargo test (schema-codegen ${{ matrix.shard }})
-        working-directory: type-bridge-core
-        # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
-        # shadows the MSVC linker.
-        shell: pwsh
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: |
-          if ($env:SHARD -eq 'acceptance') {
-            cargo test --no-fail-fast -p type-bridge-schema-codegen --test rust_acceptance
-          } else {
-            $targets = @('--lib', '--examples')
-            foreach ($file in Get-ChildItem crates/schema-codegen/tests -Filter *.rs) {
-              if ($file.BaseName -ne 'rust_acceptance') { $targets += @('--test', $file.BaseName) }
-            }
-            cargo test --no-fail-fast -p type-bridge-schema-codegen @targets
-          }
-          exit $LASTEXITCODE
-
-  # Rustdoc validation and the MSRV checks, beside the Linux tests.
-  rust-docs-msrv:
-    name: Rust docs and MSRV 1.88
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-          components: clippy
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      # Generated consumers build with --offline against the workspace lock,
-      # so every locked crate must be downloaded first.
-      - name: Fetch every locked crate
-        working-directory: type-bridge-core
-        run: cargo fetch --locked
-
-      - name: Validate first-party public Cargo docs
-        run: python scripts/ci/validate_cargo_rustdoc.py
-
-      - name: Install generated Rust MSRV
-        run: rustup toolchain install 1.88.0 --profile minimal
-
-      - name: Check C foundation on MSRV 1.88
-        working-directory: type-bridge-core
-        run: cargo +1.88.0 check --locked -p type-bridge-c --all-targets
-
-      - name: Validate first-party public Cargo docs on MSRV 1.88
-        run: python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
-
-      - name: Check generated Rust projection on MSRV 1.88
-        working-directory: type-bridge-core
-        run: >-
-          cargo +1.88.0 test --locked
-          -p type-bridge-schema-codegen --test rust_acceptance
-          generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
-
-  projected-parity:
-    name: Provider-free Projected value parity
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
-
-      - name: Install Python and Node dependencies
-        run: |
-          uv sync --extra dev
-          uv pip install maturin==1.14.1
-          npm ci --prefix type-bridge-core/crates/node
-
-      - name: Require both strict C compilers
-        run: |
-          gcc --version
-          clang --version
-
-      - name: Compare all four provider-free Projected reports
-        run: uv run python scripts/ci/run_projected_parity.py
-
-  projected-live:
-    name: Exact-TypeDB-3.12.3 Projected live parity
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    services:
-      typedb:
-        image: typedb/typedb:3.12.3
-        ports:
-          - 1729:1729
-          - 8000:8000
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
-
-      - name: Install Python and Node dependencies
-        run: |
-          uv sync --extra dev
-          uv pip install maturin==1.14.1
-          npm ci --prefix type-bridge-core/crates/node
-
-      - name: Require both strict C compilers
-        run: |
-          gcc --version
-          clang --version
-
-      - name: Wait for exact TypeDB fixture
-        run: |
-          for i in {1..30}; do
-            version="$(curl --fail --silent --max-time 3 \
-              http://localhost:8000/v1/version 2>/dev/null || true)"
-            if nc -z localhost 1729 2>/dev/null \
-              && python3 -c \
-                'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if isinstance(value,dict) and value.get("version")=="3.12.3" else 1)' \
-                "$version"; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs ${{ job.services.typedb.id }} 2>&1 || true
-          exit 1
-
-      - name: Compare all four exact-live Projected reports
-        env:
-          TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS: localhost:1729
-          TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT: "8000"
-        run: ./scripts/check.sh projected-live
-
-      - name: Show TypeDB logs after failure
-        if: failure()
-        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
-
-  # I6 single-band V2 legs: verify neither supported driver selection pulls the other band.
-  # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
-  band-feature-check:
-    name: Band feature check (${{ matrix.band }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - band: band8
-            features: band8,v2-query
-            required_driver: type-bridge-typedb-driver-b8 v3.11.5
-            forbidden_driver: typedb-driver v3.14.0
-          - band: band9
-            features: band9,v2-query
-            required_driver: typedb-driver v3.14.0
-            forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      - name: cargo check (${{ matrix.band }})
-        working-directory: type-bridge-core
-        run: cargo check -p type-bridge-orm -p type-bridge-server --no-default-features --features ${{ matrix.features }}
-
-      - name: Verify isolated V2 driver graph (${{ matrix.band }})
-        working-directory: type-bridge-core
-        env:
-          REQUIRED_DRIVER: ${{ matrix.required_driver }}
-          FORBIDDEN_DRIVER: ${{ matrix.forbidden_driver }}
-          SERVER_FEATURES: ${{ matrix.features }}
-        run: |
-          set -euo pipefail
-          dependency_tree="$(
-            cargo tree -p type-bridge-server --no-default-features \
-              --features "$SERVER_FEATURES" -e normal --prefix none
-          )"
-          printf '%s\n' "$dependency_tree"
-          grep -Fq "$REQUIRED_DRIVER" <<<"$dependency_tree"
-          if grep -Fq "$FORBIDDEN_DRIVER" <<<"$dependency_tree"; then
-            echo "forbidden driver resolved: $FORBIDDEN_DRIVER" >&2
-            exit 1
-          fi
-
-  # Rust code coverage (informational, does not block CI)
-  rust-coverage:
-    name: Rust Coverage
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
-        with:
-          toolchain: nightly
-          components: llvm-tools-preview
-
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
-        with:
-          tool: cargo-llvm-cov
-
-      - name: Generate LCOV report
-        run: ./scripts/coverage.sh branch --lcov
-
-      - name: Upload Rust coverage to Codecov
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: type-bridge-core/target/llvm-cov/lcov.branch.info
-          flags: rust
-          fail_ci_if_error: false
-
-  # Build maturin wheels for all platforms (parallel with other jobs)
-  build-wheels:
-    name: Build wheel (${{ matrix.target }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            artifact: wheels-linux-x86_64
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
-            artifact: wheels-linux-aarch64
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-            artifact: wheels-macos-x86_64
-          - target: aarch64-apple-darwin
-            runner: macos-latest
-            artifact: wheels-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            artifact: wheels-windows-x86_64
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up QEMU (Linux aarch64 cross-compilation)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
-        with:
-          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
-          platforms: arm64
-
-      - name: Set up Python
-        if: runner.os != 'Linux'
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Build wheel
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
-        env:
-          # The manylinux aarch64 cross-compiler does not define the ARM ACLE
-          # macro __ARM_ARCH that ring's pregenerated assembly requires. The
-          # variable name is target-suffixed, so it only affects the aarch64
-          # Linux wheel even though it is declared on every matrix leg.
-          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
-        with:
-          maturin-version: v1.14.1
-          target: ${{ matrix.target }}
-          rust-toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-          args: --release --out dist -i python3.13
-          manylinux: auto
-          working-directory: type-bridge-core
-
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: type-bridge-core/dist/*.whl
-
-  # Node binding is a required CI gate: the #124 NAPI pillar was previously untested
-  # in CI, so its native + TypeScript surface and database-free gates run here to keep
-  # the #110 single-core / thin-bindings invariant from silently regressing.
-  node-check:
-    name: Node binding
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: type-bridge-core/crates/node
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      - name: Build native module and TypeScript surface
-        run: npm run build
-
-      - name: Compile ordered packages for all four bindings
-        run: >-
-          cargo test --locked --manifest-path ../../Cargo.toml
-          -p type-bridge-schema-codegen --test ordered_collections
-          ordered_generated_packages_pass_all_four_language_compilers
-          -- --exact --ignored
-
-      - name: Verify native module built
-        run: ls type_bridge_node.*.node
-
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Compile generated projection integration harness
-        run: npm run typecheck:projection-integration
-
-      - name: Thin-binding scope probe
-        run: npm run scope:probe
-
-      - name: Check generated TypeScript projection package
-        run: node ../schema-codegen/tests/typescript_acceptance/check.mjs
-
-      - name: Unit tests
-        run: npm run test:unit
-
-      - name: DTS comparator tests
-        run: npm run test:dts
-
-      - name: DTS baseline parity
-        run: npm run dts:parity
-
-      - name: Package smoke
-        run: npm run smoke:package
-
-      - name: Contract foundation adapter
-        run: npm run test:contract-adapter
-
-  # Windows keeps a loaded native module locked until its Node process exits.
-  # Build and consume an actual tarball here so PR CI proves both native loading
-  # and strict cleanup before the release acceptance matrix runs.
-  node-packed-windows:
-    name: Node packed package (Windows)
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: type-bridge-core/crates/node
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
-
-      - name: Install Node dependencies
-        run: npm ci
-
-      - name: Build native module and TypeScript surface
-        run: npm run build
-
-      - name: Pack the Windows package
-        run: |
-          New-Item -ItemType Directory -Force -Path tmp/packed-node | Out-Null
-          npm pack --ignore-scripts --pack-destination tmp/packed-node
-
-      - name: Consume and remove the Windows package
-        run: |
-          npm run smoke:packed-package -- --artifact-directory tmp/packed-node
-
-  # Compile and execute a clean generated package against the exact wheel pair
-  # on every supported Python line. The consumer extracts artifacts outside
-  # the checkout and rejects source leakage or handwritten root exports.
-  python-generated-package-compat:
-    name: Python ${{ matrix.python-version }} generated wheel compatibility
-    runs-on: ubuntu-latest
-    needs: build-wheels
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13.5", "3.14"]
-    env:
-      UV_PYTHON: ${{ matrix.python-version }}
-      UV_PYTHON_PREFERENCE: only-system
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Download Linux x86_64 core wheel
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: wheels-linux-x86_64
-          path: tmp/generated-python-wheels/core
-
-      - name: Build root Python wheel
-        run: >-
-          uv build --wheel --package type-bridge
-          --out-dir tmp/generated-python-wheels/root
-
-      - name: Prepare generated package and consumer tools
-        run: |
-          scripts/ci/prepare_generated_live_fixture.sh python-artifact \
-            tmp/generated-python-wheels/generated
-          uv venv --python python tmp/generated-python-tools
-          uv pip install --python tmp/generated-python-tools/bin/python \
-            'pydantic>=2.12.4' 'isodate==0.7.2' 'jinja2>=3.1.0' \
-            'typer>=0.15.0' 'pyright>=1.1.407'
-
-      - name: Run isolated generated-package compatibility
-        run: |
-          mapfile -t core_wheels < <(
-            find tmp/generated-python-wheels/core -maxdepth 1 -type f \
-              -name 'type_bridge_core-*.whl' -print
-          )
-          mapfile -t root_wheels < <(
-            find tmp/generated-python-wheels/root -maxdepth 1 -type f \
-              -name 'type_bridge-*.whl' -print
-          )
-          if [[ ${#core_wheels[@]} -ne 1 || ${#root_wheels[@]} -ne 1 ]]; then
-            printf 'Expected one root/core wheel pair; root=%s core=%s\n' \
-              "${#root_wheels[@]}" "${#core_wheels[@]}" >&2
-            exit 1
-          fi
-          python scripts/ci/run_generated_python_artifact.py \
-            --root-wheel "${root_wheels[0]}" \
-            --core-wheel "${core_wheels[0]}" \
-            --generated-stage tmp/generated-python-wheels/generated \
-            --python "$PWD/tmp/generated-python-tools/bin/python" \
-            --pyright "$PWD/tmp/generated-python-tools/bin/pyright"
-  # Code quality: linting and formatting (parallel)
-  lint:
-    name: Python ${{ matrix.check }}
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        check: [ruff-lint, ruff-format]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Run ruff lint check
-        if: matrix.check == 'ruff-lint'
-        run: uv run ruff check .
-
-      - name: Run ruff format check
-        if: matrix.check == 'ruff-format'
-        run: uv run ruff format --check .
-
-  # Type checking with pyright (parallel matrix for faster execution)
-  typecheck:
-    name: Python Type Check (${{ matrix.target }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: [type_bridge, examples, tests]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Install pyright
-        run: uv pip install pyright
-
-      # The generated-projection acceptance check (tests target) shells out to
-      # `maturin develop`; pin the same Maturin the artifact contract pins.
-      - name: Install maturin
-        if: matrix.target == 'tests'
-        run: uv pip install maturin==1.14.1
-
-      - name: Generate example Python package
-        if: matrix.target == 'examples'
-        run: uv run type-bridge --manifest examples/typebridge.yaml schema generate
-
-      - name: Run pyright on ${{ matrix.target }}
-        run: uv run pyright ${{ matrix.target }}/
-
-      - name: Check intentional typed Query API diagnostics
-        if: matrix.target == 'tests'
-        run: uv run python tests/unit/typed_query/check_query_negative.py
-
-      - name: Check generated Python projection package
-        if: matrix.target == 'tests'
-        run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
-
-  # Unit tests (fast, no external dependencies, parallel execution)
-  test-unit:
-    name: Python Unit Tests (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13.5", "3.14"]
-    env:
-      # The repo's .python-version pins 3.13 for local dev; without these,
-      # uv ignores the matrix interpreter and downloads a managed build
-      # whose missing shared libpython breaks the typedb native driver.
-      UV_PYTHON: ${{ matrix.python-version }}
-      UV_PYTHON_PREFERENCE: only-system
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Install pytest-xdist for parallel execution
-        run: uv pip install pytest-xdist
-
-      - name: Run unit tests with coverage
-        run: |
-          uv run pytest tests/unit/ -v --tb=short -n auto \
-            --cov=type_bridge --cov-branch \
-            --cov-report=xml:coverage.xml \
-            --cov-report=term-missing
-
-      - name: Upload Python coverage to Codecov
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
-        if: always()
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage.xml
-          flags: python
-          fail_ci_if_error: false
-
-  # Integration tests (require TypeDB server, parallel by test category)
-  test-integration:
-    name: Python Integration (${{ matrix.test-group }}, ${{ matrix.typedb-server }})
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # Every populated ordinary integration directory is represented here.
-        # Generated CRUD and generation coverage now lives in the schema suite;
-        # parity and proxy retain dedicated jobs because they need extra runtimes.
-        test-group:
-          [queries, schema, expressions, session]
-        # Fan across the retained server lines: band 8 (3.11.5) and the
-        # dual-band 3.12 line. The 3.12 leg prefers the
-        # embedded band-9 driver after safe discovery, with band-8 retained as
-        # the compatibility fallback. Keep in sync with compose default and
-        # version SSOT in crates/core.
-        typedb-server:
-          - "typedb/typedb:3.11.5"
-          - "typedb/typedb:3.12.3"
-        include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
-          # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
-          # server 3.12 accepts it natively.
-          - typedb-server: "typedb/typedb:3.12.3"
-            python-driver: "3.12.3"
-            semantic-profile: "typedb-3.12.1/v1"
-
-    # Start TypeDB as a service container (runs first, before steps)
-    services:
-      typedb:
-        image: ${{ matrix.typedb-server }}
-        ports:
-          - 1729:1729
-          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
-          - 8000:8000
-
-    # Generated packages default to typedb-3.13.6/v1; pin each lane's
-    # profile as test.sh's LANE_PROFILES does.
-    env:
-      TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Install the band's Python driver
-        run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
-
-      - name: Wait for TypeDB server to be ready
-        run: |
-          echo "Waiting for TypeDB server to start..."
-          echo "Container ID: ${{ job.services.typedb.id }}"
-
-          # Show initial logs for debugging
-          echo "=== Initial TypeDB logs ==="
-          docker logs ${{ job.services.typedb.id }} 2>&1 || echo "Could not fetch logs"
-          echo "==========================="
-
-          # Wait for server to be ready by checking port connectivity
-          for i in {1..30}; do
-            if nc -z localhost 1729 2>/dev/null; then
-              echo "TypeDB server is ready on port 1729!"
-              docker logs ${{ job.services.typedb.id }} 2>&1 | tail -20
-              break
-            fi
-            echo "Waiting for port 1729... ($i/30)"
-            sleep 2
-          done
-
-          # Final check
-          if ! nc -z localhost 1729 2>/dev/null; then
-            echo "ERROR: TypeDB server did not start within 60 seconds"
-            echo "=== Full TypeDB logs ==="
-            docker logs ${{ job.services.typedb.id }} 2>&1
-            exit 1
-          fi
-
-      - name: Prepare Python queries evidence outputs
-        id: prepare-python-queries
-        if: >-
-          matrix.test-group == 'schema' &&
-          matrix.typedb-server == 'typedb/typedb:3.12.3'
-        run: |
-          set -euo pipefail
-          evidence_dir="$RUNNER_TEMP/typebridge-sdk-queries"
-          mkdir -p "$evidence_dir"
-          report="$evidence_dir/python.json"
-          direct_fragment="$evidence_dir/python-direct-proof.json"
-          remote_fragment="$evidence_dir/python-remote-proof.json"
-          test ! -e "$report"
-          test ! -e "$direct_fragment"
-          test ! -e "$remote_fragment"
-          run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-          [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
-          {
-            printf 'report=%s\n' "$report"
-            printf 'direct_fragment=%s\n' "$direct_fragment"
-            printf 'remote_fragment=%s\n' "$remote_fragment"
-            printf 'fragments=%s:%s\n' "$direct_fragment" "$remote_fragment"
-            printf 'run_nonce=%s\n' "$run_nonce"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Emit Python direct-cancellation queries proof fragment
-        if: >-
-          matrix.test-group == 'schema' &&
-          matrix.typedb-server == 'typedb/typedb:3.12.3'
-        env:
-          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-python-queries.outputs.direct_fragment }}
-          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-python-queries.outputs.run_nonce }}
-        run: >-
-          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-core --lib
-          match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution
-          -- --exact
-
-      - name: Emit Python generated-remote queries proof fragment
-        if: >-
-          matrix.test-group == 'schema' &&
-          matrix.typedb-server == 'typedb/typedb:3.12.3'
-        env:
-          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-python-queries.outputs.remote_fragment }}
-          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-python-queries.outputs.run_nonce }}
-        run: |
-          uv pip install maturin==1.14.1
-          uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
-
-      - name: Run integration tests for ${{ matrix.test-group }}
-        env:
-          USE_DOCKER: false
-          TYPEDB_ADDRESS: localhost:1729
-          SDK_QUERIES_REPORT_OUTPUT: ${{ steps.prepare-python-queries.outputs.report }}
-          SDK_QUERIES_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-queries.outputs.fragments }}
-          SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-queries.outputs.run_nonce }}
-        run: |
-          set -euo pipefail
-          sdk_env=()
-          if [[ -n "$SDK_QUERIES_REPORT_OUTPUT" ]]; then
-            sdk_env+=(
-              "TYPE_BRIDGE_SDK_QUERIES_REPORT=$SDK_QUERIES_REPORT_OUTPUT"
-              "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$SDK_QUERIES_FRAGMENT_OUTPUTS"
-              "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$SDK_QUERIES_RUN_NONCE_OUTPUT"
-            )
-          fi
-          env "${sdk_env[@]}" \
-            uv run pytest tests/integration/${{ matrix.test-group }} \
-              -m integration -v --tb=short
-
-      - name: Upload Python queries report
-        if: >-
-          matrix.test-group == 'schema' &&
-          matrix.typedb-server == 'typedb/typedb:3.12.3'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-queries-python
-          path: ${{ runner.temp }}/typebridge-sdk-queries/python.json
-          if-no-files-found: error
-          retention-days: 7
 
   # Rust ORM live-TypeDB integration. The ordinary rust-check job deliberately
   # leaves `integration-tests` disabled so it remains an offline gate. This job
@@ -2282,175 +889,9 @@ jobs:
           TB_RACE_CONTAINER: ${{ job.services.typedb.id }}
         run: uv run pytest tests/live/races -m slow -q -p no:cacheprovider
 
-  # Required, bounded TLS proof over one server per supported protocol band.
-  # This intentionally runs only typedb-runtime's focused live target: the
-  # broader plaintext, binding, CLI, and remote-envelope suites have separate
-  # gates. Band 8 consumes the namespaced compatibility package; band 9
-  # consumes the official upstream 3.12.3 driver against the current server.
-  tls-transport-matrix:
-    name: TLS transport (${{ matrix.lane }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - lane: band8-packaging
-            typedb-server: "typedb/typedb:3.11.5"
-            server-version: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
-            driver-band: "8"
-            driver-version: "3.11.5"
-          - lane: band9-upstream
-            typedb-server: "typedb/typedb:3.12.3"
-            server-version: "3.12.3"
-            semantic-profile: "typedb-3.12.1/v1"
-            driver-band: "9"
-            driver-version: "3.14.0"
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
-
-      - name: Restore cargo build cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: type-bridge-core/target
-          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
-          restore-keys: |
-            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
-            rust-${{ runner.os }}-main-
-
-      - name: Start isolated TypeDB and TLS terminator
-        env:
-          TYPEDB_IMAGE: ${{ matrix.typedb-server }}
-          TYPEDB_PORT: "0"
-          TYPEDB_HTTP_PORT: "0"
-          TYPEDB_TLS_PORT: "0"
-          TYPEDB_TLS_HTTP_PORT: "0"
-        run: >-
-          docker compose -f docker-compose.yml -p type-bridge-tls-ci
-          up -d typedb typedb-tls
-
-      - name: Resolve and verify TLS endpoints
-        env:
-          EXPECTED_SERVER_VERSION: ${{ matrix.server-version }}
-        run: |
-          discover_port() {
-            local container_port="$1"
-            local published=""
-            for attempt in {1..5}; do
-              published="$(docker compose -f docker-compose.yml \
-                -p type-bridge-tls-ci port typedb-tls "$container_port" || true)"
-              if [[ -n "$published" ]]; then
-                printf '%s' "$published" | tail -1 | sed 's/.*://'
-                return 0
-              fi
-              sleep 1
-            done
-            return 1
-          }
-          tls_grpc_port="$(discover_port 1729)"
-          tls_http_port="$(discover_port 8000)"
-          if [[ -z "$tls_grpc_port" || -z "$tls_http_port" ]]; then
-            echo "failed to resolve isolated TLS ports" >&2
-            exit 1
-          fi
-
-          root_ca="$GITHUB_WORKSPACE/tests/fixtures/tls/root-ca.pem"
-          version_body=""
-          for attempt in {1..45}; do
-            if timeout 3 openssl s_client \
-                -connect "127.0.0.1:${tls_grpc_port}" \
-                -servername localhost \
-                -verify_hostname localhost \
-                -verify_return_error \
-                -CAfile "$root_ca" \
-                -alpn h2 </dev/null >/dev/null 2>&1; then
-              version_body="$(curl --fail --silent --max-time 3 \
-                --cacert "$root_ca" \
-                --resolve "localhost:${tls_http_port}:127.0.0.1" \
-                "https://localhost:${tls_http_port}/v1/version" || true)"
-              if [[ "$version_body" == *"\"version\":\"${EXPECTED_SERVER_VERSION}\""* ]]; then
-                break
-              fi
-            fi
-            if [[ "$attempt" == 45 ]]; then
-              echo "TLS endpoints did not report TypeDB ${EXPECTED_SERVER_VERSION}" >&2
-              echo "last version response: ${version_body}" >&2
-              exit 1
-            fi
-            sleep 2
-          done
-
-          if curl --fail --silent --max-time 3 \
-              "http://127.0.0.1:${tls_http_port}/v1/version" >/dev/null 2>&1; then
-            echo "TLS-only HTTP endpoint unexpectedly accepted plaintext" >&2
-            exit 1
-          fi
-
-          echo "TYPEDB_TLS_ADDRESS=127.0.0.1:${tls_grpc_port}" >> "$GITHUB_ENV"
-          echo "TYPEDB_TLS_HTTP_PORT=${tls_http_port}" >> "$GITHUB_ENV"
-          echo "TYPEDB_TLS_ROOT_CA=${root_ca}" >> "$GITHUB_ENV"
-
-      # Fetch before scoping SSL_CERT_FILE to the fixture. The Rust native-root
-      # loaders used by core and all three tonic drivers honor this standard
-      # Unix trust-store override; Cargo remains offline while it is active.
-      - name: Fetch the locked Rust graph
-        run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
-
-      - name: Run focused custom-root, fallback, and native-root proofs
-        env:
-          CARGO_NET_OFFLINE: "true"
-          SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
-          TYPE_BRIDGE_TLS_LIVE_REQUIRED: "1"
-          TYPE_BRIDGE_TLS_NATIVE_ROOTS: "1"
-          TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION: ${{ matrix.server-version }}
-          TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND: ${{ matrix.driver-band }}
-          TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION: ${{ matrix.driver-version }}
-        run: >-
-          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-typedb-runtime --test tls_live
-          -- --nocapture --test-threads=1
-
-      - name: Run generated Rust application over TLS
-        env:
-          SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
-          TYPE_BRIDGE_RUST_PROJECTION_TLS: "1"
-          TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_tls
-          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
-          ACCEPTANCE_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target/tmp_projection_live_target
-        run: |
-          export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
-          export TYPEDB_HTTP_PORT="$TYPEDB_TLS_HTTP_PORT"
-          bash scripts/ci/run_exact_ignored_rust_test.sh \
-            generated_rust_projection_round_trips_exact_live_models \
-            --locked --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-schema-codegen --test rust_projection_live
-
-      - name: Show TLS stack logs on failure
-        if: failure()
-        run: >-
-          docker compose -f docker-compose.yml -p type-bridge-tls-ci
-          logs --no-color typedb typedb-tls
-
-      - name: Stop isolated TLS stack
-        if: always()
-        run: >-
-          docker compose -f docker-compose.yml -p type-bridge-tls-ci
-          down -v --remove-orphans
-
-  # Preserve the established job identity while making its authority generated-only.
-  # Binding-specific live jobs execute generated applications; this gate proves
-  # every removed handwritten operation maps to those exact sources and that
-  # all four emitters agree on the canonical projection.
-  cross-language-parity:
-    name: Generated cross-language parity inventory
+  # Rustdoc validation and the MSRV checks, beside the Linux tests.
+  rust-docs-msrv:
+    name: Rust docs and MSRV 1.88
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -2465,6 +906,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
 
       - name: Restore cargo build cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -2475,6 +917,411 @@ jobs:
             rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
             rust-${{ runner.os }}-main-
 
+      # Generated consumers build with --offline against the workspace lock,
+      # so every locked crate must be downloaded first.
+      - name: Fetch every locked crate
+        working-directory: type-bridge-core
+        run: cargo fetch --locked
+
+      - name: Validate first-party public Cargo docs
+        run: python scripts/ci/validate_cargo_rustdoc.py
+
+      - name: Install generated Rust MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+
+      - name: Check C foundation on MSRV 1.88
+        working-directory: type-bridge-core
+        run: cargo +1.88.0 check --locked -p type-bridge-c --all-targets
+
+      - name: Validate first-party public Cargo docs on MSRV 1.88
+        run: python scripts/ci/validate_cargo_rustdoc.py --toolchain 1.88.0
+
+      - name: Check generated Rust projection on MSRV 1.88
+        working-directory: type-bridge-core
+        run: >-
+          cargo +1.88.0 test --locked
+          -p type-bridge-schema-codegen --test rust_acceptance
+          generated_rust_crate_compiles_rejects_invalid_types_and_runs -- --exact
+
+  # schema-codegen holds most of the Rust test time (rust_acceptance compiles
+  # generated packages with a nested cargo), so it runs in two parallel shards.
+  rust-codegen-tests:
+    name: Rust schema-codegen ${{ matrix.shard }} ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        shard: [acceptance, rest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          components: clippy
+
+      - name: Initialize MSVC and require clang-cl for Windows C tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'Visual Studio C++ tools were not found' }
+          $devcmd = Join-Path $installation.Trim() 'Common7\Tools\VsDevCmd.bat'
+          $environment = & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw 'VsDevCmd failed' }
+          foreach ($line in $environment) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+          & cmd /D /S /C "`"$devcmd`" -arch=x64 -host_arch=x64 >nul && where cl && where clang-cl && clang-cl --version"
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC cl or clang-cl is unavailable after VsDevCmd' }
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      # Generated consumers build with --offline against the workspace lock,
+      # so every locked crate must be downloaded first.
+      - name: Fetch every locked crate
+        working-directory: type-bridge-core
+        run: cargo fetch --locked
+
+      - name: cargo test (schema-codegen ${{ matrix.shard }})
+        working-directory: type-bridge-core
+        # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
+        # shadows the MSVC linker.
+        shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if ($env:SHARD -eq 'acceptance') {
+            cargo test --no-fail-fast -p type-bridge-schema-codegen --test rust_acceptance
+          } else {
+            $targets = @('--lib', '--examples')
+            foreach ($file in Get-ChildItem crates/schema-codegen/tests -Filter *.rs) {
+              if ($file.BaseName -ne 'rust_acceptance') { $targets += @('--test', $file.BaseName) }
+            }
+            cargo test --no-fail-fast -p type-bridge-schema-codegen @targets
+          }
+          exit $LASTEXITCODE
+
+  # Build maturin wheels for all platforms (parallel with other jobs)
+  build-wheels:
+    name: Build wheel (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: wheels-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact: wheels-linux-aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            artifact: wheels-macos-x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            artifact: wheels-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            artifact: wheels-windows-x86_64
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up QEMU (Linux aarch64 cross-compilation)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+
+      - name: Set up Python
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        env:
+          # The manylinux aarch64 cross-compiler does not define the ARM ACLE
+          # macro __ARM_ARCH that ring's pregenerated assembly requires. The
+          # variable name is target-suffixed, so it only affects the aarch64
+          # Linux wheel even though it is declared on every matrix leg.
+          CFLAGS_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '-D__ARM_ARCH=8' || '' }}
+        with:
+          maturin-version: v1.14.1
+          target: ${{ matrix.target }}
+          rust-toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+          args: --release --out dist -i python3.13
+          manylinux: auto
+          working-directory: type-bridge-core
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: type-bridge-core/dist/*.whl
+
+  # Windows keeps a loaded native module locked until its Node process exits.
+  # Build and consume an actual tarball here so PR CI proves both native loading
+  # and strict cleanup before the release acceptance matrix runs.
+  node-packed-windows:
+    name: Node packed package (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module and TypeScript surface
+        run: npm run build
+
+      - name: Pack the Windows package
+        run: |
+          New-Item -ItemType Directory -Force -Path tmp/packed-node | Out-Null
+          npm pack --ignore-scripts --pack-destination tmp/packed-node
+
+      - name: Consume and remove the Windows package
+        run: |
+          npm run smoke:packed-package -- --artifact-directory tmp/packed-node
+
+  projected-live:
+    name: Exact-TypeDB-3.12.3 Projected live parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Python and Node dependencies
+        run: |
+          uv sync --extra dev
+          uv pip install maturin==1.14.1
+          npm ci --prefix type-bridge-core/crates/node
+
+      - name: Require both strict C compilers
+        run: |
+          gcc --version
+          clang --version
+
+      - name: Wait for exact TypeDB fixture
+        run: |
+          for i in {1..30}; do
+            version="$(curl --fail --silent --max-time 3 \
+              http://localhost:8000/v1/version 2>/dev/null || true)"
+            if nc -z localhost 1729 2>/dev/null \
+              && python3 -c \
+                'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if isinstance(value,dict) and value.get("version")=="3.12.3" else 1)' \
+                "$version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Compare all four exact-live Projected reports
+        env:
+          TYPE_BRIDGE_PROJECTED_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_PROJECTED_LIVE_HTTP_PORT: "8000"
+        run: ./scripts/check.sh projected-live
+
+      - name: Show TypeDB logs after failure
+        if: failure()
+        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
+
+  projected-parity:
+    name: Provider-free Projected value parity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Python and Node dependencies
+        run: |
+          uv sync --extra dev
+          uv pip install maturin==1.14.1
+          npm ci --prefix type-bridge-core/crates/node
+
+      - name: Require both strict C compilers
+        run: |
+          gcc --version
+          clang --version
+
+      - name: Compare all four provider-free Projected reports
+        run: uv run python scripts/ci/run_projected_parity.py
+
+  # Integration tests (require TypeDB server, parallel by test category)
+  test-integration:
+    name: Python Integration (${{ matrix.test-group }}, ${{ matrix.typedb-server }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Every populated ordinary integration directory is represented here.
+        # Generated CRUD and generation coverage now lives in the schema suite;
+        # parity and proxy retain dedicated jobs because they need extra runtimes.
+        test-group:
+          [queries, schema, expressions, session]
+        # Fan across the retained server lines: band 8 (3.11.5) and the
+        # dual-band 3.12 line. The 3.12 leg prefers the
+        # embedded band-9 driver after safe discovery, with band-8 retained as
+        # the compatibility fallback. Keep in sync with compose default and
+        # version SSOT in crates/core.
+        typedb-server:
+          - "typedb/typedb:3.11.5"
+          - "typedb/typedb:3.12.3"
+        include:
+          - typedb-server: "typedb/typedb:3.11.5"
+            python-driver: "3.11.5"
+            semantic-profile: "typedb-3.11.5/v1"
+          # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
+          # server 3.12 accepts it natively.
+          - typedb-server: "typedb/typedb:3.12.3"
+            python-driver: "3.12.3"
+            semantic-profile: "typedb-3.12.1/v1"
+
+    # Start TypeDB as a service container (runs first, before steps)
+    services:
+      typedb:
+        image: ${{ matrix.typedb-server }}
+        ports:
+          - 1729:1729
+          # TypeDB HTTP API; the connect-time version gate probes /v1/version.
+          - 8000:8000
+
+    # Generated packages default to typedb-3.13.6/v1; pin each lane's
+    # profile as test.sh's LANE_PROFILES does.
+    env:
+      TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
@@ -2483,17 +1330,119 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
-      - name: Audit generated successors and removed-source mapping
-        run: >-
-          uv run pytest
-          tests/unit/compat/test_generated_only_operation_parity_inventory.py
-          tests/unit/compat/test_handwritten_operation_removal_map.py
-          -q --tb=short
+      - name: Install the band's Python driver
+        run: uv pip install "typedb-driver==${{ matrix.python-driver }}"
 
-      - name: Check canonical Python, TypeScript, Rust, and C projection parity
+      - name: Wait for TypeDB server to be ready
+        run: |
+          echo "Waiting for TypeDB server to start..."
+          echo "Container ID: ${{ job.services.typedb.id }}"
+
+          # Show initial logs for debugging
+          echo "=== Initial TypeDB logs ==="
+          docker logs ${{ job.services.typedb.id }} 2>&1 || echo "Could not fetch logs"
+          echo "==========================="
+
+          # Wait for server to be ready by checking port connectivity
+          for i in {1..30}; do
+            if nc -z localhost 1729 2>/dev/null; then
+              echo "TypeDB server is ready on port 1729!"
+              docker logs ${{ job.services.typedb.id }} 2>&1 | tail -20
+              break
+            fi
+            echo "Waiting for port 1729... ($i/30)"
+            sleep 2
+          done
+
+          # Final check
+          if ! nc -z localhost 1729 2>/dev/null; then
+            echo "ERROR: TypeDB server did not start within 60 seconds"
+            echo "=== Full TypeDB logs ==="
+            docker logs ${{ job.services.typedb.id }} 2>&1
+            exit 1
+          fi
+
+      - name: Prepare Python queries evidence outputs
+        id: prepare-python-queries
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.3'
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/typebridge-sdk-queries"
+          mkdir -p "$evidence_dir"
+          report="$evidence_dir/python.json"
+          direct_fragment="$evidence_dir/python-direct-proof.json"
+          remote_fragment="$evidence_dir/python-remote-proof.json"
+          test ! -e "$report"
+          test ! -e "$direct_fragment"
+          test ! -e "$remote_fragment"
+          run_nonce="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          [[ "$run_nonce" =~ ^[0-9a-f]{64}$ ]]
+          {
+            printf 'report=%s\n' "$report"
+            printf 'direct_fragment=%s\n' "$direct_fragment"
+            printf 'remote_fragment=%s\n' "$remote_fragment"
+            printf 'fragments=%s:%s\n' "$direct_fragment" "$remote_fragment"
+            printf 'run_nonce=%s\n' "$run_nonce"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit Python direct-cancellation queries proof fragment
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-python-queries.outputs.direct_fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-python-queries.outputs.run_nonce }}
         run: >-
           cargo test --locked --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-schema-codegen --test cross_binding
+          -p type-bridge-core --lib
+          match_runtime::tests::python_direct_cancellation_fragment_is_measured_from_owned_execution
+          -- --exact
+
+      - name: Emit Python generated-remote queries proof fragment
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENT: ${{ steps.prepare-python-queries.outputs.remote_fragment }}
+          TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE: ${{ steps.prepare-python-queries.outputs.run_nonce }}
+        run: |
+          uv pip install maturin==1.14.1
+          uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+
+      - name: Run integration tests for ${{ matrix.test-group }}
+        env:
+          USE_DOCKER: false
+          TYPEDB_ADDRESS: localhost:1729
+          SDK_QUERIES_REPORT_OUTPUT: ${{ steps.prepare-python-queries.outputs.report }}
+          SDK_QUERIES_FRAGMENT_OUTPUTS: ${{ steps.prepare-python-queries.outputs.fragments }}
+          SDK_QUERIES_RUN_NONCE_OUTPUT: ${{ steps.prepare-python-queries.outputs.run_nonce }}
+        run: |
+          set -euo pipefail
+          sdk_env=()
+          if [[ -n "$SDK_QUERIES_REPORT_OUTPUT" ]]; then
+            sdk_env+=(
+              "TYPE_BRIDGE_SDK_QUERIES_REPORT=$SDK_QUERIES_REPORT_OUTPUT"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS=$SDK_QUERIES_FRAGMENT_OUTPUTS"
+              "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE=$SDK_QUERIES_RUN_NONCE_OUTPUT"
+            )
+          fi
+          env "${sdk_env[@]}" \
+            uv run pytest tests/integration/${{ matrix.test-group }} \
+              -m integration -v --tb=short
+
+      - name: Upload Python queries report
+        if: >-
+          matrix.test-group == 'schema' &&
+          matrix.typedb-server == 'typedb/typedb:3.12.3'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdk-queries-python
+          path: ${{ runner.temp }}/typebridge-sdk-queries/python.json
+          if-no-files-found: error
+          retention-days: 7
+
   # Node binding live-TypeDB integration. Source TypeScript is always compiled
   # before Node executes it, including the generated-package application suite.
   node-integration:
@@ -2670,54 +1619,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Fan in the three exact 3.12.3 generated-application reports. The producer
-  # jobs already own their live TypeDB journeys; this job performs no provider
-  # I/O and cannot turn uncovered or known-gap proofs into accepted support.
-  sdk-queries:
-    name: Shared queries conformance
-    runs-on: ubuntu-latest
-    needs: [test-integration, rust-integration, node-integration]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13.5"
-
-      - name: Download Python queries report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-queries-python
-          path: ${{ runner.temp }}/typebridge-sdk-queries
-
-      - name: Download Node queries report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-queries-node
-          path: ${{ runner.temp }}/typebridge-sdk-queries
-
-      - name: Download Rust queries report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-queries-rust
-          path: ${{ runner.temp }}/typebridge-sdk-queries
-
-      - name: Download C queries report
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: sdk-queries-c
-          path: ${{ runner.temp }}/typebridge-sdk-queries
-
-      - name: Compare generated SDK queries reports
-        run: >-
-          python scripts/ci/sdk_queries_compare.py
-          "$RUNNER_TEMP/typebridge-sdk-queries/python.json"
-          "$RUNNER_TEMP/typebridge-sdk-queries/node.json"
-          "$RUNNER_TEMP/typebridge-sdk-queries/rust.json"
-          "$RUNNER_TEMP/typebridge-sdk-queries/c.json"
-
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.
   #   POS-grpc-fallback-band8: wrong HTTP port still connects through gRPC band 8.
@@ -2817,3 +1718,1104 @@ jobs:
 
       - name: Assert version-gate cell
         run: uv run python scripts/ci/assert_gate_rejection.py --address localhost:1729 --probe ${{ matrix.probe }} --http-port ${{ matrix.http-port }} --expect ${{ matrix.expect }}
+
+  # Required, bounded TLS proof over one server per supported protocol band.
+  # This intentionally runs only typedb-runtime's focused live target: the
+  # broader plaintext, binding, CLI, and remote-envelope suites have separate
+  # gates. Band 8 consumes the namespaced compatibility package; band 9
+  # consumes the official upstream 3.12.3 driver against the current server.
+  tls-transport-matrix:
+    name: TLS transport (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: band8-packaging
+            typedb-server: "typedb/typedb:3.11.5"
+            server-version: "3.11.5"
+            semantic-profile: "typedb-3.11.5/v1"
+            driver-band: "8"
+            driver-version: "3.11.5"
+          - lane: band9-upstream
+            typedb-server: "typedb/typedb:3.12.3"
+            server-version: "3.12.3"
+            semantic-profile: "typedb-3.12.1/v1"
+            driver-band: "9"
+            driver-version: "3.14.0"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Start isolated TypeDB and TLS terminator
+        env:
+          TYPEDB_IMAGE: ${{ matrix.typedb-server }}
+          TYPEDB_PORT: "0"
+          TYPEDB_HTTP_PORT: "0"
+          TYPEDB_TLS_PORT: "0"
+          TYPEDB_TLS_HTTP_PORT: "0"
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-tls-ci
+          up -d typedb typedb-tls
+
+      - name: Resolve and verify TLS endpoints
+        env:
+          EXPECTED_SERVER_VERSION: ${{ matrix.server-version }}
+        run: |
+          discover_port() {
+            local container_port="$1"
+            local published=""
+            for attempt in {1..5}; do
+              published="$(docker compose -f docker-compose.yml \
+                -p type-bridge-tls-ci port typedb-tls "$container_port" || true)"
+              if [[ -n "$published" ]]; then
+                printf '%s' "$published" | tail -1 | sed 's/.*://'
+                return 0
+              fi
+              sleep 1
+            done
+            return 1
+          }
+          tls_grpc_port="$(discover_port 1729)"
+          tls_http_port="$(discover_port 8000)"
+          if [[ -z "$tls_grpc_port" || -z "$tls_http_port" ]]; then
+            echo "failed to resolve isolated TLS ports" >&2
+            exit 1
+          fi
+
+          root_ca="$GITHUB_WORKSPACE/tests/fixtures/tls/root-ca.pem"
+          version_body=""
+          for attempt in {1..45}; do
+            if timeout 3 openssl s_client \
+                -connect "127.0.0.1:${tls_grpc_port}" \
+                -servername localhost \
+                -verify_hostname localhost \
+                -verify_return_error \
+                -CAfile "$root_ca" \
+                -alpn h2 </dev/null >/dev/null 2>&1; then
+              version_body="$(curl --fail --silent --max-time 3 \
+                --cacert "$root_ca" \
+                --resolve "localhost:${tls_http_port}:127.0.0.1" \
+                "https://localhost:${tls_http_port}/v1/version" || true)"
+              if [[ "$version_body" == *"\"version\":\"${EXPECTED_SERVER_VERSION}\""* ]]; then
+                break
+              fi
+            fi
+            if [[ "$attempt" == 45 ]]; then
+              echo "TLS endpoints did not report TypeDB ${EXPECTED_SERVER_VERSION}" >&2
+              echo "last version response: ${version_body}" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if curl --fail --silent --max-time 3 \
+              "http://127.0.0.1:${tls_http_port}/v1/version" >/dev/null 2>&1; then
+            echo "TLS-only HTTP endpoint unexpectedly accepted plaintext" >&2
+            exit 1
+          fi
+
+          echo "TYPEDB_TLS_ADDRESS=127.0.0.1:${tls_grpc_port}" >> "$GITHUB_ENV"
+          echo "TYPEDB_TLS_HTTP_PORT=${tls_http_port}" >> "$GITHUB_ENV"
+          echo "TYPEDB_TLS_ROOT_CA=${root_ca}" >> "$GITHUB_ENV"
+
+      # Fetch before scoping SSL_CERT_FILE to the fixture. The Rust native-root
+      # loaders used by core and all three tonic drivers honor this standard
+      # Unix trust-store override; Cargo remains offline while it is active.
+      - name: Fetch the locked Rust graph
+        run: cargo fetch --locked --manifest-path type-bridge-core/Cargo.toml
+
+      - name: Run focused custom-root, fallback, and native-root proofs
+        env:
+          CARGO_NET_OFFLINE: "true"
+          SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
+          TYPE_BRIDGE_TLS_LIVE_REQUIRED: "1"
+          TYPE_BRIDGE_TLS_NATIVE_ROOTS: "1"
+          TYPE_BRIDGE_TLS_EXPECTED_SERVER_VERSION: ${{ matrix.server-version }}
+          TYPE_BRIDGE_TLS_EXPECTED_DRIVER_BAND: ${{ matrix.driver-band }}
+          TYPE_BRIDGE_TLS_EXPECTED_DRIVER_VERSION: ${{ matrix.driver-version }}
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-typedb-runtime --test tls_live
+          -- --nocapture --test-threads=1
+
+      - name: Run generated Rust application over TLS
+        env:
+          SSL_CERT_FILE: ${{ github.workspace }}/tests/fixtures/tls/root-ca.pem
+          TYPE_BRIDGE_RUST_PROJECTION_TLS: "1"
+          TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE: type_bridge_rust_projection_tls
+          TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE: ${{ matrix.semantic-profile }}
+          ACCEPTANCE_TARGET_DIR: ${{ github.workspace }}/type-bridge-core/target/tmp_projection_live_target
+        run: |
+          export TYPEDB_ADDRESS="$TYPEDB_TLS_ADDRESS"
+          export TYPEDB_HTTP_PORT="$TYPEDB_TLS_HTTP_PORT"
+          bash scripts/ci/run_exact_ignored_rust_test.sh \
+            generated_rust_projection_round_trips_exact_live_models \
+            --locked --manifest-path type-bridge-core/Cargo.toml \
+            -p type-bridge-schema-codegen --test rust_projection_live
+
+      - name: Show TLS stack logs on failure
+        if: failure()
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-tls-ci
+          logs --no-color typedb typedb-tls
+
+      - name: Stop isolated TLS stack
+        if: always()
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-tls-ci
+          down -v --remove-orphans
+
+  # I6 single-band V2 legs: verify neither supported driver selection pulls the other band.
+  # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
+  band-feature-check:
+    name: Band feature check (${{ matrix.band }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - band: band8
+            features: band8,v2-query
+            required_driver: type-bridge-typedb-driver-b8 v3.11.5
+            forbidden_driver: typedb-driver v3.14.0
+          - band: band9
+            features: band9,v2-query
+            required_driver: typedb-driver v3.14.0
+            forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: cargo check (${{ matrix.band }})
+        working-directory: type-bridge-core
+        run: cargo check -p type-bridge-orm -p type-bridge-server --no-default-features --features ${{ matrix.features }}
+
+      - name: Verify isolated V2 driver graph (${{ matrix.band }})
+        working-directory: type-bridge-core
+        env:
+          REQUIRED_DRIVER: ${{ matrix.required_driver }}
+          FORBIDDEN_DRIVER: ${{ matrix.forbidden_driver }}
+          SERVER_FEATURES: ${{ matrix.features }}
+        run: |
+          set -euo pipefail
+          dependency_tree="$(
+            cargo tree -p type-bridge-server --no-default-features \
+              --features "$SERVER_FEATURES" -e normal --prefix none
+          )"
+          printf '%s\n' "$dependency_tree"
+          grep -Fq "$REQUIRED_DRIVER" <<<"$dependency_tree"
+          if grep -Fq "$FORBIDDEN_DRIVER" <<<"$dependency_tree"; then
+            echo "forbidden driver resolved: $FORBIDDEN_DRIVER" >&2
+            exit 1
+          fi
+
+  # Preserve the established job identity while making its authority generated-only.
+  # Binding-specific live jobs execute generated applications; this gate proves
+  # every removed handwritten operation maps to those exact sources and that
+  # all four emitters agree on the canonical projection.
+  cross-language-parity:
+    name: Generated cross-language parity inventory
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Audit generated successors and removed-source mapping
+        run: >-
+          uv run pytest
+          tests/unit/compat/test_generated_only_operation_parity_inventory.py
+          tests/unit/compat/test_handwritten_operation_removal_map.py
+          -q --tb=short
+
+      - name: Check canonical Python, TypeScript, Rust, and C projection parity
+        run: >-
+          cargo test --locked --manifest-path type-bridge-core/Cargo.toml
+          -p type-bridge-schema-codegen --test cross_binding
+
+  # Fan in the three exact 3.12.3 generated-application reports. The producer
+  # jobs already own their live TypeDB journeys; this job performs no provider
+  # I/O and cannot turn uncovered or known-gap proofs into accepted support.
+  sdk-queries:
+    name: Shared queries conformance
+    runs-on: ubuntu-latest
+    needs: [test-integration, rust-integration, node-integration]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Download Python queries report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdk-queries-python
+          path: ${{ runner.temp }}/typebridge-sdk-queries
+
+      - name: Download Node queries report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdk-queries-node
+          path: ${{ runner.temp }}/typebridge-sdk-queries
+
+      - name: Download Rust queries report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdk-queries-rust
+          path: ${{ runner.temp }}/typebridge-sdk-queries
+
+      - name: Download C queries report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: sdk-queries-c
+          path: ${{ runner.temp }}/typebridge-sdk-queries
+
+      - name: Compare generated SDK queries reports
+        run: >-
+          python scripts/ci/sdk_queries_compare.py
+          "$RUNNER_TEMP/typebridge-sdk-queries/python.json"
+          "$RUNNER_TEMP/typebridge-sdk-queries/node.json"
+          "$RUNNER_TEMP/typebridge-sdk-queries/rust.json"
+          "$RUNNER_TEMP/typebridge-sdk-queries/c.json"
+
+  # Compile and execute a clean generated package against the exact wheel pair
+  # on every supported Python line. The consumer extracts artifacts outside
+  # the checkout and rejects source leakage or handwritten root exports.
+  python-generated-package-compat:
+    name: Python ${{ matrix.python-version }} generated wheel compatibility
+    runs-on: ubuntu-latest
+    needs: build-wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13.5", "3.14"]
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Download Linux x86_64 core wheel
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: wheels-linux-x86_64
+          path: tmp/generated-python-wheels/core
+
+      - name: Build root Python wheel
+        run: >-
+          uv build --wheel --package type-bridge
+          --out-dir tmp/generated-python-wheels/root
+
+      - name: Prepare generated package and consumer tools
+        run: |
+          scripts/ci/prepare_generated_live_fixture.sh python-artifact \
+            tmp/generated-python-wheels/generated
+          uv venv --python python tmp/generated-python-tools
+          uv pip install --python tmp/generated-python-tools/bin/python \
+            'pydantic>=2.12.4' 'isodate==0.7.2' 'jinja2>=3.1.0' \
+            'typer>=0.15.0' 'pyright>=1.1.407'
+
+      - name: Run isolated generated-package compatibility
+        run: |
+          mapfile -t core_wheels < <(
+            find tmp/generated-python-wheels/core -maxdepth 1 -type f \
+              -name 'type_bridge_core-*.whl' -print
+          )
+          mapfile -t root_wheels < <(
+            find tmp/generated-python-wheels/root -maxdepth 1 -type f \
+              -name 'type_bridge-*.whl' -print
+          )
+          if [[ ${#core_wheels[@]} -ne 1 || ${#root_wheels[@]} -ne 1 ]]; then
+            printf 'Expected one root/core wheel pair; root=%s core=%s\n' \
+              "${#root_wheels[@]}" "${#core_wheels[@]}" >&2
+            exit 1
+          fi
+          python scripts/ci/run_generated_python_artifact.py \
+            --root-wheel "${root_wheels[0]}" \
+            --core-wheel "${core_wheels[0]}" \
+            --generated-stage tmp/generated-python-wheels/generated \
+            --python "$PWD/tmp/generated-python-tools/bin/python" \
+            --pyright "$PWD/tmp/generated-python-tools/bin/pyright"
+
+  # Unit tests (fast, no external dependencies, parallel execution)
+  test-unit:
+    name: Python Unit Tests (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13.5", "3.14"]
+    env:
+      # The repo's .python-version pins 3.13 for local dev; without these,
+      # uv ignores the matrix interpreter and downloads a managed build
+      # whose missing shared libpython breaks the typedb native driver.
+      UV_PYTHON: ${{ matrix.python-version }}
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install pytest-xdist for parallel execution
+        run: uv pip install pytest-xdist
+
+      - name: Run unit tests with coverage
+        run: |
+          uv run pytest tests/unit/ -v --tb=short -n auto \
+            --cov=type_bridge --cov-branch \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing
+
+      - name: Upload Python coverage to Codecov
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+        if: always()
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          flags: python
+          fail_ci_if_error: false
+
+  # Type checking with pyright (parallel matrix for faster execution)
+  typecheck:
+    name: Python Type Check (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [type_bridge, examples, tests]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install pyright
+        run: uv pip install pyright
+
+      # The generated-projection acceptance check (tests target) shells out to
+      # `maturin develop`; pin the same Maturin the artifact contract pins.
+      - name: Install maturin
+        if: matrix.target == 'tests'
+        run: uv pip install maturin==1.14.1
+
+      - name: Generate example Python package
+        if: matrix.target == 'examples'
+        run: uv run type-bridge --manifest examples/typebridge.yaml schema generate
+
+      - name: Run pyright on ${{ matrix.target }}
+        run: uv run pyright ${{ matrix.target }}/
+
+      - name: Check intentional typed Query API diagnostics
+        if: matrix.target == 'tests'
+        run: uv run python tests/unit/typed_query/check_query_negative.py
+
+      - name: Check generated Python projection package
+        if: matrix.target == 'tests'
+        run: uv run python type-bridge-core/crates/schema-codegen/tests/acceptance/check.py
+
+  # Code quality: linting and formatting (parallel)
+  lint:
+    name: Python ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        check: [ruff-lint, ruff-format]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run ruff lint check
+        if: matrix.check == 'ruff-lint'
+        run: uv run ruff check .
+
+      - name: Run ruff format check
+        if: matrix.check == 'ruff-format'
+        run: uv run ruff format --check .
+
+  # Node binding is a required CI gate: the #124 NAPI pillar was previously untested
+  # in CI, so its native + TypeScript surface and database-free gates run here to keep
+  # the #110 single-core / thin-bindings invariant from silently regressing.
+  node-check:
+    name: Node binding
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: type-bridge-core/crates/node
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: type-bridge-core/target
+          key: rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            rust-${{ runner.os }}-main-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            rust-${{ runner.os }}-main-
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: type-bridge-core/crates/node/package-lock.json
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build native module and TypeScript surface
+        run: npm run build
+
+      - name: Compile ordered packages for all four bindings
+        run: >-
+          cargo test --locked --manifest-path ../../Cargo.toml
+          -p type-bridge-schema-codegen --test ordered_collections
+          ordered_generated_packages_pass_all_four_language_compilers
+          -- --exact --ignored
+
+      - name: Verify native module built
+        run: ls type_bridge_node.*.node
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Compile generated projection integration harness
+        run: npm run typecheck:projection-integration
+
+      - name: Thin-binding scope probe
+        run: npm run scope:probe
+
+      - name: Check generated TypeScript projection package
+        run: node ../schema-codegen/tests/typescript_acceptance/check.mjs
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: DTS comparator tests
+        run: npm run test:dts
+
+      - name: DTS baseline parity
+        run: npm run dts:parity
+
+      - name: Package smoke
+        run: npm run smoke:package
+
+      - name: Contract foundation adapter
+        run: npm run test:contract-adapter
+
+  # Rust code coverage (informational, does not block CI)
+  rust-coverage:
+    name: Rust Coverage
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Generate LCOV report
+        run: ./scripts/coverage.sh branch --lcov
+
+      - name: Upload Rust coverage to Codecov
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: type-bridge-core/target/llvm-cov/lcov.branch.info
+          flags: rust
+          fail_ci_if_error: false
+
+  standalone-cli-artifact:
+    name: Standalone CLI artifact (Linux x86_64 GNU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      typedb:
+        image: typedb/typedb:3.12.3
+        ports:
+          - 1729:1729
+          - 8000:8000
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install exact artifact Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tmp/standalone-cli-artifact/build
+          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            linux-cli-artifact-v1-
+
+      - name: Require native archive and binary inspectors
+        run: |
+          test "$(uname -m)" = x86_64
+          readelf --version
+          sha256sum --version
+
+      - name: Build and validate the deterministic standalone CLI artifact
+        run: >-
+          python scripts/ci/standalone_cli_artifact.py build
+          --output tmp/standalone-cli-artifact
+
+      - name: Consume the relocated artifact without language toolchains
+        run: >-
+          python scripts/ci/standalone_cli_artifact.py smoke
+          tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+
+      - name: Generate reproducible Python, Node, and Rust artifacts surfaces
+        run: |
+          set -euo pipefail
+          artifact=tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          python scripts/ci/sdk_artifacts_surfaces.py build "$artifact" \
+            --output tmp/sdk-artifacts-surfaces
+          python scripts/ci/sdk_artifacts_surfaces.py build "$artifact" \
+            --output tmp/sdk-artifacts-surfaces-repeat
+          for binding in python node rust; do
+            archive="type-bridge-$binding-generated-sdk-artifacts.tar.gz"
+            cmp "tmp/sdk-artifacts-surfaces/$archive" \
+              "tmp/sdk-artifacts-surfaces-repeat/$archive"
+            python scripts/ci/sdk_artifacts_surfaces.py validate \
+              "tmp/sdk-artifacts-surfaces/$archive" --binding "$binding"
+          done
+
+      - name: Wait for exact TypeDB fixture
+        run: |
+          for i in {1..30}; do
+            version="$(curl --fail --silent --max-time 3 \
+              http://localhost:8000/v1/version 2>/dev/null || true)"
+            if nc -z localhost 1729 2>/dev/null \
+              && python3 -c \
+                'import json,sys; value=json.loads(sys.argv[1]); raise SystemExit(0 if isinstance(value,dict) and value.get("version")=="3.12.3" else 1)' \
+                "$version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs ${{ job.services.typedb.id }} 2>&1 || true
+          exit 1
+
+      - name: Apply, verify, roll back, and reapply exact sdk history
+        run: >-
+          python scripts/ci/standalone_cli_artifact.py connected-smoke
+          tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          --database sdk_cli_${{ github.run_id }}_${{ github.run_attempt }}
+
+      - name: Upload immutable non-publishing artifact evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: standalone-cli-artifact-linux-x86_64-gnu
+          path: tmp/standalone-cli-artifact/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload artifact-generated artifacts language surfaces
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdk-artifacts-generated-surfaces
+          path: tmp/sdk-artifacts-surfaces/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Show TypeDB logs after failure
+        if: failure()
+        run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
+
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tmp/standalone-cli-artifact/build
+          key: linux-cli-artifact-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+
+  c-package-artifacts:
+    name: C runtime and generated package artifacts (Linux x86_64 GNU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install exact artifact Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tmp/c-package-artifacts/build/cargo
+          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            linux-c-package-artifacts-v1-
+
+      - name: Require native packaging and consumer tools
+        run: |
+          test "$(uname -m)" = x86_64
+          cmake --version
+          pkg-config --version
+          cc --version
+          c++ --version
+          readelf --version
+          nm --version
+
+      - name: Build and validate separate deterministic C artifacts
+        run: >-
+          python scripts/ci/c_package_artifacts.py build
+          --output tmp/c-package-artifacts
+
+      - name: Consume relocated CMake and pkg-config packages
+        run: >-
+          python scripts/ci/c_package_artifacts.py smoke
+          tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+
+      - name: Upload immutable non-publishing C artifact evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-package-artifacts-linux-x86_64-gnu
+          path: |
+            tmp/c-package-artifacts/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+            tmp/c-package-artifacts/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: tmp/c-package-artifacts/build/cargo
+          key: linux-c-package-artifacts-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+
+  c-distribution-security:
+    name: C distribution supply-chain artifact gate
+    needs: [standalone-cli-artifact, c-package-artifacts]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact artifact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install exact artifact Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Install pinned RustSec scanner
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-audit@0.22.2
+
+      - name: Download immutable standalone CLI artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: standalone-cli-artifact-linux-x86_64-gnu
+          path: tmp/c-distribution-input/cli
+
+      - name: Download immutable C package artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: c-package-artifacts-linux-x86_64-gnu
+          path: tmp/c-distribution-input/c
+
+      - name: Scan only the shipped CLI and C runtime dependency closure
+        run: |
+          python scripts/ci/c_distribution_security.py prune-lock \
+            --output tmp/c-distribution-input/Cargo.lock
+          cargo audit --json \
+            --file tmp/c-distribution-input/Cargo.lock \
+            > tmp/c-distribution-input/rustsec-report.json
+
+      - name: Assemble and hostile-validate exact supply-chain evidence
+        run: >-
+          python scripts/ci/c_distribution_security.py assemble
+          --cli tmp/c-distribution-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          --runtime tmp/c-distribution-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          --generated tmp/c-distribution-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          --audit-report tmp/c-distribution-input/rustsec-report.json
+          --output tmp/c-distribution-evidence
+
+      - name: Upload immutable non-publishing supply-chain evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-distribution-security-linux-x86_64-gnu
+          path: tmp/c-distribution-evidence
+          if-no-files-found: error
+          retention-days: 7
+
+  c-artifact-clean-consumer:
+    name: C artifact-only clean consumer (Linux x86_64 GNU)
+    needs: [standalone-cli-artifact, c-package-artifacts, c-distribution-security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact artifact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Require the exact clean-consumer compiler matrix
+        run: |
+          test "$(uname -m)" = x86_64
+          gcc --version
+          clang --version
+          g++ --version
+          clang++ --version
+          cmake --version
+          pkg-config --version
+
+      - name: Download immutable standalone CLI artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: standalone-cli-artifact-linux-x86_64-gnu
+          path: tmp/c-artifact-input/cli
+
+      - name: Download immutable C package artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: c-package-artifacts-linux-x86_64-gnu
+          path: tmp/c-artifact-input/c
+
+      - name: Run provider-free, negative, sanitizer, and unload journey
+        run: >-
+          python scripts/ci/c_artifact_journey.py provider-free
+          tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          > tmp/c-artifact-clean-consumer.json
+
+      - name: Independently revalidate the exact artifact-bound report
+        run: >-
+          python scripts/ci/c_artifact_journey.py validate-report
+          tmp/c-artifact-clean-consumer.json
+          tmp/c-artifact-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+
+      - name: Upload immutable non-publishing clean-consumer evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-artifact-clean-consumer-linux-x86_64-gnu
+          path: tmp/c-artifact-clean-consumer.json
+          if-no-files-found: error
+          retention-days: 7
+
+  c-artifact-live-consumer:
+    name: C artifact-only live journey (Linux x86_64 GNU)
+    needs: [standalone-cli-artifact, c-package-artifacts, c-artifact-clean-consumer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact artifact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13.5"
+
+      - name: Install exact fixture Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: ${{ env.RUST_STABLE_TOOLCHAIN }}
+
+      - name: Restore cargo build cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/typebridge-c-artifact-infra
+          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-
+            linux-c-artifact-live-v1-
+
+      - name: Download immutable standalone CLI artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: standalone-cli-artifact-linux-x86_64-gnu
+          path: tmp/c-artifact-live-input/cli
+
+      - name: Download immutable C package artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: c-package-artifacts-linux-x86_64-gnu
+          path: tmp/c-artifact-live-input/c
+
+      - name: Download provider-free clean-consumer evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: c-artifact-clean-consumer-linux-x86_64-gnu
+          path: tmp/c-artifact-live-input/provider-free
+
+      - name: Start isolated plaintext and TLS TypeDB fixture
+        env:
+          TYPEDB_IMAGE: typedb/typedb:3.12.3
+          TYPEDB_PORT: "1729"
+          TYPEDB_HTTP_PORT: "8000"
+          TYPEDB_TLS_PORT: "1730"
+          TYPEDB_TLS_HTTP_PORT: "8001"
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-c-artifact-live
+          up -d typedb typedb-tls
+
+      - name: Wait for exact TypeDB fixture
+        run: |
+          for attempt in {1..45}; do
+            version="$(curl --fail --silent --max-time 3 http://localhost:8000/v1/version || true)"
+            tls_version="$(curl --fail --silent --max-time 3 \
+              --cacert tests/fixtures/tls/root-ca.pem \
+              https://localhost:8001/v1/version || true)"
+            if python3 -c \
+              'import json,sys; values=[json.loads(value) for value in sys.argv[1:]]; raise SystemExit(0 if all(value.get("version")=="3.12.3" for value in values) else 1)' \
+              "$version" "$tls_version"; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Run artifact-only direct, remote, migration, and cleanup journey
+        run: >-
+          python scripts/ci/c_artifact_journey.py live
+          tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+          --database c_artifact_data_${{ github.run_id }}_${{ github.run_attempt }}
+          --migration-database c_artifact_migration_${{ github.run_id }}_${{ github.run_attempt }}
+          --infra-target ${{ runner.temp }}/typebridge-c-artifact-infra
+          --tls-address localhost:1730
+          --tls-http-port 8001
+          --tls-root-ca tests/fixtures/tls/root-ca.pem
+          > tmp/c-artifact-live-journey.json
+
+      - name: Independently revalidate exact live artifact evidence
+        run: >-
+          python scripts/ci/c_artifact_journey.py validate-live
+          tmp/c-artifact-live-journey.json
+          tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz
+          tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+
+      - name: Assemble and independently validate all 14 canonical steps
+        run: |
+          python scripts/ci/c_artifact_journey.py assemble-acceptance \
+            tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
+            tmp/c-artifact-live-journey.json \
+            tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz \
+            > tmp/c-artifact-acceptance-report.json
+          python scripts/ci/c_artifact_journey.py validate-acceptance \
+            tmp/c-artifact-acceptance-report.json \
+            tmp/c-artifact-live-input/provider-free/c-artifact-clean-consumer.json \
+            tmp/c-artifact-live-journey.json \
+            tmp/c-artifact-live-input/cli/type-bridge-cli-artifact-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/type-bridge-c-runtime-abi-1.6-x86_64-unknown-linux-gnu.tar.gz \
+            tmp/c-artifact-live-input/c/tb_sdkv3-c-3a39d320fb1a36cb8bf348b37f9be5db9b8b49f4f8ee698e4d86c38d99155bfb.tar.gz
+
+      - name: Upload immutable non-publishing live artifact evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: c-artifact-live-consumer-linux-x86_64-gnu
+          path: |
+            tmp/c-artifact-live-journey.json
+            tmp/c-artifact-acceptance-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Show fixture logs after failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -p type-bridge-c-artifact-live logs
+
+      - name: Remove isolated plaintext and TLS fixture
+        if: always()
+        run: >-
+          docker compose -f docker-compose.yml -p type-bridge-c-artifact-live
+          down --volumes --remove-orphans
+
+  # Rust crate: compile, test, lint (parallel with Python jobs)
+
+      # Only master writes caches; pull requests restore master's.
+      - name: Save cargo build cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/typebridge-c-artifact-infra
+          key: linux-c-artifact-live-v1-${{ hashFiles('type-bridge-core/Cargo.lock') }}-${{ github.run_id }}

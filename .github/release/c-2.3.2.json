@@ -841,7 +841,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "53d44afc496593d979bc8d1a125c957d3beedcc48db6b9d073e0e8796a591d34",
+  "ci_workflow_sha256": "83adb33608559870c00f32715f1653c1ea6c006d8a34c79e31751bb58dc10d91",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.2.tar.gz",
   "format": "typebridge.c-release-policy/v1",
