@@ -2,7 +2,9 @@
 
 The `Perf` workflow (`.github/workflows/perf.yml`) measures TypeBridge on
 GitHub-hosted runners and the docs site renders the history at
-[Performance](../perf/index.md).
+[Performance](../perf/index.md). It runs after each green master CI
+run (recorded as a `push` of that commit), on pull requests that carry the
+`perf` label, on published releases, nightly and on dispatch.
 
 ## Results
 

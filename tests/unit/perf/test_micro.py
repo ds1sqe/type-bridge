@@ -40,6 +40,21 @@ def test_run_block_from_github_actions() -> None:
     assert run.started_at == "2026-10-16T03:12:45+00:00"
 
 
+def test_workflow_run_measures_the_ci_head_as_a_push() -> None:
+    head = "a" * 40
+    env = GITHUB | {
+        "GITHUB_SHA": "b" * 40,
+        "GITHUB_EVENT_NAME": "workflow_run",
+        "PERF_COMMIT": head,
+        "PERF_TRIGGER": "push",
+    }
+
+    run = micro.collect_run(env, started_at="2026-10-16T03:12:45+00:00")
+
+    assert run.commit == head
+    assert run.trigger == "push"
+
+
 def test_pull_request_records_the_head_branch() -> None:
     env = GITHUB | {
         "GITHUB_EVENT_NAME": "pull_request",
