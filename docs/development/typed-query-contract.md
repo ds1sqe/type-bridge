@@ -748,6 +748,49 @@ interceptor vouches for (`on_v3_write_authority`), or from any caller under
 vocabulary are in the
 [staged remote envelope](../reference/query-plan-v3.md#staged-remote-envelope-v3).
 
+### Hosting the staged executor in-process
+
+A host that embeds `type-bridge-server` as a library runs the staged route
+without its HTTP framing through `StagedExecutor`, the V3 counterpart of the
+V2 pair `preflight_remote_request_v2` / `execute_admitted_remote_request_v2`.
+It takes the same `QueryPipeline` and `V2QueryState` the server binary builds
+and does everything the route does after the body is read:
+
+```rust
+use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcomeKind};
+
+let executor = Arc::new(StagedExecutor::new(pipeline, query_state));
+
+// Admit the caller through the pipeline, as the route does for its headers.
+let mut ctx = executor
+    .pipeline()
+    .v3_request_context(metadata)?;          // every policy must cover V3
+executor.pipeline().begin_v2_request(&mut ctx).await?;
+
+// Signed request bytes in, signed reply bytes out.
+let outcome = executor
+    .execute_staged_request(ctx, body, Instant::now() + execution_timeout)
+    .await;
+deliver(outcome.reply);                      // the bytes the client verifies
+match outcome.kind {
+    StagedOutcomeKind::Committed => {}       // code "ok"; the reply carries the answers
+    StagedOutcomeKind::Failed => {}          // nothing applied; `outcome.code` says why
+    StagedOutcomeKind::Unknown => {}         // a write may have applied: reconcile by reading
+}
+```
+
+The hooks run in a fixed order, pinned by a test: the transport hook
+(`on_v2_transport`, during admission), `on_v3_write_authority` for a write,
+`on_v3_plan` for every bound plan in index order before anything is
+reserved or opened, then nonce reservation, staging and one commit,
+`on_v3_commit` once the outcome is known (observe-only, bounded by the audit
+deadline), and the response policies (`on_v2_response`) over the signed
+reply. A refusal at any step before reservation leaves nothing reserved and
+nothing open, so a retry is re-authorized rather than replayed. The outcome
+is owned by a detached task once admitted: a host that stops awaiting
+mid-commit does not drop the observers. The reply the host delivers is
+already policed by its own pipeline's response hooks.
+
 ## Stable Error Categories
 
 | Category | Meaning | Executor invoked? | Data statements? |
