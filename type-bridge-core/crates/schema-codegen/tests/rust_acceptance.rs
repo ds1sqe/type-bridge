@@ -865,6 +865,9 @@ async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let _: Vec<Person> = exact.insert_many(vec![create.clone()]).await.unwrap();
     let _: Vec<Person> = exact.put_many(vec![create.clone()]).await.unwrap();
     let _: () = exact.delete("0x1").await.unwrap();
+    let snapshot: Option<Person> = exact.delete_returning("0x1").await.unwrap();
+    if let Some(snapshot) = snapshot { let _: bool = snapshot.deleted(); }
+    let _: Vec<Person> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
     let _: Option<Person> = exact.get_by_iid("0x1").await.unwrap();
     let _: Vec<Person> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();
@@ -874,7 +877,7 @@ async fn positive(db: &Database<AppSchema>, create: PersonCreate) {
     let _: u64 = exact.subtypes().count().await.unwrap();
     let family = db.entities::<Party>().subtypes();
     let family_value: Option<PartyFamily> = family.get_by_iid("0x1").await.unwrap();
-    if let Some(value) = family_value { let _ = value.name(); narrow(value); }
+    if let Some(value) = family_value { let _ = value.name(); let _: bool = value.deleted(); narrow(value); }
     let _: Option<PartyFamily> = family.get_by_iid("0x1").await.unwrap();
     let _: Vec<PartyFamily> = family.all().await.unwrap();
     let _: u64 = family.count().await.unwrap();
@@ -898,6 +901,9 @@ async fn relation_positive(db: &Database<AppSchema>, create: ContractCreate) {
     let _: Vec<Contract> = exact.insert_many(vec![create.clone()]).await.unwrap();
     let _: Vec<Contract> = exact.put_many(vec![create.clone()]).await.unwrap();
     let _: () = exact.delete("0x1").await.unwrap();
+    let snapshot: Option<Contract> = exact.delete_returning("0x1").await.unwrap();
+    if let Some(snapshot) = snapshot { let _: bool = snapshot.deleted(); }
+    let _: Vec<Contract> = exact.delete_many_returning(&["0x1".into()]).await.unwrap();
     let _: Option<Contract> = exact.get_by_iid("0x1").await.unwrap();
     let _: Vec<Contract> = exact.all().await.unwrap();
     let _: u64 = exact.count().await.unwrap();

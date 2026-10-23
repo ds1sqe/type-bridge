@@ -229,7 +229,7 @@ fn test_db_with_failures(
 
 fn fetch(iid: &str, name: &str, value: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":iid,"_type":"record","attributes":{"name":[name],"text":[value]}}),
+        serde_json::json!({"_iid":iid,"_type":"record","attributes":{"name":name,"text":value}}),
     ]))
 }
 
@@ -626,7 +626,7 @@ async fn public_insert_missing_post_write_row_rolls_back() {
 #[tokio::test]
 async fn public_insert_wrong_concrete_provider_row_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
+        serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":"n1","text":"v"}}),
     ]))]);
     let error = db
         .entities::<Record>()
@@ -636,31 +636,15 @@ async fn public_insert_wrong_concrete_provider_row_rolls_back() {
         })
         .await
         .unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "wrong_concrete_type");
-    assert_eq!(path, &["type"]);
-    assert_eq!(
-        message,
-        "provider entity row has the wrong exact concrete type"
-    );
-    assert!(std::error::Error::source(&error).is_none());
+    // The exact-type plan rejects attributes of an undeclared result type before hydration.
+    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
     assert_post_write_events(&state.lock().unwrap().events, "\"v\"");
 }
 
 #[tokio::test]
 async fn public_insert_materializer_rejection_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["reject-materialize"]}}),
+        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":"n1","text":"reject-materialize"}}),
     ]))]);
     let error = db
         .entities::<Record>()
@@ -1631,8 +1615,8 @@ async fn public_insert_zero_iid_documents_rolls_back() {
 #[tokio::test]
 async fn public_insert_multiple_iid_documents_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{}}),
-        serde_json::json!({"_iid":"0x2","_type":"record","attributes":{}}),
+        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":"n1","text":"v"}}),
+        serde_json::json!({"_iid":"0x2","_type":"record","attributes":{"name":"n1","text":"v"}}),
     ]))]);
     let err = db
         .entities::<Record>()
@@ -1649,7 +1633,7 @@ async fn public_insert_multiple_iid_documents_rolls_back() {
 #[tokio::test]
 async fn public_insert_noncanonical_iid_rolls_back_without_refetch() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"bad","_type":"record","attributes":{}}),
+        serde_json::json!({"_iid":"bad","_type":"record","attributes":{"name":"n1","text":"v"}}),
     ]))]);
     let err = db
         .entities::<Record>()
@@ -1659,7 +1643,7 @@ async fn public_insert_noncanonical_iid_rolls_back_without_refetch() {
         })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("provider_identity_mismatch"));
+    assert_eq!(err.code(), Some("query_remote_v3_document_value"));
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 
@@ -1667,7 +1651,7 @@ async fn public_insert_noncanonical_iid_rolls_back_without_refetch() {
 async fn public_insert_uses_recording_projection_and_materializes_iid() {
     let state = Arc::new(Mutex::new(State::default()));
     let responses = VecDeque::from([Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["hello"]}}),
+        serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":"n1","text":"hello"}}),
     ]))]);
     let backend = Backend {
         state: Arc::clone(&state),

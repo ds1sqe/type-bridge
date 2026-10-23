@@ -208,6 +208,14 @@ class ModelBase:
     def iid(self) -> str | None:
         return self._iid
 
+    @property
+    def deleted(self) -> bool:
+        return self.__runtime_projection__.instance_deleted(self)
+
+    def _require_live(self) -> None:
+        if self.deleted:
+            raise ValueError("thing_deleted: a deleted snapshot cannot be mutated")
+
     @classmethod
     def manager(
         cls,
@@ -495,6 +503,24 @@ class ProjectedModelManager[ModelT: ModelBase]:
         self._run_post(CrudEvent.POST_DELETE, instance_or_iid)
         return instance_or_iid
 
+    def delete_returning(self, instance: ModelT) -> ModelT:
+        """Delete an instance and return its stored pre-delete snapshot."""
+        snapshots = self.delete_many_returning([instance])
+        if not snapshots:
+            raise ProjectedModelNotFoundError("generated model not found")
+        return snapshots[0]
+
+    def delete_many_returning(self, instances: Sequence[ModelT]) -> list[ModelT]:
+        """Return existing deletion snapshots in input order."""
+        resolved = [value for value in instances if self._resolve_instance_iid(value)]
+        self._run_pre_many(CrudEvent.PRE_DELETE, resolved)
+        snapshots = cast(
+            list[ModelT],
+            self._native.delete_many_returning([cast(str, value.iid) for value in resolved]),
+        )
+        self._run_post_many(CrudEvent.POST_DELETE, snapshots)
+        return snapshots
+
     def delete_many(
         self,
         instances: Sequence[ModelT],
@@ -576,6 +602,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return cast(ModelT | None, self._native.get_by_iid(iid))
 
     def _resolve_instance_iid(self, instance: ModelT) -> bool:
+        instance._require_live()
         if instance.iid is not None:
             return True
         iid = self._native.resolve_iid(instance)
@@ -585,6 +612,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return True
 
     def _run_pre(self, event: CrudEvent, instance: ModelT) -> None:
+        instance._require_live()
         for hook in self._hooks:
             if not hook.should_run(event, self._model):
                 continue
@@ -949,6 +977,7 @@ class _ProjectedField:
         return values[self.name]
 
     def __set__(self, instance: ModelBase, value: object) -> None:
+        instance._require_live()
         if self.create is None:
             raise AttributeError(f"{self.name} is read-only")
         multiplicity = _mapping(self.create["multiplicity"])

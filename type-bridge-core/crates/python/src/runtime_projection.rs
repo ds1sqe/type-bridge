@@ -473,6 +473,19 @@ impl Drop for PendingActivationGuard {
     }
 }
 
+struct DeletedBatchOutput {
+    output: Py<PyAny>,
+    origins: PendingActivationGuard,
+}
+
+impl DeletedBatchOutput {
+    fn finish(mut self) -> Py<PyAny> {
+        self.origins.registry.activate(&self.origins.activations);
+        self.origins.armed = false;
+        self.output
+    }
+}
+
 struct BatchPublicationGuard<'py> {
     py: Python<'py>,
     package: Arc<InstalledPackage>,
@@ -2268,6 +2281,11 @@ impl PyRuntimeProjection {
         )
     }
 
+    /// Whether this exact facade retains a deleted root snapshot.
+    fn instance_deleted(&self, instance: Bound<'_, PyAny>) -> bool {
+        facade_is_deleted(self.package.as_ref(), &instance)
+    }
+
     /// Hydrate one proof-backed query result through this exact package projection.
     fn hydrate_thing(
         &self,
@@ -2951,6 +2969,22 @@ impl PyProjectedModelManager {
             }
         }
         Ok(())
+    }
+
+    /// Delete one exact model and return its stored pre-delete snapshot.
+    fn delete_by_iid_returning(&self, py: Python<'_>, iid: String) -> PyResult<Py<PyAny>> {
+        let output = self.delete_many_returning_projected(py, vec![iid])?;
+        let values = output.bind(py).cast_exact::<PyList>()?;
+        if values.is_empty() {
+            Ok(py.None())
+        } else {
+            Ok(values.get_item(0)?.unbind())
+        }
+    }
+
+    /// Delete exact models and return existing snapshots in input order.
+    fn delete_many_returning(&self, py: Python<'_>, iids: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        self.delete_many_returning_projected(py, bounded_projected_iids(&iids)?)
     }
 
     /// Delete exact generated models atomically by canonical IID.
@@ -3733,7 +3767,10 @@ impl PyProjectedModelManager {
         })
     }
 
-    fn delete_many_projected(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
+    fn prepare_delete_batch(
+        &self,
+        iids: Vec<String>,
+    ) -> PyResult<(ProjectedBatch, ProjectedBatchInvocationControl)> {
         ProjectedBatch::validate_binding_row_count(iids.len()).map_err(py_sdk_diagnostic)?;
         let control = ProjectedBatchInvocationControl::capture(
             QueryExecutionResourceLimits::default(),
@@ -3763,6 +3800,92 @@ impl PyProjectedModelManager {
             &control,
         )
         .map_err(py_sdk_diagnostic)?;
+        Ok((batch, control))
+    }
+
+    fn delete_many_returning_projected(
+        &self,
+        py: Python<'_>,
+        iids: Vec<String>,
+    ) -> PyResult<Py<PyAny>> {
+        let (batch, control) = self.prepare_delete_batch(iids)?;
+        let package = Arc::clone(&self.package);
+        let callback_free = self.uses_successor_runtime();
+        let database = self.database.clone();
+        let transaction = self.transaction.clone();
+        let marker = self.successor_batch_marker.clone();
+        provider_block_on_with_gil(py, self.runtime.as_ref(), move |py| {
+            Box::pin(async move {
+                let _gc_guard = SuccessorBatchGcGuard::disable(py);
+                if callback_free {
+                    package.validate_batch_hydration_layouts(py)?;
+                }
+                let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
+                let binding_error = Mutex::new(None);
+                let empty = DeletedBatchOutput {
+                    output: fallible_python_empty_list(py)?,
+                    origins: PendingActivationGuard::new(package.facade_origins.clone(), 0)
+                        .map_err(py_sdk_diagnostic)?,
+                };
+                let mapper = |result| {
+                    materialize_deleted_batch(
+                        py,
+                        Arc::clone(&package),
+                        callback_free,
+                        result,
+                        &binding_error,
+                        &pool,
+                    )
+                };
+                let executor =
+                    ProjectedBatchExecutor::new(package.projection.as_ref()).returning_deleted();
+                let result = match (&database, &transaction) {
+                    (Some(database), None) => {
+                        executor
+                            .execute_mapped(database.as_ref(), &batch, control, empty, mapper)
+                            .await
+                    }
+                    (None, Some(transaction)) => {
+                        let prior_state = transaction.lifecycle_state().await;
+                        let result = executor
+                            .execute_in_transaction_mapped(
+                                transaction,
+                                &batch,
+                                control,
+                                empty,
+                                mapper,
+                            )
+                            .await;
+                        if !batch.is_empty()
+                            && matches!(
+                                prior_state,
+                                TransactionContextState::Active
+                                    | TransactionContextState::RolledBack
+                            )
+                            && (result.is_ok()
+                                || transaction.lifecycle_state().await
+                                    == TransactionContextState::RollbackOnly)
+                            && let Some(marker) = marker
+                        {
+                            marker.store(true, Ordering::Release);
+                        }
+                        result
+                    }
+                    _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                };
+                let output = match result {
+                    Ok(mapped) => Ok(mapped.finish()),
+                    Err(diagnostic) => Err(take_binding_materialization_error(&binding_error)
+                        .unwrap_or_else(|| py_sdk_diagnostic(diagnostic))),
+                };
+                drop(pool);
+                output
+            })
+        })
+    }
+
+    fn delete_many_projected(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
+        let (batch, control) = self.prepare_delete_batch(iids)?;
         if !batch.is_empty()
             && let Some(transaction) = &self.transaction
         {
@@ -3874,6 +3997,7 @@ impl PyProjectedModelManager {
     }
 
     fn ensure_instance(&self, py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        require_live_facade(self.package.as_ref(), value)?;
         let expected = self
             .package
             .class(&self.type_id, ProjectedModelForm::Complete)?;
@@ -3926,6 +4050,21 @@ impl PyProjectedModelManager {
     }
 }
 
+fn facade_is_deleted(package: &InstalledPackage, value: &Bound<'_, PyAny>) -> bool {
+    matches!(package.facade_origins.proof(value), Some(FacadeProjectionProof::Thing(thing)) if thing.is_deleted())
+}
+
+fn require_live_facade(package: &InstalledPackage, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    if facade_is_deleted(package, value) {
+        return Err(py_sdk_diagnostic(batch_input_shape_diagnostic(
+            "thing_deleted",
+            "A deleted snapshot cannot be mutated",
+            &[],
+        )));
+    }
+    Ok(())
+}
+
 fn ensure_batch_instance_at(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -3933,6 +4072,7 @@ fn ensure_batch_instance_at(
     value: &Bound<'_, PyAny>,
     ordinal: usize,
 ) -> PyResult<()> {
+    require_live_facade(package, value)?;
     let expected = package.class(type_id, ProjectedModelForm::Complete)?;
     if value.get_type().as_ptr() != expected.bind(py).as_ptr() {
         return Err(py_sdk_diagnostic(generated_token_package_mismatch_at([
@@ -4183,6 +4323,82 @@ fn projected_batch_hydration_pool_capacity(
         }
     }
     Ok(total)
+}
+
+fn materialize_deleted_batch(
+    py: Python<'_>,
+    package: Arc<InstalledPackage>,
+    callback_free: bool,
+    result: ProjectedBatchResult,
+    binding_error: &Mutex<Option<PyErr>>,
+    pool: &BatchHydrationPool,
+) -> Result<DeletedBatchOutput, SdkExecutionDiagnostic> {
+    let ProjectedBatchResult::Things(things) = result else {
+        return Err(SdkExecutionDiagnostic::internal_failure());
+    };
+    if callback_free {
+        pool.reserve_exact(projected_batch_hydration_pool_capacity(&things)?)?;
+    }
+    let mut values = reserved_binding_rows(things.len())?;
+    let capacity = things
+        .iter()
+        .try_fold(things.len(), |count, thing| {
+            thing
+                .roles()
+                .values()
+                .try_fold(count, |count, players| count.checked_add(players.len()))
+        })
+        .ok_or_else(ProjectedBatch::binding_allocation_failure)?;
+    let mut origins = reserved_binding_rows(capacity)?;
+    for (ordinal, thing) in things.into_iter().enumerate() {
+        let thing = Arc::new(thing);
+        let value = hydrate_projected_thing_value_staged(
+            py,
+            package.as_ref(),
+            thing.as_ref(),
+            Some(&thing),
+            &mut origins,
+            callback_free,
+            callback_free.then_some(pool),
+        )
+        .and_then(|value| {
+            let origin = package.facade_origins.prepare(value.bind(py))?;
+            origins.push(PendingFacadeOrigin {
+                origin,
+                proof: FacadeProjectionProof::Thing(thing),
+            });
+            Ok(value)
+        })
+        .map_err(|error| {
+            record_binding_materialization_error(binding_error, error);
+            ProjectedBatchExecutor::binding_materialization_failure(projected_index(ordinal))
+        })?;
+        values.push(value);
+    }
+    if callback_free {
+        pool.verify_fully_consumed()?;
+    }
+    let output = PyList::new(py, values.iter().map(|value| value.bind(py)))
+        .map_err(|error| {
+            record_binding_materialization_error(binding_error, error);
+            ProjectedBatchExecutor::binding_materialization_failure(0)
+        })?
+        .into_any()
+        .unbind();
+    let mut activation_guard =
+        PendingActivationGuard::new(package.facade_origins.clone(), capacity)?;
+    for origin in origins {
+        activation_guard
+            .stage(py, origin.origin, origin.proof, None)
+            .map_err(|error| {
+                record_binding_materialization_error(binding_error, error);
+                ProjectedBatchExecutor::binding_materialization_failure(0)
+            })?;
+    }
+    Ok(DeletedBatchOutput {
+        output,
+        origins: activation_guard,
+    })
 }
 
 fn materialize_projected_batch<'py>(
@@ -10460,17 +10676,25 @@ class StructBase:
         })
     }
 
+    fn origin_gathering_fetch_document(iid: &str, player_iid: &str) -> serde_json::Value {
+        serde_json::json!({
+            "_iid": iid,
+            "_type": "gathering",
+            "attributes": {},
+            "_role_0_iid": player_iid,
+            "_role_0_type": "person",
+            "_role_0_attributes": {"tag": ["source-tag"]}
+        })
+    }
+
     fn origin_container_document(iid: &str, player_iid: &str) -> serde_json::Value {
         serde_json::json!({
             "_iid": iid,
             "_type": "container",
             "attributes": {},
-            "role_players": [{
-                "role_name": "item",
-                "player_iid": player_iid,
-                "player_type_name": "gathering",
-                "attributes": {}
-            }]
+            "_role_0_iid": player_iid,
+            "_role_0_type": "gathering",
+            "_role_0_attributes": {}
         })
     }
 
@@ -12999,7 +13223,7 @@ def public_state(value):
             );
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![origin_gathering_document("0xb1", "0xa1")]),
+                QueryResult::Documents(vec![origin_gathering_fetch_document("0xb1", "0xa1")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
                 Box::new(same_backend),
@@ -13106,7 +13330,7 @@ def public_state(value):
                 .expect("borrowed transaction hydration should succeed");
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![origin_gathering_document("0xb2", "0xa2")]),
+                QueryResult::Documents(vec![origin_gathering_fetch_document("0xb2", "0xa2")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
                 Box::new(same_backend),
@@ -13251,7 +13475,7 @@ def public_state(value):
             .unwrap();
             let borrowed = hydrate_first_query_thing(py, package.as_ref(), borrowed_handle);
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![origin_gathering_document("0xb4", "0xa4")]),
+                QueryResult::Documents(vec![origin_gathering_fetch_document("0xb4", "0xa4")]),
             ]);
             let same_database = Arc::new(Database::with_backend_authority(
                 Box::new(same_backend),
@@ -13313,7 +13537,7 @@ def public_state(value):
             assert!(remote_reference().origin_carrier().is_none());
 
             let (target_backend, target_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![origin_gathering_document("0xb5", "0xa5")]),
+                QueryResult::Documents(vec![origin_gathering_fetch_document("0xb5", "0xa5")]),
             ]);
             let target = Arc::new(Database::with_backend(
                 Box::new(target_backend),
@@ -14347,6 +14571,146 @@ def failing_initialize(target, original):
                         &state.calls,
                     );
                 }
+            }
+        });
+    }
+
+    #[test]
+    fn returning_delete_supports_predecessor_hydration_and_rolls_back_callback_failure() {
+        Python::initialize();
+        Python::attach(|py| {
+            for fail_hydration in [false, true] {
+                let (_, package) = install(py);
+                let person_id = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                assert!(package.batch_slots(&person_id).is_err());
+                if fail_hydration {
+                    package
+                        .class(&person_id, ProjectedModelForm::Complete)
+                        .unwrap()
+                        .bind(py)
+                        .setattr(
+                            "attach_runtime_iid",
+                            py.eval(ffi::c_str!("lambda self, iid: 1 / 0"), None, None)
+                                .unwrap(),
+                        )
+                        .unwrap();
+                }
+                let (database, state) = BatchRecordingBackend::fixture(
+                    vec![
+                        BatchResponse::Documents(vec![serde_json::json!({
+                            "ordinal": 0, "_iid": "0x20", "_type": "person",
+                            "attributes": {"identifier": [{"value": "stored"}], "aliases": []}
+                        })]),
+                        BatchResponse::Documents(vec![serde_json::json!({"ordinal": 0})]),
+                    ],
+                    false,
+                );
+                let manager = origin_manager(
+                    Arc::clone(&package),
+                    person_id,
+                    Some(database),
+                    None,
+                    Arc::new(ProviderRuntimeOwner::new().unwrap()),
+                );
+                let result = manager.delete_by_iid_returning(py, "0x20".into());
+                if fail_hydration {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .is_instance_of::<pyo3::exceptions::PyZeroDivisionError>(py)
+                    );
+                    assert_eq!(package.facade_origins.len(), 0);
+                } else {
+                    let snapshot = result.unwrap();
+                    assert!(facade_is_deleted(package.as_ref(), snapshot.bind(py)));
+                    assert_eq!(
+                        snapshot
+                            .bind(py)
+                            .getattr("iid")
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "0x20"
+                    );
+                }
+                let state = state.lock().unwrap();
+                assert!(state.responses.is_empty());
+                assert_eq!(state.calls.len(), 2);
+                assert_eq!(state.commits, usize::from(!fail_hydration));
+                assert_eq!(state.rollbacks, usize::from(fail_hydration));
+            }
+        });
+    }
+
+    #[test]
+    fn returning_delete_materializes_fresh_snapshots_and_publishes_only_on_success() {
+        Python::initialize();
+        Python::attach(|py| {
+            for fail_commit in [false, true] {
+                let (_, package) = install_batch(py);
+                let person_id = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let (database, state) = BatchRecordingBackend::fixture(
+                    vec![
+                        BatchResponse::Documents(vec![
+                            batch_person_document(2, "0x22", "person-2", "stored-2"),
+                            batch_person_document(0, "0x20", "person-0", "stored-0"),
+                        ]),
+                        BatchResponse::Documents(vec![
+                            serde_json::json!({"ordinal": 0}),
+                            serde_json::json!({"ordinal": 1}),
+                            serde_json::json!({"ordinal": 2}),
+                        ]),
+                    ],
+                    fail_commit,
+                );
+                let manager = origin_manager(
+                    Arc::clone(&package),
+                    person_id,
+                    Some(database),
+                    None,
+                    Arc::new(ProviderRuntimeOwner::new().unwrap()),
+                );
+                let result = manager.delete_many_returning_projected(
+                    py,
+                    vec!["0x20".into(), "0x21".into(), "0x22".into()],
+                );
+                if fail_commit {
+                    assert!(result.is_err());
+                    assert_eq!(package.facade_origins.len(), 0);
+                } else {
+                    let output = result.unwrap();
+                    let values = output.bind(py).cast_exact::<PyList>().unwrap();
+                    assert_eq!(values.len(), 2);
+                    for (ordinal, iid) in ["0x20", "0x22"].into_iter().enumerate() {
+                        let value = values.get_item(ordinal).unwrap();
+                        assert_eq!(
+                            value.getattr("iid").unwrap().extract::<String>().unwrap(),
+                            iid
+                        );
+                        assert!(facade_is_deleted(package.as_ref(), &value));
+                        let error = manager.delete(py, value).unwrap_err();
+                        assert_eq!(
+                            error
+                                .value(py)
+                                .getattr("code")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "thing_deleted"
+                        );
+                    }
+                }
+                let state = state.lock().unwrap();
+                assert!(state.responses.is_empty());
+                assert_eq!(state.calls.len(), 2);
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.legacy_commits, 0);
             }
         });
     }

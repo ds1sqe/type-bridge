@@ -1546,6 +1546,12 @@ pub struct NodeProjectedValueEnvelope {
 
 #[napi]
 impl NodeProjectedValueEnvelope {
+    /// Whether the root is a pre-delete snapshot.
+    #[napi(getter)]
+    pub fn deleted(&self) -> bool {
+        self.thing.is_deleted()
+    }
+
     /// Return the public generated-value wire without any origin evidence.
     #[napi(getter)]
     pub fn json(&self) -> String {
@@ -3126,7 +3132,7 @@ impl NodeProjectedModelManager {
             row_count,
             row_at.raw(),
         )?;
-        self.execute_projected_batch(&batch, control, (), |result| match result {
+        self.execute_projected_batch(&batch, control, false, (), |result| match result {
             ProjectedBatchResult::Deleted => Ok(()),
             _ => Err(SdkExecutionDiagnostic::internal_failure()),
         })
@@ -3304,6 +3310,65 @@ impl NodeProjectedModelManager {
             }
         };
         wire_json(&stored)
+    }
+
+    /// Delete one exact value and retain its stored pre-delete snapshot.
+    #[napi(js_name = "deleteByIidReturning")]
+    pub fn delete_by_iid_returning(
+        &self,
+        iid: String,
+    ) -> napi::Result<Option<NodeProjectedValueEnvelope>> {
+        Ok(self.delete_many_returning(vec![iid])?.pop())
+    }
+
+    /// Delete exact values atomically and return existing snapshots in input order.
+    #[napi(js_name = "deleteManyReturning")]
+    pub fn delete_many_returning(
+        &self,
+        iids: Vec<String>,
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        ProjectedBatch::validate_binding_row_count(iids.len()).map_err(napi_sdk_diagnostic)?;
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let mut budget = ProjectedBatchBindingBudget::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            &control,
+        )
+        .map_err(napi_sdk_diagnostic)?;
+        let mut rows = reserved_projected_batch_rows(iids.len()).map_err(napi_sdk_diagnostic)?;
+        for iid in iids {
+            let row = ProjectedBatchRow::Delete { iid };
+            budget
+                .try_add_row(self.package.projection.as_ref(), &row)
+                .map_err(napi_sdk_diagnostic)?;
+            rows.push(row);
+        }
+        drop(budget);
+        let batch = ProjectedBatch::try_new_for_invocation(
+            self.package.projection.as_ref(),
+            self.type_id.clone(),
+            ProjectedBatchOperation::Delete,
+            rows,
+            &control,
+        )
+        .map_err(napi_sdk_diagnostic)?;
+        self.execute_projected_batch(&batch, control, true, Vec::new(), |result| {
+            let ProjectedBatchResult::Things(things) = result else {
+                return Err(SdkExecutionDiagnostic::internal_failure());
+            };
+            let mut values = reserved_projected_batch_rows(things.len())?;
+            for (ordinal, thing) in things.into_iter().enumerate() {
+                values.push(
+                    projected_envelope(Arc::clone(&self.package), thing).map_err(|_| {
+                        ProjectedBatchExecutor::binding_materialization_failure(ordinal as u64)
+                    })?,
+                );
+            }
+            Ok(values)
+        })
+        .map_err(napi_sdk_diagnostic)
     }
 
     /// Delete one exact projected value by its canonical TypeDB IID.
@@ -3537,7 +3602,7 @@ impl NodeProjectedModelManager {
             row_at,
         )?;
         if batch.is_empty() {
-            self.execute_projected_batch(&batch, control, (), |_| {
+            self.execute_projected_batch(&batch, control, false, (), |_| {
                 Err(SdkExecutionDiagnostic::internal_failure())
             })
             .map_err(napi_sdk_diagnostic)?;
@@ -3557,7 +3622,7 @@ impl NodeProjectedModelManager {
         // reads the array length during this conversion; no fallible N-API work
         // may follow authority activation.
         let array = unsafe { Array::from_napi_value(env.raw(), output.array) }?;
-        self.execute_projected_batch(&batch, control, ptr::null_mut(), |result| {
+        self.execute_projected_batch(&batch, control, false, ptr::null_mut(), |result| {
             output.materialize(result)
         })
         .map_err(napi_sdk_diagnostic)?;
@@ -3569,6 +3634,7 @@ impl NodeProjectedModelManager {
         &self,
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
+        returning_deleted: bool,
         empty: T,
         mapper: F,
     ) -> Result<T, SdkExecutionDiagnostic>
@@ -3576,6 +3642,11 @@ impl NodeProjectedModelManager {
         F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic>,
     {
         let executor = ProjectedBatchExecutor::new(self.package.projection.as_ref());
+        let executor = if returning_deleted {
+            executor.returning_deleted()
+        } else {
+            executor
+        };
         match (&self.database, &self.transaction) {
             (Some(database), None) => self
                 .runtime
@@ -7352,6 +7423,69 @@ entities:
 
     #[cfg(feature = "contract-test-adapter")]
     #[test]
+    fn node_returning_delete_retains_snapshot_origin_on_owned_and_borrowed_routes() {
+        use type_bridge_orm::TxType;
+        use type_bridge_orm::session::backend::QueryResult;
+
+        for borrowed in [false, true] {
+            let projection = ordered_runtime();
+            let (database, state) = projection_recording_database_for_test(vec![
+                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
+                    serde_json::json!({
+                        "ordinal": 0, "_iid": "0xa1", "_type": "group", "attributes": {"tag": []}
+                    }),
+                ])),
+                ProjectionRecordingResponse::Query(QueryResult::Documents(vec![
+                    serde_json::json!({"ordinal": 0}),
+                ])),
+            ]);
+            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+            let transaction = borrowed.then(|| {
+                runtime
+                    .block_on(database.transaction_context(TxType::Write))
+                    .unwrap()
+            });
+            let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
+            let manager = NodeProjectedModelManager {
+                package: Arc::clone(&projection.package),
+                type_id: TypeId::new(TypeKind::Entity, "group").unwrap(),
+                database: (!borrowed).then(|| Arc::clone(&database)),
+                transaction: transaction.clone(),
+                successor_batch_marker: marker.clone(),
+                runtime: Arc::clone(&runtime),
+                filters: Vec::new(),
+            };
+            let snapshot = manager
+                .delete_by_iid_returning("0xa1".into())
+                .unwrap()
+                .unwrap();
+            assert!(snapshot.deleted());
+            assert_eq!(snapshot.thing.iid(), "0xa1");
+            assert_eq!(
+                snapshot
+                    .thing
+                    .try_to_reference(projection.package.projection.as_ref())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "thing_deleted"
+            );
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.commits, usize::from(!borrowed));
+                assert_eq!(state.rollbacks, 0);
+            }
+            if let Some(transaction) = transaction {
+                assert!(marker.unwrap().load(Ordering::Acquire));
+                runtime.block_on(transaction.commit_sdk()).unwrap();
+                assert_eq!(state.lock().unwrap().commits, 1);
+            }
+        }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
     fn node_batch_routes_preserve_provider_and_hydration_atomicity() {
         use type_bridge_orm::TxType;
         use type_bridge_orm::session::backend::QueryResult;
@@ -7467,7 +7601,7 @@ entities:
                     let (batch, control) =
                         one_row_insert_batch(&runtime_projection, type_id.clone(), wire.clone());
                     let diagnostic = manager
-                        .execute_projected_batch(&batch, control, (), |_| -> Result<_, _> {
+                        .execute_projected_batch(&batch, control, false, (), |_| -> Result<_, _> {
                             panic!("provider/hydration failure unexpectedly reached the mapper")
                         })
                         .unwrap_err();

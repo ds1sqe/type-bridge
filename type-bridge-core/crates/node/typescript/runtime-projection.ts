@@ -301,6 +301,7 @@ export interface NativeProjectedFacadeProof {
 
 /** @internal Private wire plus exact root and role-player proofs. */
 export interface NativeProjectedValueEnvelope {
+  readonly deleted: boolean;
   readonly json: string;
   rootProof(): NativeProjectedFacadeProof;
   roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
@@ -383,6 +384,8 @@ export interface NativeProjectedManager {
     rowAt: (ordinal: number) => NativeProjectedUpdateBatchRow,
   ): readonly Complete[];
   deleteByIid(iid: string): void;
+  deleteByIidReturning(iid: string): NativeProjectedValueEnvelope | null;
+  deleteManyReturning(iids: string[]): NativeProjectedValueEnvelope[];
   deleteManyProjected(
     rowCount: number,
     rowAt: (ordinal: number) => string,

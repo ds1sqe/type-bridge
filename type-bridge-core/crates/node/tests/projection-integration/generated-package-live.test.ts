@@ -2895,18 +2895,57 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       networkManager.putMany(relationBatch).map((candidate) => candidate.iid),
       relationBatch.map((candidate) => candidate.iid),
     );
-    for (const relation of relationBatch) {
+    const deletedRelations = networkManager.deleteManyReturning(
+      relationBatch.map((relation) => relation.iid).reverse(),
+    );
+    assert.deepEqual(
+      deletedRelations.map((relation) => relation.iid),
+      relationBatch.map((relation) => relation.iid).reverse(),
+    );
+    assert.deepEqual(
+      deletedRelations.map((relation) => relation.identifier.value),
+      relationBatch.map((relation) => relation.identifier.value).reverse(),
+    );
+    const playerIids = (relation: typeof relationBatch[number]) => ({
+      origin: relation.origin.iid,
+      destination: relation.destination.iid,
+      participants: relation.participant.map((person) => person.iid).sort(),
+    });
+    assert.deepEqual(
+      deletedRelations.map(playerIids),
+      relationBatch.map(playerIids).reverse(),
+    );
+    for (const relation of deletedRelations) {
       assertIid(relation.iid);
-      networkManager.delete(relation);
+      assert.throws(() => networkManager.delete(relation), /thing_deleted/);
       assert.equal(networkManager.getByIid(relation.iid), null);
+      assert.notEqual(personManager.getByIid(relation.origin.iid), null);
     }
 
     membershipManager.delete(insertedMembership);
     assert.equal(membershipManager.getByIid(insertedMembership.iid), null);
-    networkManager.delete(insertedNetwork);
+    const deletedNetwork = networkManager.deleteReturning(insertedNetwork.iid);
+    assert.notEqual(deletedNetwork, null);
+    assert.equal(deletedNetwork?.identifier.value, insertedNetwork.identifier.value);
+    assert.equal(deletedNetwork?.origin.iid, insertedNetwork.origin.iid);
+    assert.ok(deletedNetwork);
+    assert.throws(() => networkManager.delete(deletedNetwork), /thing_deleted/);
     assert.equal(networkManager.getByIid(insertedNetwork.iid), null);
-    personManager.delete(transactionPersonIid);
+    const deletedPerson = personManager.deleteReturning(transactionPersonIid);
+    assert.equal(deletedPerson?.iid, transactionPersonIid);
     assert.equal(personManager.getByIid(transactionPersonIid), null);
+    assert.deepEqual(personManager.deleteManyReturning([transactionPersonIid]), []);
+    const deletedPeople = personManager.deleteManyReturning([
+      insertedBatch[1].iid, transactionPersonIid, insertedBatch[0].iid,
+    ]);
+    assert.deepEqual(
+      deletedPeople.map((person) => person.iid),
+      [insertedBatch[1].iid, insertedBatch[0].iid],
+    );
+    for (const person of deletedPeople) {
+      assert.equal(personManager.getByIid(person.iid), null);
+      assert.throws(() => personManager.delete(person), /thing_deleted/);
+    }
   } catch (error) {
     failure = error;
   }

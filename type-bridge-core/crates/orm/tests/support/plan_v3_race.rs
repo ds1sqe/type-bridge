@@ -590,20 +590,34 @@ pub fn insert_doctor_fetch(name: &str) -> QueryPlanV3 {
 
 /// Capture all doctors before deleting them in the same write transaction.
 pub fn delete_doctors_returning() -> QueryPlanV3 {
+    delete_doctors_plan(true)
+}
+
+/// The unchanged plain-delete counterpart used by the cost comparison.
+pub fn delete_doctors() -> QueryPlanV3 {
+    delete_doctors_plan(false)
+}
+
+fn delete_doctors_plan(returning: bool) -> QueryPlanV3 {
+    let mut pipeline = vec![Stage::Match {
+        patterns: vec![isa(0, entity("doctor"))],
+    }];
+    if returning {
+        pipeline.push(Stage::Fetch(ThingDocument::new(id(0), vec![])));
+    }
+    pipeline.push(Stage::Delete {
+        items: vec![DeleteItem::Thing { binding: id(0) }],
+    });
     QueryPlanV3::new(
         spec(
             &["doctor"],
-            vec![
-                Stage::Match {
-                    patterns: vec![isa(0, entity("doctor"))],
-                },
-                Stage::Fetch(ThingDocument::new(id(0), vec![])),
-                Stage::Delete {
-                    items: vec![DeleteItem::Thing { binding: id(0) }],
-                },
-            ],
+            pipeline,
             Operation::Write {
-                returns: WriteReturns::Rows,
+                returns: if returning {
+                    WriteReturns::Rows
+                } else {
+                    WriteReturns::Matched
+                },
             },
             vec![],
         ),
@@ -677,4 +691,72 @@ pub fn delete_named_doctors_returning(names: &[&str]) -> QueryPlanV3 {
             .collect(),
     );
     QueryPlanV3::new(plan, &schema()).unwrap()
+}
+
+/// Extend only the deletion parity fixture, preserving the existing race schema.
+pub fn deletion_subtype_schema() -> DeclaredSchema {
+    use type_bridge_contract::schema::{SubFact, SubFactId};
+    let mut facts = schema().facts().cloned().collect::<Vec<_>>();
+    for label in ["doctor-report", "doctor-memo"] {
+        let child = entity(label);
+        facts.push(SchemaFact::Type(TypeFact::new(child.clone()).unwrap()));
+        facts.push(SchemaFact::Sub(SubFact::new(
+            SubFactId::new(child, entity("doctor")).unwrap(),
+        )));
+    }
+    let sourced = facts.into_iter().enumerate().map(|(index, fact)| {
+        SourcedSchemaFact::new(
+            fact,
+            SourceSpan::new(
+                DocumentId::new("deletion-subtype-parity").unwrap(),
+                index as u64,
+                index as u64 + 1,
+                index as u32 + 1,
+                1,
+                index as u32 + 1,
+                2,
+            )
+            .unwrap(),
+        )
+    });
+    DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced).unwrap()
+}
+
+/// Capture concrete doctor subtypes selected by a shared attribute filter.
+pub fn delete_doctor_subtypes_returning() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["doctor", "on_call"],
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Isa {
+                            binding: id(0),
+                            include_subtypes: true,
+                            type_id: entity("doctor"),
+                        }
+                        .into(),
+                        has(0, 1, "on-call"),
+                        compare(
+                            ValueComparator::Equal,
+                            binding(1),
+                            QueryOperand::Literal {
+                                value: CanonicalValue::Boolean(true),
+                            },
+                        ),
+                    ],
+                },
+                Stage::Fetch(ThingDocument::new(id(0), vec![])),
+                Stage::Delete {
+                    items: vec![DeleteItem::Thing { binding: id(0) }],
+                },
+            ],
+            Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            vec![],
+        ),
+        &deletion_subtype_schema(),
+    )
+    .unwrap()
 }

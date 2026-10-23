@@ -908,6 +908,14 @@ pub struct ReferenceOrigin {
 }
 
 impl ReferenceOrigin {
+    /// Whether this generated value retains a deleted root snapshot.
+    #[must_use]
+    pub fn deleted(&self) -> bool {
+        self.projected
+            .as_ref()
+            .is_some_and(|origin| origin.is_deleted())
+    }
+
     #[must_use]
     pub(crate) const fn from_projected(
         origin: Option<type_bridge_orm::ProjectedReferenceOrigin>,

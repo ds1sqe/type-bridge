@@ -1374,6 +1374,38 @@ impl PyDynamicEntityManager {
         provider_block_on(py, self.runtime.as_ref(), manager.delete_by_iid(&iid))
             .map_err(py_orm_error)
     }
+    /// Delete one exact IID and return its captured document, or None when absent.
+    fn delete_by_iid_returning(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
+        let rows = self.delete_many_returning(py, vec![iid.to_owned()])?;
+        let rows = rows.bind(py).cast::<PyList>()?;
+        if rows.is_empty() {
+            Ok(py.None())
+        } else {
+            Ok(rows.get_item(0)?.unbind())
+        }
+    }
+
+    /// Delete exact IIDs atomically and return captured documents in input order.
+    fn delete_many_returning(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<Py<PyAny>> {
+        let manager = self.manager()?;
+        let documents = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.delete_many_by_iid_exact_returning(&iids),
+        )
+        .map_err(py_orm_error)?;
+        let rows = documents
+            .iter()
+            .map(|document| {
+                type_bridge_orm::_manager::hydration::hydrate_dynamic_entity(
+                    &self.descriptor,
+                    document,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(py_orm_error)?;
+        entity_rows_to_py(py, &rows)
+    }
 }
 
 impl PyDynamicEntityManager {
@@ -1657,6 +1689,38 @@ impl PyDynamicRelationManager {
         let manager = self.manager()?;
         provider_block_on(py, self.runtime.as_ref(), manager.delete_by_iid(&iid))
             .map_err(py_orm_error)
+    }
+    /// Delete one exact IID and return its captured document, or None when absent.
+    fn delete_by_iid_returning(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
+        let rows = self.delete_many_returning(py, vec![iid.to_owned()])?;
+        let rows = rows.bind(py).cast::<PyList>()?;
+        if rows.is_empty() {
+            Ok(py.None())
+        } else {
+            Ok(rows.get_item(0)?.unbind())
+        }
+    }
+
+    /// Delete exact IIDs atomically and return captured documents in input order.
+    fn delete_many_returning(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<Py<PyAny>> {
+        let manager = self.manager()?;
+        let documents = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            manager.delete_many_by_iid_exact_returning(&iids),
+        )
+        .map_err(py_orm_error)?;
+        let rows = documents
+            .iter()
+            .map(|document| {
+                type_bridge_orm::_manager::hydration::hydrate_dynamic_relation(
+                    &self.descriptor,
+                    document,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(py_orm_error)?;
+        relation_rows_to_py(py, &rows)
     }
 }
 

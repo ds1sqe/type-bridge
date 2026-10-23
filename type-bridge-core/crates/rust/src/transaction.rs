@@ -383,6 +383,30 @@ where
         materialize_projected(projected, installed)
     }
 
+    /// Delete the exact model and return its pre-delete snapshot without committing.
+    /// An absent IID returns `None`.
+    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
+        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    }
+
+    /// Delete exact models and return existing snapshots in input order without committing.
+    pub async fn delete_many_returning(&self, iids: &[String]) -> Result<Vec<M>> {
+        validate_binding_row_count(iids.len())?;
+        let (id, installed, _manager) = self.exact()?;
+        let batch = prepare_batch(
+            installed,
+            id,
+            ProjectedBatchOperation::Delete,
+            delete_rows(iids)?,
+        )?;
+        crate::projected_batch::execute_borrowed_deleted_things(
+            &self.transaction.tx,
+            installed,
+            &batch,
+        )
+        .await
+    }
+
     /// Deletes only the exact model at canonical `iid` in the open
     /// transaction, without committing.
     pub async fn delete(&self, iid: &str) -> Result<()> {
@@ -662,6 +686,30 @@ where
                 Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Update))
             })?;
         materialize_projected(projected, installed)
+    }
+
+    /// Delete the exact model and return its pre-delete snapshot without committing.
+    /// An absent IID returns `None`.
+    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
+        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    }
+
+    /// Delete exact models and return existing snapshots in input order without committing.
+    pub async fn delete_many_returning(&self, iids: &[String]) -> Result<Vec<M>> {
+        validate_binding_row_count(iids.len())?;
+        let (id, installed, _manager) = self.exact()?;
+        let batch = prepare_batch(
+            installed,
+            id,
+            ProjectedBatchOperation::Delete,
+            delete_rows(iids)?,
+        )?;
+        crate::projected_batch::execute_borrowed_deleted_things(
+            &self.transaction.tx,
+            installed,
+            &batch,
+        )
+        .await
     }
 
     /// Deletes only the exact relation at canonical `iid` in the open

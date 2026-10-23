@@ -18,15 +18,17 @@ test("query-remote-v3 fixtures and Rust embedded plans", () => {
   const fixtures = Object.fromEntries(fs.readdirSync(root)
     .filter(name => name.endsWith(".json"))
     .map(name => [name, JSON.parse(fs.readFileSync(path.join(root, name), "utf8"))]));
-  assert.equal(Object.keys(fixtures).length, 7);
+  assert.equal(Object.keys(fixtures).length, 10);
   const request = fixtures["request.json"];
   assert.equal(request.format, "typebridge.query-remote-request/v3");
   const schema = fs.readFileSync("../../../tests/contracts/plan_v3/schema.json");
-  for (const entry of request.plans) {
-    const original = Buffer.from(entry.plan_bytes, "hex");
-    const encoded = native._query_plan_v3_round_trip(original, schema);
-    assert.deepEqual(encoded.bytes, original);
-    assert.equal(encoded.fingerprint.length, 64);
+  for (const name of ["request.json", "request-documents.json", "request-delete-snapshot.json"]) {
+    for (const entry of fixtures[name].plans) {
+      const original = Buffer.from(entry.plan_bytes, "hex");
+      const encoded = native._query_plan_v3_round_trip(original, schema);
+      assert.deepEqual(encoded.bytes, original);
+      assert.equal(encoded.fingerprint.length, 64);
+    }
   }
   for (const name of ["reply-committed.json", "reply-failed.json"]) {
     const outer = fixtures[name];
