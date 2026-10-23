@@ -6,6 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
     "prune_cargo_target", ROOT / "scripts/ci/prune_cargo_target.py"
@@ -57,3 +59,15 @@ def test_prune_drops_workspace_units_and_keeps_dependencies(tmp_path: Path) -> N
             profile / "type-bridge.exe",
             profile / ".cargo-lock",
         }
+
+
+def test_prune_fails_when_the_target_layout_matches_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The newer build-dir layout: no `deps` folder, units under build/<pkg>/<hash>.
+    touch(tmp_path / "debug/build/type-bridge-orm/aaa111/out/lib.rlib")
+    monkeypatch.setattr(prune, "workspace_packages", lambda manifest: ["type-bridge-orm"])
+    monkeypatch.setattr(sys, "argv", ["prune_cargo_target.py", str(tmp_path)])
+
+    with pytest.raises(SystemExit, match="nothing matched"):
+        prune.main()

@@ -115,6 +115,12 @@ def main() -> None:
                 path.unlink()
     verb = "would remove" if arguments.dry_run else "removed"
     print(f"{arguments.target}: {before / 1e9:.2f} GB, {verb} {removed / 1e9:.2f} GB")
+    if before and not removed:
+        # A toolchain that changes the target layout would otherwise save
+        # the whole multi-GB target again without anyone noticing.
+        raise SystemExit(
+            f"{arguments.target}: nothing matched the cargo target layout this script expects"
+        )
 
 
 if __name__ == "__main__":
