@@ -234,7 +234,13 @@ def test_the_released_job_runs_every_sdk_and_version_into_the_store() -> None:
     assert "python -m perf.harness.versions" in pick
     assert "--require" in pick
     assert workflow[True]["release"] == {"types": ["published"]}
-    assert "tags" not in workflow[True]["push"]
+    # Master commits are measured after their CI run, never on a push or tag.
+    assert "push" not in workflow[True]
+    assert workflow[True]["workflow_run"] == {
+        "workflows": ["CI"],
+        "types": ["completed"],
+        "branches": ["master"],
+    }
     service = job["services"]["typedb"]
     assert service["image"] == "typedb/typedb:3.12.3"
     assert service["options"] == "--tmpfs /var/lib/typedb/data:rw"
