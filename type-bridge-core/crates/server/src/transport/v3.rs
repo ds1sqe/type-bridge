@@ -12,10 +12,10 @@
 //! [`Interceptor::on_v3_write_authority`](crate::interceptor::Interceptor::on_v3_write_authority)
 //! or the operator explicitly allows unauthenticated staged writes.
 //!
-//! The executor is a library entry: [`StagedExecutor::execute_staged_request`]
+//! The executor is a library entry: `StagedExecutor::execute_staged_request`
 //! takes one admitted caller and the signed request bytes and returns the
 //! signed reply bytes, so an embedding host runs the staged route
-//! in-process without the HTTP framing of [`create_v3_router`].
+//! in-process without the HTTP framing of `create_v3_router`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -64,8 +64,8 @@ pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
 /// pipeline, the query state (advertisement, ceilings, replay store, live
 /// authority, signer) and the staged advertisement it answers under.
 ///
-/// [`create_v3_router`] wraps one in HTTP; an embedding host builds one and
-/// calls [`StagedExecutor::execute_staged_request`] directly.
+/// `create_v3_router` wraps one in HTTP; an embedding host builds one and
+/// calls `StagedExecutor::execute_staged_request` directly.
 pub struct StagedExecutor {
     pipeline: Arc<QueryPipeline>,
     query: Arc<V2QueryState>,
