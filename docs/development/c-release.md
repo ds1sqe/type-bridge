@@ -11,8 +11,8 @@ promotion and independent public verification on 2026-10-11. The 2.2.5
 artifacts completed promotion and independent public verification on
 2026-10-15. The 2.2.6 artifacts completed promotion and independent public
 verification on 2026-10-20. The 2.3.0 artifacts completed promotion and
-independent public verification on 2026-10-22, and the 2.3.1 artifacts on
-2026-10-23.
+independent public verification on 2026-10-22, and the 2.3.1 and 2.3.2
+artifacts on 2026-10-23.
 
 The standalone CLI, native runtime and generated sdk example are
 separate archives. Application owners generate and distribute their own
@@ -229,3 +229,15 @@ Sigstore bundles. The downloaded archives and records bind to the promotion
 record's digests and the CLI archive's Sigstore bundle verifies against the
 tag identity. This release keeps C ABI 1.7.0 and adds TypeDB 3.14 to the
 support window.
+
+The 2.3.2 public artifacts were independently verified on 2026-10-23.
+They bind source `a5a0992d475e0e24891de2a47e02b8248695f610`,
+[CI run 39919419375](https://github.com/ds1sqe/type-bridge/actions/runs/39919419375),
+[C verification run 39924411591](https://github.com/ds1sqe/type-bridge/actions/runs/39924411591),
+and [promotion run 39943942073](https://github.com/ds1sqe/type-bridge/actions/runs/39943942073).
+The [2.3.2 release](https://github.com/ds1sqe/type-bridge/releases/tag/v2.3.2)
+retains the signed evidence, verification receipt, promotion record, and
+Sigstore bundles. The downloaded archives and records bind to the promotion
+record's digests and the CLI archive's Sigstore bundle verifies against the
+tag identity. This release keeps C ABI 1.7.0; it adds the staged V3
+executor library entry and refuses TypeDB 3.14's query rules at plan build.
