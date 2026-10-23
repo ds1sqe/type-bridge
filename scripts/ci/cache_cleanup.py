@@ -8,7 +8,9 @@ evict useful entries, so this removes them:
 
 - ``--mode pr --pr N``: every cache of ``refs/pull/N/merge``.
 - ``--mode master``: all but the newest ``--keep`` entries of each master
-  family.
+  family, and every master entry keyed by a superseded ``Cargo.lock`` hash
+  once its family has an entry for the current one (a lockfile change starts
+  new families, so the keep rule alone never drops the old ones).
 - ``--mode sweep``: the master rule, plus caches of refs that no longer
   exist (deleted branches, closed pull requests) and of any non-master ref
   idle for ``--max-idle-days``.
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import re
 import subprocess
@@ -30,6 +33,8 @@ from typing import Any
 
 MASTER = "refs/heads/master"
 RUN_ID = re.compile(r"-\d+$")
+HASH = re.compile(r"-([0-9a-f]{64})(?=-|$)")
+LOCK = "type-bridge-core/Cargo.lock"
 
 Cache = dict[str, Any]
 
@@ -53,6 +58,31 @@ def superseded(caches: Iterable[Cache], keep: int = 2) -> list[Cache]:
     for entries in groups.values():
         entries.sort(key=_created, reverse=True)
         stale.extend(entries[keep:])
+    return stale
+
+
+def lock_hash(payload: bytes) -> str:
+    """GitHub's ``hashFiles`` of one file: sha256 over the file's sha256 digest."""
+    return hashlib.sha256(hashlib.sha256(payload).digest()).hexdigest()
+
+
+def of_old_lock(caches: Iterable[Cache], current: str) -> list[Cache]:
+    """Master caches keyed by another lock hash whose family also has ``current``.
+
+    Keys carrying an unrelated 64-hex digest (an npm lock, an image digest)
+    are untouched: no entry of theirs carries the Cargo lock hash.
+    """
+    master = [cache for cache in caches if cache["ref"] == MASTER]
+    current_prefixes = set()
+    for cache in master:
+        match = HASH.search(cache["key"])
+        if match and match[1] == current:
+            current_prefixes.add(cache["key"][: match.start()])
+    stale = []
+    for cache in master:
+        match = HASH.search(cache["key"])
+        if match and match[1] != current and cache["key"][: match.start()] in current_prefixes:
+            stale.append(cache)
     return stale
 
 
@@ -115,6 +145,7 @@ def main(
     parser.add_argument("--pr", type=int, help="pull request number for --mode pr")
     parser.add_argument("--keep", type=int, default=2, help="newest master entries kept per family")
     parser.add_argument("--max-idle-days", type=int, default=7)
+    parser.add_argument("--lock", default=LOCK, help="Cargo.lock whose hash the current keys carry")
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args(argv)
     if arguments.mode == "pr" and arguments.pr is None:
@@ -127,6 +158,9 @@ def main(
         doomed = of_pull_request(caches, arguments.pr)
     else:
         doomed = superseded(caches, arguments.keep)
+        with open(arguments.lock, "rb") as lock:
+            current = lock_hash(lock.read())
+        doomed += [cache for cache in of_old_lock(caches, current) if cache not in doomed]
         if arguments.mode == "sweep":
             doomed += orphaned(
                 caches, live_refs(arguments.repo, run), now(), arguments.max_idle_days

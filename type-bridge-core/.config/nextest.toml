@@ -1,11 +1,18 @@
 # nextest runs every test in its own process, many at once. These tests
-# bound wall time (busy-wait stage timing, a 40 ms answer deadline),
-# which a test running beside them can stretch, so each takes every test
-# slot. An injected clock would remove the need; see #263.
+# bound wall time (busy-wait stage timing, a 40 ms answer deadline, 10 s
+# budgets for ceiling-scale migration graphs), which a test running beside
+# them can stretch, so each takes every test slot. An injected clock would
+# remove the need; see #263.
 [[profile.default.overrides]]
 filter = """
 package(type-bridge-perf-stages)
 | (package(type-bridge-orm)
    & test(=session::staged::tests::answer_timeout_refreshes_on_commit_reuse_and_debug_redacts_queries))
+| (package(type-bridge-migration)
+   & (test(=graph::tests::directory_ceiling_disconnected_graph_remains_near_linear)
+      | test(=graph::tests::directory_ceiling_scale_cycle_returns_typed_validation_without_recursion)
+      | test(=graph::tests::overlapping_deep_backedges_are_amortized_at_the_directory_ceiling)
+      | test(=adoption::tests::irrelevant_snapshot_children_are_not_recursively_enumerated)
+      | test(=adoption::tests::ceiling_scale_reversed_chain_validates_resolves_and_finds_head_within_budget)))
 """
 threads-required = "num-test-threads"

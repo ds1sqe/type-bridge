@@ -53,6 +53,29 @@ def test_master_keeps_the_newest_entries_of_each_family() -> None:
     assert [c["id"] for c in cleanup.superseded(caches, keep=2)] == [2, 1]
 
 
+def test_master_drops_families_of_a_superseded_lock_once_the_current_one_exists() -> None:
+    old, new, npm = "b" * 64, "c" * 64, "d" * 64
+    caches = [
+        cache(f"rust-Linux-main-{old}-1", cleanup.MASTER, "2026-10-10T00:00:00Z", id=1),
+        cache(f"rust-Linux-main-{new}-2", cleanup.MASTER, "2026-10-11T00:00:00Z", id=2),
+        cache(f"Linux-cargo-perf-v1-{old}", cleanup.MASTER, "2026-10-10T00:00:00Z", id=3),
+        cache(f"Linux-cargo-perf-v1-{new}", cleanup.MASTER, "2026-10-11T00:00:00Z", id=4),
+        # No current-lock entry yet: the old one is still what CI restores.
+        cache(f"rust-macOS-main-{old}-1", cleanup.MASTER, "2026-10-10T00:00:00Z", id=5),
+        # A digest that is not the Cargo lock hash stays.
+        cache(f"node-cache-Linux-x64-npm-{npm}", cleanup.MASTER, "2026-10-10T00:00:00Z", id=6),
+        cache(f"rust-Linux-main-{old}-7", "refs/pull/7/merge", "2026-10-10T00:00:00Z", id=7),
+    ]
+    assert [c["id"] for c in cleanup.of_old_lock(caches, new)] == [1, 3]
+
+
+def test_lock_hash_matches_github_hash_files() -> None:
+    # hashFiles('x') of one file is sha256 over the file's sha256 digest.
+    assert (
+        cleanup.lock_hash(b"") == "5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456"
+    )
+
+
 def test_a_closed_pull_request_loses_every_cache_and_nothing_else() -> None:
     caches = [
         cache("a", "refs/pull/7/merge", "2026-10-01T00:00:00Z", id=1),
