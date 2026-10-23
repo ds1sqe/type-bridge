@@ -127,8 +127,17 @@ jobs:
 
       # schema-codegen's tests run in parallel in rust-codegen-tests. nextest
       # runs the test binaries in parallel; the benches (harness = false, which
-      # nextest cannot list) stay on cargo test, which runs each once.
-      - name: cargo test
+      # nextest cannot list) stay on cargo test, which runs each once. Build
+      # and run are separate steps so their times show apart.
+      - name: Build Rust tests
+        working-directory: type-bridge-core
+        shell: pwsh
+        run: |
+          cargo nextest run --no-run --workspace --exclude type-bridge-schema-codegen --lib --bins --tests --examples
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --no-run --workspace --exclude type-bridge-schema-codegen --benches
+
+      - name: Run Rust tests
         working-directory: type-bridge-core
         shell: pwsh
         run: |
@@ -1032,10 +1041,28 @@ jobs:
         with:
           tool: cargo-nextest@0.9.140
 
+      # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
+      # shadows the MSVC linker. Build and run are separate steps so their
+      # times show apart.
+      - name: Build schema-codegen ${{ matrix.shard }} tests
+        working-directory: type-bridge-core
+        shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          if ($env:SHARD -eq 'acceptance') {
+            cargo test --no-run -p type-bridge-schema-codegen --test rust_acceptance
+          } else {
+            $targets = @('--lib', '--examples')
+            foreach ($file in Get-ChildItem crates/schema-codegen/tests -Filter *.rs) {
+              if ($file.BaseName -ne 'rust_acceptance') { $targets += @('--test', $file.BaseName) }
+            }
+            cargo nextest run --no-run -p type-bridge-schema-codegen @targets
+          }
+          exit $LASTEXITCODE
+
       - name: cargo test (schema-codegen ${{ matrix.shard }})
         working-directory: type-bridge-core
-        # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
-        # shadows the MSVC linker.
         shell: pwsh
         env:
           SHARD: ${{ matrix.shard }}
