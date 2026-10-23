@@ -37,7 +37,7 @@ pub(crate) struct ProjectionBrand {
 }
 
 #[derive(Eq, PartialEq)]
-struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity);
+struct ProjectedDatabaseOrigin(DatabaseExecutionIdentity, bool);
 
 impl std::fmt::Debug for ProjectedDatabaseOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -50,11 +50,19 @@ impl std::fmt::Debug for ProjectedDatabaseOrigin {
 /// Bindings cannot construct or inspect this value. Its debug form is
 /// permanently redacted and its private, non-serializable payload is shared so
 /// bindings can retain it cheaply without exposing an identity token. It
-/// exists only to preserve same-database reference fencing across complete or
-/// reference hydration and a later relation write.
+/// preserves same-database reference fencing and deleted-snapshot status
+/// across facade reconstruction and later writes.
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ProjectedReferenceOrigin(Arc<ProjectedDatabaseOrigin>);
+
+impl ProjectedReferenceOrigin {
+    /// Whether the retained value is a deleted root snapshot.
+    #[must_use]
+    pub fn is_deleted(&self) -> bool {
+        self.0.1
+    }
+}
 
 impl std::fmt::Debug for ProjectedReferenceOrigin {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -429,6 +437,7 @@ impl ProjectedReference {
             keys,
             Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
                 database_identity,
+                false,
             )))),
         )
     }
@@ -440,6 +449,13 @@ impl ProjectedReference {
         keys: Vec<(OwnsFactId, ProjectedAttributeValue)>,
         database_origin: Option<ProjectedReferenceOrigin>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
+        if database_origin.as_ref().is_some_and(|origin| origin.0.1) {
+            return Err(invalid_input(
+                "thing_deleted",
+                "A deleted snapshot cannot be used as a live reference",
+                type_path(&type_id),
+            ));
+        }
         let model = require_projected_thing_model(installed, &type_id)?;
         if model.reference_read().target_name().is_none() {
             return Err(invalid_input(
@@ -1378,6 +1394,7 @@ impl ProjectedThing {
             roles,
             Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
                 database_identity,
+                false,
             )))),
         )
     }
@@ -1468,6 +1485,27 @@ impl ProjectedThing {
     #[must_use]
     pub const fn resource_measure(&self) -> ProjectedResourceMeasure {
         ProjectedResourceMeasure(self.size)
+    }
+
+    /// Whether this value is a snapshot of a deleted thing.
+    #[must_use]
+    pub fn is_deleted(&self) -> bool {
+        self.database_origin
+            .as_ref()
+            .is_some_and(|origin| origin.0.1)
+    }
+
+    pub(crate) fn mark_deleted(&mut self) -> Result<(), SdkExecutionDiagnostic> {
+        let origin = self
+            .database_origin
+            .as_ref()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        // Replace only the root's carrier; surviving role players stay live.
+        self.database_origin = Some(ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
+            origin.0.0.clone(),
+            true,
+        ))));
+        Ok(())
     }
 
     /// Derive an exact nonrecursive reference while preserving database origin.
@@ -2005,7 +2043,7 @@ fn validate_role_player_database_origin(
     path: Vec<SdkDiagnosticPathSegment>,
 ) -> Result<(), SdkExecutionDiagnostic> {
     match (thing_origin, player_origin) {
-        (Some(expected), Some(actual)) if expected.0 == actual.0 => Ok(()),
+        (Some(expected), Some(actual)) if expected.0.0 == actual.0.0 => Ok(()),
         (Some(_), None) => Err(integrity(
             "hydrated_role_player_database_origin_missing",
             "A database-bound hydrated role player is missing its opaque database origin",
@@ -3053,13 +3091,81 @@ plays:
     }
 
     #[test]
+    fn deleted_relation_carrier_preserves_surviving_players_and_refuses_root_references() {
+        let installed = origin_projection();
+        let identity = DatabaseExecutionIdentity::isolated("deleted-relation");
+        let player = origin_complete_player(
+            &installed,
+            ProjectedReference::try_new_for_database(
+                &installed,
+                TypeId::new(TypeKind::Entity, "person").unwrap(),
+                Some("0x1".into()),
+                vec![],
+                identity.clone(),
+            )
+            .unwrap(),
+        );
+        let relation = TypeId::new(TypeKind::Relation, "friendship").unwrap();
+        let roles = vec![(
+            RoleId::new("friendship", "friend").unwrap(),
+            vec![player.clone()],
+        )];
+        let mut snapshot = ProjectedThing::try_new_for_database(
+            &installed,
+            relation.clone(),
+            "0x10".into(),
+            vec![],
+            roles.clone(),
+            identity,
+        )
+        .unwrap();
+        let live_copy = snapshot.clone();
+        snapshot.mark_deleted().unwrap();
+        assert!(snapshot.is_deleted());
+        assert!(!live_copy.is_deleted());
+        let restored = ProjectedThing::try_new_with_origin_carrier(
+            &installed,
+            relation.clone(),
+            "0x10".into(),
+            vec![],
+            roles,
+            snapshot.origin_carrier(),
+        )
+        .unwrap();
+        assert!(restored.is_deleted());
+        assert_eq!(
+            restored
+                .try_to_reference(&installed)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "thing_deleted"
+        );
+        assert_eq!(
+            ProjectedReference::try_new_with_origin_carrier(
+                &installed,
+                relation,
+                Some("0x10".into()),
+                vec![],
+                snapshot.origin_carrier(),
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "thing_deleted"
+        );
+        assert!(!player.reference().origin_carrier().unwrap().0.1);
+    }
+
+    #[test]
     fn hydrated_database_origins_are_coherent_and_redacted() {
         let identity = DatabaseExecutionIdentity::isolated("projected-model-a");
         let matching =
-            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone())));
-        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity)));
+            ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity.clone(), false)));
+        let same = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(identity, false)));
         let different = ProjectedReferenceOrigin(Arc::new(ProjectedDatabaseOrigin(
             DatabaseExecutionIdentity::isolated("projected-model-a"),
+            false,
         )));
 
         validate_role_player_database_origin(Some(&matching), Some(&same), Vec::new()).unwrap();

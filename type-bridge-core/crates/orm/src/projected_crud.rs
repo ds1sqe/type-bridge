@@ -33,7 +33,9 @@ use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
 use crate::plan_builders::put::{KeyedPut, keyed_entity_put};
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
-use crate::plan_builders::write::{ThingUpdate, delete_by_iid, entity_insert, update_by_iid};
+use crate::plan_builders::write::{
+    ThingUpdate, delete_by_iid, delete_by_iid_returning, entity_insert, update_by_iid,
+};
 use crate::plan_builders::{LITERAL_CONTROL_CHARACTER, ValueTransport};
 use crate::projected_batch::{
     ProjectedBatch, ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchRow,
@@ -492,8 +494,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             )
             .await?;
         let result = self
-            .delete_entity_prepared(&transaction, &prepared, ExecutionMode::default())
-            .await;
+            .delete_entity_prepared(&transaction, &prepared, ExecutionMode::default(), false)
+            .await
+            .map(|_| ());
         finish_owned_write(transaction, &prepared.type_id, result).await
     }
 
@@ -519,7 +522,316 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let prepared = self.prepare_entity_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
-        self.delete_entity_prepared(transaction, &prepared, ExecutionMode::default())
+        self.delete_entity_prepared(transaction, &prepared, ExecutionMode::default(), false)
+            .await
+            .map(|_| ())
+    }
+
+    /// Delete an exact entity and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_entity_by_iid_returning(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .delete_entity_by_iid_returning_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
+        let prepared = self.prepare_entity_identity(type_id, iid)?;
+        let transaction = self
+            .open_transaction(
+                database,
+                TxType::Write,
+                &prepared.type_id,
+                ExecutionMode::default(),
+            )
+            .await?;
+        let result = self
+            .delete_entity_prepared(&transaction, &prepared, ExecutionMode::default(), true)
+            .await;
+        finish_owned_write(transaction, &prepared.type_id, result).await
+    }
+
+    /// Delete an exact entity and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_entity_by_iid_returning_in_transaction(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .delete_entity_by_iid_returning_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
+        let prepared = self.prepare_entity_identity(type_id, iid)?;
+        require_transaction(transaction, TxType::Write, &prepared.type_id)?;
+        self.delete_entity_prepared(transaction, &prepared, ExecutionMode::default(), true)
+            .await
+    }
+
+    /// Delete an exact entity and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_entity_by_iid_returning_controlled(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        limits: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.delete_entity_by_iid_returning_controlled_with_control(
+            database,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Delete an exact entity and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_entity_by_iid_returning_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.require_exact_model(type_id, TypeKind::Entity)?;
+        validate_iid(type_id, iid)?;
+        control.check()?;
+        let batch = self.single_controlled_batch(
+            type_id,
+            ProjectedBatchOperation::Delete,
+            ProjectedBatchRow::Delete {
+                iid: iid.to_owned(),
+            },
+            &control,
+        )?;
+        self.execute_controlled_single_delete_returning(database, &batch, control)
+            .await
+    }
+
+    /// Delete an exact entity and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_entity_by_iid_returning_in_transaction_controlled(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        limits: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.delete_entity_by_iid_returning_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Delete an exact entity and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_entity_by_iid_returning_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.require_exact_model(type_id, TypeKind::Entity)?;
+        validate_iid(type_id, iid)?;
+        control.check()?;
+        let batch = self.single_controlled_batch(
+            type_id,
+            ProjectedBatchOperation::Delete,
+            ProjectedBatchRow::Delete {
+                iid: iid.to_owned(),
+            },
+            &control,
+        )?;
+        self.execute_controlled_single_delete_returning_in_transaction(transaction, &batch, control)
+            .await
+    }
+
+    /// Delete an exact relation and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_relation_by_iid_returning(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = database.answer_limits() {
+            return self
+                .delete_relation_by_iid_returning_controlled(
+                    database,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
+        let prepared = self.prepare_relation_identity(type_id, iid)?;
+        let transaction = self
+            .open_transaction(
+                database,
+                TxType::Write,
+                &prepared.type_id,
+                ExecutionMode::default(),
+            )
+            .await?;
+        let result = self
+            .delete_relation_prepared(&transaction, &prepared, ExecutionMode::default(), true)
+            .await;
+        finish_owned_write(transaction, &prepared.type_id, result).await
+    }
+
+    /// Delete an exact relation and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_relation_by_iid_returning_in_transaction(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(limits) = transaction.answer_limits() {
+            return self
+                .delete_relation_by_iid_returning_in_transaction_controlled(
+                    transaction,
+                    type_id,
+                    iid,
+                    limits,
+                    AnswerCancellation::default(),
+                )
+                .await;
+        }
+        let prepared = self.prepare_relation_identity(type_id, iid)?;
+        require_transaction(transaction, TxType::Write, &prepared.type_id)?;
+        self.delete_relation_prepared(transaction, &prepared, ExecutionMode::default(), true)
+            .await
+    }
+
+    /// Delete an exact relation and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_relation_by_iid_returning_controlled(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        limits: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.delete_relation_by_iid_returning_controlled_with_control(
+            database,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Delete an exact relation and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_relation_by_iid_returning_controlled_with_control(
+        &self,
+        database: &Database,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.require_exact_model(type_id, TypeKind::Relation)?;
+        validate_iid(type_id, iid)?;
+        control.check()?;
+        let batch = self.single_controlled_batch(
+            type_id,
+            ProjectedBatchOperation::Delete,
+            ProjectedBatchRow::Delete {
+                iid: iid.to_owned(),
+            },
+            &control,
+        )?;
+        self.execute_controlled_single_delete_returning(database, &batch, control)
+            .await
+    }
+
+    /// Delete an exact relation and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_relation_by_iid_returning_in_transaction_controlled(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        limits: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.delete_relation_by_iid_returning_in_transaction_controlled_with_control(
+            transaction,
+            type_id,
+            iid,
+            ProjectedBatchInvocationControl::capture(limits, cancellation),
+        )
+        .await
+    }
+
+    /// Delete an exact relation and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_relation_by_iid_returning_in_transaction_controlled_with_control(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        self.require_exact_model(type_id, TypeKind::Relation)?;
+        validate_iid(type_id, iid)?;
+        control.check()?;
+        let batch = self.single_controlled_batch(
+            type_id,
+            ProjectedBatchOperation::Delete,
+            ProjectedBatchRow::Delete {
+                iid: iid.to_owned(),
+            },
+            &control,
+        )?;
+        self.execute_controlled_single_delete_returning_in_transaction(transaction, &batch, control)
+            .await
+    }
+
+    async fn execute_controlled_single_delete_returning(
+        &self,
+        database: &Database,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        let model = batch.model().clone();
+        ProjectedBatchExecutor::new(self.installed)
+            .returning_deleted()
+            .execute_mapped(database, batch, control, None, move |result| {
+                single_batch_deleted_thing(result, &model)
+            })
+            .await
+    }
+
+    async fn execute_controlled_single_delete_returning_in_transaction(
+        &self,
+        transaction: &TransactionContext,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        let model = batch.model().clone();
+        ProjectedBatchExecutor::new(self.installed)
+            .returning_deleted()
+            .execute_in_transaction_mapped(transaction, batch, control, None, move |result| {
+                single_batch_deleted_thing(result, &model)
+            })
             .await
     }
 
@@ -823,8 +1135,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             )
             .await?;
         let result = self
-            .delete_relation_prepared(&transaction, &prepared, ExecutionMode::default())
-            .await;
+            .delete_relation_prepared(&transaction, &prepared, ExecutionMode::default(), false)
+            .await
+            .map(|_| ());
         finish_owned_write(transaction, &prepared.type_id, result).await
     }
 
@@ -850,8 +1163,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let prepared = self.prepare_relation_identity(type_id, iid)?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
-        self.delete_relation_prepared(transaction, &prepared, ExecutionMode::default())
+        self.delete_relation_prepared(transaction, &prepared, ExecutionMode::default(), false)
             .await
+            .map(|_| ())
     }
 
     /// Count exact instances of one projected relation in an owned read transaction.
@@ -2005,8 +2319,10 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 transaction,
                 &prepared,
                 ExecutionMode::compatibility(&capture),
+                false,
             )
-            .await;
+            .await
+            .map(|_| ());
         compatibility_result(result, &capture)
     }
 
@@ -2223,8 +2539,10 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 transaction,
                 &prepared,
                 ExecutionMode::compatibility(&capture),
+                false,
             )
-            .await;
+            .await
+            .map(|_| ());
         compatibility_result(result, &capture)
     }
 
@@ -3373,27 +3691,56 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         prepared: &PreparedEntityIdentity,
         mode: ExecutionMode<'_>,
-    ) -> Result<(), SdkExecutionDiagnostic> {
-        if let Ok(authority) = self.installed.plan_authority() {
-            return execute_delete_plan(
+        returning: bool,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        let authority = self.installed.plan_authority();
+        if returning || authority.is_ok() {
+            let authority =
+                authority.map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+            let roles = if returning { Some(Vec::new()) } else { None };
+            let documents = execute_delete_plan(
                 transaction,
                 &authority,
                 &prepared.type_id,
                 &prepared.iid,
+                roles,
                 mode,
             )
-            .await;
+            .await?;
+            if documents.is_empty() {
+                return Ok(None);
+            }
+            let hydrate = || {
+                let mut thing = {
+                    if documents.len() != 1 {
+                        return Err(identity_cardinality(&prepared.type_id));
+                    }
+                    let row = hydrate_dynamic_entity(&prepared.descriptor, &documents[0]).map_err(
+                        |error| {
+                            mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+                        },
+                    )?;
+                    self.hydrate_entity(
+                        row,
+                        &prepared.type_id,
+                        &prepared.iid,
+                        transaction.execution_identity(),
+                        mode,
+                    )?
+                };
+                thing.mark_deleted()?;
+                Ok(Some(thing))
+            };
+            return after_write(transaction, hydrate()).await;
         }
-        let manager = DynamicEntityManager::with_canonical_transaction(
+        DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
-        );
-        manager
-            .delete_by_iid_exact(&prepared.iid)
-            .await
-            .map_err(|error| {
-                mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
-            })
+        )
+        .delete_by_iid_exact(&prepared.iid)
+        .await
+        .map(|()| None)
+        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id))
     }
 
     async fn count_entities_prepared(
@@ -3549,9 +3896,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         prepared: &PreparedRelationCreate,
     ) -> Result<Vec<DocumentRole>, SdkExecutionDiagnostic> {
-        let model = self.model_integrity(&prepared.type_id)?;
-        prepared
-            .descriptor
+        self.document_roles_for(&prepared.type_id, &prepared.descriptor)
+    }
+
+    fn document_roles_for(
+        &self,
+        type_id: &TypeId,
+        descriptor: &RelationDescriptor,
+    ) -> Result<Vec<DocumentRole>, SdkExecutionDiagnostic> {
+        let model = self.model_integrity(type_id)?;
+        descriptor
             .roles
             .iter()
             .map(|descriptor_role| {
@@ -3563,7 +3917,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     .roles()
                     .keys()
                     .find(|role| role.label().as_str() == descriptor_role.role_name)
-                    .ok_or_else(|| write_plan_invalid(&prepared.type_id))?;
+                    .ok_or_else(|| write_plan_invalid(type_id))?;
                 Ok(DocumentRole::new(role.clone(), false))
             })
             .collect()
@@ -3976,27 +4330,61 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         transaction: &TransactionContext,
         prepared: &PreparedRelationIdentity,
         mode: ExecutionMode<'_>,
-    ) -> Result<(), SdkExecutionDiagnostic> {
-        if let Ok(authority) = self.installed.plan_authority() {
-            return execute_delete_plan(
+        returning: bool,
+    ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+        let authority = self.installed.plan_authority();
+        if returning || authority.is_ok() {
+            let authority =
+                authority.map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+            let roles = if returning {
+                Some(self.document_roles_for(&prepared.type_id, &prepared.descriptor)?)
+            } else {
+                None
+            };
+            let documents = execute_delete_plan(
                 transaction,
                 &authority,
                 &prepared.type_id,
                 &prepared.iid,
+                roles,
                 mode,
             )
-            .await;
+            .await?;
+            if documents.is_empty() {
+                return Ok(None);
+            }
+            let hydrate = || {
+                let mut thing = {
+                    let row = coalesce_dynamic_relation_by_iid(
+                        &prepared.descriptor,
+                        &documents,
+                        &prepared.iid,
+                    )
+                    .map_err(|error| {
+                        mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+                    })?;
+                    let row = require_mutation_relation_row(row, &prepared.type_id)?;
+                    self.hydrate_relation(
+                        row,
+                        &prepared.type_id,
+                        &prepared.iid,
+                        transaction.execution_identity(),
+                        mode,
+                    )?
+                };
+                thing.mark_deleted()?;
+                Ok(Some(thing))
+            };
+            return after_write(transaction, hydrate()).await;
         }
-        let manager = DynamicRelationManager::with_canonical_transaction(
+        DynamicRelationManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
-        );
-        manager
-            .delete_by_iid_exact(&prepared.iid)
-            .await
-            .map_err(|error| {
-                mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
-            })
+        )
+        .delete_by_iid_exact(&prepared.iid)
+        .await
+        .map(|()| None)
+        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id))
     }
 
     async fn count_relations_prepared(
@@ -4767,6 +5155,16 @@ fn single_batch_thing(
         .ok_or_else(|| single_batch_result_invalid(type_id))
 }
 
+fn single_batch_deleted_thing(
+    result: ProjectedBatchResult,
+    type_id: &TypeId,
+) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
+    match result {
+        ProjectedBatchResult::Things(mut things) if things.len() <= 1 => Ok(things.pop()),
+        _ => Err(single_batch_result_invalid(type_id)),
+    }
+}
+
 fn single_batch_delete(
     result: ProjectedBatchResult,
     type_id: &TypeId,
@@ -5254,8 +5652,14 @@ async fn execute_delete_plan(
     authority: &PlanAuthority,
     type_id: &TypeId,
     iid: &str,
+    returning_roles: Option<Vec<DocumentRole>>,
     mode: ExecutionMode<'_>,
-) -> Result<(), SdkExecutionDiagnostic> {
+) -> Result<Vec<serde_json::Value>, SdkExecutionDiagnostic> {
+    if let Some(roles) = returning_roles {
+        let plan = delete_by_iid_returning(authority, type_id, iid, roles)
+            .map_err(|diagnostic| plan_build_failure(&diagnostic, type_id))?;
+        return execute_write_rows(transaction, plan.local(), type_id, mode).await;
+    }
     let plan = delete_by_iid(authority, type_id, iid)
         .map_err(|diagnostic| plan_build_failure(&diagnostic, type_id))?;
     let query = transaction
@@ -5265,7 +5669,7 @@ async fn execute_delete_plan(
     let deleted = transaction
         .dispatch_plan(query)
         .await
-        .map(|_| ())
+        .map(|_| Vec::new())
         .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id));
     after_write(transaction, deleted).await
 }

@@ -369,6 +369,120 @@ impl TransactionContext {
         Ok(answer)
     }
 
+    /// Capture and hydrate a legacy manager batch before any deletion, keeping
+    /// the same exclusive transaction lease through all statements.
+    pub(crate) async fn delete_captured<F>(
+        &self,
+        statements: &(String, String),
+        iids: &[String],
+        canonical: bool,
+        mut hydrate: F,
+    ) -> Result<Vec<serde_json::Value>>
+    where
+        F: FnMut(usize, Vec<serde_json::Value>) -> Result<Option<serde_json::Value>> + Send,
+    {
+        let mut limits = AnswerLimits::default();
+        if let Some(policy) = self.answer_limits() {
+            if policy.statements < 2 {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::ResourceLimit,
+                    "statement_count_limit",
+                    "Deletion snapshots exceed the configured statement ceiling",
+                )
+                .into());
+            }
+            limits.answer.max_items = policy.items;
+            limits.answer.max_bytes = policy.bytes;
+            limits.answer.deadline = Some(
+                crate::query_execution_limits::QueryExecutionDeadline::for_limits(policy).instant(),
+            );
+            limits.max_collection_members = policy.collection_members;
+        }
+        let mut lease = self.acquire_mutation_lease().await?;
+        lease.phase = MutationLeasePhase::PossibleEffect;
+        let result = async {
+            let mut meter = crate::answer_meter::AnswerMeter::new(&limits.answer);
+            let mut snapshots = Vec::new();
+            let mut snapshot_resources = [0_u64; 4];
+            let policy = self.answer_limits().unwrap_or_default();
+            let rows = GivenRowsSpec {
+                variables: vec!["snapshot_iid".into()],
+                rows: iids
+                    .iter()
+                    .map(|iid| vec![super::backend::GivenValue::String(iid.to_ascii_lowercase())])
+                    .collect(),
+            };
+            let answer = lease
+                .transaction()?
+                .query_materialized_bounded(
+                    &statements.0,
+                    Some(rows.clone()),
+                    limits.clone(),
+                    canonical,
+                )
+                .await?;
+            let QueryResult::Documents(documents) = answer else {
+                return Err(OrmError::Hydration {
+                    type_name: "delete_returning".into(),
+                    message: "Snapshot capture did not return documents".into(),
+                });
+            };
+            let positions: std::collections::HashMap<_, _> = iids
+                .iter()
+                .enumerate()
+                .map(|(index, iid)| (iid.to_ascii_lowercase(), index))
+                .collect();
+            let mut grouped = vec![Vec::new(); iids.len()];
+            for document in documents {
+                meter.accept_value(&document)?;
+                let position = document
+                    .as_object()
+                    .and_then(|object| {
+                        crate::_manager::hydration::extract_scalar_string(object, "_iid")
+                    })
+                    .and_then(|iid| positions.get(&iid.to_ascii_lowercase()).copied())
+                    .ok_or_else(|| OrmError::Hydration {
+                        type_name: "delete_returning".into(),
+                        message: "Snapshot capture returned an unrequested identity".into(),
+                    })?;
+                grouped[position].push(document);
+            }
+            for (index, documents) in grouped.into_iter().enumerate() {
+                if let Some(snapshot) = hydrate(index, documents)? {
+                    charge_deletion_snapshot(&snapshot, &mut snapshot_resources, policy)?;
+                    snapshots.push(snapshot);
+                }
+            }
+            let answer = lease
+                .transaction()?
+                .query_materialized_bounded(&statements.1, Some(rows), limits.clone(), canonical)
+                .await?;
+            match answer {
+                QueryResult::Rows(rows) | QueryResult::Documents(rows) => {
+                    for row in &rows {
+                        meter.accept_value(row)?;
+                    }
+                }
+                QueryResult::Ok => {}
+            }
+            Ok(snapshots)
+        }
+        .await;
+        match result {
+            Ok(snapshots) => {
+                lease.complete_success();
+                Ok(snapshots)
+            }
+            Err(error) => {
+                lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                    &error,
+                    SdkProviderOperation::Write,
+                ));
+                Err(error)
+            }
+        }
+    }
+
     /// Resolve a dispatched plan answer.
     pub(crate) fn resolve_plan(
         plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
@@ -660,6 +774,70 @@ fn begin_commit(
         | TransactionContextState::CommitOutcomeUnknown
         | TransactionContextState::Closed => Err(CommitOnceError::Consumed),
     }
+}
+
+// Count the coalesced snapshot, so Cartesian role evidence is not charged as
+// multiple logical roots. Keep the same semantic dimensions as projected CRUD.
+fn charge_deletion_snapshot(
+    snapshot: &serde_json::Value,
+    totals: &mut [u64; 4],
+    policy: QueryExecutionResourceLimits,
+) -> Result<()> {
+    fn attribute_count(document: &serde_json::Value) -> u64 {
+        let Some(object) = document.as_object() else {
+            return 0;
+        };
+        let attributes = object
+            .get("attributes")
+            .and_then(serde_json::Value::as_object);
+        attributes
+            .unwrap_or(object)
+            .iter()
+            .filter(|(key, _)| {
+                attributes.is_some()
+                    || (!key.starts_with('_') && *key != "attributes" && *key != "role_players")
+            })
+            .fold(0_u64, |count, (_, value)| {
+                count.saturating_add(value.as_array().map_or(1, |values| values.len() as u64))
+            })
+    }
+    let players = snapshot
+        .get("role_players")
+        .and_then(serde_json::Value::as_array);
+    let player_count = players.map_or(0, |players| players.len() as u64);
+    let attributes = players
+        .into_iter()
+        .flatten()
+        .fold(attribute_count(snapshot), |count, player| {
+            count.saturating_add(attribute_count(player))
+        });
+    let counts = [
+        1_u64.saturating_add(player_count),
+        attributes,
+        attributes.saturating_add(player_count),
+        player_count,
+    ];
+    let dimensions = [
+        ("graph_nodes", policy.graph_nodes),
+        ("attribute_values", policy.attribute_values),
+        ("collection_members", policy.collection_members),
+        ("role_players", policy.role_players),
+    ];
+    for ((total, count), (dimension, maximum)) in totals.iter_mut().zip(counts).zip(dimensions) {
+        *total = total.saturating_add(count);
+        if *total > maximum {
+            return Err(crate::match_request::MatchError::new(
+                crate::match_request::MatchErrorCategory::ResourceLimit,
+                "deletion_snapshot_resource_limit",
+                "Deletion snapshots exceed the configured resource ceiling",
+            )
+            .with_detail("dimension", dimension)
+            .with_detail("actual", *total)
+            .with_detail("maximum", maximum)
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn active_transaction(

@@ -68,6 +68,7 @@ pub enum ProjectedBatchResult {
 /// Binding-neutral atomic executor for [`ProjectedBatch`].
 pub struct ProjectedBatchExecutor<'projection> {
     installed: &'projection InstalledRuntimeProjection,
+    return_deleted: bool,
     #[cfg(test)]
     fail_hydration_allocation: bool,
 }
@@ -78,9 +79,19 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     pub const fn new(installed: &'projection InstalledRuntimeProjection) -> Self {
         Self {
             installed,
+            return_deleted: false,
             #[cfg(test)]
             fail_hydration_allocation: false,
         }
+    }
+
+    /// Capture complete deleted things before mutation, in input order.
+    ///
+    /// Only delete batches may use this mode. Missing IIDs are omitted.
+    #[must_use]
+    pub const fn returning_deleted(mut self) -> Self {
+        self.return_deleted = true;
+        self
     }
 
     /// Construct the shared redacted diagnostic for one binding
@@ -123,7 +134,11 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             database,
             batch,
             control,
-            empty_result(batch.operation()),
+            if self.return_deleted {
+                ProjectedBatchResult::Things(Vec::new())
+            } else {
+                empty_result(batch.operation())
+            },
             Ok,
         )
         .await
@@ -154,6 +169,13 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     where
         F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
     {
+        if self.return_deleted && batch.operation() != ProjectedBatchOperation::Delete {
+            return Err(invalid_at_type(
+                "delete_returning_operation",
+                "Deletion snapshots require a delete batch",
+                batch.model(),
+            ));
+        }
         let control = control.constrained_by(database.answer_limits());
         let prepared = PreparedProjectedBatchInvocation::try_new(self.installed, batch, control)?;
         if batch.is_empty() {
@@ -162,7 +184,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         prepared.check_control()?;
         require_given_capability(database.supports_given_stage())?;
         let identity = database.execution_identity();
-        let plan = BatchPlan::compile(self.installed, &prepared, &identity)?;
+        let plan = BatchPlan::compile(self.installed, &prepared, &identity, self.return_deleted)?;
         prepared.check_control()?;
 
         let transaction = await_controlled(
@@ -218,7 +240,11 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             transaction,
             batch,
             control,
-            empty_result(batch.operation()),
+            if self.return_deleted {
+                ProjectedBatchResult::Things(Vec::new())
+            } else {
+                empty_result(batch.operation())
+            },
             Ok,
         )
         .await
@@ -248,6 +274,13 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
     where
         F: FnOnce(ProjectedBatchResult) -> std::result::Result<T, SdkExecutionDiagnostic>,
     {
+        if self.return_deleted && batch.operation() != ProjectedBatchOperation::Delete {
+            return Err(invalid_at_type(
+                "delete_returning_operation",
+                "Deletion snapshots require a delete batch",
+                batch.model(),
+            ));
+        }
         let control = control.constrained_by(transaction.answer_limits());
         let prepared = PreparedProjectedBatchInvocation::try_new(self.installed, batch, control)?;
         if batch.is_empty() {
@@ -270,7 +303,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         .map_err(|error| controlled_orm(error, SdkProviderOperation::Read, batch.model()))?;
         require_given_capability(supported)?;
         let identity = transaction.execution_identity().clone();
-        let plan = BatchPlan::compile(self.installed, &prepared, &identity)?;
+        let plan = BatchPlan::compile(self.installed, &prepared, &identity, self.return_deleted)?;
         prepared.check_control()?;
         match self
             .execute_prepared_in_transaction(transaction, &prepared, plan, &identity, mapper)
@@ -373,14 +406,48 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
 
         let remaining_reply_items = u64::try_from(plan.row_count)
             .unwrap_or(u64::MAX)
-            .saturating_mul(if plan.operation == ProjectedBatchOperation::Delete {
-                1
-            } else {
-                2
-            });
+            .saturating_mul(
+                if plan.operation == ProjectedBatchOperation::Delete
+                    && plan.snapshot_source.is_none()
+                {
+                    1
+                } else {
+                    2
+                },
+            );
         ledger.require_remaining_items(remaining_reply_items)?;
 
         let mutation_rows = plan.mutation_rows(&resolved)?;
+        let deleted = if let Some(source) = &plan.snapshot_source {
+            let mut consumer = HydrationConsumer::new(self, plan, identity)?;
+            consumer.targets.resize(plan.row_count, String::new());
+            for (ordinal, row) in &plan.rows {
+                consumer.targets[*ordinal] = row_iid(row).expect("delete row has IID").to_owned();
+            }
+            for chunk in split_stage(source, mutation_rows.clone(), SplitLimits::CANONICAL)? {
+                let dispatched = dispatch_rows(
+                    lease,
+                    false,
+                    source,
+                    chunk,
+                    prepared,
+                    &mut consumer,
+                    (plan.row_count as u64 + 1).min(ledger.remaining_items()),
+                    ledger.remaining_bytes(),
+                )
+                .await;
+                let stats = match dispatched {
+                    Ok(stats) => stats,
+                    Err(later) => return Err(consumer.take_deferred().unwrap_or(later)),
+                };
+                ledger.record_reply(stats)?;
+            }
+            let things = consumer.finish_existing()?;
+            ledger.charge_projected(&things)?;
+            Some(things)
+        } else {
+            None
+        };
         let mut identities = OrdinalIdentityConsumer::new(plan.row_count, plan.operation)?;
         let mut pending_attach = if plan.operation == ProjectedBatchOperation::Delete {
             None
@@ -414,7 +481,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
 
         if plan.operation == ProjectedBatchOperation::Delete {
             prepared.check_control()?;
-            return Ok(ProjectedBatchResult::Deleted);
+            return Ok(deleted.map_or(ProjectedBatchResult::Deleted, ProjectedBatchResult::Things));
         }
 
         let mut attach_rows = pending_attach
@@ -567,6 +634,7 @@ struct BatchPlan<'a> {
     prerequisite: Option<ProviderStatement>,
     mutation_source: String,
     attach_source: Option<String>,
+    snapshot_source: Option<String>,
     row_count: usize,
     statement_count: u32,
     preflight_bytes: u64,
@@ -577,8 +645,16 @@ impl<'a> BatchPlan<'a> {
         installed: &'a InstalledRuntimeProjection,
         prepared: &PreparedProjectedBatchInvocation<'a>,
         identity: &DatabaseExecutionIdentity,
+        return_deleted: bool,
     ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
         let batch = prepared.batch();
+        if return_deleted && batch.operation() != ProjectedBatchOperation::Delete {
+            return Err(invalid_at_type(
+                "delete_returning_operation",
+                "Deletion snapshots require a delete batch",
+                batch.model(),
+            ));
+        }
         let model = installed
             .projection()
             .models()
@@ -653,6 +729,22 @@ impl<'a> BatchPlan<'a> {
             &mutation_source,
             attach_source.as_deref(),
         )?;
+        let snapshot_source = if return_deleted {
+            Some(compile_attach_source(installed, model, &[], &[])?)
+        } else {
+            None
+        };
+        let (statement_count, preflight_bytes) = if let Some(source) = &snapshot_source {
+            preflight_complexity(None, source, None)?;
+            let rows = preflight_mutation_rows(batch.operation(), &rows, model)?;
+            let bytes = checked_add_u64(source_bytes(source)?, given_rows_bytes(&rows)?)?;
+            (
+                statement_count + 1,
+                checked_add_u64(preflight_bytes, bytes)?,
+            )
+        } else {
+            (statement_count, preflight_bytes)
+        };
         Ok(Self {
             installed,
             model,
@@ -664,6 +756,7 @@ impl<'a> BatchPlan<'a> {
             prerequisite,
             mutation_source,
             attach_source,
+            snapshot_source,
             row_count: batch.len(),
             statement_count,
             preflight_bytes,
@@ -2396,6 +2489,19 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
         self.deferred.take()
     }
 
+    fn finish_existing(
+        mut self,
+    ) -> std::result::Result<Vec<ProjectedThing>, SdkExecutionDiagnostic> {
+        if let Some(error) = self.deferred {
+            return Err(error);
+        }
+        for mut thing in self.slots.into_iter().flatten() {
+            thing.mark_deleted()?;
+            self.ordered.push(thing);
+        }
+        Ok(self.ordered)
+    }
+
     fn finish(mut self) -> std::result::Result<Vec<ProjectedThing>, SdkExecutionDiagnostic> {
         if let Some(error) = self.deferred {
             return Err(error);
@@ -3746,6 +3852,7 @@ mod tests {
     #[derive(Default)]
     struct AllocationState {
         answers: VecDeque<Vec<Value>>,
+        statements: Vec<String>,
         calls: usize,
         commits: usize,
         rollbacks: usize,
@@ -3796,12 +3903,13 @@ mod tests {
 
         fn query_with_rows(
             &mut self,
-            _typeql: &str,
+            typeql: &str,
             _rows: GivenRowsSpec,
         ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             let answer = {
                 let mut state = self.state.lock().unwrap();
                 state.calls += 1;
+                state.statements.push(typeql.to_owned());
                 state.answers.pop_front().expect("unexpected provider call")
             };
             Box::pin(async move { Ok(QueryResult::Documents(answer)) })
@@ -3933,6 +4041,136 @@ plays:
             "role_players": []
         })]);
         answers
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn returning_delete_captures_existing_rows_before_mutation() {
+        let installed = allocation_installed();
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            let label = if kind == TypeKind::Entity {
+                "person"
+            } else {
+                "membership"
+            };
+            let batch = ProjectedBatch::try_new(
+                &installed,
+                TypeId::new(kind, label).unwrap(),
+                ProjectedBatchOperation::Delete,
+                ["0x20", "0x21", "0x22"]
+                    .into_iter()
+                    .map(|iid| ProjectedBatchRow::Delete { iid: iid.into() })
+                    .collect(),
+            )
+            .unwrap();
+            let state = Arc::new(Mutex::new(AllocationState {
+                answers: VecDeque::from([
+                    vec![
+                        json!({"ordinal":2,"_iid":"0x22","_type":label,"attributes":{"identifier":"last"},"role_players":[]}),
+                        json!({"ordinal":0,"_iid":"0x20","_type":label,"attributes":{"identifier":"first"},"role_players":[]}),
+                    ],
+                    vec![
+                        json!({"ordinal":0}),
+                        json!({"ordinal":1}),
+                        json!({"ordinal":2}),
+                    ],
+                ]),
+                ..AllocationState::default()
+            }));
+            let database = Database::with_backend(
+                Box::new(AllocationBackend {
+                    state: Arc::clone(&state),
+                }),
+                "returning-delete",
+            );
+            let result = ProjectedBatchExecutor::new(&installed)
+                .returning_deleted()
+                .execute(
+                    &database,
+                    &batch,
+                    ProjectedBatchInvocationControl::capture(
+                        QueryExecutionResourceLimits::default(),
+                        AnswerCancellation::default(),
+                    ),
+                )
+                .await
+                .unwrap();
+            let ProjectedBatchResult::Things(things) = result else {
+                panic!("expected snapshots")
+            };
+            assert!(things.iter().all(ProjectedThing::is_deleted));
+            assert_eq!(
+                things[0]
+                    .try_to_reference(&installed)
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "thing_deleted"
+            );
+            assert_eq!(
+                things.iter().map(ProjectedThing::iid).collect::<Vec<_>>(),
+                vec!["0x20", "0x22"]
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.calls, 2);
+            assert!(!state.statements[0].contains("delete"));
+            assert!(state.statements[1].contains("delete"));
+            assert_eq!(state.commits, 1);
+            assert_eq!(state.rollbacks, 0);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn returning_delete_refuses_limits_and_bad_evidence_before_mutation() {
+        let installed = allocation_installed();
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            TypeId::new(TypeKind::Entity, "person").unwrap(),
+            ProjectedBatchOperation::Delete,
+            vec![ProjectedBatchRow::Delete { iid: "0x20".into() }],
+        )
+        .unwrap();
+        for statement_limit in [1, 2] {
+            let state = Arc::new(Mutex::new(AllocationState {
+                answers: VecDeque::from([vec![json!({
+                    "ordinal":0,"_iid":"0x20","_type":"person","attributes":{}
+                })]]),
+                ..AllocationState::default()
+            }));
+            let database = Database::with_backend(
+                Box::new(AllocationBackend {
+                    state: Arc::clone(&state),
+                }),
+                "refused-delete",
+            );
+            let limits = QueryExecutionResourceLimits {
+                statements: statement_limit,
+                ..QueryExecutionResourceLimits::default()
+            };
+            assert!(
+                ProjectedBatchExecutor::new(&installed)
+                    .returning_deleted()
+                    .execute(
+                        &database,
+                        &batch,
+                        ProjectedBatchInvocationControl::capture(
+                            limits,
+                            AnswerCancellation::default()
+                        ),
+                    )
+                    .await
+                    .is_err()
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.calls, usize::from(statement_limit == 2));
+            assert!(
+                state
+                    .statements
+                    .iter()
+                    .all(|source| !source.contains("delete"))
+            );
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 1);
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

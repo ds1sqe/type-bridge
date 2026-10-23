@@ -165,6 +165,214 @@ entity party @abstract, owns identifier @key, plays membership:member;
 entity person sub party; entity company sub party;
 relation membership, relates member @card(1..2), owns note @card(0..1);";
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths() {
+    let Some(db) = live_database("tb_returning_helpers").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = party_projection();
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let person_type = party_type(TypeKind::Entity, "person");
+    let relation_type = party_type(TypeKind::Relation, "membership");
+    for controlled in [false, true] {
+        let create = ProjectedCreate::try_new(
+            &installed,
+            person_type.clone(),
+            vec![(
+                OwnsFactId::new(
+                    person_type.clone(),
+                    type_bridge_contract::id::AttributeId::new("identifier").unwrap(),
+                )
+                .unwrap(),
+                vec![party_text(
+                    &installed,
+                    "identifier",
+                    if controlled { "controlled" } else { "direct" },
+                )],
+            )],
+            vec![],
+        )
+        .unwrap();
+        let person = crud.insert_entity(&db, &create).await.unwrap();
+        let relation = crud
+            .insert_relation(
+                &db,
+                &membership(
+                    &installed,
+                    person.try_to_reference(&installed).unwrap(),
+                    "snapshot",
+                ),
+            )
+            .await
+            .unwrap();
+        let deleted = if controlled {
+            crud.delete_relation_by_iid_returning_controlled(
+                &db,
+                &relation_type,
+                relation.iid(),
+                Default::default(),
+                Default::default(),
+            )
+            .await
+        } else {
+            crud.delete_relation_by_iid_returning(&db, &relation_type, relation.iid())
+                .await
+        }
+        .unwrap()
+        .unwrap();
+        assert!(deleted.is_deleted());
+        assert_eq!(deleted.fields(), relation.fields());
+        let member = RoleId::new("membership", "member").unwrap();
+        assert_eq!(deleted.roles()[&member][0].iid(), person.iid());
+        assert!(
+            crud.get_relation_by_iid(&db, &relation_type, relation.iid())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            crud.get_entity_by_iid(&db, &person_type, person.iid())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let deleted = if controlled {
+            crud.delete_entity_by_iid_returning_controlled(
+                &db,
+                &person_type,
+                person.iid(),
+                Default::default(),
+                Default::default(),
+            )
+            .await
+        } else {
+            crud.delete_entity_by_iid_returning(&db, &person_type, person.iid())
+                .await
+        }
+        .unwrap()
+        .unwrap();
+        assert_eq!(deleted.type_id(), &person_type);
+        assert_eq!(deleted.fields(), person.fields());
+        assert!(deleted.is_deleted());
+        assert!(
+            crud.get_entity_by_iid(&db, &person_type, person.iid())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            crud.delete_entity_by_iid_returning(&db, &person_type, person.iid())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynamic_returning_deletes_preserve_subtype_and_relation_players() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+
+    let Some(db) = live_database("tb_returning_dynamic").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = party_projection();
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let person_type = party_type(TypeKind::Entity, "person");
+    let relation_type = party_type(TypeKind::Relation, "membership");
+    let create = ProjectedCreate::try_new(
+        &installed,
+        person_type.clone(),
+        vec![(
+            OwnsFactId::new(
+                person_type.clone(),
+                type_bridge_contract::id::AttributeId::new("identifier").unwrap(),
+            )
+            .unwrap(),
+            vec![party_text(&installed, "identifier", "dynamic")],
+        )],
+        vec![],
+    )
+    .unwrap();
+    let person = crud.insert_entity(&db, &create).await.unwrap();
+    let relation = crud
+        .insert_relation(
+            &db,
+            &membership(
+                &installed,
+                person.try_to_reference(&installed).unwrap(),
+                "snapshot",
+            ),
+        )
+        .await
+        .unwrap();
+    let relations = DynamicRelationManager::new_canonical(
+        &db,
+        Arc::new(
+            installed
+                .relation_descriptor(&relation_type)
+                .unwrap()
+                .clone(),
+        ),
+    );
+    let snapshots = relations
+        .delete_many_by_iid_exact_returning(&[relation.iid().to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0]["_type"], "membership");
+    let players = snapshots[0]["role_players"].as_array().unwrap();
+    assert_eq!(players.len(), 1);
+    assert_eq!(players[0]["iid"], person.iid());
+    assert_eq!(players[0]["attributes"]["identifier"], "dynamic");
+    assert!(
+        crud.get_relation_by_iid(&db, &relation_type, relation.iid())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        crud.get_entity_by_iid(&db, &person_type, person.iid())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let people = DynamicEntityManager::new_canonical(
+        &db,
+        Arc::new(installed.entity_descriptor(&person_type).unwrap().clone()),
+    );
+    let snapshots = people
+        .delete_many_by_iid_exact_returning(&[person.iid().to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0]["_type"], "person");
+    assert!(
+        crud.get_entity_by_iid(&db, &person_type, person.iid())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        people
+            .delete_many_by_iid_exact_returning(&[person.iid().to_owned()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
 fn party_projection() -> InstalledRuntimeProjection {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("plan-execute-live-party.yaml").unwrap(),

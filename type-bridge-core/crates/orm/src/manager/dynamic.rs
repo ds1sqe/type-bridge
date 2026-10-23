@@ -690,6 +690,32 @@ impl<'db> DynamicEntityManager<'db> {
         Ok(())
     }
 
+    /// Delete exact-type entities, returning complete pre-delete documents in input order.
+    /// Missing IIDs are omitted. All snapshots are captured before any mutation.
+    pub async fn delete_many_by_iid_exact_returning(
+        &self,
+        iids: &[String],
+    ) -> Result<Vec<serde_json::Value>> {
+        let templates = query_builder::build_dynamic_entity_delete_returning(&self.descriptor)?;
+        self.target
+            .delete_captured(&templates, iids, |index, documents| {
+                if documents.len() > 1 {
+                    return Err(snapshot_error(&self.descriptor.type_name));
+                }
+                if let Some(document) = documents.first() {
+                    let row = hydrate_dynamic_entity(&self.descriptor, document)?;
+                    validate_snapshot_identity(
+                        &self.descriptor.type_name,
+                        &iids[index],
+                        row.iid.as_deref(),
+                        row.type_name.as_deref(),
+                    )?;
+                }
+                Ok(documents.into_iter().next())
+            })
+            .await
+    }
+
     /// Delete exact-type entities atomically by canonical IID.
     pub async fn delete_many_by_iid_exact(&self, iids: &[String]) -> Result<()> {
         if iids.is_empty() {
@@ -1732,6 +1758,25 @@ impl<'db> DynamicRelationManager<'db> {
         self.target.execute(&q, TxType::Write).await.map(|_| ())
     }
 
+    /// Delete exact-type relations, returning complete pre-delete documents in input order.
+    /// Missing IIDs are omitted. All snapshots are captured before any mutation.
+    pub async fn delete_many_by_iid_exact_returning(
+        &self,
+        iids: &[String],
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut capture_descriptor = (*self.descriptor).clone();
+        for role in &mut capture_descriptor.roles {
+            role.cardinality = role.cardinality.map(|(_, maximum)| (0, maximum));
+        }
+        let templates =
+            query_builder::build_dynamic_relation_delete_returning(&capture_descriptor)?;
+        self.target
+            .delete_captured(&templates, iids, |index, documents| {
+                relation_snapshot_document(&self.descriptor, &iids[index], documents)
+            })
+            .await
+    }
+
     /// Delete exact-type relations atomically by canonical IID.
     pub async fn delete_many_by_iid_exact(&self, iids: &[String]) -> Result<()> {
         if iids.is_empty() {
@@ -2231,6 +2276,65 @@ enum DynamicExecutionTarget<'db> {
 }
 
 impl DynamicExecutionTarget<'_> {
+    async fn delete_captured<F>(
+        &self,
+        statements: &(String, String),
+        iids: &[String],
+        hydrate: F,
+    ) -> Result<Vec<serde_json::Value>>
+    where
+        F: FnMut(usize, Vec<serde_json::Value>) -> Result<Option<serde_json::Value>> + Send,
+    {
+        if iids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for iid in iids {
+            if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
+                return Err(OrmError::QueryExecution(
+                    "Delete requires a canonical IID".into(),
+                ));
+            }
+            if !seen.insert(iid.to_ascii_lowercase()) {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::InvalidPlan,
+                    "duplicate_batch_target",
+                    "The same exact IID appears more than once in the batch",
+                )
+                .into());
+            }
+        }
+        let canonical = matches!(
+            self,
+            Self::CanonicalDatabase(_) | Self::CanonicalTransaction(_)
+        );
+        match self {
+            Self::Database(db) | Self::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                match tx
+                    .delete_captured(statements, iids, canonical, hydrate)
+                    .await
+                {
+                    Ok(snapshots) => {
+                        tx.commit_classified()
+                            .await
+                            .map_err(crate::error::ClassifiedCommitError::into_orm_error)?;
+                        Ok(snapshots)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                tx.delete_captured(statements, iids, canonical, hydrate)
+                    .await
+            }
+        }
+    }
+
     async fn execute(&self, typeql: &str, required_tx_type: TxType) -> Result<QueryResult> {
         match self {
             Self::Database(db) => db.execute_raw(typeql, required_tx_type).await,
@@ -2245,6 +2349,64 @@ impl DynamicExecutionTarget<'_> {
             }
         }
     }
+}
+
+fn relation_snapshot_document(
+    descriptor: &RelationDescriptor,
+    iid: &str,
+    documents: Vec<serde_json::Value>,
+) -> Result<Option<serde_json::Value>> {
+    let rows = coalesce_dynamic_relation_by_iid(descriptor, &documents, &iid.to_ascii_lowercase())?;
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    validate_snapshot_identity(
+        &descriptor.type_name,
+        iid,
+        row.iid.as_deref(),
+        row.type_name.as_deref(),
+    )?;
+    let mut document = documents
+        .into_iter()
+        .next()
+        .ok_or_else(|| snapshot_error(&descriptor.type_name))?;
+    let object = document
+        .as_object_mut()
+        .ok_or_else(|| snapshot_error(&descriptor.type_name))?;
+    object.retain(|key, _| !key.starts_with("_role_"));
+    let players = row
+        .role_players
+        .into_iter()
+        .map(|player| {
+            let attributes: serde_json::Map<String, serde_json::Value> =
+                player.attributes.into_iter().collect();
+            serde_json::json!({"role": player.role_name, "iid": player.player_iid,
+            "type_name": player.player_type_name, "attributes": attributes})
+        })
+        .collect();
+    object.insert("role_players".into(), serde_json::Value::Array(players));
+    Ok(Some(document))
+}
+
+fn snapshot_error(type_name: &str) -> OrmError {
+    OrmError::Hydration {
+        type_name: type_name.into(),
+        message: "Deletion snapshot has invalid exact identity evidence".into(),
+    }
+}
+
+fn validate_snapshot_identity(
+    type_name: &str,
+    expected_iid: &str,
+    iid: Option<&str>,
+    concrete_type: Option<&str>,
+) -> Result<()> {
+    if iid.is_none_or(|iid| !iid.eq_ignore_ascii_case(expected_iid))
+        || concrete_type != Some(type_name)
+    {
+        return Err(snapshot_error(type_name));
+    }
+    Ok(())
 }
 
 fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()> {
