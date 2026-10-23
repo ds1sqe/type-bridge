@@ -120,10 +120,21 @@ jobs:
         working-directory: type-bridge-core
         run: cargo check --all-targets
 
-      # schema-codegen's tests run in parallel in rust-codegen-tests.
+      - name: Install pinned cargo-nextest
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-nextest@0.9.140
+
+      # schema-codegen's tests run in parallel in rust-codegen-tests. nextest
+      # runs the test binaries in parallel; the benches (harness = false, which
+      # nextest cannot list) stay on cargo test, which runs each once.
       - name: cargo test
         working-directory: type-bridge-core
-        run: cargo test --all-targets --no-fail-fast --workspace --exclude type-bridge-schema-codegen
+        shell: pwsh
+        run: |
+          cargo nextest run --no-fail-fast --workspace --exclude type-bridge-schema-codegen --lib --bins --tests --examples
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --no-fail-fast --workspace --exclude type-bridge-schema-codegen --benches
 
       - name: Check alternate serde_json backends
         working-directory: type-bridge-core
@@ -1001,6 +1012,12 @@ jobs:
         working-directory: type-bridge-core
         run: cargo fetch --locked
 
+      - name: Install pinned cargo-nextest
+        if: matrix.shard == 'rest'
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+        with:
+          tool: cargo-nextest@0.9.140
+
       - name: cargo test (schema-codegen ${{ matrix.shard }})
         working-directory: type-bridge-core
         # PowerShell on every OS: under Git Bash on Windows, /usr/bin/link
@@ -1016,7 +1033,7 @@ jobs:
             foreach ($file in Get-ChildItem crates/schema-codegen/tests -Filter *.rs) {
               if ($file.BaseName -ne 'rust_acceptance') { $targets += @('--test', $file.BaseName) }
             }
-            cargo test --no-fail-fast -p type-bridge-schema-codegen @targets
+            cargo nextest run --no-fail-fast -p type-bridge-schema-codegen @targets
           }
           exit $LASTEXITCODE
 

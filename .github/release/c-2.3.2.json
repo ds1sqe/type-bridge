@@ -561,6 +561,7 @@
       "Install Rust toolchain": "success",
       "Install pinned cargo-about": "skipped",
       "Install pinned cargo-audit": "skipped",
+      "Install pinned cargo-nextest": "success",
       "Install ripgrep": "skipped",
       "Require Clang for the macOS C gate": "success",
       "Require GCC and Clang for the Linux C gate": "skipped",
@@ -578,6 +579,7 @@
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
+      "Install pinned cargo-nextest": "skipped",
       "Restore cargo build cache": "success",
       "Set up Python": "success",
       "cargo test (schema-codegen acceptance)": "success"
@@ -587,6 +589,7 @@
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
+      "Install pinned cargo-nextest": "skipped",
       "Restore cargo build cache": "success",
       "Set up Python": "success",
       "cargo test (schema-codegen acceptance)": "success"
@@ -596,6 +599,7 @@
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "success",
       "Install Rust toolchain": "success",
+      "Install pinned cargo-nextest": "skipped",
       "Restore cargo build cache": "success",
       "Set up Python": "success",
       "cargo test (schema-codegen acceptance)": "success"
@@ -605,6 +609,7 @@
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
+      "Install pinned cargo-nextest": "success",
       "Restore cargo build cache": "success",
       "Set up Python": "success",
       "cargo test (schema-codegen rest)": "success"
@@ -614,6 +619,7 @@
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "skipped",
       "Install Rust toolchain": "success",
+      "Install pinned cargo-nextest": "success",
       "Restore cargo build cache": "success",
       "Set up Python": "success",
       "cargo test (schema-codegen rest)": "success"
@@ -623,6 +629,7 @@
       "Fetch every locked crate": "success",
       "Initialize MSVC and require clang-cl for Windows C tests": "success",
       "Install Rust toolchain": "success",
+      "Install pinned cargo-nextest": "success",
       "Restore cargo build cache": "success",
       "Set up Python": "success",
       "cargo test (schema-codegen rest)": "success"
@@ -649,6 +656,7 @@
       "Install Rust toolchain": "success",
       "Install pinned cargo-about": "success",
       "Install pinned cargo-audit": "success",
+      "Install pinned cargo-nextest": "success",
       "Install ripgrep": "success",
       "Require Clang for the macOS C gate": "skipped",
       "Require GCC and Clang for the Linux C gate": "success",
@@ -683,6 +691,7 @@
       "Install Rust toolchain": "success",
       "Install pinned cargo-about": "skipped",
       "Install pinned cargo-audit": "skipped",
+      "Install pinned cargo-nextest": "success",
       "Install ripgrep": "skipped",
       "Require Clang for the macOS C gate": "skipped",
       "Require GCC and Clang for the Linux C gate": "skipped",
@@ -841,7 +850,7 @@
       "Wait for TypeDB server to be ready": "success"
     }
   },
-  "ci_workflow_sha256": "83adb33608559870c00f32715f1653c1ea6c006d8a34c79e31751bb58dc10d91",
+  "ci_workflow_sha256": "4c7686c6aabeb493f1a3ff15827552b5db6456400fbaf3c1332e7a7ad4c42ad9",
   "cosign_version": "3.0.6",
   "evidence": "type-bridge-c-evidence-2.3.2.tar.gz",
   "format": "typebridge.c-release-policy/v1",
