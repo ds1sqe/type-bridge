@@ -1,0 +1,6 @@
+# nextest runs every test in its own process, many at once. The stage
+# timing tests bound busy-wait wall time, which a test running beside
+# them can stretch, so each of them takes every test slot.
+[[profile.default.overrides]]
+filter = "package(type-bridge-perf-stages)"
+threads-required = "num-test-threads"
