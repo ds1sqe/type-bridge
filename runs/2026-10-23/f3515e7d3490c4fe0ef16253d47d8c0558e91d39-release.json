@@ -1,0 +1,4095 @@
+{
+  "format": "perf-result/v1",
+  "run": {
+    "commit": "f3515e7d3490c4fe0ef16253d47d8c0558e91d39",
+    "branch": "v2.3.1",
+    "version": "2.3.1",
+    "trigger": "release",
+    "runner": {
+      "image": "ubuntu24/20261012.334.1",
+      "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+      "cores": 4
+    },
+    "toolchains": {
+      "rust": "1.94.1",
+      "python": "3.13.5",
+      "node": "v20.20.2",
+      "cc": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"
+    },
+    "typedb": "3.13.6",
+    "started_at": "2026-10-23T04:31:58Z"
+  },
+  "metrics": [
+    {
+      "id": "binding.rust.build_purchase",
+      "family": "binding",
+      "unit": "ns",
+      "value": 46189.5,
+      "n": 30,
+      "samples": [
+        49033.0,
+        60141.0,
+        47892.0,
+        46600.0,
+        46620.0,
+        46179.0,
+        47291.0,
+        46490.0,
+        46560.0,
+        46711.0,
+        50015.0,
+        46480.0,
+        46299.0,
+        46200.0,
+        46149.0,
+        45809.0,
+        46049.0,
+        45979.0,
+        46340.0,
+        45508.0,
+        46069.0,
+        45808.0,
+        53401.0,
+        45658.0,
+        45939.0,
+        46120.0,
+        45869.0,
+        45828.0,
+        46169.0,
+        45909.0
+      ],
+      "p50": 46189.5,
+      "p90": 49131.200000000004,
+      "p99": 58186.40000000001
+    },
+    {
+      "id": "binding.rust.build_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 1231880.0,
+      "n": 30,
+      "samples": [
+        1210949.0,
+        1205502.0,
+        1240613.0,
+        1206843.0,
+        1240663.0,
+        1214264.0,
+        1244169.0,
+        1220343.0,
+        1218601.0,
+        1210909.0,
+        1200654.0,
+        1219141.0,
+        1196468.0,
+        1757981.0,
+        1595747.0,
+        1625913.0,
+        1215245.0,
+        1255787.0,
+        1223147.0,
+        1266572.0,
+        1210759.0,
+        1210198.0,
+        1507095.0,
+        2034245.0,
+        1267223.0,
+        1629578.0,
+        1414104.0,
+        1213563.0,
+        1294595.0,
+        1279332.0
+      ],
+      "p50": 1231880.0,
+      "p90": 1626279.5,
+      "p99": 1954128.4400000002
+    },
+    {
+      "id": "binding.rust.encode_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 863552.0,
+      "n": 30,
+      "samples": [
+        863357.0,
+        853161.0,
+        866542.0,
+        856116.0,
+        860844.0,
+        849776.0,
+        862136.0,
+        863747.0,
+        854854.0,
+        850928.0,
+        974374.0,
+        1270709.0,
+        1287924.0,
+        880813.0,
+        1104068.0,
+        869656.0,
+        858981.0,
+        854543.0,
+        953052.0,
+        855305.0,
+        966141.0,
+        914905.0,
+        855355.0,
+        861444.0,
+        856667.0,
+        907704.0,
+        854504.0,
+        981544.0,
+        1120974.0,
+        1157579.0
+      ],
+      "p50": 863552.0,
+      "p90": 1124634.5,
+      "p99": 1282931.65
+    },
+    {
+      "id": "binding.python.build_purchase",
+      "family": "binding",
+      "unit": "ns",
+      "value": 83616.0,
+      "n": 30,
+      "samples": [
+        89364.0,
+        87281.0,
+        86480.0,
+        84537.0,
+        82604.0,
+        83746.0,
+        83916.0,
+        94231.0,
+        83486.0,
+        82764.0,
+        80751.0,
+        81172.0,
+        80171.0,
+        80040.0,
+        81613.0,
+        81082.0,
+        103746.0,
+        135194.0,
+        120070.0,
+        79960.0,
+        81071.0,
+        81332.0,
+        80401.0,
+        79689.0,
+        82133.0,
+        99369.0,
+        129274.0,
+        138308.0,
+        123135.0,
+        89024.0
+      ],
+      "p50": 83616.0,
+      "p90": 123748.90000000001,
+      "p99": 137404.94
+    },
+    {
+      "id": "binding.python.build_purchase.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 37426.5
+    },
+    {
+      "id": "binding.python.build_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 3676517.5,
+      "n": 30,
+      "samples": [
+        3690945.0,
+        3677284.0,
+        7620378.0,
+        7873848.0,
+        6216069.0,
+        4556805.0,
+        4616435.0,
+        4654532.0,
+        5420082.0,
+        3959769.0,
+        3742442.0,
+        3649603.0,
+        3609833.0,
+        3672607.0,
+        3653609.0,
+        4138638.0,
+        3583894.0,
+        3585566.0,
+        3574630.0,
+        3599898.0,
+        3578336.0,
+        3585467.0,
+        3592838.0,
+        4322583.0,
+        4193780.0,
+        3675751.0,
+        3606758.0,
+        3581000.0,
+        3568551.0,
+        3805186.0
+      ],
+      "p50": 3676517.5,
+      "p90": 5499680.700000001,
+      "p99": 7800341.7
+    },
+    {
+      "id": "binding.python.build_rows_1k.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 2444637.5
+    },
+    {
+      "id": "binding.python.encode_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 837563.0,
+      "n": 30,
+      "samples": [
+        839732.0,
+        977158.0,
+        924388.0,
+        837999.0,
+        842315.0,
+        840583.0,
+        845650.0,
+        840342.0,
+        830578.0,
+        835705.0,
+        837318.0,
+        839531.0,
+        839631.0,
+        837007.0,
+        839742.0,
+        823968.0,
+        830488.0,
+        856357.0,
+        837028.0,
+        830097.0,
+        834804.0,
+        820753.0,
+        830658.0,
+        843377.0,
+        834433.0,
+        844008.0,
+        832842.0,
+        828875.0,
+        837808.0,
+        834754.0
+      ],
+      "p50": 837563.0,
+      "p90": 846720.7000000001,
+      "p99": 961854.7000000001
+    },
+    {
+      "id": "binding.python.encode_rows_1k.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 0.0
+    },
+    {
+      "id": "binding.node.build_purchase",
+      "family": "binding",
+      "unit": "ns",
+      "value": 82934.5,
+      "n": 30,
+      "samples": [
+        99880.0,
+        89895.0,
+        116886.0,
+        126771.0,
+        110456.0,
+        116956.0,
+        118378.0,
+        88232.0,
+        81943.0,
+        81743.0,
+        86380.0,
+        82074.0,
+        84136.0,
+        82964.0,
+        80050.0,
+        81072.0,
+        84637.0,
+        92649.0,
+        81553.0,
+        79810.0,
+        80511.0,
+        80350.0,
+        80130.0,
+        79380.0,
+        78898.0,
+        87261.0,
+        82905.0,
+        79970.0,
+        79460.0,
+        93630.0
+      ],
+      "p50": 82934.5,
+      "p90": 116893.0,
+      "p99": 124337.03000000001
+    },
+    {
+      "id": "binding.node.build_purchase.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 36745.0
+    },
+    {
+      "id": "binding.node.build_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 3916388.5,
+      "n": 30,
+      "samples": [
+        3706659.0,
+        4238737.0,
+        3611986.0,
+        4534232.0,
+        3615541.0,
+        3686458.0,
+        3941311.0,
+        5219121.0,
+        5340753.0,
+        3779858.0,
+        3899148.0,
+        3908712.0,
+        5080863.0,
+        3736183.0,
+        3718016.0,
+        3847941.0,
+        5178941.0,
+        4646821.0,
+        4969256.0,
+        3924065.0,
+        5563428.0,
+        3959478.0,
+        3865467.0,
+        3839297.0,
+        5971070.0,
+        3816073.0,
+        3864675.0,
+        3889954.0,
+        4215533.0,
+        4499600.0
+      ],
+      "p50": 3916388.5,
+      "p90": 5231284.2,
+      "p99": 5852853.82
+    },
+    {
+      "id": "binding.node.build_rows_1k.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 2684508.5
+    },
+    {
+      "id": "binding.node.encode_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 1064464.0,
+      "n": 30,
+      "samples": [
+        1056977.0,
+        1062636.0,
+        1064719.0,
+        1069106.0,
+        1086853.0,
+        1078029.0,
+        1059702.0,
+        1060213.0,
+        1063237.0,
+        1054034.0,
+        1065781.0,
+        1063007.0,
+        1060333.0,
+        1057618.0,
+        1060723.0,
+        1064839.0,
+        1064209.0,
+        1059632.0,
+        1052562.0,
+        1066122.0,
+        1071800.0,
+        1070558.0,
+        1062797.0,
+        1058000.0,
+        1102366.0,
+        1066943.0,
+        1074915.0,
+        1080894.0,
+        1338340.0,
+        1073854.0
+      ],
+      "p50": 1064464.0,
+      "p90": 1081489.9,
+      "p99": 1269907.5400000003
+    },
+    {
+      "id": "binding.node.encode_rows_1k.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 200912.0
+    },
+    {
+      "id": "binding.c.build_purchase",
+      "family": "binding",
+      "unit": "ns",
+      "value": 64712.0,
+      "n": 30,
+      "samples": [
+        67021.0,
+        67040.0,
+        65719.0,
+        64948.0,
+        64947.0,
+        74492.0,
+        64978.0,
+        65949.0,
+        66280.0,
+        65708.0,
+        65348.0,
+        64807.0,
+        63986.0,
+        64487.0,
+        64637.0,
+        63586.0,
+        64086.0,
+        64607.0,
+        64056.0,
+        63976.0,
+        64407.0,
+        69324.0,
+        64467.0,
+        64838.0,
+        64617.0,
+        64787.0,
+        63796.0,
+        64297.0,
+        64156.0,
+        64146.0
+      ],
+      "p50": 64712.0,
+      "p90": 67022.9,
+      "p99": 72993.28
+    },
+    {
+      "id": "binding.c.build_purchase.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 18522.5
+    },
+    {
+      "id": "binding.c.build_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 2076795.5,
+      "n": 30,
+      "samples": [
+        2148428.0,
+        2102148.0,
+        2091752.0,
+        2069319.0,
+        2072694.0,
+        2073184.0,
+        2071092.0,
+        2078162.0,
+        2071271.0,
+        2070060.0,
+        2059114.0,
+        2108537.0,
+        2077131.0,
+        2074737.0,
+        2049569.0,
+        2050190.0,
+        2056699.0,
+        2068518.0,
+        2061527.0,
+        2083951.0,
+        2078612.0,
+        2076460.0,
+        2069709.0,
+        2086104.0,
+        2085613.0,
+        2083060.0,
+        2098342.0,
+        2098803.0,
+        2096550.0,
+        2089970.0
+      ],
+      "p50": 2076795.5,
+      "p90": 2099137.5,
+      "p99": 2136859.61
+    },
+    {
+      "id": "binding.c.build_rows_1k.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 844915.5
+    },
+    {
+      "id": "binding.c.encode_rows_1k",
+      "family": "binding",
+      "unit": "ns",
+      "value": 761.0,
+      "n": 30,
+      "samples": [
+        781.0,
+        771.0,
+        761.0,
+        761.0,
+        771.0,
+        761.0,
+        761.0,
+        751.0,
+        762.0,
+        751.0,
+        771.0,
+        761.0,
+        761.0,
+        751.0,
+        772.0,
+        761.0,
+        761.0,
+        751.0,
+        761.0,
+        751.0,
+        772.0,
+        761.0,
+        761.0,
+        751.0,
+        771.0,
+        771.0,
+        761.0,
+        751.0,
+        771.0,
+        751.0
+      ],
+      "p50": 761.0,
+      "p90": 771.1,
+      "p99": 778.39
+    },
+    {
+      "id": "binding.c.encode_rows_1k.overhead",
+      "family": "binding",
+      "unit": "ns",
+      "value": 0.0
+    },
+    {
+      "id": "build.node.wall",
+      "family": "build",
+      "unit": "s",
+      "value": 311.8252456449999
+    },
+    {
+      "id": "build.public.wall",
+      "family": "build",
+      "unit": "s",
+      "value": 354.23254562799997
+    },
+    {
+      "id": "build.python.wall",
+      "family": "build",
+      "unit": "s",
+      "value": 428.306401458
+    },
+    {
+      "id": "build.unit.type_bridge_contract",
+      "family": "build",
+      "unit": "s",
+      "value": 431.27
+    },
+    {
+      "id": "build.unit.type_bridge_orm",
+      "family": "build",
+      "unit": "s",
+      "value": 332.27000000000004
+    },
+    {
+      "id": "build.unit.type_bridge_migration",
+      "family": "build",
+      "unit": "s",
+      "value": 183.60000000000002
+    },
+    {
+      "id": "build.unit.type_bridge_core_lib",
+      "family": "build",
+      "unit": "s",
+      "value": 157.74
+    },
+    {
+      "id": "build.unit.type_bridge_schema",
+      "family": "build",
+      "unit": "s",
+      "value": 146.37
+    },
+    {
+      "id": "build.unit.type_bridge_schema_compat",
+      "family": "build",
+      "unit": "s",
+      "value": 128.35
+    },
+    {
+      "id": "build.unit.typedb_driver",
+      "family": "build",
+      "unit": "s",
+      "value": 127.42
+    },
+    {
+      "id": "build.unit.type_bridge_typedb_driver_b8",
+      "family": "build",
+      "unit": "s",
+      "value": 119.12
+    },
+    {
+      "id": "build.unit.type_bridge_schema_migration",
+      "family": "build",
+      "unit": "s",
+      "value": 104.05
+    },
+    {
+      "id": "build.unit.type_bridge_schema_migration_typedb",
+      "family": "build",
+      "unit": "s",
+      "value": 92.12
+    },
+    {
+      "id": "build.unit.type_bridge_schema_codegen",
+      "family": "build",
+      "unit": "s",
+      "value": 92.05
+    },
+    {
+      "id": "build.unit.type_bridge_cli",
+      "family": "build",
+      "unit": "s",
+      "value": 80.53
+    },
+    {
+      "id": "build.unit.typeql",
+      "family": "build",
+      "unit": "s",
+      "value": 75.0
+    },
+    {
+      "id": "build.unit.rustls",
+      "family": "build",
+      "unit": "s",
+      "value": 73.03
+    },
+    {
+      "id": "build.unit.type_bridge_typedb_runtime",
+      "family": "build",
+      "unit": "s",
+      "value": 69.19
+    },
+    {
+      "id": "build.unit.type_bridge_server",
+      "family": "build",
+      "unit": "s",
+      "value": 67.06
+    },
+    {
+      "id": "build.unit.type_bridge_core",
+      "family": "build",
+      "unit": "s",
+      "value": 63.94
+    },
+    {
+      "id": "build.unit.regex_automata",
+      "family": "build",
+      "unit": "s",
+      "value": 62.71
+    },
+    {
+      "id": "build.unit.type_bridge_workspace",
+      "family": "build",
+      "unit": "s",
+      "value": 58.06
+    },
+    {
+      "id": "build.unit.type_bridge_query",
+      "family": "build",
+      "unit": "s",
+      "value": 47.459999999999994
+    },
+    {
+      "id": "micro.core.compile.arithmetic_match",
+      "family": "micro",
+      "unit": "ns",
+      "value": 10915.967881953267,
+      "n": 100,
+      "ci95": [
+        10898.888989682111,
+        10941.846027750376
+      ],
+      "p50": 10898.039201665913
+    },
+    {
+      "id": "micro.core.compile.batch_50_clauses",
+      "family": "micro",
+      "unit": "ns",
+      "value": 167462.0396095794,
+      "n": 100,
+      "ci95": [
+        167054.67868396075,
+        168114.3830934678
+      ],
+      "p50": 167025.78588269968
+    },
+    {
+      "id": "micro.core.compile.complex_10_patterns",
+      "family": "micro",
+      "unit": "ns",
+      "value": 36582.077581743186,
+      "n": 100,
+      "ci95": [
+        36488.33419024749,
+        36737.753692639286
+      ],
+      "p50": 36478.01089974236
+    },
+    {
+      "id": "micro.core.compile.deeply_nested_3_levels",
+      "family": "micro",
+      "unit": "ns",
+      "value": 84853.47799765659,
+      "n": 100,
+      "ci95": [
+        84671.55703809997,
+        85089.36478351214
+      ],
+      "p50": 84692.41079545455
+    },
+    {
+      "id": "micro.core.compile.fetch_variable",
+      "family": "micro",
+      "unit": "ns",
+      "value": 3699.9235448640084,
+      "n": 100,
+      "ci95": [
+        3694.1331097017433,
+        3706.9089030089813
+      ],
+      "p50": 3693.906216433942
+    },
+    {
+      "id": "micro.core.compile.graph_traversal_8_hops",
+      "family": "micro",
+      "unit": "ns",
+      "value": 104303.68191108594,
+      "n": 100,
+      "ci95": [
+        104024.91019135348,
+        104735.5221675818
+      ],
+      "p50": 104025.77202380952
+    },
+    {
+      "id": "micro.core.compile.heavy_insert_100x6",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1608746.424732064,
+      "n": 100,
+      "ci95": [
+        1605565.4514873049,
+        1612726.6413287916
+      ],
+      "p50": 1603864.4142857143
+    },
+    {
+      "id": "micro.core.compile.isa_constraint",
+      "family": "micro",
+      "unit": "ns",
+      "value": 12291.28063265992,
+      "n": 100,
+      "ci95": [
+        12253.33318526495,
+        12348.627709510965
+      ],
+      "p50": 12250.415670305305
+    },
+    {
+      "id": "micro.core.compile.large_batch_200_clauses",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1500132.9401157668,
+      "n": 100,
+      "ci95": [
+        1493762.5736473473,
+        1507139.8504187686
+      ],
+      "p50": 1498964.4579593765
+    },
+    {
+      "id": "micro.core.compile.long_30_patterns",
+      "family": "micro",
+      "unit": "ns",
+      "value": 124833.07430210881,
+      "n": 100,
+      "ci95": [
+        124636.58477019807,
+        125108.701352742
+      ],
+      "p50": 124674.84560154707
+    },
+    {
+      "id": "micro.core.compile.match_let_3_assignments",
+      "family": "micro",
+      "unit": "ns",
+      "value": 2542.5062786429194,
+      "n": 100,
+      "ci95": [
+        2534.6543259901705,
+        2554.8016693973814
+      ],
+      "p50": 2534.5745830090073
+    },
+    {
+      "id": "micro.core.compile.match_with_constraints",
+      "family": "micro",
+      "unit": "ns",
+      "value": 6716.260759585844,
+      "n": 100,
+      "ci95": [
+        6700.549380520094,
+        6743.481599247312
+      ],
+      "p50": 6698.483701683439
+    },
+    {
+      "id": "micro.core.compile.nested_arithmetic_4_levels",
+      "family": "micro",
+      "unit": "ns",
+      "value": 13313.340898524038,
+      "n": 100,
+      "ci95": [
+        13258.395054277576,
+        13409.792631960414
+      ],
+      "p50": 13251.281250804714
+    },
+    {
+      "id": "micro.core.compile.reduce_with_groupby",
+      "family": "micro",
+      "unit": "ns",
+      "value": 2920.6872983274698,
+      "n": 100,
+      "ci95": [
+        2914.174851554241,
+        2931.5246731972284
+      ],
+      "p50": 2914.506278601557
+    },
+    {
+      "id": "micro.core.compile.relation_insert",
+      "family": "micro",
+      "unit": "ns",
+      "value": 10799.986249892005,
+      "n": 100,
+      "ci95": [
+        10757.497865300717,
+        10859.30465081994
+      ],
+      "p50": 10757.042779049072
+    },
+    {
+      "id": "micro.core.compile.simple_match",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1571.6325633943727,
+      "n": 100,
+      "ci95": [
+        1569.8463571255238,
+        1574.586635266162
+      ],
+      "p50": 1569.6401733234368
+    },
+    {
+      "id": "micro.core.compile.standalone_delete_10",
+      "family": "micro",
+      "unit": "ns",
+      "value": 2735.267346607856,
+      "n": 100,
+      "ci95": [
+        2728.867026945104,
+        2743.986338283609
+      ],
+      "p50": 2730.760543854294
+    },
+    {
+      "id": "micro.core.compile.standalone_insert_5x4",
+      "family": "micro",
+      "unit": "ns",
+      "value": 48112.293638925665,
+      "n": 100,
+      "ci95": [
+        47960.06586549087,
+        48336.65995677676
+      ],
+      "p50": 47931.44552109382
+    },
+    {
+      "id": "micro.core.compile.standalone_update_20",
+      "family": "micro",
+      "unit": "ns",
+      "value": 55930.25563814338,
+      "n": 100,
+      "ci95": [
+        55789.37093908381,
+        56159.18901973355
+      ],
+      "p50": 55764.215651135004
+    },
+    {
+      "id": "micro.core.schema.from_json",
+      "family": "micro",
+      "unit": "ns",
+      "value": 23627.35734516868,
+      "n": 100,
+      "ci95": [
+        23575.426171287134,
+        23685.5910980583
+      ],
+      "p50": 23635.49130761151
+    },
+    {
+      "id": "micro.core.schema.parse_large_120types",
+      "family": "micro",
+      "unit": "ns",
+      "value": 143686.35635813774,
+      "n": 100,
+      "ci95": [
+        143186.9118462545,
+        144383.35597752422
+      ],
+      "p50": 143106.1759188524
+    },
+    {
+      "id": "micro.core.schema.parse_medium",
+      "family": "micro",
+      "unit": "ns",
+      "value": 25741.78323549257,
+      "n": 100,
+      "ci95": [
+        25711.761904507453,
+        25784.804485194985
+      ],
+      "p50": 25715.44931341237
+    },
+    {
+      "id": "micro.core.schema.parse_small",
+      "family": "micro",
+      "unit": "ns",
+      "value": 3551.016537248337,
+      "n": 100,
+      "ci95": [
+        3537.1802494203507,
+        3570.1104711465523
+      ],
+      "p50": 3534.2934523809527
+    },
+    {
+      "id": "micro.core.schema.resolve_inheritance_depth10",
+      "family": "micro",
+      "unit": "ns",
+      "value": 73803.42903713182,
+      "n": 100,
+      "ci95": [
+        73712.97642980058,
+        73925.01144851069
+      ],
+      "p50": 73702.26964285714
+    },
+    {
+      "id": "micro.core.schema.to_json",
+      "family": "micro",
+      "unit": "ns",
+      "value": 16174.349365462469,
+      "n": 100,
+      "ci95": [
+        16152.024951428308,
+        16210.581489230795
+      ],
+      "p50": 16151.500448028673
+    },
+    {
+      "id": "micro.core.validate_pattern.complex_nested",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1530.1275851485293,
+      "n": 100,
+      "ci95": [
+        1526.8117455660094,
+        1534.6066550092485
+      ],
+      "p50": 1524.7991528185075
+    },
+    {
+      "id": "micro.core.validate_pattern.simple_entity",
+      "family": "micro",
+      "unit": "ns",
+      "value": 335.6001941395451,
+      "n": 100,
+      "ci95": [
+        335.0201709763584,
+        336.3754114781118
+      ],
+      "p50": 335.18912212581506
+    },
+    {
+      "id": "micro.core.validate_statement.relation_with_attrs",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1011.4009531572863,
+      "n": 100,
+      "ci95": [
+        1010.3559457761361,
+        1012.9717456416989
+      ],
+      "p50": 1009.7397851037852
+    },
+    {
+      "id": "micro.core.validate_statement.simple_isa",
+      "family": "micro",
+      "unit": "ns",
+      "value": 88.00259086382661,
+      "n": 100,
+      "ci95": [
+        87.91447927921163,
+        88.15166652681773
+      ],
+      "p50": 87.92078181719035
+    },
+    {
+      "id": "micro.core.validate_type_name.attribute_context",
+      "family": "micro",
+      "unit": "ns",
+      "value": 69.38671250564164,
+      "n": 100,
+      "ci95": [
+        69.32647364831298,
+        69.46703024784769
+      ],
+      "p50": 69.32409552597032
+    },
+    {
+      "id": "micro.core.validate_type_name.batch_1000",
+      "family": "micro",
+      "unit": "ns",
+      "value": 97328.92663286015,
+      "n": 100,
+      "ci95": [
+        97150.5644949759,
+        97637.75845608524
+      ],
+      "p50": 97145.91731053757
+    },
+    {
+      "id": "micro.core.validate_type_name.batch_5000",
+      "family": "micro",
+      "unit": "ns",
+      "value": 461134.72617043735,
+      "n": 100,
+      "ci95": [
+        460858.03324553213,
+        461538.50299061957
+      ],
+      "p50": 460836.2019400353
+    },
+    {
+      "id": "micro.core.validate_type_name.invalid_digit_start",
+      "family": "micro",
+      "unit": "ns",
+      "value": 150.01867348736522,
+      "n": 100,
+      "ci95": [
+        149.4920520640027,
+        150.89038829056642
+      ],
+      "p50": 149.28559410275446
+    },
+    {
+      "id": "micro.core.validate_type_name.long_100ch",
+      "family": "micro",
+      "unit": "ns",
+      "value": 213.1268061142734,
+      "n": 100,
+      "ci95": [
+        212.26435323820215,
+        214.42307150493713
+      ],
+      "p50": 212.1731705309861
+    },
+    {
+      "id": "micro.core.validate_type_name.relation_context",
+      "family": "micro",
+      "unit": "ns",
+      "value": 69.10377182340541,
+      "n": 100,
+      "ci95": [
+        69.03452981472032,
+        69.19467385188763
+      ],
+      "p50": 69.04693632697393
+    },
+    {
+      "id": "micro.core.validate_type_name.reserved_word",
+      "family": "micro",
+      "unit": "ns",
+      "value": 139.8548042737271,
+      "n": 100,
+      "ci95": [
+        139.1924973774462,
+        140.65531797912644
+      ],
+      "p50": 138.56156271945792
+    },
+    {
+      "id": "micro.core.validate_type_name.role_context",
+      "family": "micro",
+      "unit": "ns",
+      "value": 62.560751550705874,
+      "n": 100,
+      "ci95": [
+        62.43608106922026,
+        62.77753066986122
+      ],
+      "p50": 62.44379201543211
+    },
+    {
+      "id": "micro.core.validate_type_name.simple",
+      "family": "micro",
+      "unit": "ns",
+      "value": 54.937924512753355,
+      "n": 100,
+      "ci95": [
+        54.90014741281955,
+        54.994894417408496
+      ],
+      "p50": 54.905009256045695
+    },
+    {
+      "id": "micro.core.validate_type_name.unicode",
+      "family": "micro",
+      "unit": "ns",
+      "value": 92.87971520079836,
+      "n": 100,
+      "ci95": [
+        92.64270327607326,
+        93.27729338151784
+      ],
+      "p50": 92.64660496392209
+    },
+    {
+      "id": "micro.core.validate_variable_name.invalid_no_dollar",
+      "family": "micro",
+      "unit": "ns",
+      "value": 97.87323079729718,
+      "n": 100,
+      "ci95": [
+        97.48939502041932,
+        98.38060300365338
+      ],
+      "p50": 96.97784200808863
+    },
+    {
+      "id": "micro.core.validate_variable_name.valid",
+      "family": "micro",
+      "unit": "ns",
+      "value": 11.215109593174697,
+      "n": 100,
+      "ci95": [
+        11.20921509569398,
+        11.22269176550986
+      ],
+      "p50": 11.206891775792112
+    },
+    {
+      "id": "micro.orm.query_codegen.medium_schema",
+      "family": "micro",
+      "unit": "ns",
+      "value": 48031.58546796974,
+      "n": 100,
+      "ci95": [
+        47976.686258931775,
+        48115.470866522526
+      ],
+      "p50": 47966.68414786967
+    },
+    {
+      "id": "micro.orm.query_codegen.small_schema",
+      "family": "micro",
+      "unit": "ns",
+      "value": 9793.5672338224,
+      "n": 100,
+      "ci95": [
+        9780.482637549752,
+        9813.304764686367
+      ],
+      "p50": 9781.115842733489
+    },
+    {
+      "id": "micro.orm.query_schema_generate.large_30_entities",
+      "family": "micro",
+      "unit": "ns",
+      "value": 225881.2338644686,
+      "n": 100,
+      "ci95": [
+        225340.55513018477,
+        226753.36358086267
+      ],
+      "p50": 225236.0750909091
+    },
+    {
+      "id": "micro.orm.query_schema_generate.medium_10_entities",
+      "family": "micro",
+      "unit": "ns",
+      "value": 73326.9087649154,
+      "n": 100,
+      "ci95": [
+        73217.0093462478,
+        73479.52454092211
+      ],
+      "p50": 73192.66124843863
+    },
+    {
+      "id": "micro.orm.query_schema_generate.small_5_entities",
+      "family": "micro",
+      "unit": "ns",
+      "value": 34441.81224407425,
+      "n": 100,
+      "ci95": [
+        34308.73282220961,
+        34631.61037360421
+      ],
+      "p50": 34290.55154264973
+    },
+    {
+      "id": "micro.orm.serde.value_type_batch_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 439.7510263776497,
+      "n": 100,
+      "ci95": [
+        438.7676913325075,
+        441.2251641316015
+      ],
+      "p50": 439.2860184670972
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.boolean_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 57.303423992086,
+      "n": 100,
+      "ci95": [
+        57.126926923041914,
+        57.58665763015066
+      ],
+      "p50": 57.073291123278636
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.date_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 124.09534675610388,
+      "n": 100,
+      "ci95": [
+        123.77633102475285,
+        124.54982229338617
+      ],
+      "p50": 123.753460294944
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.datetime_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 121.96548492426193,
+      "n": 100,
+      "ci95": [
+        121.73387485262435,
+        122.37540051038123
+      ],
+      "p50": 121.73206647603743
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.double_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 106.69912246658735,
+      "n": 100,
+      "ci95": [
+        106.49268025210846,
+        107.0316841526429
+      ],
+      "p50": 106.46360161354718
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.long_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 62.98576188706292,
+      "n": 100,
+      "ci95": [
+        62.79508870586432,
+        63.30709393347038
+      ],
+      "p50": 62.77151996604686
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.string_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 105.08427821303496,
+      "n": 100,
+      "ci95": [
+        104.98744971313738,
+        105.22294570577539
+      ],
+      "p50": 104.98592750922394
+    },
+    {
+      "id": "micro.orm.serde_expr.agg_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 245.0356398068773,
+      "n": 100,
+      "ci95": [
+        244.64669762561246,
+        245.5547873313156
+      ],
+      "p50": 244.5248691124857
+    },
+    {
+      "id": "micro.orm.serde_expr.deep_deserialize",
+      "family": "micro",
+      "unit": "ns",
+      "value": 16637.197698988748,
+      "n": 100,
+      "ci95": [
+        16594.73837971616,
+        16699.989897655043
+      ],
+      "p50": 16589.051955128205
+    },
+    {
+      "id": "micro.orm.serde_expr.deep_serialize",
+      "family": "micro",
+      "unit": "ns",
+      "value": 6762.125628358846,
+      "n": 100,
+      "ci95": [
+        6748.593577154557,
+        6784.080868363149
+      ],
+      "p50": 6751.010074168955
+    },
+    {
+      "id": "micro.orm.serde_expr.sort_dir_roundtrip",
+      "family": "micro",
+      "unit": "ns",
+      "value": 103.26389968648478,
+      "n": 100,
+      "ci95": [
+        103.16725460495879,
+        103.41259147924666
+      ],
+      "p50": 103.1415576753015
+    },
+    {
+      "id": "micro.orm.serde_schema_info.large_deserialize",
+      "family": "micro",
+      "unit": "ns",
+      "value": 82935.37026436324,
+      "n": 100,
+      "ci95": [
+        82651.32638001119,
+        83332.05981482423
+      ],
+      "p50": 82650.0458570525
+    },
+    {
+      "id": "micro.orm.serde_schema_info.large_serialize",
+      "family": "micro",
+      "unit": "ns",
+      "value": 33061.67314337166,
+      "n": 100,
+      "ci95": [
+        33018.94192452866,
+        33128.215762578184
+      ],
+      "p50": 33021.4750877193
+    },
+    {
+      "id": "micro.orm.serde_schema_info.small_deserialize",
+      "family": "micro",
+      "unit": "ns",
+      "value": 4387.801899983848,
+      "n": 100,
+      "ci95": [
+        4376.335224855884,
+        4406.29005688257
+      ],
+      "p50": 4379.8069782935745
+    },
+    {
+      "id": "micro.orm.serde_schema_info.small_serialize",
+      "family": "micro",
+      "unit": "ns",
+      "value": 1927.2102837939458,
+      "n": 100,
+      "ci95": [
+        1920.855566339969,
+        1935.9773359682454
+      ],
+      "p50": 1917.3855745764615
+    },
+    {
+      "id": "micro.orm.staged.mixed_commit",
+      "family": "micro",
+      "unit": "ns",
+      "value": 45881.08601315214,
+      "n": 100,
+      "ci95": [
+        45750.168302839964,
+        46075.78051057781
+      ],
+      "p50": 45735.6145256917
+    },
+    {
+      "id": "micro.core.compile.arithmetic_match.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4450226
+    },
+    {
+      "id": "micro.core.compile.batch_50_clauses.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 5811574
+    },
+    {
+      "id": "micro.core.compile.complex_10_patterns.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4663626
+    },
+    {
+      "id": "micro.core.compile.deeply_nested_3_levels.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 5083988
+    },
+    {
+      "id": "micro.core.compile.fetch_variable.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4377179
+    },
+    {
+      "id": "micro.core.compile.graph_traversal_8_hops.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 5262326
+    },
+    {
+      "id": "micro.core.compile.heavy_insert_100x6.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 18810456
+    },
+    {
+      "id": "micro.core.compile.isa_constraint.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4458085
+    },
+    {
+      "id": "micro.core.compile.large_batch_200_clauses.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 16726414
+    },
+    {
+      "id": "micro.core.compile.long_30_patterns.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 5447583
+    },
+    {
+      "id": "micro.core.compile.match_let_3_assignments.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 8773034
+    },
+    {
+      "id": "micro.core.compile.match_with_constraints.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4405701
+    },
+    {
+      "id": "micro.core.compile.nested_arithmetic_4_levels.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4473787
+    },
+    {
+      "id": "micro.core.compile.reduce_with_groupby.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4377458
+    },
+    {
+      "id": "micro.core.compile.relation_insert.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4443542
+    },
+    {
+      "id": "micro.core.compile.simple_match.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4358419
+    },
+    {
+      "id": "micro.core.compile.standalone_delete_10.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4374218
+    },
+    {
+      "id": "micro.core.compile.standalone_insert_5x4.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4762649
+    },
+    {
+      "id": "micro.core.compile.standalone_update_20.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4853607
+    },
+    {
+      "id": "micro.core.schema.from_json.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 240650
+    },
+    {
+      "id": "micro.core.schema.parse_large_120types.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1257916
+    },
+    {
+      "id": "micro.core.schema.parse_medium.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 237935
+    },
+    {
+      "id": "micro.core.schema.parse_small.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 30227
+    },
+    {
+      "id": "micro.core.schema.resolve_inheritance_depth10.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 667129
+    },
+    {
+      "id": "micro.core.schema.to_json.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 170940
+    },
+    {
+      "id": "micro.core.validate_pattern.complex_nested.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 66586
+    },
+    {
+      "id": "micro.core.validate_pattern.simple_entity.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 51314
+    },
+    {
+      "id": "micro.core.validate_statement.relation_with_attrs.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 59786
+    },
+    {
+      "id": "micro.core.validate_statement.simple_isa.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 47612
+    },
+    {
+      "id": "micro.core.validate_type_name.attribute_context.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 47413
+    },
+    {
+      "id": "micro.core.validate_type_name.batch_1000.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1164947
+    },
+    {
+      "id": "micro.core.validate_type_name.batch_5000.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 5566539
+    },
+    {
+      "id": "micro.core.validate_type_name.invalid_digit_start.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 48836
+    },
+    {
+      "id": "micro.core.validate_type_name.long_100ch.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 49743
+    },
+    {
+      "id": "micro.core.validate_type_name.relation_context.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 47495
+    },
+    {
+      "id": "micro.core.validate_type_name.reserved_word.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 48626
+    },
+    {
+      "id": "micro.core.validate_type_name.role_context.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 47475
+    },
+    {
+      "id": "micro.core.validate_type_name.simple.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 47250
+    },
+    {
+      "id": "micro.core.validate_type_name.unicode.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 47806
+    },
+    {
+      "id": "micro.core.validate_variable_name.invalid_no_dollar.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1193
+    },
+    {
+      "id": "micro.core.validate_variable_name.valid.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 71
+    },
+    {
+      "id": "micro.orm.query_codegen.medium_schema.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 482070
+    },
+    {
+      "id": "micro.orm.query_codegen.small_schema.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 95297
+    },
+    {
+      "id": "micro.orm.query_schema_generate.large_30_entities.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 2075295
+    },
+    {
+      "id": "micro.orm.query_schema_generate.medium_10_entities.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 673608
+    },
+    {
+      "id": "micro.orm.query_schema_generate.small_5_entities.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 309811
+    },
+    {
+      "id": "micro.orm.serde.value_type_batch_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 5797
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.boolean_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 897
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.date_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1253
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.datetime_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1395
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.double_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1232
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.long_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 973
+    },
+    {
+      "id": "micro.orm.serde_attribute_value.string_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1295
+    },
+    {
+      "id": "micro.orm.serde_expr.agg_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 3016
+    },
+    {
+      "id": "micro.orm.serde_expr.deep_deserialize.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 153995
+    },
+    {
+      "id": "micro.orm.serde_expr.deep_serialize.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 67405
+    },
+    {
+      "id": "micro.orm.serde_expr.sort_dir_roundtrip.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 1457
+    },
+    {
+      "id": "micro.orm.serde_schema_info.large_deserialize.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 804515
+    },
+    {
+      "id": "micro.orm.serde_schema_info.large_serialize.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 392747
+    },
+    {
+      "id": "micro.orm.serde_schema_info.small_deserialize.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 40467
+    },
+    {
+      "id": "micro.orm.serde_schema_info.small_serialize.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 21782
+    },
+    {
+      "id": "micro.orm.staged.mixed_commit.instructions",
+      "family": "micro",
+      "unit": "instructions",
+      "value": 4751222
+    },
+    {
+      "id": "binding.python.compilation.compile_arithmetic_match",
+      "family": "binding",
+      "unit": "ns",
+      "value": 38204.93391309014,
+      "n": 8292,
+      "p50": 36337.99997260212
+    },
+    {
+      "id": "binding.python.compilation.compile_batch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 382379.4360896568,
+      "n": 1995,
+      "p50": 377648.0000396987
+    },
+    {
+      "id": "binding.python.compilation.compile_complex_query",
+      "family": "binding",
+      "unit": "ns",
+      "value": 98487.89676343996,
+      "n": 5095,
+      "p50": 90529.99985215138
+    },
+    {
+      "id": "binding.python.compilation.compile_constrained_match",
+      "family": "binding",
+      "unit": "ns",
+      "value": 22777.3837650778,
+      "n": 12935,
+      "p50": 21329.999981389847
+    },
+    {
+      "id": "binding.python.compilation.compile_deeply_nested",
+      "family": "binding",
+      "unit": "ns",
+      "value": 216866.81894854442,
+      "n": 3684,
+      "p50": 210174.4998981303
+    },
+    {
+      "id": "binding.python.compilation.compile_deeply_nested_e2e",
+      "family": "binding",
+      "unit": "ns",
+      "value": 285610.6897353532,
+      "n": 2543,
+      "p50": 280526.99985892104
+    },
+    {
+      "id": "binding.python.compilation.compile_e2e_batch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 510714.3752330735,
+      "n": 1599,
+      "p50": 509685.9999866865
+    },
+    {
+      "id": "binding.python.compilation.compile_e2e_complex",
+      "family": "binding",
+      "unit": "ns",
+      "value": 127074.76744462732,
+      "n": 3741,
+      "p50": 122058.99997752567
+    },
+    {
+      "id": "binding.python.compilation.compile_fetch_variable",
+      "family": "binding",
+      "unit": "ns",
+      "value": 9251.339947909642,
+      "n": 16832,
+      "p50": 8465.999826512416
+    },
+    {
+      "id": "binding.python.compilation.compile_graph_traversal",
+      "family": "binding",
+      "unit": "ns",
+      "value": 238699.49120621962,
+      "n": 3583,
+      "p50": 232405.99989549082
+    },
+    {
+      "id": "binding.python.compilation.compile_graph_traversal_e2e",
+      "family": "binding",
+      "unit": "ns",
+      "value": 295767.69933482975,
+      "n": 2704,
+      "p50": 290600.00008485076
+    },
+    {
+      "id": "binding.python.compilation.compile_heavy_insert",
+      "family": "binding",
+      "unit": "ns",
+      "value": 3427949.3171688206,
+      "n": 268,
+      "p50": 3418483.0000185682
+    },
+    {
+      "id": "binding.python.compilation.compile_heavy_insert_e2e",
+      "family": "binding",
+      "unit": "ns",
+      "value": 4359232.58442017,
+      "n": 231,
+      "p50": 4129796.999905011
+    },
+    {
+      "id": "binding.python.compilation.compile_isa_constraint",
+      "family": "binding",
+      "unit": "ns",
+      "value": 36733.69711089631,
+      "n": 9175,
+      "p50": 34925.000136354356
+    },
+    {
+      "id": "binding.python.compilation.compile_large_batch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 3360311.5516080474,
+      "n": 281,
+      "p50": 3348801.0001292424
+    },
+    {
+      "id": "binding.python.compilation.compile_large_batch_e2e",
+      "family": "binding",
+      "unit": "ns",
+      "value": 4782472.935765268,
+      "n": 218,
+      "p50": 4458212.500026093
+    },
+    {
+      "id": "binding.python.compilation.compile_large_fetch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 36234.459435049124,
+      "n": 13978,
+      "p50": 34805.00004116038
+    },
+    {
+      "id": "binding.python.compilation.compile_long_query",
+      "family": "binding",
+      "unit": "ns",
+      "value": 305090.3394256837,
+      "n": 2463,
+      "p50": 290565.0001139293
+    },
+    {
+      "id": "binding.python.compilation.compile_long_query_e2e",
+      "family": "binding",
+      "unit": "ns",
+      "value": 379924.19195782795,
+      "n": 2188,
+      "p50": 375373.9999865502
+    },
+    {
+      "id": "binding.python.compilation.compile_match_let_multiple",
+      "family": "binding",
+      "unit": "ns",
+      "value": 16477.680138062184,
+      "n": 14031,
+      "p50": 15589.999975418323
+    },
+    {
+      "id": "binding.python.compilation.compile_match_let_single",
+      "family": "binding",
+      "unit": "ns",
+      "value": 8373.967540633674,
+      "n": 1417,
+      "p50": 7553.999921583454
+    },
+    {
+      "id": "binding.python.compilation.compile_nested_arithmetic",
+      "family": "binding",
+      "unit": "ns",
+      "value": 50949.84695856445,
+      "n": 10788,
+      "p50": 48771.00013800373
+    },
+    {
+      "id": "binding.python.compilation.compile_realistic_pipeline",
+      "family": "binding",
+      "unit": "ns",
+      "value": 79126.0355040307,
+      "n": 6140,
+      "p50": 74790.99986085203
+    },
+    {
+      "id": "binding.python.compilation.compile_realistic_pipeline_e2e",
+      "family": "binding",
+      "unit": "ns",
+      "value": 112726.2258055174,
+      "n": 4619,
+      "p50": 104726.000017763
+    },
+    {
+      "id": "binding.python.compilation.compile_reduce",
+      "family": "binding",
+      "unit": "ns",
+      "value": 22897.50354933589,
+      "n": 12960,
+      "p50": 21861.00005019398
+    },
+    {
+      "id": "binding.python.compilation.compile_relation_insert",
+      "family": "binding",
+      "unit": "ns",
+      "value": 31764.8136600317,
+      "n": 13411,
+      "p50": 28252.999982214533
+    },
+    {
+      "id": "binding.python.compilation.compile_simple_match",
+      "family": "binding",
+      "unit": "ns",
+      "value": 7272.8298154670865,
+      "n": 1087,
+      "p50": 6722.000080117141
+    },
+    {
+      "id": "binding.python.compilation.compile_standalone_delete",
+      "family": "binding",
+      "unit": "ns",
+      "value": 14477.47050081898,
+      "n": 24221,
+      "p50": 13645.999842992751
+    },
+    {
+      "id": "binding.python.compilation.compile_standalone_insert",
+      "family": "binding",
+      "unit": "ns",
+      "value": 113513.21730674797,
+      "n": 4657,
+      "p50": 109816.00007653469
+    },
+    {
+      "id": "binding.python.compilation.compile_standalone_update",
+      "family": "binding",
+      "unit": "ns",
+      "value": 127761.9166848344,
+      "n": 4813,
+      "p50": 124583.99987735902
+    },
+    {
+      "id": "binding.python.compilation.serde_conversion_overhead_batch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 103089.523701386,
+      "n": 5232,
+      "p50": 101449.99987460324
+    },
+    {
+      "id": "binding.python.compilation.serde_conversion_overhead_complex",
+      "family": "binding",
+      "unit": "ns",
+      "value": 24133.580862190243,
+      "n": 17567,
+      "p50": 23704.00011386664
+    },
+    {
+      "id": "binding.python.compilation.serde_conversion_overhead_simple",
+      "family": "binding",
+      "unit": "ns",
+      "value": 1058.993883840282,
+      "n": 181489,
+      "p50": 1041.999894368928
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_arithmetic",
+      "family": "binding",
+      "unit": "ns",
+      "value": 10338.737463220457,
+      "n": 31687,
+      "p50": 10189.00002236478
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_deeply_nested",
+      "family": "binding",
+      "unit": "ns",
+      "value": 59416.73753718217,
+      "n": 10592,
+      "p50": 58659.99992238358
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_fetch_variable",
+      "family": "binding",
+      "unit": "ns",
+      "value": 3777.1615697105553,
+      "n": 20437,
+      "p50": 3727.000148501247
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_graph_traversal",
+      "family": "binding",
+      "unit": "ns",
+      "value": 50741.01242904945,
+      "n": 16251,
+      "p50": 49894.000085259904
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_heavy_insert",
+      "family": "binding",
+      "unit": "ns",
+      "value": 761083.9852385253,
+      "n": 1084,
+      "p50": 697773.4999509266
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_large_batch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 919987.7984650595,
+      "n": 1042,
+      "p50": 917415.9999929543
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_long_query",
+      "family": "binding",
+      "unit": "ns",
+      "value": 73811.16964117522,
+      "n": 11094,
+      "p50": 72686.00006682391
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_match_let",
+      "family": "binding",
+      "unit": "ns",
+      "value": 4198.4379285726445,
+      "n": 106417,
+      "p50": 4107.999984626076
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_standalone_delete",
+      "family": "binding",
+      "unit": "ns",
+      "value": 10987.184330243514,
+      "n": 66587,
+      "p50": 10851.000070033479
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_standalone_insert",
+      "family": "binding",
+      "unit": "ns",
+      "value": 19063.93125218011,
+      "n": 30750,
+      "p50": 18824.999870048487
+    },
+    {
+      "id": "binding.python.compilation.serde_overhead_standalone_update",
+      "family": "binding",
+      "unit": "ns",
+      "value": 18768.09083813106,
+      "n": 37077,
+      "p50": 18545.000102676568
+    },
+    {
+      "id": "binding.python.validation.validate_attribute_context",
+      "family": "binding",
+      "unit": "ns",
+      "value": 208.35199746395708,
+      "n": 199641,
+      "p50": 203.75000531203113
+    },
+    {
+      "id": "binding.python.validation.validate_batch",
+      "family": "binding",
+      "unit": "ns",
+      "value": 180103.054555552,
+      "n": 5059,
+      "p50": 178434.99995251477
+    },
+    {
+      "id": "binding.python.validation.validate_batch_5000",
+      "family": "binding",
+      "unit": "ns",
+      "value": 878894.1654494341,
+      "n": 1100,
+      "p50": 877646.5000437384
+    },
+    {
+      "id": "binding.python.validation.validate_batch_variable",
+      "family": "binding",
+      "unit": "ns",
+      "value": 47377.06030922928,
+      "n": 16498,
+      "p50": 46868.00002673408
+    },
+    {
+      "id": "binding.python.validation.validate_digit_start",
+      "family": "binding",
+      "unit": "ns",
+      "value": 921.3007961028521,
+      "n": 165235,
+      "p50": 902.0000106829684
+    },
+    {
+      "id": "binding.python.validation.validate_empty_name",
+      "family": "binding",
+      "unit": "ns",
+      "value": 814.2751047985354,
+      "n": 122310,
+      "p50": 801.9999313546577
+    },
+    {
+      "id": "binding.python.validation.validate_long_name",
+      "family": "binding",
+      "unit": "ns",
+      "value": 348.40868023201483,
+      "n": 106633,
+      "p50": 344.1499984546681
+    },
+    {
+      "id": "binding.python.validation.validate_pattern_complex",
+      "family": "binding",
+      "unit": "ns",
+      "value": 17836.338707757728,
+      "n": 25739,
+      "p50": 17543.00001266529
+    },
+    {
+      "id": "binding.python.validation.validate_pattern_simple",
+      "family": "binding",
+      "unit": "ns",
+      "value": 5951.51543442346,
+      "n": 27406,
+      "p50": 5850.999968970427
+    },
+    {
+      "id": "binding.python.validation.validate_relation_context",
+      "family": "binding",
+      "unit": "ns",
+      "value": 206.75436130190286,
+      "n": 166086,
+      "p50": 204.34999896679074
+    },
+    {
+      "id": "binding.python.validation.validate_reserved_word",
+      "family": "binding",
+      "unit": "ns",
+      "value": 912.4883611744085,
+      "n": 75393,
+      "p50": 901.0000212583691
+    },
+    {
+      "id": "binding.python.validation.validate_role_context",
+      "family": "binding",
+      "unit": "ns",
+      "value": 201.35505836092352,
+      "n": 127146,
+      "p50": 198.8999997593055
+    },
+    {
+      "id": "binding.python.validation.validate_single_name",
+      "family": "binding",
+      "unit": "ns",
+      "value": 317.56912432122573,
+      "n": 40232,
+      "p50": 310.99989428184927
+    },
+    {
+      "id": "binding.python.validation.validate_statement_relation",
+      "family": "binding",
+      "unit": "ns",
+      "value": 11931.608372937117,
+      "n": 29357,
+      "p50": 11741.999969672179
+    },
+    {
+      "id": "binding.python.validation.validate_statement_simple",
+      "family": "binding",
+      "unit": "ns",
+      "value": 2060.2770674707126,
+      "n": 113431,
+      "p50": 2024.0001958882203
+    },
+    {
+      "id": "binding.python.validation.validate_unicode_name",
+      "family": "binding",
+      "unit": "ns",
+      "value": 370.52672403924475,
+      "n": 71603,
+      "p50": 361.0000476328423
+    },
+    {
+      "id": "binding.python.validation.validate_variable_invalid",
+      "family": "binding",
+      "unit": "ns",
+      "value": 857.9970135115007,
+      "n": 116198,
+      "p50": 841.999963085982
+    },
+    {
+      "id": "binding.python.validation.validate_variable_valid",
+      "family": "binding",
+      "unit": "ns",
+      "value": 138.98877489349647,
+      "n": 145709,
+      "p50": 136.8000084767118
+    },
+    {
+      "id": "pipeline.rust.insert_one",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2136070.5,
+      "n": 30,
+      "samples": [
+        2095982.0,
+        2153549.0,
+        2130925.0,
+        2109429.0,
+        2139947.0,
+        2157528.0,
+        2130345.0,
+        2125741.0,
+        2132194.0,
+        2165783.0,
+        2092912.0,
+        2150523.0,
+        2150118.0,
+        2127674.0,
+        2104417.0,
+        2183602.0,
+        2413308.0,
+        2872563.0,
+        2111962.0,
+        2197593.0,
+        2024838.0,
+        2144454.0,
+        2159472.0,
+        2095437.0,
+        2162824.0,
+        2100756.0,
+        2122819.0,
+        2166326.0,
+        2142424.0,
+        2112859.0
+      ],
+      "p50": 2136070.5,
+      "p90": 2185001.1,
+      "p99": 2739379.0500000003,
+      "stages": {
+        "tb.commit": 927160.5,
+        "tb.decode": 7838.0,
+        "tb.orm.plan": 64835.0,
+        "tb.query.compile": 28196.5,
+        "tb.runtime.execute": 1071682.0
+      }
+    },
+    {
+      "id": "pipeline.rust.insert_one.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 461.6925674145019
+    },
+    {
+      "id": "pipeline.rust.fetch_by_key",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 1720076.0,
+      "n": 30,
+      "samples": [
+        2464625.0,
+        2509537.0,
+        2386999.0,
+        2462978.0,
+        2491744.0,
+        2514951.0,
+        2509708.0,
+        2555387.0,
+        2662182.0,
+        1734315.0,
+        1712225.0,
+        1712752.0,
+        1613403.0,
+        1578700.0,
+        1747822.0,
+        1724273.0,
+        1652421.0,
+        1695490.0,
+        1935997.0,
+        1659016.0,
+        1659588.0,
+        1668780.0,
+        1652296.0,
+        1715879.0,
+        1866466.0,
+        1603465.0,
+        1602659.0,
+        1690963.0,
+        1633910.0,
+        1746540.0
+      ],
+      "p50": 1720076.0,
+      "p90": 2510232.3,
+      "p99": 2631211.45,
+      "stages": {
+        "tb.decode": 4390.0,
+        "tb.orm.plan": 53886.0,
+        "tb.query.compile": 29368.5,
+        "tb.runtime.execute": 1588067.0
+      }
+    },
+    {
+      "id": "pipeline.rust.fetch_by_key.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 515.7734613613727
+    },
+    {
+      "id": "pipeline.rust.fetch_filtered",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 14186967.5,
+      "n": 30,
+      "samples": [
+        14365972.0,
+        13991347.0,
+        13947520.0,
+        14270686.0,
+        14327051.0,
+        14316645.0,
+        14536946.0,
+        14193300.0,
+        14012093.0,
+        13829012.0,
+        14189193.0,
+        14761210.0,
+        14313646.0,
+        14373713.0,
+        14114522.0,
+        14058218.0,
+        14056050.0,
+        14389970.0,
+        14184742.0,
+        14240514.0,
+        13744345.0,
+        14337742.0,
+        13598692.0,
+        14015978.0,
+        13751358.0,
+        14249775.0,
+        14799255.0,
+        13828993.0,
+        13671953.0,
+        14089588.0
+      ],
+      "p50": 14186967.5,
+      "p90": 14404667.6,
+      "p99": 14788221.95,
+      "stages": {
+        "tb.decode": 221700.5,
+        "tb.orm.plan": 90587.5,
+        "tb.query.compile": 35897.5,
+        "tb.runtime.execute": 13609530.5
+      }
+    },
+    {
+      "id": "pipeline.rust.fetch_filtered.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 70.66138578956993
+    },
+    {
+      "id": "pipeline.rust.update",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2137037.0,
+      "n": 30,
+      "samples": [
+        3232022.0,
+        2137677.0,
+        2099890.0,
+        2114261.0,
+        2248075.0,
+        2084413.0,
+        2097940.0,
+        2131955.0,
+        2160458.0,
+        2100471.0,
+        2196583.0,
+        2093960.0,
+        2122033.0,
+        2164750.0,
+        2085535.0,
+        2169681.0,
+        2145561.0,
+        2124016.0,
+        3017921.0,
+        5620316.0,
+        2147644.0,
+        2101051.0,
+        2060019.0,
+        2141998.0,
+        2142119.0,
+        2100458.0,
+        2197642.0,
+        2157749.0,
+        2136397.0,
+        2116184.0
+      ],
+      "p50": 2137037.0,
+      "p90": 2325059.600000001,
+      "p99": 4927710.740000002,
+      "stages": {
+        "tb.commit": 670843.5,
+        "tb.decode": 8858.0,
+        "tb.orm.plan": 79218.5,
+        "tb.query.compile": 47642.5,
+        "tb.runtime.execute": 1290675.5
+      }
+    },
+    {
+      "id": "pipeline.rust.update.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 431.97303727974827
+    },
+    {
+      "id": "pipeline.rust.delete",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2131271.5,
+      "n": 30,
+      "samples": [
+        2119463.0,
+        2130684.0,
+        2085757.0,
+        2176892.0,
+        2129070.0,
+        2129444.0,
+        2138378.0,
+        2114653.0,
+        2153208.0,
+        2107617.0,
+        2171415.0,
+        2102567.0,
+        2195112.0,
+        2131859.0,
+        2114128.0,
+        2186246.0,
+        2151241.0,
+        2102151.0,
+        2265063.0,
+        2051701.0,
+        3162051.0,
+        2161920.0,
+        2096836.0,
+        2103070.0,
+        2219379.0,
+        2102150.0,
+        2160663.0,
+        2140076.0,
+        2130483.0,
+        2142110.0
+      ],
+      "p50": 2131271.5,
+      "p90": 2197538.7,
+      "p99": 2901924.480000001,
+      "stages": {
+        "tb.commit": 768736.5,
+        "tb.decode": 4418.5,
+        "tb.orm.plan": 63507.5,
+        "tb.query.compile": 29647.0,
+        "tb.runtime.execute": 1231368.0
+      }
+    },
+    {
+      "id": "pipeline.rust.delete.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 460.29646130064407
+    },
+    {
+      "id": "pipeline.rust.batch_given_rows_1k",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 152179057.5,
+      "n": 30,
+      "samples": [
+        153073967.0,
+        153832042.0,
+        151507731.0,
+        152665470.0,
+        152664675.0,
+        154327236.0,
+        152198557.0,
+        156105339.0,
+        149369763.0,
+        148525524.0,
+        152159558.0,
+        154494276.0,
+        151063552.0,
+        151152838.0,
+        150202107.0,
+        150496097.0,
+        147583393.0,
+        151442659.0,
+        154690772.0,
+        178879396.0,
+        152889945.0,
+        146308705.0,
+        151777651.0,
+        153437807.0,
+        151332501.0,
+        153293861.0,
+        156376082.0,
+        153217158.0,
+        146294187.0,
+        147780277.0
+      ],
+      "p50": 152179057.5,
+      "p90": 154832228.7,
+      "p99": 172353434.94000003,
+      "stages": {
+        "tb.commit": 16201579.5,
+        "tb.decode": 4578137.0,
+        "tb.orm.plan": 2020552.5,
+        "tb.query.compile": 262630.5,
+        "tb.runtime.execute": 126788024.0
+      }
+    },
+    {
+      "id": "pipeline.rust.batch_given_rows_1k.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 6551.444052854005
+    },
+    {
+      "id": "pipeline.rust.staged_mixed",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 15956784.5,
+      "n": 30,
+      "samples": [
+        14925974.0,
+        15098137.0,
+        14969432.0,
+        14935818.0,
+        14936332.0,
+        14908636.0,
+        16135613.0,
+        17092340.0,
+        14940383.0,
+        15027677.0,
+        14969805.0,
+        15964588.0,
+        14912595.0,
+        14937870.0,
+        17138894.0,
+        16038131.0,
+        15011743.0,
+        16154153.0,
+        18425965.0,
+        15674676.0,
+        16048871.0,
+        16117203.0,
+        16104108.0,
+        15993047.0,
+        18243574.0,
+        16068396.0,
+        15948981.0,
+        15878577.0,
+        16096640.0,
+        16025724.0
+      ],
+      "p50": 15956784.5,
+      "p90": 17096995.4,
+      "p99": 18373071.61,
+      "stages": {
+        "tb.commit": 2042908.0,
+        "tb.decode": 372038.5,
+        "tb.orm.plan": 245903.5,
+        "tb.query.compile": 107110.5,
+        "tb.runtime.execute": 12578084.0
+      }
+    },
+    {
+      "id": "pipeline.rust.staged_mixed.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 63.194629708571036
+    },
+    {
+      "id": "pipeline.rust.migration_apply",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 420405295.0,
+      "n": 5,
+      "samples": [
+        413570493.0,
+        421227791.0,
+        430345622.0,
+        413051740.0,
+        420405295.0
+      ],
+      "p50": 420405295.0,
+      "p90": 426698489.6,
+      "p99": 429980908.76,
+      "stages": {
+        "tb.commit": 23289306,
+        "tb.decode": 650030,
+        "tb.orm.plan": 36479,
+        "tb.query.compile": 502641,
+        "tb.runtime.execute": 195417439
+      }
+    },
+    {
+      "id": "pipeline.rust.migration_apply.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 2.382539673129785
+    },
+    {
+      "id": "pipeline.python.insert_one",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2117859.5,
+      "n": 30,
+      "samples": [
+        2111723.0,
+        2097373.0,
+        2117096.0,
+        2116183.0,
+        2139197.0,
+        2164701.0,
+        2098490.0,
+        2165891.0,
+        2143530.0,
+        2158576.0,
+        2095460.0,
+        2224627.0,
+        2033176.0,
+        2126947.0,
+        2118623.0,
+        2123120.0,
+        2125705.0,
+        2068239.0,
+        2115661.0,
+        2235666.0,
+        2042532.0,
+        2127854.0,
+        2097336.0,
+        2169476.0,
+        2111466.0,
+        2135597.0,
+        2107662.0,
+        2104142.0,
+        2122247.0,
+        2109403.0
+      ],
+      "p50": 2117859.5,
+      "p90": 2166249.5,
+      "p99": 2232464.69,
+      "stages": {
+        "tb.commit": 806081.5,
+        "tb.decode": 7316.0,
+        "tb.orm.plan": 63829.5,
+        "tb.query.compile": 26075.5,
+        "tb.runtime.execute": 1093521.0,
+        "tb.sdk.entry": 22990.0
+      }
+    },
+    {
+      "id": "pipeline.python.insert_one.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 470.90069914469836
+    },
+    {
+      "id": "pipeline.python.fetch_by_key",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 1856124.0,
+      "n": 30,
+      "samples": [
+        2681053.0,
+        2356016.0,
+        2470930.0,
+        2571530.0,
+        4403428.0,
+        2690194.0,
+        2480343.0,
+        2850779.0,
+        1664943.0,
+        1843393.0,
+        1641641.0,
+        1790249.0,
+        1655588.0,
+        1606413.0,
+        1796787.0,
+        1857509.0,
+        1846373.0,
+        1820053.0,
+        1887785.0,
+        1949167.0,
+        1920029.0,
+        1722095.0,
+        1866849.0,
+        1802715.0,
+        1978238.0,
+        1758864.0,
+        1675459.0,
+        1854978.0,
+        1683003.0,
+        1857270.0
+      ],
+      "p50": 1856124.0,
+      "p90": 2681967.1,
+      "p99": 3953159.7900000014,
+      "stages": {
+        "tb.decode": 3908.5,
+        "tb.orm.plan": 52177.5,
+        "tb.query.compile": 27526.5,
+        "tb.runtime.execute": 1650060.5,
+        "tb.sdk.entry": 23286.5
+      }
+    },
+    {
+      "id": "pipeline.python.fetch_by_key.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 483.99841545372095
+    },
+    {
+      "id": "pipeline.python.fetch_filtered",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 14368274.0,
+      "n": 30,
+      "samples": [
+        14683538.0,
+        14524568.0,
+        14230994.0,
+        14544127.0,
+        14884405.0,
+        14266456.0,
+        13923088.0,
+        14627259.0,
+        14859893.0,
+        14170682.0,
+        14794621.0,
+        14755432.0,
+        14399359.0,
+        14153507.0,
+        14373042.0,
+        14497180.0,
+        13981835.0,
+        14363506.0,
+        14553576.0,
+        14222996.0,
+        14186918.0,
+        14013729.0,
+        13878210.0,
+        14104687.0,
+        13949150.0,
+        14198033.0,
+        14439309.0,
+        14397386.0,
+        14443327.0,
+        14014979.0
+      ],
+      "p50": 14368274.0,
+      "p90": 14759350.9,
+      "p99": 14877296.52,
+      "stages": {
+        "tb.decode": 205511.0,
+        "tb.orm.plan": 68886.5,
+        "tb.query.compile": 38209.0,
+        "tb.runtime.execute": 13791709.5,
+        "tb.sdk.entry": 113433.0
+      }
+    },
+    {
+      "id": "pipeline.python.fetch_filtered.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 69.696806254439
+    },
+    {
+      "id": "pipeline.python.update",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2149434.5,
+      "n": 30,
+      "samples": [
+        6369854.0,
+        3164132.0,
+        3168935.0,
+        2150939.0,
+        2113065.0,
+        3234433.0,
+        3188897.0,
+        2084541.0,
+        2173352.0,
+        2109785.0,
+        2147930.0,
+        2085671.0,
+        2110584.0,
+        2166848.0,
+        2108061.0,
+        2142578.0,
+        2106516.0,
+        2151163.0,
+        3312525.0,
+        7428731.0,
+        3131816.0,
+        3174135.0,
+        2177205.0,
+        2073528.0,
+        2115638.0,
+        2151295.0,
+        2127369.0,
+        2083965.0,
+        2111509.0,
+        2137305.0
+      ],
+      "p50": 2149434.5,
+      "p90": 3242242.2,
+      "p99": 7121656.670000001,
+      "stages": {
+        "tb.commit": 588527.5,
+        "tb.decode": 9278.0,
+        "tb.orm.plan": 79864.0,
+        "tb.query.compile": 38613.0,
+        "tb.runtime.execute": 1317847.5,
+        "tb.sdk.entry": 22964.5
+      }
+    },
+    {
+      "id": "pipeline.python.update.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 371.2765372225458
+    },
+    {
+      "id": "pipeline.python.delete",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2127274.5,
+      "n": 30,
+      "samples": [
+        2126364.0,
+        2135079.0,
+        2122663.0,
+        2160455.0,
+        2074879.0,
+        2170279.0,
+        2128230.0,
+        2072171.0,
+        2120571.0,
+        2128185.0,
+        2115796.0,
+        2141123.0,
+        2140792.0,
+        2104277.0,
+        2111089.0,
+        2222071.0,
+        2089998.0,
+        2170271.0,
+        2234308.0,
+        2043375.0,
+        3219114.0,
+        2097177.0,
+        2109107.0,
+        2141955.0,
+        2116215.0,
+        2132563.0,
+        2165354.0,
+        2096657.0,
+        2120186.0,
+        2151990.0
+      ],
+      "p50": 2127274.5,
+      "p90": 2175458.2,
+      "p99": 2933520.2600000007,
+      "stages": {
+        "tb.commit": 685611.5,
+        "tb.decode": 4448.0,
+        "tb.orm.plan": 61831.0,
+        "tb.query.compile": 27658.5,
+        "tb.runtime.execute": 1216808.5,
+        "tb.sdk.entry": 23731.5
+      }
+    },
+    {
+      "id": "pipeline.python.delete.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 461.80635185081366
+    },
+    {
+      "id": "pipeline.python.batch_given_rows_1k",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 154257300.5,
+      "n": 30,
+      "samples": [
+        154781999.0,
+        154102310.0,
+        154236659.0,
+        154226361.0,
+        153343707.0,
+        152520718.0,
+        148439344.0,
+        153509294.0,
+        153566248.0,
+        154689222.0,
+        155330280.0,
+        148072054.0,
+        153593815.0,
+        155442189.0,
+        155184323.0,
+        149560765.0,
+        153540850.0,
+        154594877.0,
+        154126388.0,
+        183905959.0,
+        159683812.0,
+        155113988.0,
+        158405772.0,
+        149926232.0,
+        154693017.0,
+        154277942.0,
+        154637969.0,
+        156565679.0,
+        153588357.0,
+        157920584.0
+      ],
+      "p50": 154257300.5,
+      "p90": 157969102.8,
+      "p99": 176881536.37,
+      "stages": {
+        "tb.commit": 16019492.0,
+        "tb.decode": 4181019.0,
+        "tb.orm.plan": 1900545.5,
+        "tb.query.compile": 202331.0,
+        "tb.runtime.execute": 126681737.0,
+        "tb.sdk.entry": 1921952.0
+      }
+    },
+    {
+      "id": "pipeline.python.batch_given_rows_1k.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 6449.420496930885
+    },
+    {
+      "id": "pipeline.python.staged_mixed",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 15997573.5,
+      "n": 30,
+      "samples": [
+        14919012.0,
+        14804827.0,
+        17104927.0,
+        16077116.0,
+        16025053.0,
+        17164310.0,
+        14909023.0,
+        15000798.0,
+        15053706.0,
+        15927724.0,
+        16074432.0,
+        16027759.0,
+        16030190.0,
+        14901658.0,
+        14937027.0,
+        16008462.0,
+        15986685.0,
+        15974763.0,
+        19588943.0,
+        15633404.0,
+        15897173.0,
+        16047559.0,
+        15957893.0,
+        15967716.0,
+        15979882.0,
+        16030171.0,
+        17047310.0,
+        16038883.0,
+        18257156.0,
+        16994779.0
+      ],
+      "p50": 15997573.5,
+      "p90": 17110865.3,
+      "p99": 19202724.77,
+      "stages": {
+        "tb.commit": 2060498.0,
+        "tb.decode": 352602.0,
+        "tb.orm.plan": 224238.0,
+        "tb.query.compile": 103038.0,
+        "tb.runtime.execute": 12605747.5,
+        "tb.sdk.entry": 126570.5
+      }
+    },
+    {
+      "id": "pipeline.python.staged_mixed.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 62.19313634432737
+    },
+    {
+      "id": "pipeline.node.insert_one",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2559348.0,
+      "n": 30,
+      "samples": [
+        3180305.0,
+        2955938.0,
+        3086500.0,
+        3105960.0,
+        2137604.0,
+        2155911.0,
+        3069917.0,
+        2070594.0,
+        2095570.0,
+        2063480.0,
+        3253808.0,
+        2068715.0,
+        3184424.0,
+        3088040.0,
+        2099443.0,
+        2137947.0,
+        2059341.0,
+        2127770.0,
+        3195046.0,
+        3196786.0,
+        3093112.0,
+        2151335.0,
+        3112391.0,
+        2114701.0,
+        3169275.0,
+        2144908.0,
+        3143069.0,
+        3176783.0,
+        2162758.0,
+        2054290.0
+      ],
+      "p50": 2559348.0,
+      "p90": 3185486.2,
+      "p99": 3237271.62,
+      "stages": {
+        "tb.commit": 916374.0,
+        "tb.decode": 8535.5,
+        "tb.orm.plan": 56362.0,
+        "tb.query.compile": 23117.5,
+        "tb.runtime.execute": 1218546.5,
+        "tb.sdk.entry": 57713.0
+      }
+    },
+    {
+      "id": "pipeline.node.insert_one.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 381.40900138719724
+    },
+    {
+      "id": "pipeline.node.fetch_by_key",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 1962879.0,
+      "n": 30,
+      "samples": [
+        2961519.0,
+        2005424.0,
+        1972618.0,
+        2204748.0,
+        2151623.0,
+        2035515.0,
+        1943713.0,
+        1906688.0,
+        1854545.0,
+        1807746.0,
+        1902229.0,
+        1869619.0,
+        1904804.0,
+        1873890.0,
+        2070549.0,
+        2093468.0,
+        2026643.0,
+        1971517.0,
+        1979767.0,
+        1807003.0,
+        2070323.0,
+        2083236.0,
+        1944782.0,
+        2088027.0,
+        1983386.0,
+        1954241.0,
+        1862099.0,
+        1839101.0,
+        1874766.0,
+        1819016.0
+      ],
+      "p50": 1962879.0,
+      "p90": 2099283.5,
+      "p99": 2742055.4100000006,
+      "stages": {
+        "tb.decode": 4808.5,
+        "tb.orm.plan": 52702.5,
+        "tb.query.compile": 27854.5,
+        "tb.runtime.execute": 1603301.5,
+        "tb.sdk.entry": 58184.0
+      }
+    },
+    {
+      "id": "pipeline.node.fetch_by_key.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 501.1475862101223
+    },
+    {
+      "id": "pipeline.node.fetch_filtered",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 15204030.0,
+      "n": 30,
+      "samples": [
+        18508290.0,
+        15414556.0,
+        14944971.0,
+        15032544.0,
+        14882358.0,
+        15261198.0,
+        15017654.0,
+        14670441.0,
+        15200419.0,
+        14961632.0,
+        14875312.0,
+        15400197.0,
+        14727102.0,
+        15239526.0,
+        14845467.0,
+        15277101.0,
+        15000520.0,
+        15193549.0,
+        14817209.0,
+        15072009.0,
+        15761834.0,
+        15591277.0,
+        15594135.0,
+        15207641.0,
+        15030835.0,
+        16170942.0,
+        16572558.0,
+        15784021.0,
+        15679184.0,
+        15841558.0
+      ],
+      "p50": 15204030.0,
+      "p90": 15874496.4,
+      "p99": 17946927.720000003,
+      "stages": {
+        "tb.decode": 359132.0,
+        "tb.orm.plan": 55668.0,
+        "tb.query.compile": 40514.0,
+        "tb.runtime.execute": 14178428.0,
+        "tb.sdk.entry": 216036.5
+      }
+    },
+    {
+      "id": "pipeline.node.fetch_filtered.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 64.99470813086398
+    },
+    {
+      "id": "pipeline.node.update",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 3167222.0,
+      "n": 30,
+      "samples": [
+        3112640.0,
+        3143338.0,
+        3169246.0,
+        3187985.0,
+        3170946.0,
+        2056971.0,
+        3173885.0,
+        3209129.0,
+        3192980.0,
+        3121605.0,
+        2071488.0,
+        3192007.0,
+        3144553.0,
+        6429750.0,
+        3194439.0,
+        3167008.0,
+        2179133.0,
+        3054442.0,
+        4356103.0,
+        3112928.0,
+        3156905.0,
+        3129097.0,
+        2116497.0,
+        3162290.0,
+        3171079.0,
+        3185514.0,
+        3167436.0,
+        3181520.0,
+        3224518.0,
+        3164820.0
+      ],
+      "p50": 3167222.0,
+      "p90": 3210667.9,
+      "p99": 5828392.370000002,
+      "stages": {
+        "tb.commit": 1392944.0,
+        "tb.decode": 9846.5,
+        "tb.orm.plan": 70559.0,
+        "tb.query.compile": 41421.0,
+        "tb.runtime.execute": 1314342.0,
+        "tb.sdk.entry": 55482.0
+      }
+    },
+    {
+      "id": "pipeline.node.update.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 315.45657733903795
+    },
+    {
+      "id": "pipeline.node.delete",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2122973.5,
+      "n": 30,
+      "samples": [
+        3180468.0,
+        2131268.0,
+        2044689.0,
+        2076345.0,
+        2124398.0,
+        2175491.0,
+        3093432.0,
+        2041487.0,
+        3137009.0,
+        4280851.0,
+        2105727.0,
+        2505623.0,
+        2687132.0,
+        2104874.0,
+        3195425.0,
+        2106204.0,
+        2087319.0,
+        2072063.0,
+        3198651.0,
+        3043667.0,
+        2146370.0,
+        2052034.0,
+        2093265.0,
+        2099010.0,
+        2046489.0,
+        2121549.0,
+        2099320.0,
+        3150483.0,
+        3150210.0,
+        2114512.0
+      ],
+      "p50": 2122973.5,
+      "p90": 3181963.7,
+      "p99": 3967013.000000001,
+      "stages": {
+        "tb.commit": 576395.5,
+        "tb.decode": 5310.5,
+        "tb.orm.plan": 53810.5,
+        "tb.query.compile": 24312.0,
+        "tb.runtime.execute": 1219449.5,
+        "tb.sdk.entry": 51535.0
+      }
+    },
+    {
+      "id": "pipeline.node.delete.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 402.8718586150756
+    },
+    {
+      "id": "pipeline.node.batch_given_rows_1k",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 158102011.0,
+      "n": 30,
+      "samples": [
+        155826260.0,
+        158736669.0,
+        157976867.0,
+        156786530.0,
+        155735299.0,
+        157284816.0,
+        157499833.0,
+        159574566.0,
+        157696500.0,
+        158541116.0,
+        159236422.0,
+        159861499.0,
+        158525479.0,
+        155911579.0,
+        161293637.0,
+        157468605.0,
+        152873133.0,
+        155410380.0,
+        156134593.0,
+        217971108.0,
+        159085005.0,
+        153828755.0,
+        161021873.0,
+        158075607.0,
+        159728952.0,
+        160159152.0,
+        159301245.0,
+        154322443.0,
+        158128415.0,
+        173358990.0
+      ],
+      "p50": 158102011.0,
+      "p90": 161049049.4,
+      "p99": 205033593.78000003,
+      "stages": {
+        "tb.commit": 15974220.5,
+        "tb.decode": 4677290.0,
+        "tb.orm.plan": 2867431.0,
+        "tb.query.compile": 267385.5,
+        "tb.runtime.execute": 128289044.0,
+        "tb.sdk.entry": 1634839.5
+      }
+    },
+    {
+      "id": "pipeline.node.batch_given_rows_1k.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 6240.437403340617
+    },
+    {
+      "id": "pipeline.node.staged_mixed",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 17017237.0,
+      "n": 30,
+      "samples": [
+        15936516.0,
+        15983541.0,
+        15866701.0,
+        15927495.0,
+        15886907.0,
+        16049010.0,
+        17055800.0,
+        17102117.0,
+        16937864.0,
+        16019719.0,
+        16918985.0,
+        17025066.0,
+        17087854.0,
+        16978320.0,
+        17084374.0,
+        15949007.0,
+        19328998.0,
+        17042645.0,
+        18504755.0,
+        17787966.0,
+        17009408.0,
+        16956610.0,
+        19286790.0,
+        17070608.0,
+        17158939.0,
+        19269069.0,
+        18126509.0,
+        16986369.0,
+        18165476.0,
+        16904005.0
+      ],
+      "p50": 17017237.0,
+      "p90": 18581186.400000002,
+      "p99": 19316757.68,
+      "stages": {
+        "tb.commit": 2122743.0,
+        "tb.decode": 401176.0,
+        "tb.orm.plan": 382837.5,
+        "tb.query.compile": 138594.0,
+        "tb.runtime.execute": 13114322.5,
+        "tb.sdk.entry": 192056.5
+      }
+    },
+    {
+      "id": "pipeline.node.staged_mixed.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 58.43312475830721
+    },
+    {
+      "id": "pipeline.c.insert_one",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2126252.5,
+      "n": 30,
+      "samples": [
+        2134227.0,
+        2177709.0,
+        2095308.0,
+        2124606.0,
+        2210470.0,
+        2129571.0,
+        2061831.0,
+        2143322.0,
+        2113541.0,
+        2110931.0,
+        2106612.0,
+        2107393.0,
+        2199803.0,
+        2107890.0,
+        2050890.0,
+        2187459.0,
+        2141364.0,
+        2127899.0,
+        2103240.0,
+        2245207.0,
+        2129547.0,
+        2042140.0,
+        2116853.0,
+        2115674.0,
+        2162107.0,
+        2089620.0,
+        2161020.0,
+        2170862.0,
+        2155889.0,
+        2095215.0
+      ],
+      "p50": 2126252.5,
+      "p90": 2188693.4,
+      "p99": 2235133.27,
+      "stages": {
+        "tb.commit": 844160.5,
+        "tb.decode": 7703.5,
+        "tb.orm.plan": 62171.0,
+        "tb.query.compile": 29669.0,
+        "tb.runtime.execute": 1116388.0,
+        "tb.sdk.entry": 43664.0
+      }
+    },
+    {
+      "id": "pipeline.c.insert_one.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 469.3498878253768
+    },
+    {
+      "id": "pipeline.c.fetch_by_key",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 1595425.5,
+      "n": 30,
+      "samples": [
+        2367319.0,
+        2392643.0,
+        2598894.0,
+        2522690.0,
+        1574130.0,
+        1604683.0,
+        1615798.0,
+        1590709.0,
+        1528089.0,
+        1570666.0,
+        1646007.0,
+        1736354.0,
+        1576866.0,
+        1546645.0,
+        1509103.0,
+        1680973.0,
+        1507368.0,
+        1593555.0,
+        1596883.0,
+        1740519.0,
+        1585288.0,
+        1533975.0,
+        1589032.0,
+        1593388.0,
+        1695689.0,
+        1614234.0,
+        1646532.0,
+        1593968.0,
+        1632471.0,
+        1479448.0
+      ],
+      "p50": 1595425.5,
+      "p90": 2369851.4,
+      "p99": 2576794.84,
+      "stages": {
+        "tb.decode": 4047.0,
+        "tb.orm.plan": 51923.0,
+        "tb.query.compile": 27785.5,
+        "tb.runtime.execute": 1458832.5,
+        "tb.sdk.entry": 30795.5
+      }
+    },
+    {
+      "id": "pipeline.c.fetch_by_key.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 582.9326756091
+    },
+    {
+      "id": "pipeline.c.fetch_filtered",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 14218963.5,
+      "n": 30,
+      "samples": [
+        13563440.0,
+        14064691.0,
+        13891280.0,
+        13562316.0,
+        13278607.0,
+        13177442.0,
+        14786148.0,
+        15650352.0,
+        15655012.0,
+        14420694.0,
+        14075538.0,
+        14275800.0,
+        14512380.0,
+        14357774.0,
+        14309743.0,
+        14067989.0,
+        13972009.0,
+        14561335.0,
+        14105138.0,
+        14399557.0,
+        14133631.0,
+        14665033.0,
+        14196160.0,
+        14013422.0,
+        14112951.0,
+        14241767.0,
+        14466394.0,
+        14799701.0,
+        14311353.0,
+        14076467.0
+      ],
+      "p50": 14218963.5,
+      "p90": 14787503.3,
+      "p99": 15653660.6,
+      "stages": {
+        "tb.decode": 211063.0,
+        "tb.orm.plan": 72419.0,
+        "tb.query.compile": 40592.0,
+        "tb.runtime.execute": 13792088.5,
+        "tb.sdk.entry": 34040.5
+      }
+    },
+    {
+      "id": "pipeline.c.fetch_filtered.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 70.14194700633749
+    },
+    {
+      "id": "pipeline.c.update",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2125455.5,
+      "n": 30,
+      "samples": [
+        2107542.0,
+        2127084.0,
+        2138149.0,
+        2105166.0,
+        2082822.0,
+        2121415.0,
+        2112800.0,
+        2133402.0,
+        2136571.0,
+        2174306.0,
+        2116648.0,
+        2150754.0,
+        2100453.0,
+        2107104.0,
+        2123827.0,
+        2129540.0,
+        2134788.0,
+        2144700.0,
+        3059743.0,
+        2220834.0,
+        6028482.0,
+        3178404.0,
+        2100553.0,
+        2108297.0,
+        2139977.0,
+        2081654.0,
+        2103229.0,
+        2131163.0,
+        2094327.0,
+        2086541.0
+      ],
+      "p50": 2125455.5,
+      "p90": 2304724.9000000013,
+      "p99": 5201959.380000003,
+      "stages": {
+        "tb.commit": 693078.0,
+        "tb.decode": 8711.5,
+        "tb.orm.plan": 79885.5,
+        "tb.query.compile": 44333.5,
+        "tb.runtime.execute": 1222574.5,
+        "tb.sdk.entry": 50212.5
+      }
+    },
+    {
+      "id": "pipeline.c.update.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 431.156674790377
+    },
+    {
+      "id": "pipeline.c.delete",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 2118546.5,
+      "n": 30,
+      "samples": [
+        2052571.0,
+        2152495.0,
+        2136524.0,
+        2081228.0,
+        2087132.0,
+        2107177.0,
+        2117764.0,
+        2119329.0,
+        2097266.0,
+        2126481.0,
+        2080131.0,
+        2095227.0,
+        2145918.0,
+        2137499.0,
+        2102411.0,
+        2316235.0,
+        1951932.0,
+        2155187.0,
+        2251011.0,
+        1991645.0,
+        2119508.0,
+        2140270.0,
+        2132355.0,
+        2133071.0,
+        2111297.0,
+        2170931.0,
+        2103268.0,
+        2104847.0,
+        2176499.0,
+        2110268.0
+      ],
+      "p50": 2118546.5,
+      "p90": 2171487.8,
+      "p99": 2297320.04,
+      "stages": {
+        "tb.commit": 775697.5,
+        "tb.decode": 4051.0,
+        "tb.orm.plan": 58604.0,
+        "tb.query.compile": 28761.0,
+        "tb.runtime.execute": 1185684.5,
+        "tb.sdk.entry": 37516.0
+      }
+    },
+    {
+      "id": "pipeline.c.delete.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 471.6426655312865
+    },
+    {
+      "id": "pipeline.c.batch_given_rows_1k",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 152793824.0,
+      "n": 30,
+      "samples": [
+        154535521.0,
+        155556601.0,
+        150908626.0,
+        152337148.0,
+        151585966.0,
+        150404281.0,
+        150443254.0,
+        150982063.0,
+        151403317.0,
+        153752871.0,
+        153365972.0,
+        149421404.0,
+        156358786.0,
+        152147740.0,
+        154217753.0,
+        152843274.0,
+        152318457.0,
+        151503534.0,
+        152383454.0,
+        209525715.0,
+        153549821.0,
+        154531789.0,
+        156568646.0,
+        153916920.0,
+        151765549.0,
+        152489531.0,
+        154506370.0,
+        152975743.0,
+        152744374.0,
+        154698200.0
+      ],
+      "p50": 152793824.0,
+      "p90": 155636819.5,
+      "p99": 194168164.99000004,
+      "stages": {
+        "tb.commit": 15958924.0,
+        "tb.decode": 4518020.5,
+        "tb.orm.plan": 1960898.0,
+        "tb.query.compile": 205790.5,
+        "tb.runtime.execute": 126332497.0,
+        "tb.sdk.entry": 3322947.0
+      }
+    },
+    {
+      "id": "pipeline.c.batch_given_rows_1k.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 6460.306280364354
+    },
+    {
+      "id": "pipeline.c.staged_mixed",
+      "family": "pipeline",
+      "unit": "ns",
+      "value": 15978345.5,
+      "n": 30,
+      "samples": [
+        16043797.0,
+        15948751.0,
+        15041887.0,
+        14971944.0,
+        16131054.0,
+        15926866.0,
+        14963245.0,
+        15979283.0,
+        15935494.0,
+        14938877.0,
+        16088263.0,
+        16056240.0,
+        15980515.0,
+        15948387.0,
+        16004286.0,
+        17113843.0,
+        16027828.0,
+        15977408.0,
+        17624108.0,
+        16579076.0,
+        15967151.0,
+        16002944.0,
+        16053178.0,
+        14894408.0,
+        14833484.0,
+        17124917.0,
+        15942286.0,
+        16041444.0,
+        14969850.0,
+        15906370.0
+      ],
+      "p50": 15978345.5,
+      "p90": 16632552.700000001,
+      "p99": 17479342.61,
+      "stages": {
+        "tb.commit": 2097062.5,
+        "tb.decode": 361374.5,
+        "tb.orm.plan": 239858.5,
+        "tb.query.compile": 113674.0,
+        "tb.runtime.execute": 12574646.5,
+        "tb.sdk.entry": 232658.5
+      }
+    },
+    {
+      "id": "pipeline.c.staged_mixed.throughput",
+      "family": "pipeline",
+      "unit": "ops_per_s",
+      "value": 62.89081610946745
+    },
+    {
+      "id": "size.c_runtime.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 13425880
+    },
+    {
+      "id": "size.c_runtime_lib.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 36728952
+    },
+    {
+      "id": "size.cli_stripped.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 32390496
+    },
+    {
+      "id": "size.cli_unstripped.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 40702280
+    },
+    {
+      "id": "size.npm.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 16955861
+    },
+    {
+      "id": "size.server.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 29509456
+    },
+    {
+      "id": "size.wheel.bytes",
+      "family": "size",
+      "unit": "bytes",
+      "value": 21881520
+    },
+    {
+      "id": "suite.rust.wall",
+      "family": "suite",
+      "unit": "s",
+      "value": 1372.056739187
+    },
+    {
+      "id": "suite.python.wall",
+      "family": "suite",
+      "unit": "s",
+      "value": 73.7272541970001
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_core_sdist_req_2d4de8cc5a4a",
+      "family": "suite",
+      "unit": "s",
+      "value": 3.22
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_core_sdist_req_3dc17525c8a8",
+      "family": "suite",
+      "unit": "s",
+      "value": 3.18
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_release_set_re_f798e9b2d822",
+      "family": "suite",
+      "unit": "s",
+      "value": 3.03
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_exact_release__8a34f6c44c27",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.79
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_cli_writes_val_95d7b6dde4b5",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.78
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_sdist_metadata_7c55895b0030",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.73
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_sdist_metadata_c13167222e4b",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.73
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_core_sdist_rej_62ff5e7a1260",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.65
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_core_sdist_rej_a1f5247374c1",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.65
+    },
+    {
+      "id": "suite.python.slow.tests_unit_compat_test_python_release_artifact_validator_py__test_core_sdist_rej_d46f46f15029",
+      "family": "suite",
+      "unit": "s",
+      "value": 1.64
+    },
+    {
+      "id": "suite.node.wall",
+      "family": "suite",
+      "unit": "s",
+      "value": 6.375726355000097
+    },
+    {
+      "id": "suite.node.slow.documented_node_low_level_example_typechecks_and_executes_verbatim_4ab2d1c55473",
+      "family": "suite",
+      "unit": "s",
+      "value": 2.738573919
+    },
+    {
+      "id": "suite.node.slow.public_invocation_rows_are_count_and_aggregate_byte_bounded_before_materializati_b1f168e37098",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.051058828
+    },
+    {
+      "id": "suite.node.slow.queryv2error_takes_the_rust_diagnostic_json_forms_as_given_96efa72729ec",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.033376855
+    },
+    {
+      "id": "suite.node.slow.malformed_proxy_endpoints_and_headers_are_refused_by_name_be37bba96244",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.025045629000000003
+    },
+    {
+      "id": "suite.node.slow.v2_string_inputs_fail_at_their_semantic_byte_ceilings_a32d0b3e83c9",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.022451968
+    },
+    {
+      "id": "suite.node.slow.public_node_facade_matches_every_fixed_rust_authority_vector_aea03ae32777",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.021656578
+    },
+    {
+      "id": "suite.node.slow.both_transport_default_sets_are_exported_e6fb4a50c034",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.020848654
+    },
+    {
+      "id": "suite.node.slow.directly_loaded_addon_rejects_sharedarraybuffer_before_rust_borrowing_f1c0268ba59a",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.018716612
+    },
+    {
+      "id": "suite.node.slow.public_node_facade_preserves_every_complete_inventory_diagnostic_8989f8e425df",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.018482773
+    },
+    {
+      "id": "suite.node.slow.the_typescript_purchase_equals_the_rust_hand_built_purchase_byte_for_byte_14b35cc89350",
+      "family": "suite",
+      "unit": "s",
+      "value": 0.016292881999999998
+    }
+  ]
+}
