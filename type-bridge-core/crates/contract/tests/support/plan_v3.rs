@@ -52,6 +52,28 @@ pub fn semantics() -> ManagedSemanticSchemaFingerprint {
     .unwrap()
 }
 pub fn schema() -> DeclaredSchema {
+    declare(schema_facts())
+}
+
+/// The shared schema plus a duration attribute `shift` on `account`, for
+/// tests of the TypeDB 3.14 rules; kept out of the shared fixture schema.
+pub fn schema_with_duration() -> DeclaredSchema {
+    let mut facts = schema_facts();
+    let shift = AttributeId::new("shift").unwrap();
+    facts.push(SchemaFact::Type(
+        TypeFact::new(TypeId::new(TypeKind::Attribute, "shift").unwrap()).unwrap(),
+    ));
+    facts.push(SchemaFact::Value(ValueFact::new(
+        ValueFactId::new(shift.clone()),
+        ValueTypeTag::Duration,
+    )));
+    facts.push(SchemaFact::Owns(OwnsFact::new(
+        OwnsFactId::new(entity("account"), shift).unwrap(),
+    )));
+    declare(facts)
+}
+
+fn schema_facts() -> Vec<SchemaFact> {
     let mut facts = vec![
         SchemaFact::Type(TypeFact::new(entity("account")).unwrap()),
         SchemaFact::Type(TypeFact::new(entity("abstract_account")).unwrap()),
@@ -172,6 +194,10 @@ pub fn schema() -> DeclaredSchema {
     facts.push(SchemaFact::Owns(OwnsFact::new(
         OwnsFactId::new(entity("account"), balance).unwrap(),
     )));
+    facts
+}
+
+fn declare(facts: Vec<SchemaFact>) -> DeclaredSchema {
     DeclaredSchema::from_facts(
         FormatVersion::V1,
         CapabilitySet::new(),

@@ -251,7 +251,12 @@ Sort directions are `ascending`/`descending`. Select restricts scope; require
 makes visible optional bindings mandatory. Reduce exposes grouping bindings
 and fresh reduction results. Output and ordering must respect the resulting
 scope. Duplicate selected/output bindings and sort terms fail. Offset and limit require
-an explicit preceding sort.
+an explicit preceding sort. A sort term on a duration binding fails
+(`query_plan_sort_unordered_value`), and a `value` pattern that orders a
+duration operand with `less`, `less_or_equal`, `greater` or
+`greater_or_equal` fails (`query_plan_duration_range`): TypeDB 3.14 refuses
+both, so the builder refuses them on every profile before any server sees
+them. Equality on durations stays admitted.
 
 Rows output is `{"kind":"rows","columns":[B,...]}`. Documents output is
 `{"kind":"documents","fields":[{"key":"item","source":{"kind":"binding","binding":0}}]}`.

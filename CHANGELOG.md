@@ -17,6 +17,16 @@ All notable changes to TypeBridge will be documented in this file.
   `/v3/staged` is that call behind HTTP framing. The hook order is
   documented on the V3 interceptor hooks and pinned by a test.
 
+### Changed
+
+- TypeDB 3.14's query rules are refused at plan build on every profile and
+  in every language (#268): a sort on a duration (`query_plan_sort_unordered_value`,
+  V2 `query_plan_v2_sort_unordered_value`) and a range comparison of
+  durations (`query_plan_duration_range`, V2 `query_plan_v2_duration_range`).
+  On 3.12 and 3.13 these plans ran or crashed the server; on 3.14 they failed
+  at the server. `like`/`contains` on non-strings were already refused
+  (`query_plan_v2_string_operator_type`).
+
 ## [2.3.1] - 2026-10-23
 
 2.3.1 adds TypeDB 3.14 to the supported matrix (#268). Applications and

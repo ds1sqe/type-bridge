@@ -161,6 +161,15 @@ fn person_name(binding: u16) -> QueryFieldV2 {
     )
 }
 
+fn person_shift(binding: u16) -> QueryFieldV2 {
+    QueryFieldV2::new(
+        binding_id(binding),
+        type_id(TypeKind::Entity, "person"),
+        AttributeId::new("shift").expect("attribute"),
+        ValueTypeTag::Duration,
+    )
+}
+
 fn employment_code(binding: u16) -> QueryFieldV2 {
     QueryFieldV2::new(
         binding_id(binding),
@@ -925,6 +934,38 @@ fn v2_compatibility_invalid_edge_shapes_fail_before_encoding() {
         .as_str(),
         "query_plan_v2_string_operator_type",
     );
+    // TypeDB 3.14 refuses range comparisons of durations; the builder does
+    // on every profile.
+    assert_eq!(
+        build(QueryPlanV2Compatibility::new(
+            Some(QueryPatternV2::FieldComparison {
+                left: person_shift(0),
+                comparator: QueryComparatorV2::Greater,
+                right: person_shift(1),
+            }),
+            Vec::new(),
+            None,
+        ))
+        .expect_err("duration range")
+        .code()
+        .as_str(),
+        "query_plan_v2_duration_range",
+    );
+    assert_ne!(
+        build(QueryPlanV2Compatibility::new(
+            Some(QueryPatternV2::FieldComparison {
+                left: person_shift(0),
+                comparator: QueryComparatorV2::Equal,
+                right: person_shift(1),
+            }),
+            Vec::new(),
+            None,
+        ))
+        .err()
+        .map(|diagnostic| diagnostic.code().as_str().to_owned()),
+        Some("query_plan_v2_duration_range".to_owned()),
+        "duration equality is not the range refusal"
+    );
     assert_eq!(
         build(QueryPlanV2Compatibility::new(
             Some(QueryPatternV2::Or {
@@ -1303,6 +1344,21 @@ fn stable_order_terms_are_provable_from_their_public_response_slots() {
         .code()
         .as_str(),
         "query_plan_v2_duplicate_order_field",
+    );
+
+    // TypeDB 3.14 refuses sorts on unordered value types (3.13 panicked).
+    assert_eq!(
+        build(ModelQueryV2::Rows {
+            cardinality: QueryRowCardinalityV2::BoundedMany,
+            hydration: hydration(),
+            order: Some(stable_order(person_shift(0), 0)),
+            output: rich_output(),
+            window: QueryWindowV2::new(0, 10),
+        })
+        .expect_err("duration order term")
+        .code()
+        .as_str(),
+        "query_plan_v2_sort_unordered_value",
     );
 
     let hidden_collection_term = QueryStableOrderV2::new(

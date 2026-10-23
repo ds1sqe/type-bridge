@@ -368,3 +368,24 @@ fn builder_put_and_links_build() {
     assert_eq!(built.bindings()[2].variable().as_str(), "account_2");
     assert!(matches!(built.pipeline()[1], Stage::Put { .. }));
 }
+
+#[test]
+fn builder_refuses_typedb_3_14_query_rules_on_every_profile() {
+    // Every SDK's plan builder wraps this builder, so the refusal reaches
+    // every language from here.
+    let mut plan = PlanBuilder::new();
+    let account = plan.exact(entity("account"));
+    let shift = plan.field(account, attribute("shift"));
+    plan.compare(
+        QueryOperand::Binding { binding: shift },
+        ValueComparator::Greater,
+        QueryOperand::Binding { binding: shift },
+    );
+    assert_eq!(
+        plan.build(&schema_with_duration(), semantics())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_duration_range"
+    );
+}
