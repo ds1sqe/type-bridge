@@ -23,18 +23,23 @@ def touch(path: Path) -> None:
     path.write_bytes(b"x")
 
 
-def test_prune_drops_workspace_units_and_keeps_dependencies(tmp_path: Path) -> None:
+def test_prune_drops_workspace_executables_and_keeps_libraries(tmp_path: Path) -> None:
     debug = tmp_path / "debug"
     nested = tmp_path / "rule-wire-standalone" / "debug"
     for profile in (debug, nested):
-        # A workspace package: lib, test executable on Windows, build script.
+        # A workspace package: its library, unit-test and integration-test
+        # executables, and its build script.
         touch(profile / ".fingerprint/type-bridge-orm-aaa111/lib-type_bridge_orm")
         touch(profile / ".fingerprint/type-bridge-orm-bbb222/test-integration-test-serde")
-        touch(profile / "build/type-bridge-orm-ccc333/build-script-build")
+        touch(profile / ".fingerprint/type-bridge-orm-ggg777/test-lib-type_bridge_orm")
         touch(profile / ".fingerprint/type-bridge-orm-ccc333/build-script-build-script-build")
+        touch(profile / "build/type-bridge-orm-ccc333/build-script-build")
         touch(profile / "deps/libtype_bridge_orm-aaa111.rlib")
+        touch(profile / "deps/type_bridge_orm-aaa111.d")
         touch(profile / "deps/serde-bbb222.exe")
         touch(profile / "deps/serde-bbb222.pdb")
+        touch(profile / "deps/type_bridge_orm-ggg777")
+        touch(profile / "deps/type_bridge_orm-ggg777.dSYM/Contents/Info.plist")
         # A dependency that shares a name with the workspace bench `serde`.
         touch(profile / ".fingerprint/serde-ddd444/lib-serde")
         touch(profile / "build/serde-eee555/out/private.rs")
@@ -48,13 +53,12 @@ def test_prune_drops_workspace_units_and_keeps_dependencies(tmp_path: Path) -> N
     for profile in (debug, nested):
         removed = set(prune.doomed(profile, ["type-bridge-orm", "type-bridge-c"]))
         assert removed == {
-            profile / ".fingerprint/type-bridge-orm-aaa111",
             profile / ".fingerprint/type-bridge-orm-bbb222",
-            profile / ".fingerprint/type-bridge-orm-ccc333",
-            profile / "build/type-bridge-orm-ccc333",
-            profile / "deps/libtype_bridge_orm-aaa111.rlib",
+            profile / ".fingerprint/type-bridge-orm-ggg777",
             profile / "deps/serde-bbb222.exe",
             profile / "deps/serde-bbb222.pdb",
+            profile / "deps/type_bridge_orm-ggg777",
+            profile / "deps/type_bridge_orm-ggg777.dSYM",
             profile / "incremental",
             profile / "type-bridge.exe",
             profile / ".cargo-lock",

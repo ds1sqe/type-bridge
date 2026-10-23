@@ -243,8 +243,8 @@ jobs:
         working-directory: type-bridge-core
         run: cargo clippy --all-targets -- -D warnings
 
-      # The next build rebuilds the workspace's own crates anyway; keep only
-      # the compiled dependencies so the entry stays small.
+      # Drop the test, bench and example executables; keep every library so
+      # the next build recompiles only the crates a change touches.
       - name: Prune cargo target
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: python scripts/ci/prune_cargo_target.py type-bridge-core/target --manifest-path type-bridge-core/Cargo.toml
@@ -2670,8 +2670,8 @@ jobs:
         if: failure()
         run: docker logs ${{ job.services.typedb.id }} 2>&1 || true
 
-      # The next build rebuilds the workspace's own crates anyway; keep only
-      # the compiled dependencies so the entry stays small.
+      # Drop the test, bench and example executables; keep every library so
+      # the next build recompiles only the crates a change touches.
       - name: Prune cargo target
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: python scripts/ci/prune_cargo_target.py tmp/standalone-cli-artifact/build --manifest-path type-bridge-core/Cargo.toml
@@ -2742,8 +2742,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # The next build rebuilds the workspace's own crates anyway; keep only
-      # the compiled dependencies so the entry stays small.
+      # Drop the test, bench and example executables; keep every library so
+      # the next build recompiles only the crates a change touches.
       - name: Prune cargo target
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         run: python scripts/ci/prune_cargo_target.py tmp/c-package-artifacts/build/cargo --manifest-path type-bridge-core/Cargo.toml
