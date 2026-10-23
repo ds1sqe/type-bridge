@@ -1034,3 +1034,239 @@ async fn staged_deletion_snapshots_equal_direct_pre_images() {
     );
     drop_database(db).await;
 }
+
+/// Includes commit and answer materialization; setup is outside the timed region.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires TYPE_BRIDGE_COST_LIVE=1 and a live TypeDB"]
+async fn deletion_snapshot_cost_direct_and_staged() {
+    use std::time::Instant;
+    use type_bridge_orm::{GivenRowsSpec, GivenValue};
+
+    if std::env::var("TYPE_BRIDGE_COST_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    let (name, db) = seeded("delete_cost").await;
+    let proxy = proxy(&name, LivePolicy::default(), true).await;
+    let plans = [race::delete_doctors(), race::delete_doctors_returning()];
+    let mut samples = [[Vec::new(), Vec::new()], [Vec::new(), Vec::new()]];
+    // One warm-up and three measured runs; alternate operation order.
+    for run in 0..4 {
+        for (route, route_samples) in samples.iter_mut().enumerate() {
+            for operation in if run % 2 == 0 { [0, 1] } else { [1, 0] } {
+                let tx = db.transaction_context(TxType::Write).await.unwrap();
+                tx.query_with_rows(
+                    "given $name: string; insert $d isa doctor, has name == $name, has on-call true;",
+                    GivenRowsSpec {
+                        variables: vec!["name".into()],
+                        rows: (0..5000)
+                            .map(|index| vec![GivenValue::String(format!("cost-{index}"))])
+                            .collect(),
+                    },
+                )
+                .await
+                .unwrap();
+                tx.commit_classified().await.unwrap();
+                let plan = &plans[operation];
+                let (elapsed, answer) = if route == 0 {
+                    let mut transaction = db.transaction(TransactionOptions::default());
+                    let pending = transaction.stage_plan(plan).unwrap();
+                    let started = Instant::now();
+                    transaction.commit().await.unwrap();
+                    let answer = pending.get().unwrap().to_staged_v3(plan).unwrap();
+                    (started.elapsed().as_secs_f64(), answer)
+                } else {
+                    let request = request(&proxy, vec![plain_entry(&proxy, plan)]);
+                    let started = Instant::now();
+                    let reply = verify(&proxy, &request, &post(&proxy, &request).await);
+                    assert!(reply.committed(), "{:?}", reply.diagnostic());
+                    (started.elapsed().as_secs_f64(), reply.answers()[0].clone())
+                };
+                match answer {
+                    StagedAnswerV3::Documents { documents } => assert_eq!(documents.len(), 5000),
+                    StagedAnswerV3::Matched { value } => assert_eq!(value, 5000),
+                    _ => panic!("unexpected deletion answer"),
+                }
+                let remaining = db
+                    .execute_raw(
+                        "match $d isa doctor; fetch { \"iid\": iid($d) };",
+                        TxType::Read,
+                    )
+                    .await
+                    .unwrap();
+                assert!(
+                    matches!(remaining, type_bridge_orm::session::backend::QueryResult::Documents(documents) if documents.is_empty())
+                );
+                if run != 0 {
+                    route_samples[operation].push(elapsed);
+                }
+            }
+        }
+    }
+    for (route, mut samples) in samples.into_iter().enumerate() {
+        for values in &mut samples {
+            values.sort_by(f64::total_cmp);
+        }
+        let plain = samples[0][1];
+        let returning = samples[1][1];
+        println!(
+            "delete-cost route={} rows=5000 runs=3 plain_median_s={plain:.6} returning_median_s={returning:.6} overhead_percent={:.2}",
+            if route == 0 {
+                "direct"
+            } else {
+                "staged-router"
+            },
+            (returning / plain - 1.0) * 100.0
+        );
+    }
+    drop_database(db).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB"]
+async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
+    use type_bridge_contract::query_remote::RemoteFieldValue;
+    let (name, db) = seeded("delete_subtypes").await;
+    db.execute_raw(
+        "define entity doctor-report sub doctor; entity doctor-memo sub doctor;",
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    db.execute_raw(
+        "insert $a isa doctor-report, has name \"report\", has on-call true; $b isa doctor-memo, has name \"memo\", has on-call true;",
+        TxType::Write,
+    ).await.unwrap();
+    db.execute_raw(
+        "match $a isa account; $i isa item; insert $p isa purchase, links (buyer: $a, item: $i), has order-id \"snapshot\";",
+        TxType::Write,
+    ).await.unwrap();
+    let proxy = staged_live::proxy_with(
+        &name,
+        LivePolicy::default(),
+        true,
+        race::deletion_subtype_schema(),
+        "delete-subtypes",
+    )
+    .await;
+    let plans = [
+        race::delete_doctor_subtypes_returning(),
+        race::delete_purchases_returning(true),
+    ];
+    let mut direct = db.transaction(TransactionOptions::default().with_never_commit(true));
+    let pending = plans
+        .iter()
+        .map(|plan| direct.stage_plan(plan).unwrap())
+        .collect::<Vec<_>>();
+    direct.commit().await.unwrap();
+    let mut expected = pending
+        .iter()
+        .zip(&plans)
+        .map(|(pending, plan)| pending.get().unwrap().to_staged_v3(plan).unwrap())
+        .collect::<Vec<_>>();
+    let StagedAnswerV3::Documents { documents } = &expected[0] else {
+        panic!("expected subtype snapshots")
+    };
+    let mut labels = documents
+        .iter()
+        .map(|document| {
+            let RemoteFieldValue::Scalar {
+                value: CanonicalValue::String(label),
+            } = &document["_type"]
+            else {
+                panic!("expected exact type")
+            };
+            label.as_str().to_owned()
+        })
+        .collect::<Vec<_>>();
+    labels.sort();
+    assert_eq!(labels, ["doctor-memo", "doctor-report"]);
+    let StagedAnswerV3::Documents { documents } = &expected[1] else {
+        panic!("expected relation snapshot")
+    };
+    assert_eq!(documents.len(), 1);
+    for (index, label, attributes) in [
+        (
+            0,
+            "account",
+            vec![
+                ("account-id", text("A1").unwrap()),
+                ("balance", CanonicalValue::Long(100)),
+            ],
+        ),
+        (
+            1,
+            "item",
+            vec![
+                ("item-id", text("I1").unwrap()),
+                ("stock", CanonicalValue::Long(1)),
+                ("price", CanonicalValue::Long(40)),
+            ],
+        ),
+    ] {
+        let RemoteFieldValue::Scalar {
+            value: CanonicalValue::String(iid),
+        } = &documents[0][&format!("_role_{index}_iid")]
+        else {
+            panic!("expected a present player IID")
+        };
+        assert!(type_bridge_contract::id::is_canonical_thing_iid(
+            iid.as_str()
+        ));
+        assert_eq!(
+            documents[0][&format!("_role_{index}_type")],
+            RemoteFieldValue::Scalar {
+                value: text(label).unwrap()
+            }
+        );
+        let RemoteFieldValue::Document { fields } =
+            &documents[0][&format!("_role_{index}_attributes")]
+        else {
+            panic!("expected stored player attributes")
+        };
+        for (name, expected) in attributes {
+            match &fields[name] {
+                RemoteFieldValue::Scalar { value } => assert_eq!(value, &expected),
+                RemoteFieldValue::List { values } => assert_eq!(values, &[expected]),
+                _ => panic!("expected a present player attribute: {name}"),
+            }
+        }
+    }
+    let deletion = request(
+        &proxy,
+        plans.iter().map(|plan| plain_entry(&proxy, plan)).collect(),
+    );
+    let reply = verify(&proxy, &deletion, &post(&proxy, &deletion).await);
+    assert!(reply.committed(), "{:?}", reply.diagnostic());
+    let mut actual = reply.answers().to_vec();
+    // This plan has no ordering stage; compare the complete document sets.
+    for answers in [&mut expected, &mut actual] {
+        for answer in answers {
+            if let StagedAnswerV3::Documents { documents } = answer {
+                documents.sort_by_cached_key(|document| serde_json::to_string(document).unwrap());
+            }
+        }
+    }
+    assert_eq!(actual, expected);
+    let absent = request(
+        &proxy,
+        plans.iter().map(|plan| plain_entry(&proxy, plan)).collect(),
+    );
+    let reply = verify(&proxy, &absent, &post(&proxy, &absent).await);
+    assert!(reply.committed());
+    assert!(reply.answers().iter().all(
+        |answer| matches!(answer, StagedAnswerV3::Documents { documents } if documents.is_empty())
+    ));
+    for label in ["account", "item"] {
+        let answer = db
+            .execute_raw(
+                &format!("match $p isa {label}; fetch {{ \"iid\": iid($p) }};"),
+                TxType::Read,
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(answer, type_bridge_orm::session::backend::QueryResult::Documents(documents) if documents.len() == 1)
+        );
+    }
+    drop_database(db).await;
+}

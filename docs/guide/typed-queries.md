@@ -281,6 +281,132 @@ shapes, all reducers, and binding/field/tuple-field grouping. Reduction replies
 echo the exact root, grouping, and reducer contract and are authenticated before
 materialization through the same projection as direct execution.
 
+### Deletion snapshots
+
+Use `delete_returning` when you need the stored values of the things being
+deleted. Plain `delete` keeps its existing return value and execution path.
+The returning operation captures the matching things, then deletes them in the
+same transaction. A failure does not return a successful deletion snapshot.
+Deleting a relation captures its players without deleting those players.
+
+#### 1. Code
+
+These exact-type manager calls return a fresh model hydrated from the database,
+rather than the object passed by the application:
+
+```python
+people = Person.manager(db)                       # ProjectedModelManager[Person]
+deleted = people.delete_returning(person)         # Person; raises if absent
+snapshots = people.delete_many_returning(others)  # list[Person]; omits absent things
+assert deleted.deleted
+```
+
+```typescript
+const people = Person.manager(database);                // ProjectedModelManager<Person>
+const deleted: Person | null = people.deleteReturning(iid);
+const snapshots: readonly Person[] = people.deleteManyReturning(iids);
+```
+
+```rust
+let people = database.entities::<Person>();
+let deleted: Option<Person> = people.delete_returning(iid).await?;
+let snapshots: Vec<Person> = people.delete_many_returning(&iids).await?;
+assert!(deleted.as_ref().is_none_or(Person::deleted));
+```
+
+Batch snapshots preserve input order and omit missing things. Rust and the
+native single-IID interfaces return an optional value for absence; the Python
+instance manager raises `ProjectedModelNotFoundError`. A returned deleted root
+cannot be submitted for another mutation: it is refused with `thing_deleted`.
+A surviving relation player remains usable. Python exposes `deleted`; generated
+Rust models and their subtype-family enums expose `deleted()`.
+
+A manager bound to an existing transaction returns its snapshot without
+committing that transaction. The caller must still commit; receiving the
+snapshot does not prove that the deletion was committed. Staged-plan answers
+become available only after the staged transaction completes successfully.
+
+#### 2. Plan
+
+The core snapshot construct is a fetch immediately before the terminal delete.
+This abbreviated plan shows the operation and answer shape; bindings, authority,
+inputs and the exact match are omitted:
+
+```json
+{
+  "pipeline": [
+    {"kind": "match", "patterns": ["exact type and requested identity"]},
+    {"kind": "fetch", "thing": 0, "roles": []},
+    {"kind": "delete", "items": [{"kind": "thing", "binding": 0}]}
+  ],
+  "operation": {"kind": "write", "returns": "rows"},
+  "output": {"kind": "rows", "columns": []}
+}
+```
+
+Such a plan requires `query.write.delete-snapshot`. A relation capture includes
+its declared roles; hydration combines player evidence into one snapshot per
+root. A subtype-inclusive plan retains each root's concrete `_type`. Manager
+calls above select their exact type; they do not implicitly delete subtypes.
+
+#### 3. TypeQL
+
+The batch entity path transports the ordinal and IID as given rows. Its capture
+statement has this shape, followed by deletion on the same transaction:
+
+```typeql
+given $ordinal: integer, $target-iid: string;
+match
+$thing isa! person;
+let $actual-iid = iid($thing);
+$actual-iid == $target-iid;
+$thing isa! $thing-type;
+fetch {
+  "ordinal": $ordinal,
+  "_iid": iid($thing),
+  "_type": label($thing-type),
+  "attributes": { $thing.* }
+};
+```
+
+```typeql
+given $ordinal: integer, $target-iid: string;
+match
+try {
+  $thing isa! person;
+  let $actual-iid = iid($thing);
+  $actual-iid == $target-iid;
+};
+delete try { $thing; };
+select $ordinal;
+fetch { "ordinal": $ordinal };
+```
+
+#### 4. Result and cost
+
+The capture's `_type` selects the generated model; `_iid` supplies its identity,
+and `attributes` supplies its stored fields. The returned Python `Person` or
+Rust `Person` is marked deleted. For example, a stored age of 18 remains 18 in
+the snapshot even if the caller changed its local object's age to 99 without
+saving it. For a subtype-inclusive core plan, `_type: "report"` and
+`_type: "memo"` hydrate the corresponding concrete document types.
+
+Capturing data adds work that plain deletion does not perform. On TypeDB
+3.14.0, deleting 5,000 entities through the same subtype-inclusive filter gave
+these medians:
+
+| Execution route | Plain delete | Snapshot delete | Overhead |
+| --- | ---: | ---: | ---: |
+| Direct staged transaction | 0.450 s | 1.366 s | +203% |
+| In-process staged proxy router | 0.515 s | 3.366 s | +553% |
+
+Each median uses three measured runs after one warm-up, alternating plain and
+snapshot deletion. Timing includes commit and answer materialization; seeding
+and absence checks are excluded. The proxy measurement includes request/reply
+encoding, signing and verification through `/v3/staged`, but excludes external
+TCP/TLS transport. These are local measurements, not a latency guarantee.
+Snapshot overhead is measured and documented; it is not subject to a +10% gate.
+
 ### Staged transactions and plans in Python
 
 A plan is one typed `query-plan/v3` pipeline: a match with comparisons and

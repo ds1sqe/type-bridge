@@ -237,7 +237,7 @@ exactly the fetched thing. Write prefixes are refused because executing the
 prefix for both capture and deletion would repeat mutations. Existing plain
 delete plans, answers and fingerprints are unchanged.
 
-`query.write.attach` and `query.fetch.thing` are advertised by
+`query.write.attach`, `query.fetch.thing` and `query.write.delete-snapshot` are advertised by
 `GET /v3/capabilities` and admitted on the staged route. Fetch answers use
 schema-validated document evidence. The fixtures `attach.json`,
 `replace_players.json` (players deletion then attach), `fetch_entity.json`
@@ -359,7 +359,8 @@ produce a different plan digest.
 Recompute the sorted union from syntax. V3 includes `query.plan.v3`; released
 read syntax also derives `query.plan`. New stages add `query.write.insert`,
 `query.write.put`, `query.write.update`, `query.write.delete`,
-`query.write.attach` and `query.fetch.thing`. Let adds `query.let`; an iid
+`query.write.attach` and `query.fetch.thing`. A fetch immediately before its
+terminal delete also requires `query.write.delete-snapshot`. Let adds `query.let`; an iid
 pattern adds `query.pattern.iid`; expression operators/builtins add
 `query.expr.` plus their exact wire name, including `query.expr.length`.
 

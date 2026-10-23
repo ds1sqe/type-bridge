@@ -440,10 +440,10 @@ fn fetch_doc(iid: &str, position: &str, worker_iid: &str, worker_name: &str) -> 
     serde_json::json!({
         "_iid": iid,
         "_type": "assignment",
-        "attributes": {"position": [position]},
+        "attributes": {"position": position},
         "_role_0_iid": worker_iid,
         "_role_0_type": "person",
-        "_role_0_attributes": {"name": [worker_name]}
+        "_role_0_attributes": {"name": worker_name}
     })
 }
 
@@ -460,7 +460,7 @@ fn person_fetch(iid: &str, name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "person",
-        "attributes": {"name": [name]}
+        "attributes": {"name": name}
     })]))
 }
 
@@ -798,12 +798,12 @@ async fn public_relation_insert_without_a_written_row_rolls_back() {
 }
 
 #[tokio::test]
-async fn public_relation_hydration_failure_rolls_back() {
+async fn public_relation_document_validation_failure_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
         serde_json::json!({
             "_iid": "0x1",
             "_type": "assignment",
-            "attributes": {"position": ["p"]},
+            "attributes": {"position": "p"},
             "_role_0_iid": "0x9",
             "_role_0_type": "person",
             "_role_0_attributes": {"bogus": ["x"]}
@@ -814,14 +814,13 @@ async fn public_relation_hydration_failure_rolls_back() {
         .insert(create("p", "0x9"))
         .await
         .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "invalid_player_attributes",
-        &["worker[0]", "attributes"],
-    );
+    // The shared plan decoder rejects an undeclared player attribute before hydration.
+    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
     let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Rollback)));
+    assert!(matches!(
+        guard.events.as_slice(),
+        [Event::Open(TxType::Write), Event::Query(_), Event::Rollback]
+    ));
 }
 
 #[tokio::test]

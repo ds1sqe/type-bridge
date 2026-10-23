@@ -11,6 +11,13 @@ All notable changes to TypeBridge will be documented in this file.
 - Fetch documents on direct and staged query-plan execution, with schema-derived
   validation, bounded answers, and Python, TypeScript and Rust answer variants.
 - The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.
+- Opt-in deletion snapshots: a fetch immediately before a terminal delete
+  captures documents in the same transaction and requires
+  `query.write.delete-snapshot`. Plain deletion keeps its existing behavior.
+- `delete_returning` and `delete_many_returning` in Rust and Python, and
+  `deleteReturning` / `deleteManyReturning` in generated TypeScript managers.
+  Snapshots retain stored fields and relation players; deleted roots refuse
+  further mutation with `thing_deleted`.
 
 ### Breaking
 

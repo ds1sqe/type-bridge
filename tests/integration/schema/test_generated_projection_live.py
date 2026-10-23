@@ -2805,6 +2805,69 @@ def test_sdk_serialization_live(
     person_manager.delete(person)
 
 
+def test_generated_delete_returning_preserves_stored_values_and_players_live(
+    clean_db: Database,
+    generated_package: ModuleType,
+) -> None:
+    generated = generated_package
+    _, provider_schema, _ = _acceptance_contract(clean_db)
+    clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")
+    people = generated.Person.manager(clean_db)
+    memberships = generated.Membership.manager(clean_db)
+    person = _make_generated_person(generated, "delete-snapshot", 17)
+    people.insert(person)
+    relation = generated.Membership(member=person)
+    memberships.insert(relation)
+
+    deleted_relation = memberships.delete_returning(relation)
+    assert type(deleted_relation) is generated.Membership
+    assert deleted_relation is not relation
+    assert deleted_relation.deleted is True
+    assert deleted_relation.member.iid == person.iid
+    assert memberships.get_by_iid(relation.iid) is None
+    assert people.get_by_iid(person.iid) is not None
+    assert deleted_relation.member.deleted is False
+    assert memberships.delete(relation) is relation
+
+    person.score = generated.Score(99)
+    deleted_person = people.delete_returning(person)
+    assert type(deleted_person) is generated.Person
+    assert deleted_person is not person
+    assert deleted_person.deleted is True
+    assert deleted_person.score.value == 17
+    assert people.get_by_iid(person.iid) is None
+    assert people.delete_many_returning([person]) == []
+    with pytest.raises(ValueError, match="thing_deleted"):
+        deleted_person.score = generated.Score(30)
+    with pytest.raises(ValueError, match="thing_deleted"):
+        people.delete(deleted_person)
+    with pytest.raises(ValueError, match="thing_deleted"):
+        memberships.delete(deleted_relation)
+
+    batch_people = [
+        _make_generated_person(generated, "delete-snapshot-batch-a", 20),
+        _make_generated_person(generated, "delete-snapshot-batch-b", 21),
+    ]
+    people.insert_many(batch_people)
+    for batch_person in batch_people:
+        batch_person.score = generated.Score(99)
+    deleted_batch = people.delete_many_returning([batch_people[1], person, batch_people[0]])
+    assert [snapshot.iid for snapshot in deleted_batch] == [
+        batch_people[1].iid,
+        batch_people[0].iid,
+    ]
+    assert [snapshot.score.value for snapshot in deleted_batch] == [21, 20]
+    for snapshot, original in zip(deleted_batch, reversed(batch_people), strict=True):
+        assert type(snapshot) is generated.Person
+        assert snapshot is not original
+        assert snapshot.deleted is True
+        assert people.get_by_iid(snapshot.iid) is None
+        with pytest.raises(ValueError, match="thing_deleted"):
+            snapshot.score = generated.Score(30)
+        with pytest.raises(ValueError, match="thing_deleted"):
+            people.delete(snapshot)
+
+
 def test_generated_package_preserves_application_operation_outcomes_live(
     clean_db: Database,
     generated_package: ModuleType,

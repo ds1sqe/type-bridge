@@ -588,6 +588,68 @@ where
         Ok(output)
     }
 
+    /// Delete an exact model and return its pre-delete snapshot, or `None` when absent.
+    pub async fn delete_returning(&self, iid: &str) -> Result<Option<M>> {
+        Ok(self.delete_many_returning(&[iid.to_owned()]).await?.pop())
+    }
+
+    /// Atomically delete exact models and return existing snapshots in input order.
+    /// Pre-hooks run before provider work; post-hooks run after commit.
+    pub async fn delete_many_returning(&self, iids: &[String]) -> Result<Vec<M>> {
+        validate_binding_row_count(iids.len())?;
+        let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
+        let (id, _) = resolve_entity_authority(
+            M::TYPE_ID_JSON,
+            installed,
+            ModelValidationPhase::Input,
+            true,
+        )?;
+        let batch = prepare_batch(
+            installed,
+            id,
+            ProjectedBatchOperation::Delete,
+            delete_rows(iids)?,
+        )?;
+        let mut states = reserved_binding_vec(iids.len())?;
+        if self.hooks.has_hooks() {
+            for (ordinal, iid) in iids.iter().enumerate() {
+                states.push(
+                    self.hooks
+                        .run_pre(
+                            M::TYPE_ID_JSON,
+                            ModelKind::Entity,
+                            CrudOperation::Delete,
+                            Some(iid),
+                            None,
+                        )
+                        .await
+                        .map_err(|error| {
+                            error.with_projected_batch_row(checked_batch_ordinal(ordinal))
+                        })?,
+                );
+            }
+        }
+        let snapshots = crate::projected_batch::execute_owned_deleted_things(
+            self.db.inner_orm(),
+            installed,
+            &batch,
+        )
+        .await?;
+        for (iid, state) in iids.iter().zip(states) {
+            self.hooks
+                .run_post(
+                    M::TYPE_ID_JSON,
+                    ModelKind::Entity,
+                    CrudOperation::Delete,
+                    Some(iid),
+                    None,
+                    state,
+                )
+                .await;
+        }
+        Ok(snapshots)
+    }
+
     /// Deletes only the exact model at canonical `iid`; subtype instances are not targeted.
     pub async fn delete(&self, iid: &str) -> Result<()> {
         if !is_canonical_thing_iid(iid) {

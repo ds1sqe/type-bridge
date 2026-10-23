@@ -84,6 +84,7 @@ class RustTypeDBManager[T: "TypeDBType"]:
         self._hook_runner.remove(hook)
 
     def insert(self, instance: T) -> T:
+        instance._require_live()
         self._run_pre(CrudEvent.PRE_INSERT, instance)
         if isinstance(instance, Entity):
             attributes = normalize_attributes(self.model_class, instance.to_dict())
@@ -117,6 +118,7 @@ class RustTypeDBManager[T: "TypeDBType"]:
         return RustTypeDBQuery(self, filters).count()
 
     def delete(self, instance: T) -> T:
+        instance._require_live()
         iid = self._resolve_delete_iid(instance)
         if iid is None:
             return instance
@@ -132,6 +134,7 @@ class RustTypeDBManager[T: "TypeDBType"]:
         resolved: list[tuple[T, str]] = []
         missing: list[T] = []
         for instance in instances:
+            instance._require_live()
             iid = self._resolve_delete_iid(instance)
             if iid is None:
                 missing.append(instance)
@@ -149,7 +152,39 @@ class RustTypeDBManager[T: "TypeDBType"]:
         self._run_post_many(CrudEvent.POST_DELETE, [instance for instance, _ in resolved])
         return [instance for instance, _ in resolved]
 
+    def delete_returning(self, instance: T) -> T:
+        """Delete an instance and return its hydrated, read-only snapshot."""
+        snapshots = self.delete_many_returning([instance])
+        if not snapshots:
+            from type_bridge.crud.exceptions import EntityNotFoundError
+
+            raise EntityNotFoundError("entity not found")
+        return snapshots[0]
+
+    def delete_many_returning(self, instances: list[T]) -> list[T]:
+        """Atomically delete instances and return existing snapshots in input order."""
+        resolved: list[tuple[T, str]] = []
+        for instance in instances:
+            instance._require_live()
+            iid = self._resolve_delete_iid(instance)
+            if iid is not None:
+                resolved.append((instance, iid))
+        if not resolved:
+            return []
+        self._run_pre_many(CrudEvent.PRE_DELETE, [instance for instance, _ in resolved])
+        rows = self._manager.delete_many_returning([iid for _, iid in resolved])
+        snapshots = (
+            self._hydrate_relation_rows(rows)
+            if self._kind == "relation"
+            else [self._hydrate_entity(row) for row in rows]
+        )
+        for snapshot in snapshots:
+            snapshot._mark_deleted()
+        self._run_post_many(CrudEvent.POST_DELETE, snapshots)
+        return snapshots
+
     def update(self, instance: T) -> T:
+        instance._require_live()
         self._run_pre(CrudEvent.PRE_UPDATE, instance)
         if isinstance(instance, Entity):
             attributes = normalize_attributes(self.model_class, instance.to_dict())
@@ -179,6 +214,7 @@ class RustTypeDBManager[T: "TypeDBType"]:
         raise TypeError(f"Unsupported instance type: {type(instance)}")
 
     def put(self, instance: T) -> T:
+        instance._require_live()
         self._run_pre(CrudEvent.PRE_PUT, instance)
         if isinstance(instance, Entity):
             attributes = normalize_attributes(self.model_class, instance.to_dict())

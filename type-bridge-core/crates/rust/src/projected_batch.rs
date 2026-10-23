@@ -120,12 +120,48 @@ pub(crate) async fn execute_owned_things<M: CompleteModel>(
         .map_err(map_execution_error)
 }
 
+pub(crate) async fn execute_owned_deleted_things<M: CompleteModel>(
+    database: &Database,
+    installed: &InstalledRuntimeProjection,
+    batch: &ProjectedBatch,
+) -> Result<Vec<M>> {
+    ProjectedBatchExecutor::new(installed)
+        .returning_deleted()
+        .execute_mapped(
+            database,
+            batch,
+            database_control(database),
+            Vec::new(),
+            |result| materialize_result(result, installed),
+        )
+        .await
+        .map_err(map_execution_error)
+}
+
 pub(crate) async fn execute_borrowed_things<M: CompleteModel>(
     transaction: &TransactionContext,
     installed: &InstalledRuntimeProjection,
     batch: &ProjectedBatch,
 ) -> Result<Vec<M>> {
     ProjectedBatchExecutor::new(installed)
+        .execute_in_transaction_mapped(
+            transaction,
+            batch,
+            transaction_control(transaction),
+            Vec::new(),
+            |result| materialize_result(result, installed),
+        )
+        .await
+        .map_err(map_execution_error)
+}
+
+pub(crate) async fn execute_borrowed_deleted_things<M: CompleteModel>(
+    transaction: &TransactionContext,
+    installed: &InstalledRuntimeProjection,
+    batch: &ProjectedBatch,
+) -> Result<Vec<M>> {
+    ProjectedBatchExecutor::new(installed)
+        .returning_deleted()
         .execute_in_transaction_mapped(
             transaction,
             batch,

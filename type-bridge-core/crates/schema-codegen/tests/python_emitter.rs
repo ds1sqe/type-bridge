@@ -479,6 +479,29 @@ fn emits_exact_deterministic_compound_package_with_migration_resource() {
                 .find("# Projection-owned dependency-first SCC link phase.")
                 .unwrap()
     );
+    // Unordered snapshots also retain native proofs through weak references.
+    for (declaration, slots) in [
+        ("Person(_Entity)", "(\"__weakref__\",)"),
+        ("PersonRef(_Reference)", "(\"__weakref__\",)"),
+        ("Membership(_Relation)", "(\"__weakref__\",)"),
+        ("MembershipRef(_Reference)", "(\"__weakref__\",)"),
+        ("Employment(Membership)", "()"),
+        ("EmploymentRef(MembershipRef)", "()"),
+    ] {
+        let body = source
+            .split_once(&format!("class {declaration}:\n"))
+            .unwrap()
+            .1;
+        let actual = body
+            .lines()
+            .find(|line| line.contains("__slots__ ="))
+            .unwrap();
+        assert_eq!(
+            actual.trim(),
+            format!("__slots__ = {slots}"),
+            "{declaration}"
+        );
+    }
     assert!(source.contains("class PlayerStats(_StructValue):"));
     assert!(
         source
@@ -542,6 +565,26 @@ entities:
     assert!(source.contains(&format!("class Person(Actor):\n    {documentation}")));
     assert!(source.contains(&format!("class PersonRef(ActorRef):\n    {documentation}")));
     assert!(stub.contains(&format!("class Person(Actor):\n    {documentation}")));
+    for (declaration, slots) in [
+        ("Actor(_Entity)", "(\"__weakref__\",)"),
+        ("ActorRef(_Reference)", "(\"__weakref__\",)"),
+        ("Person(Actor)", "()"),
+        ("PersonRef(ActorRef)", "()"),
+    ] {
+        let body = source
+            .split_once(&format!("class {declaration}:\n"))
+            .unwrap()
+            .1;
+        let actual = body
+            .lines()
+            .find(|line| line.contains("__slots__ ="))
+            .unwrap();
+        assert_eq!(
+            actual.trim(),
+            format!("__slots__ = {slots}"),
+            "{declaration}"
+        );
+    }
 }
 
 #[test]

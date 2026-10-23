@@ -70,6 +70,27 @@ class TypeDBType(BaseModel, ABC):
 
     # TypeDB internal ID - treated as private attribute by Pydantic
     _iid: str | None = PrivateAttr(default=None)
+    _deleted: bool = PrivateAttr(default=False)
+
+    @property
+    def deleted(self) -> bool:
+        """Whether this model is a read-only pre-delete snapshot."""
+        return self._deleted
+
+    def _require_live(self) -> None:
+        if self.deleted:
+            raise ValueError("thing_deleted: a deleted snapshot cannot be mutated")
+
+    def _mark_deleted(self) -> None:
+        private = self.__pydantic_private__
+        if private is None:
+            raise RuntimeError("Pydantic private storage is unavailable")
+        private["_deleted"] = True
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in type(self).model_fields and self.__pydantic_private__:
+            self._require_live()
+        super().__setattr__(name, value)
 
     @classmethod
     @abstractmethod

@@ -788,6 +788,7 @@ fn render_read(projection: &RuntimeProjection, ordered: bool) -> Result<String, 
             for member in &members {
                 render_getter(&mut output, member);
             }
+            output.push_str("  /// Whether this model is a pre-delete snapshot.\n  #[must_use]\n  pub fn deleted(&self) -> bool { self.__tb_origin.deleted() }\n");
             output.push_str("}\n\n");
 
             let mut exp_fields = Vec::new();
@@ -1401,15 +1402,20 @@ fn render_families(projection: &RuntimeProjection) -> Result<String, Diagnostic>
         );
         let _ = writeln!(output, "impl {family_name} {{");
         if is_thing_family {
-            output.push_str("  #[must_use]\n  pub fn iid(&self) -> &str {\n    match self {\n");
-            for descendant in &descendants {
-                let variant_name = descendant.target_name().as_str();
+            for (getter, result) in [("iid", "&str"), ("deleted", "bool")] {
                 let _ = writeln!(
                     output,
-                    "      Self::{variant_name}(__tb_inner) => __tb_inner.iid(),"
+                    "  #[must_use]\n  pub fn {getter}(&self) -> {result} {{\n    match self {{"
                 );
+                for descendant in &descendants {
+                    let variant_name = descendant.target_name().as_str();
+                    let _ = writeln!(
+                        output,
+                        "      Self::{variant_name}(__tb_inner) => __tb_inner.{getter}(),"
+                    );
+                }
+                output.push_str("    }\n  }\n");
             }
-            output.push_str("    }\n  }\n");
         }
         for member in common_family_members(projection, &descendants)? {
             let fn_name = &member.name;
@@ -2893,6 +2899,7 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
         } else if !model.declaration().is_abstract() {
             for (name, identity) in [
                 ("iid", "complete IID getter"),
+                ("deleted", "deleted snapshot getter"),
                 ("materialize", "complete materializer"),
             ] {
                 reserve_rust_name(

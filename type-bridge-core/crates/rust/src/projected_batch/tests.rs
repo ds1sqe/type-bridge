@@ -852,6 +852,58 @@ async fn run_borrowed(kind: Kind, operation: Operation) {
 }
 
 #[tokio::test]
+async fn returning_delete_models_keep_snapshot_origin_and_input_order() {
+    let (database, state) = fixture(
+        vec![
+            Response::Documents(vec![
+                person_document(2, "0x12", "last", &[]),
+                person_document(0, "0x10", "first", &["old"]),
+            ]),
+            Response::Documents(vec![
+                json!({"ordinal":0}),
+                json!({"ordinal":1}),
+                json!({"ordinal":2}),
+            ]),
+        ],
+        CommitBehavior::Success,
+    );
+    let snapshots = database
+        .entities::<Person>()
+        .delete_many_returning(&["0x10".into(), "0x11".into(), "0x12".into()])
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|thing| thing.iid.as_str())
+            .collect::<Vec<_>>(),
+        ["0x10", "0x12"]
+    );
+    assert!(snapshots.iter().all(|thing| thing.origin.deleted()));
+    assert_eq!(snapshots[0].tags, ["old"]);
+    assert_eq!(state.lock().unwrap().commits, 1);
+
+    let (database, state) = fixture(
+        vec![
+            Response::Documents(vec![person_document(0, "0x10", "borrowed", &[])]),
+            Response::Documents(vec![json!({"ordinal":0})]),
+        ],
+        CommitBehavior::Success,
+    );
+    let transaction = database.write().await.unwrap();
+    let snapshot = transaction
+        .entities::<Person>()
+        .delete_returning("0x10")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(snapshot.origin.deleted());
+    assert_eq!(state.lock().unwrap().commits, 0);
+    transaction.commit().await.unwrap();
+    assert_eq!(state.lock().unwrap().commits, 1);
+}
+
+#[tokio::test]
 async fn rust_v2_routes_all_four_operations_for_both_kinds_owned_and_borrowed() {
     for kind in [Kind::Entity, Kind::Relation] {
         for operation in [

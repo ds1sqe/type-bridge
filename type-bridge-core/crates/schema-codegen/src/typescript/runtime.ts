@@ -5,6 +5,7 @@ import {
   type InstalledRuntimeProjection,
   type CanonicalCodecOptions,
   type NativeProjectedManager,
+  type NativeProjectedValueEnvelope,
   type RuntimeProjectionConnection,
   type RuntimeProjectionMatchBinding,
   type RuntimeProjectionMatchField,
@@ -96,6 +97,8 @@ export interface ProjectedModelManager<Complete> {
   putMany(instances: readonly Complete[]): readonly Complete[];
   update(iid: string, replacement: Complete): Complete;
   delete(instanceOrIid: Complete | string): void;
+  deleteReturning(iid: string): Complete | null;
+  deleteManyReturning(iids: readonly string[]): readonly Complete[];
   filter(
     filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
   ): ProjectedModelManager<Complete>;
@@ -1143,12 +1146,27 @@ function projectedManager<Complete>(
   );
 }
 
+const deletedSnapshotProofs = new WeakMap<object, NativeProjectedValueEnvelope>();
+
+function retainDeletedSnapshot<Complete>(value: Complete, envelope: NativeProjectedValueEnvelope): Complete {
+  assertRecord(value, "deleted snapshot");
+  deletedSnapshotProofs.set(value, envelope);
+  return value;
+}
+
+function requireLiveSnapshot(value: unknown): void {
+  if (value !== null && typeof value === "object" && deletedSnapshotProofs.get(value)?.deleted) {
+    throw new TypeError("thing_deleted: a deleted snapshot cannot be mutated");
+  }
+}
+
 function projectedManagerForNative<Complete>(
   typeKey: string,
   native: NativeProjectedManager,
 ): ProjectedModelManager<Complete> {
   return Object.freeze({
     insert(instance: Complete): Complete {
+      requireLiveSnapshot(instance);
       const wire = lowerProjectedValue(instance);
       if (wire.typeKey !== typeKey || wire.form !== "complete") {
         throw new TypeError(
@@ -1168,6 +1186,7 @@ function projectedManagerForNative<Complete>(
       );
     },
     put(instance: Complete): Complete {
+      requireLiveSnapshot(instance);
       const wire = lowerProjectedValue(instance);
       if (wire.typeKey !== typeKey || wire.form !== "complete") {
         throw new TypeError(
@@ -1184,6 +1203,7 @@ function projectedManagerForNative<Complete>(
       );
     },
     update(iid: string, replacement: Complete): Complete {
+      requireLiveSnapshot(replacement);
       if (typeof iid !== "string" || iid.length === 0) {
         throw new TypeError(
           "projected manager update requires a non-empty TypeDB IID",
@@ -1201,6 +1221,7 @@ function projectedManagerForNative<Complete>(
       );
     },
     delete(instanceOrIid: Complete | string): void {
+      requireLiveSnapshot(instanceOrIid);
       if (typeof instanceOrIid === "string") {
         native.deleteByIid(instanceOrIid);
         return;
@@ -1217,6 +1238,17 @@ function projectedManagerForNative<Complete>(
         );
       }
       native.deleteByIid(wire.iid);
+    },
+    deleteReturning(iid: string): Complete | null {
+      const envelope = native.deleteByIidReturning(iid);
+      return envelope === null ? null : retainDeletedSnapshot(
+        hydrateNativeResult<Complete>(envelope.json, typeKey), envelope,
+      );
+    },
+    deleteManyReturning(iids: readonly string[]): readonly Complete[] {
+      return native.deleteManyReturning([...iids]).map((envelope) => retainDeletedSnapshot(
+        hydrateNativeResult<Complete>(envelope.json, typeKey), envelope,
+      ));
     },
     filter(
       filters: Readonly<Record<string, ProjectedManagerFilterValue>>,
@@ -1304,6 +1336,7 @@ function lowerManagerBatch<Complete>(
     throw new TypeError(`projected manager ${operation} requires an array`);
   }
   return instances.map((instance) => {
+    requireLiveSnapshot(instance);
     const wire = lowerProjectedValue(instance);
     if (wire.typeKey !== typeKey || wire.form !== "complete") {
       throw new TypeError(

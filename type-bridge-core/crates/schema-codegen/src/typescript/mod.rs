@@ -604,6 +604,7 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
 ): OrderedProjectedModelManager<Complete, Owner> {
   const legacy = projectedManagerForNative<Complete>(typeKey, native);
   const exactWire = (instance: Complete, operation: string): ProjectedWire => {
+    requireLiveSnapshot(instance);
     const wire = lowerOrderedProjectedValue(instance);
     if (wire.typeKey !== typeKey || wire.form !== "complete") {
       throw new TypeError(
@@ -702,6 +703,17 @@ function orderedProjectedManagerForNative<Complete, Owner extends string>(
     },
     delete(instanceOrIid: Complete | string): void {
       legacy.delete(instanceOrIid);
+    },
+    deleteReturning(iid: string): Complete | null {
+      const envelope = native.deleteByIidReturning(iid);
+      return envelope === null ? null : retainDeletedSnapshot(
+        hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey), envelope,
+      );
+    },
+    deleteManyReturning(iids: readonly string[]): readonly Complete[] {
+      return native.deleteManyReturning([...iids]).map((envelope) => retainDeletedSnapshot(
+        hydrateOrderedProjectedEnvelope<Complete>(envelope, typeKey), envelope,
+      ));
     },
     deleteMany(iids: readonly string[]): void {
       if (!Array.isArray(iids)) {
@@ -1307,15 +1319,15 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 123_101);
+        assert_eq!(RUNTIME_SOURCE.len(), 124_502);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "3eb500a1c94d29612a35286bc2b3382522aad9193cafe6894a2ad5647e949b83"
+            "beee915e4929c4968520083a2b3b92c35a0b0e33682de8f9768e249a0978b4e3"
         );
         let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "fb090775f172a3c9b8de66dd2e4e4c37fcae39f0f152e5dd19302ddb2ff00361"
+            "835abd341f288e1c8ba534d9f97ebb389d047075fd2eded4f296bac401c52c42"
         );
     }
 

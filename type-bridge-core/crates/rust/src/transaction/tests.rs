@@ -395,7 +395,7 @@ fn worker_fetch(iid: &str, name: &str) -> Response {
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "person",
-        "attributes": {"name": [name]}
+        "attributes": {"name": name}
     })]))
 }
 
@@ -403,10 +403,10 @@ fn assignment_fetch(iid: &str, position: &str, worker_iid: &str, worker_name: &s
     Response::Result(QueryResult::Documents(vec![serde_json::json!({
         "_iid": iid,
         "_type": "assignment",
-        "attributes": {"position": [position]},
+        "attributes": {"position": position},
         "_role_0_iid": worker_iid,
         "_role_0_type": "person",
-        "_role_0_attributes": {"name": [worker_name]}
+        "_role_0_attributes": {"name": worker_name}
     })]))
 }
 

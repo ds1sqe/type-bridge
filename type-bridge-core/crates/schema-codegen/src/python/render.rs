@@ -69,6 +69,8 @@ const PUBLIC_SCHEMA_NAMES: &[&str] = &[
 const MODEL_RESERVED_NAMES: &[&str] = &[
     "value",
     "iid",
+    "deleted",
+    "_require_live",
     "__model_form__",
     "__projection__",
     "__runtime_projection__",
@@ -374,13 +376,7 @@ fn render_models(
 ) -> Result<String, Diagnostic> {
     let mut body = String::new();
     for id in projection.emission().model_shells() {
-        render_model(
-            &mut body,
-            projection,
-            &projection.models()[id],
-            stub,
-            ordered,
-        )?;
+        render_model(&mut body, projection, &projection.models()[id], stub)?;
     }
     for id in projection.emission().structs() {
         render_struct(&mut body, &projection.structs()[id], stub)?;
@@ -601,7 +597,6 @@ fn render_model(
     projection: &RuntimeProjection,
     model: &ModelProjection,
     stub: bool,
-    ordered: bool,
 ) -> Result<(), Diagnostic> {
     let name = model.target_name().as_str();
     let documentation = model_documentation(model);
@@ -628,8 +623,7 @@ fn render_model(
         let id = canonical_text!(model.id());
         let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
         output.push_str("    __model_form__ = \"complete\"\n");
-        if ordered
-            && model.declaration().parent().is_none()
+        if model.declaration().parent().is_none()
             && matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation)
         {
             output.push_str("    __slots__ = (\"__weakref__\",)\n");
@@ -664,7 +658,7 @@ fn render_model(
             let id = canonical_text!(model.id());
             let _ = writeln!(output, "    __type_id__ = {}", python_string(&id)?);
             output.push_str("    __model_form__ = \"reference\"\n");
-            if ordered && inherited_reference.is_none() {
+            if inherited_reference.is_none() {
                 output.push_str("    __slots__ = (\"__weakref__\",)\n");
             } else {
                 output.push_str("    __slots__ = ()\n");
