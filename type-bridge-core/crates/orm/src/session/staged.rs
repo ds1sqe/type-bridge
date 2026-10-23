@@ -119,6 +119,7 @@ pub struct StagedQuery {
     /// Whether the statement may write.
     pub writes: bool,
     pub(crate) canonical: bool,
+    pub(crate) snapshot: Option<(String, QueryPlanV3)>,
     /// Value-free schema context supplied by the plan lowering layer.
     pub failure_context: FailureContext,
 }
@@ -130,9 +131,37 @@ impl StagedQuery {
             rows: None,
             writes,
             canonical: false,
+            snapshot: None,
             failure_context: FailureContext::default(),
         }
     }
+    /// Execute the shared provider program, retaining validated capture evidence.
+    pub(crate) async fn execute(
+        &self,
+        ops: &mut dyn super::backend::TransactionOps,
+        limits: AnswerLimits,
+    ) -> Result<QueryResult, OrmError> {
+        let snapshot = if let Some((typeql, plan)) = &self.snapshot {
+            let answer = ops
+                .query_materialized_bounded(
+                    typeql,
+                    self.rows.clone(),
+                    limits.clone(),
+                    self.canonical,
+                )
+                .await?;
+            crate::answer_meter::meter_result(&answer, &limits.answer)?;
+            crate::query_plan_exec::validate_snapshot(plan, &answer).map_err(plan_answer_error)?;
+            Some(answer)
+        } else {
+            None
+        };
+        let answer = ops
+            .query_materialized_bounded(&self.typeql, self.rows.clone(), limits, self.canonical)
+            .await?;
+        Ok(snapshot.unwrap_or(answer))
+    }
+
     /// Attach schema identities from the lowered plan, never provider prose.
     pub fn with_failure_context(mut self, context: FailureContext) -> Self {
         self.failure_context = context;
@@ -881,15 +910,13 @@ impl Transaction {
                         match (&item.query, provider.as_mut()) {
                             (_, None) => Err(provider_consumed()),
                             (Some(query), Some(ops)) => {
-                                let result = ops
-                                    .query_materialized_bounded(
-                                        &query.typeql,
-                                        query.rows.clone(),
+                                let result = query
+                                    .execute(
+                                        ops.as_mut(),
                                         AnswerLimits {
                                             answer: answer_limits.clone(),
                                             ..self.options.answer_limits.clone()
                                         },
-                                        query.canonical,
                                     )
                                     .await;
                                 // Plan answers resolve before the provider commit, so a
@@ -1152,6 +1179,9 @@ mod tests {
         given: bool,
         rows: usize,
         answer_ok: bool,
+        snapshot_documents: Option<Vec<serde_json::Value>>,
+        fail_delete: bool,
+        given_payloads: Vec<GivenRowsSpec>,
     }
     struct Fake(Arc<Mutex<State>>);
     impl DriverBackend for Fake {
@@ -1186,9 +1216,20 @@ mod tests {
     impl TransactionOps for Fake {
         fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.0.lock().unwrap().events.push(query.to_owned());
-            let fail = query == "fail";
+            let fail =
+                query == "fail" || (self.0.lock().unwrap().fail_delete && query.contains("delete"));
             let typed = query == "typed-fail";
-            let answer = self.answer();
+            let answer = if query.contains("fetch") {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .snapshot_documents
+                    .clone()
+                    .map(QueryResult::Documents)
+            } else {
+                None
+            }
+            .unwrap_or_else(|| self.answer());
             Box::pin(async move {
                 if typed {
                     Err(OrmError::QueryExecution(
@@ -1203,15 +1244,22 @@ mod tests {
         }
         fn query_with_rows(
             &mut self,
-            _: &str,
+            typeql: &str,
             rows: GivenRowsSpec,
         ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.0.lock().unwrap().given_payloads.push(rows.clone());
             self.0
                 .lock()
                 .unwrap()
                 .events
                 .push(format!("given:{}", rows.rows.len()));
-            let answer = self.answer();
+            let captured = if typeql.contains("fetch") {
+                let state = self.0.lock().unwrap();
+                state.snapshot_documents.clone().map(QueryResult::Documents)
+            } else {
+                None
+            };
+            let answer = captured.unwrap_or_else(|| self.answer());
             Box::pin(async move { Ok(answer) })
         }
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -1242,6 +1290,61 @@ mod tests {
             state,
         )
     }
+    #[tokio::test]
+    async fn deletion_snapshot_reuses_identical_given_rows_without_interpolation() {
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        state.lock().unwrap().given = true;
+        state.lock().unwrap().snapshot_documents = Some(vec![]);
+        let plan =
+            crate::query_plan_exec::race::delete_named_doctors_returning(&["SECRET_A", "SECRET_B"]);
+        let query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+        assert!(!query.typeql.contains("SECRET"));
+        assert!(!query.snapshot.as_ref().unwrap().0.contains("SECRET"));
+        tx.stage_plan(&plan).unwrap();
+        tx.commit().await.unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.given_payloads.len(), 2);
+        assert_eq!(state.given_payloads[0], state.given_payloads[1]);
+        assert_eq!(state.given_payloads[0].rows.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn deletion_snapshots_execute_before_delete_and_fail_atomically() {
+        use crate::query_plan_exec::race;
+        for (fail_delete, malformed) in [(false, false), (true, false), (false, true)] {
+            let (mut tx, state) = fixture(TransactionOptions::default());
+            let documents = vec![if malformed {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({"_iid":"0x01", "_type":"doctor", "attributes":{"name":"alice", "on-call":true}})
+            }];
+            state.lock().unwrap().snapshot_documents = Some(documents.clone());
+            state.lock().unwrap().fail_delete = fail_delete;
+            let pending = tx.stage_plan(&race::delete_doctors_returning()).unwrap();
+            assert!(matches!(pending.get(), Err(PendingError::NotCommitted)));
+            let result = tx.commit().await;
+            let events = &state.lock().unwrap().events;
+            assert!(events[0].contains("fetch"));
+            if malformed {
+                assert!(result.is_err());
+                assert_eq!(&events[1..], ["rollback", "close"]);
+            } else {
+                assert!(events[1].contains("delete"));
+                if fail_delete {
+                    assert!(result.is_err());
+                    assert_eq!(&events[2..], ["rollback", "close"]);
+                } else {
+                    result.unwrap();
+                    assert_eq!(&*pending.get().unwrap(), &PlanAnswer::Documents(documents));
+                    assert_eq!(&events[2..], ["commit", "close"]);
+                }
+            }
+            if fail_delete || malformed {
+                assert!(matches!(pending.get(), Err(PendingError::Failed { .. })));
+            }
+        }
+    }
+
     #[tokio::test]
     async fn staged_plans_resolve_matched_and_rows_from_their_own_stream() {
         use crate::query_plan_exec::race;

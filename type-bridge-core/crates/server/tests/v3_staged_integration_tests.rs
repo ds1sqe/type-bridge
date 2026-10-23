@@ -1004,3 +1004,33 @@ async fn staged_fetch_documents_equal_direct_answers_with_role_evidence() {
     assert_eq!(remote_failure["details"], direct_failure["details"]);
     drop_database(db).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB"]
+async fn staged_deletion_snapshots_equal_direct_pre_images() {
+    let (name, db) = seeded("delete_snapshots").await;
+    db.execute_raw(
+        "insert $d isa doctor, has name \"alice\", has on-call true;",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let proxy = proxy(&name, LivePolicy::default(), true).await;
+    let plan = race::delete_doctors_returning();
+    let mut direct = db.transaction(TransactionOptions::default().with_never_commit(true));
+    let pending = direct.stage_plan(&plan).unwrap();
+    direct.commit().await.unwrap();
+    let expected = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+    assert!(matches!(&expected, StagedAnswerV3::Documents { documents } if !documents.is_empty()));
+    let deletion = request(&proxy, vec![plain_entry(&proxy, &plan)]);
+    let reply = verify(&proxy, &deletion, &post(&proxy, &deletion).await);
+    assert!(reply.committed(), "{:?}", reply.diagnostic());
+    assert_eq!(reply.answers(), [expected]);
+    let empty = request(&proxy, vec![plain_entry(&proxy, &plan)]);
+    let reply = verify(&proxy, &empty, &post(&proxy, &empty).await);
+    assert!(reply.committed());
+    assert!(
+        matches!(&reply.answers()[0], StagedAnswerV3::Documents { documents } if documents.is_empty())
+    );
+    drop_database(db).await;
+}

@@ -97,8 +97,8 @@ enum MutationLeasePhase {
 ///
 /// Holding the owned guard keeps ordinary queries and lifecycle transitions on
 /// every context clone behind the same mutex for the whole multi-statement
-/// operation. The type deliberately has no public re-export: the first and
-/// only consumer is the common projected batch executor.
+/// operation. The type deliberately has no public re-export: its
+/// consumers are the common projected batch executor and snapshot deletion.
 pub(crate) struct TransactionContextMutationLease {
     inner: OwnedMutexGuard<TransactionContextInner>,
     phase: MutationLeasePhase,
@@ -326,6 +326,35 @@ impl TransactionContext {
         &self,
         query: crate::session::staged::StagedQuery,
     ) -> Result<QueryResult> {
+        if query.snapshot.is_some() {
+            let mut lease = self.acquire_mutation_lease().await?;
+            // Cancellation or failure anywhere in the two-statement operation
+            // leaves the caller-owned transaction unable to commit.
+            lease.phase = MutationLeasePhase::PossibleEffect;
+            let result = query
+                .execute(
+                    lease.transaction()?,
+                    super::backend::AnswerLimits::default(),
+                )
+                .await
+                .and_then(|answer| {
+                    crate::answer_meter::meter_result(&answer, &BoundedAnswerLimits::default())?;
+                    Ok(answer)
+                });
+            return match result {
+                Ok(answer) => {
+                    lease.complete_success();
+                    Ok(answer)
+                }
+                Err(error) => {
+                    lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                        &error,
+                        SdkProviderOperation::Write,
+                    ));
+                    Err(error)
+                }
+            };
+        }
         let mut guard = self.inner.lock().await;
         let tx = active_transaction(&mut guard)?;
         let answer = tx
@@ -740,12 +769,26 @@ mod tests {
         commit_gate: Option<Arc<Gate>>,
         rollback_gate: Option<Arc<Gate>>,
         close_gate: Option<Arc<Gate>>,
+        deletion_gate: Option<Arc<Gate>>,
     }
 
     impl TransactionOps for LifecycleTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult>> {
             self.calls.queries.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Ok(QueryResult::Ok) })
+            let gate = self.deletion_gate.clone();
+            let deleting = typeql.contains("delete");
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    if deleting {
+                        gate.entered.notify_one();
+                        return pending().await;
+                    }
+                    return Ok(QueryResult::Documents(vec![serde_json::json!({
+                        "_iid":"0x01", "_type":"doctor", "attributes":{"name":"alice", "on-call":true}
+                    })]));
+                }
+                Ok(QueryResult::Ok)
+            })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
@@ -850,6 +893,7 @@ mod tests {
                     commit_gate,
                     rollback_gate,
                     close_gate,
+                    deletion_gate: None,
                 }),
                 TxType::Write,
                 None,
@@ -1145,6 +1189,72 @@ mod tests {
             TransactionContextState::Closed
         );
         assert_eq!(calls.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cancelled_deletion_snapshot_cannot_commit_its_borrowed_transaction() {
+        let calls = Arc::new(Calls::default());
+        let gate = Arc::new(Gate::default());
+        let context = TransactionContext::new(
+            super::super::eager::EagerTransaction::new(
+                Box::new(LifecycleTransaction {
+                    calls: Arc::clone(&calls),
+                    commit_result: CommitResult::Success,
+                    rollback_fails: false,
+                    close_fails: false,
+                    commit_gate: None,
+                    rollback_gate: None,
+                    close_gate: None,
+                    deletion_gate: Some(Arc::clone(&gate)),
+                }),
+                TxType::Write,
+                None,
+            ),
+            TxType::Write,
+            CapabilitySet::new(),
+            None,
+            DatabaseExecutionIdentity::isolated("snapshot-cancellation-test"),
+            None,
+        );
+        let task = tokio::spawn({
+            let context = context.clone();
+            async move {
+                let plan = crate::query_plan_exec::race::delete_doctors_returning();
+                let query = crate::query_plan_exec::staged_query(&plan, false).unwrap();
+                context.dispatch_plan(query).await
+            }
+        });
+        gate.entered.notified().await;
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+        assert!(context.commit().await.is_err());
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
+        context.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn malformed_deletion_snapshot_poison_latches_the_borrowed_transaction() {
+        let (context, calls) = active_context();
+        let plan = crate::query_plan_exec::race::delete_doctors_returning();
+        let query = crate::query_plan_exec::staged_query(&plan, false).unwrap();
+        assert!(context.dispatch_plan(query).await.is_err());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::RollbackOnly
+        );
+        assert_eq!(
+            context.rollback_only_cause().await.unwrap().code().as_str(),
+            "query_remote_v3_answer_kind"
+        );
+        assert!(context.commit().await.is_err());
+        assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
+        context.rollback().await.unwrap();
     }
 
     #[tokio::test]

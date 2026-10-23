@@ -950,3 +950,142 @@ async fn fetch_documents_resolve_and_enforce_answer_limits_before_commit() {
     }
     db.delete_database().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_snapshots_return_pre_images_and_rollback_with_the_stack() {
+    use type_bridge_orm::session::backend::BoundedAnswerLimits;
+    let Some(db) = live_database("tb_delete_snapshots").await else {
+        return;
+    };
+    db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    db.execute_raw(
+        "insert $d isa doctor, has name \"alice\", has on-call true;",
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let plan = race::delete_doctors_returning();
+    let mut tight = db.transaction(TransactionOptions::default().with_answer_limits(
+        BoundedAnswerLimits {
+            max_items: 0,
+            ..Default::default()
+        },
+    ));
+    tight.stage_plan(&plan).unwrap();
+    assert_eq!(
+        tight
+            .commit()
+            .await
+            .unwrap_err()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "processed_item_limit"
+    );
+    let mut failed = db.transaction(TransactionOptions::default());
+    let pending = failed.stage_plan(&plan).unwrap();
+    failed
+        .stage(StagedQuery::new(
+            "match $d isa nonexistent_snapshot_type;",
+            false,
+        ))
+        .unwrap();
+    assert!(failed.commit().await.is_err());
+    assert!(pending.get().is_err());
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $d isa doctor; select $d;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        1
+    );
+    let mut tx = db.transaction(TransactionOptions::default());
+    let pending = tx.stage_plan(&plan).unwrap();
+    tx.commit().await.unwrap();
+    let answer = pending.get().unwrap();
+    let PlanAnswer::Documents(documents) = answer.as_ref() else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0]["_type"], "doctor");
+    assert_eq!(documents[0]["attributes"]["name"], "alice");
+    assert_eq!(documents[0]["attributes"]["on-call"], true);
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $d isa doctor; select $d;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        0
+    );
+    let empty = tx.stage_plan(&plan).unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        empty.get().unwrap().as_ref(),
+        &PlanAnswer::Documents(vec![])
+    );
+    db.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deletion_snapshots_preserve_optional_roles_and_refuse_missing_required_evidence() {
+    let Some(db) = live_database("tb_delete_snapshot_roles").await else {
+        return;
+    };
+    db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    db.execute_raw("insert $i isa item, has item-id \"I1\", has stock 1; $p isa purchase, links (item: $i), has order-id \"O1\";", TxType::Write).await.unwrap();
+    let mut required = db.transaction(TransactionOptions::default());
+    required
+        .stage_plan(&race::delete_purchases_returning(true))
+        .unwrap();
+    assert!(required.commit().await.is_err());
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $p isa purchase; select $p;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        1
+    );
+    let mut tx = db.transaction(TransactionOptions::default());
+    let pending = tx
+        .stage_plan(&race::delete_purchases_returning(false))
+        .unwrap();
+    tx.commit().await.unwrap();
+    let answer = pending.get().unwrap();
+    let PlanAnswer::Documents(documents) = answer.as_ref() else {
+        panic!("{answer:?}");
+    };
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0]["_type"], "purchase");
+    assert_eq!(documents[0]["attributes"]["order-id"], "O1");
+    assert!(
+        documents[0]
+            .get("_role_0_iid")
+            .is_none_or(serde_json::Value::is_null)
+    );
+    assert_eq!(documents[0]["_role_1_type"], "item");
+    assert_eq!(documents[0]["_role_1_attributes"]["item-id"], "I1");
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $p isa purchase; select $p;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        0
+    );
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $i isa item; select $i;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        1
+    );
+    db.delete_database().await.unwrap();
+}

@@ -231,7 +231,8 @@ mod tests {
             ],
             Vec::new(),
         )?;
-        let (query, given) = lower(plan.local()).unwrap();
+        let lowered = lower(plan.local()).unwrap();
+        let (query, given) = (lowered.query, lowered.given);
         Ok((
             tql::render(&query).unwrap(),
             given.map(|given| given.variables),
@@ -296,7 +297,8 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
             attached: &[],
         };
         let plan = keyed_entity_put(&authority(), ValueTransport::Given, &put).unwrap();
-        let (query, given) = lower(plan.local()).unwrap();
+        let lowered = lower(plan.local()).unwrap();
+        let (query, given) = (lowered.query, lowered.given);
         assert!(given.is_some());
         tql::render(&query).unwrap()
     }

@@ -424,9 +424,16 @@ players-deletion, iid or fetch call; such plans are constructed as a
 
 ## TypeQL lowering
 
-Lower stages in order into one pipeline in one transaction. Generate hygienic
-variables, resolve labels through checked identities and bind values. These
-are illustrative forms, not a snapshot read followed by a separate mutation.
+Plain plans lower their stages into one pipeline. Opt-in deletion snapshots
+lower to a capture statement followed by a deletion statement in the same
+write transaction. Both use the same read-only prefix and given rows. Capture
+is bounded and schema-validated before deletion; any failure aborts the staged
+stack or makes a borrowed transaction rollback-only. Snapshot role expansion
+uses optional matches so it cannot silently remove a deletion target; required
+role evidence is still validated before mutation.
+
+Generate hygienic variables, resolve labels through checked identities and bind
+values. The forms below describe the shared Rust lowering.
 
 | Construct | TypeQL form |
 | --- | --- |
@@ -441,6 +448,7 @@ are illustrative forms, not a snapshot read followed by a separate mutation.
 | field / role update | `update $x has score == $next;` / `update $r links (member: $new);` |
 | attach | `insert $x has tag == $value;` / `insert $r links (member: $p);` over bound variables |
 | delete thing / ownership / link | `delete $x;` / `delete has $old_score of $x;` / `delete links (member: $old) of $r;` |
+| fetch then delete | Execute `<prefix>; <fetch>;` followed by `<prefix>; delete $x;`, retaining the validated capture as the answer. |
 | delete players | `try { $r links (member: $p); };` then `delete try { links (member: $p) of $r; };` |
 | select / require / distinct | `select $x;` / `require $x;` / `distinct;` |
 | fetch | `match $x isa! $T; $x links (member: $P0); $P0 isa! $P0T;` (optional roles inside `try`), then `fetch { "_iid": iid($x), "_type": label($T), "attributes": { $x.* }, "_role_0_iid": iid($P0), "_role_0_type": label($P0T), "_role_0_attributes": { $P0.* } };` |
