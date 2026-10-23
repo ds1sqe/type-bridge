@@ -11,13 +11,18 @@
 //! Writes open only when a policy vouches for the caller through
 //! [`Interceptor::on_v3_write_authority`](crate::interceptor::Interceptor::on_v3_write_authority)
 //! or the operator explicitly allows unauthenticated staged writes.
+//!
+//! The executor is a library entry: `StagedExecutor::execute_staged_request`
+//! takes one admitted caller and the signed request bytes and returns the
+//! signed reply bytes, so an embedding host runs the staged route
+//! in-process without the HTTP framing of `create_v3_router`.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
-use axum::body::to_bytes;
+use axum::body::{Bytes, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -31,7 +36,8 @@ use type_bridge_contract::query_plan::v3::{
 use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteCapabilitiesFingerprint};
 use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3,
+    StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
 };
 use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
@@ -54,14 +60,85 @@ use crate::pipeline::QueryPipeline;
 /// Code of the signed failure refusing a staged write no policy admitted.
 pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
 
-struct V3RouterState {
+/// The staged V3 executor over one V2 executor identity: the policy
+/// pipeline, the query state (advertisement, ceilings, replay store, live
+/// authority, signer) and the staged advertisement it answers under.
+///
+/// `create_v3_router` wraps one in HTTP; an embedding host builds one and
+/// calls `StagedExecutor::execute_staged_request` directly.
+pub struct StagedExecutor {
     pipeline: Arc<QueryPipeline>,
     query: Arc<V2QueryState>,
     advertisement: RemoteCapabilities,
     fingerprint: RemoteCapabilitiesFingerprint,
 }
 
-impl V3RouterState {
+/// What one staged request came to, with the signed bytes to deliver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedOutcome {
+    /// The signed reply (committed, failed or `commit_outcome_unknown`), or
+    /// an unbound signed failure when the request could not be decoded.
+    pub reply: Vec<u8>,
+    /// Whether the transaction committed, did not, or may have.
+    pub kind: StagedOutcomeKind,
+    /// The reply's diagnostic code; `"ok"` when committed.
+    pub code: String,
+}
+
+/// Whether a staged request's transaction committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StagedOutcomeKind {
+    /// The transaction committed (a read closed) and the reply carries its
+    /// answers.
+    Committed,
+    /// Nothing committed: refused before execution, or failed with a
+    /// diagnostic the reply carries.
+    Failed,
+    /// A write may have committed (replayed nonce, lost or unsignable
+    /// reply, withheld reply, panic): the reply is `commit_outcome_unknown`
+    /// and the caller must read the database before retrying.
+    Unknown,
+}
+
+impl StagedOutcome {
+    fn new(reply: Vec<u8>, kind: StagedOutcomeKind, code: &str) -> Self {
+        Self {
+            reply,
+            kind,
+            code: code.to_owned(),
+        }
+    }
+}
+
+impl StagedExecutor {
+    /// Bind the executor to one pipeline and query state; the staged
+    /// advertisement re-states the validated V2 one.
+    pub fn new(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Self {
+        // The V2 advertisement's limits were validated when it was built, so
+        // re-stating them under a wider capability set cannot fail.
+        let advertisement = staged_advertisement(&query.advertisement)
+            .expect("validated V2 advertisement re-states under the staged capabilities");
+        let fingerprint = advertisement
+            .fingerprint()
+            .expect("staged advertisement fingerprints");
+        Self {
+            pipeline,
+            query,
+            advertisement,
+            fingerprint,
+        }
+    }
+
+    /// The staged advertisement this executor answers under.
+    pub fn advertisement(&self) -> &RemoteCapabilities {
+        &self.advertisement
+    }
+
+    /// The policy pipeline that admits callers for this executor.
+    pub fn pipeline(&self) -> &Arc<QueryPipeline> {
+        &self.pipeline
+    }
+
     fn unbound(&self, diagnostic: &Diagnostic) -> Vec<u8> {
         encode_unbound_remote_failure_v2(None, diagnostic, &self.fingerprint, &self.query.signer)
     }
@@ -120,19 +197,7 @@ pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilitie
 
 /// Build `POST /v3/staged` and `GET /v3/capabilities` over one V2 executor.
 pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Router {
-    // The V2 advertisement's limits were validated when it was built, so
-    // re-stating them under a wider capability set cannot fail.
-    let advertisement = staged_advertisement(&query.advertisement)
-        .expect("validated V2 advertisement re-states under the staged capabilities");
-    let fingerprint = advertisement
-        .fingerprint()
-        .expect("staged advertisement fingerprints");
-    let state = Arc::new(V3RouterState {
-        pipeline,
-        query,
-        advertisement,
-        fingerprint,
-    });
+    let state = Arc::new(StagedExecutor::new(pipeline, query));
     Router::new()
         .route("/v3/staged", post(handle_v3_staged))
         .route("/v3/capabilities", get(handle_v3_capabilities))
@@ -140,7 +205,7 @@ pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) 
 }
 
 async fn handle_v3_capabilities(
-    State(state): State<Arc<V3RouterState>>,
+    State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
     let Some(deadline) = Instant::now().checked_add(state.query.execution_timeout) else {
@@ -150,13 +215,25 @@ async fn handle_v3_capabilities(
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
-    match state.advertisement.encode() {
-        Ok(bytes) => finish(&state, deadline, &ctx, None, true, "ok", bytes).await,
+    let outcome = match state.advertisement.encode() {
+        Ok(bytes) => {
+            finish(
+                &state,
+                deadline,
+                &ctx,
+                None,
+                StagedOutcomeKind::Committed,
+                "ok",
+                bytes,
+            )
+            .await
+        }
         Err(diagnostic) => refuse(&state, deadline, &ctx, None, diagnostic).await,
-    }
+    };
+    envelope_response(outcome.reply)
 }
 
-async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Request) -> Response {
+async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Request) -> Response {
     let state = shared.as_ref();
     let Some(deadline) = Instant::now().checked_add(state.query.execution_timeout) else {
         return envelope_response(state.unbound(&deadline_exceeded()));
@@ -168,8 +245,67 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
         Err(response) => return *response,
     };
     if declared_v2_body_oversized(request.headers(), state.query.body_limit_bytes()) {
-        return refuse(state, deadline, &ctx, None, body_oversized()).await;
+        let outcome = refuse(state, deadline, &ctx, None, body_oversized()).await;
+        return envelope_response(outcome.reply);
     }
+    let body = match await_before_deadline(
+        deadline,
+        to_bytes(request.into_body(), state.query.body_limit_bytes()),
+    )
+    .await
+    {
+        Some(Ok(body)) => body,
+        Some(Err(_)) => {
+            let outcome = refuse(state, deadline, &ctx, None, body_oversized()).await;
+            return envelope_response(outcome.reply);
+        }
+        None => {
+            let outcome = refuse(state, deadline, &ctx, None, deadline_exceeded()).await;
+            return envelope_response(outcome.reply);
+        }
+    };
+    let outcome = shared.execute_staged_request(ctx, body, deadline).await;
+    envelope_response(outcome.reply)
+}
+
+impl StagedExecutor {
+    /// Execute one staged request from its signed bytes to its signed reply.
+    ///
+    /// `ctx` is the caller the transport admitted: build it with
+    /// [`QueryPipeline::v3_request_context`] and
+    /// [`QueryPipeline::begin_v2_request`], as the router does. `deadline`
+    /// is the server's execution deadline; the request's own lifetime
+    /// tightens it.
+    ///
+    /// In order: decode under the advertised limits, freshness, transaction
+    /// kind, write vouching (`on_v3_write_authority`), every bound plan's
+    /// policy (`on_v3_plan`, in index order, before anything is reserved
+    /// or opened), nonce reservation for the request's lifetime, staging
+    /// and one commit, commit observation (`on_v3_commit`, observe-only),
+    /// answer assembly under the ceilings tightened by the request,
+    /// signing, and the pipeline's response policies. A write whose
+    /// outcome is lost answers `commit_outcome_unknown`
+    /// ([`StagedOutcomeKind::Unknown`]), never a safe-to-retry refusal.
+    ///
+    /// The outcome is owned by a detached task once admitted, so a caller
+    /// that stops waiting mid-commit does not drop the observers.
+    pub async fn execute_staged_request(
+        self: &Arc<Self>,
+        ctx: RequestContext,
+        body: Bytes,
+        deadline: Instant,
+    ) -> StagedOutcome {
+        execute(self, ctx, body, deadline).await
+    }
+}
+
+async fn execute(
+    shared: &Arc<StagedExecutor>,
+    ctx: RequestContext,
+    body: Bytes,
+    deadline: Instant,
+) -> StagedOutcome {
+    let state = shared.as_ref();
     let permit = match await_before_deadline(
         deadline,
         Arc::clone(&V2_PREFLIGHT_SLOTS).acquire_owned(),
@@ -178,16 +314,6 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
     {
         Some(Ok(permit)) => permit,
         Some(Err(_)) => return refuse(state, deadline, &ctx, None, unavailable()).await,
-        None => return refuse(state, deadline, &ctx, None, deadline_exceeded()).await,
-    };
-    let body = match await_before_deadline(
-        deadline,
-        to_bytes(request.into_body(), state.query.body_limit_bytes()),
-    )
-    .await
-    {
-        Some(Ok(body)) => body,
-        Some(Err(_)) => return refuse(state, deadline, &ctx, None, body_oversized()).await,
         None => return refuse(state, deadline, &ctx, None, deadline_exceeded()).await,
     };
     let query = Arc::clone(&state.query);
@@ -292,7 +418,7 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
     // From here the outcome is owned by a detached task: a client that goes
     // away mid-commit cannot drop the observers or leave the key in flight.
     let task = tokio::spawn(run_staged(
-        Arc::clone(&shared),
+        Arc::clone(shared),
         ctx,
         staged.clone(),
         plans,
@@ -300,10 +426,21 @@ async fn handle_v3_staged(State(shared): State<Arc<V3RouterState>>, request: Req
         Window { deadline, expires },
     ));
     match task.await {
-        Ok(reply) => envelope_response(reply),
+        Ok(outcome) => outcome,
         // A panicked write may have committed.
-        Err(_) if kind == TransactionKind::Write => envelope_response(state.unknown(&staged)),
-        Err(_) => envelope_response(state.refusal(request, &unavailable())),
+        Err(_) if kind == TransactionKind::Write => StagedOutcome::new(
+            state.unknown(&staged),
+            StagedOutcomeKind::Unknown,
+            &unknown_code(),
+        ),
+        Err(_) => {
+            let diagnostic = unavailable();
+            StagedOutcome::new(
+                state.refusal(request, &diagnostic),
+                StagedOutcomeKind::Failed,
+                diagnostic.code().as_str(),
+            )
+        }
     }
 }
 
@@ -317,13 +454,13 @@ struct Window {
 /// Reserve the nonce, execute, observe and police one admitted request;
 /// return the bytes to deliver.
 async fn run_staged(
-    shared: Arc<V3RouterState>,
+    shared: Arc<StagedExecutor>,
     ctx: RequestContext,
     staged: StagedRequestV3,
     plans: Vec<QueryPlanV3>,
     kind: TransactionKind,
     window: Window,
-) -> Vec<u8> {
+) -> StagedOutcome {
     let state = shared.as_ref();
     let deadline = window.deadline;
     // Every executed request holds its nonce for its whole lifetime, so a
@@ -340,7 +477,17 @@ async fn run_staged(
         Some(Err(ReplayStoreError::Replayed)) if kind == TransactionKind::Write => {
             let reply = state.unknown(&staged);
             let code = unknown_code();
-            return settle(state, deadline, &ctx, &staged, reply, false, &code, true).await;
+            return settle(
+                state,
+                deadline,
+                &ctx,
+                &staged,
+                reply,
+                StagedOutcomeKind::Unknown,
+                &code,
+                true,
+            )
+            .await;
         }
         Some(Err(ReplayStoreError::Replayed)) => Some(replayed()),
         Some(Err(ReplayStoreError::Capacity)) => Some(replay_capacity()),
@@ -350,7 +497,17 @@ async fn run_staged(
     if let Some(diagnostic) = refused {
         let reply = state.refusal(Some(&staged), &diagnostic);
         let code = diagnostic.code().as_str();
-        return settle(state, deadline, &ctx, &staged, reply, false, code, false).await;
+        return settle(
+            state,
+            deadline,
+            &ctx,
+            &staged,
+            reply,
+            StagedOutcomeKind::Failed,
+            code,
+            false,
+        )
+        .await;
     }
 
     let executed = execute_staged(state, &staged, &plans, kind, deadline).await;
@@ -369,23 +526,32 @@ async fn run_staged(
         state.pipeline.observe_v3_commit(&outcome, &ctx),
     )
     .await;
-    let (reply, success, code) = match executed {
+    let (reply, outcome, code) = match executed {
         Ok(answers) => match state.signed(&staged, StagedOutcomeV3::Committed, answers) {
-            Ok(reply) => (reply, true, "ok".to_owned()),
+            Ok(reply) => (reply, StagedOutcomeKind::Committed, "ok".to_owned()),
             // The write already committed, so an unsignable success (e.g.
             // over its byte budget) must not read as a safe-to-retry refusal.
             Err(_) if kind == TransactionKind::Write => {
                 let reply = state.unknown(&staged);
-                (reply, false, unknown_code())
+                (reply, StagedOutcomeKind::Unknown, unknown_code())
             }
             Err(diagnostic) => {
                 let code = diagnostic.code().as_str().to_owned();
-                (state.refusal(Some(&staged), &diagnostic), false, code)
+                (
+                    state.refusal(Some(&staged), &diagnostic),
+                    StagedOutcomeKind::Failed,
+                    code,
+                )
             }
         },
         Err(diagnostic) => {
             let code = diagnostic.code().as_str().to_owned();
-            (state.failed(&staged, diagnostic), false, code)
+            let outcome = if diagnostic.commit_outcome() == Some(SdkCommitFailureOutcome::Unknown) {
+                StagedOutcomeKind::Unknown
+            } else {
+                StagedOutcomeKind::Failed
+            };
+            (state.failed(&staged, diagnostic), outcome, code)
         }
     };
     settle(
@@ -394,7 +560,7 @@ async fn run_staged(
         &ctx,
         &staged,
         reply,
-        success,
+        outcome,
         &code,
         may_have_committed,
     )
@@ -411,21 +577,30 @@ fn unknown_code() -> String {
 /// Police `reply` and return what is delivered.
 #[allow(clippy::too_many_arguments)]
 async fn settle(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     deadline: Instant,
     ctx: &RequestContext,
     staged: &StagedRequestV3,
     reply: Vec<u8>,
-    success: bool,
+    kind: StagedOutcomeKind,
     code: &str,
     may_have_committed: bool,
-) -> Vec<u8> {
+) -> StagedOutcome {
     // The response policy decides: a write it withholds after commit becomes
     // an unknown outcome, and any other refusal replaces the reply.
+    let success = kind == StagedOutcomeKind::Committed;
     match police(state, deadline, ctx, success, code, reply.len()).await {
-        None => reply,
-        Some(_) if may_have_committed => state.unknown(staged),
-        Some(refusal) => state.refusal(Some(staged), &refusal),
+        None => StagedOutcome::new(reply, kind, code),
+        Some(_) if may_have_committed => StagedOutcome::new(
+            state.unknown(staged),
+            StagedOutcomeKind::Unknown,
+            &unknown_code(),
+        ),
+        Some(refusal) => StagedOutcome::new(
+            state.refusal(Some(staged), &refusal),
+            StagedOutcomeKind::Failed,
+            refusal.code().as_str(),
+        ),
     }
 }
 
@@ -435,7 +610,7 @@ async fn settle(
 /// Nothing opens until commit, so a plan refused while staging leaves no
 /// provider transaction behind.
 async fn execute_staged(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     staged: &StagedRequestV3,
     plans: &[QueryPlanV3],
     kind: TransactionKind,
@@ -574,7 +749,7 @@ fn unix_ms() -> u64 {
 }
 
 async fn admit_transport(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     headers: &HeaderMap,
     endpoint: &'static str,
     deadline: Instant,
@@ -591,29 +766,33 @@ async fn admit_transport(
         .map_err(|_| Box::new(envelope_response(state.unbound(&policy_rejected()))))?;
     match await_before_deadline(deadline, state.pipeline.begin_v2_request(&mut ctx)).await {
         Some(Ok(())) => Ok(ctx),
-        Some(Err(_)) => Err(Box::new(
-            refuse(state, deadline, &ctx, None, policy_rejected()).await,
-        )),
-        None => Err(Box::new(
-            refuse(state, deadline, &ctx, None, deadline_exceeded()).await,
-        )),
+        Some(Err(_)) => Err(Box::new(envelope_response(
+            refuse(state, deadline, &ctx, None, policy_rejected())
+                .await
+                .reply,
+        ))),
+        None => Err(Box::new(envelope_response(
+            refuse(state, deadline, &ctx, None, deadline_exceeded())
+                .await
+                .reply,
+        ))),
     }
 }
 
 async fn refuse(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     deadline: Instant,
     ctx: &RequestContext,
     request: Option<&StagedRequestV3>,
     diagnostic: Diagnostic,
-) -> Response {
+) -> StagedOutcome {
     let reply = state.refusal(request, &diagnostic);
     finish(
         state,
         deadline,
         ctx,
         request,
-        false,
+        StagedOutcomeKind::Failed,
         diagnostic.code().as_str(),
         reply,
     )
@@ -621,37 +800,51 @@ async fn refuse(
 }
 
 async fn finish_failed(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     deadline: Instant,
     ctx: &RequestContext,
     request: &StagedRequestV3,
     diagnostic: SdkExecutionDiagnostic,
-) -> Response {
+) -> StagedOutcome {
     let code = diagnostic.code().as_str().to_owned();
     let reply = state.failed(request, diagnostic);
-    finish(state, deadline, ctx, Some(request), false, &code, reply).await
+    finish(
+        state,
+        deadline,
+        ctx,
+        Some(request),
+        StagedOutcomeKind::Failed,
+        &code,
+        reply,
+    )
+    .await
 }
 
 /// Run the response/audit policies, then deliver `reply` or their refusal.
 async fn finish(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     deadline: Instant,
     ctx: &RequestContext,
     request: Option<&StagedRequestV3>,
-    success: bool,
+    kind: StagedOutcomeKind,
     code: &str,
     reply: Vec<u8>,
-) -> Response {
+) -> StagedOutcome {
+    let success = kind == StagedOutcomeKind::Committed;
     match police(state, deadline, ctx, success, code, reply.len()).await {
-        Some(refusal) => envelope_response(state.refusal(request, &refusal)),
-        None => envelope_response(reply),
+        Some(refusal) => StagedOutcome::new(
+            state.refusal(request, &refusal),
+            StagedOutcomeKind::Failed,
+            refusal.code().as_str(),
+        ),
+        None => StagedOutcome::new(reply, kind, code),
     }
 }
 
 /// Run the response/audit policies over a reply of `len` bytes; return why
 /// they withhold it, if they do.
 async fn police(
-    state: &V3RouterState,
+    state: &StagedExecutor,
     deadline: Instant,
     ctx: &RequestContext,
     success: bool,

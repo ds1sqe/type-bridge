@@ -304,8 +304,8 @@ def test_sdk_models_catalog_freezes_final_fingerprint_authority() -> None:
             }
             for binding, digest in {
                 "python": "907f0cb03771d40f99500e5a6938b809de661bb055a96a0b82f6509d16973bfc",
-                "node": "713a99060e381cdfc34c941bd9b63de16d428bfa65c44464be3935539a503521",
-                "rust": "a885bc9614875cd2c10d6672ed8b1f708b983f345e87b59458f92f43910e0f12",
+                "node": "562391ebf22f59c9581c523c48033a736bcd8923ca9ea22a495b05d3ee16bcb9",
+                "rust": "88e36a2ca6c36348574f75c1c909bf13caa49427c547bcef179f57bd62d525f1",
                 "c": "d242ae5c7d56a878372b6eccab0dc3bae47d60d48a2b7241d7d51dd9e6dada9a",
             }.items()
         },

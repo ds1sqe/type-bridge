@@ -861,6 +861,7 @@ fn validate_stages(
                         scalar_types.insert(*binding, domain);
                     }
                 }
+                refuse_duration_ranges(&reads, &scalar_types, &spec.inputs)?;
                 for pattern in patterns {
                     if let Pattern::Iid { binding, iid } = pattern {
                         check_binding(*binding, spec.bindings.len())?;
@@ -1097,6 +1098,18 @@ fn validate_stages(
         spec.bindings.len(),
         limits.structural,
     )?;
+    for stage in &read_tail {
+        if let ReadStage::Sort { terms } = stage
+            && terms
+                .iter()
+                .any(|term| scalar_types.get(&term.binding()) == Some(&ValueTypeTag::Duration))
+        {
+            return Err(invalid(
+                "query_plan_sort_unordered_value",
+                "sort requires an ordered value type; durations have no total order",
+            ));
+        }
+    }
     if !has_sort
         && read_tail
             .iter()
@@ -1112,6 +1125,58 @@ fn validate_stages(
     } else if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
     {
         validate_output(&spec.output, &mandatory, &optional, limits.structural)?;
+    }
+    Ok(())
+}
+
+/// TypeDB 3.14 refuses range comparisons of durations (3.13 accepted them);
+/// refuse them at build time on every profile so a plan fails the same way
+/// before reaching any server. Operands whose domain is unknown here
+/// (branch-local bindings) are left to the server.
+fn refuse_duration_ranges(
+    patterns: &[QueryPattern],
+    scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
+    inputs: &[InputColumn],
+) -> Result<(), Diagnostic> {
+    use crate::migration_assertion::ValueComparator;
+    let duration = |operand: &QueryOperand| match operand {
+        QueryOperand::Literal { value } => value.value_type() == ValueTypeTag::Duration,
+        QueryOperand::Binding { binding } => {
+            scalar_types.get(binding) == Some(&ValueTypeTag::Duration)
+        }
+        QueryOperand::Input { column } => inputs
+            .get(usize::from(column.get()))
+            .is_some_and(|input| input.value_type() == ValueTypeTag::Duration),
+    };
+    for pattern in patterns {
+        match pattern {
+            QueryPattern::Value {
+                comparator,
+                left,
+                right,
+            } if matches!(
+                comparator,
+                ValueComparator::Less
+                    | ValueComparator::LessOrEqual
+                    | ValueComparator::Greater
+                    | ValueComparator::GreaterOrEqual
+            ) && (duration(left) || duration(right)) =>
+            {
+                return Err(invalid(
+                    "query_plan_duration_range",
+                    "durations admit only equality comparison",
+                ));
+            }
+            QueryPattern::Or { branches } => {
+                for branch in branches {
+                    refuse_duration_ranges(branch, scalar_types, inputs)?;
+                }
+            }
+            QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                refuse_duration_ranges(patterns, scalar_types, inputs)?;
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

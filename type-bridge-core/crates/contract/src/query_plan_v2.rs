@@ -2126,6 +2126,7 @@ fn validate_pattern(
                     "string operators require a canonical string literal",
                 ));
             }
+            refuse_duration_range(*comparator, field.value_type())?;
             if field.value_type() == ValueTypeTag::Boolean
                 && !matches!(
                     comparator,
@@ -2161,6 +2162,7 @@ fn validate_pattern(
                     "released field-to-field comparisons do not admit string operators",
                 ));
             }
+            refuse_duration_range(*comparator, left.value_type())?;
             if left.value_type() == ValueTypeTag::Boolean
                 && !matches!(
                     comparator,
@@ -2576,6 +2578,30 @@ fn validate_window(window: QueryWindowV2) -> Result<(), Diagnostic> {
     }
 }
 
+/// TypeDB 3.14 refuses range comparisons of durations; refuse them on every
+/// profile at build time.
+fn refuse_duration_range(
+    comparator: QueryComparatorV2,
+    value_type: ValueTypeTag,
+) -> Result<(), Diagnostic> {
+    if value_type == ValueTypeTag::Duration
+        && matches!(
+            comparator,
+            QueryComparatorV2::Less
+                | QueryComparatorV2::LessOrEqual
+                | QueryComparatorV2::Greater
+                | QueryComparatorV2::GreaterOrEqual
+        )
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_plan_v2_duration_range",
+            "durations admit only equality comparison",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_stable_order(
     order: &QueryStableOrderV2,
     binding_count: usize,
@@ -2591,6 +2617,14 @@ fn validate_stable_order(
     let mut fields = BTreeSet::new();
     for term in order.terms() {
         check_field(term.field(), binding_count)?;
+        // TypeDB 3.14 refuses sorts on unordered value types (3.13 panicked).
+        if term.field().value_type() == ValueTypeTag::Duration {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_v2_sort_unordered_value",
+                "order terms require an ordered value type; durations have no total order",
+            ));
+        }
         if !fields.insert((
             term.field().binding(),
             term.field().descriptor(),

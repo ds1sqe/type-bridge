@@ -825,7 +825,7 @@ fn optional_order_rows_plan() -> QueryPlan {
     .expect("optional-order rows plan")
 }
 
-fn duration_order_rows_plan() -> QueryPlan {
+fn duration_order_rows_plan() -> Result<QueryPlan, Diagnostic> {
     let person = person();
     let elapsed = AttributeId::new("elapsed").expect("attribute");
     let person_id = AttributeId::new("person-id").expect("attribute");
@@ -919,7 +919,6 @@ fn duration_order_rows_plan() -> QueryPlan {
         ),
         semantics(),
     )
-    .expect("duration-order rows plan")
 }
 
 fn decimal_hydration_rows_plan(
@@ -1164,31 +1163,6 @@ fn optional_order_person_node(
             HydrationAttributeEvidenceV2::new(
                 AttributeId::new("nickname").expect("attribute"),
                 nickname.into_iter().map(string_value).collect(),
-            ),
-            HydrationAttributeEvidenceV2::new(
-                AttributeId::new("person-id").expect("attribute"),
-                vec![string_value(person_id)],
-            ),
-        ],
-        vec![],
-    )
-}
-
-fn duration_order_person_node(
-    id: u32,
-    iid: &str,
-    elapsed: CompatibilityValueV2,
-    person_id: &str,
-) -> HydrationNodeV2 {
-    HydrationNodeV2::new(
-        HydrationNodeIdV2::new(id),
-        iid.to_owned(),
-        person(),
-        HydrationNodeKindV2::Entity,
-        vec![
-            HydrationAttributeEvidenceV2::new(
-                AttributeId::new("elapsed").expect("attribute"),
-                vec![elapsed],
             ),
             HydrationAttributeEvidenceV2::new(
                 AttributeId::new("person-id").expect("attribute"),
@@ -2543,55 +2517,16 @@ fn reject_missing_order_matches_v1_pairwise_semantics() {
 }
 
 #[test]
-fn duration_order_uses_released_v1_component_semantics() {
-    let plan = duration_order_rows_plan();
-    let request = request(&plan, RemoteResultKindV2::HydratedRows, true);
-    let fingerprint = request.fingerprint().expect("fingerprint");
-    let day = CompatibilityValueV2::released_duration("PT24H").expect("released duration");
-    let days = CompatibilityValueV2::canonical(CanonicalValue::Duration(
-        "P30D".parse().expect("canonical duration"),
-    ));
-    let month = CompatibilityValueV2::canonical(CanonicalValue::Duration(
-        "P1M".parse().expect("canonical duration"),
-    ));
-    let graph = HydrationGraphV2::new(vec![
-        duration_order_person_node(0, "0x01", day, "person-1"),
-        duration_order_person_node(1, "0x02", days, "person-2"),
-        duration_order_person_node(2, "0x03", month, "person-3"),
-    ])
-    .expect("duration graph");
-    let row = |node| {
-        HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-            value: HydrationReferenceV2::new(person(), HydrationNodeIdV2::new(node)),
-        }])
-    };
-    assert!(
-        RemoteQueryResponseV2::new(
-            NONCE,
-            &plan,
-            &fingerprint,
-            RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows {
-                graph: graph.clone(),
-                rows: vec![row(0), row(1), row(2)],
-            },
-        )
-        .is_ok(),
-        "released V1 compares PT24H < P30D < P1M by (months, days, nanos)",
-    );
-    assert!(
-        RemoteQueryResponseV2::new(
-            NONCE,
-            &plan,
-            &fingerprint,
-            RemoteResultKindV2::HydratedRows,
-            RemoteOutcomeV2::HydratedRows {
-                graph,
-                rows: vec![row(2), row(1), row(0)],
-            },
-        )
-        .is_err(),
-        "lexical or reversed duration order must not pass as released V1 order",
+fn duration_order_is_refused_at_build_as_typedb_3_14_does() {
+    // Released V1 compared durations by (months, days, nanos) and the
+    // reply verifier checked that order; TypeDB 3.14 refuses sorting on
+    // durations, so the plan is refused before any reply exists.
+    assert_eq!(
+        duration_order_rows_plan()
+            .expect_err("duration order term")
+            .code()
+            .as_str(),
+        "query_plan_v2_sort_unordered_value"
     );
 }
 

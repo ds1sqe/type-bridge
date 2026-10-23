@@ -18,7 +18,10 @@ use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 
 use super::*;
 use crate::interceptor::{StagedWriteAuthority, V3CommitOutcome, V3PolicyPlan};
-use crate::transport::v3::{STAGED_WRITE_NOT_AUTHORIZED, staged_advertisement};
+use crate::transport::v3::{
+    STAGED_WRITE_NOT_AUTHORIZED, StagedExecutor, StagedOutcome, StagedOutcomeKind,
+    staged_advertisement,
+};
 
 struct V3Fixture {
     advertisement: RemoteCapabilities,
@@ -26,6 +29,8 @@ struct V3Fixture {
     metrics: Arc<BackendMetrics>,
     query: Arc<V2QueryState>,
     router: Router,
+    /// The library entry over the same pipeline and query state as the router.
+    executor: Arc<StagedExecutor>,
 }
 
 fn v3_fixture(pipeline: QueryPipeline, allow_unauthenticated_writes: bool) -> V3Fixture {
@@ -74,14 +79,41 @@ fn configured_v3_fixture(
         None => query,
     });
     let advertisement = staged_advertisement(&query.advertisement).expect("staged advertisement");
-    let router = create_router_with_v2(Arc::new(pipeline), Arc::clone(&query));
+    let pipeline = Arc::new(pipeline);
+    let executor = Arc::new(StagedExecutor::new(
+        Arc::clone(&pipeline),
+        Arc::clone(&query),
+    ));
+    let router = create_router_with_v2(pipeline, Arc::clone(&query));
     V3Fixture {
         advertisement,
         declared,
         metrics,
         query,
         router,
+        executor,
     }
+}
+
+/// Call the library entry the way an embedding host does: admit the caller
+/// through the pipeline, then hand over the signed request bytes.
+async fn direct(fixture: &V3Fixture, request: &StagedRequestV3) -> StagedOutcome {
+    let body = request.encode().expect("request bytes");
+    let pipeline = fixture.executor.pipeline();
+    let mut metadata = v2_request_metadata(&HeaderMap::new(), "staged");
+    metadata.insert("transport".to_owned(), serde_json::json!("v3"));
+    let mut ctx = pipeline
+        .v3_request_context(metadata)
+        .expect("v3 request context");
+    pipeline
+        .begin_v2_request(&mut ctx)
+        .await
+        .expect("transport admission");
+    let deadline = Instant::now() + fixture.query.execution_timeout;
+    fixture
+        .executor
+        .execute_staged_request(ctx, body.into(), deadline)
+        .await
 }
 
 /// The client identity the vouching test policies authenticate.
@@ -1351,4 +1383,197 @@ fn sdk_staged_advertisement_must_match_the_connection_signer() {
         )
         .expect_err("a fetched foreign advertisement is refused");
     assert_eq!(refused.code().as_str(), "query_remote_v3_advertisement_mismatch");
+}
+
+/// Records the order in which the staged hooks run.
+#[derive(Default)]
+struct OrderPolicy {
+    events: Mutex<Vec<String>>,
+}
+
+impl Interceptor for Arc<OrderPolicy> {
+    fn name(&self) -> &str {
+        "order-policy"
+    }
+
+    fn on_v2_transport<'a>(
+        &'a self,
+        ctx: &'a mut RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        ctx.client_id = VOUCHED_CLIENT.to_owned();
+        self.events.lock().expect("events").push("transport".to_owned());
+        Box::pin(async { Ok(()) })
+    }
+
+    fn on_request<'a>(
+        &'a self,
+        clauses: Vec<type_bridge_core_lib::ast::Clause>,
+        _ctx: &'a mut RequestContext,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { Ok(clauses) })
+    }
+
+    fn supports_v2(&self) -> bool {
+        true
+    }
+
+    fn supports_v3(&self) -> bool {
+        true
+    }
+
+    fn on_v3_write_authority<'a>(
+        &'a self,
+        _ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<StagedWriteAuthority, InterceptError>> + Send + 'a>>
+    {
+        self.events.lock().expect("events").push("authority".to_owned());
+        Box::pin(async { Ok(StagedWriteAuthority::Authenticated) })
+    }
+
+    fn on_v3_plan<'a>(
+        &'a self,
+        index: usize,
+        _plan: &'a V3PolicyPlan<'a>,
+        _ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        self.events.lock().expect("events").push(format!("plan:{index}"));
+        Box::pin(async { Ok(()) })
+    }
+
+    fn on_v3_commit<'a>(
+        &'a self,
+        outcome: &'a V3CommitOutcome<'a>,
+        _ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        self.events
+            .lock()
+            .expect("events")
+            .push(format!("commit:{}", outcome.committed()));
+        Box::pin(async { Ok(()) })
+    }
+
+    fn on_v2_response<'a>(
+        &'a self,
+        outcome: &'a V2PolicyOutcome<'a>,
+        _ctx: &'a RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        self.events
+            .lock()
+            .expect("events")
+            .push(format!("response:{}", outcome.code()));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn order_pipeline(policy: &Arc<OrderPolicy>) -> QueryPipeline {
+    PipelineBuilder::new(MockExecutor::new())
+        .with_default_database("server-v2-route")
+        .with_interceptor(Arc::clone(policy))
+        .build()
+        .expect("query pipeline")
+}
+
+#[tokio::test]
+async fn library_entry_runs_the_hooks_in_order_and_commits() {
+    let policy = Arc::new(OrderPolicy::default());
+    let fixture = v3_fixture(order_pipeline(&policy), false);
+    let plans = [
+        insert_plan(&fixture.declared),
+        insert_plan(&fixture.declared),
+        count_plan(&fixture.declared),
+    ];
+    let request = staged(&fixture, &plans, TEST_NONCE);
+    let outcome = direct(&fixture, &request).await;
+    assert_eq!(outcome.kind, StagedOutcomeKind::Committed);
+    assert_eq!(outcome.code, "ok");
+    let verified = verify(&fixture, &request, &outcome.reply);
+    assert!(verified.committed());
+    assert_eq!(verified.answers().len(), 3);
+    assert_eq!(
+        policy.events.lock().expect("events").clone(),
+        [
+            "transport",
+            "authority",
+            "plan:0",
+            "plan:1",
+            "plan:2",
+            "commit:true",
+            "response:ok"
+        ]
+    );
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn library_entry_refuses_before_reservation_or_io() {
+    let policy = Arc::new(HookPolicy {
+        refuse: Some("query.write.delete"),
+        ..HookPolicy::default()
+    });
+    let fixture = v3_fixture(hook_pipeline(&[&policy]), false);
+    let plans = [
+        insert_plan(&fixture.declared),
+        delete_plan(&fixture.declared),
+        count_plan(&fixture.declared),
+    ];
+    let request = staged(&fixture, &plans, TEST_NONCE);
+    let outcome = direct(&fixture, &request).await;
+    assert_eq!(outcome.kind, StagedOutcomeKind::Failed);
+    assert_eq!(outcome.code, "query_remote_policy_rejected");
+    let verified = verify(&fixture, &request, &outcome.reply);
+    assert_eq!(failure_code(&verified), "query_remote_policy_rejected");
+    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
+    assert!(policy.commits.lock().expect("commits").is_empty());
+    // Nothing was reserved: the same nonce still admits an allowed request.
+    let admitted = staged(&fixture, &plans[..1], TEST_NONCE);
+    assert_eq!(
+        direct(&fixture, &admitted).await.kind,
+        StagedOutcomeKind::Committed
+    );
+}
+
+#[tokio::test]
+async fn library_entry_reports_a_replayed_write_as_unknown() {
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
+    assert_eq!(
+        direct(&fixture, &request).await.kind,
+        StagedOutcomeKind::Committed
+    );
+    let replay = direct(&fixture, &request).await;
+    assert_eq!(replay.kind, StagedOutcomeKind::Unknown);
+    assert_eq!(replay.code, "commit_outcome_unknown");
+    assert_eq!(
+        failure_code(&verify(&fixture, &request, &replay.reply)),
+        "commit_outcome_unknown"
+    );
+    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn library_entry_and_router_answer_the_same_request_alike() {
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    let plans = [
+        insert_returning(
+            &fixture.declared,
+            WriteReturns::Rows,
+            vec![BindingId::new(0).expect("binding")],
+        ),
+        count_plan(&fixture.declared),
+    ];
+    let through_router = staged(&fixture, &plans, TEST_NONCE);
+    let routed = verify(&fixture, &through_router, &post(&fixture, &through_router).await);
+    let through_entry = staged(&fixture, &plans, "server-route-nonce-000002");
+    let outcome = direct(&fixture, &through_entry).await;
+    let entered = verify(&fixture, &through_entry, &outcome.reply);
+    assert!(routed.committed() && entered.committed());
+    assert_eq!(routed.answers(), entered.answers());
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 2);
 }

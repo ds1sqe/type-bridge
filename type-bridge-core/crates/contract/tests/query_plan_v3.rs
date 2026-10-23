@@ -1263,3 +1263,72 @@ fn removing_every_player_of_a_role_needs_a_declared_role_of_the_relation() {
         "query_plan_wrong_role_owner"
     );
 }
+
+#[test]
+fn typedb_3_14_query_rules_are_refused_at_build_on_every_profile() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
+    let shift = || {
+        vec![
+            isa(0, entity("account")).into(),
+            QueryPattern::Has {
+                owner: id(0),
+                attribute: id(1),
+                attribute_id: AttributeId::new("shift").unwrap(),
+            }
+            .into(),
+        ]
+    };
+    // Sort on a duration binding: unordered value type.
+    assert_eq!(
+        QueryPlanV3::new(
+            spec(
+                vec![
+                    Stage::Match { patterns: shift() },
+                    Stage::Sort {
+                        terms: vec![OrderTerm::new(id(1), OrderDirection::Ascending)],
+                    },
+                ],
+                vec![0],
+            ),
+            &schema_with_duration(),
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_plan_sort_unordered_value"
+    );
+    // Range comparison with a duration operand, also inside a branch.
+    let range = |comparator| {
+        let mut patterns = shift();
+        patterns.push(
+            QueryPattern::Or {
+                branches: vec![
+                    vec![QueryPattern::Value {
+                        comparator,
+                        left: QueryOperand::Binding { binding: id(1) },
+                        right: QueryOperand::Binding { binding: id(1) },
+                    }],
+                    vec![isa(0, entity("account"))],
+                ],
+            }
+            .into(),
+        );
+        QueryPlanV3::new(
+            spec(vec![Stage::Match { patterns }], vec![0]),
+            &schema_with_duration(),
+        )
+    };
+    assert_eq!(
+        range(ValueComparator::GreaterOrEqual)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_duration_range"
+    );
+    assert!(
+        range(ValueComparator::Equal).is_ok(),
+        "duration equality stays admitted"
+    );
+}
