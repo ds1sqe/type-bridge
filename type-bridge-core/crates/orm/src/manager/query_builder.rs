@@ -8,8 +8,8 @@ use std::collections::HashSet;
 
 use type_bridge_contract::id::TypeKind;
 use type_bridge_core_lib::ast::{
-    Clause, Constraint, FetchItem, FunctionCallValue, Pattern, ReduceAssignment, RolePlayer,
-    SortField, Statement, Value,
+    Clause, Constraint, FetchItem, FunctionCallValue, LetAssignment, Pattern, ReduceAssignment,
+    RolePlayer, SortField, Statement, Value,
 };
 use type_bridge_core_lib::compiler::QueryCompiler;
 
@@ -341,6 +341,72 @@ pub fn build_dynamic_entity_fetch_by_iid_exact(
     QueryCompiler::new()
         .try_compile(&clauses)
         .map_err(|error| OrmError::QueryExecution(error.to_string()))
+}
+
+/// Compile both snapshot statements without embedding a caller IID.
+pub(crate) fn build_dynamic_entity_delete_returning(
+    descriptor: &EntityDescriptor,
+) -> Result<(String, String)> {
+    dynamic_delete_returning_statements(
+        crate::_dynamic::entity_fetch_exact_clauses(descriptor, &[], "$e"),
+        &descriptor.type_name,
+        "$e",
+    )
+}
+
+pub(crate) fn build_dynamic_relation_delete_returning(
+    descriptor: &RelationDescriptor,
+) -> Result<(String, String)> {
+    dynamic_delete_returning_statements(
+        crate::_dynamic::relation_fetch_exact_clauses(descriptor, &[], "$r"),
+        &descriptor.type_name,
+        "$r",
+    )
+}
+
+fn dynamic_delete_returning_statements(
+    mut capture: Vec<Clause>,
+    type_name: &str,
+    var: &str,
+) -> Result<(String, String)> {
+    let bound_iid = || {
+        vec![
+            Clause::MatchLet(vec![LetAssignment {
+                variables: vec!["$snapshot_actual_iid".into()],
+                expression: Value::FunctionCall(FunctionCallValue {
+                    function: "iid".into(),
+                    args: vec![Value::Variable(var.into())],
+                }),
+                is_stream: false,
+            }]),
+            Clause::Match(vec![Pattern::ValueComparison {
+                var: "$snapshot_actual_iid".into(),
+                operator: "==".into(),
+                value: Value::Variable("$snapshot_iid".into()),
+            }]),
+        ]
+    };
+    let fetch = capture
+        .pop()
+        .ok_or_else(|| OrmError::Compilation("Snapshot fetch is missing".into()))?;
+    debug_assert!(matches!(fetch, Clause::Fetch(_)));
+    capture.extend(bound_iid());
+    capture.push(fetch);
+    let mut delete = vec![Clause::Match(vec![Pattern::Entity {
+        variable: var.into(),
+        type_name: type_name.into(),
+        constraints: vec![],
+        is_strict: true,
+    }])];
+    delete.extend(bound_iid());
+    delete.push(Clause::Delete(vec![Statement::DeleteThing(var.into())]));
+    let compile = |clauses: &[Clause]| {
+        QueryCompiler::new()
+            .try_compile(clauses)
+            .map(|source| format!("given $snapshot_iid: string;\n{source}"))
+            .map_err(|error| OrmError::QueryExecution(error.to_string()))
+    };
+    Ok((compile(&capture)?, compile(&delete)?))
 }
 
 /// Build a count query for a runtime entity descriptor.

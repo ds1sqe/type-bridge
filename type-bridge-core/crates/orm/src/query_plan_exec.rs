@@ -11,7 +11,7 @@
 
 use type_bridge_core_lib::__internal as tql;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
@@ -25,12 +25,13 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::query_remote::{RemoteFieldValue, RemoteValue};
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::sdk_diagnostic::FailureContext;
+use type_bridge_contract::value::ValueTypeTag;
 
 use crate::query_v2::{
     ast, failure, given_rows_spec, local_variable, lower_functions, lower_operand,
     lower_scoped_patterns, reducer_keyword,
 };
-use crate::session::backend::{GivenRowsSpec, QueryResult};
+use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult};
 use crate::session::staged::StagedQuery;
 
 /// The answer a committed plan resolves to.
@@ -232,7 +233,7 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
     let bindings = plan.bindings();
     let inputs = plan.inputs();
     let mut stages = Vec::new();
-    let given = if inputs.is_empty() {
+    let mut given = if inputs.is_empty() {
         None
     } else {
         let rows = plan.given_rows().ok_or_else(|| {
@@ -245,15 +246,68 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
         for value in rows.iter().flat_map(|row| row.values()).flatten() {
             type_bridge_schema::validate_provider_temporal_value(value)?;
         }
-        stages.push(ast(tql::given(
-            &inputs
-                .iter()
-                .map(|column| (column.public_name().as_str(), column.value_type()))
-                .collect::<Vec<_>>(),
-        ))?);
         Some(given_rows_spec(inputs, rows)?)
     };
-    let scope = Scope { bindings, inputs };
+    let snapshot_iids = snapshot_iid_inputs(plan);
+    if !snapshot_iids.is_empty() {
+        let encoding_failure = || {
+            failure(
+                DiagnosticCategory::InvalidContract,
+                "query_invocation_inputs_unencodable",
+                "snapshot input rows cannot be encoded",
+            )
+        };
+        let row_count = given.as_ref().map_or(1, |given| given.rows.len());
+        let existing_bytes = given
+            .as_ref()
+            .map_or(Ok(4), |given| {
+                serde_json::to_vec(&given.rows).map(|bytes| bytes.len())
+            })
+            .map_err(|_| encoding_failure())?;
+        let added_bytes = snapshot_iids.iter().try_fold(0_usize, |total, input| {
+            let cell = GivenValue::String(input.iid.to_ascii_lowercase());
+            let bytes = serde_json::to_vec(&cell).map_err(|_| encoding_failure())?;
+            Ok::<_, Diagnostic>(total.saturating_add(bytes.len().saturating_add(1)))
+        })?;
+        if !plan.limits().structural.allows_input_rows(row_count)
+            || !plan.limits().structural.allows_input_bytes(
+                existing_bytes.saturating_add(added_bytes.saturating_mul(row_count)),
+            )
+        {
+            return Err(plan.limits().annotate(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_invocation_input_byte_limit",
+                "snapshot input rows exceed the structural transport ceiling",
+            )));
+        }
+        let given = given.get_or_insert_with(|| GivenRowsSpec {
+            variables: Vec::new(),
+            rows: vec![Vec::new()],
+        });
+        for input in &snapshot_iids {
+            given.variables.push(input.input.clone());
+            for row in &mut given.rows {
+                row.push(GivenValue::String(input.iid.to_ascii_lowercase()));
+            }
+        }
+    }
+    if given.is_some() {
+        let mut columns: Vec<_> = inputs
+            .iter()
+            .map(|column| (column.public_name().as_str(), column.value_type()))
+            .collect();
+        columns.extend(
+            snapshot_iids
+                .iter()
+                .map(|input| (input.input.as_str(), ValueTypeTag::String)),
+        );
+        stages.push(ast(tql::given(&columns))?);
+    }
+    let mut scope = Scope {
+        bindings,
+        inputs,
+        snapshot_iids: snapshot_iids.iter(),
+    };
     let mut snapshot = None;
     for (index, stage) in plan.pipeline().iter().enumerate() {
         match stage {
@@ -638,9 +692,60 @@ fn failure_context(plan: &QueryPlanV3) -> FailureContext {
     FailureContext::default()
 }
 
+struct SnapshotIidInput<'a> {
+    iid: &'a str,
+    input: String,
+    actual: String,
+}
+
+fn snapshot_iid_inputs(plan: &QueryPlanV3) -> Vec<SnapshotIidInput<'_>> {
+    if !matches!(plan.pipeline().last(), Some(Stage::Delete { .. }))
+        || !plan
+            .pipeline()
+            .iter()
+            .any(|stage| matches!(stage, Stage::Fetch(_)))
+    {
+        return Vec::new();
+    }
+    let mut names: BTreeSet<String> = plan
+        .bindings()
+        .iter()
+        .map(|binding| binding.variable().as_str().to_owned())
+        .chain(
+            plan.inputs()
+                .iter()
+                .map(|input| input.public_name().as_str().to_owned()),
+        )
+        .collect();
+    let mut ordinal = 0;
+    let mut fresh = || loop {
+        let name = format!("delete_snapshot_iid{ordinal}");
+        ordinal += 1;
+        if names.insert(name.clone()) {
+            break name;
+        }
+    };
+    let mut result = Vec::new();
+    for stage in plan.pipeline() {
+        if let Stage::Match { patterns } = stage {
+            for pattern in patterns {
+                if let Pattern::Iid { iid, .. } = pattern {
+                    result.push(SnapshotIidInput {
+                        iid,
+                        input: fresh(),
+                        actual: fresh(),
+                    });
+                }
+            }
+        }
+    }
+    result
+}
+
 struct Scope<'a> {
     bindings: &'a [AssertionBinding],
     inputs: &'a [InputColumn],
+    snapshot_iids: std::slice::Iter<'a, SnapshotIidInput<'a>>,
 }
 
 impl Scope<'_> {
@@ -660,7 +765,7 @@ impl Scope<'_> {
     /// generated witness names stay unique. IID constraints follow, then
     /// `let` assignments in source order; the validator resolves them after
     /// every read pattern.
-    fn patterns(&self, patterns: &[Pattern]) -> Result<Vec<tql::Pattern>, Diagnostic> {
+    fn patterns(&mut self, patterns: &[Pattern]) -> Result<Vec<tql::Pattern>, Diagnostic> {
         let reads: Vec<QueryPattern> = patterns
             .iter()
             .filter_map(|pattern| match pattern {
@@ -671,10 +776,26 @@ impl Scope<'_> {
         let mut output = lower_scoped_patterns(self.inputs, self.bindings, &reads, None, None)?;
         for pattern in patterns {
             if let Pattern::Iid { binding, iid } = pattern {
-                output.push(ast(tql::thing(
-                    self.name(*binding)?,
-                    vec![ast(tql::iid(iid))?],
-                ))?);
+                if let Some(input) = self.snapshot_iids.next() {
+                    output.push(ast(tql::let_value(
+                        &[&input.actual],
+                        ast(tql::function(
+                            "iid",
+                            vec![ast(tql::var(self.name(*binding)?))?],
+                        ))?,
+                        false,
+                    ))?);
+                    output.push(ast(tql::compare(
+                        ast(tql::var(&input.actual))?,
+                        "==",
+                        ast(tql::var(&input.input))?,
+                    ))?);
+                } else {
+                    output.push(ast(tql::thing(
+                        self.name(*binding)?,
+                        vec![ast(tql::iid(iid))?],
+                    ))?);
+                }
             }
         }
         for pattern in patterns {

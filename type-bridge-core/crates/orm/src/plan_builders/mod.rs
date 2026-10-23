@@ -184,6 +184,143 @@ mod tests {
         )
     }
 
+    #[test]
+    fn delete_returning_is_opt_in_and_preserves_the_plain_delete_statement() {
+        use type_bridge_contract::query_plan::v3::{Operation, WriteReturns};
+        let authority = authority();
+        let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
+        let iid = "0x1E00000000000000000001";
+        let plain = super::write::delete_by_iid(&authority, &doctor, iid).unwrap();
+        let returning =
+            super::write::delete_by_iid_returning(&authority, &doctor, iid, vec![]).unwrap();
+        assert_eq!(
+            plain.local().operation(),
+            Operation::Write {
+                returns: WriteReturns::Matched
+            }
+        );
+        assert_eq!(
+            returning.local().operation(),
+            Operation::Write {
+                returns: WriteReturns::Rows
+            }
+        );
+        let plain = lower(plain.local()).unwrap();
+        let returning = lower(returning.local()).unwrap();
+        assert!(plain.snapshot.is_none());
+        assert!(plain.given.is_none());
+        assert!(
+            tql::equivalent(
+                &tql::render(&plain.query).unwrap(),
+                &format!("match $thing0 isa! doctor; $thing0 iid {iid}; delete $thing0;")
+            )
+            .unwrap()
+        );
+        let snapshot = tql::render(returning.snapshot.as_ref().unwrap()).unwrap();
+        let deletion = tql::render(&returning.query).unwrap();
+        for statement in [&snapshot, &deletion] {
+            assert!(!statement.contains(iid));
+            assert!(statement.contains("given $delete_snapshot_iid0: string;"));
+            assert!(statement.contains("iid($thing0)"));
+            assert!(statement.contains("$delete_snapshot_iid1 == $delete_snapshot_iid0"));
+        }
+        let given = returning.given.unwrap();
+        assert_eq!(given.variables, ["delete_snapshot_iid0"]);
+        assert_eq!(
+            given.rows,
+            [vec![crate::session::backend::GivenValue::String(
+                iid.to_ascii_lowercase()
+            )]]
+        );
+    }
+
+    #[test]
+    fn snapshot_iid_transport_preserves_existing_rows_and_avoids_name_collisions() {
+        use crate::session::backend::GivenValue;
+        use type_bridge_contract::migration_assertion::QueryVariable;
+        use type_bridge_contract::query_plan::v3::{
+            DeleteItem, Operation, Pattern, Stage, ThingDocument, WriteReturns,
+        };
+        use type_bridge_contract::query_plan::{
+            InputColumn, InputColumnId, InputRow, QueryOutput, QueryPattern,
+        };
+        use type_bridge_contract::value::ValueTypeTag;
+
+        let authority = authority();
+        let mut draft = super::PlanDraft::new(ValueTransport::Given);
+        let thing = draft.bind("delete_snapshot_iid").unwrap();
+        draft.value(text("first")).unwrap();
+        draft.inputs[0] = InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("delete_snapshot_iid1").unwrap(),
+            ValueTypeTag::String,
+            false,
+        );
+        let iid = "0x1e00000000000000000001";
+        let built = draft
+            .finish(
+                &authority,
+                vec![
+                    Stage::Match {
+                        patterns: vec![
+                            QueryPattern::Isa {
+                                binding: thing,
+                                include_subtypes: false,
+                                type_id: TypeId::new(TypeKind::Entity, "doctor").unwrap(),
+                            }
+                            .into(),
+                            Pattern::Iid {
+                                binding: thing,
+                                iid: iid.to_owned(),
+                            },
+                        ],
+                    },
+                    Stage::Fetch(ThingDocument::new(thing, vec![])),
+                    Stage::Delete {
+                        items: vec![DeleteItem::Thing { binding: thing }],
+                    },
+                ],
+                Operation::Write {
+                    returns: WriteReturns::Rows,
+                },
+                QueryOutput::Rows { columns: vec![] },
+            )
+            .unwrap();
+        for values in [vec!["first"], vec!["first", "second"]] {
+            let plan = built
+                .local()
+                .with_given_rows(
+                    values
+                        .iter()
+                        .map(|value| InputRow::new(vec![Some(text(value))]))
+                        .collect(),
+                    authority.declared(),
+                )
+                .unwrap();
+            let lowered = lower(&plan).unwrap();
+            let given = lowered.given.unwrap();
+            assert_eq!(
+                given.variables,
+                ["delete_snapshot_iid1", "delete_snapshot_iid2"]
+            );
+            assert_eq!(
+                given.rows,
+                values
+                    .iter()
+                    .map(|value| vec![
+                        GivenValue::String((*value).to_owned()),
+                        GivenValue::String(iid.to_owned()),
+                    ])
+                    .collect::<Vec<_>>()
+            );
+            for query in [lowered.query, lowered.snapshot.unwrap()] {
+                let statement = tql::render(&query).unwrap();
+                assert!(!statement.contains(iid));
+                assert!(statement.contains("$delete_snapshot_iid3 == $delete_snapshot_iid2"));
+            }
+        }
+    }
+
     fn text(value: &str) -> CanonicalValue {
         CanonicalValue::String(CanonicalString::new(value).unwrap())
     }
