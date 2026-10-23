@@ -216,8 +216,7 @@ mod tests {
     fn nested_stages_count_their_exclusive_time_once() {
         let (subscriber, times) = recorder();
         tracing::subscriber::with_default(subscriber, || {
-            let started = Instant::now();
-            {
+            let stages = || {
                 let _outer = tracing::info_span!("tb.orm.plan").entered();
                 spin(Duration::from_millis(2));
                 {
@@ -228,7 +227,14 @@ mod tests {
                 let _other = tracing::info_span!("unrelated").entered();
                 let _inner = tracing::info_span!("tb.query.compile").entered();
                 spin(Duration::from_millis(1));
-            }
+            };
+            // The first pass registers the span callsites, which a fresh
+            // process (one test per process under nextest) would otherwise
+            // charge to the outer stage.
+            stages();
+            times.take();
+            let started = Instant::now();
+            stages();
             let wall = u64::try_from(started.elapsed().as_nanos()).unwrap();
             let stages = times.take();
             assert_eq!(

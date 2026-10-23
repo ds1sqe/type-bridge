@@ -2541,6 +2541,9 @@ mod tls_mode_tests {
 
     #[test]
     fn explicit_python_tls_inputs_follow_the_canonical_truth_table() {
+        // Each test may run in its own process (nextest), so none can rely
+        // on another having initialized the interpreter.
+        Python::initialize();
         assert!(matches!(
             python_tls_mode(None, None).unwrap(),
             type_bridge_orm::TlsMode::Disabled
