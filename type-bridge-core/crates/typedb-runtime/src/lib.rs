@@ -1131,6 +1131,7 @@ const TRACE_CODE_BAND9_UPGRADE_FAILED: &str = "typedb_runtime_band9_upgrade_fail
 #[cfg(feature = "band8")]
 const TRACE_CODE_BAND8_FALLBACK_CONNECTED: &str = "typedb_runtime_band8_fallback_connected";
 const TRACE_CODE_CONNECTED: &str = "typedb_runtime_connected";
+const TRACE_CODE_UNMEASURED_SERVER: &str = "typedb_runtime_unmeasured_server";
 
 fn runtime_trace_failure_code(error: &RuntimeError) -> &'static str {
     match error {
@@ -1210,13 +1211,28 @@ fn trace_runtime_connected(
     server_version: Option<core_version::Version>,
 ) {
     match server_version {
-        Some(server_version) => tracing::info!(
-            code = TRACE_CODE_CONNECTED,
-            driver_band,
-            server_version_known = true,
-            %server_version,
-            "TypeDB runtime connected"
-        ),
+        Some(server_version) => {
+            if core_version::newer_than_measured(&server_version) {
+                let (major, minor) = core_version::MAX_SUPPORTED_LINE;
+                let newest_measured_line = format!("{major}.{minor}");
+                let semantic_profile = core_version::semantic_profile_id(&server_version)
+                    .expect("newer admitted servers have a measured fallback profile");
+                tracing::warn!(
+                    code = TRACE_CODE_UNMEASURED_SERVER,
+                    %server_version,
+                    %newest_measured_line,
+                    semantic_profile,
+                    "TypeDB server is not tested or supported by this TypeBridge release; using the newest measured semantic profile and protocol assumptions"
+                );
+            }
+            tracing::info!(
+                code = TRACE_CODE_CONNECTED,
+                driver_band,
+                server_version_known = true,
+                %server_version,
+                "TypeDB runtime connected"
+            );
+        }
         None => tracing::info!(
             code = TRACE_CODE_CONNECTED,
             driver_band,
@@ -1280,7 +1296,7 @@ impl PreparedSecureConnectOptions {
         self
     }
 
-    /// Require one of the exact provider releases owned by a generated
+    /// Require a patch floor on one of the minor lines owned by a generated
     /// package's semantic profile.
     ///
     /// This is deliberately not an arbitrary version-taking lane: the release
@@ -2016,14 +2032,8 @@ fn require_generated_server_version(
     if release.admits(&observed) {
         return Ok(());
     }
-    let required = release.server();
     Err(RuntimeError::UnsupportedVersion(
-        core_version::VersionError::FeatureUnsupported {
-            feature: "generated-package exact provider compatibility",
-            server: observed,
-            required,
-            remediation: "connect the generated package to its exact required TypeDB release",
-        },
+        release.unsupported_version(observed),
     ))
 }
 
@@ -2371,8 +2381,9 @@ impl TypeDBRuntime {
     /// any gRPC connection when no version is supplied. If HTTP discovery fails,
     /// band 8 discovers the version before upgrading to band 9 when supported.
     /// A server that requires band 9 fails closed if the upgrade fails.
-    /// Returns [`RuntimeError::UnsupportedVersion`] when the server is outside the
-    /// supported window or on a different protocol band than the driver.
+    /// Versions below the admission floor or without a compiled protocol band
+    /// return [`RuntimeError::UnsupportedVersion`]. Newer lines are admitted with
+    /// one warning: not tested or supported by this TypeBridge release.
     pub async fn connect(
         address: &str,
         username: &str,
@@ -4513,6 +4524,7 @@ mod tests {
             // discovery. Classification keys on the known server line, not
             // the negotiated driver band.
             (8, Some(core_version::Version::new(3, 12, 1))),
+            (9, Some(core_version::Version::new(3, 14, 1))),
             (8, None),
             (9, None),
         ] {
@@ -4521,6 +4533,34 @@ mod tests {
             assert!(output.contains(TRACE_CODE_CONNECTED), "{output}");
             assert!(!output.contains("WARN"), "{output}");
             assert!(!output.contains("deprecated"), "{output}");
+        }
+    }
+
+    #[test]
+    fn newer_server_connection_warns_once_with_measured_fallback_and_no_address() {
+        for version in [
+            core_version::Version::new(3, 15, 0),
+            core_version::Version::new(4, 0, 0),
+        ] {
+            let output =
+                capture_traces(|| trace_runtime_connected("PRIVATE_ENDPOINT", 9, Some(version)));
+            assert_eq!(
+                output.matches(TRACE_CODE_UNMEASURED_SERVER).count(),
+                1,
+                "{output}"
+            );
+            assert_eq!(output.matches("WARN").count(), 1, "{output}");
+            assert!(output.contains(&version.to_string()), "{output}");
+            assert!(output.contains("newest_measured_line=3.14"), "{output}");
+            assert!(
+                output.contains(core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID),
+                "{output}"
+            );
+            assert!(
+                output.contains("not tested or supported by this TypeBridge release"),
+                "{output}"
+            );
+            assert!(!output.contains("PRIVATE_ENDPOINT"), "{output}");
         }
     }
 
@@ -4555,14 +4595,14 @@ mod tests {
         let error = SecureConnectError::Runtime(RuntimeError::UnsupportedVersion(
             core_version::VersionError::Unsupported {
                 component: "server",
-                found: core_version::Version::new(3, 15, 0),
+                found: core_version::Version::new(3, 10, 4),
             },
         ));
         let diagnostic = error
             .credential_safe_diagnostic()
             .expect("closed version diagnostics remain actionable");
-        assert!(diagnostic.contains("server version 3.15.0"), "{diagnostic}");
-        assert!(diagnostic.contains("3.11.0–3.14.x"), "{diagnostic}");
+        assert!(diagnostic.contains("server version 3.10.4"), "{diagnostic}");
+        assert!(diagnostic.contains("3.11.0 or newer"), "{diagnostic}");
     }
 
     #[test]
@@ -5573,8 +5613,49 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn generated_patch_floor_gate_uses_core_admission_and_diagnostics() {
+        for (profile, observed) in [
+            (
+                core_version::TYPEDB_3_12_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 12, 7),
+            ),
+            (
+                core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 13, 9),
+            ),
+            (
+                core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 14, 1),
+            ),
+            (
+                core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(3, 15, 0),
+            ),
+            (
+                core_version::TYPEDB_3_13_SEMANTIC_PROFILE_ID,
+                core_version::Version::new(4, 0, 0),
+            ),
+        ] {
+            let release = core_version::GeneratedPackageRelease::for_profile(profile).unwrap();
+            require_generated_server_version(observed, Some(release)).unwrap();
+            let error = require_generated_server_version(
+                core_version::Version::new(3, 13, 5),
+                Some(release),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(&release.to_string()));
+            assert!(
+                SecureConnectError::Runtime(error)
+                    .credential_safe_diagnostic()
+                    .unwrap()
+                    .contains(&release.to_string())
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn generated_exact_version_rejects_after_one_probe_before_driver_construction() {
+    async fn generated_patch_floor_rejects_after_one_probe_before_driver_construction() {
         for (profile, observed, expected) in [
             (
                 core_version::TYPEDB_3_12_SEMANTIC_PROFILE_ID,
@@ -5589,7 +5670,7 @@ mod tests {
             ),
         ] {
             let release = core_version::GeneratedPackageRelease::for_profile(profile)
-                .expect("generated profiles map to an exact release");
+                .expect("generated profiles map to measured releases");
             let probe_calls = Arc::new(AtomicUsize::new(0));
             let observed_calls = Arc::clone(&probe_calls);
             let result = gated_driver_prepared_with_probe(
@@ -5610,7 +5691,7 @@ mod tests {
             )
             .await;
             let error = match result {
-                Ok(_) => panic!("a generated {profile} package requires exact TypeDB {expected}"),
+                Ok(_) => panic!("a generated {profile} package requires TypeDB {release}"),
                 Err(error) => error,
             };
 
@@ -6314,9 +6395,14 @@ mod tests {
     #[cfg(all(feature = "band8", feature = "band9"))]
     #[test]
     fn band8_discovery_negotiates_the_accepted_embedded_band() {
-        for (reported, expected_band) in
-            [("3.11.5", 8), ("3.12.3", 9), ("3.13.6", 9), ("3.14.0", 9)]
-        {
+        for (reported, expected_band) in [
+            ("3.11.5", 8),
+            ("3.12.3", 9),
+            ("3.13.6", 9),
+            ("3.14.0", 9),
+            ("3.15.0", 9),
+            ("4.0.0", 9),
+        ] {
             let Band8GrpcVersion::Validated(version) =
                 classify_band8_grpc_version("localhost:1729", Ok(reported.to_owned()))
                     .expect("supported discovery version must validate")
@@ -6326,7 +6412,7 @@ mod tests {
             assert_eq!(validate_server_band(&version).unwrap(), expected_band);
         }
         assert!(matches!(
-            classify_band8_grpc_version("localhost:1729", Ok("3.15.0".to_owned())),
+            classify_band8_grpc_version("localhost:1729", Ok("3.10.4".to_owned())),
             Err(RuntimeError::UnsupportedVersion(
                 core_version::VersionError::Unsupported { .. }
             ))

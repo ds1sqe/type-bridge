@@ -27,8 +27,8 @@ const NODE_RUNTIME_PACKAGE = process.env.TYPE_BRIDGE_NODE_PACKAGE_ROOT ?? NODE_S
 const CORE = resolve(NODE_SOURCE_PACKAGE, "../..");
 const ROOT = resolve(CORE, "..");
 const ACCEPTANCE = resolve(CORE, "crates/schema-codegen/tests/acceptance");
-// Mirrors `GeneratedPackageRelease::for_profile` (type-bridge-core `core::version`):
-// a generated package admits exactly the server release its profile names.
+// Measured acceptance releases; generated packages also admit later patches
+// on these minor lines through the Rust core's GeneratedPackageRelease rule.
 const PROFILE_SERVER_VERSIONS: Readonly<Record<string, string>> = {
   "typedb-3.12.1/v1": "3.12.3",
   "typedb-3.13.6/v1": "3.13.6",

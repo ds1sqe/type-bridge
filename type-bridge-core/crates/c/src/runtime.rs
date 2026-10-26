@@ -1656,7 +1656,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             return return_execution_error(
                 unsupported(
                     "c_database_server_version_not_exact",
-                    "The C database ABI requires the authoritative TypeDB release bound by the package semantic profile",
+                    "The C database ABI requires a detected TypeDB version admitted by the package semantic profile",
                 ),
                 out_diagnostics,
             );
@@ -1694,7 +1694,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
     })
 }
 
-/// Connect and bind one exact TypeDB 3.12.3 database to a verified C package.
+/// Connect and bind one database meeting a verified C package's patch floors.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn type_bridge_database_open_v1(
     runtime: *const TypeBridgeRuntime,
@@ -1766,7 +1766,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
             return return_execution_error(
                 unsupported(
                     "c_database_server_version_not_exact",
-                    "The C database ABI requires the authoritative TypeDB release bound by the package semantic profile",
+                    "The C database ABI requires a detected TypeDB version admitted by the package semantic profile",
                 ),
                 out_diagnostics,
             );
@@ -5440,7 +5440,7 @@ entities:
     }
 
     #[test]
-    fn exact_version_profile_and_provider_errors_are_redacted() {
+    fn patch_floor_profile_and_provider_errors_are_redacted() {
         let state = Arc::new(FakeState::default());
         let mut runtime_handle = runtime(Arc::clone(&state), Version::new(3, 12, 2));
         let mut package_handle = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "version")));
@@ -5457,13 +5457,21 @@ entities:
         );
 
         let state = Arc::new(FakeState::default());
-        let mut runtime_handle = runtime(Arc::clone(&state), Version::new(3, 12, 3));
+        let mut runtime_handle = runtime(Arc::clone(&state), Version::new(3, 12, 7));
+        let (mut database, mut diagnostics, status) =
+            unsafe { open_database(runtime_handle, package_handle, ptr::null()) };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(!database.is_null());
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
         let mut old_package = Box::into_raw(Box::new(package("typedb-3.11.5/v1", "oldprofile")));
         let (database, mut diagnostics, status) =
             unsafe { open_database(runtime_handle, old_package, ptr::null()) };
         assert_eq!(status, TypeBridgeStatus::Unsupported);
         assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
             "c_database_semantic_profile_unsupported"
