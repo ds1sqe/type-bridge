@@ -577,7 +577,7 @@ unsafe fn finish_commit(
         let outcome = handle.owner.block_on(
             tx.commit()
                 // The provider may poll on another thread; the span follows it.
-            .instrument(entry.clone()),
+                .instrument(entry.clone()),
         );
         handle.poisoned = false;
         match outcome {

@@ -9,8 +9,7 @@ use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v3::{
-    StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3,
-    VerifiedStagedReplyV3,
+    StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
 };
 use type_bridge_contract::schema::DeclaredSchema;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
