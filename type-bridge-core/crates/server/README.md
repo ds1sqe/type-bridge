@@ -57,6 +57,32 @@ commit failure as `CommitFailure` with its original text and `CommitCertainty`
 indeterminate commit may have succeeded. The existing `execute` method keeps
 returning `PipelineError` with the released error text.
 
+#### Embedding the staged executor
+
+`StagedExecutor::execute_staged_request` runs `/v3/staged` in-process,
+without axum. The host admits the caller through its pipeline and passes
+the signed request bytes; the executor returns the signed reply with the
+commit outcome.
+
+```rust,ignore
+use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcomeKind};
+
+let executor = Arc::new(StagedExecutor::new(pipeline, query_state));
+let outcome = executor.execute_staged_request(ctx, body, deadline).await;
+match outcome.kind {
+    StagedOutcomeKind::Committed => {}  // outcome.reply holds the answers
+    StagedOutcomeKind::Failed => {}     // nothing applied; outcome.code says why
+    StagedOutcomeKind::Unknown => {}    // a write may have applied: reconcile
+}
+```
+
+Hooks run in a fixed order: transport admission, `on_v3_write_authority`
+for a write, `on_v3_plan` per plan before anything is reserved, nonce
+reservation, staging and one commit, `on_v3_commit` (observe-only) once the
+outcome is known, then signing and the response policies. `on_v3_commit`
+therefore runs before the reply bytes exist; the test
+`library_entry_runs_the_hooks_in_order_and_commits` pins this order.
+
 ## Architecture
 
 ```text
@@ -260,6 +286,19 @@ executor identity, nonce, plan fingerprint, expiry, capability, and byte-budget
 checks run before provider transaction construction. Successes and failures use
 the versioned canonical remote envelope; callers should decode them through the
 one-shot request handle that created the request.
+
+### `GET /v3/capabilities` — staged advertisement
+
+Returns the signed staged advertisement after the transport policy. Clients
+pin its bytes or fingerprint and check the capabilities a plan requires
+before staging it.
+
+### `POST /v3/staged` — execute a staged plan stack
+
+Accepts the signed staged request bytes the bindings build: one or more
+query plans run in one transaction, with one commit for writes. The reply is
+signed and carries each plan's answer (matched counts, rows, documents) or
+the failure; `commit_outcome_unknown` means a write may have applied.
 
 ## Custom interceptors
 
