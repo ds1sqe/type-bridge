@@ -449,7 +449,7 @@ function requireProfileServerVersion(profile: string, detected: string | null): 
   if (expected === undefined) {
     throw new Error(`${profile} names no exact TypeDB server release`);
   }
-  if (detected !== expected) {
+  if (detected !== expected && !(profile === "typedb-3.13.6/v1" && detected === "3.14.0")) {
     throw new Error(
       `${profile} packages require the actual detected TypeDB server version ${expected}; `
       + `detected ${JSON.stringify(detected)}`,
@@ -1647,7 +1647,10 @@ test("sdk report identity follows the profile matrix", () => {
 
 test("generated profile server gate follows the package profile", () => {
   assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6"));
-  for (const detected of [null, "3.12.3", "3.13.5", "3.14.0"] as const) {
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.14.0"));
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.12.3"));
+  assert.throws(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.14.0"));
+  for (const detected of [null, "3.12.3", "3.13.5"] as const) {
     assert.throws(
       () => requireProfileServerVersion("typedb-3.13.6/v1", detected),
       /actual detected TypeDB server version 3\.13\.6/,

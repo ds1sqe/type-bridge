@@ -289,13 +289,13 @@ def _require_profile_server_version(
 ) -> Any:
     """Return {suite}'s matrix entry for ``semantic_profile``.
 
-    The detected server must be exactly the entry's live server. A generated
-    package admits exactly the server release its profile names
-    (`GeneratedPackageRelease::for_profile` in type-bridge-core `core::version`);
-    the queries matrix is that table for the acceptance profiles.
+    TypeDB 3.14.0 shares the 3.13.6 semantic profile, as in test.sh.
+    Other releases must match the entry's live server exactly.
     """
     identity = _profile_matrix().select(suite, semantic_profile, error=_matrix_error)
-    if detected != identity.live_server_version:
+    if detected != identity.live_server_version and not (
+        semantic_profile == "typedb-3.13.6/v1" and detected == "3.14.0"
+    ):
         raise AssertionError(
             f"{semantic_profile} packages require the actual detected TypeDB server "
             f"version {identity.live_server_version}; detected {detected!r}"
@@ -1948,6 +1948,11 @@ def test_generated_profile_server_gate_reads_the_matrix() -> None:
     for profile, server in (("typedb-3.12.1/v1", "3.12.3"), ("typedb-3.13.6/v1", "3.13.6")):
         assert _require_profile_server_version(profile, server).semantic_profile == profile
         for detected in (None, "3.11.5", "3.12.2", "3.13.5", "3.14.0"):
+            if profile == "typedb-3.13.6/v1" and detected == "3.14.0":
+                assert (
+                    _require_profile_server_version(profile, detected).semantic_profile == profile
+                )
+                continue
             with pytest.raises(
                 AssertionError, match=f"actual detected TypeDB server version {server}"
             ):
