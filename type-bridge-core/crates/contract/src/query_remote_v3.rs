@@ -360,10 +360,10 @@ impl StagedRequestV3 {
             .cloned()
             .map(|p| StagedPlanV3::rebuild(p, schema, limits))
             .collect::<Result<Vec<_>, _>>()?;
-        let writes = plans
-            .iter()
-            .filter(|p| matches!(p.plan.operation(), Operation::Write { .. }))
-            .count();
+        let (reads, writes) = plans.iter().fold((0, 0), |(reads, writes), entry| {
+            let (plan_reads, plan_writes) = entry.plan.statement_counts();
+            (reads + plan_reads, writes + plan_writes)
+        });
         if wire.kind == Some(StagedKindV3::Schema)
             || (writes > 0 && wire.kind == Some(StagedKindV3::Read))
         {
@@ -373,7 +373,7 @@ impl StagedRequestV3 {
             ));
         }
         if writes > wire.limits.max_write_statements as usize
-            || plans.len() - writes > wire.limits.max_read_statements as usize
+            || reads > wire.limits.max_read_statements as usize
         {
             return Err(limit(
                 "query_remote_v3_statement_limit",

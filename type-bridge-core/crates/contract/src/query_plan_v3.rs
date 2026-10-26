@@ -666,6 +666,19 @@ impl QueryPlanV3 {
     pub fn format(&self) -> &str {
         &self.format
     }
+    /// Provider read/write statements charged to a staged request's budgets.
+    /// A deletion snapshot adds a capture read before its write statement.
+    #[must_use]
+    pub fn statement_counts(&self) -> (usize, usize) {
+        let writes = usize::from(self.writes());
+        let capture = usize::from(
+            self.pipeline
+                .windows(2)
+                .any(|pair| matches!(pair, [Stage::Fetch(_), Stage::Delete { .. }])),
+        );
+        (1 - writes + capture, writes)
+    }
+
     /// Receiver-owned limits retained during trusted construction.
     #[must_use]
     pub const fn limits(&self) -> QueryLimits {

@@ -921,3 +921,37 @@ fn deletion_snapshots_require_capability_and_verify_signed_pre_images() {
         assert_eq!(std::fs::read(root.join(name)).unwrap(), bytes);
     }
 }
+
+#[test]
+fn deletion_snapshot_capture_consumes_the_read_statement_budget() {
+    let schema = support::schema();
+    let read = examples::expression_plan(type_bridge_contract::query_plan::v3::Expr::Operand(
+        support::literal(2),
+    ))
+    .with_operation(Operation::Count, &schema)
+    .unwrap();
+    let snapshot = examples::delete_returning(false);
+    assert_eq!(read.statement_counts(), (1, 0));
+    assert_eq!(examples::purchase().statement_counts(), (0, 1));
+    assert_eq!(examples::batch().statement_counts(), (0, 1));
+    assert_eq!(snapshot.statement_counts(), (1, 1));
+    let old = advertisement();
+    let mut caps = old.capabilities().clone();
+    caps.insert(CapabilityId::new("query.write.delete-snapshot").unwrap());
+    let ad = RemoteCapabilities::new(caps, old.executor().clone(), Keys::new().public_key());
+    for count in [2, 3] {
+        let mut spec = spec();
+        spec.limits.max_read_statements = 3;
+        spec.plans = vec![entry(read.clone()); count];
+        spec.plans.push(entry(snapshot.clone()));
+        let result = StagedRequestV3::new(spec, &schema, &ad);
+        if count == 2 {
+            assert!(result.is_ok());
+        } else {
+            assert_eq!(
+                result.unwrap_err().code().as_str(),
+                "query_remote_v3_statement_limit"
+            );
+        }
+    }
+}

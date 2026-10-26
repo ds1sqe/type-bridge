@@ -441,7 +441,8 @@ The builder has no attach, players-deletion or iid call; such plans are construc
 
 Plain plans lower their stages into one pipeline. Opt-in deletion snapshots
 lower to a capture statement followed by a deletion statement in the same
-write transaction. Both use the same read-only prefix and given rows. Capture
+write transaction. A snapshot charges one read and one write statement to the
+staged request budgets. Both use the same read-only prefix and given rows. Capture
 is bounded and schema-validated before deletion; any failure aborts the staged
 stack or makes a borrowed transaction rollback-only. Snapshot role expansion
 uses optional matches so it cannot silently remove a deletion target; required
