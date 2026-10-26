@@ -289,10 +289,9 @@ def _require_profile_server_version(
 ) -> Any:
     """Return {suite}'s matrix entry for ``semantic_profile``.
 
-    The detected server must be exactly the entry's live server. A generated
-    package admits exactly the server release its profile names
-    (`GeneratedPackageRelease::for_profile` in type-bridge-core `core::version`);
-    the queries matrix is that table for the acceptance profiles.
+    The detected server must be exactly the entry's measured live server.
+    Generated packages also admit later patches on that minor line; this
+    acceptance matrix records only the measured releases.
     """
     identity = _profile_matrix().select(suite, semantic_profile, error=_matrix_error)
     if detected != identity.live_server_version:

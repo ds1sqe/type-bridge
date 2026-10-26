@@ -24,7 +24,7 @@ from type_bridge_core import min_supported_version as min_supported_version
 
 
 class UnsupportedVersionError(type_bridge_core.VersionError):
-    """Raised when the driver/server pair falls outside the support window or spans
+    """Raised when the driver/server pair is below the admission floor or spans
     incompatible protocol bands.
 
     The exception message contains both detected version strings and a
@@ -38,7 +38,7 @@ class UnsupportedVersionError(type_bridge_core.VersionError):
 
 
 def ensure_supported(driver: str, server: str) -> None:
-    """Assert that a driver/server version pair is within the support window and band.
+    """Assert that a driver/server pair meets the admission floor and protocol band.
 
     Translates ``type_bridge_core.VersionError`` into
     :class:`UnsupportedVersionError` so all version-gate failures surface as the
@@ -50,7 +50,7 @@ def ensure_supported(driver: str, server: str) -> None:
         server: Detected server version string (e.g. ``"3.11.5"``).
 
     Raises:
-        UnsupportedVersionError: When the pair violates the window or crosses
+        UnsupportedVersionError: When the pair is below the admission floor or crosses
             protocol bands.  The message names both versions and a remediation
             hint.
     """
@@ -61,15 +61,18 @@ def ensure_supported(driver: str, server: str) -> None:
 
 
 def ensure_runtime_supported(server: str) -> None:
-    """Assert the embedded Rust runtime can serve the detected server.
+    """Check the embedded runtime's version admission for the detected server.
 
     Every TypeBridge transaction executes through the Rust runtime's own
     typedb-driver, and the default build embeds drivers covering the full
-    supported window (3.11–3.14; confirmed 3.12, 3.13 and 3.14 servers normally
-    negotiate embedded band 9, with band 8 retained for discovery/fallback).  Core makes
+    measured lines (3.11–3.14; confirmed 3.12, 3.13 and 3.14 servers normally
+    negotiate embedded band 9, with band 8 retained for discovery/fallback).
+    Newer versions are admitted using the newest measured assumptions and
+    are not tested or supported by this TypeBridge release. The runtime emits
+    one warning per connection to a newer line. Core makes
     the decision using band-set intersection —
     the band set is derived from the compiled features in the Rust runtime
-    (``check_server_supported`` reads them directly), so any in-window server
+    (``check_server_supported`` reads them directly), so any admitted server
     is accepted by the default build.  This wrapper only reframes the failure
     — the "install a different typedb-driver" remediation does not apply to a
     driver compiled into the wheel.
@@ -78,20 +81,19 @@ def ensure_runtime_supported(server: str) -> None:
         server: Detected server version string.
 
     Raises:
-        UnsupportedVersionError: When the server is outside the supported window
+        UnsupportedVersionError: When the server is below the admission floor
             or (in a non-default single-band build) its band is not compiled in.
-            The message names the supported window and gives wheel-appropriate
+            The message names the admission floor and gives wheel-appropriate
             remediation.
     """
     try:
         _check_server_supported(server)
     except type_bridge_core.VersionError as exc:
         min_v = min_supported_version()
-        max_l = max_supported_line()
         raise UnsupportedVersionError(
             f"TypeBridge's embedded runtime does not support server {server}: {exc} "
-            f"(use a TypeDB server in the supported window {min_v}–{max_l}.x, "
-            f"or upgrade to a type-bridge release that covers this server line)"
+            f"(minimum admitted version {min_v}; use a type-bridge release "
+            f"with a compatible embedded protocol driver)"
         ) from exc
 
 

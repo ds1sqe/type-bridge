@@ -106,10 +106,11 @@ class TestEnsureSupportedWindowBoundaries:
             for server in ("3.12.0", "3.13.0", "3.13.99", "3.14.0"):
                 version.ensure_supported(driver, server)
 
-    def test_above_ceiling_raises(self):
-        """Server 3.15.0 is above the 3.14 ceiling line — must reject."""
-        with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.14.0", "3.15.0")
+    @pytest.mark.parametrize("server", ["3.15.0", "4.0.0"])
+    def test_newer_server_uses_measured_protocol_assumptions(self, server: str):
+        """Newer lines are admitted without claiming measured compatibility."""
+        version.ensure_supported("3.14.0", server)
+        assert version.band(server) == version.band("3.14.0")
 
     def test_ancient_version_raises(self):
         """Server 2.9.0 is a TypeDB 2.x version far below the floor — must reject."""
@@ -420,21 +421,21 @@ class TestCreateDriverOptionsBandNone:
     """Unknown band raises UnsupportedVersionError naming the installed version."""
 
     def test_unknown_band_raises(self, monkeypatch: pytest.MonkeyPatch):
-        """driver_version 3.15.0 maps to band None → UnsupportedVersionError."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.15.0")
+        """driver_version 3.10.0 maps to band None → UnsupportedVersionError."""
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.10.0")
         with pytest.raises(version.UnsupportedVersionError):
             _typedb_driver_mod.create_driver_options()
 
     def test_unknown_band_message_contains_version(self, monkeypatch: pytest.MonkeyPatch):
         """UnsupportedVersionError message must name the rejected version."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.15.0")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.10.0")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             _typedb_driver_mod.create_driver_options()
-        assert "3.15.0" in str(exc_info.value)
+        assert "3.10.0" in str(exc_info.value)
 
     def test_unknown_band_message_no_band_numbers(self, monkeypatch: pytest.MonkeyPatch):
         """UnsupportedVersionError message must not expose raw band numbers."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.15.0")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.10.0")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             _typedb_driver_mod.create_driver_options()
         msg = str(exc_info.value)
@@ -444,7 +445,7 @@ class TestCreateDriverOptionsBandNone:
 
     def test_unknown_band_message_is_interpreter_safe(self, monkeypatch: pytest.MonkeyPatch):
         """Remediation never recommends a native driver unavailable to this interpreter."""
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.15.0")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.10.0")
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
             _typedb_driver_mod.create_driver_options()
         msg = str(exc_info.value)
@@ -818,16 +819,10 @@ class TestEnsureRuntimeSupported:
         """Server 3.13.6 is served by the embedded band-9 driver."""
         version.ensure_runtime_supported("3.13.6")
 
-    def test_above_window_raises_with_embedded_framing(self):
-        """Server above the window (3.15.0) raises with wheel-appropriate framing."""
-        with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            version.ensure_runtime_supported("3.15.0")
-        msg = str(exc_info.value)
-        assert "3.15.0" in msg
-        assert "3.11" in msg
-        assert "band 7" not in msg
-        assert "band 8" not in msg
-        assert "0.0.0" not in msg
+    @pytest.mark.parametrize("server", ["3.15.0", "4.0.0"])
+    def test_newer_server_is_admitted(self, server: str):
+        """The Rust runtime owns warning emission on an actual connection."""
+        version.ensure_runtime_supported(server)
 
     def test_window_message_no_band_tokens(self):
         """Out-of-window embedded message must not expose raw band numbers."""

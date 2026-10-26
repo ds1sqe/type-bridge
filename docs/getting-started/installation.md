@@ -21,13 +21,17 @@ semantic engine.
 
 ## TypeDB versions
 
-Run the newest supported TypeDB, currently 3.14.0. TypeBridge adds each new
-TypeDB minor line in its next release. The current window, verified tags,
-protocol bands, and migration pairs are in
+Run the newest supported TypeDB, currently 3.14.0. Supported lines are the
+measured 3.11–3.14 lines with profile patch floors. General version admission
+accepts >=3.11.0. Newer lines are admitted with one warning per connection:
+"not tested or supported by this TypeBridge release". They reuse the newest
+measured profile and protocol assumptions without a compatibility guarantee.
+Verified tags, protocol bands, and migration pairs are in
 [TypeDB integration](../development/typedb.md#server-and-driver-compatibility).
 
 | TypeBridge | TypeDB servers | Protocol bands |
 | --- | --- | --- |
+| Unreleased | Admits >=3.11.0; supported lines 3.11–3.14; newer lines warn | 8, 9 (newer lines reuse measured assumptions) |
 | 2.3.1–2.3.2 | 3.11–3.14 | 8, 9 (3.14 shares profile `typedb-3.13.6/v1`) |
 | 2.3.0 | 3.11–3.13 | 8, 9 |
 | 2.1.0–2.2.6 | 3.11–3.12 | 8, 9 (3.8 and 3.10 removed in 2.1.0) |
@@ -41,9 +45,11 @@ protocol bands, and migration pairs are in
 Requirements:
 
 - CPython 3.12–3.14
-- TypeDB 3.11–3.14 for generated CRUD/query operations; exactly 3.12.3,
-  3.13.6 or 3.14.0, matching the workspace semantic profile, for connected V2 migration
-  apply/verify/adopt
+- TypeDB >=3.11.0 is admitted; supported lines are the measured 3.11–3.14
+  lines. Connected migrations also enforce the workspace profile floors:
+  3.12.3+ on 3.12, or 3.13.6+/3.14.0+ and newer lines on the newest profile.
+
+Here, `+` admits later patches on the same minor line; it does not admit a new minor line.
 
 ```bash
 pip install type-bridge

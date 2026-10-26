@@ -11,11 +11,19 @@ replaces it, and the behaviour changes you may notice. The
 
 | Use | TypeDB |
 | --- | --- |
-| Queries and CRUD | 3.11.0 to 3.14.x from 2.3.1 (3.11.0 to 3.13.x in 2.3.0); newer lines are refused |
+| Queries and CRUD | Admits >=3.11.0; measured, supported lines remain 3.11–3.14; newer lines warn |
 | Recommended server, default in `docker-compose.yml` and `test.sh` | 3.14.0 (3.13.6 in 2.3.0) |
 | Staged plans with input rows (the `given` stage) | 3.12 or newer |
-| Migrations on profile `typedb-3.12.1/v1` | exactly 3.12.3 |
-| Migrations on profile `typedb-3.13.6/v1` | exactly 3.13.6, or 3.14.0 from 2.3.1 |
+| Migrations on profile `typedb-3.12.1/v1` | 3.12.3+ |
+| Migrations on profile `typedb-3.13.6/v1` | 3.13.6+, 3.14.0+, and newer lines |
+
+`+` admits later patches on the same minor line. The measured release pins
+remain unchanged. Earlier 2.3 releases required exact patches.
+Newer lines reuse the newest measured profile and protocol assumptions and
+warn once per connection that they are
+"not tested or supported by this TypeBridge release". Admission does not
+guarantee compatibility. Versions below 3.11.0 remain refused; older workspace
+profiles still reject mismatched server lines.
 
 TypeDB 3.11 support is deprecated in 2.3 and removed in 2.4.0; move 3.11
 servers to 3.12, 3.13 or 3.14 before upgrading to 2.4.

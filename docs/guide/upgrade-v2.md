@@ -155,8 +155,8 @@ retry over plaintext.
 - No application imports `type_bridge.models`, handwritten Node descriptors,
   or Rust ORM derive/schema-authoring APIs.
 - Generated application operations pass on TypeDB 3.11 and/or 3.12; connected
-  migration apply/verify/adopt pass on exactly 3.12.3 and reject other versions
-  before database mutation.
+  migration apply/verify/adopt pass on the workspace profile's admitted patch
+  floors and reject unsupported profile/server pairs before database mutation.
 - Archived migration adoption and a subsequent canonical V2 migration replay
   from empty.
 - Wheel, npm package, generated Rust crate, CLI, and server candidates contain
