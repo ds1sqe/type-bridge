@@ -10,23 +10,42 @@
     "public_support_authorized": false
   },
   "abi": {
-    "decision": "additive-1.7",
-    "version": "1.7.0",
+    "decision": "additive-1.8",
+    "version": "1.8.0",
     "package_metadata_version": "1.6.0",
-    "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.7.0; CMake reports 1.7.0 and accepts 1.6 and 1.7 requests, EXACT included.",
+    "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.8.0; CMake reports 1.8.0 and accepts 1.6, 1.7 and 1.8 requests, EXACT included.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "2175e02b04cf829c469e542ab08a27dc954054dbfc46068925116d819e336fc1",
+    "contract_sha256": "d72129cbd97186068fcda5d6d29c7fd29307c210e1b20c1b16362e654b6c516d",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
       6,
-      7
+      7,
+      8
     ],
     "added_exports": [
       "type_bridge_database_transaction",
+      "type_bridge_document_attribute_boolean",
+      "type_bridge_document_attribute_count",
+      "type_bridge_document_attribute_date",
+      "type_bridge_document_attribute_datetime",
+      "type_bridge_document_attribute_datetime_tz",
+      "type_bridge_document_attribute_decimal",
+      "type_bridge_document_attribute_double",
+      "type_bridge_document_attribute_duration",
+      "type_bridge_document_attribute_kind",
+      "type_bridge_document_attribute_long",
+      "type_bridge_document_attribute_string",
+      "type_bridge_document_iid",
+      "type_bridge_document_role",
+      "type_bridge_document_type",
       "type_bridge_execution_diagnostics_failure_get_v1",
       "type_bridge_pending_answer",
+      "type_bridge_pending_document",
+      "type_bridge_pending_document_count",
       "type_bridge_pending_free",
+      "type_bridge_pending_row",
+      "type_bridge_pending_row_count",
       "type_bridge_plan_builder_build",
       "type_bridge_plan_builder_compare",
       "type_bridge_plan_builder_count",
@@ -73,6 +92,16 @@
       "type_bridge_proxy_connection_transaction",
       "type_bridge_proxy_query_execute_v1",
       "type_bridge_query_session_open_with_limits_v1",
+      "type_bridge_row_value_boolean",
+      "type_bridge_row_value_date",
+      "type_bridge_row_value_datetime",
+      "type_bridge_row_value_datetime_tz",
+      "type_bridge_row_value_decimal",
+      "type_bridge_row_value_double",
+      "type_bridge_row_value_duration",
+      "type_bridge_row_value_kind",
+      "type_bridge_row_value_long",
+      "type_bridge_row_value_string",
       "type_bridge_staged_transaction_close",
       "type_bridge_staged_transaction_commit",
       "type_bridge_staged_transaction_rollback",
@@ -106,7 +135,7 @@
   },
   "compatibility": {
     "runtime_abi": {
-      "exact": "1.7.0"
+      "exact": "1.8.0"
     },
     "required_pre_io_checks": [
       "product-version",
@@ -261,19 +290,19 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "2413804dd7f4a91d12f73dae896b5f60be213775020916c8068cfc0884c14adb"
+      "sha256": "a0c79d941a08b665f46c212d8c739636f16354b8d6ede1b8460756dacf221099"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",
-      "sha256": "e07854b1ba2d53656f68870827443962df4f822020aa899de2194aaf50c7de7b"
+      "sha256": "e8a897f76ec2b8d02f0fb13896626c3aec158b4a84926f99e1b1f9a6374c51fa"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.cmake.in",
-      "sha256": "5b3a03ff97bedd3001a333a6518807921cb945ff3ace8bd910a0709a96553148"
+      "sha256": "a30e386e983808f1994a39f6f94bdee92bd2e101f4bfb8cc8009c2aef3796357"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in",
-      "sha256": "a496beec69861638bf8088b8a44ca1eb627e6121f4e401c1298b731f009dcf0b"
+      "sha256": "12bb8ce9c85bd946e2e138c2f019ab9d730bb5718f58250b2a826b1c1f63f750"
     }
   ]
 }

@@ -306,6 +306,60 @@ opens the same transaction on a proxy connection. It fetches the server's
 staged advertisement at open; commit is one signed exchange that carries every
 staged plan. The transaction may outlive the connection.
 
+### Reading answers (ABI 1.8)
+
+`type_bridge_pending_answer` reports `DOCUMENTS` with its document count for
+a fetch plan, or `ROWS` with its row count for a projected row plan. Read
+individual values through borrowed cursors after commit:
+
+```c
+const type_bridge_document_t *doc = NULL, *buyer = NULL;
+type_bridge_byte_view_t type = {NULL, 0u}, order_id = {NULL, 0u};
+size_t count = 0u;
+assert(type_bridge_pending_document_count(pending, &count) == TYPE_BRIDGE_STATUS_OK);
+assert(count == 1u);
+assert(type_bridge_pending_document(pending, 0u, &doc) == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_document_type(doc, &type) == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_document_attribute_string(doc, view("order-id"), 0u, &order_id)
+       == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_document_role(doc, 0u, &buyer) == TYPE_BRIDGE_STATUS_OK);
+```
+
+For a row plan that projects a scalar variable:
+
+```c
+const type_bridge_row_t *row = NULL;
+type_bridge_value_kind_t kind;
+type_bridge_byte_view_t order_id = {NULL, 0u};
+assert(type_bridge_pending_row(pending, 0u, &row) == TYPE_BRIDGE_STATUS_OK);
+assert(type_bridge_row_value_kind(row, view("purchase_order_id"), &kind)
+       == TYPE_BRIDGE_STATUS_OK);
+assert(kind == TYPE_BRIDGE_VALUE_STRING);
+assert(type_bridge_row_value_string(row, view("purchase_order_id"), &order_id)
+       == TYPE_BRIDGE_STATUS_OK);
+```
+
+Include `<assert.h>` for these checked examples. Cursors and all returned
+byte views borrow from `pending` until `type_bridge_pending_free`; the plan
+and transaction may be freed earlier. Copy any bytes that must outlive the
+pending handle. Cursor calls allocate nothing.
+
+`document_attribute_count` returns zero for an absent schema-owned attribute;
+a scalar has one value and a collection is indexed in its returned order.
+`document_attribute_kind` lets callers select the typed getter for an element.
+`document_role` returns `OK` and null for an absent optional player.
+Unknown fields, wrong kinds, foreign cursor kinds and out-of-range indices
+return `INVALID_ARGUMENT`. Before commit, pending cursors return `IN_USE`;
+failed or discarded answers return `EXECUTION_FAILED`. Disjoint outputs are
+zeroed on failure; overlapping outputs are rejected without changing inputs.
+
+Both cursor types have string, long, double, boolean, date, datetime,
+datetime_tz, decimal and duration getters. Doubles return IEEE-754 bits,
+booleans return 0/1, and temporal/decimal getters borrow canonical UTF-8
+text. Row names are projected variables without `$`; absent, thing and list
+row cells expose their kind and refuse scalar getters. Use a document fetch
+to inspect a thing's identity, attributes and players.
+
 ### Typed failures
 
 `type_bridge_execution_diagnostics_failure_get_v1` reads the typed provider
@@ -318,19 +372,21 @@ purchases racing for the last item end with one commit and one rejected
 commit whose failure is a retry-safe `STC2` conflict with
 `TYPE_BRIDGE_FAILURE_LOCK_EXCLUSIVE`; see [Concurrency](concurrency.md).
 
-### Require ABI 1.7
+<a id="require-abi-17"></a>
 
-The 1.7 runtime serves 1.6 consumers unchanged: CMake accepts
+### Require ABI 1.8
+
+The 1.8 runtime serves 1.6 and 1.7 consumers unchanged: CMake accepts
 `find_package(TypeBridge 1.6.0 EXACT)` and pkg-config keeps
-`type-bridge = 1.6.0` resolving. Applications that use the 1.7 surface
+`type-bridge = 1.6.0` resolving. Applications that use the new answer cursors
 require it explicitly:
 
 ```cmake
-find_package(TypeBridge 1.7 CONFIG REQUIRED)
+find_package(TypeBridge 1.8 CONFIG REQUIRED)
 ```
 
 ```text
-Requires: type-bridge-abi >= 1.7.0
+Requires: type-bridge-abi >= 1.8.0
 ```
 
 The runtime's pkg-config file keeps `Version: 1.6.0` and provides

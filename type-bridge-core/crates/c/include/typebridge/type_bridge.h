@@ -30,7 +30,7 @@
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 7u
+#define TYPE_BRIDGE_C_ABI_MINOR 8u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -1239,7 +1239,8 @@ typedef enum type_bridge_plan_answer_kind {
     TYPE_BRIDGE_PLAN_ANSWER_ROWS = 1,
     TYPE_BRIDGE_PLAN_ANSWER_COUNT = 2,
     TYPE_BRIDGE_PLAN_ANSWER_EXISTS = 3,
-    TYPE_BRIDGE_PLAN_ANSWER_MATCHED = 4
+    TYPE_BRIDGE_PLAN_ANSWER_MATCHED = 4,
+    TYPE_BRIDGE_PLAN_ANSWER_DOCUMENTS = 5
 } type_bridge_plan_answer_kind_t;
 
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1279,7 +1280,7 @@ TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
 type_bridge_staged_transaction_close(
     type_bridge_staged_transaction_t **transaction);
 
-/* Rows report the row count as the value; exists reports 0 or 1. Before a
+/* Rows and documents report their count as the value; exists reports 0 or 1. Before a
  * commit this returns TYPE_BRIDGE_STATUS_IN_USE; after a failed commit,
  * rollback or close it returns TYPE_BRIDGE_STATUS_EXECUTION_FAILED. A
  * non-OK status leaves both outputs zero. */
@@ -1289,6 +1290,90 @@ type_bridge_pending_answer(
     type_bridge_plan_answer_kind_t *out_kind, uint64_t *out_value);
 TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
 type_bridge_pending_free(type_bridge_pending_t **pending);
+
+/* ABI 1.8: immutable borrowed answer cursors. Every cursor and returned
+ * byte view expires at pending_free; the transaction and plan may be freed
+ * earlier. Getters allocate nothing. Null/foreign cursor kinds, wrong value
+ * kinds, unknown fields and out-of-range indices return INVALID_ARGUMENT.
+ * Pending cursors return IN_USE before commit and EXECUTION_FAILED after
+ * a failed commit/rollback/close. Disjoint outputs are zeroed on errors;
+ * outputs overlapping inputs or retained answer bytes are rejected untouched.
+ * Double outputs are IEEE-754 bits; boolean outputs are 0/1; temporal and
+ * decimal outputs borrow canonical UTF-8 text. Row getters take the projected
+ * variable name, without '$'. Thing/absent/list row cells have no scalar getter.
+ */
+typedef struct type_bridge_document type_bridge_document_t;
+typedef struct type_bridge_row type_bridge_row_t;
+typedef uint32_t type_bridge_value_kind_t;
+#define TYPE_BRIDGE_VALUE_ABSENT ((type_bridge_value_kind_t)0)
+#define TYPE_BRIDGE_VALUE_STRING ((type_bridge_value_kind_t)1)
+#define TYPE_BRIDGE_VALUE_LONG ((type_bridge_value_kind_t)2)
+#define TYPE_BRIDGE_VALUE_DOUBLE ((type_bridge_value_kind_t)3)
+#define TYPE_BRIDGE_VALUE_BOOLEAN ((type_bridge_value_kind_t)4)
+#define TYPE_BRIDGE_VALUE_DATE ((type_bridge_value_kind_t)5)
+#define TYPE_BRIDGE_VALUE_DATETIME ((type_bridge_value_kind_t)6)
+#define TYPE_BRIDGE_VALUE_DATETIME_TZ ((type_bridge_value_kind_t)7)
+#define TYPE_BRIDGE_VALUE_DECIMAL ((type_bridge_value_kind_t)8)
+#define TYPE_BRIDGE_VALUE_DURATION ((type_bridge_value_kind_t)9)
+#define TYPE_BRIDGE_VALUE_LIST ((type_bridge_value_kind_t)10)
+#define TYPE_BRIDGE_VALUE_THING ((type_bridge_value_kind_t)11)
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_document_count(const type_bridge_pending_t *pending, size_t *out_count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_document(const type_bridge_pending_t *pending, size_t index, const type_bridge_document_t **out_document);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_row_count(const type_bridge_pending_t *pending, size_t *out_count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_row(const type_bridge_pending_t *pending, size_t index, const type_bridge_row_t **out_row);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_iid(const type_bridge_document_t *doc, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_type(const type_bridge_document_t *doc, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_count(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t *out_count);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_kind(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_value_kind_t *out_kind);
+/* Optional absent players return OK and a null cursor. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_role(const type_bridge_document_t *doc, size_t index, const type_bridge_document_t **out_player);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_kind(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_value_kind_t *out_kind);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_string(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_string(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_long(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, int64_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_long(const type_bridge_row_t *row, type_bridge_byte_view_t variable, int64_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_double(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, uint64_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_double(const type_bridge_row_t *row, type_bridge_byte_view_t variable, uint64_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_boolean(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, uint8_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_boolean(const type_bridge_row_t *row, type_bridge_byte_view_t variable, uint8_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_date(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_date(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_datetime(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_datetime(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_datetime_tz(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_datetime_tz(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_decimal(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_decimal(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_document_attribute_duration(const type_bridge_document_t *doc, type_bridge_byte_view_t label, size_t index, type_bridge_byte_view_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_row_value_duration(const type_bridge_row_t *row, type_bridge_byte_view_t variable, type_bridge_byte_view_t *out_value);
 
 /*
  * ABI 1.7: the plan builder. It forwards to the one core builder every SDK

@@ -82,11 +82,11 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     contract = _load("tests/contracts/c-abi.json")
     header = ROOT / contract["header"]
     assert hashlib.sha256(header.read_bytes()).hexdigest() == contract["header_sha256"]
-    assert contract["version"] == "1.7.0"
+    assert contract["version"] == "1.8.0"
     assert not any(key.startswith("parent_") for key in contract)
     exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", header.read_text()))
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 395
+    assert len(exports) == 423
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
@@ -105,7 +105,34 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
             "value_date value_datetime value_datetime_tz value_decimal value_duration"
         ).split()
     }
-    assert exports == previous_exports | builder | {
+    cursors = {
+        f"type_bridge_{prefix}_{suffix}"
+        for prefix in ("document_attribute", "row_value")
+        for suffix in (
+            "string",
+            "long",
+            "double",
+            "boolean",
+            "date",
+            "datetime",
+            "datetime_tz",
+            "decimal",
+            "duration",
+        )
+    }
+    cursors |= {
+        "type_bridge_pending_document_count",
+        "type_bridge_pending_document",
+        "type_bridge_pending_row_count",
+        "type_bridge_pending_row",
+        "type_bridge_document_iid",
+        "type_bridge_document_type",
+        "type_bridge_document_role",
+        "type_bridge_document_attribute_count",
+        "type_bridge_document_attribute_kind",
+        "type_bridge_row_value_kind",
+    }
+    assert exports == previous_exports | builder | cursors | {
         "type_bridge_write_transaction_rollback_keep",
         "type_bridge_plan_v3_decode",
         "type_bridge_plan_v3_canonical_bytes",

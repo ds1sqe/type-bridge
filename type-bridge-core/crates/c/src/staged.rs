@@ -12,9 +12,10 @@
 //! output is cleared before any other check, so it is initialized on every
 //! path.
 
+use crate::staged_answers::PendingState;
 use std::mem::size_of;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tracing::Instrument as _;
 
 use type_bridge_contract::diagnostic::Diagnostic;
@@ -24,7 +25,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
 };
 use type_bridge_orm::session::staged::{
-    Pending, PendingError, PlanAnswer, Transaction, TransactionKind, TransactionOptions,
+    PendingError, PlanAnswer, Transaction, TransactionKind, TransactionOptions,
 };
 
 use crate::abi::{TypeBridgeStatus, guarded};
@@ -59,6 +60,7 @@ pub struct TypeBridgeStagedTransaction {
     poisoned: bool,
     // Dropped after the transaction so the database stays busy until then.
     owner: StagedOwner,
+    pending_views: Vec<Weak<PendingState>>,
 }
 
 /// What a staged transaction runs on: a direct database, or a proxy
@@ -88,8 +90,10 @@ impl StagedOwner {
 }
 
 /// Opaque staged answer, readable after a successful commit.
+#[repr(C)]
 pub struct TypeBridgePending {
-    pending: Pending<PlanAnswer>,
+    pub(crate) tag: u64,
+    pub(crate) state: Arc<PendingState>,
 }
 
 /// Answer kinds a staged plan resolves to (`type_bridge_plan_answer_kind_t`).
@@ -100,6 +104,7 @@ pub enum TypeBridgePlanAnswerKind {
     Count = 2,
     Exists = 3,
     Matched = 4,
+    Documents = 5,
 }
 
 /// Transaction kinds accepted by [`type_bridge_database_transaction`].
@@ -442,6 +447,7 @@ pub unsafe extern "C" fn type_bridge_database_transaction(
             transaction,
             poisoned: false,
             owner: StagedOwner::Database(database),
+            pending_views: Vec::new(),
         });
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_transaction.write_unaligned(Box::into_raw(handle)) };
@@ -495,6 +501,7 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_transaction(
             transaction,
             poisoned: false,
             owner: StagedOwner::Proxy(guard),
+            pending_views: Vec::new(),
         });
         // SAFETY: the output slot was fenced and initialized above.
         unsafe { out_transaction.write_unaligned(Box::into_raw(handle)) };
@@ -533,7 +540,12 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
         }
         match transaction.transaction.stage_plan(&plan.plan) {
             Ok(pending) => {
-                let handle = Box::new(TypeBridgePending { pending });
+                let state = Arc::new(PendingState::new(pending, &plan.plan));
+                transaction.pending_views.push(Arc::downgrade(&state));
+                let handle = Box::new(TypeBridgePending {
+                    tag: crate::staged_answers::PENDING_TAG,
+                    state,
+                });
                 // SAFETY: the output slot was fenced and initialized above.
                 unsafe { out_pending.write_unaligned(Box::into_raw(handle)) };
                 TypeBridgeStatus::Ok
@@ -580,6 +592,13 @@ unsafe fn finish_commit(
                 .instrument(entry.clone()),
         );
         handle.poisoned = false;
+        for state in handle
+            .pending_views
+            .drain(..)
+            .filter_map(|state| state.upgrade())
+        {
+            state.prepare();
+        }
         match outcome {
             Ok(()) => TypeBridgeStatus::Ok,
             Err(error) => return_execution_error(error.diagnostic(), out_diagnostics),
@@ -604,6 +623,7 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_rollback(
         match handle.transaction.rollback() {
             Ok(()) => {
                 handle.poisoned = false;
+                handle.pending_views.clear();
                 TypeBridgeStatus::Ok
             }
             Err(_) => TypeBridgeStatus::ExecutionFailed,
@@ -634,7 +654,7 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_close(
     });
 }
 
-fn answer_status(error: &PendingError) -> TypeBridgeStatus {
+pub(crate) fn answer_status(error: &PendingError) -> TypeBridgeStatus {
     match error {
         PendingError::NotCommitted => TypeBridgeStatus::InUse,
         // The commit already reported the typed failure; rollback and close
@@ -644,7 +664,11 @@ fn answer_status(error: &PendingError) -> TypeBridgeStatus {
 }
 
 fn answer(pending: &TypeBridgePending) -> Result<Arc<PlanAnswer>, TypeBridgeStatus> {
-    pending.pending.get().map_err(|error| answer_status(&error))
+    pending
+        .state
+        .pending
+        .get()
+        .map_err(|error| answer_status(&error))
 }
 
 /// Report the resolved answer kind and, for count, exists (0/1), matched
@@ -663,9 +687,17 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
         Ok(value) => value,
         Err(status) => return status,
     };
-    if let Err(status) = check_object(&outputs, pending) {
-        return status;
-    }
+    // SAFETY: a non-null input is a live cursor retained by the caller.
+    let tag = match unsafe {
+        crate::staged_answers::check_cursor_ranges(
+            &outputs,
+            pending.cast(),
+            size_of::<TypeBridgePending>(),
+        )
+    } {
+        Ok(tag) => tag,
+        Err(status) => return status,
+    };
     if !out_kind.is_null() {
         // SAFETY: the slot is writable and overlaps no fenced input.
         unsafe { out_kind.write_unaligned(0) };
@@ -674,7 +706,8 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
         // SAFETY: as above.
         unsafe { out_value.write_unaligned(0) };
     }
-    if pending.is_null() || out_kind.is_null() || out_value.is_null() {
+    if tag != Some(crate::staged_answers::PENDING_TAG) || out_kind.is_null() || out_value.is_null()
+    {
         return TypeBridgeStatus::InvalidArgument;
     }
     guarded(|| {
@@ -687,6 +720,10 @@ pub unsafe extern "C" fn type_bridge_pending_answer(
             PlanAnswer::Rows(rows) => (
                 TypeBridgePlanAnswerKind::Rows,
                 u64::try_from(rows.len()).unwrap_or(u64::MAX),
+            ),
+            PlanAnswer::Documents(documents) => (
+                TypeBridgePlanAnswerKind::Documents,
+                u64::try_from(documents.len()).unwrap_or(u64::MAX),
             ),
             PlanAnswer::Count(count) => (TypeBridgePlanAnswerKind::Count, *count),
             PlanAnswer::Exists(exists) => (TypeBridgePlanAnswerKind::Exists, u64::from(*exists)),
@@ -1673,6 +1710,179 @@ mod tests {
             type_bridge_pending_free(&mut pending);
             type_bridge_pending_free(&mut again);
             type_bridge_plan_free(&mut plan);
+        }
+    }
+    #[test]
+    fn borrowed_cursors_follow_pending_commit_and_owner_lifetimes() {
+        use crate::staged_answers::*;
+        let response = Response::Result(QueryResult::Documents(vec![serde_json::json!({
+            "_iid":"0x01", "_type":"account", "attributes":{"id":"account-b","score":1}
+        })]));
+        let fixture = fixture(vec![response], COMMIT_SUCCESS);
+        let mut plan = decode(include_bytes!(
+            "../../../../tests/contracts/plan_v3/fetch_entity.json"
+        ));
+        let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_WRITE);
+        let mut pending = stage(transaction, plan);
+        let mut count = usize::MAX;
+        // SAFETY: live handles and writable distinct outputs throughout.
+        unsafe {
+            assert_eq!(
+                type_bridge_pending_document_count(pending, &mut count),
+                TypeBridgeStatus::InUse
+            );
+            assert_eq!(count, 0);
+            type_bridge_plan_free(&mut plan);
+            let (status, diagnostics) = commit(transaction);
+            assert_eq!(status, TypeBridgeStatus::Ok);
+            assert!(diagnostics.is_null());
+            type_bridge_staged_transaction_close(&mut transaction);
+            assert_eq!(
+                read(pending),
+                (
+                    TypeBridgeStatus::Ok,
+                    TypeBridgePlanAnswerKind::Documents as u32,
+                    1
+                )
+            );
+            assert_eq!(
+                type_bridge_pending_document_count(pending, &mut count),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(count, 1);
+            let mut doc = ptr::null();
+            assert_eq!(
+                type_bridge_pending_document(pending, 1, &mut doc),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(doc.is_null());
+            assert_eq!(
+                type_bridge_pending_document(pending, 0, &mut doc),
+                TypeBridgeStatus::Ok
+            );
+            let mut value = 0;
+            let label = crate::abi::TypeBridgeByteView {
+                data: b"score".as_ptr(),
+                length: 5,
+            };
+            assert_eq!(
+                type_bridge_document_attribute_long(doc, label, 0, &mut value),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(value, 1);
+            assert_eq!(
+                type_bridge_pending_row_count(pending, &mut count),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(count, 0);
+            type_bridge_pending_free(&mut pending);
+            assert!(pending.is_null());
+            // `doc` and borrowed byte views expire here; they must not be used.
+        }
+    }
+    #[test]
+    fn mock_pending_keeps_all_scalar_domains_and_listed_players_after_commit() {
+        use crate::staged_answers::*;
+        let fixture = fixture(
+            vec![Response::Result(QueryResult::Documents(vec![
+                crate::staged_answers::tests::answer(),
+            ]))],
+            COMMIT_SUCCESS,
+        );
+        let core_plan = crate::staged_answers::tests::plan();
+        let bytes = core_plan.canonical_bytes().unwrap();
+        let mut plan = Box::into_raw(Box::new(TypeBridgePlan::new(core_plan, bytes)));
+        let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_READ);
+        let mut pending = stage(transaction, plan);
+        // SAFETY: live handles, readable labels and distinct writable outputs.
+        unsafe {
+            type_bridge_plan_free(&mut plan);
+            let (status, diagnostics) = commit(transaction);
+            assert_eq!(status, TypeBridgeStatus::Ok);
+            assert!(diagnostics.is_null());
+            type_bridge_staged_transaction_close(&mut transaction);
+            let mut doc = ptr::null();
+            assert_eq!(
+                type_bridge_pending_document(pending, 0, &mut doc),
+                TypeBridgeStatus::Ok
+            );
+            let mut player = ptr::null();
+            assert_eq!(
+                type_bridge_document_role(doc, 0, &mut player),
+                TypeBridgeStatus::Ok
+            );
+            assert!(!player.is_null());
+            let label = |text: &'static [u8]| crate::abi::TypeBridgeByteView {
+                data: text.as_ptr(),
+                length: text.len(),
+            };
+            let mut count = 0;
+            assert_eq!(
+                type_bridge_document_attribute_count(player, label(b"key"), &mut count),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(count, 2);
+            let mut long = 0;
+            assert_eq!(
+                type_bridge_document_attribute_long(player, label(b"measure-long"), 0, &mut long),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(long, i64::MIN);
+            let mut duration = crate::abi::TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            };
+            assert_eq!(
+                type_bridge_document_attribute_duration(
+                    player,
+                    label(b"elapsed"),
+                    0,
+                    &mut duration
+                ),
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                std::slice::from_raw_parts(duration.data, duration.length),
+                b"P1D"
+            );
+            assert_eq!(
+                type_bridge_document_role(doc, 1, &mut player),
+                TypeBridgeStatus::Ok
+            );
+            assert!(player.is_null());
+            assert_eq!(
+                type_bridge_document_role(doc, 0, &mut player),
+                TypeBridgeStatus::Ok
+            );
+            let mut text = crate::abi::TypeBridgeByteView {
+                data: ptr::null(),
+                length: 0,
+            };
+            assert_eq!(
+                type_bridge_document_attribute_string(player, label(b"key"), 1, &mut text),
+                TypeBridgeStatus::Ok
+            );
+            let before = std::slice::from_raw_parts(text.data, text.length).to_vec();
+            assert_eq!(
+                type_bridge_row_value_kind(
+                    pending.cast(),
+                    label(b"key"),
+                    text.data.cast_mut().cast()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(std::slice::from_raw_parts(text.data, text.length), before);
+            assert_eq!(
+                type_bridge_document_attribute_kind(
+                    pending.cast(),
+                    label(b"key"),
+                    1,
+                    text.data.cast_mut().cast()
+                ),
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert_eq!(std::slice::from_raw_parts(text.data, text.length), before);
+            type_bridge_pending_free(&mut pending);
         }
     }
 }

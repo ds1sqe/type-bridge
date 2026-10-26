@@ -31,6 +31,7 @@ mod schema_package;
 #[allow(dead_code)]
 mod sdk_profile_matrix;
 mod staged;
+mod staged_answers;
 mod thing_crud;
 
 pub use abi::{
