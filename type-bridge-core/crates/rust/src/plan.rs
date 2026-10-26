@@ -42,7 +42,7 @@ use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, Builtin, Expr as PlanExpr, PlanBuilder as CoreBuilder, QueryPlanV3,
+    ArithOp, Builtin, DocumentRole, Expr as PlanExpr, PlanBuilder as CoreBuilder, QueryPlanV3,
 };
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
@@ -157,6 +157,28 @@ impl<M: ThingModel, Mode: SelectionMode> std::fmt::Debug for Thing<M, Mode> {
             .debug_tuple("Thing")
             .field(&self.binding.get())
             .finish()
+    }
+}
+
+/// One generated role to include in a fetched thing document.
+pub struct FetchRole<M: ThingModel> {
+    role: Result<RoleId>,
+    required: bool,
+    marker: PhantomData<fn() -> M>,
+}
+
+impl<M: ThingModel> FetchRole<M> {
+    /// Fetch the role's player; a missing required player drops the document.
+    pub fn new<Owner, Players>(role: RoleToken<Owner, Players>, required: bool) -> Self
+    where
+        M: RoleTokenCompatible<Owner, Players>,
+        Owner: RelationModel<Schema = M::Schema>,
+    {
+        Self {
+            role: role_id(role.role_id_json()),
+            required,
+            marker: PhantomData,
+        }
     }
 }
 
@@ -753,6 +775,30 @@ impl<S: Schema> PlanBuilder<S> {
     pub fn returning(&mut self, columns: impl IntoIterator<Item = impl Into<Column>>) -> &mut Self {
         self.core
             .returning(columns.into_iter().map(|column| column.into().0).collect());
+        self
+    }
+
+    /// Describe `thing` and its listed role players.
+    /// Call before deleting `thing` to return a deletion snapshot.
+    pub fn fetch<M, Mode>(
+        &mut self,
+        thing: Thing<M, Mode>,
+        roles: impl IntoIterator<Item = FetchRole<M>>,
+    ) -> &mut Self
+    where
+        M: ThingModel<Schema = S>,
+        Mode: SelectionMode,
+    {
+        let roles = roles
+            .into_iter()
+            .map(|role| {
+                self.check(role.role)
+                    .map(|id| DocumentRole::new(id, role.required))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(roles) = roles {
+            self.core.fetch(thing.binding, roles);
+        }
         self
     }
 

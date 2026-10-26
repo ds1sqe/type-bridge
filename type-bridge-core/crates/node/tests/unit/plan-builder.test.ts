@@ -24,6 +24,8 @@ interface Fixture {
   readonly declared_hex: string;
   readonly purchase: { readonly order: string; readonly item_id: string; readonly account_id: string };
   readonly purchase_hex: string;
+  readonly read_back_hex: string;
+  readonly read_back_optional_hex: string;
 }
 
 const fixture = JSON.parse(
@@ -212,3 +214,31 @@ function typeChecks(plan: PlanBuilder): void {
   plan.field(item, ItemFields.stock).gt(1);
 }
 void typeChecks;
+
+for (const required of [false, true]) {
+  test(`fetch bytes equal the core builder (item required=${required})`, () => {
+    const plan = Plan.builder();
+    const purchase = plan.exact(Purchase);
+    const key = plan.field(purchase, PurchaseTokens.orderId);
+    const order = plan.input("order_id", "string");
+    plan.where(key.eq(order)).fetch(purchase, [PurchaseTokens.buyer, [PurchaseTokens.item, required]]);
+    plan.row([order.value("O1")]);
+    assert.equal(Buffer.from(plan.build(authority()).canonicalBytes()).toString("hex"),
+      required ? fixture.read_back_hex : fixture.read_back_optional_hex);
+  });
+}
+for (const fetchFirst of [false, true]) {
+  for (const terminal of ["fetch", "returning", "count", "exists"] as const) {
+    test(`fetch terminal conflict ${terminal}, fetch first=${fetchFirst}`, () => {
+      const plan = Plan.builder();
+      const thing = plan.exact(Purchase);
+      if (fetchFirst) plan.fetch(thing);
+      if (terminal === "fetch") plan.fetch(thing);
+      else if (terminal === "returning") plan.returning([]);
+      else plan[terminal]();
+      if (!fetchFirst) plan.fetch(thing);
+      assert.equal(buildError(() => plan.build(authority())).code,
+        `query_plan_builder_${terminal === "fetch" ? "fetch_once" : "terminal_conflict"}`);
+    });
+  }
+}

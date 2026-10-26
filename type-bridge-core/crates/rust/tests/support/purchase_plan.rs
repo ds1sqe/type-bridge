@@ -200,3 +200,36 @@ pub fn hand_built_purchase(
     };
     QueryPlanV3::new(spec, declared).unwrap()
 }
+
+/// Read-back golden shared by the four SDK builder tests.
+pub fn read_back(
+    declared: &type_bridge_contract::schema::DeclaredSchema,
+    semantics: type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint,
+    item_required: bool,
+) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    let mut plan = PlanBuilder::new();
+    let purchase = plan.exact(TypeId::new(TypeKind::Relation, "purchase").unwrap());
+    let key = plan.field(purchase, AttributeId::new("order-id").unwrap());
+    let order = plan.input("order_id", ValueTypeTag::String, false);
+    plan.compare(
+        QueryOperand::Binding { binding: key },
+        ValueComparator::Equal,
+        QueryOperand::Input { column: order },
+    );
+    plan.fetch(
+        purchase,
+        vec![
+            DocumentRole::new(RoleId::new("purchase", "buyer").unwrap(), true),
+            DocumentRole::new(RoleId::new("purchase", "item").unwrap(), item_required),
+        ],
+    );
+    plan.row(vec![Some(CanonicalValue::String(
+        CanonicalString::new("O1").unwrap(),
+    ))]);
+    plan.build(declared, semantics).unwrap()
+}

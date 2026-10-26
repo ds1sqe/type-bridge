@@ -1,6 +1,7 @@
 #ifndef TYPEBRIDGE_TYPE_BRIDGE_H
 #define TYPEBRIDGE_TYPE_BRIDGE_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -1500,6 +1501,17 @@ type_bridge_plan_builder_row(type_bridge_plan_builder_t *builder,
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_returning(type_bridge_plan_builder_t *builder,
                                    const uint32_t *bindings, size_t count);
+/* Bare roles are required; set required=false to permit an absent player. */
+typedef struct type_bridge_fetch_role {
+  uint32_t role;
+  bool required;
+} type_bridge_fetch_role_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_fetch(type_bridge_plan_builder_t *builder,
+                               uint32_t thing,
+                               const type_bridge_fetch_role_t *roles,
+                               size_t n_roles);
+
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_count(type_bridge_plan_builder_t *builder);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL

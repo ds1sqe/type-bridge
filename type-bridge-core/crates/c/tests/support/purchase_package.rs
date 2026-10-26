@@ -83,6 +83,18 @@ impl PurchasePackage {
         )
     }
 
+    /// The core-builder read-back under this package's authority.
+    pub fn read_back(&self, required: bool) -> QueryPlanV3 {
+        purchase_plan::read_back(
+            self.authority.declared_schema(),
+            self.authority
+                .managed_state()
+                .managed_semantic_schema()
+                .clone(),
+            required,
+        )
+    }
+
     /// Generated source text of `path`.
     pub fn source(&self, path: &str) -> &str {
         std::str::from_utf8(self.package.get(path).expect("generated file exists"))

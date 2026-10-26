@@ -44,7 +44,20 @@ const GREATER_OR_EQUAL: u32 = 6;
 const SUB: u32 = 2;
 const STRING: i32 = 1;
 
+#[repr(C)]
+struct FetchRole {
+    role: u32,
+    required: u8,
+}
+
 unsafe extern "C" {
+    fn type_bridge_plan_builder_fetch(
+        b: *mut Builder,
+        thing: u32,
+        roles: *const FetchRole,
+        count: usize,
+    ) -> TypeBridgeStatus;
+
     fn type_bridge_schema_package_open_v1(
         descriptor: *const TypeBridgeSchemaPackageDescriptorV1,
         out_package: *mut *mut TypeBridgeSchemaPackage,
@@ -841,4 +854,94 @@ int main(void) {{
         )
         .unwrap()
     );
+}
+
+#[test]
+fn c_fetch_bytes_equal_the_core_builder_and_terminal_errors_surface() {
+    let fixture = purchase_package();
+    let package = OpenPackage::new(&fixture);
+    for required in [false, true] {
+        let p = B::new();
+        // SAFETY: live handles, readable arrays and distinct writable outputs.
+        unsafe {
+            let ty =
+                p.id(|b, out| type_bridge_plan_builder_type(b, RELATION, p.text("purchase"), out));
+            let thing = p.id(|b, out| type_bridge_plan_builder_exact(b, ty, out));
+            let field =
+                p.id(|b, out| type_bridge_plan_builder_owns(b, ty, p.text("order-id"), out));
+            let key = p.id(|b, out| type_bridge_plan_builder_field(b, thing, field, out));
+            let order = p
+                .id(|b, out| type_bridge_plan_builder_input(b, p.text("order_id"), STRING, 0, out));
+            p.ok(|b| type_bridge_plan_builder_compare(b, BINDING, key, EQUAL, INPUT, order));
+            let roles = [
+                FetchRole {
+                    role: p.id(|b, out| type_bridge_plan_builder_role(b, ty, p.text("buyer"), out)),
+                    required: 1,
+                },
+                FetchRole {
+                    role: p.id(|b, out| type_bridge_plan_builder_role(b, ty, p.text("item"), out)),
+                    required: u8::from(required),
+                },
+            ];
+            p.ok(|b| type_bridge_plan_builder_fetch(b, thing, roles.as_ptr(), roles.len()));
+            let value = p.id(|b, out| type_bridge_plan_builder_value_string(b, p.text("O1"), out));
+            p.ok(|b| type_bridge_plan_builder_row(b, &value, 1));
+            assert_eq!(
+                p.build(&package).unwrap(),
+                fixture.read_back(required).canonical_bytes().unwrap()
+            );
+            p.ok(|b| type_bridge_plan_builder_fetch(b, thing, ptr::null(), 0));
+            assert_eq!(
+                p.build(&package).unwrap_err().1,
+                "query_plan_builder_fetch_once"
+            );
+        }
+    }
+    for fetch_first in [false, true] {
+        let p = B::new();
+        // SAFETY: live handles and valid output slots.
+        unsafe {
+            let ty =
+                p.id(|b, out| type_bridge_plan_builder_type(b, RELATION, p.text("purchase"), out));
+            let thing = p.id(|b, out| type_bridge_plan_builder_exact(b, ty, out));
+            if fetch_first {
+                p.ok(|b| type_bridge_plan_builder_fetch(b, thing, ptr::null(), 0));
+            }
+            p.ok(|b| type_bridge_plan_builder_count(b));
+            if !fetch_first {
+                p.ok(|b| type_bridge_plan_builder_fetch(b, thing, ptr::null(), 0));
+            }
+            assert_eq!(
+                p.build(&package).unwrap_err().1,
+                "query_plan_builder_terminal_conflict"
+            );
+        }
+    }
+}
+
+#[test]
+fn fetch_role_arrays_validate_pointer_ranges_and_boolean_flags() {
+    let fixture = purchase_package();
+    let package = OpenPackage::new(&fixture);
+    let p = B::new();
+    // SAFETY: invalid pointer/length pairs and overflow are rejected before reads.
+    unsafe {
+        assert_eq!(
+            type_bridge_plan_builder_fetch(p.0, 0, ptr::null(), 1),
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(
+            type_bridge_plan_builder_fetch(p.0, 0, ptr::dangling(), usize::MAX),
+            TypeBridgeStatus::InvalidArgument
+        );
+        let ty = p.id(|b, out| type_bridge_plan_builder_type(b, RELATION, p.text("purchase"), out));
+        let thing = p.id(|b, out| type_bridge_plan_builder_exact(b, ty, out));
+        let role = p.id(|b, out| type_bridge_plan_builder_role(b, ty, p.text("buyer"), out));
+        let roles = [FetchRole { role, required: 2 }];
+        p.ok(|b| type_bridge_plan_builder_fetch(b, thing, roles.as_ptr(), roles.len()));
+        assert_eq!(
+            p.build(&package).unwrap_err().1,
+            "c_plan_builder_constant_invalid"
+        );
+    }
 }

@@ -591,6 +591,14 @@ export class PlanBuilder {
     return this;
   }
 
+  /** Describe `thing` and its listed players; bare roles are required. */
+  fetch<Id extends string>(thing: PlanThing<Id>, roles: ReadonlyArray<PlanRoleToken<Owned<Id>> | readonly [PlanRoleToken<Owned<Id>>, boolean]> = []): this {
+    const lowered = roles.map((entry): readonly [PlanRoleToken<Owned<Id>>, boolean] =>
+      "kind" in entry ? [entry, true] : entry);
+    this.#native.fetch(this.#index(thing), lowered.map(([role]) => role.role), lowered.map(([, required]) => required));
+    return this;
+  }
+
   /** Answer the number of rows a read plan matches. */
   count(): this {
     this.#native.count();

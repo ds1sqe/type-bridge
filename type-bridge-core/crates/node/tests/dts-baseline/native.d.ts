@@ -223,6 +223,7 @@ export interface NativePlanBuilder {
     deletePlayer(relation: number, roleJson: string, player: number): void;
     row(columns: number[], literals: (number | null)[]): void;
     returning(columns: number[]): void;
+    fetch(thing: number, roles: string[], required: boolean[]): void;
     count(): void;
     exists(): void;
     build(authority: NativeQueryV2Authority): NativePlan;

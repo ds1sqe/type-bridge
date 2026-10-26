@@ -528,6 +528,21 @@ class PlanBuilder:
         self._native.returning([self._own(column)._index for column in columns])
         return self
 
+    def fetch(
+        self, thing: PlanThing, roles: Iterable[_RoleToken | tuple[_RoleToken, bool]] = ()
+    ) -> PlanBuilder:
+        """Answer documents for ``thing`` and its listed role players.
+
+        Bare roles are required; ``(role, False)`` permits an absent player.
+        Call before ``delete(thing)`` to return a deletion snapshot.
+        """
+        lowered = [
+            (_role_json(role[0]), role[1]) if isinstance(role, tuple) else (_role_json(role), True)
+            for role in roles
+        ]
+        self._native.fetch(self._own(thing)._index, lowered)
+        return self
+
     def count(self) -> PlanBuilder:
         """Answer the number of rows a read plan matches."""
         self._native.count()

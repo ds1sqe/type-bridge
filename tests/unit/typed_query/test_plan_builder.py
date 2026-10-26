@@ -202,3 +202,38 @@ def test_plan_answers_are_typed_values() -> None:
             assert n == 3
         case _:
             pytest.fail("Count did not match")
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_fetch_bytes_equal_the_core_builder(required: bool) -> None:
+    plan = Plan.builder()
+    purchase = plan.exact(Purchase)
+    key = plan.field(purchase, ORDER_ID)
+    order = plan.input("order_id", "string")
+    plan.where_(key.eq(order)).fetch(purchase, [BUYER, (ITEM, required)])
+    plan.row([order.value("O1")])
+    expected = FIXTURE["read_back_hex" if required else "read_back_optional_hex"]
+    assert plan.build(_authority()).canonical_bytes().hex() == expected
+
+
+@pytest.mark.parametrize("terminal", ["returning", "count", "exists", "fetch"])
+@pytest.mark.parametrize("fetch_first", [False, True])
+def test_fetch_terminal_errors_surface_from_the_core(terminal: str, fetch_first: bool) -> None:
+    plan = Plan.builder()
+    thing = plan.exact(Purchase)
+    if fetch_first:
+        plan.fetch(thing)
+    if terminal == "fetch":
+        plan.fetch(thing)
+    elif terminal == "returning":
+        plan.returning([])
+    elif terminal == "count":
+        plan.count()
+    else:
+        plan.exists()
+    if not fetch_first:
+        plan.fetch(thing)
+    with pytest.raises(QueryV2Error) as caught:
+        plan.build(_authority())
+    expected = "fetch_once" if terminal == "fetch" else "terminal_conflict"
+    assert caught.value.code == f"query_plan_builder_{expected}"

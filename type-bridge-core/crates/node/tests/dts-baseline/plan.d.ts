@@ -226,6 +226,8 @@ export declare class PlanBuilder {
      * the same pipeline instead of its matched count.
      */
     returning(columns: readonly (PlanThing | PlanValue)[]): this;
+    /** Describe `thing` and its listed players; bare roles are required. */
+    fetch<Id extends string>(thing: PlanThing<Id>, roles?: ReadonlyArray<PlanRoleToken<Owned<Id>> | readonly [PlanRoleToken<Owned<Id>>, boolean]>): this;
     /** Answer the number of rows a read plan matches. */
     count(): this;
     /** Answer whether a read plan matches any row. */

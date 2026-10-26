@@ -216,3 +216,59 @@ async fn transaction_kinds_refuse_plans_they_cannot_run() {
         "a read transaction stages reads"
     );
 }
+
+#[test]
+fn fetch_bytes_equal_the_core_builder_and_conflicts_surface() {
+    use crate::plan::FetchRole;
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../tests/fixtures/plan_builder/purchase.json"
+    )))
+    .unwrap();
+    for required in [false, true] {
+        let mut plan = Plan::<Shop>::builder();
+        let purchase = plan.exact::<Purchase>();
+        let key = plan.field(purchase, PurchaseType::order_id);
+        let order = plan.input::<String>("order_id");
+        plan.where_(key.eq(order)).fetch(
+            purchase,
+            [
+                FetchRole::new(PurchaseType::buyer, true),
+                FetchRole::new(PurchaseType::item, required),
+            ],
+        );
+        plan.row([order.value("O1".to_owned())]);
+        let bytes = plan.build(&package()).unwrap().canonical_bytes().unwrap();
+        let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+        assert_eq!(
+            hex,
+            fixture[if required {
+                "read_back_hex"
+            } else {
+                "read_back_optional_hex"
+            }]
+        );
+    }
+    for fetch_first in [false, true] {
+        let mut plan = Plan::<Shop>::builder();
+        let thing = plan.exact::<Purchase>();
+        if fetch_first {
+            plan.fetch(thing, []);
+        }
+        plan.count();
+        if !fetch_first {
+            plan.fetch(thing, []);
+        }
+        assert_eq!(
+            plan.build(&package()).unwrap_err().code(),
+            Some("query_plan_builder_terminal_conflict")
+        );
+    }
+    let mut plan = Plan::<Shop>::builder();
+    let thing = plan.exact::<Purchase>();
+    plan.fetch(thing, []).fetch(thing, []);
+    assert_eq!(
+        plan.build(&package()).unwrap_err().code(),
+        Some("query_plan_builder_fetch_once")
+    );
+}

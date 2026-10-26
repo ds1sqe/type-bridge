@@ -14,7 +14,9 @@ use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::migration_assertion::BindingId;
-use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, Expr, PlanBuilder, QueryPlanV3};
+use type_bridge_contract::query_plan::v3::{
+    ArithOp, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
+};
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
@@ -425,6 +427,30 @@ impl NodePlanBuilder {
         self.core.returning(columns);
     }
 
+    /// Describe one thing and its listed role players.
+    #[napi]
+    pub fn fetch(&mut self, thing: u32, roles: Vec<String>, required: Vec<bool>) {
+        if roles.len() != required.len() {
+            self.check::<()>(Err(invalid(
+                "plan_fetch_roles_invalid",
+                "each role needs its required flag",
+            )));
+            return;
+        }
+        let thing = self.binding(thing);
+        let roles = roles
+            .into_iter()
+            .zip(required)
+            .map(|(role, required)| {
+                self.role_id(&role)
+                    .map(|role| DocumentRole::new(role, required))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(roles) = roles {
+            self.core.fetch(thing, roles);
+        }
+    }
+
     /// Answer the number of rows a read plan matches.
     #[napi]
     pub fn count(&mut self) {
@@ -514,7 +540,7 @@ mod tests {
         ManagedDeltaContext, SchemaDocumentSet, build_schema_authority, normalize_documents,
     };
 
-    use crate::purchase_plan::{PROFILE, SCOPE, SOURCE, hand_built_purchase};
+    use crate::purchase_plan::{PROFILE, SCOPE, SOURCE, hand_built_purchase, read_back};
 
     const FIXTURE: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -558,6 +584,12 @@ mod tests {
                 .managed_semantic_schema(),
             &semantics
         );
+        let read_back_hex = hex(&read_back(&declared, semantics.clone(), true)
+            .canonical_bytes()
+            .unwrap());
+        let read_back_optional_hex = hex(&read_back(&declared, semantics.clone(), false)
+            .canonical_bytes()
+            .unwrap());
         let purchase = hand_built_purchase(&declared, semantics, "O1", "I1", "A1");
         let fixture = serde_json::json!({
             "scope": SCOPE,
@@ -565,6 +597,8 @@ mod tests {
             "declared_hex": hex(&declared_bytes),
             "purchase": { "order": "O1", "item_id": "I1", "account_id": "A1" },
             "purchase_hex": hex(&purchase.canonical_bytes().unwrap()),
+            "read_back_hex": read_back_hex,
+            "read_back_optional_hex": read_back_optional_hex,
         });
         let expected = format!("{}\n", serde_json::to_string_pretty(&fixture).unwrap());
         if std::env::var_os("TB_UPDATE_PLAN_BUILDER_FIXTURE").is_some() {

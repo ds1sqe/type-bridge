@@ -24,7 +24,7 @@ use std::str::FromStr;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES;
 use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
-use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, Expr, PlanBuilder};
+use type_bridge_contract::query_plan::v3::{ArithOp, Builtin, DocumentRole, Expr, PlanBuilder};
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
@@ -52,6 +52,16 @@ pub const TYPE_BRIDGE_PLAN_OPERAND_BINDING: u32 = 1;
 pub const TYPE_BRIDGE_PLAN_OPERAND_INPUT: u32 = 2;
 pub const TYPE_BRIDGE_PLAN_OPERAND_VALUE: u32 = 3;
 pub const TYPE_BRIDGE_PLAN_OPERAND_EXPR: u32 = 4;
+
+/// One registered role included in a fetched thing document.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct TypeBridgeFetchRole {
+    /// Registered role identity.
+    pub role: u32,
+    /// Whether a missing player drops the document (0 or 1).
+    pub required: u8,
+}
 
 /// A row cell with no value (an optional input left absent).
 pub const TYPE_BRIDGE_PLAN_VALUE_ABSENT: u32 = u32::MAX;
@@ -948,6 +958,40 @@ pub unsafe extern "C" fn type_bridge_plan_builder_returning(
                 .collect();
             if let Some(columns) = columns {
                 b.core.returning(columns);
+            }
+            0
+        })
+    }
+}
+
+/// Describe one thing and its registered role players.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_builder_fetch(
+    builder: *mut TypeBridgePlanBuilder,
+    thing: u32,
+    roles: *const TypeBridgeFetchRole,
+    count: usize,
+) -> TypeBridgeStatus {
+    let Some(length) = count.checked_mul(size_of::<TypeBridgeFetchRole>()) else {
+        return TypeBridgeStatus::InvalidArgument;
+    };
+    // SAFETY: the array is read only after its pointer contract holds.
+    unsafe {
+        run(builder, None, &[(roles.cast(), length)], |b| {
+            let thing = b.binding(thing);
+            let roles = (0..count)
+                .map(|i| {
+                    let entry = roles.add(i).read_unaligned();
+                    if entry.required > 1 {
+                        b.fail(constant_invalid());
+                        return None;
+                    }
+                    b.role_id(entry.role)
+                        .map(|role| DocumentRole::new(role, entry.required != 0))
+                })
+                .collect::<Option<Vec<_>>>();
+            if let (Some(thing), Some(roles)) = (thing, roles) {
+                b.core.fetch(thing, roles);
             }
             0
         })
