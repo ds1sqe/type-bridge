@@ -198,7 +198,7 @@
                 "personManager.update",
                 "const specialAlias =",
                 "clearedOwnerships.aliases, []",
-                "personManager.delete(transactionPersonIid)",
+                "personManager.delete(stalePerson.iid)",
                 "personManager.count(), 4n"
               ]
             }
@@ -310,7 +310,7 @@
                 "networkManager.update",
                 "networkManager.getByIid",
                 "filteredNetworks.exists(), true",
-                "networkManager.delete(insertedNetwork)"
+                "membershipManager.delete(insertedMembership)"
               ]
             }
           ]
