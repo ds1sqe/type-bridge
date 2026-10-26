@@ -82,7 +82,7 @@ pub enum CommitFailureCertainty {
 /// Runtime error type for direct TypeDB driver operations.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
-    /// The detected TypeDB server version lies outside the supported window or
+    /// The detected TypeDB server version is below the admitted floor or
     /// its protocol band is not compiled into this runtime.
     #[error("Unsupported version: {0}")]
     UnsupportedVersion(#[from] core_version::VersionError),
