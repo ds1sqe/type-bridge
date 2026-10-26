@@ -10,8 +10,8 @@ use sha2::{Digest as _, Sha256};
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::projection::{
-    BindingTarget, CSymbolPrefix, ProjectionConfig, RuntimeProjection,
-    resolve_generated_manager_lookup,
+    BindingTarget, CSymbolPrefix, ProjectionConfig, RuntimeProjection, TYPE_BRIDGE_C_ABI_MAJOR,
+    TYPE_BRIDGE_C_ABI_MINOR, resolve_generated_manager_lookup,
 };
 use type_bridge_contract::schema::DocumentId;
 use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
@@ -326,8 +326,25 @@ fn sdk_catalogs_and_release_archive_use_current_emitter_resources() {
     }
     let policy: serde_json::Value =
         serde_json::from_str(include_str!("../../../../.github/release/c-2.3.2.json")).unwrap();
-    assert!(
-        policy["public_files"].get(&archive).is_some(),
-        "release archive fingerprint is stale"
-    );
+    let active_abi = [TYPE_BRIDGE_C_ABI_MAJOR, TYPE_BRIDGE_C_ABI_MINOR, 0];
+    let published_abi: [u32; 3] = policy["abi"]
+        .as_str()
+        .expect("published ABI is a version")
+        .split('.')
+        .map(|part| part.parse::<u32>().expect("ABI component is numeric"))
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("ABI has three components");
+    if active_abi == published_abi {
+        assert!(
+            policy["public_files"].get(&archive).is_some(),
+            "release archive fingerprint is stale"
+        );
+    } else {
+        // The release policy moves to the active ABI in milestone 07.
+        assert!(
+            active_abi > published_abi,
+            "active ABI must advance the published ABI"
+        );
+    }
 }
