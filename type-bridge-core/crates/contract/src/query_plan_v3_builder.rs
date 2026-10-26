@@ -31,6 +31,8 @@ pub struct PlanBuilder {
     writes: Vec<Stage>,
     output: Vec<BindingId>,
     read: Option<Operation>,
+    returning_called: bool,
+    fetch: Option<(usize, ThingDocument)>,
     error: Option<Diagnostic>,
 }
 
@@ -233,7 +235,13 @@ impl PlanBuilder {
     }
 
     fn write_stage(&mut self, same: fn(&Stage) -> bool, fresh: Stage) -> &mut Stage {
-        if !self.writes.last().is_some_and(same) {
+        if (matches!(fresh, Stage::Delete { .. })
+            && self
+                .fetch
+                .as_ref()
+                .is_some_and(|(after, _)| *after == self.writes.len()))
+            || !self.writes.last().is_some_and(same)
+        {
             self.writes.push(fresh);
         }
         self.writes
@@ -403,18 +411,50 @@ impl PlanBuilder {
     /// Project `columns`, in order. A write plan then answers rows from
     /// the same pipeline instead of the matched count.
     pub fn returning(&mut self, columns: Vec<BindingId>) -> &mut Self {
+        self.check_fetch_conflict();
+        self.returning_called = true;
         self.output = columns;
+        self
+    }
+
+    fn check_fetch_conflict(&mut self) {
+        if self.fetch.is_some() {
+            self.fail(builder_error(
+                "query_plan_builder_terminal_conflict",
+                "fetch cannot be combined with returning, count or exists",
+            ));
+        }
+    }
+
+    /// Answer documents describing `thing` and the players of the listed roles.
+    /// A subsequent delete snapshots the thing before deleting it.
+    pub fn fetch(&mut self, thing: BindingId, roles: Vec<DocumentRole>) -> &mut Self {
+        if self.fetch.is_some() {
+            self.fail(builder_error(
+                "query_plan_builder_fetch_once",
+                "a plan can fetch only once",
+            ));
+        } else if self.returning_called || self.read.is_some() {
+            self.fail(builder_error(
+                "query_plan_builder_terminal_conflict",
+                "fetch cannot be combined with returning, count or exists",
+            ));
+        } else {
+            self.fetch = Some((self.writes.len(), ThingDocument::new(thing, roles)));
+        }
         self
     }
 
     /// Answer the number of matched rows of a read plan.
     pub fn count(&mut self) -> &mut Self {
+        self.check_fetch_conflict();
         self.read = Some(Operation::Count);
         self
     }
 
     /// Answer whether a read plan matches any row.
     pub fn exists(&mut self) -> &mut Self {
+        self.check_fetch_conflict();
         self.read = Some(Operation::Exists);
         self
     }
@@ -422,7 +462,7 @@ impl PlanBuilder {
     /// Validate the program against `schema`, under `semantics`.
     ///
     /// A plan with write stages is a write: it answers the matched count,
-    /// or rows when [`Self::returning`] named columns. A read answers rows,
+    /// or rows when [`Self::returning`] named columns or [`Self::fetch`] requests documents. A read answers rows,
     /// or [`Self::count`] / [`Self::exists`].
     ///
     /// # Errors
@@ -442,7 +482,7 @@ impl PlanBuilder {
         let operation = match (self.writes.is_empty(), self.read) {
             (true, read) => read.unwrap_or(Operation::Rows),
             (false, None) => Operation::Write {
-                returns: if self.output.is_empty() {
+                returns: if self.output.is_empty() && self.fetch.is_none() {
                     WriteReturns::Matched
                 } else {
                     WriteReturns::Rows
@@ -462,6 +502,17 @@ impl PlanBuilder {
             });
         }
         pipeline.extend(self.writes.iter().cloned());
+        if let Some((after, document)) = &self.fetch {
+            let deletion = self.writes[*after..].iter().position(|stage| {
+                matches!(stage, Stage::Delete { items } if items.iter().any(|item| {
+                    matches!(item, DeleteItem::Thing { binding } if *binding == document.thing)
+                }))
+            });
+            let position = deletion.map_or(pipeline.len(), |offset| {
+                *after + offset + usize::from(!self.patterns.is_empty())
+            });
+            pipeline.insert(position, Stage::Fetch(document.clone()));
+        }
         QueryPlanV3::new(
             PlanSpec {
                 bindings: self.bindings.clone(),

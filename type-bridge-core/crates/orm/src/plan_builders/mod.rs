@@ -185,6 +185,40 @@ mod tests {
     }
 
     #[test]
+    fn fetch_terminal_matches_orm_insert_after_variable_normalization() {
+        use type_bridge_contract::codec::to_canonical_json;
+        use type_bridge_contract::query_plan::QueryOperand;
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        let authority = authority();
+        let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
+        let field = OwnsFactId::new(doctor.clone(), AttributeId::new("name").unwrap()).unwrap();
+        let value = CanonicalValue::String(CanonicalString::new("Ada").unwrap());
+        let helper = super::write::entity_insert(
+            &authority,
+            ValueTransport::Literal,
+            &doctor,
+            &[(field.clone(), value.clone())],
+        )
+        .unwrap();
+        let mut builder = PlanBuilder::new();
+        let thing = builder.insert(doctor);
+        builder
+            .thing_field(thing, field, QueryOperand::Literal { value })
+            .fetch(thing, vec![]);
+        let built = builder
+            .build(authority.declared(), authority.managed_semantics().clone())
+            .unwrap();
+        let mut helper_json: serde_json::Value =
+            serde_json::from_slice(&helper.local().canonical_bytes().unwrap()).unwrap();
+        // ORM helpers call their root thing0; public builders derive its type label.
+        helper_json["bindings"][0]["variable"] = built.bindings()[0].variable().as_str().into();
+        assert_eq!(
+            built.canonical_bytes().unwrap(),
+            to_canonical_json(&helper_json).unwrap()
+        );
+    }
+
+    #[test]
     fn delete_returning_is_opt_in_and_preserves_the_plain_delete_statement() {
         use type_bridge_contract::query_plan::v3::{Operation, WriteReturns};
         let authority = authority();

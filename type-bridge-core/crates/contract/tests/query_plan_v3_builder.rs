@@ -389,3 +389,176 @@ fn builder_refuses_typedb_3_14_query_rules_on_every_profile() {
         "query_plan_duration_range"
     );
 }
+
+#[test]
+fn builder_fetch_matches_validated_document_plans() {
+    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+    for inserted in [false, true] {
+        let mut plan = PlanBuilder::new();
+        let account = if inserted {
+            let account = plan.insert(entity("account"));
+            plan.thing_field(account, field("id"), string("account-a"));
+            account
+        } else {
+            plan.exact(entity("account"))
+        };
+        plan.fetch(account, vec![]);
+        let built = plan.build(&schema(), semantics()).unwrap();
+        let mut spec = PlanSpec {
+            bindings: bindings(&["account"]),
+            inputs: vec![],
+            given_rows: None,
+            operation: if inserted {
+                Operation::Write {
+                    returns: WriteReturns::Rows,
+                }
+            } else {
+                Operation::Rows
+            },
+            pipeline: if inserted {
+                vec![Stage::Insert {
+                    things: vec![InsertThing {
+                        binding: account,
+                        type_id: entity("account"),
+                        fields: vec![(field("id"), string("account-a"))],
+                        players: vec![],
+                    }],
+                }]
+            } else {
+                vec![Stage::Match {
+                    patterns: vec![pat(0, entity("account"))],
+                }]
+            },
+            output: QueryOutput::Rows { columns: vec![] },
+            managed_semantics: semantics(),
+            compatibility: None,
+            functions: vec![],
+        };
+        spec.pipeline
+            .push(Stage::Fetch(ThingDocument::new(account, vec![])));
+        assert_eq!(
+            built.canonical_bytes().unwrap(),
+            QueryPlanV3::new(spec, &schema())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap()
+        );
+        assert_eq!(
+            built.operation(),
+            if inserted {
+                Operation::Write {
+                    returns: WriteReturns::Rows,
+                }
+            } else {
+                Operation::Rows
+            }
+        );
+    }
+    let mut plan = PlanBuilder::new();
+    let purchase = plan.exact(purchase_type());
+    let roles = vec![
+        DocumentRole::new(RoleId::new("purchase", "buyer").unwrap(), true),
+        DocumentRole::new(RoleId::new("purchase", "item").unwrap(), false),
+    ];
+    plan.fetch(purchase, roles.clone());
+    assert_eq!(
+        plan.build(&schema(), semantics())
+            .unwrap()
+            .pipeline()
+            .last(),
+        Some(&Stage::Fetch(ThingDocument::new(purchase, roles)))
+    );
+}
+
+#[test]
+fn builder_fetch_conflicts_in_both_orders_including_empty_returning() {
+    let terminals: [fn(&mut PlanBuilder); 3] = [
+        |p| {
+            p.returning(vec![]);
+        },
+        |p| {
+            p.count();
+        },
+        |p| {
+            p.exists();
+        },
+    ];
+    for terminal in terminals {
+        for fetch_first in [false, true] {
+            let mut plan = PlanBuilder::new();
+            let account = plan.exact(entity("account"));
+            if fetch_first {
+                plan.fetch(account, vec![]);
+            }
+            terminal(&mut plan);
+            if !fetch_first {
+                plan.fetch(account, vec![]);
+            }
+            assert_eq!(
+                plan.build(&schema(), semantics())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "query_plan_builder_terminal_conflict"
+            );
+        }
+    }
+    let mut plan = PlanBuilder::new();
+    let account = plan.exact(entity("account"));
+    plan.fetch(account, vec![]).fetch(account, vec![]);
+    assert_eq!(
+        plan.build(&schema(), semantics())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_builder_fetch_once"
+    );
+}
+
+#[test]
+fn builder_fetch_then_delete_snapshots_but_delete_then_fetch_stays_invalid() {
+    for fetch_first in [false, true] {
+        let mut plan = PlanBuilder::new();
+        let account = plan.exact(entity("account"));
+        if fetch_first {
+            plan.fetch(account, vec![]);
+        }
+        plan.delete(account);
+        if !fetch_first {
+            plan.fetch(account, vec![]);
+        }
+        let built = plan.build(&schema(), semantics());
+        if fetch_first {
+            let built = built.unwrap();
+            assert!(matches!(built.pipeline()[1], Stage::Fetch(_)));
+            assert!(matches!(built.pipeline()[2], Stage::Delete { .. }));
+        } else {
+            assert!(built.is_err());
+        }
+    }
+}
+
+#[test]
+fn builder_fetch_remains_terminal_when_configured_before_a_write() {
+    for prior_write in [false, true] {
+        let mut plan = PlanBuilder::new();
+        let account = plan.exact(entity("account"));
+        if prior_write {
+            let peer = plan.exact(entity("account"));
+            plan.update(peer, field("score"), literal(3));
+        }
+        plan.fetch(account, vec![])
+            .update(account, field("score"), literal(7));
+        let built = plan.build(&schema(), semantics()).unwrap();
+        assert!(
+            matches!(&built.pipeline()[1], Stage::Update { sets } if sets.len() == 1 + usize::from(prior_write))
+        );
+        assert!(matches!(built.pipeline()[2], Stage::Fetch(_)));
+        assert_eq!(
+            built.operation(),
+            Operation::Write {
+                returns: WriteReturns::Rows
+            }
+        );
+    }
+}

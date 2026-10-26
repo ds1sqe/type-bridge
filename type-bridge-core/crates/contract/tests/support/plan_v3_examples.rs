@@ -460,3 +460,28 @@ pub fn delete_returning(relation_players: bool) -> QueryPlanV3 {
     };
     QueryPlanV3::new(plan, &schema()).unwrap()
 }
+
+/// Purchase hydration through the public builder, shared by all wrappers.
+pub fn purchase_read_back() -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+    let mut plan = PlanBuilder::new();
+    let purchase = plan.exact(TypeId::new(TypeKind::Relation, "purchase").unwrap());
+    let key = plan.field(purchase, AttributeId::new("purchase-id").unwrap());
+    let order_id = plan.input("purchase_id", ValueTypeTag::String, false);
+    plan.compare(
+        QueryOperand::Binding { binding: key },
+        ValueComparator::Equal,
+        QueryOperand::Input { column: order_id },
+    );
+    plan.fetch(
+        purchase,
+        vec![
+            DocumentRole::new(RoleId::new("purchase", "buyer").unwrap(), true),
+            DocumentRole::new(RoleId::new("purchase", "item").unwrap(), true),
+        ],
+    );
+    plan.row(vec![Some(CanonicalValue::String(
+        CanonicalString::new("purchase-1").unwrap(),
+    ))]);
+    plan.build(&schema(), semantics()).unwrap()
+}

@@ -419,15 +419,22 @@ namespace.
 
 `build` chooses the operation. A plan with write stages answers
 `{"kind":"write","returns":"matched"}`, or `"rows"` when `returning` named
-columns; a read answers `rows`, or `count`/`exists` with empty output
+columns or `fetch` requests documents; a read answers `rows`, or `count`/`exists` with empty output
 columns. Every method is infallible: the first invalid call is kept and
 returned by `build`, which then runs full plan validation. Builder codes are
 `query_plan_builder_duplicate_name`, `query_plan_builder_binding_limit`,
 `query_plan_builder_untyped_relation` (`links` needs a relation bound by
 `exact`/`subtypes`), `query_plan_builder_not_created` (fields and players on
 a thing that was not inserted or put) and `query_plan_builder_write_operation`
-(a write plan that asked for count or exists). The builder has no attach,
-players-deletion, iid or fetch call; such plans are constructed as a
+(a write plan that asked for count or exists). `fetch(thing, roles)` returns the thing's IID, exact type, all attributes,
+and listed role players as documents, with empty output columns. Roles use
+`DocumentRole { role, required }`; optional absent players omit their keys.
+A fetch before `delete(thing)` returns a deletion snapshot. Fetch is allowed
+once (`query_plan_builder_fetch_once`) and cannot be combined with
+`returning`, `count` or `exists` in either order
+(`query_plan_builder_terminal_conflict`).
+
+The builder has no attach, players-deletion or iid call; such plans are constructed as a
 `PlanSpec` and validated by `QueryPlanV3::new`.
 
 ## TypeQL lowering

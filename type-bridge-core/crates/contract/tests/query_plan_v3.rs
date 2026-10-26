@@ -868,6 +868,7 @@ fn shared_plan_v3_fixtures() {
     // Hydration fetches are shared per-file fixtures only: the aggregate
     // stage and expression goldens stay byte-identical, and the capability
     // they derive is not advertised by proxies yet.
+    plans.insert("purchase-read-back", examples::purchase_read_back());
     plans.insert("fetch_entity", examples::fetch_written(false));
     plans.insert("fetch_relation", examples::fetch_written(true));
     plans.insert("delete_returning_entity", examples::delete_returning(false));
