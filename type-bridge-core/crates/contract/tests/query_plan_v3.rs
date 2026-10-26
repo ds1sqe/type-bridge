@@ -921,7 +921,10 @@ fn shared_plan_v3_fixtures() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_str().unwrap().to_owned())
         .collect();
-    assert_eq!(actual, files.keys().cloned().collect());
+    // The ORM owns explanation fixtures because it owns provider lowering.
+    let mut expected: std::collections::BTreeSet<_> = files.keys().cloned().collect();
+    expected.insert("explain".to_owned());
+    assert_eq!(actual, expected);
 }
 
 #[test]
@@ -1459,4 +1462,28 @@ fn deletion_snapshot_refuses_replayed_mutations_and_nonterminal_fetches() {
             .iter()
             .any(|cap| cap.as_str() == "query.write.delete-snapshot")
     );
+}
+
+#[test]
+fn diagnostic_shape_fingerprint_omits_given_rows_and_uses_its_own_domain() {
+    let plan = examples::purchase();
+    let original_bytes = plan.canonical_bytes().unwrap();
+    let original_fingerprint = plan.fingerprint().unwrap();
+    let mut changed: Value = serde_json::from_slice(&original_bytes).unwrap();
+    changed["given_rows"][0][0]["value"] = json!("other-purchase");
+    let other = decode_query_plan_v3(&to_canonical_json(&changed).unwrap(), &schema()).unwrap();
+    let shape = plan.shape_fingerprint().unwrap();
+    assert_eq!(shape, other.shape_fingerprint().unwrap());
+    assert_eq!(shape.domain().as_str(), "typebridge.query.plan-shape");
+    assert_ne!(
+        shape.digest(),
+        original_fingerprint.as_fingerprint().digest()
+    );
+    assert_ne!(
+        shape.digest(),
+        other.fingerprint().unwrap().as_fingerprint().digest()
+    );
+    assert_ne!(original_fingerprint, other.fingerprint().unwrap());
+    assert_eq!(original_bytes, plan.canonical_bytes().unwrap());
+    assert_eq!(original_fingerprint, plan.fingerprint().unwrap());
 }

@@ -22,6 +22,8 @@ use crate::schema::{
 pub const QUERY_PLAN_FORMAT_V3: &str = "typebridge.query-plan/v3";
 /// Canonicalization version separating V3 fingerprints from frozen V2.
 pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3";
+/// Domain for diagnostic plan shapes, excluding transported caller values.
+pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
 
 #[path = "query_plan_v3_document.rs"]
 mod document;
@@ -491,9 +493,16 @@ pub struct QueryPlanV3 {
     required_capabilities: CapabilitySet,
     #[serde(skip)]
     fetch_document_shape: Option<FetchDocumentShape>,
+    #[serde(skip)]
+    binding_types: BTreeMap<BindingId, BTreeSet<TypeId>>,
 }
 
 impl QueryPlanV3 {
+    /// Schema-derived possible thing types for a binding, including subtypes.
+    pub fn binding_types(&self, binding: BindingId) -> Option<&BTreeSet<TypeId>> {
+        self.binding_types.get(&binding)
+    }
+
     /// Schema-derived evidence for a terminal thing fetch; absent on other plans.
     pub fn fetch_document_shape(&self) -> Option<&FetchDocumentShape> {
         self.fetch_document_shape.as_ref()
@@ -538,7 +547,9 @@ impl QueryPlanV3 {
         }
         let mut nodes = 0;
         validate_local_functions(&spec.functions, limits.structural, &mut nodes)?;
-        let fetch_document_shape = validate_stages(&spec, schema, limits, &mut nodes)?;
+        let mut binding_types = BTreeMap::new();
+        let fetch_document_shape =
+            validate_stages(&spec, schema, limits, &mut nodes, &mut binding_types)?;
         if let Some(compatibility) = &spec.compatibility {
             compatibility.validate(spec.bindings.len(), limits)?;
         }
@@ -635,6 +646,7 @@ impl QueryPlanV3 {
             pipeline: spec.pipeline,
             required_capabilities,
             fetch_document_shape,
+            binding_types,
         };
         plan.canonical_bytes()?;
         Ok(plan)
@@ -785,6 +797,20 @@ impl QueryPlanV3 {
             &self.canonical_bytes()?,
         )))
     }
+
+    /// Fingerprint the canonical program without `given_rows` for diagnostics.
+    ///
+    /// This separate domain never identifies an invocation or authenticates a request.
+    pub fn shape_fingerprint(&self) -> Result<Fingerprint, Diagnostic> {
+        let mut shape = self.clone();
+        shape.given_rows = None;
+        Ok(Fingerprint::compute(
+            FingerprintDomain::new(QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN)?,
+            CanonicalizationVersion::new(QUERY_PLAN_CANONICALIZATION_V3)?,
+            None,
+            &shape.canonical_bytes()?,
+        ))
+    }
 }
 
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
@@ -796,6 +822,7 @@ fn validate_stages(
     schema: &DeclaredSchema,
     limits: QueryLimits,
     nodes: &mut usize,
+    binding_types: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
 ) -> Result<Option<FetchDocumentShape>, Diagnostic> {
     let Some(first) = spec.pipeline.first() else {
         return Err(invalid(
@@ -1184,6 +1211,7 @@ fn validate_stages(
             "offset and limit require explicit sort",
         ));
     }
+    *binding_types = types.clone();
     if let Some(document) = fetched {
         let (answer_mandatory, answer_optional) = captured_environment
             .as_ref()

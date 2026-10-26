@@ -1182,6 +1182,7 @@ mod tests {
         snapshot_documents: Option<Vec<serde_json::Value>>,
         fail_delete: bool,
         given_payloads: Vec<GivenRowsSpec>,
+        given_queries: Vec<String>,
     }
     struct Fake(Arc<Mutex<State>>);
     impl DriverBackend for Fake {
@@ -1248,6 +1249,7 @@ mod tests {
             rows: GivenRowsSpec,
         ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.0.lock().unwrap().given_payloads.push(rows.clone());
+            self.0.lock().unwrap().given_queries.push(typeql.to_owned());
             self.0
                 .lock()
                 .unwrap()
@@ -1290,6 +1292,32 @@ mod tests {
             state,
         )
     }
+    #[tokio::test]
+    async fn explained_statements_are_the_recorded_provider_program() {
+        for snapshot in [false, true] {
+            let (mut tx, state) = fixture(TransactionOptions::default());
+            state.lock().unwrap().given = true;
+            state.lock().unwrap().snapshot_documents = Some(vec![]);
+            let plan = if snapshot {
+                crate::query_plan_exec::race::delete_named_doctors_returning(&["EXPLAIN_SECRET"])
+            } else {
+                crate::query_plan_exec::race::purchase("EXPLAIN_SECRET", "I1", "A1")
+            };
+            let explanation = crate::plan_explain::explain(&plan).unwrap();
+            assert!(
+                !String::from_utf8(explanation.canonical_bytes().unwrap())
+                    .unwrap()
+                    .contains("EXPLAIN_SECRET")
+            );
+            tx.stage_plan(&plan).unwrap();
+            tx.commit().await.unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(explanation.statements, state.given_queries);
+            assert_eq!(explanation.read_statements, usize::from(snapshot));
+            assert_eq!(explanation.write_statements, 1);
+        }
+    }
+
     #[tokio::test]
     async fn deletion_snapshot_reuses_identical_given_rows_without_interpolation() {
         let (mut tx, state) = fixture(TransactionOptions::default());
