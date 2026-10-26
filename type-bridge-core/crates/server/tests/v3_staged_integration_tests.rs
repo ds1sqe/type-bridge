@@ -782,8 +782,10 @@ async fn sdk_writes_fixture_serves_until_stopped() {
     for binding in WRITES_BINDINGS {
         let mut databases = Vec::new();
         for transport in ["direct", "proxy"] {
+            let prefix = std::env::var("TB_SDK_WRITES_DATABASE_PREFIX")
+                .unwrap_or_else(|_| "tb_sdk_writes".to_owned());
             let name = format!(
-                "tb_sdk_writes_{binding}_{transport}_{}_{}",
+                "{prefix}_{binding}_{transport}_{}_{}",
                 std::process::id(),
                 SEQUENCE.fetch_add(1, Ordering::Relaxed)
             );
@@ -887,9 +889,28 @@ async fn serve(proxy: &Proxy) -> u16 {
             }
         },
     ));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
+    static NEXT_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let listener = if let Ok(range) = std::env::var("TB_STAGED_PROXY_PORT_RANGE") {
+        let (first, last) = range.split_once('-').expect("proxy port range first-last");
+        let first = first.parse::<u16>().expect("first proxy port");
+        let last = last.parse::<u16>().expect("last proxy port");
+        assert!(first > 0 && first <= last, "invalid proxy port range");
+        loop {
+            let port = first
+                .checked_add(NEXT_PORT.fetch_add(1, Ordering::Relaxed))
+                .filter(|port| *port <= last)
+                .expect("assigned proxy port range exhausted");
+            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => break listener,
+                Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(error) => panic!("proxy bind: {error}"),
+            }
+        }
+    } else {
+        tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind")
+    };
     let port = listener.local_addr().expect("address").port();
     tokio::spawn(async move { axum::serve(listener, router).await });
     port

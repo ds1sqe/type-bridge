@@ -1272,7 +1272,14 @@ def execute(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "The writes fixture accepts TB_SDK_WRITES_DATABASE_PREFIX for owned database "
+            "names and TB_STAGED_PROXY_PORT_RANGE=first-last for an inclusive proxy port "
+            "range. Unset variables preserve the default prefix and OS-assigned ports."
+        ),
+    )
     parser.add_argument("suite", choices=(*SUITES, *STAGED_SUITES))
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--address", default="127.0.0.1:1729")
