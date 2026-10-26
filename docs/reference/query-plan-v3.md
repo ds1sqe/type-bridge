@@ -229,13 +229,15 @@ players of a role give one document per player combination. A fetch adds
 `query.fetch.thing`.
 
 An opt-in deletion snapshot permits a fetch immediately before a terminal
-`delete`, with `write` returning `rows` and empty output columns. It requires
+`delete`, with `write` returning `rows` and empty output columns
+(`query_plan_fetch_delete_operation` otherwise). It requires
 `query.write.delete-snapshot` in addition to the ordinary fetch/delete
 capabilities. Its answer is validated against the environment before deletion;
 the deleted binding remains unavailable afterward. The delete must remove
-exactly the fetched thing. Write prefixes are refused because executing the
-prefix for both capture and deletion would repeat mutations. Existing plain
-delete plans, answers and fingerprints are unchanged.
+exactly the fetched thing (`query_plan_fetch_delete_target` otherwise).
+Write prefixes are refused with `query_plan_fetch_delete_prefix` because
+executing the prefix for both capture and deletion would repeat mutations.
+Existing plain delete plans, answers and fingerprints are unchanged.
 
 `query.write.attach`, `query.fetch.thing` and `query.write.delete-snapshot` are advertised by
 `GET /v3/capabilities` and admitted on the staged route. Fetch answers use
