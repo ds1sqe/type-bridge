@@ -510,7 +510,7 @@ functions:
         serde_json::json!({
             "_iid": iid,
             "_type": "person",
-            "attributes": {"identifier": [{"value": "ada"}]}
+            "attributes": {"identifier": "ada"}
         })
     }
 
@@ -600,10 +600,11 @@ functions:
         serde_json::json!({
             "_iid": iid,
             "_type": "membership",
+            "attributes": {},
             "_role_0_iid": "0x10",
             "_role_0_type": "person",
             "_role_0_attributes": {
-                "identifier": [{"value": "ada"}]
+                "identifier": "ada"
             }
         })
     }
@@ -612,6 +613,7 @@ functions:
         serde_json::json!({
             "_iid": iid,
             "_type": "membership",
+            "attributes": {},
             "_role_0_iid": "0x11",
             "_role_0_type": "event",
             "_role_0_attributes": {}
