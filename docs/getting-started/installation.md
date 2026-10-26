@@ -28,7 +28,7 @@ protocol bands, and migration pairs are in
 
 | TypeBridge | TypeDB servers | Protocol bands |
 | --- | --- | --- |
-| 2.3.1 | 3.11–3.14 | 8, 9 (3.14 shares profile `typedb-3.13.6/v1`) |
+| 2.3.1–2.3.2 | 3.11–3.14 | 8, 9 (3.14 shares profile `typedb-3.13.6/v1`) |
 | 2.3.0 | 3.11–3.13 | 8, 9 |
 | 2.1.0–2.2.6 | 3.11–3.12 | 8, 9 (3.8 and 3.10 removed in 2.1.0) |
 | 2.0.0–2.0.2 | 3.8–3.12 | 7, 8, 9 (3.8 and 3.10 with a deprecation notice) |
