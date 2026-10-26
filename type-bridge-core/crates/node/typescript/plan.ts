@@ -646,6 +646,20 @@ export function nativePlan(plan: Plan): NativePlan {
  * {@link StagedTransaction} from `RustDatabase.stagedTransaction()` or
  * `ProxyConnection.transaction()`.
  */
+export interface PlanExplanation {
+  /** Canonical plan-shape fingerprint; excludes transported caller values. */
+  readonly fingerprint: { readonly algorithm: string; readonly canonicalization: string; readonly domain: string; readonly digest: string };
+  readonly format: string;
+  readonly required_capabilities: readonly string[];
+  readonly operation: { readonly kind: "rows" | "count" | "exists" | "write"; readonly returns?: "rows" | "matched" };
+  readonly bindings: readonly { readonly id: number; readonly variable: string; readonly possible_types: readonly { readonly kind: "entity" | "relation" | "attribute"; readonly label: string }[] }[];
+  readonly inputs: readonly { readonly public_name: string; readonly value_type: PlanValueType; readonly optional: boolean }[];
+  readonly given: { readonly row_count: number; readonly canonical_bytes: number };
+  readonly statements: readonly string[];
+  readonly read_statements: number;
+  readonly write_statements: number;
+}
+
 export class Plan {
   /** @internal */
   constructor(native: NativePlan) {
@@ -662,6 +676,11 @@ export class Plan {
   canonicalBytes(): Uint8Array {
     const native = nativePlan(this);
     return queryV2NativeCall(() => native.canonicalBytes());
+  }
+
+  /** Exact executed statements. Given values are omitted; embedded plan constants remain. */
+  explain(): PlanExplanation {
+    return queryV2NativeCall(() => JSON.parse(nativePlan(this).explainJson()) as PlanExplanation);
   }
 
   /** The plan fingerprint digest, hex encoded. */

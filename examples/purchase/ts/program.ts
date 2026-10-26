@@ -430,6 +430,7 @@ async function main(): Promise<void> {
     plans: Object.fromEntries([...plans].map(([name, plan]) => [name, hex(plan.canonicalBytes())])),
     results,
     ...("read_back" in SUITE.builders ? { read_back: snapshots } : {}),
+    ...(plans.has("purchase") ? { explanation: plans.get("purchase")!.explain() } : {}),
   };
   process.stdout.write(`${JSON.stringify(report)}\n`);
 }

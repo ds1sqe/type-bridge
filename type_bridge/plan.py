@@ -26,8 +26,9 @@ from __future__ import annotations
 import datetime as _dt
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal, NotRequired, Protocol, TypedDict
 
 from type_bridge_core import (
     Count,
@@ -50,6 +51,7 @@ __all__ = [
     "Matched",
     "Pending",
     "Plan",
+    "PlanExplanation",
     "PlanBuilder",
     "PlanCondition",
     "PlanExpr",
@@ -559,9 +561,75 @@ class PlanBuilder:
         return Plan(self._native.build(authority))
 
 
+class ExplainedType(TypedDict):
+    """One possible schema type."""
+
+    kind: Literal["entity", "relation", "attribute"]
+    label: str
+
+
+class ExplainedBinding(TypedDict):
+    """Binding identity, provider variable, and possible schema types."""
+
+    id: int
+    variable: str
+    possible_types: list[ExplainedType]
+
+
+class ExplainedInput(TypedDict):
+    """Input declaration without its transported values."""
+
+    public_name: str
+    value_type: PlanValueType
+    optional: bool
+
+
+class ExplainedFingerprint(TypedDict):
+    """Canonical plan-shape fingerprint, excluding transported caller values."""
+
+    algorithm: str
+    canonicalization: str
+    digest: str
+    domain: str
+
+
+class ExplainedOperation(TypedDict):
+    """Terminal kind and optional write result kind."""
+
+    kind: Literal["rows", "count", "exists", "write"]
+    returns: NotRequired[Literal["rows", "matched"]]
+
+
+class ExplainedGiven(TypedDict):
+    """Transport size without the input values."""
+
+    row_count: int
+    canonical_bytes: int
+
+
+@dataclass(frozen=True)
+class PlanExplanation:
+    """Exact provider program. Given values are omitted; plan constants remain."""
+
+    fingerprint: ExplainedFingerprint
+    format: str
+    required_capabilities: list[str]
+    operation: ExplainedOperation
+    bindings: list[ExplainedBinding]
+    inputs: list[ExplainedInput]
+    given: ExplainedGiven
+    statements: list[str]
+    read_statements: int
+    write_statements: int
+
+
 class Plan(_Plan):
     """One validated plan: ``canonical_bytes()``, ``fingerprint()`` and
     ``writes()``. Stage it with ``Transaction.stage``."""
+
+    def explain(self) -> PlanExplanation:
+        """Inspect the statements execution sends, omitting given values."""
+        return PlanExplanation(**json.loads(self.explain_json()))
 
     @staticmethod
     def builder() -> PlanBuilder:

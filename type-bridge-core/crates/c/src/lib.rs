@@ -105,3 +105,5 @@ pub use runtime::{
 };
 
 pub use runtime::{TypeBridgeDebugListener, type_bridge_debug_listener_set};
+
+pub use staged::type_bridge_plan_explain;

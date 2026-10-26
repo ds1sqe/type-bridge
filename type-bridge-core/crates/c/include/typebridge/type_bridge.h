@@ -3322,6 +3322,13 @@ type_bridge_migration_verification_finding_close(type_bridge_migration_verificat
   ((type_bridge_generated_opaque_input_kind_t)42u)
 
 typedef struct type_bridge_canonical_bytes type_bridge_canonical_bytes_t;
+/* ABI 1.9: exact executed program as owned canonical JSON. Caller values
+ * carried in given rows are omitted; embedded plan constants remain visible.
+ * Close the buffer with type_bridge_canonical_bytes_close. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_explain(
+    const type_bridge_plan_t *plan, type_bridge_canonical_bytes_t **out_bytes,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
 typedef struct type_bridge_canonical_archive_builder
     type_bridge_canonical_archive_builder_t;
 typedef struct type_bridge_canonical_archive type_bridge_canonical_archive_t;

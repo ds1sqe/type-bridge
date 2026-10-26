@@ -272,3 +272,19 @@ def test_rust_log_fallback_reaches_stderr() -> None:
     )
     assert "type_bridge.plan.build" in result.stderr
     assert "FALLBACK_SECRET" not in result.stderr
+
+
+def test_explanation_matches_plan_and_omits_given_values() -> None:
+    from dataclasses import asdict
+
+    plan = purchase("EXPLAIN_SECRET", "I1", "A1")
+    explanation = plan.explain()
+    assert explanation.fingerprint["digest"] != plan.fingerprint()
+    assert explanation.fingerprint["domain"] == "typebridge.query.plan-shape"
+    assert explanation.fingerprint == purchase("OTHER_SECRET", "I2", "A2").explain().fingerprint
+    assert explanation.given["row_count"] == 1
+    assert explanation.read_statements == 0
+    assert explanation.write_statements == 1
+    assert len(explanation.statements) == 1
+    assert "EXPLAIN_SECRET" not in json.dumps(asdict(explanation))
+    assert asdict(explanation) == json.loads(plan.explain_json())

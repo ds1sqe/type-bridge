@@ -464,6 +464,14 @@ impl PyPlan {
             .map_err(|diagnostic| value_error(&diagnostic))
     }
 
+    /// Canonical explanation JSON; transported input values are omitted.
+    fn explain_json(&self) -> PyResult<String> {
+        type_bridge_orm::plan_explain::explain(&self.plan)
+            .and_then(|explanation| explanation.canonical_bytes())
+            .map(|bytes| String::from_utf8(bytes).expect("canonical JSON is UTF-8"))
+            .map_err(|diagnostic| value_error(&diagnostic))
+    }
+
     /// The plan fingerprint digest in hex.
     fn fingerprint(&self) -> PyResult<String> {
         self.plan

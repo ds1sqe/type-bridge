@@ -251,6 +251,41 @@ export declare function nativePlan(plan: Plan): NativePlan;
  * {@link StagedTransaction} from `RustDatabase.stagedTransaction()` or
  * `ProxyConnection.transaction()`.
  */
+export interface PlanExplanation {
+    /** Canonical plan-shape fingerprint; excludes transported caller values. */
+    readonly fingerprint: {
+        readonly algorithm: string;
+        readonly canonicalization: string;
+        readonly domain: string;
+        readonly digest: string;
+    };
+    readonly format: string;
+    readonly required_capabilities: readonly string[];
+    readonly operation: {
+        readonly kind: "rows" | "count" | "exists" | "write";
+        readonly returns?: "rows" | "matched";
+    };
+    readonly bindings: readonly {
+        readonly id: number;
+        readonly variable: string;
+        readonly possible_types: readonly {
+            readonly kind: "entity" | "relation" | "attribute";
+            readonly label: string;
+        }[];
+    }[];
+    readonly inputs: readonly {
+        readonly public_name: string;
+        readonly value_type: PlanValueType;
+        readonly optional: boolean;
+    }[];
+    readonly given: {
+        readonly row_count: number;
+        readonly canonical_bytes: number;
+    };
+    readonly statements: readonly string[];
+    readonly read_statements: number;
+    readonly write_statements: number;
+}
 export declare class Plan {
     /** @internal */
     constructor(native: NativePlan);
@@ -258,6 +293,8 @@ export declare class Plan {
     static builder(): PlanBuilder;
     /** The plan's canonical `query-plan/v3` bytes, identical in every SDK. */
     canonicalBytes(): Uint8Array;
+    /** Exact executed statements. Given values are omitted; embedded plan constants remain. */
+    explain(): PlanExplanation;
     /** The plan fingerprint digest, hex encoded. */
     fingerprint(): string;
     /** Whether the plan writes, which makes an inferred transaction kind `write`. */

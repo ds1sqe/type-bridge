@@ -195,6 +195,7 @@ export interface NativePlanOperand {
 }
 /** One validated `query-plan/v3` program. */
 export interface NativePlan {
+    explainJson(): string;
     canonicalBytes(): Uint8Array;
     fingerprint(): string;
     writes(): boolean;

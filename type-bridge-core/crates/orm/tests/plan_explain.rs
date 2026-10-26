@@ -42,3 +42,43 @@ fn fixtures_explain_with_one_common_canonical_shape() {
     }
     assert!(explained > 30);
 }
+
+#[test]
+fn sdk_purchase_explanation_matches_committed_fixture() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let authority: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("tests/fixtures/plan_builder/purchase.json")).unwrap(),
+    )
+    .unwrap();
+    let expected: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("tests/contracts/sdk_conformance/writes/purchase/expected.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let decode_hex = |text: &str| {
+        text.as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let schema =
+        decode_declared_schema(&decode_hex(authority["declared_hex"].as_str().unwrap())).unwrap();
+    let plan = decode_query_plan_v3(
+        &decode_hex(expected["plans"]["purchase"].as_str().unwrap()),
+        &schema,
+    )
+    .unwrap();
+    let profile = expected["semantic_profile"]
+        .as_str()
+        .unwrap()
+        .replace('/', "-");
+    let fixture = root.join(format!(
+        "tests/contracts/plan_v3/explain/purchase-sdk.{profile}.json"
+    ));
+    let bytes = explain(&plan).unwrap().canonical_bytes().unwrap();
+    if std::env::var_os("UPDATE_EXPECT").is_some() {
+        std::fs::create_dir_all(fixture.parent().unwrap()).unwrap();
+        std::fs::write(&fixture, &bytes).unwrap();
+    }
+    assert_eq!(bytes, std::fs::read(fixture).unwrap());
+}

@@ -37,6 +37,11 @@ def report(binding: str, *, live: bool) -> dict[str, Any]:
             if live
             else {}
         ),
+        "explanation": json.loads(
+            (
+                ROOT / "tests/contracts/plan_v3/explain/purchase-sdk.typedb-3.13.6-v1.json"
+            ).read_text()
+        ),
         "results": (
             {transport: copy.deepcopy(EXPECTED["results"]) for transport in COMPARE.TRANSPORTS}
             if live
@@ -206,3 +211,10 @@ def test_reports_naming_no_single_program_are_refused(tmp_path: Path) -> None:
         paths.append(path)
     with pytest.raises(COMPARE.ContractError, match="no single program"):
         COMPARE.compare_reports(paths, live=False)
+
+
+def test_explanation_drift_is_refused(tmp_path: Path) -> None:
+    reports = [report(binding, live=False) for binding in COMPARE.BINDINGS]
+    reports[0]["explanation"]["statements"][0] += " "
+    with pytest.raises(COMPARE.ContractError, match="explanation"):
+        COMPARE.compare_reports(write(tmp_path, reports), live=False)

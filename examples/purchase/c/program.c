@@ -788,7 +788,17 @@ int main(void) {
     }
     printf("\"");
   }
-  printf("},\"results\":{");
+  printf("}");
+  if (strcmp(suite->name, "purchase") == 0) {
+    type_bridge_canonical_bytes_t *explanation = NULL;
+    type_bridge_byte_view_t view = {NULL, 0u};
+    CHECK(type_bridge_plan_explain(plans[1], &explanation, &diagnostics));
+    CHECK(type_bridge_canonical_bytes_view(explanation, &view));
+    printf(",\"explanation\":");
+    fwrite(view.data, 1u, view.length, stdout);
+    CHECK(type_bridge_canonical_bytes_close(&explanation));
+  }
+  printf(",\"results\":{");
   if (database_name != NULL) {
     type_bridge_runtime_config_v1_t runtime_config = {
         sizeof(type_bridge_runtime_config_v1_t), TYPE_BRIDGE_RUNTIME_CONFIG_VERSION, 2u, 0u,

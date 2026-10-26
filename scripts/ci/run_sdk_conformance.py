@@ -1183,6 +1183,8 @@ def writes_reports(
         }
         if "read_back" in output:
             report["read_back"] = output["read_back"]
+        if suite == "purchase":
+            report["explanation"] = output["explanation"]
         path = reports / f"{binding}.json"
         path.write_bytes(writes_contract.canonical_json_bytes(report))
         paths.append(path)

@@ -20,6 +20,7 @@ import importlib
 import json
 import os
 import sys
+from dataclasses import asdict
 from typing import Any
 
 from type_bridge_core import MatchRequestError, ProxyConnection
@@ -395,6 +396,8 @@ def main() -> int:
         "results": {},
     }
     snapshots: dict[str, Any] = {}
+    if "purchase" in plans:
+        report["explanation"] = asdict(plans["purchase"].explain())
     database = os.environ.get("TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE")
     endpoint = os.environ.get("TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT")
     if database:

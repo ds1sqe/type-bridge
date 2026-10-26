@@ -52,6 +52,7 @@ export {
   PlanNewThing,
   PlanThing,
   PlanValue,
+  type PlanExplanation,
   type PlanFieldToken,
   type PlanLiteral,
   type PlanModelToken,

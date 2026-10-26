@@ -433,7 +433,27 @@ impl<S: Schema> std::fmt::Debug for Plan<S> {
     }
 }
 
+/// Common explanation shape returned by all SDKs.
+pub use type_bridge_orm::plan_explain::PlanExplanation;
+
 impl<S: Schema> Plan<S> {
+    /// Inspect the exact provider program, excluding transported input values.
+    /// Embedded plan constants remain visible.
+    ///
+    /// ```
+    /// # fn inspect<S: type_bridge::Schema>(plan: &type_bridge::plan::Plan<S>) -> type_bridge::Result<()> {
+    /// let explanation = plan.explain()?;
+    /// assert_eq!(explanation.statements.len(), explanation.read_statements + explanation.write_statements);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the same lowering and resource-limit diagnostics as execution.
+    pub fn explain(&self) -> Result<PlanExplanation> {
+        type_bridge_orm::plan_explain::explain(&self.plan).map_err(Error::from_contract_diagnostic)
+    }
+
     /// Start an empty program.
     #[must_use]
     pub fn builder() -> PlanBuilder<S> {

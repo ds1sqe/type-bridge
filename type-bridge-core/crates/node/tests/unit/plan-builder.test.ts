@@ -278,3 +278,16 @@ test("RUST_LOG fallback emits plan records on stderr", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stderr.includes("type_bridge.plan.build"));
 });
+
+test("explain returns the shared metadata without given values", () => {
+  const plan = purchase("EXPLAIN_SECRET", "I1", "A1");
+  const explanation = plan.explain();
+  assert.notEqual(explanation.fingerprint.digest, plan.fingerprint());
+  assert.equal(explanation.fingerprint.domain, "typebridge.query.plan-shape");
+  assert.deepEqual(explanation.fingerprint, purchase("OTHER_SECRET", "I2", "A2").explain().fingerprint);
+  assert.equal(explanation.given.row_count, 1);
+  assert.equal(explanation.write_statements, 1);
+  assert.equal(explanation.read_statements, 0);
+  assert.equal(explanation.statements.length, 1);
+  assert.ok(!JSON.stringify(explanation).includes("EXPLAIN_SECRET"));
+});

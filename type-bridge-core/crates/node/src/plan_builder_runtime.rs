@@ -513,6 +513,15 @@ impl NodePlan {
             .map_err(|diagnostic| napi_error(&diagnostic))
     }
 
+    /// Canonical explanation JSON; transported input values are omitted.
+    #[napi(js_name = "explainJson")]
+    pub fn explain_json(&self) -> napi::Result<String> {
+        type_bridge_orm::plan_explain::explain(&self.plan)
+            .and_then(|explanation| explanation.canonical_bytes())
+            .map(|bytes| String::from_utf8(bytes).expect("canonical JSON is UTF-8"))
+            .map_err(|diagnostic| napi_error(&diagnostic))
+    }
+
     /// The plan fingerprint digest in hex.
     #[napi]
     pub fn fingerprint(&self) -> napi::Result<String> {

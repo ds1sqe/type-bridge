@@ -36,7 +36,7 @@
       "source_commit": "177ce24ac182b94269561c8622e5533d29891a44",
       "authorities": [
         {"path": "tests/contracts/c-artifact-journey-v1.json", "sha256": "76e7057180129fd5e0e7d47a314cb6059c4fc69f99d59942b690e99331b5270f"},
-        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "a4be6547d82d481ddac6aa891ebee5bd17e7e87741d1a5ef17e4849d56f757f2"}
+        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "c78b9ce6162d05836f640e9a5ecf0025966304638789b6f6f340c464ed3c796c"}
       ]
     }
   },

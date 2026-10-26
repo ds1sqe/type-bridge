@@ -338,6 +338,61 @@ pub unsafe extern "C" fn type_bridge_plan_v3_decode(
     })
 }
 
+/// Explain a bound plan as owned canonical JSON, excluding given values.
+/// Close the returned buffer with `type_bridge_canonical_bytes_close`.
+///
+/// # Safety
+/// The plan must be live. Output slots must be writable and must not overlap
+/// each other, the plan, or its retained canonical bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_plan_explain(
+    plan: *const TypeBridgePlan,
+    out_bytes: *mut *mut crate::canonical_archive::TypeBridgeCanonicalBytes,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: validate and initialize caller outputs before reading the plan.
+    if let Err(status) = unsafe {
+        prepare_handle_outputs(out_bytes, out_diagnostics, |outputs| {
+            check_plan(outputs, plan)
+        })
+    } {
+        return status;
+    }
+    if plan.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: a non-null plan is live by the caller contract.
+        let plan = unsafe { &*plan };
+        let bytes = match type_bridge_orm::plan_explain::explain(&plan.plan)
+            .and_then(|explanation| explanation.canonical_bytes())
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return return_execution_error(
+                    contract_error(&error, "the plan cannot be explained"),
+                    out_diagnostics,
+                );
+            }
+        };
+        let handle = match crate::allocation::try_box(
+            crate::allocation::AllocationSite::CanonicalBytesHandle,
+            crate::canonical_archive::TypeBridgeCanonicalBytes { bytes },
+        ) {
+            Ok(handle) => handle,
+            Err(_) => {
+                return return_execution_error(
+                    crate::allocation::allocation_exhausted(),
+                    out_diagnostics,
+                );
+            }
+        };
+        // SAFETY: the output slot was fenced and initialized above.
+        unsafe { out_bytes.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
 /// Write the canonical bytes of `plan` into a caller buffer. With a null or
 /// short buffer, only the required length is reported.
 #[unsafe(no_mangle)]
@@ -1980,5 +2035,59 @@ mod tests {
             assert_eq!(std::slice::from_raw_parts(text.data, text.length), before);
             type_bridge_pending_free(&mut pending);
         }
+    }
+}
+
+#[cfg(test)]
+mod explain_tests {
+    use super::*;
+    #[test]
+    fn owned_explanation_matches_core_and_checks_output_aliases() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/contracts/plan_v3");
+        let schema = type_bridge_contract::schema::decode_declared_schema(
+            &std::fs::read(root.join("schema.json")).unwrap(),
+        )
+        .unwrap();
+        let bytes = std::fs::read(root.join("purchase.json")).unwrap();
+        let plan =
+            type_bridge_contract::query_plan::v3::decode_query_plan_v3(&bytes, &schema).unwrap();
+        let expected = type_bridge_orm::plan_explain::explain(&plan)
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        let plan = TypeBridgePlan::new(plan, bytes);
+        let mut output = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: the plan and distinct output slots are live for the call.
+        assert_eq!(
+            unsafe { type_bridge_plan_explain(&plan, &mut output, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(diagnostics.is_null());
+        // SAFETY: a successful call returned this owned buffer.
+        assert_eq!(unsafe { &*output }.bytes, expected);
+        // SAFETY: the exclusively owned buffer slot is live.
+        assert_eq!(
+            unsafe { crate::canonical_archive::type_bridge_canonical_bytes_close(&mut output) },
+            TypeBridgeStatus::Ok
+        );
+        // SAFETY: both output slots are intentionally aliased to test preflight.
+        assert_eq!(
+            unsafe {
+                type_bridge_plan_explain(
+                    &plan,
+                    (&mut diagnostics as *mut *mut TypeBridgeExecutionDiagnostics).cast(),
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::InvalidArgument
+        );
+        // SAFETY: null plan with writable outputs is an invalid-input probe.
+        assert_eq!(
+            unsafe { type_bridge_plan_explain(ptr::null(), &mut output, &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(output.is_null());
     }
 }

@@ -2,7 +2,7 @@
   "format": "typebridge.c-abi/v1",
   "version": "1.9.0",
   "header": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-  "header_sha256": "339d83f7ba7dcdf21c383a32809c03c21d0b06d0ac29922b1c298d7914069b08",
+  "header_sha256": "759ff409895656d10086d3e4b21d3f48b8ec724e0d24d36613901e318cb6339e",
   "handles": [
     "type_bridge_canonical_bytes_t",
     "type_bridge_canonical_archive_builder_t",
@@ -248,6 +248,7 @@
     "type_bridge_plan_builder_value_duration",
     "type_bridge_plan_builder_value_long",
     "type_bridge_plan_builder_value_string",
+    "type_bridge_plan_explain",
     "type_bridge_plan_free",
     "type_bridge_plan_v3_canonical_bytes",
     "type_bridge_plan_v3_decode",

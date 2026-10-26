@@ -512,6 +512,9 @@ async fn main() -> Result<()> {
     if suite == "purchase" {
         report["read_back"] = Json::Object(snapshots);
     }
+    if let Some((_, plan)) = plans.iter().find(|(name, _)| *name == "purchase") {
+        report["explanation"] = json!(plan.explain()?);
+    }
     println!("{report}");
     Ok(())
 }

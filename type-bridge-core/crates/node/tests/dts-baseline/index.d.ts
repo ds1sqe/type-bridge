@@ -442,7 +442,7 @@ export declare class RustTransactionContext {
     transactionType(): TransactionType;
 }
 export { PendingPlanAnswer, StagedTransaction, type PlanAnswer, type StagedTransactionKind, } from "./staged-transaction.js";
-export { Plan, PlanBuilder, PlanCondition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanThing, PlanValue, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, } from "./plan.js";
+export { Plan, PlanBuilder, PlanCondition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanThing, PlanValue, type PlanExplanation, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, } from "./plan.js";
 /** Metadata from Rust plan execution; transported input values are omitted. */
 export interface DebugEvent {
     readonly name: string;
