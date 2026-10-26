@@ -395,12 +395,19 @@ The runtime's pkg-config file keeps `Version: 1.6.0` and provides
 `type_bridge_c_abi_minor()` reports the loaded runtime's minor.
 
 
-### Database debug callbacks (ABI 1.9)
+### Explain and database debug callbacks (ABI 1.9)
 
-`type_bridge_debug_listener_set(database, callback, context)` forwards that
-database's stage, commit, provider and answer records as borrowed JSON bytes.
-The bytes last until the callback returns. Keep the context alive until clearing
-the callback or closing the database; clearing waits for an active callback.
-The callback must not retain the bytes, unwind or reenter TypeBridge.
+`type_bridge_plan_explain(plan, &bytes, &diagnostics)` returns owned canonical
+JSON describing the exact executed statements. Caller values transported in
+`given` rows are omitted; embedded plan constants remain visible. Read it with
+`type_bridge_canonical_bytes_view` and close it with
+`type_bridge_canonical_bytes_close`.
+
+`type_bridge_debug_listener_set(database, callback, context)` receives that
+handle's stage, commit, provider and answer records as borrowed JSON bytes.
+Keep the context alive until clearing the callback or closing the database.
+The callback must not retain the byte pointer, unwind or reenter TypeBridge.
 Schema-only build events use tracing or `RUST_LOG`, since they have no database
-handle. A null callback clears the listener.
+handle. A null callback clears the listener. See [Debugging plans](debugging.md)
+for examples and record fields. Require `type-bridge-abi >= 1.9.0` or
+`find_package(TypeBridge 1.9 CONFIG REQUIRED)` for these additions.

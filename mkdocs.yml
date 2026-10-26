@@ -137,6 +137,7 @@ nav:
     - Operate and Upgrade:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md
+      - Debugging Plans: guide/debugging.md
       - Logging: guide/logging.md
       - Upgrading to 2.3: guide/upgrade-2.3.md
       - Upgrading to 2.1: guide/upgrade-v2.md

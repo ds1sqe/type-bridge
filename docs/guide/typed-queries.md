@@ -5,6 +5,9 @@ projection. It provides the same supported application outcomes in Python,
 TypeScript/Node, and Rust without routing generated models through handwritten
 model descriptors.
 
+See [Debugging plans](debugging.md) to inspect built plans and follow native
+execution and hydration through the host logger.
+
 ## Start a session
 
 ```python

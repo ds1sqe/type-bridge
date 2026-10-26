@@ -762,3 +762,46 @@ A server restart forgets spent nonces, and its executor epoch and
 advertisement change, so a request bound to the old advertisement is refused.
 TypeBridge reports the outcome; retries, locks and concurrency limits are the
 application's policy.
+
+
+## Explaining a plan
+
+Python, TypeScript and Rust expose `plan.explain()` as a typed
+`PlanExplanation`. C ABI 1.9 exposes `type_bridge_plan_explain` as owned
+canonical JSON. All four use the execution lowerer and renderer, without
+provider IO. A plan with declared inputs needs bound rows. Explanation can
+fail with the same lowering or resource-limit diagnostic as staging.
+
+Caller values transported in `given` rows never appear. Embedded plan
+constants are shown exactly as execution sends them. The `fingerprint` is a
+shape fingerprint: it uses the same canonical encoding with `given_rows`
+omitted, domain `typebridge.query.plan-shape`, canonicalization
+`typebridge.query-plan-c14n/v3`, SHA-256 and no outer semantic profile.
+It is independent of caller values and differs from the real plan fingerprint
+used to identify and verify invocations. `given` exposes counts only.
+
+| Member | Shape and meaning |
+| --- | --- |
+| `fingerprint` | Value-free plan-shape fingerprint object: `algorithm`, `canonicalization`, `domain`, `digest` |
+| `format` | `typebridge.query-plan/v3` |
+| `required_capabilities` | Sorted syntax-derived capability strings the receiver must advertise |
+| `operation` | Plan terminal object (`rows`, `count`, `exists`, or `write` with `returns`) |
+| `bindings` | Dense `id`, provider `variable`, and sorted `possible_types` (`kind`, `label`); scalar bindings have no possible thing types |
+| `inputs` | Public declarations: `public_name`, canonical `value_type`, `optional` |
+| `given` | `row_count` and `canonical_bytes` of transported rows, including internal snapshot inputs; both zero without inputs |
+| `statements` | Complete TypeQL pipelines in provider execution order |
+| `read_statements` | Number of provider read statements |
+| `write_statements` | Number of provider write statements |
+
+A delete snapshot explains the capture read followed by the delete pipeline.
+These are two statements even though they belong to one plan. Statement counts
+reflect execution, so each capture read also consumes the request's read
+budget. `given.canonical_bytes` uses the bounded canonical JSON encoder over
+the native transported row array; it includes no TypeQL text or column header.
+The complete explanation uses that same bounded encoder for its canonical JSON.
+
+The core purchase fixture is `tests/contracts/plan_v3/explain/purchase.json`.
+The SDK purchase program has profile-specific `purchase-sdk.*.json` fixtures
+beside it, compared exactly in the writes suite. See
+[Debugging plans](../guide/debugging.md) for the four SDK examples, host logger
+setup and event names.
