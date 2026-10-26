@@ -195,6 +195,8 @@ function answer(pending: PendingPlanAnswer): Answer {
   switch (value.kind) {
     case "rows":
       return ["rows", value.rows.length];
+    case "documents":
+      return ["documents", value.documents.length];
     case "exists":
       return ["exists", value.value ? 1 : 0];
     default:
