@@ -471,25 +471,96 @@ A `with` block commits on a clean exit unless `commit_on_exit=False`,
 discards on an exception, and always closes.
 `Database.transaction()` keeps its released eager context.
 
-### Fetch documents from a staged write
+### Reading a thing back
 
-A hand-authored plan can end its insert pipeline with a fetch:
+`fetch(thing, roles)` is the document terminal in every plan builder. It
+returns the thing's IID, exact type and all stored attributes, plus the
+players of its listed roles. Bare Python/TypeScript roles are required;
+`(role, False)` / `[role, false]` permits an absent player. Rust uses
+`FetchRole::new(role, required)` and C uses `type_bridge_fetch_role_t`.
+A read answers `Documents`; a write with an explicit fetch answers the same
+documents after its writes. Writes without a terminal still answer `Matched`.
 
-```json
-[
-  {"kind":"insert","things":[{"binding":0,"type_id":{"kind":"entity","label":"person"},"fields":[],"players":[]}]},
-  {"kind":"fetch","thing":0,"roles":[]}
-]
+#### 1. Code
+
+These are the executable purchase conformance programs' read-back builders.
+They select purchase R1 after the write that inserted it and both its players.
+
+```python
+--8<-- "examples/purchase/python/program.py:read_back"
 ```
 
-This pipeline belongs to a validated plan with `write` returning `rows`, empty
-row columns, and a schema declaring `person` without required attributes.
-Stage it through the normal transaction API. Python returns
-`Documents(documents)`, TypeScript returns `{ kind: "documents", documents }`,
-and Rust returns `PlanAnswer::Documents`. Each document has `_iid`, `_type`
-and an `attributes` map; relation fetches also contain listed role players.
-These are schema-validated documents; generated model hydration is provided
-by the typed facade. The plan builder does not yet expose a fetch terminal.
+```typescript
+--8<-- "examples/purchase/ts/program.ts:read_back"
+```
+
+```rust
+--8<-- "examples/purchase/rust/main.rs:read_back"
+```
+
+```c
+--8<-- "examples/purchase/c/program.c:read_back"
+```
+
+Stage the built plan on a read transaction and commit it. Python's
+`Pending.result()` returns `Documents(documents)`; TypeScript's `get()`
+returns `{ kind: "documents", documents }`; Rust's `get()` returns
+`PlanAnswer::Documents`. C reads the same answer through the
+[borrowed document cursors](c.md#reading-answers-abi-18).
+
+#### 2. Plan
+
+Every builder produces the same pipeline fragment, with `operation: rows`
+and empty output columns. A write uses `write` returning `rows` instead.
+
+```json
+{"kind":"fetch","thing":0,"roles":[
+  {"role":{"declaring_relation":"purchase","label":"buyer"},"required":true},
+  {"role":{"declaring_relation":"purchase","label":"item"},"required":true}
+]}
+```
+
+Fetch is allowed once. It cannot be combined with `returning`, `count` or
+`exists` in either order. Fetch before `delete(thing)` returns the deletion
+snapshot; the deleted binding stays dead. `returning` keeps its explicit row
+projection and does not add a fetch.
+
+#### 3. TypeQL
+
+The shared fetch tail extends the matched purchase as follows. The leading
+match and its parameter values select R1 in the same provider transaction.
+
+```typeql
+match
+  $purchase isa! $PlanFetchType;
+  $purchase links (buyer: $PlanFetchRole0);
+  $PlanFetchRole0 isa! $PlanFetchRole0Type;
+  $purchase links (item: $PlanFetchRole1);
+  $PlanFetchRole1 isa! $PlanFetchRole1Type;
+fetch {
+  "_iid": iid($purchase), "_type": label($PlanFetchType),
+  "attributes": { $purchase.* },
+  "_role_0_iid": iid($PlanFetchRole0),
+  "_role_0_type": label($PlanFetchRole0Type),
+  "_role_0_attributes": { $PlanFetchRole0.* },
+  "_role_1_iid": iid($PlanFetchRole1),
+  "_role_1_type": label($PlanFetchRole1Type),
+  "_role_1_attributes": { $PlanFetchRole1.* }
+};
+```
+
+#### 4. Result
+
+The conformance program checks one document (`["documents", 1]`) and derives
+this summary from its attributes and role-player attributes in all four SDKs:
+
+```json
+{"type":"purchase","order_id":"R1","buyer":"A2","item":"I2"}
+```
+
+Documents retain `_iid`, `_type`, `attributes` and the `_role_N_*` triples.
+An absent optional player omits its triple. These are schema-validated
+documents; generated model hydration belongs to the typed facade.
 
 ### Replacing `update_with`
 

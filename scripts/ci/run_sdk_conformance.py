@@ -1181,6 +1181,8 @@ def writes_reports(
             "results": output["results"],
             "observed": None if observed is None else observed[binding],
         }
+        if "read_back" in output:
+            report["read_back"] = output["read_back"]
         path = reports / f"{binding}.json"
         path.write_bytes(writes_contract.canonical_json_bytes(report))
         paths.append(path)

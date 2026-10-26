@@ -8,6 +8,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Explicit `fetch` terminals in the Python, TypeScript, Rust and C plan
+  builders; plain writes keep their matched-count default.
+- C ABI 1.8 adds borrowed row and document cursors with typed scalar getters,
+  attribute-kind queries and optional role-player access, preserving 1.6/1.7
+  compatibility.
 - Fetch documents on direct and staged query-plan execution, with schema-derived
   validation, bounded answers, and Python, TypeScript and Rust answer variants.
 - The staged endpoint advertises `query.fetch.thing` and `query.write.attach`.

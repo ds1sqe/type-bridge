@@ -26,7 +26,7 @@ from type_bridge_core import MatchRequestError, ProxyConnection
 
 from type_bridge import Database
 from type_bridge.failure import CommitRejected, Failure
-from type_bridge.plan import Count, Exists, Matched, Plan, PlanAnswer, Rows
+from type_bridge.plan import Count, Documents, Exists, Matched, Plan, PlanAnswer, Rows
 
 models: Any = importlib.import_module(
     os.environ.get("TYPE_BRIDGE_SDK_WRITES_PYTHON_PACKAGE", "purchase_models")
@@ -194,6 +194,21 @@ def remove(authority: Any) -> Plan:
     return plan.delete(order).build(authority)
 
 
+# --8<-- [start:read_back]
+def read_back(authority: Any) -> Plan:
+    """Read the inserted purchase and both players from its committed answer."""
+    plan = Plan.builder()  # PlanBuilder
+    purchase = plan.exact(Purchase)  # PlanThing
+    order_id = plan.input("order_id", "string")
+    plan.where_(plan.field(purchase, Purchase.order_id).eq(order_id))
+    plan.fetch(purchase, [Purchase.buyer, Purchase.item])
+    plan.row([order_id.value("R1")])
+    return plan.build(authority)
+
+
+# --8<-- [end:read_back]
+
+
 def doctors_on_call(authority: Any) -> Plan:
     plan = Plan.builder()
     doctor = plan.exact(Doctor)
@@ -237,12 +252,13 @@ PURCHASE_STEPS = {
     "program": ("purchase", "touch", "batch"),
     "read": ("sold_out", "charged", "orders", "on_call"),
     "journeys": ("put_doctor", "returns", "refer", "remove"),
+    "read_back": ("read_back",),
     "after": ("doctors_on_call", "referred", "removed"),
     "rollback": ("kept",),
 }
 # Plans a step stages and rolls back before staging its own.
 PURCHASE_ROLLED_BACK = {"rollback": ("ghost",)}
-PURCHASE_READS = {"read", "after"}
+PURCHASE_READS = {"read", "after", "read_back"}
 PURCHASE_BUILDERS = {
     "seed": seed,
     "purchase": purchase,
@@ -256,6 +272,7 @@ PURCHASE_BUILDERS = {
     "returns": returns,
     "refer": refer,
     "remove": remove,
+    "read_back": read_back,
     "doctors_on_call": doctors_on_call,
     "referred": referred,
     "removed": removed,
@@ -304,6 +321,8 @@ def answer(value: PlanAnswer) -> list[Any]:
             return ["exists", int(exists)]
         case Rows(rows):
             return ["rows", len(rows)]
+        case Documents(documents):
+            return ["documents", len(documents)]
     raise TypeError(f"unknown answer {value!r}")
 
 
@@ -321,7 +340,11 @@ def failure(value: Failure) -> list[Any]:
 
 
 def run(
-    transaction: Any, plans: dict[str, Plan], names: tuple[str, ...], discarded: tuple[str, ...]
+    transaction: Any,
+    plans: dict[str, Plan],
+    names: tuple[str, ...],
+    discarded: tuple[str, ...],
+    snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     """Stage `names` in one transaction, commit, and read their answers.
 
@@ -343,6 +366,23 @@ def run(
         if not isinstance(typed, Failure):
             raise
         return {name: failure(typed) for name in names}
+    if "read_back" in pending:
+        value = pending["read_back"].result()
+        assert isinstance(value, Documents) and len(value.documents) == 1
+        doc = value.documents[0]
+
+        def scalar(attributes: Any, key: str) -> Any:
+            value = attributes[key]
+            return value[0] if isinstance(value, list) else value
+
+        snapshot.update(
+            type=doc["_type"],
+            order_id=scalar(doc["attributes"], "order-id"),
+            buyer=scalar(doc["_role_0_attributes"], "account-id"),
+            item=scalar(doc["_role_1_attributes"], "item-id"),
+        )
+        assert doc["_role_0_type"] == "account" and doc["_role_1_type"] == "item"
+        assert snapshot == {"type": "purchase", "order_id": "R1", "buyer": "A2", "item": "I2"}
     return {name: answer(item.result()) for name, item in pending.items()}
 
 
@@ -354,6 +394,7 @@ def main() -> int:
         "plans": {name: plan.canonical_bytes().hex() for name, plan in plans.items()},
         "results": {},
     }
+    snapshots: dict[str, Any] = {}
     database = os.environ.get("TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE")
     endpoint = os.environ.get("TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT")
     if database:
@@ -366,12 +407,14 @@ def main() -> int:
         )
         db.connect()
         try:
+            snapshots["direct"] = {}
             report["results"]["direct"] = {
                 step: run(
                     db.staged_transaction("read" if step in READS else "write"),
                     plans,
                     names,
                     ROLLED_BACK.get(step, ()),
+                    snapshots["direct"],
                 )
                 for step, names in STEPS.items()
             }
@@ -379,15 +422,19 @@ def main() -> int:
             db.close()
     if endpoint:
         proxy = ProxyConnection.connect(authority, endpoint)
+        snapshots["proxy"] = {}
         report["results"]["proxy"] = {
             step: run(
                 proxy.transaction("read" if step in READS else "write"),
                 plans,
                 names,
                 ROLLED_BACK.get(step, ()),
+                snapshots["proxy"],
             )
             for step, names in STEPS.items()
         }
+    if "read_back" in BUILDERS:
+        report["read_back"] = snapshots
     json.dump(report, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
     return 0

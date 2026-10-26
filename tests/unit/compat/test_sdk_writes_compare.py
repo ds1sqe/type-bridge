@@ -32,6 +32,11 @@ def report(binding: str, *, live: bool) -> dict[str, Any]:
         "program": "purchase",
         "semantic_profile": EXPECTED["semantic_profile"],
         "plans": dict(EXPECTED["plans"]),
+        "read_back": (
+            {transport: dict(EXPECTED["read_back"]) for transport in COMPARE.TRANSPORTS}
+            if live
+            else {}
+        ),
         "results": (
             {transport: copy.deepcopy(EXPECTED["results"]) for transport in COMPARE.TRANSPORTS}
             if live
@@ -65,6 +70,7 @@ def test_the_program_contract_names_every_step_plan_and_answer() -> None:
         "program": ["purchase", "touch", "batch"],
         "read": ["sold_out", "charged", "orders", "on_call"],
         "journeys": ["put_doctor", "returns", "refer", "remove"],
+        "read_back": ["read_back"],
         "after": ["doctors_on_call", "referred", "removed"],
         "rollback": ["kept"],
     }
@@ -97,7 +103,7 @@ def test_the_program_contract_names_every_step_plan_and_answer() -> None:
     assert EXPECTED["state"]["on_call"] == 2
     # Seed, program, read, journeys, after and rollback: one signed commit
     # each; the rollback itself sends nothing.
-    assert EXPECTED["proxy_commits"] == ["true:ok"] * 6
+    assert EXPECTED["proxy_commits"] == ["true:ok"] * 7
 
 
 @pytest.mark.parametrize("live", [False, True])
@@ -129,6 +135,7 @@ def _flip_plan(item: dict[str, Any]) -> None:
     ("mutate", "code"),
     [
         (_flip_plan, "plan_bytes_mismatch"),
+        (_set(("read_back", "proxy", "buyer"), "A1"), "read_back_mismatch"),
         (_set(("results", "proxy", "program", "batch"), ["matched", 49]), "answer_mismatch"),
         (_set(("results", "direct", "read", "on_call"), ["exists", 0]), "answer_mismatch"),
         (lambda item: item["results"].pop("proxy"), "invalid_object_fields"),

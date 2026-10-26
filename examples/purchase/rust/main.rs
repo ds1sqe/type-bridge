@@ -13,7 +13,7 @@ use models::{
     Account, AccountType, AppSchema, Doctor, DoctorType, Item, ItemType, Purchase, PurchaseType,
 };
 use serde_json::{Map, Value as Json, json};
-use type_bridge::plan::{Plan, PlanBuilder};
+use type_bridge::plan::{FetchRole, Plan, PlanBuilder};
 use type_bridge::staged::{PlanAnswer, Transaction, TransactionKind, TransactionOptions};
 use type_bridge::{
     ConnectionOptions, Database, ProxyConnectionPolicy, ProxyDatabase, ProxyEndpoint, Result,
@@ -209,6 +209,24 @@ fn remove() -> Result<Built> {
     plan.build(&models::SCHEMA)
 }
 
+// --8<-- [start:read_back]
+fn read_back() -> Result<Built> {
+    let mut plan = Plan::builder(); // PlanBuilder<AppSchema>
+    let purchase = plan.exact::<Purchase>(); // Thing<Purchase>
+    let key = plan.field(purchase, PurchaseType::order_id);
+    let order = plan.input::<String>("order_id");
+    plan.where_(key.eq(order)).fetch(
+        purchase,
+        [
+            FetchRole::new(PurchaseType::buyer, true),
+            FetchRole::new(PurchaseType::item, true),
+        ],
+    );
+    plan.row([order.value("R1".to_owned())]);
+    plan.build(&models::SCHEMA)
+}
+// --8<-- [end:read_back]
+
 fn doctors_on_call() -> Result<Built> {
     let mut plan = Plan::builder();
     let doctor = plan.exact::<Doctor>();
@@ -283,6 +301,7 @@ const PURCHASE_STEPS: Steps = &[
     ("program", &["purchase", "touch", "batch"]),
     ("read", &["sold_out", "charged", "orders", "on_call"]),
     ("journeys", &["put_doctor", "returns", "refer", "remove"]),
+    ("read_back", &["read_back"]),
     ("after", &["doctors_on_call", "referred", "removed"]),
     ("rollback", &["kept"]),
 ];
@@ -306,12 +325,13 @@ fn answer(value: &PlanAnswer) -> Json {
         PlanAnswer::Count(count) => json!(["count", count]),
         PlanAnswer::Exists(exists) => json!(["exists", u8::from(*exists)]),
         PlanAnswer::Rows(rows) => json!(["rows", rows.len()]),
+        PlanAnswer::Documents(documents) => json!(["documents", documents.len()]),
         other => panic!("unknown answer {other:?}"),
     }
 }
 
 fn kind(step: &str) -> TransactionOptions {
-    TransactionOptions::default().with_kind(if matches!(step, "read" | "after") {
+    TransactionOptions::default().with_kind(if matches!(step, "read" | "after" | "read_back") {
         TransactionKind::Read
     } else {
         TransactionKind::Write
@@ -326,6 +346,7 @@ async fn run(
     plans: &[(&str, Built)],
     names: &[&str],
     discarded: &[&str],
+    snapshot: &mut Json,
 ) -> Result<Json> {
     let built = |name: &str| {
         plans
@@ -365,7 +386,29 @@ async fn run(
     }
     let mut answers = Map::new();
     for (name, item) in pending {
-        answers.insert(name.to_owned(), answer(&*item.get()?));
+        let value = item.get()?;
+        if name == "read_back" {
+            let PlanAnswer::Documents(documents) = value.as_ref() else {
+                panic!("expected documents")
+            };
+            assert_eq!(documents.len(), 1);
+            let doc = &documents[0];
+            let scalar = |attributes: &Json, key: &str| {
+                let value = &attributes[key];
+                value
+                    .as_array()
+                    .map_or_else(|| value.clone(), |values| values[0].clone())
+            };
+            *snapshot = json!({ "type": doc["_type"], "order_id": scalar(&doc["attributes"], "order-id"),
+                "buyer": scalar(&doc["_role_0_attributes"], "account-id"), "item": scalar(&doc["_role_1_attributes"], "item-id") });
+            assert_eq!(doc["_role_0_type"], "account");
+            assert_eq!(doc["_role_1_type"], "item");
+            assert_eq!(
+                *snapshot,
+                json!({"type":"purchase", "order_id":"R1", "buyer":"A2", "item":"I2"})
+            );
+        }
+        answers.insert(name.to_owned(), answer(&value));
     }
     Ok(Json::Object(answers))
 }
@@ -389,6 +432,7 @@ async fn main() -> Result<()> {
                 ("returns", returns()?),
                 ("refer", refer()?),
                 ("remove", remove()?),
+                ("read_back", read_back()?),
                 ("doctors_on_call", doctors_on_call()?),
                 ("referred", referred()?),
                 ("removed", removed()?),
@@ -412,6 +456,7 @@ async fn main() -> Result<()> {
         encoded.insert((*name).to_owned(), Json::String(hex));
     }
     let mut results = Map::new();
+    let mut snapshots = Map::new();
     if let Some(database) = std::env::var("TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE")
         .ok()
         .filter(|name| !name.is_empty())
@@ -432,14 +477,16 @@ async fn main() -> Result<()> {
             .await?
             .with_schema(models::SCHEMA)?;
         let mut steps = Map::new();
+        let mut snapshot = Json::Null;
         for &(step, names) in suite_steps {
             let tx = db.transaction(kind(step));
             steps.insert(
                 step.to_owned(),
-                run(tx, &plans, names, rolled_back(step)).await?,
+                run(tx, &plans, names, rolled_back(step), &mut snapshot).await?,
             );
         }
         results.insert("direct".to_owned(), Json::Object(steps));
+        snapshots.insert("direct".to_owned(), snapshot);
     }
     if let Some(endpoint) = std::env::var("TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT")
         .ok()
@@ -450,16 +497,21 @@ async fn main() -> Result<()> {
                 .await?
                 .with_schema(models::SCHEMA)?;
         let mut steps = Map::new();
+        let mut snapshot = Json::Null;
         for &(step, names) in suite_steps {
             let tx = proxy.transaction(kind(step)).await?;
             steps.insert(
                 step.to_owned(),
-                run(tx, &plans, names, rolled_back(step)).await?,
+                run(tx, &plans, names, rolled_back(step), &mut snapshot).await?,
             );
         }
         results.insert("proxy".to_owned(), Json::Object(steps));
+        snapshots.insert("proxy".to_owned(), snapshot);
     }
-    let report = json!({"binding": "rust", "plans": encoded, "results": results});
+    let mut report = json!({"binding": "rust", "plans": encoded, "results": results});
+    if suite == "purchase" {
+        report["read_back"] = Json::Object(snapshots);
+    }
     println!("{report}");
     Ok(())
 }

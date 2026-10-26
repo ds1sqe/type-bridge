@@ -188,6 +188,18 @@ function remove(authority: QueryV2Authority): Built {
   return plan.delete(order).build(authority);
 }
 
+// --8<-- [start:read_back]
+function readBack(authority: QueryV2Authority): Built {
+  const plan = Plan.builder(); // PlanBuilder
+  const purchase = plan.exact(Purchase); // PlanThing
+  const orderId = plan.input("order_id", "string");
+  plan.where(plan.field(purchase, Purchase.fields.orderId).eq(orderId));
+  plan.fetch(purchase, [Purchase.roles.buyer, Purchase.roles.item]);
+  plan.row([orderId.value("R1")]);
+  return plan.build(authority);
+}
+// --8<-- [end:read_back]
+
 function doctorsOnCall(authority: QueryV2Authority): Built {
   const plan = Plan.builder();
   const doctor = plan.exact(Doctor);
@@ -253,6 +265,7 @@ const PURCHASE_BUILDERS: Record<string, (authority: QueryV2Authority) => Built> 
   returns,
   refer,
   remove,
+  read_back: readBack,
   doctors_on_call: doctorsOnCall,
   referred,
   removed,
@@ -264,6 +277,7 @@ const PURCHASE_STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["program", ["purchase", "touch", "batch"]],
   ["read", ["sold_out", "charged", "orders", "on_call"]],
   ["journeys", ["put_doctor", "returns", "refer", "remove"]],
+  ["read_back", ["read_back"]],
   ["after", ["doctors_on_call", "referred", "removed"]],
   ["rollback", ["kept"]],
 ];
@@ -271,7 +285,7 @@ const PURCHASE_STEPS: ReadonlyArray<readonly [string, readonly string[]]> = [
 const PURCHASE_ROLLED_BACK: ReadonlyMap<string, readonly string[]> = new Map([
   ["rollback", ["ghost"]],
 ]);
-const PURCHASE_READS: ReadonlySet<string> = new Set(["read", "after"]);
+const PURCHASE_READS: ReadonlySet<string> = new Set(["read", "after", "read_back"]);
 
 interface Suite {
   readonly builders: Record<string, (authority: QueryV2Authority) => Built>;
@@ -310,6 +324,8 @@ function answer(pending: PendingPlanAnswer): Answer {
   switch (value.kind) {
     case "rows":
       return ["rows", value.rows.length];
+    case "documents":
+      return ["documents", value.documents.length];
     case "exists":
       return ["exists", value.value ? 1 : 0];
     default:
@@ -327,6 +343,7 @@ async function run(
   plans: ReadonlyMap<string, Built>,
   names: readonly string[],
   discarded: readonly string[],
+  snapshot: Record<string, unknown>,
 ): Promise<Record<string, Answer>> {
   try {
     for (const name of discarded) {
@@ -347,6 +364,19 @@ async function run(
       const failed: Answer = ["failure", { phase, reason, code, retry_safe }];
       return Object.fromEntries(names.map((name) => [name, failed]));
     }
+    const fetched = pending.find(([name]) => name === "read_back")?.[1].get();
+    if (fetched !== undefined) {
+      if (fetched.kind !== "documents" || fetched.documents.length !== 1) throw new Error("expected one purchase document");
+      const doc = fetched.documents[0] as Record<string, unknown>;
+      const scalar = (attributes: unknown, key: string): unknown => {
+        const value = (attributes as Record<string, unknown>)[key];
+        return Array.isArray(value) ? value[0] : value;
+      };
+      Object.assign(snapshot, { type: doc["_type"], order_id: scalar(doc["attributes"], "order-id"),
+        buyer: scalar(doc["_role_0_attributes"], "account-id"), item: scalar(doc["_role_1_attributes"], "item-id") });
+      if (doc["_role_0_type"] !== "account" || doc["_role_1_type"] !== "item" ||
+          snapshot["type"] !== "purchase" || snapshot["order_id"] !== "R1" || snapshot["buyer"] !== "A2" || snapshot["item"] !== "I2") throw new Error("purchase read-back differs");
+    }
     return Object.fromEntries(pending.map(([name, item]) => [name, answer(item)]));
   } finally {
     tx.close();
@@ -356,11 +386,12 @@ async function run(
 async function program(
   open: (kind: "read" | "write") => StagedTransaction | Promise<StagedTransaction>,
   plans: ReadonlyMap<string, Built>,
+  snapshot: Record<string, unknown>,
 ): Promise<Record<string, Record<string, Answer>>> {
   const results: Record<string, Record<string, Answer>> = {};
   for (const [step, names] of SUITE.steps) {
     const kind = SUITE.reads.has(step) ? "read" : "write";
-    results[step] = await run(await open(kind), plans, names, SUITE.rolledBack.get(step) ?? []);
+    results[step] = await run(await open(kind), plans, names, SUITE.rolledBack.get(step) ?? [], snapshot);
   }
   return results;
 }
@@ -373,6 +404,7 @@ async function main(): Promise<void> {
   const authority = schemaAuthority();
   const plans = new Map(Object.entries(SUITE.builders).map(([name, build]) => [name, build(authority)]));
   const results: Record<string, unknown> = {};
+  const snapshots: Record<string, Record<string, unknown>> = {};
   const database = process.env["TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE"];
   const endpoint = process.env["TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT"];
   if (database) {
@@ -382,19 +414,22 @@ async function main(): Promise<void> {
       password: process.env["TYPEDB_PASSWORD"] ?? "password",
     });
     try {
-      results["direct"] = await program((kind) => db.stagedTransaction(kind), plans);
+      snapshots["direct"] = {};
+      results["direct"] = await program((kind) => db.stagedTransaction(kind), plans, snapshots["direct"]);
     } finally {
       db.close();
     }
   }
   if (endpoint) {
     const proxy = await ProxyConnection.connect(authority, endpoint);
-    results["proxy"] = await program((kind) => proxy.transaction(kind), plans);
+    snapshots["proxy"] = {};
+    results["proxy"] = await program((kind) => proxy.transaction(kind), plans, snapshots["proxy"]);
   }
   const report = {
     binding: "node",
     plans: Object.fromEntries([...plans].map(([name, plan]) => [name, hex(plan.canonicalBytes())])),
     results,
+    ...("read_back" in SUITE.builders ? { read_back: snapshots } : {}),
   };
   process.stdout.write(`${JSON.stringify(report)}\n`);
 }

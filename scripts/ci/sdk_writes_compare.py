@@ -63,7 +63,11 @@ def _compare(label: str, actual: Any, expected: Any, code: str) -> None:
 
 
 def _validate(report: LoadedJson, expected: Any, *, live: bool) -> str:
-    value = _exact_object(report.value, REPORT_KEYS, f"{report.path.name}")
+    value = _exact_object(
+        report.value,
+        REPORT_KEYS | ({"read_back"} if "read_back" in expected else set()),
+        f"{report.path.name}",
+    )
     binding = value["binding"]
     if binding not in BINDINGS:
         raise ContractError("unknown_binding", f"{report.path.name} names binding {binding!r}")
@@ -87,6 +91,17 @@ def _validate(report: LoadedJson, expected: Any, *, live: bool) -> str:
         )
         for step, answers in expected["results"].items():
             _compare(f"{binding} {transport} {step}", steps[step], answers, "answer_mismatch")
+    if "read_back" in expected:
+        snapshots = _exact_object(
+            value["read_back"], set(TRANSPORTS) if live else set(), f"{binding} read_back"
+        )
+        for transport, snapshot in snapshots.items():
+            _compare(
+                f"{binding} {transport} read_back",
+                snapshot,
+                expected["read_back"],
+                "read_back_mismatch",
+            )
     if not live:
         _compare(f"{binding} observed", value["observed"], None, "unexpected_observation")
         return binding
