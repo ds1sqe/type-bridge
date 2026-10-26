@@ -491,6 +491,7 @@ impl<S: Schema> PlanBuilder<S> {
     /// An empty program.
     #[must_use]
     pub fn new() -> Self {
+        type_bridge_orm::debug::init();
         Self {
             core: CoreBuilder::new(),
             error: None,

@@ -443,3 +443,12 @@ export declare class RustTransactionContext {
 }
 export { PendingPlanAnswer, StagedTransaction, type PlanAnswer, type StagedTransactionKind, } from "./staged-transaction.js";
 export { Plan, PlanBuilder, PlanCondition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanThing, PlanValue, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, } from "./plan.js";
+/** Metadata from Rust plan execution; transported input values are omitted. */
+export interface DebugEvent {
+    readonly name: string;
+    readonly target: string;
+    readonly level: string;
+    readonly fields: Readonly<Record<string, string | number | boolean>>;
+}
+/** Forward Rust debug records to the host logger; null disables forwarding. */
+export declare function setDebugListener(listener: ((event: DebugEvent) => void) | null): void;

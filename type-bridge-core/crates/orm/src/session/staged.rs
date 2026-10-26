@@ -119,6 +119,7 @@ pub struct StagedQuery {
     /// Whether the statement may write.
     pub writes: bool,
     pub(crate) canonical: bool,
+    pub(crate) fingerprint: Option<String>,
     pub(crate) snapshot: Option<(String, QueryPlanV3)>,
     /// Value-free schema context supplied by the plan lowering layer.
     pub failure_context: FailureContext,
@@ -131,16 +132,19 @@ impl StagedQuery {
             rows: None,
             writes,
             canonical: false,
+            fingerprint: None,
             snapshot: None,
             failure_context: FailureContext::default(),
         }
     }
     /// Execute the shared provider program, retaining validated capture evidence.
+    #[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.stage", skip_all, fields(fingerprint = self.fingerprint.as_deref().unwrap_or("")))]
     pub(crate) async fn execute(
         &self,
         ops: &mut dyn super::backend::TransactionOps,
         limits: AnswerLimits,
     ) -> Result<QueryResult, OrmError> {
+        use tracing::Instrument;
         let snapshot = if let Some((typeql, plan)) = &self.snapshot {
             let answer = ops
                 .query_materialized_bounded(
@@ -149,6 +153,7 @@ impl StagedQuery {
                     limits.clone(),
                     self.canonical,
                 )
+                .instrument(tracing::debug_span!(target: "type_bridge.io", "type_bridge.io.provider", index = 0, writes = false, bytes_sent = typeql.len()))
                 .await?;
             crate::answer_meter::meter_result(&answer, &limits.answer)?;
             crate::query_plan_exec::validate_snapshot(plan, &answer).map_err(plan_answer_error)?;
@@ -158,6 +163,7 @@ impl StagedQuery {
         };
         let answer = ops
             .query_materialized_bounded(&self.typeql, self.rows.clone(), limits, self.canonical)
+            .instrument(tracing::debug_span!(target: "type_bridge.io", "type_bridge.io.provider", index = usize::from(self.snapshot.is_some()), writes = self.writes, bytes_sent = self.typeql.len()))
             .await?;
         Ok(snapshot.unwrap_or(answer))
     }
@@ -451,7 +457,11 @@ impl Slot {
         match self {
             Self::Query(_) => Ok(Resolved::Query(answer)),
             Self::Plan { plan, .. } => {
-                crate::query_plan_exec::resolve_plan(plan, answer).map(Resolved::Plan)
+                let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
+                let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", %fingerprint).entered();
+                let result = crate::query_plan_exec::resolve_plan(plan, answer);
+                tracing::debug!(target: "type_bridge.plan", outcome = if result.is_ok() { "ok" } else { "error" }, "plan answer resolved");
+                result.map(Resolved::Plan)
             }
             Self::Program(_) => unreachable!("programs resolve their own answers"),
         }
@@ -743,7 +753,13 @@ impl Transaction {
     /// A `Schema` transaction refuses plans; the schema transaction stays
     /// in eager mode.
     pub fn stage_plan(&mut self, plan: &QueryPlanV3) -> Result<Pending<PlanAnswer>, PendingError> {
-        let _stage = tracing::info_span!("tb.orm.plan").entered();
+        let _performance = tracing::info_span!("tb.orm.plan").entered();
+        let fingerprint = plan
+            .shape_fingerprint()
+            .map_err(|d| PendingError::InvalidPlan(Box::new(d)))?
+            .digest()
+            .to_hex();
+        let _stage = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.stage", %fingerprint, writes = plan.writes(), stages = plan.pipeline().len(), outcome = "refused").entered();
         self.admit(plan.writes())?;
         self.admit_typed()?;
         let invalid = |diagnostic| PendingError::InvalidPlan(Box::new(diagnostic));
@@ -775,6 +791,7 @@ impl Transaction {
                 plan: Box::new(plan.clone()),
             },
         });
+        tracing::Span::current().record("outcome", "ok");
         Ok(Pending { state })
     }
     /// Queue one validated selected-row read, run at commit on the commit's
@@ -859,6 +876,14 @@ impl Transaction {
     }
     /// Fire queued queries in order and expose their answers after success only.
     pub async fn commit(&mut self) -> Result<(), CommitError> {
+        use tracing::Instrument;
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.commit", plans = self.stack.0.len(), nonce = tracing::field::Empty, outcome = tracing::field::Empty);
+        let result = self.commit_inner().instrument(span.clone()).await;
+        span.record("outcome", if result.is_ok() { "ok" } else { "error" });
+        result
+    }
+
+    async fn commit_inner(&mut self) -> Result<(), CommitError> {
         if self.closed {
             return Err(CommitError::lifecycle(PendingError::Closed));
         }
@@ -922,6 +947,7 @@ impl Transaction {
                                 // Plan answers resolve before the provider commit, so a
                                 // malformed answer aborts instead of surfacing after writes.
                                 result.and_then(|answer| {
+                                    let _answer = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", fingerprint = query.fingerprint.as_deref().unwrap_or("")).entered();
                                     if matches!(item.slot, Slot::Plan { .. }) {
                                         crate::answer_meter::meter_result(&answer, &answer_limits)?;
                                     }
@@ -1031,6 +1057,10 @@ impl Transaction {
                 return Err(error);
             }
         };
+        let span = tracing::Span::current();
+        if !span.is_disabled() {
+            span.record("nonce", request.nonce());
+        }
         Self::attempt(&proxy, &request, bytes, execution, timeout).await
     }
     fn commit_timeout(&self) -> Option<Duration> {
@@ -1292,6 +1322,61 @@ mod tests {
             state,
         )
     }
+    #[tokio::test]
+    async fn plan_trace_records_seams_and_metering_without_given_values() {
+        use tracing::instrument::WithSubscriber;
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&records);
+        let dispatch = crate::debug::dispatch(Arc::new(move |event| {
+            captured.lock().unwrap().push(event.clone())
+        }));
+        async {
+            let (mut tx, state) = fixture(TransactionOptions::default());
+            state.lock().unwrap().given = true;
+            state.lock().unwrap().rows = 2;
+            for order in ["TRACE_SECRET", "OTHER_SECRET"] {
+                let plan = crate::query_plan_exec::race::purchase(order, "I1", "A1");
+                tx.stage_plan(&plan).unwrap();
+                tx.commit().await.unwrap();
+            }
+        }
+        .with_subscriber(dispatch)
+        .await;
+        let records = records.lock().unwrap();
+        let expected = crate::query_plan_exec::race::purchase("TRACE_SECRET", "I1", "A1")
+            .shape_fingerprint()
+            .unwrap()
+            .digest()
+            .to_hex();
+        for record in records.iter() {
+            assert!(!record.fields.contains_key("request_fingerprint"));
+            if let Some(fingerprint) = record.fields.get("fingerprint") {
+                assert_eq!(fingerprint, &serde_json::json!(expected));
+            }
+        }
+        for name in ["lower", "stage", "commit", "answer"] {
+            assert!(
+                records
+                    .iter()
+                    .any(|record| record.name == format!("type_bridge.plan.{name}")),
+                "missing {name}"
+            );
+        }
+        assert!(
+            records
+                .iter()
+                .any(|record| record.name == "type_bridge.io.provider")
+        );
+        assert!(records.iter().any(|record| record.fields.get("items")
+            == Some(&serde_json::json!(2))
+            && record.fields.get("bytes") == Some(&serde_json::json!(4))));
+        assert!(
+            !serde_json::to_string(&*records)
+                .unwrap()
+                .contains("TRACE_SECRET")
+        );
+    }
+
     #[tokio::test]
     async fn explained_statements_are_the_recorded_provider_program() {
         for snapshot in [false, true] {

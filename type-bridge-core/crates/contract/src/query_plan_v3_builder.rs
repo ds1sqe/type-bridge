@@ -532,6 +532,10 @@ impl PlanBuilder {
                 functions: vec![],
             },
             schema,
-        )
+        ).inspect(|plan| {
+            if let Ok(fingerprint) = plan.shape_fingerprint() {
+                tracing::debug!(target: "type_bridge.plan", origin = "builder", fingerprint = %fingerprint.digest().to_hex(), operation = ?plan.operation(), stages = plan.pipeline().len(), statements = plan.statement_counts().0 + plan.statement_counts().1, writes = plan.writes(), "type_bridge.plan.build");
+            }
+        })
     }
 }

@@ -1118,3 +1118,15 @@ export {
   type PlanRoleToken,
   type PlanValueType,
 } from "./plan.js";
+
+/** Metadata from Rust plan execution; transported input values are omitted. */
+export interface DebugEvent {
+  readonly name: string;
+  readonly target: string;
+  readonly level: string;
+  readonly fields: Readonly<Record<string, string | number | boolean>>;
+}
+/** Forward Rust debug records to the host logger; null disables forwarding. */
+export function setDebugListener(listener: ((event: DebugEvent) => void) | null): void {
+  loadNative().setDebugListener(listener === null ? null : (json) => listener(JSON.parse(json) as DebugEvent));
+}

@@ -30,8 +30,8 @@ def _write(tmp_path: Path, value: dict[str, Any]) -> Path:
 
 def test_distribution_contract_matches_every_live_source_authority() -> None:
     contract = VALIDATOR.validate()
-    assert contract["abi"]["decision"] == "additive-1.8"
-    assert contract["abi"]["version"] == "1.8.0"
+    assert contract["abi"]["decision"] == "additive-1.9"
+    assert contract["abi"]["version"] == "1.9.0"
     assert contract["abi"]["package_metadata_version"] == "1.6.0"
     assert contract["matrix"]["public_supported"] == []
     assert contract["publication_disposition"] == "artifact-only-unpublished-unsupported"

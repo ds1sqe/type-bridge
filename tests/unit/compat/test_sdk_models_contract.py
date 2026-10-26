@@ -306,7 +306,7 @@ def test_sdk_models_catalog_freezes_final_fingerprint_authority() -> None:
                 "python": "6c1c7553915c85d96058df7e8b2018362dc16dc19fe94097e82a5c77e972a4b2",
                 "node": "e1c5959ddb5b35214b29a9b8660c6c735c42f983e52241783dd1e5b195ea2b0e",
                 "rust": "88e36a2ca6c36348574f75c1c909bf13caa49427c547bcef179f57bd62d525f1",
-                "c": "a9014fc4ea2369861a2757d1ae26ed52d0e2dca856c4b1fa790d0ecc8ff9ff66",
+                "c": "4805c221049de164099abaaa60d23f3c58787fc6d9e53061980f8d8a272e2720",
             }.items()
         },
     }

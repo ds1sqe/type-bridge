@@ -3174,6 +3174,10 @@ impl RuntimeTransaction {
         limits: QueryV2RuntimeAnswerLimits,
         canonical: bool,
     ) -> Result<QueryResult> {
+        let started = std::time::Instant::now();
+        if canonical {
+            tracing::trace!(target: "type_bridge.io", statement = typeql, "type_bridge.io.provider.statement");
+        }
         let mut items = Vec::new();
         let mut consumer = |item| {
             items.push(item);
@@ -3182,18 +3186,26 @@ impl RuntimeTransaction {
         let stats = match (rows, canonical) {
             (None, false) => {
                 self.query_bounded(typeql, limits.answer, &mut consumer)
-                    .await?
+                    .await
             }
             (Some(rows), false) => {
                 self.query_with_rows_bounded(typeql, rows, limits.answer, &mut consumer)
-                    .await?
+                    .await
             }
-            (None, true) => self.query_v2_bounded(typeql, limits, &mut consumer).await?,
+            (None, true) => self.query_v2_bounded(typeql, limits, &mut consumer).await,
             (Some(rows), true) => {
                 self.query_v2_with_rows_bounded(typeql, rows, limits, &mut consumer)
-                    .await?
+                    .await
             }
         };
+        let stats = match stats {
+            Ok(stats) => stats,
+            Err(error) => {
+                tracing::debug!(target: "type_bridge.io", outcome = "error", bytes_sent = typeql.len(), items = items.len(), duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX), "type_bridge.io.provider");
+                return Err(error);
+            }
+        };
+        tracing::debug!(target: "type_bridge.io", outcome = "ok", bytes_sent = typeql.len(), items = stats.processed_items, bytes_received = stats.response_bytes, duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX), "type_bridge.io.provider");
         Ok(materialize_runtime_answer(stats, items))
     }
 

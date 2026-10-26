@@ -229,6 +229,7 @@ export interface NativePlanBuilder {
     build(authority: NativeQueryV2Authority): NativePlan;
 }
 interface NativePlanBuilderModule {
+    setDebugListener(callback: ((json: string) => void) | null): void;
     NodePlanBuilder: new () => NativePlanBuilder;
 }
 /** Native proxy connection over the built-in HTTP route. */

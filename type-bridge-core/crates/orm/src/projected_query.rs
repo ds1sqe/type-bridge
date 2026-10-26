@@ -559,8 +559,11 @@ fn materialize_projected_query_value_with_budget(
     check_materialization_budget(cancellation, deadline)?;
     let mut materializer =
         Materializer::new(installed, registry, origin, limits, cancellation, deadline);
-    let value = materializer.materialize_result(request, canonical)?;
+    let value = materializer.materialize_result(request, canonical).inspect_err(|error| {
+        tracing::debug!(target: "type_bridge.plan", refusal = %error.code(), "type_bridge.plan.hydrate");
+    })?;
     materializer.checkpoint()?;
+    tracing::debug!(target: "type_bridge.plan", rows = materializer.measure.rows(), things = materializer.measure.things(), bytes = materializer.measure.bytes(), "type_bridge.plan.hydrate");
     Ok((value, materializer.measure))
 }
 
@@ -835,6 +838,7 @@ impl<'a> Materializer<'a> {
     ) -> Result<Arc<ProjectedThing>, SdkExecutionDiagnostic> {
         self.checkpoint()?;
         let type_id = projected_type_id(self.registry, thing.concrete_descriptor())?;
+        let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.hydrate", type_label = %type_id.label(), model = self.installed.projection().models().get(&type_id).map_or(thing.concrete_descriptor().as_str(), |model| model.target_name().as_str())).entered();
         let fields = self.attributes(&type_id, thing.attributes())?;
         let roles = self.roles(&type_id, thing)?;
         self.checkpoint()?;

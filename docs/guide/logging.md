@@ -53,3 +53,18 @@ Do not log passwords, tokens, credential-provider output, complete TLS private
 material, or unbounded query/result bytes. Projection fingerprints, schema
 labels, operation names, bounded diagnostics, TypeDB versions, and request
 identities are suitable for troubleshooting.
+
+
+## Native plan and IO events
+
+The shared Rust engine emits `type_bridge.plan` and `type_bridge.io` tracing
+records containing codes, counts, schema labels and fingerprints. Python
+forwards them through standard `logging`; Node exposes `setDebugListener`;
+Rust uses the host subscriber; C exposes a database-scoped callback.
+When no listener is registered, `RUST_LOG=type_bridge=debug` enables the stderr
+fallback. Statement text appears only at `trace`; transported given values
+never appear. Python and Node use bounded asynchronous queues, so a slow
+logger can lose debug records without blocking transactions.
+
+Python forwards Rust TRACE at numeric logging level 5. Private `perf-stages`
+builds keep subscriber ownership with their stage recorder.

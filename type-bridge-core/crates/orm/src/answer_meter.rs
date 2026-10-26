@@ -107,5 +107,6 @@ pub(crate) fn meter_result(
     for item in items {
         meter.accept_value(item)?;
     }
+    tracing::debug!(target: "type_bridge.plan", items = meter.items(), bytes = meter.bytes(), "type_bridge.plan.answer");
     Ok(())
 }

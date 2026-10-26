@@ -400,6 +400,7 @@ pub unsafe extern "C" fn type_bridge_plan_builder_new(
     // SAFETY: a writable, possibly unaligned, owner slot by contract.
     unsafe { out_builder.write_unaligned(ptr::null_mut()) };
     guarded(|| {
+        type_bridge_orm::debug::init();
         let handle = Box::new(TypeBridgePlanBuilder::new());
         // SAFETY: as above.
         unsafe { out_builder.write_unaligned(Box::into_raw(handle)) };

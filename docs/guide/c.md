@@ -374,22 +374,33 @@ commit whose failure is a retry-safe `STC2` conflict with
 
 <a id="require-abi-17"></a>
 
-### Require ABI 1.8
+### Require ABI 1.9
 
-The 1.8 runtime serves 1.6 and 1.7 consumers unchanged: CMake accepts
+The 1.9 runtime serves 1.6, 1.7 and 1.8 consumers unchanged: CMake accepts
 `find_package(TypeBridge 1.6.0 EXACT)` and pkg-config keeps
 `type-bridge = 1.6.0` resolving. Applications that use the new answer cursors
 require it explicitly:
 
 ```cmake
-find_package(TypeBridge 1.8 CONFIG REQUIRED)
+find_package(TypeBridge 1.9 CONFIG REQUIRED)
 ```
 
 ```text
-Requires: type-bridge-abi >= 1.8.0
+Requires: type-bridge-abi >= 1.9.0
 ```
 
 The runtime's pkg-config file keeps `Version: 1.6.0` and provides
 `type-bridge-abi` at the native ABI version (pkgconf, the Ubuntu 24.04
 `pkg-config`, resolves provided modules). At run time,
 `type_bridge_c_abi_minor()` reports the loaded runtime's minor.
+
+
+### Database debug callbacks (ABI 1.9)
+
+`type_bridge_debug_listener_set(database, callback, context)` forwards that
+database's stage, commit, provider and answer records as borrowed JSON bytes.
+The bytes last until the callback returns. Keep the context alive until clearing
+the callback or closing the database; clearing waits for an active callback.
+The callback must not retain the bytes, unwind or reenter TypeBridge.
+Schema-only build events use tracing or `RUST_LOG`, since they have no database
+handle. A null callback clears the listener.

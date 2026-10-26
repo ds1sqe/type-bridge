@@ -103,3 +103,5 @@ pub use runtime::{
     TypeBridgeReadTransaction, TypeBridgeRuntime, TypeBridgeRuntimeConfigV1,
     TypeBridgeWriteTransaction,
 };
+
+pub use runtime::{TypeBridgeDebugListener, type_bridge_debug_listener_set};

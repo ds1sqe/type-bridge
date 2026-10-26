@@ -28,7 +28,7 @@ use crate::value::AttributeValue;
 ///     }
 /// }
 /// ```
-#[tracing::instrument(skip(doc), fields(entity_type = T::TYPE_NAME))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc), fields(model = T::TYPE_NAME))]
 pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T> {
     let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
         type_name: T::TYPE_NAME.to_string(),
@@ -64,7 +64,7 @@ pub fn hydrate_entity<T: TypeBridgeEntity>(doc: &serde_json::Value) -> Result<T>
 ///
 /// Uses the same document shape as entity hydration since relations
 /// also own attributes and have IIDs.
-#[tracing::instrument(skip(doc), fields(relation_type = R::TYPE_NAME))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc), fields(model = R::TYPE_NAME))]
 pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Result<R> {
     let obj = doc.as_object().ok_or_else(|| OrmError::Hydration {
         type_name: R::TYPE_NAME.to_string(),
@@ -93,7 +93,7 @@ pub fn hydrate_relation<R: TypeBridgeRelation>(doc: &serde_json::Value) -> Resul
 }
 
 /// Hydrate a dynamic entity row from a TypeDB fetch document.
-#[tracing::instrument(skip(doc, descriptor), fields(entity_type = %descriptor.type_name))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc, descriptor), fields(model = %descriptor.type_name))]
 pub fn hydrate_dynamic_entity(
     descriptor: &EntityDescriptor,
     doc: &serde_json::Value,
@@ -233,7 +233,7 @@ fn relation_identity_scalar(
 }
 
 /// Hydrate one dynamic relation document through the compatibility surface.
-#[tracing::instrument(skip(doc, descriptor), fields(relation_type = %descriptor.type_name))]
+#[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.hydrate", skip(doc, descriptor), fields(model = %descriptor.type_name))]
 pub fn hydrate_dynamic_relation(
     descriptor: &RelationDescriptor,
     doc: &serde_json::Value,

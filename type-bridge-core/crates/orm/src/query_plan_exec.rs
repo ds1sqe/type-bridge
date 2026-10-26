@@ -101,6 +101,9 @@ impl PlanAnswer {
     /// objects keyed by the projected variable, holding the typed remote
     /// value; fetched documents retain their validated scalar domains.
     pub fn from_staged_v3(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<Self, Diagnostic> {
+        let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
+        let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", %fingerprint, transport = "proxy").entered();
+        tracing::debug!(target: "type_bridge.plan", items = match answer { StagedAnswerV3::Rows { rows } => rows.len(), StagedAnswerV3::Documents { documents } => documents.len(), _ => 1 }, wire_bytes = serde_json::to_vec(answer).map_or(0, |bytes| bytes.len()), "type_bridge.plan.answer");
         Ok(match answer {
             StagedAnswerV3::Count { value } => Self::Count(*value),
             StagedAnswerV3::Exists { value } => Self::Exists(*value),
@@ -445,7 +448,29 @@ pub(crate) fn staged_query(
     plan: &QueryPlanV3,
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
-    let _stage = tracing::info_span!("tb.query.compile").entered();
+    let _performance = tracing::info_span!("tb.query.compile").entered();
+    let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
+    let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.lower", %fingerprint, stages = plan.pipeline().len(), writes = plan.writes(), statements = tracing::field::Empty, outcome = tracing::field::Empty, refusal = tracing::field::Empty);
+    let _entered = span.enter();
+    let result = staged_query_inner(plan, supports_given_rows, fingerprint);
+    if result.is_ok() {
+        span.record(
+            "statements",
+            plan.statement_counts().0 + plan.statement_counts().1,
+        );
+    }
+    span.record("outcome", if result.is_ok() { "ok" } else { "error" });
+    if let Err(error) = &result {
+        span.record("refusal", error.code().as_str());
+    }
+    result
+}
+
+fn staged_query_inner(
+    plan: &QueryPlanV3,
+    supports_given_rows: bool,
+    fingerprint: String,
+) -> Result<StagedQuery, Diagnostic> {
     let LoweredPlan {
         query,
         snapshot,
@@ -469,6 +494,7 @@ pub(crate) fn staged_query(
     let mut staged = StagedQuery::new(typeql, plan.writes())
         .canonical()
         .with_failure_context(failure_context(plan));
+    staged.fingerprint = Some(fingerprint);
     if let Some(snapshot) = snapshot {
         let snapshot = ast(tql::render(&snapshot))?;
         if snapshot.len() > plan.limits().codec.max_bytes {

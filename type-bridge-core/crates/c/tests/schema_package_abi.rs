@@ -37,7 +37,7 @@ use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::projection::ProjectedTokenIdentity;
 use type_bridge_contract::projection::{
     BindingTarget, CSymbolPrefix, CodeResourceDigest, EmissionPlan, ProjectionConfig,
-    RuntimeProjection,
+    RuntimeProjection, TYPE_BRIDGE_C_ABI_MINOR,
 };
 use type_bridge_contract::projection_wire::decode_runtime_projection_verified;
 use type_bridge_contract::schema::DocumentId;
@@ -754,7 +754,7 @@ fn native_import_library(native_library: &Path) -> PathBuf {
 fn rust_abi_layout() -> Vec<usize> {
     let mut layout = vec![
         1,
-        8,
+        TYPE_BRIDGE_C_ABI_MINOR as usize,
         TypeBridgeStatus::Ok as usize,
         TypeBridgeStatus::InvalidArgument as usize,
         TypeBridgeStatus::SchemaPackageRejected as usize,
@@ -2626,7 +2626,7 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     assert!(
         fs::read_to_string(&installed_config)
             .expect("CMake metadata is UTF-8")
-            .contains("set(TypeBridge_C_ABI_VERSION \"1.8.0\")")
+            .contains("set(TypeBridge_C_ABI_VERSION \"1.9.0\")")
     );
     assert!(
         fs::read_to_string(&installed_pkg_config)
@@ -2668,23 +2668,26 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         "the installed package incorrectly satisfied an incompatible ABI request"
     );
 
-    // ABI 1.8 serves 1.6/1.7 exact pins; new consumers can require 1.8.
+    // ABI 1.9 serves 1.6/1.7/1.8 exact pins; new consumers can require 1.9.
     for (request, accepted) in [
         ("1.6.0 EXACT", true),
         ("1.6", true),
         ("1.7", true),
         ("1.7.0 EXACT", true),
+        ("1.8.0 EXACT", true),
         ("1.6...1.7", false),
-        ("1.6...1.8", true),
         ("1.5", false),
         ("1.6.1 EXACT", false),
         ("1.7.1 EXACT", false),
+        ("1.8.1 EXACT", false),
         ("1.8", true),
-        ("1.8.0 EXACT", true),
-        ("1.9", false),
+        ("1.9.0 EXACT", true),
+        ("1.6...1.8", false),
+        ("1.6...1.9", true),
+        ("1.10", false),
+        ("1.9", true),
         ("2.0", false),
-        ("1.8...2.0", true),
-        ("1.9...2.0", false),
+        ("1.9...2.0", true),
     ] {
         let source = stage.path().join("version-request");
         let build = stage.path().join("version-request-build");
@@ -2731,11 +2734,11 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
             "legacy exact pins resolve"
         );
         assert!(
-            pkg_config("type-bridge-abi >= 1.7.0"),
-            "1.7 consumers resolve"
+            pkg_config("type-bridge-abi >= 1.8.0"),
+            "current consumers resolve"
         );
-        assert!(pkg_config("type-bridge-abi >= 1.8.0"));
-        assert!(!pkg_config("type-bridge-abi >= 1.9.0"));
+        assert!(pkg_config("type-bridge-abi >= 1.9.0"));
+        assert!(!pkg_config("type-bridge-abi >= 1.10.0"));
     }
 
     let output = Command::new("cmake")
@@ -3451,9 +3454,9 @@ fn generated_descriptor_opens_and_borrows_exact_emitted_bytes() {
 }
 
 #[test]
-fn abi_1_6_through_1_8_descriptors_open_in_flat_and_chunked_forms() {
+fn supported_additive_descriptors_open_in_flat_and_chunked_forms() {
     let bytes = emitted_fixture().bytes;
-    for minor in [6, 7, 8] {
+    for minor in 6..=TYPE_BRIDGE_C_ABI_MINOR {
         let mut descriptor = bytes.descriptor();
         descriptor.abi_minor = minor;
         let mut package = ptr::null_mut();
@@ -3494,7 +3497,7 @@ fn abi_1_6_through_1_8_descriptors_open_in_flat_and_chunked_forms() {
             TypeBridgeStatus::Ok
         );
     }
-    for minor in [0, 5, 9, u32::MAX] {
+    for minor in [0, 5, TYPE_BRIDGE_C_ABI_MINOR + 1, u32::MAX] {
         let mut descriptor = bytes.descriptor();
         descriptor.abi_minor = minor;
         assert_rejected(
@@ -3531,7 +3534,7 @@ int main(void) {
   type_bridge_diagnostics_t *diagnostics = NULL;
   type_bridge_write_transaction_t *transaction = NULL;
   type_bridge_execution_diagnostics_t *execution = NULL;
-  if (type_bridge_c_abi_minor() != 8u) return 1;
+  if (type_bridge_c_abi_minor() != 9u) return 1;
   if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 2;
   if (package == NULL || diagnostics != NULL) return 3;
   if (type_bridge_write_transaction_rollback(&transaction, &execution) != TYPE_BRIDGE_STATUS_OK) return 4;
@@ -5593,7 +5596,7 @@ fn schema_package_open_v2_retains_the_exact_missing_semantic_evidence_representa
 fn schema_package_admission_rejects_unsupported_abis() {
     let fixture = emitted_fixture();
     let parts = fixture.bytes.chunked_parts(23);
-    for minor in (0..6).chain([9, u32::MAX]) {
+    for minor in (0..6).chain([TYPE_BRIDGE_C_ABI_MINOR + 1, u32::MAX]) {
         let mut flat = fixture.bytes.descriptor();
         flat.abi_minor = minor;
         assert_v2_flat_rejected(
@@ -6391,7 +6394,10 @@ fn abi_metadata_and_null_handle_paths_are_stable_and_initialize_views() {
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
     assert_eq!(unsafe { type_bridge_c_abi_major() }, 1);
     // SAFETY: these ABI metadata functions take no caller-owned inputs.
-    assert_eq!(unsafe { type_bridge_c_abi_minor() }, 8);
+    assert_eq!(
+        unsafe { type_bridge_c_abi_minor() },
+        TYPE_BRIDGE_C_ABI_MINOR
+    );
 
     let mut version = TypeBridgeByteView {
         data: ptr::null(),

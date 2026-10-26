@@ -17,6 +17,8 @@
 #![warn(missing_docs)]
 
 pub mod ast;
+#[cfg(not(feature = "perf-stages"))]
+mod debug;
 pub mod match_runtime;
 mod migration_catalog_runtime;
 pub mod migration_runtime;
@@ -898,6 +900,8 @@ fn run_v2_cli(py: Python<'_>, arguments: Vec<String>) -> i32 {
 // Preserve the GIL-required module contract across the dependency migration.
 #[pymodule(gil_used = true)]
 fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    #[cfg(not(feature = "perf-stages"))]
+    debug::install();
     m.add_class::<ValidationEngine>()?;
     m.add_class::<QueryCompiler>()?;
     m.add_class::<TypeSchema>()?;

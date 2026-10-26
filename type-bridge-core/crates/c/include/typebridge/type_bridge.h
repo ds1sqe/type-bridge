@@ -30,7 +30,7 @@
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 8u
+#define TYPE_BRIDGE_C_ABI_MINOR 9u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -916,6 +916,19 @@ typedef struct type_bridge_execution_diagnostic_detail_view_v1 {
 
 TYPE_BRIDGE_API uint32_t TYPE_BRIDGE_CALL type_bridge_c_abi_major(void);
 TYPE_BRIDGE_API uint32_t TYPE_BRIDGE_CALL type_bridge_c_abi_minor(void);
+
+/* ABI 1.9: borrowed JSON, valid only during the callback. Do not retain the
+ * pointer, unwind, or reenter TypeBridge. The context must remain live
+ * until cleared or database close. NULL clears the listener. This database's
+ * stage/commit/provider/answer events are isolated from other handles;
+ * schema-only build events use tracing or the RUST_LOG stderr fallback. */
+typedef void (TYPE_BRIDGE_CALL *type_bridge_debug_listener_t)(
+    type_bridge_byte_view_t event_json, void *user_data);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+    type_bridge_debug_listener_set(const type_bridge_database_t *database,
+                                  type_bridge_debug_listener_t callback,
+                                  void *user_data);
+
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_runtime_version(type_bridge_byte_view_t *out_version);
 

@@ -38,6 +38,8 @@ pub mod _relation;
 #[path = "schema/mod.rs"]
 pub mod _schema;
 mod answer_meter;
+#[doc(hidden)]
+pub mod debug;
 mod enum_spelling;
 pub mod error;
 mod execution_diagnostic;

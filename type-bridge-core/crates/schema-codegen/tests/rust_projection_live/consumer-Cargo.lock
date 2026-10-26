@@ -2590,11 +2590,11 @@ dependencies = [
  "sha2",
  "tempfile",
  "type-bridge-contract",
+ "typeql",
  "unicode-ident",
  "ureq",
  "winnow",
  "winx",
- "typeql",
 ]
 
 [[package]]
@@ -2642,6 +2642,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "type-bridge-contract",
  "type-bridge-core-lib",
  "type-bridge-query",

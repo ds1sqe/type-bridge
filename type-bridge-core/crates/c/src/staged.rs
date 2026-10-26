@@ -71,6 +71,12 @@ enum StagedOwner {
 }
 
 impl StagedOwner {
+    fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
+        match self {
+            Self::Database(guard) => guard.debug_dispatch(),
+            Self::Proxy(_) => None,
+        }
+    }
     fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         match self {
             Self::Database(guard) => guard.block_on(future),
@@ -538,7 +544,14 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
         if transaction.poisoned {
             return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
         }
-        match transaction.transaction.stage_plan(&plan.plan) {
+        let dispatch = transaction.owner.debug_dispatch();
+        let pending = match dispatch {
+            Some(dispatch) => tracing::dispatcher::with_default(&dispatch, || {
+                transaction.transaction.stage_plan(&plan.plan)
+            }),
+            None => transaction.transaction.stage_plan(&plan.plan),
+        };
+        match pending {
             Ok(pending) => {
                 let state = Arc::new(PendingState::new(pending, &plan.plan));
                 transaction.pending_views.push(Arc::downgrade(&state));
@@ -764,6 +777,7 @@ mod tests {
     use type_bridge_orm::{ClassifiedCommitError, CommitFailureCertainty, TxType};
 
     use super::*;
+    use crate::TypeBridgeByteView;
     use crate::entity_crud::tests::{
         COMMIT_CONFLICT, COMMIT_CONFLICT_MESSAGE, COMMIT_PANIC, COMMIT_SUCCESS, COMMIT_UNKNOWN,
         Fixture, Response, close_diagnostics, diagnostic, fixture,
@@ -862,6 +876,88 @@ mod tests {
             close_diagnostics(&mut diagnostics);
         }
         status
+    }
+
+    #[test]
+    fn debug_listener_is_scoped_to_its_database() {
+        unsafe extern "C" fn record(view: TypeBridgeByteView, context: *mut std::ffi::c_void) {
+            // SAFETY: the test retains this vector and the callback receives live bytes.
+            let records = unsafe { &*(context.cast::<std::sync::Mutex<Vec<serde_json::Value>>>()) };
+            let bytes = unsafe { std::slice::from_raw_parts(view.data, view.length) };
+            records
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(bytes).unwrap());
+        }
+        let records = std::sync::Mutex::new(Vec::<serde_json::Value>::new());
+        let a = fixture(vec![rows(0)], COMMIT_SUCCESS);
+        let b = fixture(vec![rows(0)], COMMIT_SUCCESS);
+        // SAFETY: listener context lives until cleared below; handles are exclusive.
+        assert_eq!(
+            unsafe {
+                crate::runtime::type_bridge_debug_listener_set(
+                    &*a.database,
+                    Some(record),
+                    (&records as *const _ as *mut std::sync::Mutex<Vec<serde_json::Value>>).cast(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        let mut plan = decode(COUNT);
+        let mut transaction = open(&b, TYPE_BRIDGE_TRANSACTION_READ);
+        let mut pending = stage(transaction, plan);
+        assert_eq!(commit(transaction).0, TypeBridgeStatus::Ok);
+        assert!(records.lock().unwrap().is_empty());
+        // SAFETY: these owned handles are no longer in use.
+        unsafe {
+            type_bridge_pending_free(&mut pending);
+            type_bridge_staged_transaction_close(&mut transaction);
+        }
+        transaction = open(&a, TYPE_BRIDGE_TRANSACTION_READ);
+        pending = stage(transaction, plan);
+        assert_eq!(commit(transaction).0, TypeBridgeStatus::Ok);
+        {
+            let events = records.lock().unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|record| record["name"] == "type_bridge.plan.commit"),
+                "{events:?}"
+            );
+        }
+        // A running transaction can retain a dispatch after the callback is cleared.
+        let retained = unsafe { &*transaction }.owner.debug_dispatch().unwrap();
+        // SAFETY: clear the callback before its context is released and close owned handles.
+        unsafe {
+            crate::runtime::type_bridge_debug_listener_set(&*a.database, None, ptr::null_mut());
+            type_bridge_pending_free(&mut pending);
+            type_bridge_staged_transaction_close(&mut transaction);
+            type_bridge_plan_free(&mut plan);
+        }
+        let count = records.lock().unwrap().len();
+        tracing::dispatcher::with_default(&retained, || {
+            tracing::debug!(target: "type_bridge.plan", "late event");
+        });
+        assert_eq!(records.lock().unwrap().len(), count);
+        // Closing the database also ends the callback context's lifetime.
+        let mut database = Box::into_raw(a.database);
+        // SAFETY: the database is owned and the records remain live through close.
+        assert_eq!(
+            unsafe {
+                crate::runtime::type_bridge_debug_listener_set(
+                    database,
+                    Some(record),
+                    (&records as *const _ as *mut std::sync::Mutex<Vec<serde_json::Value>>).cast(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(close_database(&mut database), TypeBridgeStatus::Ok);
+        assert!(database.is_null());
+        tracing::dispatcher::with_default(&retained, || {
+            tracing::debug!(target: "type_bridge.plan", "late event after close");
+        });
+        assert_eq!(records.lock().unwrap().len(), count);
     }
 
     /// Category, path count and detail keys as an ABI 1.6 consumer reads them.

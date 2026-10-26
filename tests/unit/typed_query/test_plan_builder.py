@@ -237,3 +237,38 @@ def test_fetch_terminal_errors_surface_from_the_core(terminal: str, fetch_first:
         plan.build(_authority())
     expected = "fetch_once" if terminal == "fetch" else "terminal_conflict"
     assert caught.value.code == f"query_plan_builder_{expected}"
+
+
+def test_plan_build_reaches_python_logging(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+    import time
+
+    with caplog.at_level(logging.DEBUG, logger="type_bridge.plan"):
+        purchase("LOG_SECRET", "I1", "A1").canonical_bytes()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(
+            "type_bridge.plan.build" in record.message for record in caplog.records
+        ):
+            time.sleep(0.01)
+    assert any("type_bridge.plan.build" in record.message for record in caplog.records)
+    assert all("LOG_SECRET" not in record.message for record in caplog.records)
+
+
+def test_rust_log_fallback_reaches_stderr() -> None:
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        f"import runpy,time; ns=runpy.run_path({str(Path(__file__).resolve())!r}); "
+        "ns['purchase']('FALLBACK_SECRET','I1','A1').canonical_bytes(); time.sleep(0.2)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=os.environ | {"RUST_LOG": "type_bridge=debug"},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "type_bridge.plan.build" in result.stderr
+    assert "FALLBACK_SECRET" not in result.stderr

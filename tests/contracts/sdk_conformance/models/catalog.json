@@ -75,7 +75,7 @@
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
         "semantic_profile": "typedb-3.12.1/v1",
-        "digest": "a9014fc4ea2369861a2757d1ae26ed52d0e2dca856c4b1fa790d0ecc8ff9ff66"
+        "digest": "4805c221049de164099abaaa60d23f3c58787fc6d9e53061980f8d8a272e2720"
       }
     }
   },

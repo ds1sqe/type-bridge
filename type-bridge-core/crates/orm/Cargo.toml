@@ -41,6 +41,7 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 thiserror = "2"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry", "env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
@@ -48,7 +49,6 @@ base64 = "0.22"
 tokio = { version = "1", features = ["full", "test-util"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 typeql.workspace = true
-tracing-subscriber = "0.3"
 # Instruction-count benches; the CI runner installs gungraun-runner at the
 # same exact version.
 gungraun = "=0.20.0"

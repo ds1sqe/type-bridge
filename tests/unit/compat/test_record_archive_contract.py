@@ -82,19 +82,17 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
     contract = _load("tests/contracts/c-abi.json")
     header = ROOT / contract["header"]
     assert hashlib.sha256(header.read_bytes()).hexdigest() == contract["header_sha256"]
-    assert contract["version"] == "1.8.0"
+    assert contract["version"] == "1.9.0"
     assert not any(key.startswith("parent_") for key in contract)
     exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", header.read_text()))
     assert contract["exports"] == sorted(exports)
-    assert len(exports) == 423
+    assert len(exports) == 424
     previous = ROOT / "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
     assert hashlib.sha256(previous.read_bytes()).hexdigest() == (
         "fa990bf4e896948f104645e343131ac81be958069b3741a2691672aebd888fbb"
     )
     previous_exports = set(re.findall(r"\b(type_bridge_[a-z0-9_]+)\s*\(", previous.read_text()))
-    # ABI 1.7 is additive: keep-open rollback, the staged transaction surface,
-    # the plan builder, the typed failure accessor, the proxy connection and
-    # the limits session open.
+    # The current ABI remains additive to the frozen ABI 1.6 header.
     builder = {
         f"type_bridge_plan_builder_{name}"
         for name in (
@@ -138,6 +136,7 @@ def test_current_abi_has_one_complete_header_and_export_inventory() -> None:
         "type_bridge_plan_v3_canonical_bytes",
         "type_bridge_plan_free",
         "type_bridge_database_transaction",
+        "type_bridge_debug_listener_set",
         "type_bridge_proxy_connection_transaction",
         "type_bridge_staged_transaction_stage",
         "type_bridge_staged_transaction_commit",

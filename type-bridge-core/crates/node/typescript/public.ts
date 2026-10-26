@@ -1,6 +1,8 @@
 /** Generated-only package root for @type-bridge/node. */
 
 export {
+  setDebugListener,
+  type DebugEvent,
   AggregateSpec,
   BooleanExpr,
   ComparisonExpr,

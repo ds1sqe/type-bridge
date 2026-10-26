@@ -437,6 +437,7 @@ export interface NativePlanBuilder {
 }
 
 interface NativePlanBuilderModule {
+  setDebugListener(callback: ((json: string) => void) | null): void;
   NodePlanBuilder: new () => NativePlanBuilder;
 }
 

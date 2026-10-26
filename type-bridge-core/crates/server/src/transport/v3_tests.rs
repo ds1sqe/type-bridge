@@ -1646,3 +1646,31 @@ async fn library_entry_and_router_answer_the_same_request_alike() {
     assert_eq!(routed.answers(), entered.answers());
     assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 2);
 }
+
+
+#[tokio::test]
+async fn staged_io_traces_use_nonce_without_payload_fingerprints() {
+    use tracing::instrument::WithSubscriber;
+    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = Arc::clone(&records);
+    let dispatch = type_bridge_orm::debug::dispatch(Arc::new(move |event| captured.lock().unwrap().push(event.clone())));
+    let fixture = v3_fixture(vouching_pipeline(), false);
+    let read = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
+    let outcome = direct(&fixture, &read).with_subscriber(dispatch.clone()).await;
+    assert_eq!(outcome.kind, StagedOutcomeKind::Committed);
+    let nonce = "server-trace-given-000001";
+    let request = StagedRequestV3::new(StagedRequestSpecV3 {
+        nonce: nonce.into(), kind: None, limits: StagedLimitsV3::default(),
+        plans: vec![insert_input_entry(&fixture.declared)], prepared_at_unix_ms: now_ms(),
+    }, &fixture.declared, &fixture.advertisement).unwrap();
+    // The mock refuses given transport, but the accepted payload must still stay private.
+    let _ = direct(&fixture, &request).with_subscriber(dispatch).await;
+    let records = records.lock().unwrap();
+    assert!(records.iter().any(|record| record.name == "type_bridge.io.request" && record.fields.get("nonce") == Some(&serde_json::json!(nonce))));
+    assert!(records.iter().all(|record| !record.fields.contains_key("request_fingerprint")));
+    assert!(records.iter().filter(|record| record.name == "type_bridge.io.request").all(|record| !record.fields.contains_key("fingerprint")));
+    let encoded = serde_json::to_string(&*records).unwrap();
+    assert!(!encoded.contains(&request.fingerprint().unwrap().digest().to_hex()));
+    assert!(!encoded.contains(&read.fingerprint().unwrap().digest().to_hex()));
+    assert!(records.iter().any(|record| record.name == "type_bridge.io.reply" && record.fields.contains_key("bytes_out")));
+}

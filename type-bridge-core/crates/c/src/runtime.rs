@@ -155,10 +155,17 @@ pub(crate) struct DatabaseState {
     database: Arc<Database>,
     server_version: Vec<u8>,
     transaction_children: AtomicUsize,
+    debug_dispatch: std::sync::Mutex<Option<tracing::Dispatch>>,
+    debug_listener: Arc<std::sync::Mutex<Option<(TypeBridgeDebugListener, usize)>>>,
 }
 
 impl Drop for DatabaseState {
     fn drop(&mut self) {
+        // Retained spans must not call host data after the database closes.
+        *self
+            .debug_listener
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.runtime
             .database_children
             .fetch_sub(1, Ordering::AcqRel);
@@ -236,8 +243,23 @@ pub(crate) struct StagedDatabaseGuard {
 }
 
 impl StagedDatabaseGuard {
+    pub(crate) fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
+        self.database
+            .debug_dispatch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub(crate) fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.database.runtime.runtime.block_on(future)
+        use tracing::instrument::WithSubscriber;
+        match self.debug_dispatch() {
+            Some(dispatch) => self
+                .database
+                .runtime
+                .runtime
+                .block_on(future.with_subscriber(dispatch)),
+            None => self.database.runtime.runtime.block_on(future),
+        }
     }
 
     /// Fence the retained package and server-version bytes, as the 1.6
@@ -350,6 +372,8 @@ impl TypeBridgeDatabase {
                 database: Arc::new(database),
                 server_version: b"3.12.3".to_vec(),
                 transaction_children: AtomicUsize::new(0),
+                debug_dispatch: std::sync::Mutex::new(None),
+                debug_listener: Arc::new(std::sync::Mutex::new(None)),
             }),
         }
     }
@@ -1346,6 +1370,7 @@ pub unsafe extern "C" fn type_bridge_runtime_open_v1(
             return TypeBridgeStatus::InvalidArgument;
         }
         // SAFETY: unaligned reads admit hostile-but-readable configuration storage.
+        type_bridge_orm::debug::init();
         let config = unsafe { config.read_unaligned() };
         if config.struct_size as usize != size_of::<TypeBridgeRuntimeConfigV1>()
             || config.version != RUNTIME_CONFIG_VERSION
@@ -1681,6 +1706,8 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             database: Arc::new(database),
             server_version: release.server().to_string().into_bytes(),
             transaction_children: AtomicUsize::new(0),
+            debug_dispatch: std::sync::Mutex::new(None),
+            debug_listener: Arc::new(std::sync::Mutex::new(None)),
         };
         // SAFETY: the initialized output remains writable.
         unsafe {
@@ -1781,6 +1808,8 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
             database: Arc::new(database),
             server_version: release.server().to_string().into_bytes(),
             transaction_children: AtomicUsize::new(0),
+            debug_dispatch: std::sync::Mutex::new(None),
+            debug_listener: Arc::new(std::sync::Mutex::new(None)),
         };
         // SAFETY: the initialized output remains writable.
         unsafe {
@@ -2658,6 +2687,61 @@ pub unsafe extern "C" fn type_bridge_write_transaction_close(
 ) -> TypeBridgeStatus {
     // SAFETY: the shared implementation validates both caller-owned slots.
     unsafe { rollback_write_transaction(transaction, out_diagnostics, false) }
+}
+
+/// Callback receives borrowed JSON bytes valid only until it returns.
+/// It must not unwind, retain the byte pointer, or reenter TypeBridge.
+pub type TypeBridgeDebugListener = unsafe extern "C" fn(TypeBridgeByteView, *mut std::ffi::c_void);
+
+/// Set or clear this database's stage/commit/provider/answer listener.
+/// Schema-only build events use the host tracing subscriber or RUST_LOG.
+///
+/// # Safety
+/// `database` must be live and exclusively accessed. `user_data` must remain
+/// valid until the callback is cleared or the database is closed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_debug_listener_set(
+    database: *const TypeBridgeDatabase,
+    callback: Option<TypeBridgeDebugListener>,
+    user_data: *mut std::ffi::c_void,
+) -> TypeBridgeStatus {
+    guarded(|| {
+        if database.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: the caller supplies one live exclusively accessed handle.
+        let database = unsafe { &*database };
+        // Clearing waits for any active callback before its context can be freed.
+        *database
+            .state
+            .debug_listener
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) =
+            callback.map(|callback| (callback, user_data as usize));
+        let listener = Arc::clone(&database.state.debug_listener);
+        let dispatch = callback.map(|_| {
+            type_bridge_orm::debug::dispatch(Arc::new(move |event| {
+                if let Ok(bytes) = serde_json::to_vec(event) {
+                    let slot = listener.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Some((callback, context)) = *slot {
+                        let view = TypeBridgeByteView {
+                            data: bytes.as_ptr(),
+                            length: bytes.len(),
+                        };
+                        // SAFETY: the listener lock fences the context lifetime;
+                        // borrowed JSON remains live for this synchronous call.
+                        unsafe { callback(view, context as *mut std::ffi::c_void) };
+                    }
+                }
+            }))
+        });
+        *database
+            .state
+            .debug_dispatch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = dispatch;
+        TypeBridgeStatus::Ok
+    })
 }
 
 #[cfg(test)]

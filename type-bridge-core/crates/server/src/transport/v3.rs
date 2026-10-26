@@ -20,6 +20,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::instrument::WithSubscriber;
 
 use axum::Router;
 use axum::body::{Bytes, to_bytes};
@@ -297,6 +298,7 @@ impl StagedExecutor {
     }
 }
 
+#[tracing::instrument(target = "type_bridge.io", name = "type_bridge.io.request", skip_all, fields(bytes_in = body.len()))]
 async fn execute(
     shared: &Arc<StagedExecutor>,
     ctx: RequestContext,
@@ -304,6 +306,7 @@ async fn execute(
     deadline: Instant,
 ) -> StagedOutcome {
     let state = shared.as_ref();
+    tracing::debug!(target: "type_bridge.io", bytes_in = body.len(), "type_bridge.io.request");
     let permit = match await_before_deadline(
         deadline,
         Arc::clone(&V2_PREFLIGHT_SLOTS).acquire_owned(),
@@ -327,10 +330,14 @@ async fn execute(
     });
     let staged = match await_before_deadline(deadline, decode).await {
         Some(Ok(Ok(staged))) => staged,
-        Some(Ok(Err(diagnostic))) => return refuse(state, deadline, &ctx, None, diagnostic).await,
+        Some(Ok(Err(diagnostic))) => {
+            tracing::debug!(target: "type_bridge.io", decode = "refused", code = diagnostic.code().as_str(), "type_bridge.io.request");
+            return refuse(state, deadline, &ctx, None, diagnostic).await;
+        }
         Some(Err(_)) => return refuse(state, deadline, &ctx, None, unavailable()).await,
         None => return refuse(state, deadline, &ctx, None, deadline_exceeded()).await,
     };
+    tracing::debug!(target: "type_bridge.io", decode = "ok", deadline_ms = u64::try_from(deadline.saturating_duration_since(Instant::now()).as_millis()).unwrap_or(u64::MAX), nonce = staged.nonce(), kind = ?staged.kind(), plans = staged.plans().len(), "type_bridge.io.request");
     let request = Some(&staged);
 
     let now_ms = unix_ms();
@@ -401,14 +408,17 @@ async fn execute(
 
     // From here the outcome is owned by a detached task: a client that goes
     // away mid-commit cannot drop the observers or leave the key in flight.
-    let task = tokio::spawn(run_staged(
-        Arc::clone(shared),
-        ctx,
-        staged.clone(),
-        plans,
-        kind,
-        Window { deadline, expires },
-    ));
+    let task = tokio::spawn(
+        run_staged(
+            Arc::clone(shared),
+            ctx,
+            staged.clone(),
+            plans,
+            kind,
+            Window { deadline, expires },
+        )
+        .with_current_subscriber(),
+    );
     match task.await {
         Ok(outcome) => outcome,
         // A panicked write may have committed.
@@ -437,6 +447,7 @@ struct Window {
 
 /// Reserve the nonce, execute, observe and police one admitted request;
 /// return the bytes to deliver.
+#[tracing::instrument(target = "type_bridge.io", name = "type_bridge.io.request", skip_all, fields(nonce = staged.nonce(), plans = plans.len()))]
 async fn run_staged(
     shared: Arc<StagedExecutor>,
     ctx: RequestContext,
@@ -560,6 +571,7 @@ fn unknown_code() -> String {
 
 /// Police `reply` and return what is delivered.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(target = "type_bridge.io", name = "type_bridge.io.reply", skip_all, fields(bytes_out = tracing::field::Empty, outcome = tracing::field::Empty, signing_key_id = %state.advertisement.reply_key_id().to_hex()))]
 async fn settle(
     state: &StagedExecutor,
     deadline: Instant,
@@ -573,7 +585,7 @@ async fn settle(
     // The response policy decides: a write it withholds after commit becomes
     // an unknown outcome, and any other refusal replaces the reply.
     let success = kind == StagedOutcomeKind::Committed;
-    match police(state, deadline, ctx, success, code, reply.len()).await {
+    let outcome = match police(state, deadline, ctx, success, code, reply.len()).await {
         None => StagedOutcome::new(reply, kind, code),
         Some(_) if may_have_committed => StagedOutcome::new(
             state.unknown(staged),
@@ -585,7 +597,11 @@ async fn settle(
             StagedOutcomeKind::Failed,
             refusal.code().as_str(),
         ),
-    }
+    };
+    tracing::Span::current().record("bytes_out", outcome.reply.len());
+    tracing::Span::current().record("outcome", outcome.code.as_str());
+    tracing::debug!(target: "type_bridge.io", bytes_out = outcome.reply.len(), outcome = outcome.code.as_str(), "type_bridge.io.reply");
+    outcome
 }
 
 /// Stage every policy-authorized bound plan in order on one core
@@ -808,6 +824,7 @@ async fn finish(
     code: &str,
     reply: Vec<u8>,
 ) -> StagedOutcome {
+    tracing::debug!(target: "type_bridge.io", bytes_out = reply.len(), outcome = code, "type_bridge.io.reply");
     let success = kind == StagedOutcomeKind::Committed;
     match police(state, deadline, ctx, success, code, reply.len()).await {
         Some(refusal) => StagedOutcome::new(

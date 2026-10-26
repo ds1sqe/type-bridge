@@ -1,9 +1,12 @@
 import assert = require("node:assert/strict");
+import { spawnSync } from "node:child_process";
 import fs = require("node:fs");
 import path = require("node:path");
 import test = require("node:test");
 
 import {
+  setDebugListener,
+  type DebugEvent,
   Plan,
   PlanBuilder,
   PlanExpr,
@@ -242,3 +245,36 @@ for (const fetchFirst of [false, true]) {
     });
   }
 }
+
+
+
+test("plan build forwards debug metadata to the host listener", async () => {
+  const events: DebugEvent[] = [];
+  setDebugListener((event) => events.push(event));
+  try {
+    purchase("LOG_SECRET", "I1", "A1").canonicalBytes();
+    for (let attempt = 0; attempt < 100 && !events.some((event) => event.name === "type_bridge.plan.build"); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(events.some((event) => event.name === "type_bridge.plan.build"));
+    assert.ok(!JSON.stringify(events).includes("LOG_SECRET"));
+  } finally {
+    setDebugListener(null);
+  }
+});
+
+
+test("RUST_LOG fallback emits plan records on stderr", () => {
+  const script = `
+    const sdk = require('./dist/public.js');
+    const fixture = require('./tests/fixtures/plan-builder-purchase.json');
+    const authority = new sdk.QueryV2Authority(Buffer.from(fixture.declared_hex, 'hex'), fixture.scope, fixture.profile);
+    const builder = sdk.Plan.builder();
+    builder.exact({typeKey: JSON.stringify({kind: 'entity', label: 'item'})});
+    builder.count();
+    builder.build(authority).canonicalBytes();
+  `;
+  const result = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, RUST_LOG: "type_bridge=debug" }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(result.stderr.includes("type_bridge.plan.build"));
+});

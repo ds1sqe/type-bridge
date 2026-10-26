@@ -10,21 +10,23 @@
     "public_support_authorized": false
   },
   "abi": {
-    "decision": "additive-1.8",
-    "version": "1.8.0",
+    "decision": "additive-1.9",
+    "version": "1.9.0",
     "package_metadata_version": "1.6.0",
-    "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.8.0; CMake reports 1.8.0 and accepts 1.6, 1.7 and 1.8 requests, EXACT included.",
+    "package_metadata_description": "pkg-config type-bridge keeps Version 1.6.0 for exact pins and provides type-bridge-abi 1.9.0; CMake reports 1.9.0 and accepts 1.6 through 1.9 requests, EXACT included.",
     "contract_path": "tests/contracts/c-abi.json",
-    "contract_sha256": "d72129cbd97186068fcda5d6d29c7fd29307c210e1b20c1b16362e654b6c516d",
+    "contract_sha256": "c5ed5d3669d1f74d706cd6658ff137f6f829570a370be69cd6ab6211ccabbe92",
     "static_linkage": "unsupported",
     "shared_linkage": "artifact",
     "accepted_descriptor_minors": [
       6,
       7,
-      8
+      8,
+      9
     ],
     "added_exports": [
       "type_bridge_database_transaction",
+      "type_bridge_debug_listener_set",
       "type_bridge_document_attribute_boolean",
       "type_bridge_document_attribute_count",
       "type_bridge_document_attribute_date",
@@ -135,7 +137,7 @@
   },
   "compatibility": {
     "runtime_abi": {
-      "exact": "1.8.0"
+      "exact": "1.9.0"
     },
     "required_pre_io_checks": [
       "product-version",
@@ -290,19 +292,19 @@
     },
     {
       "path": "type-bridge-core/crates/c/include/typebridge/type_bridge.h",
-      "sha256": "a0c79d941a08b665f46c212d8c739636f16354b8d6ede1b8460756dacf221099"
+      "sha256": "339d83f7ba7dcdf21c383a32809c03c21d0b06d0ac29922b1c298d7914069b08"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/CMakeLists.txt.in",
-      "sha256": "e8a897f76ec2b8d02f0fb13896626c3aec158b4a84926f99e1b1f9a6374c51fa"
+      "sha256": "ed3994438d45da8ac913023941e216302600f4fa2b8a5be73a4040cc38085998"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/SchemaConfig.cmake.in",
-      "sha256": "a30e386e983808f1994a39f6f94bdee92bd2e101f4bfb8cc8009c2aef3796357"
+      "sha256": "b2350299034f5df2eadf28bbb283b18c5b7d5590ab603d541474047326dc75ce"
     },
     {
       "path": "type-bridge-core/crates/schema-codegen/src/c/schema.pc.in",
-      "sha256": "12bb8ce9c85bd946e2e138c2f019ab9d730bb5718f58250b2a826b1c1f63f750"
+      "sha256": "5b33e7af3ced610e056c8b57ea40c6a9bf04e9ccc1484b349b87608ab2a60689"
     }
   ]
 }
