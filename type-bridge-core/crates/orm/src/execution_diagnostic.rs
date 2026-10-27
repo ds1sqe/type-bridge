@@ -23,6 +23,9 @@ pub(crate) fn lower_orm_error(
     error: &OrmError,
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
+    if let OrmError::ExecutionDiagnostic(diagnostic) = error {
+        return (**diagnostic).clone();
+    }
     let base = lower_orm_error_base(error, provider_operation);
     match error.failure() {
         Some(failure) => base.with_failure(&failure, Default::default()),
@@ -35,6 +38,7 @@ fn lower_orm_error_base(
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
     match error {
+        OrmError::ExecutionDiagnostic(error) => (**error).clone(),
         OrmError::Match(error) => lower_match_error(error),
         OrmError::UnsupportedVersion(error) => match error {
             VersionError::Probe(_) | VersionError::Parse(_) => {

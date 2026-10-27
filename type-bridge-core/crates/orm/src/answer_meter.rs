@@ -28,14 +28,25 @@ impl AnswerMeter {
     }
 
     pub(crate) fn accept_value(&mut self, value: &serde_json::Value) -> Result<(), OrmError> {
-        let items = self.items.checked_add(1).ok_or_else(|| {
-            limit(
-                "processed_item_counter_overflow",
-                "processed provider item counter overflowed",
-                u64::MAX,
-                self.max_items,
-            )
-        })?;
+        let nested = value.as_object().map_or(0, |fields| {
+            fields
+                .iter()
+                .filter(|(key, _)| key.starts_with("_role_") && key.ends_with("_players"))
+                .filter_map(|(_, value)| value.as_array())
+                .map(|values| values.len() as u64)
+                .sum::<u64>()
+        });
+        let items = self
+            .items
+            .checked_add(1_u64.saturating_add(nested))
+            .ok_or_else(|| {
+                limit(
+                    "processed_item_counter_overflow",
+                    "processed provider item counter overflowed",
+                    u64::MAX,
+                    self.max_items,
+                )
+            })?;
         if items > self.max_items {
             return Err(limit(
                 "processed_item_limit",

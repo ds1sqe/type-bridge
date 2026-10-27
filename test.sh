@@ -863,6 +863,17 @@ run_live_lane() {
                 -p type-bridge-orm --lib
     fi
 
+    if [[ "$lane_given_rows" == 1 ]]; then
+        run_step "negated given role IID regression (TypeDB $typedb_server_version)" \
+            run_with_timeout 10m \
+            env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPE_BRIDGE_TRANSACTION_LIVE_VERSION="$typedb_server_version" \
+                TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-orm --test plan_execute_live \
+                negated_given_role_iid_preserves_the_provider_connection -- --exact
+    fi
+
     # The staged V3 suites run on every server of the typedb-3.13.6/v1 profile.
     if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
         run_step "staged query-plan/v3 programs resolve at commit (TypeDB $typedb_server_version)" \

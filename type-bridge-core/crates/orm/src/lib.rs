@@ -230,3 +230,11 @@ pub use type_bridge_contract::projection::{
 #[doc(hidden)]
 pub use type_bridge_core_lib::version::Version as _ProviderVersion;
 pub use value::AttributeValue;
+
+#[cfg(test)]
+#[path = "../tests/support/native_batch.rs"]
+mod native_batch_fixture;
+#[cfg(test)]
+mod native_batch_answer_item {
+    pub use crate::session::backend::{AnswerItem, QueryResult};
+}

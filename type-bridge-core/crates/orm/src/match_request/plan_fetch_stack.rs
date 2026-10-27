@@ -57,6 +57,24 @@ pub fn build_plan_fetch_stack(
     plan: &QueryPlanV3,
     model_slots: &[(BindingId, DescriptorId)],
 ) -> Result<PlanFetchStack, Diagnostic> {
+    build_fetch_stack(registry, plan, model_slots, false)
+}
+
+/// Manager selections already collapse roots before sorting and windowing.
+pub(crate) fn build_unique_plan_fetch_stack(
+    registry: &DescriptorRegistry,
+    plan: &QueryPlanV3,
+    model_slots: &[(BindingId, DescriptorId)],
+) -> Result<PlanFetchStack, Diagnostic> {
+    build_fetch_stack(registry, plan, model_slots, true)
+}
+
+fn build_fetch_stack(
+    registry: &DescriptorRegistry,
+    plan: &QueryPlanV3,
+    model_slots: &[(BindingId, DescriptorId)],
+    unique: bool,
+) -> Result<PlanFetchStack, Diagnostic> {
     if model_slots.len() > type_bridge_contract::limits::MAX_SELECTED_SLOTS {
         return Err(integrity(
             "plan_returning_models_slot_limit",
@@ -64,7 +82,7 @@ pub fn build_plan_fetch_stack(
         ));
     }
     let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
-    let mut stack = build_under_authority(registry, plan, model_slots, &authority, false, &[])?;
+    let mut stack = build_under_authority(registry, plan, model_slots, &authority, unique, &[])?;
     let roots = model_slots
         .iter()
         .map(|(binding, descriptor)| {

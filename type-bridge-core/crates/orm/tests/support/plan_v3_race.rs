@@ -402,6 +402,7 @@ pub fn attach_on_call() -> QueryPlanV3 {
                 },
                 Stage::Attach {
                     items: vec![AttachItem::Has {
+                        optional: false,
                         owner: id(0),
                         field: owns(entity("doctor"), "on-call"),
                         operand: QueryOperand::Literal {
@@ -952,5 +953,65 @@ pub fn doctor_iid_or_name(iid: &str, name: &str) -> QueryPlanV3 {
         ),
     ];
     plan.given_rows = Some(vec![InputRow::new(vec![Some(text(iid)), Some(text(name))])]);
+    QueryPlanV3::new(plan, &schema()).unwrap()
+}
+
+/// A given IID scoped by a role-player disjunction, with optional negation.
+pub fn scoped_given_iid(iid: &str, negative: bool, optional: bool) -> QueryPlanV3 {
+    use type_bridge_contract::migration_assertion::AssertionRolePlayer;
+    let branch = vec![
+        QueryPattern::Isa {
+            binding: id(1),
+            include_subtypes: false,
+            type_id: entity("account"),
+        },
+        QueryPattern::Links {
+            relation: id(0),
+            relation_id: purchase_type(),
+            players: vec![AssertionRolePlayer::new(role("buyer"), id(1))],
+        },
+        QueryPattern::Iid {
+            binding: id(1),
+            iid: input(0),
+        },
+    ];
+    let nested = QueryPattern::Or {
+        branches: vec![branch.clone(), branch],
+    };
+    let scoped = if negative {
+        QueryPattern::Not {
+            patterns: vec![nested],
+        }
+    } else if optional {
+        QueryPattern::Try {
+            patterns: match nested {
+                QueryPattern::Or { mut branches } => branches.remove(0),
+                _ => unreachable!(),
+            },
+        }
+    } else {
+        nested
+    };
+    let mut plan = spec(
+        &["purchase", "buyer"],
+        vec![
+            Stage::Match {
+                patterns: vec![isa(0, purchase_type()), scoped.into()],
+            },
+            Stage::Select {
+                bindings: vec![id(0)],
+            },
+            Stage::Distinct,
+        ],
+        Operation::Rows,
+        vec![0],
+    );
+    plan.inputs = vec![InputColumn::new(
+        InputColumnId::new(0),
+        QueryVariable::new("wanted_iid").unwrap(),
+        ValueTypeTag::String,
+        false,
+    )];
+    plan.given_rows = Some(vec![InputRow::new(vec![Some(text(iid))])]);
     QueryPlanV3::new(plan, &schema()).unwrap()
 }

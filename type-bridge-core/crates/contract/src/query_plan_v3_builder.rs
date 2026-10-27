@@ -300,7 +300,10 @@ impl PlanBuilder {
         let stage = if put {
             self.write_stage(
                 |stage| matches!(stage, Stage::Put { .. }),
-                Stage::Put { things: vec![] },
+                Stage::Put {
+                    things: vec![],
+                    include_subtypes: false,
+                },
             )
         } else {
             self.write_stage(
@@ -308,7 +311,7 @@ impl PlanBuilder {
                 Stage::Insert { things: vec![] },
             )
         };
-        if let Stage::Insert { things } | Stage::Put { things } = stage {
+        if let Stage::Insert { things } | Stage::Put { things, .. } = stage {
             things.push(thing);
         }
         binding
@@ -331,7 +334,7 @@ impl PlanBuilder {
             .iter_mut()
             .rev()
             .filter_map(|stage| match stage {
-                Stage::Insert { things } | Stage::Put { things } => Some(things),
+                Stage::Insert { things } | Stage::Put { things, .. } => Some(things),
                 _ => None,
             })
             .flatten()

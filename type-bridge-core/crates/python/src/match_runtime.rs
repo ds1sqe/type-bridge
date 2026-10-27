@@ -1916,6 +1916,7 @@ fn canonical_enum_spelling(kind: &str, value: &str) -> PyResult<&'static str> {
 
 pub(crate) fn py_match_orm_error(error: OrmError) -> PyErr {
     match error {
+        OrmError::ExecutionDiagnostic(diagnostic) => py_sdk_diagnostic(*diagnostic),
         OrmError::Match(error) => py_match_error(error),
         // Provider failures raised `RuntimeError` before typed failures; keep
         // that class so `except RuntimeError` still matches.
@@ -2541,6 +2542,46 @@ mod tests {
                 })
             );
         });
+    }
+
+    #[test]
+    fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {
+        use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
+        Python::initialize();
+        for outcome in [
+            SdkCommitFailureOutcome::DefinitelyAborted,
+            SdkCommitFailureOutcome::Unknown,
+        ] {
+            let diagnostic = type_bridge_orm::lower_classified_commit_error(
+                type_bridge_orm::ClassifiedCommitError::Driver {
+                    certainty: if outcome == SdkCommitFailureOutcome::DefinitelyAborted {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted
+                    } else {
+                        type_bridge_orm::CommitFailureCertainty::Unknown
+                    },
+                    message: "SECRET_SENTINEL".into(),
+                },
+            );
+            let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+            let error = crate::orm_runtime::py_orm_error(OrmError::ExecutionDiagnostic(Box::new(
+                diagnostic,
+            )));
+            Python::attach(|py| {
+                let value = error.value(py);
+                assert_eq!(
+                    value
+                        .getattr("category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "transaction"
+                );
+                let details: serde_json::Value =
+                    pythonize::depythonize(&value.getattr("details").unwrap()).unwrap();
+                assert_eq!(details, expected["details"]);
+                assert!(!error.to_string().contains("SECRET_SENTINEL"));
+            });
+        }
     }
 
     #[test]

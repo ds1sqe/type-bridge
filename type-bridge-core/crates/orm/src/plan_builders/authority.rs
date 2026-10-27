@@ -1,6 +1,7 @@
 //! The schema authority helper plans are validated against.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::codec::FormatVersion;
@@ -17,7 +18,7 @@ use type_bridge_schema::VerifiedSchemaAuthority;
 /// Declared schema and managed semantics a helper plan carries.
 #[derive(Debug)]
 pub(crate) struct PlanAuthority {
-    declared: DeclaredSchema,
+    declared: Arc<DeclaredSchema>,
     managed_semantics: ManagedSemanticSchemaFingerprint,
     /// Whether the declarations come from a verified package authority.
     /// Plans built from projection-rebuilt declarations run locally only.
@@ -25,10 +26,18 @@ pub(crate) struct PlanAuthority {
 }
 
 impl PlanAuthority {
+    pub(crate) fn from_installed(authority: &crate::_registry::InstalledSchemaAuthority) -> Self {
+        Self {
+            declared: authority.shared_declared(),
+            managed_semantics: authority.managed().managed_semantic_schema().clone(),
+            verified: true,
+        }
+    }
+
     /// A package's verified authority, used as is.
     pub(crate) fn from_verified(authority: &VerifiedSchemaAuthority) -> Self {
         Self {
-            declared: authority.declared_schema().clone(),
+            declared: Arc::new(authority.declared_schema().clone()),
             managed_semantics: authority.managed_state().managed_semantic_schema().clone(),
             verified: true,
         }
@@ -46,7 +55,11 @@ impl PlanAuthority {
         let wanted = |kind: &AnnotationKindId| {
             matches!(
                 kind,
-                AnnotationKindId::Abstract | AnnotationKindId::Key | AnnotationKindId::Card
+                AnnotationKindId::Abstract
+                    | AnnotationKindId::Key
+                    | AnnotationKindId::Unique
+                    | AnnotationKindId::Distinct
+                    | AnnotationKindId::Card
             )
         };
         for (type_id, model) in projection.models() {
@@ -75,9 +88,15 @@ impl PlanAuthority {
                 )));
             }
             for (role, declared) in declaration.direct_roles() {
-                add(SchemaFact::Relates(RelatesFact::new(
+                let token = model
+                    .query_tokens()
+                    .roles()
+                    .get(role)
+                    .ok_or_else(unavailable)?;
+                add(SchemaFact::Relates(RelatesFact::new_with_collection_mode(
                     RelatesFactId::new(type_id.clone(), role.clone())?,
                     declared.specializes().cloned(),
+                    token.multiplicity().collection_mode(),
                 )?));
             }
             for plays in declaration.direct_plays() {
@@ -88,13 +107,35 @@ impl PlanAuthority {
                 .fields()
                 .values()
                 .flat_map(|token| token.annotations().values());
-            for annotation in declaration.annotations().values().chain(field_annotations) {
+            let role_annotations = model
+                .query_tokens()
+                .roles()
+                .values()
+                .flat_map(|token| token.annotations().values());
+            let playing_annotations = declaration
+                .direct_plays()
+                .iter()
+                .filter_map(|plays| projection.playing_facts().get(plays))
+                .flat_map(|plays| plays.annotations().values());
+            for annotation in declaration
+                .annotations()
+                .values()
+                .chain(field_annotations)
+                .chain(role_annotations)
+                .chain(playing_annotations)
+            {
                 let declared_here = match annotation.id().subject() {
                     AnnotationSubjectId::Type(subject) => subject == type_id,
                     // Field tokens carry effective ownerships; only the
                     // declaring one is a fact.
                     AnnotationSubjectId::Owns(subject) => {
                         declaration.direct_fields().contains(subject)
+                    }
+                    AnnotationSubjectId::Relates(subject) => {
+                        declaration.direct_roles().contains_key(subject.role())
+                    }
+                    AnnotationSubjectId::Plays(subject) => {
+                        declaration.direct_plays().contains(subject)
                     }
                     _ => false,
                 };
@@ -124,19 +165,19 @@ impl PlanAuthority {
         let managed_semantics =
             ManagedSemanticSchemaFingerprint::compute(profile, &semantic.digest().bytes())?;
         Ok(Self {
-            declared,
+            declared: Arc::new(declared),
             managed_semantics,
             verified: false,
         })
     }
 
     #[cfg(test)]
-    pub(crate) const fn new(
+    pub(crate) fn new(
         declared: DeclaredSchema,
         managed_semantics: ManagedSemanticSchemaFingerprint,
     ) -> Self {
         Self {
-            declared,
+            declared: Arc::new(declared),
             managed_semantics,
             verified: true,
         }
@@ -152,7 +193,7 @@ impl PlanAuthority {
         self.verified
     }
 
-    pub(crate) const fn declared(&self) -> &DeclaredSchema {
+    pub(crate) fn declared(&self) -> &DeclaredSchema {
         &self.declared
     }
 

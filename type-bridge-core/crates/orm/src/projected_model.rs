@@ -1923,6 +1923,13 @@ fn validate_create_roles(
         }
         output.insert(role_id.clone(), references);
     }
+    if type_id.kind() == TypeKind::Relation && output.values().all(Vec::is_empty) {
+        return Err(invalid_input(
+            "relation_requires_player",
+            "A relation requires at least one player to survive commit",
+            type_path(type_id),
+        ));
+    }
     Ok((output, present_roles))
 }
 

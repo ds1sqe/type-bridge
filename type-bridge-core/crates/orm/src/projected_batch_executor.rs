@@ -41,6 +41,9 @@ use crate::session::database::DatabaseExecutionIdentity;
 use crate::session::{Database, TransactionContext, TxType};
 use crate::value::AttributeValue;
 
+#[path = "projected_batch_native.rs"]
+mod native;
+
 const COMPILER_CARDINALITY_MAX: u64 = u16::MAX as u64;
 const MAX_PROVIDER_IID_BYTES: u64 = (2 + type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS) as u64;
 
@@ -370,6 +373,9 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         plan: &mut BatchPlan<'_>,
         identity: &DatabaseExecutionIdentity,
     ) -> std::result::Result<ProjectedBatchResult, SdkExecutionDiagnostic> {
+        if plan.native {
+            return self.run_native(lease, prepared, plan, identity).await;
+        }
         let mut ledger = ExecutionLedger::new(
             prepared.limits(),
             prepared.batch().resource_measure().bytes(),
@@ -632,6 +638,8 @@ struct BatchPlan<'a> {
     role_routes: Vec<RoleRoute>,
     role_references: Vec<RoleReference<'a>>,
     prerequisite: Option<ProviderStatement>,
+    reference_routes: Vec<ReferenceRoute>,
+    native: bool,
     mutation_source: String,
     attach_source: Option<String>,
     snapshot_source: Option<String>,
@@ -688,6 +696,13 @@ impl<'a> BatchPlan<'a> {
             &reference_routes,
             &role_references,
         )?;
+        let native = model.query_tokens().fields().values().all(|token| {
+            token.multiplicity().collection_mode()
+                == type_bridge_contract::schema::CollectionMode::Unordered
+        }) && model.query_tokens().roles().values().all(|token| {
+            token.multiplicity().collection_mode()
+                == type_bridge_contract::schema::CollectionMode::Unordered
+        });
         let prerequisite = compile_prerequisite(
             installed,
             model,
@@ -695,10 +710,17 @@ impl<'a> BatchPlan<'a> {
             &rows,
             &reference_routes,
             &role_references,
+            native,
         )?;
-        let mutation_source = compile_mutation_source(installed, model, batch.operation())?;
+        let mutation_source = if native {
+            String::new()
+        } else {
+            compile_mutation_source(installed, model, batch.operation())?
+        };
         let attach_source = if batch.operation() == ProjectedBatchOperation::Delete {
             None
+        } else if native {
+            Some(String::new())
         } else {
             Some(compile_attach_source(
                 installed,
@@ -718,19 +740,25 @@ impl<'a> BatchPlan<'a> {
             &mutation_source,
             attach_source.as_deref(),
         )?;
-        let preflight_bytes = preflight_transport_bytes(
-            prepared,
-            model,
-            &rows,
-            &field_routes,
-            &role_routes,
-            &role_references,
-            prerequisite.as_ref(),
-            &mutation_source,
-            attach_source.as_deref(),
-        )?;
+        let preflight_bytes = {
+            preflight_transport_bytes(
+                prepared,
+                model,
+                &rows,
+                &field_routes,
+                &role_routes,
+                &role_references,
+                prerequisite.as_ref(),
+                &mutation_source,
+                attach_source.as_deref(),
+            )?
+        };
         let snapshot_source = if return_deleted {
-            Some(compile_attach_source(installed, model, &[], &[])?)
+            Some(if native {
+                String::new()
+            } else {
+                compile_attach_source(installed, model, &[], &[])?
+            })
         } else {
             None
         };
@@ -754,6 +782,8 @@ impl<'a> BatchPlan<'a> {
             role_routes,
             role_references,
             prerequisite,
+            reference_routes,
+            native,
             mutation_source,
             attach_source,
             snapshot_source,
@@ -1358,6 +1388,7 @@ fn compile_prerequisite(
     rows: &[(usize, &ProjectedBatchRow)],
     routes: &[ReferenceRoute],
     references: &[RoleReference<'_>],
+    native: bool,
 ) -> std::result::Result<Option<ProviderStatement>, SdkExecutionDiagnostic> {
     let include_put = operation == ProjectedBatchOperation::Put;
     if !include_put && references.is_empty() {
@@ -1448,6 +1479,16 @@ fn compile_prerequisite(
         given_rows.push(values);
     }
 
+    if native {
+        return Ok(Some(ProviderStatement {
+            source: String::new(),
+            rows: GivenRowsSpec {
+                variables,
+                rows: given_rows,
+            },
+        }));
+    }
+    // raw remainder: ordered collection transport; removed in 06.
     let mut source = String::new();
     source.push_str("given $kind: integer, $ordinal: integer, $reference-ordinal: integer, $route: integer, $wanted-iid: string?");
     for (index, field) in put_keys.iter().enumerate() {
@@ -3135,7 +3176,9 @@ fn source_bytes(source: &str) -> std::result::Result<u64, SdkExecutionDiagnostic
     u64::try_from(source.len()).map_err(|_| complexity_overflow())
 }
 
-fn given_rows_bytes(rows: &GivenRowsSpec) -> std::result::Result<u64, SdkExecutionDiagnostic> {
+pub(crate) fn given_rows_bytes(
+    rows: &impl serde::Serialize,
+) -> std::result::Result<u64, SdkExecutionDiagnostic> {
     #[derive(Default)]
     struct CountingWriter(u64);
 
@@ -3769,7 +3812,7 @@ fn integrity_at_reference(
     )
 }
 
-fn resource_limit(
+pub(crate) fn resource_limit(
     code_value: &'static str,
     message_value: &'static str,
     dimension: &'static str,
@@ -3913,7 +3956,40 @@ mod tests {
                 state.statements.push(typeql.to_owned());
                 state.answers.pop_front().expect("unexpected provider call")
             };
-            Box::pin(async move { Ok(QueryResult::Documents(answer)) })
+            let items = answer
+                .into_iter()
+                .map(|document| crate::native_batch_fixture::item(typeql, document))
+                .collect::<Vec<_>>();
+            let fetched = typeql.contains("fetch");
+            Box::pin(async move {
+                Ok(if fetched {
+                    QueryResult::Documents(
+                        items
+                            .into_iter()
+                            .map(|item| {
+                                if let crate::session::backend::AnswerItem::Document(value) = item {
+                                    value
+                                } else {
+                                    panic!("document")
+                                }
+                            })
+                            .collect(),
+                    )
+                } else {
+                    QueryResult::Rows(
+                        items
+                            .into_iter()
+                            .map(|item| {
+                                if let crate::session::backend::AnswerItem::Row(value) = item {
+                                    value
+                                } else {
+                                    panic!("row")
+                                }
+                            })
+                            .collect(),
+                    )
+                })
+            })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {

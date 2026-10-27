@@ -110,6 +110,48 @@ pub enum Expr {
 }
 
 impl Expr {
+    pub(crate) fn into_dynamic(self) -> crate::_dynamic::DynamicExpr {
+        use crate::_dynamic::{DynamicComparisonOp as Op, DynamicExpr as Dynamic};
+        let (attr_name, operator, value) = match self {
+            Self::Eq { attr, value } => (attr, Op::Eq, value),
+            Self::Neq { attr, value } => (attr, Op::Neq, value),
+            Self::Gt { attr, value } => (attr, Op::Gt, value),
+            Self::Gte { attr, value } => (attr, Op::Gte, value),
+            Self::Lt { attr, value } => (attr, Op::Lt, value),
+            Self::Lte { attr, value } => (attr, Op::Lte, value),
+            Self::Contains { attr, substring } => {
+                (attr, Op::Contains, AttributeValue::String(substring))
+            }
+            Self::Like { attr, pattern } => (attr, Op::Like, AttributeValue::String(pattern)),
+            Self::And(expressions) => {
+                return Dynamic::And {
+                    exprs: expressions.into_iter().map(Self::into_dynamic).collect(),
+                };
+            }
+            Self::Or(expressions) => {
+                return Dynamic::Or {
+                    exprs: expressions.into_iter().map(Self::into_dynamic).collect(),
+                };
+            }
+            Self::Not(expression) => {
+                return Dynamic::Not {
+                    expr: Box::new(expression.into_dynamic()),
+                };
+            }
+            Self::RolePlayer { role, inner } => {
+                return Dynamic::RolePlayer {
+                    role_name: role,
+                    expr: Box::new(inner.into_dynamic()),
+                };
+            }
+        };
+        Dynamic::Compare {
+            attr_name,
+            operator,
+            value,
+        }
+    }
+
     // -- Convenience constructors --
 
     /// Create an equality filter.
@@ -378,6 +420,23 @@ pub enum Agg {
 }
 
 impl Agg {
+    pub(crate) fn to_dynamic(&self) -> crate::_dynamic::DynamicAggregate {
+        let (function, attr_name) = match self {
+            Self::Count => ("count", None),
+            Self::Sum(field) => ("sum", Some(field.clone())),
+            Self::Min(field) => ("min", Some(field.clone())),
+            Self::Max(field) => ("max", Some(field.clone())),
+            Self::Mean(field) => ("mean", Some(field.clone())),
+            Self::Median(field) => ("median", Some(field.clone())),
+            Self::Std(field) => ("std", Some(field.clone())),
+        };
+        crate::_dynamic::DynamicAggregate {
+            result_key: format!("${function}"),
+            function: function.into(),
+            attr_name,
+        }
+    }
+
     /// Convert to a [`ReduceAssignment`] and optional `Has` binding pattern.
     ///
     /// Returns `(assignment, optional_has_pattern)`.

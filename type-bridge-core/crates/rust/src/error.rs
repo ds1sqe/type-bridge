@@ -937,6 +937,9 @@ impl Error {
         // Typed provider failures stay in their released variants; the
         // retained OrmError source still answers `Error::failure()`.
         match err {
+            type_bridge_orm::OrmError::ExecutionDiagnostic(error) => {
+                Self::from_projected_batch(*error, ModelValidationPhase::Input)
+            }
             type_bridge_orm::OrmError::Match(error) => {
                 Self::from_match(error, ModelValidationPhase::Input)
             }
@@ -1312,6 +1315,45 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {
+        use type_bridge_contract::sdk_diagnostic::{
+            SdkCommitFailureOutcome, SdkDiagnosticCategory,
+        };
+        for outcome in [
+            SdkCommitFailureOutcome::DefinitelyAborted,
+            SdkCommitFailureOutcome::Unknown,
+        ] {
+            let diagnostic = type_bridge_orm::lower_classified_commit_error(
+                type_bridge_orm::ClassifiedCommitError::Driver {
+                    certainty: if outcome == SdkCommitFailureOutcome::DefinitelyAborted {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted
+                    } else {
+                        type_bridge_orm::CommitFailureCertainty::Unknown
+                    },
+                    message: "SECRET_SENTINEL".into(),
+                },
+            );
+            let error = Error::from_orm(type_bridge_orm::OrmError::ExecutionDiagnostic(Box::new(
+                diagnostic.clone(),
+            )));
+            assert_eq!(error.category(), ErrorCategory::Transaction);
+            assert_eq!(
+                error.sdk_category(),
+                Some(SdkDiagnosticCategory::Transaction.as_str())
+            );
+            assert_eq!(error.code(), Some(diagnostic.code().as_str()));
+            assert!(error.details().unwrap().contains_key("commit_outcome"));
+            assert_eq!(
+                StdError::source(&error)
+                    .unwrap()
+                    .downcast_ref::<SdkExecutionDiagnostic>(),
+                Some(&diagnostic)
+            );
+            assert!(!format!("{error} {error:?}").contains("SECRET_SENTINEL"));
+        }
+    }
 
     #[test]
     fn typed_failure_keeps_the_released_variant_and_structural_outcome() {

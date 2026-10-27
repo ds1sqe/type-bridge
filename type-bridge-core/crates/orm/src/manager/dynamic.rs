@@ -7,8 +7,15 @@ use crate::_dynamic::{
     DynamicAggregate, DynamicAttributeMap, DynamicEntityIdentity, DynamicEntityRow, DynamicExpr,
     DynamicRelationIdentity, DynamicRelationRow, DynamicRolePlayerInput, DynamicSort,
 };
+use crate::_registry::DescriptorRegistry;
 use crate::error::{OrmError, Result};
 use crate::filter::Filter;
+use crate::match_request::{HydratedThing, MatchResult, SlotValue};
+use crate::plan_builders::BuiltPlan;
+use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
+use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
+use crate::query_plan_exec::PlanAnswer;
+use crate::session::backend::AnswerCancellation;
 use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult, TxType};
 use crate::session::{Database, TransactionContext};
 use crate::value::AttributeValue;
@@ -20,17 +27,67 @@ use super::hydration::{
 use super::query_builder;
 
 /// CRUD manager for an entity described at runtime.
+#[derive(Clone)]
 pub struct DynamicEntityManager<'db> {
     target: DynamicExecutionTarget<'db>,
     descriptor: Arc<EntityDescriptor>,
+    plans: Option<ManagerPlans>,
 }
 
 impl<'db> DynamicEntityManager<'db> {
+    /// Create a manager that executes native plans under installed registry authority.
+    pub fn from_registry(
+        db: &'db Database,
+        registry: Arc<DescriptorRegistry>,
+        descriptor: Arc<EntityDescriptor>,
+    ) -> Self {
+        let mut plans = ManagerPlans::new(registry);
+        if !db.supports_given_stage() {
+            plans.transport = crate::plan_builders::ValueTransport::Literal;
+        }
+        Self {
+            target: DynamicExecutionTarget::Database(db),
+            descriptor,
+            plans: Some(plans),
+        }
+    }
+
+    /// Bind a registry-backed manager to an existing transaction.
+    pub fn with_registry_transaction(
+        tx: TransactionContext,
+        registry: Arc<DescriptorRegistry>,
+        descriptor: Arc<EntityDescriptor>,
+    ) -> Self {
+        Self {
+            target: DynamicExecutionTarget::Transaction(tx),
+            descriptor,
+            plans: Some(ManagerPlans::new(registry)),
+        }
+    }
+
+    pub(crate) fn literal_values(mut self) -> Self {
+        self.plans
+            .as_mut()
+            .expect("registry-backed manager")
+            .transport = crate::plan_builders::ValueTransport::Literal;
+        self
+    }
+
+    fn sharing_plans(mut self, plans: &Option<ManagerPlans>) -> Self {
+        self.plans = plans.clone();
+        self
+    }
+
+    pub(crate) fn in_transaction(&self, tx: TransactionContext) -> Self {
+        Self::with_transaction(tx, Arc::clone(&self.descriptor)).sharing_plans(&self.plans)
+    }
+
     /// Create a dynamic entity manager from a registered descriptor.
     pub fn new(db: &'db Database, descriptor: Arc<EntityDescriptor>) -> Self {
         Self {
             target: DynamicExecutionTarget::Database(db),
             descriptor,
+            plans: None,
         }
     }
 
@@ -39,6 +96,7 @@ impl<'db> DynamicEntityManager<'db> {
         Self {
             target: DynamicExecutionTarget::Transaction(tx),
             descriptor,
+            plans: None,
         }
     }
 
@@ -48,6 +106,7 @@ impl<'db> DynamicEntityManager<'db> {
         Self {
             target: DynamicExecutionTarget::CanonicalDatabase(db),
             descriptor,
+            plans: None,
         }
     }
 
@@ -60,6 +119,7 @@ impl<'db> DynamicEntityManager<'db> {
         Self {
             target: DynamicExecutionTarget::CanonicalTransaction(tx),
             descriptor,
+            plans: None,
         }
     }
 
@@ -68,14 +128,112 @@ impl<'db> DynamicEntityManager<'db> {
         &self.descriptor
     }
 
+    pub(crate) async fn resolve_iid(
+        &self,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<Option<String>> {
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "This operation requires a registry-backed manager",
+            )
+        })?;
+        resolve_manager_iid(
+            &self.target,
+            plans,
+            &self.descriptor.type_name,
+            iid,
+            attributes,
+            &[],
+        )
+        .await
+    }
+
+    pub(crate) async fn delete_identity(
+        &self,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<()> {
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "This operation requires a registry-backed manager",
+            )
+        })?;
+        let plan = plans.delete_identity(&self.descriptor.type_name, iid, attributes, &[])?;
+        self.target.write_plan(&plan, |_| Ok(())).await
+    }
+
+    pub(crate) async fn delete_snapshots<T>(
+        &self,
+        iids: &[String],
+        materialize: impl FnOnce(Vec<DynamicEntityRow>) -> Result<T>,
+    ) -> Result<T> {
+        self.delete_models_returning_mapped(iids, false, materialize)
+            .await
+    }
+
+    pub(crate) async fn delete_models_returning(
+        &self,
+        iids: &[String],
+        exact: bool,
+    ) -> Result<Vec<DynamicEntityRow>> {
+        self.delete_models_returning_mapped(iids, exact, Ok).await
+    }
+
+    async fn delete_models_returning_mapped<T>(
+        &self,
+        iids: &[String],
+        exact: bool,
+        materialize: impl FnOnce(Vec<DynamicEntityRow>) -> Result<T>,
+    ) -> Result<T> {
+        if iids.is_empty() {
+            return materialize(Vec::new());
+        }
+        validate_delete_iids(iids)?;
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "Deletion snapshots require a registry-backed manager",
+            )
+        })?;
+        self.target
+            .returning(
+                plans,
+                &self.descriptor.type_name,
+                iids,
+                exact,
+                |registry, things, _, _| {
+                    things
+                        .iter()
+                        .map(|thing| plan_entity_row(registry, thing))
+                        .collect::<Result<Vec<_>>>()
+                        .and_then(materialize)
+                },
+            )
+            .await
+    }
+
     /// Insert one dynamic entity and return the assigned IID.
     pub async fn insert(&self, attributes: &DynamicAttributeMap) -> Result<String> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.insert(&self.descriptor.type_name, attributes, &[], false, false)?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
+                })
+                .await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_insert_with_iid(
             &self.descriptor,
             attributes,
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC INSERT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, result)
     }
@@ -87,8 +245,19 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Put one dynamic entity and return its IID.
     pub async fn put(&self, attributes: &DynamicAttributeMap) -> Result<String> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.entity_put(&self.descriptor.type_name, attributes, false)?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
+                })
+                .await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_put(&self.descriptor, attributes, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC PUT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, result)
     }
@@ -106,7 +275,8 @@ impl<'db> DynamicEntityManager<'db> {
                 let manager = DynamicEntityManager::with_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let iid = match manager.put_exact_in_transaction(attributes).await {
                     Ok(iid) => iid,
                     Err(error) => {
@@ -114,7 +284,7 @@ impl<'db> DynamicEntityManager<'db> {
                         return Err(error);
                     }
                 };
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iid)
             }
             DynamicExecutionTarget::Transaction(tx) => {
@@ -126,7 +296,8 @@ impl<'db> DynamicEntityManager<'db> {
                 let manager = DynamicEntityManager::with_canonical_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let iid = match manager.put_exact_in_transaction(attributes).await {
                     Ok(iid) => iid,
                     Err(error) => {
@@ -134,7 +305,7 @@ impl<'db> DynamicEntityManager<'db> {
                         return Err(error);
                     }
                 };
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iid)
             }
             DynamicExecutionTarget::CanonicalTransaction(tx) => {
@@ -156,7 +327,8 @@ impl<'db> DynamicEntityManager<'db> {
                 let manager = DynamicEntityManager::with_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let mut iids = Vec::with_capacity(items.len());
                 for item in items {
                     match manager.put_exact_in_transaction(item).await {
@@ -167,7 +339,7 @@ impl<'db> DynamicEntityManager<'db> {
                         }
                     }
                 }
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iids)
             }
             DynamicExecutionTarget::Transaction(tx) => {
@@ -183,7 +355,8 @@ impl<'db> DynamicEntityManager<'db> {
                 let manager = DynamicEntityManager::with_canonical_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let mut iids = Vec::with_capacity(items.len());
                 for item in items {
                     match manager.put_exact_in_transaction(item).await {
@@ -194,7 +367,7 @@ impl<'db> DynamicEntityManager<'db> {
                         }
                     }
                 }
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iids)
             }
             DynamicExecutionTarget::CanonicalTransaction(tx) => {
@@ -210,9 +383,19 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Update one dynamic entity's non-key attributes.
     pub async fn update(&self, iid: Option<&str>, attributes: &DynamicAttributeMap) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            if let Some(plan) =
+                plans.update(&self.descriptor.type_name, iid, attributes, &[], false)?
+            {
+                self.target.write_plan(&plan, Ok).await?;
+            }
+            return Ok(());
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_update(&self.descriptor, iid, attributes, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC UPDATE");
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
@@ -220,6 +403,15 @@ impl<'db> DynamicEntityManager<'db> {
     /// Completely replace non-key ownership on one exact-type entity identified by a mandatory
     /// canonical IID; omitted optional and multivalue values are removed.
     pub async fn update_exact(&self, iid: &str, attributes: &DynamicAttributeMap) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            if let Some(plan) =
+                plans.update(&self.descriptor.type_name, Some(iid), attributes, &[], true)?
+            {
+                self.target.write_plan(&plan, Ok).await?;
+            }
+            return Ok(());
+        }
+
         crate::_dynamic::validate_exact_iid(&self.descriptor.type_name, iid)?;
         for (name, _) in attributes {
             if self.descriptor.attribute(name).is_none() {
@@ -244,6 +436,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT UPDATE");
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
@@ -257,13 +450,14 @@ impl<'db> DynamicEntityManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager
                     .update_and_get_exact_in_transaction(iid, attributes)
                     .await
                 {
                     Ok(row) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(row)
                     }
                     Err(error) => {
@@ -275,13 +469,14 @@ impl<'db> DynamicEntityManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager
                     .update_and_get_exact_in_transaction(iid, attributes)
                     .await
                 {
                     Ok(row) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(row)
                     }
                     Err(error) => {
@@ -310,13 +505,14 @@ impl<'db> DynamicEntityManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager
                     .update_many_and_get_exact_in_transaction(items)
                     .await
                 {
                     Ok(rows) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(rows)
                     }
                     Err(error) => {
@@ -328,13 +524,14 @@ impl<'db> DynamicEntityManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager
                     .update_many_and_get_exact_in_transaction(items)
                     .await
                 {
                     Ok(rows) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(rows)
                     }
                     Err(error) => {
@@ -353,17 +550,47 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Fetch entities matching equality filters.
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                &equality_expressions(filters),
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_entity_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_fetch(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
 
     /// Fetch only entities whose concrete type exactly matches this descriptor.
     pub async fn get_exact(&self, filters: &[Filter]) -> Result<Vec<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                &equality_expressions(filters),
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_entity_row).await;
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_fetch_exact(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -376,6 +603,20 @@ impl<'db> DynamicEntityManager<'db> {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                expressions,
+                sorts,
+                limit,
+                offset,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_entity_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_fetch(
             &self.descriptor,
             expressions,
@@ -385,6 +626,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -397,6 +639,20 @@ impl<'db> DynamicEntityManager<'db> {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                expressions,
+                sorts,
+                limit,
+                offset,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_entity_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_fetch_exact(
             &self.descriptor,
             expressions,
@@ -406,6 +662,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT EXPR FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -415,6 +672,23 @@ impl<'db> DynamicEntityManager<'db> {
         &self,
         expressions: &[DynamicExpr],
     ) -> Result<Option<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                expressions,
+                &[],
+                Some(1),
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return Ok(plan_fetch(&self.target, plans, program, plan_entity_row)
+                .await?
+                .into_iter()
+                .next());
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_fetch_exact(
             &self.descriptor,
             expressions,
@@ -424,6 +698,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FIRST");
+        // raw remainder: no registry authority; removed in 06
         match self.target.execute(&typeql, TxType::Read).await? {
             QueryResult::Documents(docs) => docs
                 .first()
@@ -455,8 +730,28 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Fetch one entity by its TypeDB IID.
     pub async fn get_by_iid(&self, iid: &str) -> Result<Option<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                &[DynamicExpr::Iid { iid: iid.into() }],
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            let rows = plan_fetch(&self.target, plans, program, plan_entity_row).await?;
+            return match rows.len() {
+                0 => Ok(None),
+                1 => Ok(rows.into_iter().next()),
+                _ => Err(snapshot_error(&self.descriptor.type_name)),
+            };
+        }
+
         let typeql = query_builder::build_dynamic_entity_fetch_by_iid(&self.descriptor, iid, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC FETCH BY IID");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => match docs.len() {
@@ -477,9 +772,29 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Fetch one exact-type entity by its TypeDB IID.
     pub async fn get_by_iid_exact(&self, iid: &str) -> Result<Option<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                &[DynamicExpr::Iid { iid: iid.into() }],
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            let rows = plan_fetch(&self.target, plans, program, plan_entity_row).await?;
+            return match rows.len() {
+                0 => Ok(None),
+                1 => Ok(rows.into_iter().next()),
+                _ => Err(snapshot_error(&self.descriptor.type_name)),
+            };
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_fetch_by_iid_exact(&self.descriptor, iid, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT FETCH BY IID");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => match docs.len() {
@@ -510,21 +825,54 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Discover subtype-inclusive entity identities without fetching attributes.
     pub async fn discover_all(&self) -> Result<Vec<DynamicEntityIdentity>> {
+        if let Some(plans) = &self.plans {
+            let identities =
+                plan_identities(&self.target, plans, &self.descriptor.type_name, false, None)
+                    .await?;
+            let identities = identities
+                .into_iter()
+                .map(|(iid, type_name)| DynamicEntityIdentity { iid, type_name })
+                .collect::<Vec<_>>();
+            return Ok(identities);
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_identity_discovery(&self.descriptor, None, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC ENTITY IDENTITY DISCOVERY");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_identity_documents(result)
     }
 
     /// Discover one subtype-inclusive entity identity by canonical IID.
     pub async fn discover_by_iid(&self, iid: &str) -> Result<Option<DynamicEntityIdentity>> {
+        if let Some(plans) = &self.plans {
+            let identities = plan_identities(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                false,
+                Some(iid),
+            )
+            .await?;
+            let mut identities = identities
+                .into_iter()
+                .map(|(iid, type_name)| DynamicEntityIdentity { iid, type_name })
+                .collect::<Vec<_>>();
+            return match identities.len() {
+                0 => Ok(None),
+                1 => Ok(identities.pop()),
+                _ => Err(snapshot_error(&self.descriptor.type_name)),
+            };
+        }
+
         let typeql = query_builder::build_dynamic_entity_identity_discovery(
             &self.descriptor,
             Some(iid),
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC ENTITY IDENTITY DISCOVERY BY IID");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         let mut identities = self.hydrate_identity_documents(result)?;
         match identities.len() {
@@ -553,49 +901,109 @@ impl<'db> DynamicEntityManager<'db> {
 
     /// Count only entities whose concrete type exactly matches this descriptor.
     pub async fn count_exact(&self) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(&self.target, plans, &self.descriptor.type_name, true, &[])
+                .await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_count_exact(&self.descriptor, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Count entities matching equality filters.
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                false,
+                &equality_expressions(filters),
+            )
+            .await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_count(&self.descriptor, filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Count entities matching dynamic expressions.
     pub async fn count_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                false,
+                expressions,
+            )
+            .await;
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_expr_count(&self.descriptor, expressions, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Count exact-type entities matching dynamic expressions in the database.
     pub async fn count_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                true,
+                expressions,
+            )
+            .await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_count_exact(
             &self.descriptor,
             expressions,
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT EXPR COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Test exact-type entity existence with a database-side limit-one query.
     pub async fn exists_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<bool> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                expressions,
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Exists,
+            )?;
+            return match self.target.read_plan(&program).await?.as_slice() {
+                [PlanAnswer::Exists(value)] => Ok(*value),
+                _ => Err(snapshot_error(&self.descriptor.type_name)),
+            };
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_exists_exact(
             &self.descriptor,
             expressions,
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT EXPR EXISTS");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_exists(&self.descriptor.type_name, result)
     }
@@ -606,6 +1014,16 @@ impl<'db> DynamicEntityManager<'db> {
         filters: &[Filter],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.aggregate(
+                &self.descriptor.type_name,
+                &equality_expressions(filters),
+                &[],
+                aggregates,
+            )?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_aggregate(
             &self.descriptor,
             filters,
@@ -613,6 +1031,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -623,6 +1042,12 @@ impl<'db> DynamicEntityManager<'db> {
         expressions: &[DynamicExpr],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program =
+                plans.aggregate(&self.descriptor.type_name, expressions, &[], aggregates)?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_aggregate(
             &self.descriptor,
             expressions,
@@ -630,6 +1055,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -641,6 +1067,16 @@ impl<'db> DynamicEntityManager<'db> {
         group_fields: &[String],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.aggregate(
+                &self.descriptor.type_name,
+                &equality_expressions(filters),
+                group_fields,
+                aggregates,
+            )?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_group_by_aggregate(
             &self.descriptor,
             filters,
@@ -649,6 +1085,7 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC GROUP BY AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -660,6 +1097,16 @@ impl<'db> DynamicEntityManager<'db> {
         group_fields: &[String],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.aggregate(
+                &self.descriptor.type_name,
+                expressions,
+                group_fields,
+                aggregates,
+            )?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_entity_expr_group_by_aggregate(
             &self.descriptor,
             expressions,
@@ -668,24 +1115,37 @@ impl<'db> DynamicEntityManager<'db> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXPR GROUP BY AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
 
     /// Delete one entity by IID.
     pub async fn delete_by_iid(&self, iid: &str) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.delete(&self.descriptor.type_name, iid, false, false)?;
+            return self.target.write_plan(&plan, Ok).await.map(|_| ());
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_delete_by_iid(&self.descriptor, iid, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC DELETE");
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
 
     /// Delete an exact-type entity by mandatory canonical IID.
     pub async fn delete_by_iid_exact(&self, iid: &str) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.delete(&self.descriptor.type_name, iid, true, false)?;
+            return self.target.write_plan(&plan, Ok).await.map(|_| ());
+        }
+
         let typeql =
             query_builder::build_dynamic_entity_delete_by_iid_exact(&self.descriptor, iid, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT DELETE");
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
@@ -696,6 +1156,24 @@ impl<'db> DynamicEntityManager<'db> {
         &self,
         iids: &[String],
     ) -> Result<Vec<serde_json::Value>> {
+        if let Some(plans) = &self.plans {
+            if iids.is_empty() {
+                return Ok(Vec::new());
+            }
+            validate_delete_iids(iids)?;
+            return self
+                .target
+                .returning(
+                    plans,
+                    &self.descriptor.type_name,
+                    iids,
+                    true,
+                    |_, things, documents, _| snapshot_documents(things, documents),
+                )
+                .await;
+        }
+
+        // raw remainder: no registry authority; removed in 06
         let templates = query_builder::build_dynamic_entity_delete_returning(&self.descriptor)?;
         self.target
             .delete_captured(&templates, iids, |index, documents| {
@@ -724,9 +1202,10 @@ impl<'db> DynamicEntityManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager.delete_many_by_iid_exact_in_transaction(iids).await {
-                    Ok(()) => tx.commit().await,
+                    Ok(()) => commit_manager(&tx, &self.plans).await,
                     Err(error) => {
                         let _ = tx.rollback().await;
                         Err(error)
@@ -736,9 +1215,10 @@ impl<'db> DynamicEntityManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager.delete_many_by_iid_exact_in_transaction(iids).await {
-                    Ok(()) => tx.commit().await,
+                    Ok(()) => commit_manager(&tx, &self.plans).await,
                     Err(error) => {
                         let _ = tx.rollback().await;
                         Err(error)
@@ -754,6 +1234,16 @@ impl<'db> DynamicEntityManager<'db> {
     }
 
     async fn put_exact_in_transaction(&self, attributes: &DynamicAttributeMap) -> Result<String> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.entity_put(&self.descriptor.type_name, attributes, true)?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
+                })
+                .await;
+        }
+
         let Some(typeql) = query_builder::build_dynamic_entity_exact_key_lookup(
             &self.descriptor,
             attributes,
@@ -763,6 +1253,7 @@ impl<'db> DynamicEntityManager<'db> {
             return self.insert(attributes).await;
         };
         tracing::debug!(typeql = %typeql, entity_type = %self.descriptor.type_name, "DYNAMIC EXACT KEY LOOKUP");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match extract_exact_key_lookup_iid(&self.descriptor.type_name, result)? {
             Some(iid) => {
@@ -817,12 +1308,72 @@ impl<'db> DynamicEntityManager<'db> {
             return Ok(vec![]);
         }
 
+        if matches!(operation, DynamicWriteOperation::Insert)
+            && let Some(plans) = &self.plans
+            && plans.transport == crate::plan_builders::ValueTransport::Given
+            && let Some(batch) = plans.insert_entities(&self.descriptor.type_name, items)?
+        {
+            let mut output = vec![None; items.len()];
+            self.target
+                .write_plans(&batch, |plan, answer| {
+                    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+                        answer
+                            .to_staged_v3(plan.local())
+                            .map_err(crate::plan_builders::manager::diagnostic)?
+                    else {
+                        return Err(snapshot_error(&self.descriptor.type_name));
+                    };
+                    let inputs = plan.local().given_rows().expect("native batch inputs");
+                    if rows.len() != inputs.len() {
+                        return Err(snapshot_error(&self.descriptor.type_name));
+                    }
+                    let first = match inputs[0].values().first() {
+                        Some(Some(type_bridge_contract::value::CanonicalValue::Long(index))) => {
+                            *index
+                        }
+                        _ => return Err(snapshot_error(&self.descriptor.type_name)),
+                    };
+                    for row in rows {
+                        match row.as_slice() {
+                            [
+                                type_bridge_contract::query_remote::RemoteValue::Value {
+                                    value: type_bridge_contract::value::CanonicalValue::Long(index),
+                                },
+                                type_bridge_contract::query_remote::RemoteValue::Thing {
+                                    iid,
+                                    type_id,
+                                },
+                            ] if type_id.label().as_str() == self.descriptor.type_name
+                                && *index >= first
+                                && (*index - first) < inputs.len() as i64 =>
+                            {
+                                let slot = usize::try_from(*index)
+                                    .ok()
+                                    .and_then(|index| output.get_mut(index))
+                                    .ok_or_else(|| snapshot_error(&self.descriptor.type_name))?;
+                                if slot.replace(iid.clone()).is_some() {
+                                    return Err(snapshot_error(&self.descriptor.type_name));
+                                }
+                            }
+                            _ => return Err(snapshot_error(&self.descriptor.type_name)),
+                        }
+                    }
+                    Ok(())
+                })
+                .await?;
+            return output
+                .into_iter()
+                .map(|value| value.ok_or_else(|| snapshot_error(&self.descriptor.type_name)))
+                .collect();
+        }
+
         // Given-stage fast path (TypeDB 3.12+): one compiled insert pipeline
         // over all rows, values passed through the driver API instead of
         // being interpolated per row. Requires a homogeneous batch; anything
         // else falls through to the per-row path below. The answer is only
         // IIDs and row indexes, so canonical targets take it too.
-        if matches!(operation, DynamicWriteOperation::Insert)
+        if self.plans.is_none()
+            && matches!(operation, DynamicWriteOperation::Insert)
             && let DynamicExecutionTarget::Database(db)
             | DynamicExecutionTarget::CanonicalDatabase(db) = &self.target
             && db.supports_given_stage()
@@ -834,6 +1385,7 @@ impl<'db> DynamicEntityManager<'db> {
                 rows = items.len(),
                 "DYNAMIC GIVEN INSERT MANY"
             );
+            // raw remainder: no registry authority; removed in 06
             let result = db.execute_with_rows(&typeql, TxType::Write, rows).await?;
             return extract_insert_iids(&self.descriptor.type_name, result, items.len());
         }
@@ -844,7 +1396,8 @@ impl<'db> DynamicEntityManager<'db> {
                 let manager = DynamicEntityManager::with_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let mut iids = Vec::with_capacity(items.len());
                 for item in items {
                     match manager.write_one(item, operation).await {
@@ -855,7 +1408,7 @@ impl<'db> DynamicEntityManager<'db> {
                         }
                     }
                 }
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iids)
             }
             DynamicExecutionTarget::Transaction(tx) => {
@@ -871,7 +1424,8 @@ impl<'db> DynamicEntityManager<'db> {
                 let manager = DynamicEntityManager::with_canonical_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let mut iids = Vec::with_capacity(items.len());
                 for item in items {
                     match manager.write_one(item, operation).await {
@@ -882,7 +1436,7 @@ impl<'db> DynamicEntityManager<'db> {
                         }
                     }
                 }
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iids)
             }
             DynamicExecutionTarget::CanonicalTransaction(tx) => {
@@ -943,17 +1497,67 @@ impl<'db> DynamicEntityManager<'db> {
 }
 
 /// CRUD manager for a relation described at runtime.
+#[derive(Clone)]
 pub struct DynamicRelationManager<'db> {
     target: DynamicExecutionTarget<'db>,
     descriptor: Arc<RelationDescriptor>,
+    plans: Option<ManagerPlans>,
 }
 
 impl<'db> DynamicRelationManager<'db> {
+    /// Create a manager that executes native plans under installed registry authority.
+    pub fn from_registry(
+        db: &'db Database,
+        registry: Arc<DescriptorRegistry>,
+        descriptor: Arc<RelationDescriptor>,
+    ) -> Self {
+        let mut plans = ManagerPlans::new(registry);
+        if !db.supports_given_stage() {
+            plans.transport = crate::plan_builders::ValueTransport::Literal;
+        }
+        Self {
+            target: DynamicExecutionTarget::Database(db),
+            descriptor,
+            plans: Some(plans),
+        }
+    }
+
+    /// Bind a registry-backed manager to an existing transaction.
+    pub fn with_registry_transaction(
+        tx: TransactionContext,
+        registry: Arc<DescriptorRegistry>,
+        descriptor: Arc<RelationDescriptor>,
+    ) -> Self {
+        Self {
+            target: DynamicExecutionTarget::Transaction(tx),
+            descriptor,
+            plans: Some(ManagerPlans::new(registry)),
+        }
+    }
+
+    pub(crate) fn literal_values(mut self) -> Self {
+        self.plans
+            .as_mut()
+            .expect("registry-backed manager")
+            .transport = crate::plan_builders::ValueTransport::Literal;
+        self
+    }
+
+    fn sharing_plans(mut self, plans: &Option<ManagerPlans>) -> Self {
+        self.plans = plans.clone();
+        self
+    }
+
+    pub(crate) fn in_transaction(&self, tx: TransactionContext) -> Self {
+        Self::with_transaction(tx, Arc::clone(&self.descriptor)).sharing_plans(&self.plans)
+    }
+
     /// Create a dynamic relation manager from a registered descriptor.
     pub fn new(db: &'db Database, descriptor: Arc<RelationDescriptor>) -> Self {
         Self {
             target: DynamicExecutionTarget::Database(db),
             descriptor,
+            plans: None,
         }
     }
 
@@ -962,6 +1566,7 @@ impl<'db> DynamicRelationManager<'db> {
         Self {
             target: DynamicExecutionTarget::Transaction(tx),
             descriptor,
+            plans: None,
         }
     }
 
@@ -971,6 +1576,7 @@ impl<'db> DynamicRelationManager<'db> {
         Self {
             target: DynamicExecutionTarget::CanonicalDatabase(db),
             descriptor,
+            plans: None,
         }
     }
 
@@ -983,6 +1589,7 @@ impl<'db> DynamicRelationManager<'db> {
         Self {
             target: DynamicExecutionTarget::CanonicalTransaction(tx),
             descriptor,
+            plans: None,
         }
     }
 
@@ -991,12 +1598,149 @@ impl<'db> DynamicRelationManager<'db> {
         &self.descriptor
     }
 
+    pub(crate) async fn key_iid_exact(
+        &self,
+        attributes: &DynamicAttributeMap,
+    ) -> Result<Option<String>> {
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "Exact key resolution requires a registry-backed manager",
+            )
+        })?;
+        let keys = plans.key_expressions(&self.descriptor.type_name, attributes)?;
+        if keys.is_empty() {
+            return Ok(None);
+        }
+        let program = plans.read(
+            &self.descriptor.type_name,
+            true,
+            &keys,
+            &[],
+            None,
+            None,
+            &[],
+            ReadTerminal::Identity,
+        )?;
+        let mut identities = plan_identity_rows(&self.target, &program).await?;
+        match identities.len() {
+            0 => Ok(None),
+            1 => Ok(identities.pop().map(|(iid, _)| iid)),
+            _ => Err(snapshot_error(&self.descriptor.type_name)),
+        }
+    }
+
+    pub(crate) async fn resolve_iid(
+        &self,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+    ) -> Result<Option<String>> {
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "This operation requires a registry-backed manager",
+            )
+        })?;
+        resolve_manager_iid(
+            &self.target,
+            plans,
+            &self.descriptor.type_name,
+            iid,
+            attributes,
+            players,
+        )
+        .await
+    }
+
+    pub(crate) async fn delete_identity(
+        &self,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+    ) -> Result<()> {
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "This operation requires a registry-backed manager",
+            )
+        })?;
+        let plan = plans.delete_identity(&self.descriptor.type_name, iid, attributes, players)?;
+        self.target.write_plan(&plan, |_| Ok(())).await
+    }
+
+    pub(crate) async fn delete_snapshots<T>(
+        &self,
+        iids: &[String],
+        materialize: impl FnOnce(Vec<DynamicRelationRow>) -> Result<T>,
+    ) -> Result<T> {
+        self.delete_models_returning_mapped(iids, false, materialize)
+            .await
+    }
+
+    pub(crate) async fn delete_models_returning(
+        &self,
+        iids: &[String],
+        exact: bool,
+    ) -> Result<Vec<DynamicRelationRow>> {
+        self.delete_models_returning_mapped(iids, exact, Ok).await
+    }
+
+    async fn delete_models_returning_mapped<T>(
+        &self,
+        iids: &[String],
+        exact: bool,
+        materialize: impl FnOnce(Vec<DynamicRelationRow>) -> Result<T>,
+    ) -> Result<T> {
+        if iids.is_empty() {
+            return materialize(Vec::new());
+        }
+        validate_delete_iids(iids)?;
+        let plans = self.plans.as_ref().ok_or_else(|| {
+            crate::plan_builders::manager::invalid(
+                "manager_plan_authority_unavailable",
+                "Deletion snapshots require a registry-backed manager",
+            )
+        })?;
+        self.target
+            .returning(
+                plans,
+                &self.descriptor.type_name,
+                iids,
+                exact,
+                |registry, things, _, _| {
+                    things
+                        .iter()
+                        .map(|thing| plan_relation_row(registry, thing))
+                        .collect::<Result<Vec<_>>>()
+                        .and_then(materialize)
+                },
+            )
+            .await
+    }
+
     /// Insert one dynamic relation and return the assigned IID.
     pub async fn insert(
         &self,
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<String> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.insert(
+                &self.descriptor.type_name,
+                attributes,
+                role_players,
+                false,
+                false,
+            )?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
+                })
+                .await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_insert_with_iid(
             &self.descriptor,
             attributes,
@@ -1004,6 +1748,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION INSERT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, result)
     }
@@ -1022,6 +1767,22 @@ impl<'db> DynamicRelationManager<'db> {
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<String> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.insert(
+                &self.descriptor.type_name,
+                attributes,
+                role_players,
+                true,
+                false,
+            )?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
+                })
+                .await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_put(
             &self.descriptor,
             attributes,
@@ -1029,6 +1790,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION PUT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, result)
     }
@@ -1048,6 +1810,28 @@ impl<'db> DynamicRelationManager<'db> {
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            if let Some(plan) = plans.update(
+                &self.descriptor.type_name,
+                iid,
+                attributes,
+                role_players,
+                false,
+            )? {
+                self.target
+                    .write_plan(&plan, |answer| {
+                        validate_relation_update_answer(
+                            &self.descriptor.type_name,
+                            answer,
+                            iid.is_some(),
+                            iid.is_some() || !role_players.is_empty(),
+                        )
+                    })
+                    .await?;
+            }
+            return Ok(());
+        }
+
         let typeql = query_builder::build_dynamic_relation_update(
             &self.descriptor,
             iid,
@@ -1056,6 +1840,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION UPDATE");
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
@@ -1076,13 +1861,14 @@ impl<'db> DynamicRelationManager<'db> {
                 let manager = DynamicRelationManager::with_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 match manager
                     .update_exact_in_transaction(iid, attributes, role_players)
                     .await
                 {
                     Ok(()) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(())
                     }
                     Err(error) => {
@@ -1096,13 +1882,14 @@ impl<'db> DynamicRelationManager<'db> {
                 let manager = DynamicRelationManager::with_canonical_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 match manager
                     .update_exact_in_transaction(iid, attributes, role_players)
                     .await
                 {
                     Ok(()) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(())
                     }
                     Err(error) => {
@@ -1131,13 +1918,14 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager
                     .update_and_get_exact_in_transaction(iid, attributes, role_players)
                     .await
                 {
                     Ok(row) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(row)
                     }
                     Err(error) => {
@@ -1149,13 +1937,14 @@ impl<'db> DynamicRelationManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager
                     .update_and_get_exact_in_transaction(iid, attributes, role_players)
                     .await
                 {
                     Ok(row) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(row)
                     }
                     Err(error) => {
@@ -1187,13 +1976,14 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager
                     .update_many_and_get_exact_in_transaction(items)
                     .await
                 {
                     Ok(rows) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(rows)
                     }
                     Err(error) => {
@@ -1205,13 +1995,14 @@ impl<'db> DynamicRelationManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager
                     .update_many_and_get_exact_in_transaction(items)
                     .await
                 {
                     Ok(rows) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(rows)
                     }
                     Err(error) => {
@@ -1242,13 +2033,14 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager
                     .put_exact_in_transaction(attributes, role_players)
                     .await
                 {
                     Ok(iid) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(iid)
                     }
                     Err(e) => {
@@ -1260,13 +2052,14 @@ impl<'db> DynamicRelationManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager
                     .put_exact_in_transaction(attributes, role_players)
                     .await
                 {
                     Ok(iid) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(iid)
                     }
                     Err(e) => {
@@ -1303,10 +2096,11 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager.put_many_exact_in_transaction(items).await {
                     Ok(iids) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(iids)
                     }
                     Err(error) => {
@@ -1318,10 +2112,11 @@ impl<'db> DynamicRelationManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager.put_many_exact_in_transaction(items).await {
                     Ok(iids) => {
-                        tx.commit().await?;
+                        commit_manager(&tx, &self.plans).await?;
                         Ok(iids)
                     }
                     Err(error) => {
@@ -1357,12 +2152,52 @@ impl<'db> DynamicRelationManager<'db> {
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<String> {
+        if let Some(plans) = &self.plans {
+            let keys = plans.key_expressions(&self.descriptor.type_name, attributes)?;
+            if !keys.is_empty() {
+                let program = plans.read(
+                    &self.descriptor.type_name,
+                    true,
+                    &keys,
+                    &[],
+                    None,
+                    None,
+                    &[],
+                    ReadTerminal::Identity,
+                )?;
+                let identities = plan_identity_rows(&self.target, &program).await?;
+                match identities.as_slice() {
+                    [(iid, _)] => {
+                        self.update_exact_in_transaction(iid, attributes, role_players)
+                            .await?;
+                        return Ok(iid.clone());
+                    }
+                    [] => {}
+                    _ => return Err(snapshot_error(&self.descriptor.type_name)),
+                }
+            }
+            let plan = plans.insert(
+                &self.descriptor.type_name,
+                attributes,
+                role_players,
+                false,
+                true,
+            )?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    plan_insert_iid(&self.descriptor.type_name, &plan, answer)
+                })
+                .await;
+        }
+
         if let Some(q) = query_builder::build_dynamic_relation_exact_key_lookup(
             &self.descriptor,
             attributes,
             "$r",
         )? && let Some(iid) = extract_exact_key_lookup_iid(
             &self.descriptor.type_name,
+            // raw remainder: no registry authority; removed in 06
             self.target.execute(&q, TxType::Write).await?,
         )? {
             self.update_exact_in_transaction(&iid, attributes, role_players)
@@ -1376,6 +2211,7 @@ impl<'db> DynamicRelationManager<'db> {
             &resolved,
             "$r",
         )?;
+        // raw remainder: no registry authority; removed in 06
         let answer = self.target.execute(&q, TxType::Write).await?;
         extract_insert_iid(&self.descriptor.type_name, answer)
     }
@@ -1392,6 +2228,7 @@ impl<'db> DynamicRelationManager<'db> {
                 player.key.as_ref().map(|(n, v)| (n.as_str(), v)),
                 "$p",
             )?;
+            // raw remainder: no registry authority; removed in 06
             let answer = self.target.execute(&q, TxType::Write).await?;
             let rows = match answer {
                 QueryResult::Documents(d) => d,
@@ -1455,6 +2292,28 @@ impl<'db> DynamicRelationManager<'db> {
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            if let Some(plan) = plans.update(
+                &self.descriptor.type_name,
+                Some(iid),
+                attributes,
+                role_players,
+                true,
+            )? {
+                self.target
+                    .write_plan(&plan, |answer| {
+                        validate_relation_update_answer(
+                            &self.descriptor.type_name,
+                            answer,
+                            true,
+                            true,
+                        )
+                    })
+                    .await?;
+            }
+            return Ok(());
+        }
+
         let resolved = self.resolve_exact_role_players(role_players).await?;
         if !self.descriptor.owned_attributes.iter().all(|a| a.is_key()) {
             let q = query_builder::build_dynamic_relation_update_exact(
@@ -1463,6 +2322,7 @@ impl<'db> DynamicRelationManager<'db> {
                 attributes,
                 "$r",
             )?;
+            // raw remainder: no registry authority; removed in 06
             self.target.execute(&q, TxType::Write).await?;
         }
         for role in &self.descriptor.roles {
@@ -1472,6 +2332,7 @@ impl<'db> DynamicRelationManager<'db> {
                 &role.role_name,
                 "$r",
             )?;
+            // raw remainder: no registry authority; removed in 06
             self.target.execute(&q, TxType::Write).await?;
         }
         if !resolved.is_empty() {
@@ -1481,6 +2342,7 @@ impl<'db> DynamicRelationManager<'db> {
                 &resolved,
                 "$r",
             )?;
+            // raw remainder: no registry authority; removed in 06
             self.target.execute(&q, TxType::Write).await?;
         }
         Ok(())
@@ -1526,17 +2388,47 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Fetch relations matching equality filters.
     pub async fn get(&self, filters: &[Filter]) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                &equality_expressions(filters),
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_relation_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_fetch(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
 
     /// Fetch only relations whose concrete type exactly matches this descriptor.
     pub async fn get_exact(&self, filters: &[Filter]) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                &equality_expressions(filters),
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_relation_row).await;
+        }
+
         let typeql =
             query_builder::build_dynamic_relation_fetch_exact(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -1549,6 +2441,20 @@ impl<'db> DynamicRelationManager<'db> {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                expressions,
+                sorts,
+                limit,
+                offset,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_relation_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_fetch(
             &self.descriptor,
             expressions,
@@ -1558,6 +2464,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -1570,6 +2477,20 @@ impl<'db> DynamicRelationManager<'db> {
         limit: Option<u64>,
         offset: Option<u64>,
     ) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                expressions,
+                sorts,
+                limit,
+                offset,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_relation_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_fetch_exact(
             &self.descriptor,
             expressions,
@@ -1579,6 +2500,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT EXPR FETCH");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -1588,6 +2510,23 @@ impl<'db> DynamicRelationManager<'db> {
         &self,
         expressions: &[DynamicExpr],
     ) -> Result<Option<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                expressions,
+                &[],
+                Some(1),
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            return Ok(plan_fetch(&self.target, plans, program, plan_relation_row)
+                .await?
+                .into_iter()
+                .next());
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_fetch_exact(
             &self.descriptor,
             expressions,
@@ -1597,6 +2536,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FIRST");
+        // raw remainder: no registry authority; removed in 06
         match self.target.execute(&typeql, TxType::Read).await? {
             QueryResult::Documents(docs) => {
                 let first = docs.first().into_iter().cloned().collect::<Vec<_>>();
@@ -1617,6 +2557,20 @@ impl<'db> DynamicRelationManager<'db> {
         filters: &[Filter],
         role_filters: &[DynamicRolePlayerInput],
     ) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                &equality_expressions(filters),
+                &[],
+                None,
+                None,
+                role_filters,
+                ReadTerminal::Fetch,
+            )?;
+            return plan_fetch(&self.target, plans, program, plan_relation_row).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_fetch_with_role_filters(
             &self.descriptor,
             filters,
@@ -1624,6 +2578,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH WITH ROLE FILTERS");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         self.hydrate_documents(result)
     }
@@ -1646,9 +2601,25 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Fetch relation rows by TypeDB IID.
     pub async fn get_by_iid(&self, iid: &str) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                false,
+                &[DynamicExpr::Iid { iid: iid.into() }],
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            let rows = plan_fetch(&self.target, plans, program, plan_relation_row).await?;
+            return Ok(rows);
+        }
+
         let typeql =
             query_builder::build_dynamic_relation_fetch_by_iid(&self.descriptor, iid, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION FETCH BY IID");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => {
@@ -1660,9 +2631,25 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Fetch exact-type relation rows by TypeDB IID.
     pub async fn get_by_iid_exact(&self, iid: &str) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                &[DynamicExpr::Iid { iid: iid.into() }],
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )?;
+            let rows = plan_fetch(&self.target, plans, program, plan_relation_row).await?;
+            return Ok(rows);
+        }
+
         let typeql =
             query_builder::build_dynamic_relation_fetch_by_iid_exact(&self.descriptor, iid, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT FETCH BY IID");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => {
@@ -1684,8 +2671,20 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Discover concrete relation identities in database result order.
     pub async fn discover_all(&self) -> Result<Vec<DynamicRelationIdentity>> {
+        if let Some(plans) = &self.plans {
+            let identities =
+                plan_identities(&self.target, plans, &self.descriptor.type_name, false, None)
+                    .await?;
+            let identities = identities
+                .into_iter()
+                .map(|(iid, type_name)| DynamicRelationIdentity { iid, type_name })
+                .collect::<Vec<_>>();
+            return Ok(identities);
+        }
+
         let q =
             query_builder::build_dynamic_relation_identity_discovery(&self.descriptor, None, "$r")?;
+        // raw remainder: no registry authority; removed in 06
         match self.target.execute(&q, TxType::Read).await? {
             QueryResult::Documents(docs) => docs
                 .iter()
@@ -1704,12 +2703,33 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Discover at most one concrete relation identity by canonical IID.
     pub async fn discover_by_iid(&self, iid: &str) -> Result<Option<DynamicRelationIdentity>> {
+        if let Some(plans) = &self.plans {
+            let identities = plan_identities(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                false,
+                Some(iid),
+            )
+            .await?;
+            let mut identities = identities
+                .into_iter()
+                .map(|(iid, type_name)| DynamicRelationIdentity { iid, type_name })
+                .collect::<Vec<_>>();
+            return match identities.len() {
+                0 => Ok(None),
+                1 => Ok(identities.pop()),
+                _ => Err(snapshot_error(&self.descriptor.type_name)),
+            };
+        }
+
         crate::_dynamic::validate_relation_iid(&self.descriptor.type_name, iid)?;
         let q = query_builder::build_dynamic_relation_identity_discovery(
             &self.descriptor,
             Some(iid),
             "$r",
         )?;
+        // raw remainder: no registry authority; removed in 06
         let rows = match self.target.execute(&q, TxType::Read).await? {
             QueryResult::Documents(docs) => docs
                 .iter()
@@ -1747,14 +2767,26 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Count only exact instances of this concrete relation type.
     pub async fn count_exact(&self) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(&self.target, plans, &self.descriptor.type_name, true, &[])
+                .await;
+        }
+
         let q = query_builder::build_dynamic_relation_count_exact(&self.descriptor, "$r")?;
+        // raw remainder: no registry authority; removed in 06
         extract_count(&self.target.execute(&q, TxType::Read).await?)
     }
 
     /// Delete one exact concrete relation instance by canonical IID.
     pub async fn delete_by_iid_exact(&self, iid: &str) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.delete(&self.descriptor.type_name, iid, true, false)?;
+            return self.target.write_plan(&plan, Ok).await.map(|_| ());
+        }
+
         let q =
             query_builder::build_dynamic_relation_delete_by_iid_exact(&self.descriptor, iid, "$r")?;
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&q, TxType::Write).await.map(|_| ())
     }
 
@@ -1764,6 +2796,23 @@ impl<'db> DynamicRelationManager<'db> {
         &self,
         iids: &[String],
     ) -> Result<Vec<serde_json::Value>> {
+        if let Some(plans) = &self.plans {
+            if iids.is_empty() {
+                return Ok(Vec::new());
+            }
+            validate_delete_iids(iids)?;
+            return self.target.returning(plans, &self.descriptor.type_name, iids, true, |registry, things, documents, _| {
+                let mut documents = snapshot_documents(things, documents)?;
+                for (document, thing) in documents.iter_mut().zip(things) {
+                    let row = plan_relation_row(registry, thing)?;
+                    let object = document.as_object_mut().ok_or_else(|| snapshot_error(&self.descriptor.type_name))?;
+                    object.retain(|key, _| !key.starts_with("_role_"));
+                    object.insert("role_players".into(), row.role_players.into_iter().map(|player| serde_json::json!({"role": player.role_name, "iid": player.player_iid, "type_name": player.player_type_name, "attributes": player.attributes.into_iter().collect::<serde_json::Map<_, _>>() })).collect());
+                }
+                Ok(documents)
+            }).await;
+        }
+
         let mut capture_descriptor = (*self.descriptor).clone();
         for role in &mut capture_descriptor.roles {
             role.cardinality = role.cardinality.map(|(_, maximum)| (0, maximum));
@@ -1785,9 +2834,10 @@ impl<'db> DynamicRelationManager<'db> {
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
-                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                let manager = Self::with_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                    .sharing_plans(&self.plans);
                 match manager.delete_many_by_iid_exact_in_transaction(iids).await {
-                    Ok(()) => tx.commit().await,
+                    Ok(()) => commit_manager(&tx, &self.plans).await,
                     Err(error) => {
                         let _ = tx.rollback().await;
                         Err(error)
@@ -1797,9 +2847,10 @@ impl<'db> DynamicRelationManager<'db> {
             DynamicExecutionTarget::CanonicalDatabase(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
                 let manager =
-                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor));
+                    Self::with_canonical_transaction(tx.clone(), Arc::clone(&self.descriptor))
+                        .sharing_plans(&self.plans);
                 match manager.delete_many_by_iid_exact_in_transaction(iids).await {
-                    Ok(()) => tx.commit().await,
+                    Ok(()) => commit_manager(&tx, &self.plans).await,
                     Err(error) => {
                         let _ = tx.rollback().await;
                         Err(error)
@@ -1828,41 +2879,95 @@ impl<'db> DynamicRelationManager<'db> {
 
     /// Count relations matching equality filters.
     pub async fn count_with_filters(&self, filters: &[Filter]) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                false,
+                &equality_expressions(filters),
+            )
+            .await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_count(&self.descriptor, filters, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Count relations matching dynamic expressions.
     pub async fn count_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                false,
+                expressions,
+            )
+            .await;
+        }
+
         let typeql =
             query_builder::build_dynamic_relation_expr_count(&self.descriptor, expressions, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Count exact-type relations matching dynamic expressions in the database.
     pub async fn count_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<u64> {
+        if let Some(plans) = &self.plans {
+            return plan_read_count(
+                &self.target,
+                plans,
+                &self.descriptor.type_name,
+                true,
+                expressions,
+            )
+            .await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_count_exact(
             &self.descriptor,
             expressions,
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT EXPR COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
 
     /// Test exact-type relation existence with a database-side limit-one query.
     pub async fn exists_exact_with_query(&self, expressions: &[DynamicExpr]) -> Result<bool> {
+        if let Some(plans) = &self.plans {
+            let program = plans.read(
+                &self.descriptor.type_name,
+                true,
+                expressions,
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Exists,
+            )?;
+            return match self.target.read_plan(&program).await?.as_slice() {
+                [PlanAnswer::Exists(value)] => Ok(*value),
+                _ => Err(snapshot_error(&self.descriptor.type_name)),
+            };
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_exists_exact(
             &self.descriptor,
             expressions,
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXACT EXPR EXISTS");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_exists(&self.descriptor.type_name, result)
     }
@@ -1873,6 +2978,16 @@ impl<'db> DynamicRelationManager<'db> {
         filters: &[Filter],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.aggregate(
+                &self.descriptor.type_name,
+                &equality_expressions(filters),
+                &[],
+                aggregates,
+            )?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_aggregate(
             &self.descriptor,
             filters,
@@ -1880,6 +2995,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -1890,6 +3006,12 @@ impl<'db> DynamicRelationManager<'db> {
         expressions: &[DynamicExpr],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program =
+                plans.aggregate(&self.descriptor.type_name, expressions, &[], aggregates)?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_aggregate(
             &self.descriptor,
             expressions,
@@ -1897,6 +3019,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -1908,6 +3031,16 @@ impl<'db> DynamicRelationManager<'db> {
         group_fields: &[String],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.aggregate(
+                &self.descriptor.type_name,
+                &equality_expressions(filters),
+                group_fields,
+                aggregates,
+            )?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_group_by_aggregate(
             &self.descriptor,
             filters,
@@ -1916,6 +3049,7 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION GROUP BY AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
@@ -1927,6 +3061,16 @@ impl<'db> DynamicRelationManager<'db> {
         group_fields: &[String],
         aggregates: &[DynamicAggregate],
     ) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+        if let Some(plans) = &self.plans {
+            let program = plans.aggregate(
+                &self.descriptor.type_name,
+                expressions,
+                group_fields,
+                aggregates,
+            )?;
+            return plan_aggregate(&self.target, program).await;
+        }
+
         let typeql = query_builder::build_dynamic_relation_expr_group_by_aggregate(
             &self.descriptor,
             expressions,
@@ -1935,15 +3079,22 @@ impl<'db> DynamicRelationManager<'db> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION EXPR GROUP BY AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.target.execute(&typeql, TxType::Read).await?;
         extract_rows(&self.descriptor.type_name, result)
     }
 
     /// Delete one relation by IID.
     pub async fn delete_by_iid(&self, iid: &str) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.delete(&self.descriptor.type_name, iid, false, false)?;
+            return self.target.write_plan(&plan, Ok).await.map(|_| ());
+        }
+
         let typeql =
             query_builder::build_dynamic_relation_delete_by_iid(&self.descriptor, iid, "$r")?;
         tracing::debug!(typeql = %typeql, relation_type = %self.descriptor.type_name, "DYNAMIC RELATION DELETE");
+        // raw remainder: no registry authority; removed in 06
         self.target.execute(&typeql, TxType::Write).await?;
         Ok(())
     }
@@ -1963,7 +3114,8 @@ impl<'db> DynamicRelationManager<'db> {
                 let manager = DynamicRelationManager::with_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let mut iids = Vec::with_capacity(items.len());
                 for (attributes, role_players) in items {
                     match manager.write_one(attributes, role_players, operation).await {
@@ -1974,7 +3126,7 @@ impl<'db> DynamicRelationManager<'db> {
                         }
                     }
                 }
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iids)
             }
             DynamicExecutionTarget::Transaction(tx) => {
@@ -1990,7 +3142,8 @@ impl<'db> DynamicRelationManager<'db> {
                 let manager = DynamicRelationManager::with_canonical_transaction(
                     tx.clone(),
                     Arc::clone(&self.descriptor),
-                );
+                )
+                .sharing_plans(&self.plans);
                 let mut iids = Vec::with_capacity(items.len());
                 for (attributes, role_players) in items {
                     match manager.write_one(attributes, role_players, operation).await {
@@ -2001,7 +3154,7 @@ impl<'db> DynamicRelationManager<'db> {
                         }
                     }
                 }
-                tx.commit().await?;
+                commit_manager(&tx, &self.plans).await?;
                 Ok(iids)
             }
             DynamicExecutionTarget::CanonicalTransaction(tx) => {
@@ -2268,6 +3421,15 @@ enum DynamicWriteOperation {
     Put,
 }
 
+async fn commit_manager(tx: &TransactionContext, plans: &Option<ManagerPlans>) -> Result<()> {
+    if plans.is_some() {
+        super::returning::commit(tx).await
+    } else {
+        tx.commit().await
+    }
+}
+
+#[derive(Clone)]
 enum DynamicExecutionTarget<'db> {
     Database(&'db Database),
     Transaction(TransactionContext),
@@ -2276,6 +3438,221 @@ enum DynamicExecutionTarget<'db> {
 }
 
 impl DynamicExecutionTarget<'_> {
+    async fn returning<T>(
+        &self,
+        plans: &ManagerPlans,
+        name: &str,
+        iids: &[String],
+        exact: bool,
+        materialize: impl FnOnce(
+            &DescriptorRegistry,
+            &[&HydratedThing],
+            Vec<serde_json::Value>,
+            QueryExecutionResourceLimits,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        plans.authority()?;
+        let policy = match self {
+            Self::Database(db) | Self::CanonicalDatabase(db) => db.answer_limits(),
+            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => tx.answer_limits(),
+        }
+        .unwrap_or_default();
+        let deadline = QueryExecutionDeadline::for_limits(policy);
+        let cancellation = AnswerCancellation::default();
+        let (transaction, owned) = match self {
+            Self::Database(db) | Self::CanonicalDatabase(db) => {
+                (db.transaction_context(TxType::Write).await?, true)
+            }
+            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => (tx.clone(), false),
+        };
+        let mut lease = transaction.acquire_mutation_lease().await?;
+        let result = super::returning::delete_on_lease(
+            &mut lease,
+            plans,
+            name,
+            iids,
+            exact,
+            policy,
+            &cancellation,
+            deadline,
+            materialize,
+        )
+        .await;
+        match result {
+            Ok(value) => {
+                lease.complete_success();
+                if owned {
+                    super::returning::commit(&transaction).await?;
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                    &error,
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                ));
+                drop(lease);
+                if owned {
+                    let _ = transaction.rollback().await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn read_plan(&self, program: &ManagerRead) -> Result<Vec<PlanAnswer>> {
+        let limits = match program {
+            ManagerRead::Fetch(stack) => {
+                stack.execution_limits(QueryExecutionResourceLimits::default())
+            }
+            ManagerRead::Scalar { .. } | ManagerRead::Aggregate { .. } => {
+                QueryExecutionResourceLimits::default()
+            }
+        };
+        let cancellation = AnswerCancellation::default();
+        let deadline = QueryExecutionDeadline::for_limits(limits);
+        match self {
+            Self::Database(db) | Self::CanonicalDatabase(db) => {
+                db.execute_plans(program.plans(), &limits, &cancellation, deadline)
+                    .await
+            }
+            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+                if tx.tx_type() == TxType::Read {
+                    return tx
+                        .execute_plans(program.plans(), &limits, &cancellation, deadline)
+                        .await;
+                }
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let limits = tx
+                    .answer_limits()
+                    .map_or(limits, |ceiling| limits.constrained_by(ceiling));
+                let mut lease = tx.acquire_mutation_lease().await?;
+                let result = lease
+                    .execute_plans(program.plans(), limits, &cancellation, deadline, None)
+                    .await;
+                match result {
+                    Ok((answers, _)) => {
+                        lease.complete_success();
+                        Ok(answers)
+                    }
+                    Err(error) => {
+                        lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                            &error,
+                            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                        ));
+                        Err(error)
+                    }
+                }
+            }
+        }
+    }
+
+    async fn write_plans(
+        &self,
+        plans: &[BuiltPlan],
+        mut map: impl FnMut(&BuiltPlan, PlanAnswer) -> Result<()>,
+    ) -> Result<()> {
+        let (tx, owned) = match self {
+            Self::Database(db) | Self::CanonicalDatabase(db) => {
+                (db.transaction_context(TxType::Write).await?, true)
+            }
+            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => (tx.clone(), false),
+        };
+        let policy = tx
+            .answer_limits()
+            .unwrap_or_default()
+            .for_adapter_statements(plans.len());
+        let cancellation = AnswerCancellation::default();
+        let deadline = QueryExecutionDeadline::for_limits(policy);
+        let result = async {
+            let mut lease = tx.acquire_mutation_lease().await?;
+            let result = async {
+                if plans.len() > policy.statement_limit() as usize {
+                    return Err(crate::match_request::MatchError::new(
+                        crate::match_request::MatchErrorCategory::ResourceLimit,
+                        "projected_batch_statement_limit",
+                        "Manager batch exceeds the provider statement ceiling",
+                    )
+                    .into());
+                }
+                let mut remaining = policy;
+                for plan in plans {
+                    let query = lease.prepare_plan(plan.local())?;
+                    let limits = crate::query_plan_exec::plan_answer_limits(
+                        remaining,
+                        &cancellation,
+                        deadline,
+                    )?;
+                    let (answer, stats) = lease
+                        .dispatch_plan_counted(query, limits, Some(plan.local()))
+                        .await?;
+                    map(
+                        plan,
+                        TransactionContext::resolve_plan(plan.local(), answer)?,
+                    )?;
+                    remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+                    remaining.items = remaining.items.saturating_sub(stats.processed_items);
+                }
+                Ok(())
+            }
+            .await;
+            match result {
+                Ok(()) => lease.complete_success(),
+                Err(error) => {
+                    lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                        &error,
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                    ));
+                    return Err(error);
+                }
+            }
+            Ok(())
+        }
+        .await;
+        match result {
+            Ok(()) if owned => super::returning::commit(&tx).await,
+            Err(error) if owned => {
+                let _ = tx.rollback().await;
+                Err(error)
+            }
+            result => result,
+        }
+    }
+
+    async fn write_plan<T>(
+        &self,
+        plan: &BuiltPlan,
+        map: impl FnOnce(PlanAnswer) -> Result<T>,
+    ) -> Result<T> {
+        match self {
+            Self::Database(db) | Self::CanonicalDatabase(db) => {
+                let tx = db.transaction_context(TxType::Write).await?;
+                match dispatch_manager_plan(&tx, plan).await.and_then(map) {
+                    Ok(answer) => {
+                        super::returning::commit(&tx).await?;
+                        Ok(answer)
+                    }
+                    Err(error) => {
+                        let _ = tx.rollback().await;
+                        Err(error)
+                    }
+                }
+            }
+            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                let result = dispatch_manager_plan(tx, plan).await.and_then(map);
+                if let Err(error) = &result {
+                    tx.latch_rollback_only(&crate::execution_diagnostic::lower_orm_error(
+                        error,
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                    ))
+                    .await;
+                }
+                result
+            }
+        }
+    }
+
     async fn delete_captured<F>(
         &self,
         statements: &(String, String),
@@ -2336,6 +3713,7 @@ impl DynamicExecutionTarget<'_> {
     }
 
     async fn execute(&self, typeql: &str, required_tx_type: TxType) -> Result<QueryResult> {
+        // raw remainder: no registry authority; removed in 06
         match self {
             Self::Database(db) => db.execute_raw(typeql, required_tx_type).await,
             Self::Transaction(tx) => {
@@ -2349,6 +3727,332 @@ impl DynamicExecutionTarget<'_> {
             }
         }
     }
+}
+
+fn validate_relation_update_answer(
+    name: &str,
+    answer: PlanAnswer,
+    exact: bool,
+    require_match: bool,
+) -> Result<()> {
+    match answer {
+        PlanAnswer::Matched(count) | PlanAnswer::Count(count)
+            if (!exact || count == 1) && (!require_match || count > 0) =>
+        {
+            Ok(())
+        }
+        _ => Err(OrmError::Hydration {
+            type_name: name.into(),
+            message: "Relation update must resolve its root and every requested player".into(),
+        }),
+    }
+}
+
+async fn dispatch_manager_plan(tx: &TransactionContext, plan: &BuiltPlan) -> Result<PlanAnswer> {
+    let prepared = tx.prepare_plan(plan.local()).await?;
+    let result = tx
+        .dispatch_plan(prepared)
+        .await
+        .and_then(|answer| TransactionContext::resolve_plan(plan.local(), answer));
+    if let Err(error) = &result {
+        tx.latch_rollback_only(&crate::execution_diagnostic::lower_orm_error(
+            error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+        ))
+        .await;
+    }
+    result
+}
+
+fn hydrated_attributes(
+    registry: &DescriptorRegistry,
+    attributes: &[crate::match_request::HydratedAttribute],
+) -> Result<DynamicAttributeMap> {
+    let mut result = Vec::new();
+    for attribute in attributes {
+        let name = registry
+            .provider_attribute_name(attribute.field())
+            .ok_or_else(|| {
+                crate::plan_builders::manager::invalid(
+                    "manager_field_unknown",
+                    "Hydrated manager field has no registered provider name",
+                )
+            })?;
+        result.extend(
+            attribute
+                .values()
+                .iter()
+                .cloned()
+                .map(|value| (name.clone(), value)),
+        );
+    }
+    Ok(result)
+}
+
+pub(crate) fn plan_entity_row(
+    registry: &DescriptorRegistry,
+    thing: &HydratedThing,
+) -> Result<DynamicEntityRow> {
+    Ok(DynamicEntityRow {
+        iid: Some(thing.concept_id().as_str().to_owned()),
+        type_name: registry.descriptor_type_name(thing.concrete_descriptor()),
+        attributes: hydrated_attributes(registry, thing.attributes())?,
+    })
+}
+
+pub(crate) fn plan_relation_row(
+    registry: &DescriptorRegistry,
+    thing: &HydratedThing,
+) -> Result<DynamicRelationRow> {
+    let entity = plan_entity_row(registry, thing)?;
+    let mut role_players = Vec::new();
+    for role in thing.roles() {
+        for player in role.players() {
+            role_players.push(crate::_dynamic::DynamicRolePlayer {
+                role_name: role.role().name.clone(),
+                player_iid: Some(player.concept_id().as_str().into()),
+                player_type_name: registry.descriptor_type_name(player.concrete_descriptor()),
+                attributes: hydrated_attributes(registry, player.attributes())?
+                    .into_iter()
+                    .map(|(name, value)| (name, value.to_json()))
+                    .collect(),
+            });
+        }
+    }
+    Ok(DynamicRelationRow {
+        iid: entity.iid,
+        type_name: entity.type_name,
+        attributes: entity.attributes,
+        role_players,
+    })
+}
+
+async fn plan_fetch<T>(
+    target: &DynamicExecutionTarget<'_>,
+    plans: &ManagerPlans,
+    program: ManagerRead,
+    map: impl Fn(&DescriptorRegistry, &HydratedThing) -> Result<T>,
+) -> Result<Vec<T>> {
+    let answers = target.read_plan(&program).await?;
+    let ManagerRead::Fetch(stack) = program else {
+        unreachable!("model fetch program")
+    };
+    let limits = stack.execution_limits(QueryExecutionResourceLimits::default());
+    let proof = stack.resolve(&plans.registry, &answers, limits)?;
+    let MatchResult::Rows { rows } = proof.result().for_request(proof.request())? else {
+        unreachable!("model fetch rows")
+    };
+    rows.iter()
+        .map(|row| match row.slots() {
+            [SlotValue::One(thing)] => map(&plans.registry, thing),
+            _ => Err(crate::plan_builders::manager::invalid(
+                "manager_result_shape",
+                "A manager fetch requires one model slot",
+            )),
+        })
+        .collect()
+}
+
+fn equality_expressions(filters: &[Filter]) -> Vec<DynamicExpr> {
+    filters
+        .iter()
+        .map(|filter| DynamicExpr::Compare {
+            attr_name: filter.attr_name.clone(),
+            operator: crate::_dynamic::DynamicComparisonOp::Eq,
+            value: filter.value.clone(),
+        })
+        .collect()
+}
+
+async fn plan_read_count(
+    target: &DynamicExecutionTarget<'_>,
+    plans: &ManagerPlans,
+    name: &str,
+    exact: bool,
+    expressions: &[DynamicExpr],
+) -> Result<u64> {
+    let program = plans.read(
+        name,
+        exact,
+        expressions,
+        &[],
+        None,
+        None,
+        &[],
+        ReadTerminal::Count,
+    )?;
+    let mut answers = target.read_plan(&program).await?;
+    let answer = answers.pop().ok_or_else(|| snapshot_error(name))?;
+    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+        .to_staged_v3(&program.plans()[0])
+        .map_err(crate::plan_builders::manager::diagnostic)?
+    else {
+        return Err(snapshot_error(name));
+    };
+    match rows.as_slice() {
+        [row] => match row.as_slice() {
+            [
+                type_bridge_contract::query_remote::RemoteValue::Value {
+                    value: type_bridge_contract::value::CanonicalValue::Long(count),
+                },
+            ] => u64::try_from(*count).map_err(|_| snapshot_error(name)),
+            _ => Err(snapshot_error(name)),
+        },
+        _ => Err(snapshot_error(name)),
+    }
+}
+
+async fn plan_identities(
+    target: &DynamicExecutionTarget<'_>,
+    plans: &ManagerPlans,
+    name: &str,
+    exact: bool,
+    iid: Option<&str>,
+) -> Result<Vec<(String, String)>> {
+    let expressions = iid
+        .map(|iid| DynamicExpr::Iid { iid: iid.into() })
+        .into_iter()
+        .collect::<Vec<_>>();
+    let program = plans.read(
+        name,
+        exact,
+        &expressions,
+        &[],
+        None,
+        None,
+        &[],
+        ReadTerminal::Identity,
+    )?;
+    plan_identity_rows(target, &program).await
+}
+
+async fn resolve_manager_iid(
+    target: &DynamicExecutionTarget<'_>,
+    plans: &ManagerPlans,
+    name: &str,
+    iid: Option<&str>,
+    attributes: &DynamicAttributeMap,
+    players: &[DynamicRolePlayerInput],
+) -> Result<Option<String>> {
+    plans.authority()?;
+    if let Some(iid) = iid {
+        if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
+            return Err(crate::plan_builders::manager::invalid(
+                "query_plan_invalid_iid",
+                "Mutation requires a canonical IID",
+            ));
+        }
+        return Ok(Some(iid.to_ascii_lowercase()));
+    }
+    let keys = plans.key_expressions(name, attributes)?;
+    if keys.is_empty() && players.is_empty() {
+        return Err(crate::plan_builders::manager::invalid(
+            "manager_identity_missing",
+            "Mutation requires an IID, key attributes, or role players",
+        ));
+    }
+    let program = plans.read(
+        name,
+        false,
+        &keys,
+        &[],
+        None,
+        None,
+        players,
+        ReadTerminal::Identity,
+    )?;
+    let mut identities = plan_identity_rows(target, &program).await?;
+    match identities.len() {
+        0 => Ok(None),
+        1 => Ok(identities.pop().map(|(iid, _)| iid)),
+        _ => Err(snapshot_error(name)),
+    }
+}
+
+async fn plan_identity_rows(
+    target: &DynamicExecutionTarget<'_>,
+    program: &ManagerRead,
+) -> Result<Vec<(String, String)>> {
+    let answers = target.read_plan(program).await?;
+    let [answer] = answers.as_slice() else {
+        return Err(snapshot_error("identity"));
+    };
+    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+        .to_staged_v3(&program.plans()[0])
+        .map_err(crate::plan_builders::manager::diagnostic)?
+    else {
+        return Err(snapshot_error("identity"));
+    };
+    rows.into_iter()
+        .map(|mut row| match (row.len(), row.pop()) {
+            (1, Some(type_bridge_contract::query_remote::RemoteValue::Thing { iid, type_id })) => {
+                Ok((iid, type_id.label().as_str().into()))
+            }
+            _ => Err(snapshot_error("identity")),
+        })
+        .collect()
+}
+
+fn plan_insert_iid(name: &str, plan: &BuiltPlan, answer: PlanAnswer) -> Result<String> {
+    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+        .to_staged_v3(plan.local())
+        .map_err(crate::plan_builders::manager::diagnostic)?
+    else {
+        return Err(snapshot_error(name));
+    };
+    let mut identity = None;
+    for row in rows {
+        let [type_bridge_contract::query_remote::RemoteValue::Thing { iid, .. }] = row.as_slice()
+        else {
+            return Err(snapshot_error(name));
+        };
+        if identity.as_ref().is_some_and(|previous| previous != iid) {
+            return Err(snapshot_error(name));
+        }
+        identity = Some(iid.clone());
+    }
+    identity.ok_or_else(|| snapshot_error(name))
+}
+
+async fn plan_aggregate(
+    target: &DynamicExecutionTarget<'_>,
+    program: ManagerRead,
+) -> Result<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let answers = target.read_plan(&program).await?;
+    let ManagerRead::Aggregate { plan, keys } = program else {
+        unreachable!("aggregate program")
+    };
+    let [answer] = answers.as_slice() else {
+        return Err(snapshot_error("aggregate"));
+    };
+    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+        .to_staged_v3(plan.local())
+        .map_err(crate::plan_builders::manager::diagnostic)?
+    else {
+        return Err(snapshot_error("aggregate"));
+    };
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .zip(&keys)
+                .map(|(value, key)| {
+                    let value = match value {
+                        type_bridge_contract::query_remote::RemoteValue::Value { value }
+                        | type_bridge_contract::query_remote::RemoteValue::Attribute {
+                            value,
+                            ..
+                        } => crate::runtime_projection::attribute_value_from_canonical(&value)
+                            .to_json(),
+                        type_bridge_contract::query_remote::RemoteValue::Absent => {
+                            serde_json::Value::Null
+                        }
+                        _ => return Err(snapshot_error("aggregate")),
+                    };
+                    Ok((key.clone(), value))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn relation_snapshot_document(
@@ -2388,11 +4092,53 @@ fn relation_snapshot_document(
     Ok(Some(document))
 }
 
+fn snapshot_documents(
+    things: &[&HydratedThing],
+    documents: Vec<serde_json::Value>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut by_iid = std::collections::HashMap::new();
+    for document in documents {
+        let iid = document
+            .get("_iid")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| snapshot_error("snapshot"))?
+            .to_owned();
+        by_iid.entry(iid).or_insert(document);
+    }
+    things
+        .iter()
+        .map(|thing| {
+            by_iid
+                .remove(thing.concept_id().as_str())
+                .ok_or_else(|| snapshot_error("snapshot"))
+        })
+        .collect()
+}
+
 fn snapshot_error(type_name: &str) -> OrmError {
     OrmError::Hydration {
         type_name: type_name.into(),
         message: "Deletion snapshot has invalid exact identity evidence".into(),
     }
+}
+
+fn validate_delete_iids(iids: &[String]) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    for iid in iids {
+        if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
+            return Err(crate::plan_builders::manager::invalid(
+                "query_plan_invalid_iid",
+                "Deletion requires canonical IIDs",
+            ));
+        }
+        if !seen.insert(iid.to_ascii_lowercase()) {
+            return Err(crate::plan_builders::manager::invalid(
+                "duplicate_batch_target",
+                "The same IID appears more than once in a deletion batch",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_snapshot_identity(

@@ -60,7 +60,29 @@ All notable changes to TypeBridge will be documented in this file.
   Snapshots retain stored fields and relation players; deleted roots refuse
   further mutation with `thing_deleted`.
 
+- Registry-backed Rust dynamic and handwritten managers execute native plans,
+  retaining descriptor and registry authority without per-call descriptor copies.
+- Add capability-fenced nested IID operands, subtype-inclusive Put, optional
+  attach items, key attachments, typed fetch scalar fields, collected unordered
+  role documents, and Select/Distinct between write stages. Existing constructor
+  defaults and canonical plan bytes remain unchanged.
+
+### Fixed
+
+- Refuse nonliteral IID predicates under negation on the TypeDB 3.12 profile
+  before dispatch (`query_plan_negated_given_iid_unsupported`), avoiding a
+  provider connection failure. Positive, optional, and literal IID filters
+  retain their existing lowering.
+- Preserve nullable `given` columns in native V3 lowering so sparse batch cells
+  bind as absent instead of failing at the provider.
+- Refuse playerless projected relation creates with `relation_requires_player`
+  before I/O: TypeDB accepts their insertion but removes them at commit.
+
 ### Breaking
+
+- `OrmError::ExecutionDiagnostic` carries canonical execution failures through
+  native managers. Exhaustive matches must handle this variant; commit errors
+  retain their transaction category and durability outcome.
 
 - Rename Rust `QueryV2AnswerLimits` to `AnswerLimits`, shared by query paths.
   Transaction options and the materialized provider seam use this policy.

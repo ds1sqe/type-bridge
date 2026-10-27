@@ -1,3 +1,13 @@
+mod native_batch_answer_item {
+    pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+}
+#[allow(dead_code)]
+mod native_batch {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../orm/tests/support/native_batch.rs"
+    ));
+}
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -367,9 +377,10 @@ impl Tx {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| panic!("unexpected recording query: {q}"));
+        let source = q.to_owned();
         Box::pin(async move {
             match result {
-                Response::Result(value) => Ok(value),
+                Response::Result(value) => Ok(native_batch::result(&source, value)),
                 Response::Error(error) => Err(OrmError::QueryExecution(error)),
             }
         })

@@ -670,6 +670,27 @@ impl StagedAnswerV3 {
         validate_answer(self, plan).map(|_| ())
     }
 
+    /// Provider documents, including every collected player document.
+    pub fn item_count(&self) -> u64 {
+        match self {
+            Self::Documents { documents } => {
+                documents
+                    .iter()
+                    .fold(documents.len() as u64, |total, fields| {
+                        fields.values().fold(total, |total, field| {
+                            if let RemoteFieldValue::Documents { documents } = field {
+                                total.saturating_add(documents.len() as u64)
+                            } else {
+                                total
+                            }
+                        })
+                    })
+            }
+            Self::Rows { rows } => rows.len() as u64,
+            _ => 1,
+        }
+    }
+
     /// Semantic resource counts: graph nodes, attribute values, collection
     /// members and role players, shared by local execution and reply verification.
     pub fn resource_counts(&self) -> [u64; 4] {
@@ -701,6 +722,34 @@ impl StagedAnswerV3 {
                 for document in documents {
                     let root = iid(document.get("_iid"));
                     for (key, field) in document {
+                        if let RemoteFieldValue::Documents { documents: players } = field {
+                            for player in players {
+                                if let Some(player_iid) = iid(player.get("_iid")) {
+                                    if edges.insert((root, key, player_iid)) {
+                                        counts[3] = counts[3].saturating_add(1);
+                                        counts[2] = counts[2].saturating_add(1);
+                                    }
+                                    if nodes.insert(player_iid) {
+                                        counts[0] = counts[0].saturating_add(1);
+                                        if let Some(RemoteFieldValue::Document { fields }) =
+                                            player.get("attributes")
+                                        {
+                                            for field in fields.values() {
+                                                let count = match field {
+                                                    RemoteFieldValue::Scalar { .. } => 1,
+                                                    RemoteFieldValue::List { values } => {
+                                                        values.len() as u64
+                                                    }
+                                                    _ => 0,
+                                                };
+                                                counts[1] = counts[1].saturating_add(count);
+                                                counts[2] = counts[2].saturating_add(count);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if key.starts_with("_role_")
                             && key.ends_with("_iid")
                             && let Some(player) = iid(Some(field))
@@ -1434,6 +1483,9 @@ pub fn decode_remote_value_with_limits(
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum FieldWireV3 {
+    Documents {
+        documents: Vec<BTreeMap<String, FieldWireV3>>,
+    },
     Document {
         fields: BTreeMap<String, FieldWireV3>,
     },
@@ -1448,6 +1500,17 @@ enum FieldWireV3 {
 impl FieldWireV3 {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteFieldValue, Diagnostic> {
         Ok(match self {
+            Self::Documents { documents } => RemoteFieldValue::Documents {
+                documents: documents
+                    .into_iter()
+                    .map(|fields| {
+                        fields
+                            .into_iter()
+                            .map(|(name, value)| Ok((name, value.rebuild(limits)?)))
+                            .collect()
+                    })
+                    .collect::<Result<_, Diagnostic>>()?,
+            },
             Self::Document { fields } => RemoteFieldValue::Document {
                 fields: fields
                     .into_iter()
@@ -1541,6 +1604,11 @@ fn validate_answer_strings(
         limits: crate::limits::CodecLimits,
     ) -> Result<(), Diagnostic> {
         match value {
+            RemoteFieldValue::Documents { documents } => {
+                for value in documents.iter().flat_map(|fields| fields.values()) {
+                    field(value, limits)?;
+                }
+            }
             RemoteFieldValue::Document { fields } => {
                 for value in fields.values() {
                     field(value, limits)?;
@@ -1591,7 +1659,7 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
         for document in documents {
             shape.validate(document)?;
         }
-        return Ok(documents.len() as u64);
+        return Ok(answer.item_count());
     }
     match (answer, plan.operation(), plan.output()) {
         (StagedAnswerV3::Count { .. }, Operation::Count, _)
@@ -1646,10 +1714,12 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
             QueryOutput::Documents { fields },
         ) => {
             for document in documents {
-                if document
-                    .values()
-                    .any(|value| matches!(value, RemoteFieldValue::Document { .. }))
-                {
+                if document.values().any(|value| {
+                    matches!(
+                        value,
+                        RemoteFieldValue::Document { .. } | RemoteFieldValue::Documents { .. }
+                    )
+                }) {
                     return Err(bad());
                 }
                 if document.len() != fields.len()

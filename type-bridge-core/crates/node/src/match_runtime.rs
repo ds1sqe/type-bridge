@@ -3690,6 +3690,32 @@ plays:
     }
 
     #[test]
+    fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {
+        use type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome;
+        for outcome in [
+            SdkCommitFailureOutcome::DefinitelyAborted,
+            SdkCommitFailureOutcome::Unknown,
+        ] {
+            let diagnostic = type_bridge_orm::lower_classified_commit_error(
+                type_bridge_orm::ClassifiedCommitError::Driver {
+                    certainty: if outcome == SdkCommitFailureOutcome::DefinitelyAborted {
+                        type_bridge_orm::CommitFailureCertainty::DefinitelyAborted
+                    } else {
+                        type_bridge_orm::CommitFailureCertainty::Unknown
+                    },
+                    message: "SECRET_SENTINEL".into(),
+                },
+            );
+            let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+            let error = crate::napi_orm_error(OrmError::ExecutionDiagnostic(Box::new(diagnostic)));
+            let actual: Value = serde_json::from_str(&error.reason).unwrap();
+            assert_eq!(actual, expected);
+            assert_eq!(actual["category"], "transaction");
+            assert!(!error.reason.contains("SECRET_SENTINEL"));
+        }
+    }
+
+    #[test]
     fn node_marshalling_preserves_timeout_cancel_and_provider_diagnostics() {
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();

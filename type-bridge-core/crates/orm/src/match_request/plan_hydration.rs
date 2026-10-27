@@ -1740,6 +1740,12 @@ pub(crate) fn validate_plan_documents(
     answer
         .validate_for(plan)
         .map_err(QueryV2ExecutionError::Validation)?;
+    if answer.item_count() > limits.items {
+        return Err(resource_error(
+            "processed_item_limit",
+            "fetch documents exceed the item budget",
+        ));
+    }
     let counts = answer.resource_counts();
     for (actual, maximum, code) in [
         (counts[0], limits.graph_nodes, "query_v2_model_graph_limit"),
@@ -1831,41 +1837,56 @@ pub(crate) fn insert_plan_documents(
             ));
         }
         for (index, listed) in document.roles.iter().enumerate() {
-            let Some(player) = value
-                .get(format!("_role_{index}_iid"))
-                .and_then(json_string)
-            else {
-                continue;
+            let role_name = format!(
+                "{}:{}",
+                listed.role.declaring_relation(),
+                listed.role.label()
+            );
+            let collected;
+            let triples;
+            let player_documents = if listed.collect {
+                collected = value
+                    .get(format!("_role_{index}_players"))
+                    .and_then(JsonValue::as_array)
+                    .ok_or_else(|| {
+                        evidence_error(
+                            "query_plan_hydration_roles",
+                            "collected role list is missing",
+                        )
+                    })?;
+                collected.as_slice()
+            } else {
+                let Some(player) = value
+                    .get(format!("_role_{index}_iid"))
+                    .and_then(json_string)
+                else {
+                    continue;
+                };
+                triples = [
+                    serde_json::json!({"_iid": player, "_type": value[format!("_role_{index}_type")], "attributes": value[format!("_role_{index}_attributes")]}),
+                ];
+                triples.as_slice()
             };
-            if projected_role(
-                descriptor,
-                &format!(
-                    "{}:{}",
-                    listed.role.declaring_relation(),
-                    listed.role.label()
-                ),
-            )?
-            .ordered()
-            {
+            if !player_documents.is_empty() && projected_role(descriptor, &role_name)?.ordered() {
                 return Err(evidence_error(
                     "query_plan_hydration_ordered_role",
                     "populated ordered roles require provider fetch ordinals",
                 ));
             }
-            let key = (index, player.to_owned());
-            let player = serde_json::json!({
-                "role":format!("{}:{}", listed.role.declaring_relation(), listed.role.label()),
-                "player_concept_id":player,
-                "player_concrete_type":value[format!("_role_{index}_type")],
-                "attributes":value[format!("_role_{index}_attributes")],
-            });
-            if let Some(previous) = players.insert(key, player.clone())
-                && previous != player
-            {
-                return Err(evidence_error(
-                    "query_plan_hydration_conflict",
-                    "one player IID has contradictory fetch evidence",
-                ));
+            for player in player_documents {
+                let iid = player.get("_iid").and_then(json_string).ok_or_else(|| {
+                    evidence_error("query_plan_hydration_iid", "player document omits its IID")
+                })?;
+                let key = (index, iid.to_owned());
+                let player = serde_json::json!({ "role": role_name, "player_concept_id": iid, "player_concrete_type": player["_type"], "attributes": player["attributes"] });
+                if let Some(previous) = players.insert(key, player.clone())
+                    && previous != player
+                {
+                    return Err(evidence_error(
+                        "query_plan_hydration_conflict",
+                        "one player IID has contradictory fetch evidence",
+                    ));
+                }
             }
         }
     }

@@ -20,7 +20,6 @@ use super::*;
 use crate::interceptor::{StagedWriteAuthority, V3CommitOutcome, V3PolicyPlan};
 use crate::transport::v3::{
     STAGED_WRITE_NOT_AUTHORIZED, StagedExecutor, StagedOutcome, StagedOutcomeKind,
-    staged_advertisement,
 };
 use type_bridge_orm::session::backend::BoundedAnswerLimits;
 
@@ -79,12 +78,12 @@ fn configured_v3_fixture(
         Some(timeout) => query.with_execution_timeout(timeout),
         None => query,
     });
-    let advertisement = staged_advertisement(&query.advertisement).expect("staged advertisement");
     let pipeline = Arc::new(pipeline);
     let executor = Arc::new(StagedExecutor::new(
         Arc::clone(&pipeline),
         Arc::clone(&query),
     ));
+    let advertisement = executor.advertisement().clone();
     let router = create_router_with_v2(pipeline, Arc::clone(&query));
     V3Fixture {
         advertisement,

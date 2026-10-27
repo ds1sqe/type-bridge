@@ -1012,7 +1012,8 @@ fn patterns_contain_typeql_builtin_function(patterns: &[QueryPattern]) -> bool {
         QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
             patterns_contain_typeql_builtin_function(patterns)
         }
-        QueryPattern::Isa { .. }
+        QueryPattern::Iid { .. }
+        | QueryPattern::Isa { .. }
         | QueryPattern::Has { .. }
         | QueryPattern::Links { .. }
         | QueryPattern::Value { .. }

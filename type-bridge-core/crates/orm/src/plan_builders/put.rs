@@ -23,6 +23,8 @@ use super::{BuiltPlan, PlanDraft, ValueTransport};
 /// values; `cleared` are the non-key ownerships to empty (omitted, or
 /// multi-valued and given); `attached` are the given multi-valued values.
 pub(crate) struct KeyedPut<'a> {
+    pub(crate) include_subtypes: bool,
+    pub(crate) return_document: bool,
     pub(crate) type_id: &'a TypeId,
     pub(crate) keys: &'a [(OwnsFactId, CanonicalValue)],
     pub(crate) fields: &'a [(OwnsFactId, CanonicalValue)],
@@ -46,6 +48,7 @@ pub(crate) fn keyed_entity_put(
         .map(|(field, value)| Ok((field.clone(), draft.value(value.clone())?)))
         .collect::<Result<Vec<_>, Diagnostic>>()?;
     let mut pipeline = vec![Stage::Put {
+        include_subtypes: put.include_subtypes,
         things: vec![InsertThing {
             binding: thing,
             type_id: put.type_id.clone(),
@@ -85,6 +88,7 @@ pub(crate) fn keyed_entity_put(
             .iter()
             .map(|(field, value)| {
                 Ok(AttachItem::Has {
+                    optional: false,
                     owner: thing,
                     field: field.clone(),
                     operand: draft.value(value.clone())?,
@@ -97,7 +101,9 @@ pub(crate) fn keyed_entity_put(
         bindings: vec![thing],
     });
     pipeline.push(Stage::Distinct);
-    pipeline.push(Stage::Fetch(ThingDocument::new(thing, Vec::new())));
+    if put.return_document {
+        pipeline.push(Stage::Fetch(ThingDocument::new(thing, Vec::new())));
+    }
     draft.finish(
         authority,
         pipeline,
@@ -105,7 +111,11 @@ pub(crate) fn keyed_entity_put(
             returns: WriteReturns::Rows,
         },
         QueryOutput::Rows {
-            columns: Vec::new(),
+            columns: if put.return_document {
+                Vec::new()
+            } else {
+                vec![thing]
+            },
         },
     )
 }

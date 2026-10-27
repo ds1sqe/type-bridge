@@ -95,6 +95,9 @@ fn observe_pattern(
     observed: &mut ObservedPlanInventory,
 ) {
     match pattern {
+        QueryPattern::Iid { .. } => {
+            panic!("native V3 IID patterns are outside the frozen V2 authoring inventory")
+        }
         QueryPattern::Isa {
             include_subtypes,
             type_id,
@@ -1395,8 +1398,11 @@ fn rust_authority_recomputes_and_decodes_every_shared_vector() {
             .iter()
             .map(|spelling| (*spelling).to_owned())
             .collect::<BTreeSet<_>>(),
-        source_contract_enum_spellings("QueryPattern"),
-        "the decoded corpus must exercise every pattern kind"
+        source_contract_enum_spellings("QueryPattern")
+            .difference(&BTreeSet::from(["iid".to_owned()]))
+            .cloned()
+            .collect(),
+        "the frozen V2 corpus exercises every V2 pattern; constructors refuse the V3 IID extension"
     );
     assert_eq!(
         observed

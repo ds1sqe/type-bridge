@@ -141,7 +141,7 @@ Member names are literal wire names, and each listed member is required.
 | reachable | `source:B`, `target:B`, `relation:T`, `role_from:R`, `role_to:R`, `min_depth:integer`, `max_depth:integer` |
 | function_call | `assigned:B`, `function:string`, `arguments:[O,...]` |
 | let | `binding:B`, `expr:expression` |
-| iid | `binding:B`, `iid:string` |
+| iid | `binding:B`, `iid:string` at the root, or `iid:O` in any match scope |
 
 Comparators are `contains`, `starts_with`, `ends_with`, `like`,
 `equal`, `not_equal`, `less`, `less_or_equal`, `greater`,
@@ -149,8 +149,9 @@ Comparators are `contains`, `starts_with`, `ends_with`, `like`,
 `0 <= min_depth <= max_depth <= 64` (the receiver's predicate-depth limit),
 with root-only reachability and expanded-hop node-budget checks. Functions use checked declarations and
 argument/return types. Nested boolean bodies and local functions retain the
-released read-pattern vocabulary: let and iid are V3 root-match patterns.
-An iid pattern names a canonical thing IID (`0x` followed by 1..256
+released read-pattern vocabulary. Let remains a root-match assignment; nested
+IID operands are the additive V3 exception described below.
+A root string iid pattern names a canonical thing IID (`0x` followed by 1..256
 hexadecimal digits) and constrains a mandatory binding that positive patterns
 of the same match type only as entities or relations; it adds
 `query.pattern.iid`.
@@ -171,10 +172,21 @@ type label. Undeclared or recursive calls are invalid. Pipeline reducers also
 admit `max`, `min`, `mean`, `median`, `std` under the read contract's domain and
 empty-stream checks.
 
+A nested IID predicate uses a string literal or input operand and requires
+`query.pattern.nested-iid`. The thing must have a positive entity/relation type
+in its lexical scope. Every present IID input is checked for canonical format
+before I/O. Literal root IID patterns keep their existing string representation
+and bytes; given operands lower to `iid($thing) == $input`, including inside
+`try`, `or` and `not`.
+
 ## Stages and output
 
-The first stage is match, insert or put. Match can occur only first. Writes may
-follow in any order before the read tail. Write stage payloads are nonempty.
+The first stage is match, insert or put. A read-only selected window may rematch
+under `query.pipeline.rematch`. Writes may follow in any order before the read
+tail. The pair `select`, `distinct` may also separate write stages under
+`query.pipeline.write-projection`; it retains only the selected binding and type
+scope. Other interleaved read tails and match after write are refused. Write
+stage payloads are nonempty.
 
 | `kind` | Additional members |
 | --- | --- |
@@ -183,6 +195,11 @@ follow in any order before the read tail. Write stage payloads are nonempty.
 | delete | `items:[Delete,...]` |
 | attach | `items:[Attach,...]` |
 | fetch | `thing:B`, `roles:[{"role":R,"required":boolean},...]` |
+
+Put may carry `include_subtypes:true`, requiring `query.write.put-subtypes`.
+It matches the declared type and its subtype domain while inserting the declared
+type on a miss. False is the default, omitted from canonical bytes, and retains
+exact `isa!` lookup semantics.
 
 A Thing has `binding`, `type_id`, `fields`, `players`. Fields are ordered pairs
 `[[ownership,operand],...]`; players are ordered pairs `[[role,binding],...]`.
@@ -212,8 +229,17 @@ An Attach is `{"kind":"has","owner":B,"field":ownership,"operand":O}` or
 `{"kind":"links","relation":B,"role":R,"player":B}`. It adds a value or a
 player to a bound thing and keeps the existing ones, which `update` (a
 replacement, valid only up to one value) cannot do for multi-valued
-ownerships and roles. Key ownerships cannot be attached. Targets, operands
-and roles are checked as for update. An attach adds `query.write.attach`.
+ownerships and roles. Key ownerships may be attached under
+`query.write.attach-key`; the provider enforces key uniqueness and cardinality.
+A replacement must clear the old key first. Targets, scalar domains and roles
+are checked against the declared ownership and plays facts. An attach adds
+`query.write.attach`.
+
+Each attach item may carry `optional:true`, requiring
+`query.write.optional-attach`. An absent scalar operand or absent role player
+skips that item through a native `try` insert. False is the default and is
+omitted from canonical bytes. Required targets remain mandatory. Optional
+`given` columns retain their `?` in the provider header.
 
 A fetch is `{"kind":"fetch","thing":B,"roles":[{"required":true,"role":R},...]}`
 and is normally the last stage. It answers one hydration document per row for a
@@ -228,6 +254,21 @@ and for the role at position `N`: `_role_N_iid`, `_role_N_type`,
 the row); an optional role's keys are absent when it is unfilled; several
 players of a role give one document per player combination. A fetch adds
 `query.fetch.thing`.
+
+A fetch may include `scalars:[{"key":"ordinal","binding":B},...]` under
+`query.fetch.scalar-fields`. Each binding must be a present typed scalar; keys
+are unique, cannot start with `_`, and cannot be `attributes`. Empty `scalars`
+is omitted. Missing or incorrectly typed scalar evidence is refused.
+
+A listed unordered role may carry `collect:true` under `query.fetch.role-lists`.
+Its output key is `_role_N_players`, a list of complete documents with `_iid`,
+`_type` and `attributes`. The list is present even when empty. This avoids
+Cartesian expansion across roles. False is the default and is omitted. Ordered
+roles are refused. The verifier rejects missing or extra lists, duplicate player
+IIDs within a list and types outside that role's player domain. Every nested
+player document counts toward the item budget, and all nested bytes count toward
+the byte budget; over-budget evidence is refused without truncation. Direct and
+staged execution use the same decoder and schema-derived verifier.
 
 An opt-in deletion snapshot permits a fetch immediately before a terminal
 `delete`, with `write` returning `rows` and empty output columns
@@ -918,3 +959,37 @@ roles can materialize; any populated ordered role is refused with
 `query_plan_hydration_ordered_role`, because the current fetch shape carries
 neither stored order nor repeated-player ordinals. This limit lifts when a
 provider-admitted ordered fetch shape supplies those witnesses.
+
+
+## Registry-backed ORM managers
+
+Rust dynamic and handwritten entity/relation managers expose `from_registry`
+constructors. They retain the registry and descriptor `Arc`s and build native
+plans under installed schema authority. Missing authority refuses with
+`manager_plan_authority_unavailable` before provider work. Projected CRUD caches
+its private manager registry once per installation; schema-less installations
+reconstruct authority there, while their public typed-read registry continues
+to refuse with `schema_authority_required`.
+
+Handwritten `delete_returning` and `delete_many_returning` use the same internal
+capture/delete/proof orchestration as projected and dynamic managers. They
+materialize models before commit, preserve input order, omit missing IIDs and
+run lifecycle hooks after commit. A failure leaves an owned operation rolled
+back or a borrowed transaction rollback-only.
+
+Native batches keep one sparse event matrix and one transaction. Relation
+insert misses are grouped only by first role and concrete player type, so each
+skeleton has a resolved player. Relation Put uses its existing key prerequisite:
+hits retain their IIDs and replace players; misses insert with their players.
+Entity Put and homogeneous relation hit/miss batches retain their statement
+counts. A mixed relation Put adds one mutation group, plus any additional first
+role/type miss groups, within the same client request and transaction.
+
+Nonliteral IID predicates nested under negation additionally require
+`query.pattern.negated-given-iid`. TypeDB 3.12.3 can close the provider
+connection for this shape, including a scalar `let` comparison inside a
+negated role-player disjunction. Its executor advertisement omits this
+capability and local admission refuses it as
+`query_plan_negated_given_iid_unsupported` before dispatch. The frozen
+`typedb-3.13.6/v1` profile admits it. Positive and optional IID predicates,
+and canonical literal IID filters used by managers, retain their lowering.

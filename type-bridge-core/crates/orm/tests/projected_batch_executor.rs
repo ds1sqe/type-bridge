@@ -1,3 +1,8 @@
+#[path = "support/native_batch.rs"]
+mod native_batch;
+mod native_batch_answer_item {
+    pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+}
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,8 +20,8 @@ use type_bridge_contract::temporal::CanonicalDuration;
 use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use type_bridge_core_lib::version::Version;
 use type_bridge_orm::session::backend::{
-    AnswerConsumer, AnswerControl, AnswerItem, BoundedAnswerLimits, BoundedAnswerReader,
-    BoundedAnswerStats, BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
+    AnswerConsumer, AnswerControl, BoundedAnswerLimits, BoundedAnswerReader, BoundedAnswerStats,
+    BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
 };
 use type_bridge_orm::{
     AnswerCancellation, ClassifiedCommitError, CommitFailureCertainty, Database,
@@ -142,12 +147,13 @@ impl TransactionOps for RecordingTransaction {
                 .pop_front()
                 .expect("unexpected projected batch provider call")
         };
+        let source = typeql.to_owned();
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits);
             reader.check_before_read()?;
             let mut deliver = |documents: Vec<Value>| -> Result<(), OrmError> {
                 for document in documents {
-                    if reader.accept(AnswerItem::Document(document), consumer)?
+                    if reader.accept(native_batch::item(&source, document), consumer)?
                         == AnswerControl::Stop
                     {
                         break;
@@ -175,7 +181,9 @@ impl TransactionOps for RecordingTransaction {
                 }
                 Response::Underreported(documents) => {
                     for document in documents {
-                        if consumer.accept(AnswerItem::Document(document))? == AnswerControl::Stop {
+                        if consumer.accept(native_batch::item(&source, document))?
+                            == AnswerControl::Stop
+                        {
                             break;
                         }
                     }
@@ -344,23 +352,6 @@ fn membership_create_with_reference(
             vec![string_value(installed, "identifier", identifier)],
         )],
         vec![(RoleId::new("membership", "member").unwrap(), vec![player])],
-    )
-    .unwrap()
-}
-
-fn roleless_membership_create(
-    installed: &InstalledRuntimeProjection,
-    identifier: &str,
-) -> ProjectedCreate {
-    let membership = type_id(TypeKind::Relation, "membership");
-    ProjectedCreate::try_new(
-        installed,
-        membership.clone(),
-        vec![(
-            field(&membership, "identifier"),
-            vec![string_value(installed, "identifier", identifier)],
-        )],
-        vec![],
     )
     .unwrap()
 }
@@ -1022,8 +1013,8 @@ async fn entity_insert_is_two_calls_and_correlates_shuffled_documents_by_ordinal
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 2);
     assert_eq!(state.calls[0].1.rows.len(), 2);
-    assert!(state.calls[0].0.contains("insert\n$thing isa person"));
-    assert!(state.calls[1].0.contains("let $actual-iid = iid($thing)"));
+    assert!(state.calls[0].0.contains("insert $thing1 isa person;"));
+    assert!(state.calls[1].0.contains("iid($thing1) == $target_iid;"));
     assert!(!state.calls[1].0.contains("iid $target-iid"));
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
@@ -1079,8 +1070,11 @@ async fn put_uses_one_multirow_key_pattern_and_preserves_hit_identity() {
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 3);
     assert_eq!(state.calls[1].1.rows.len(), 2);
-    assert_eq!(state.calls[1].0.matches("\nput\n").count(), 1);
-    assert!(state.calls[1].0.contains("has identifier == $put-key-0"));
+    assert_eq!(
+        state.calls[1].0.matches("put $thing1 isa! person").count(),
+        1
+    );
+    assert!(state.calls[1].0.contains("has identifier == $put_key_0"));
 }
 
 #[tokio::test]
@@ -1130,13 +1124,13 @@ async fn relation_insert_prereads_players_and_exact_binds_relation_before_links(
     assert!(
         state.calls[0]
             .0
-            .contains("$thing isa! person;\n  let $actual-iid = iid($thing)")
+            .contains("$thing3 isa! person; iid($thing3) == $wanted_iid;")
     );
     let attach = &state.calls[2].0;
-    let exact = attach.find("$thing isa! membership;").unwrap();
-    let links = attach.find("$thing links (member:").unwrap();
+    let exact = attach.find("$thing1 isa! membership;").unwrap();
+    let links = attach.find("$thing1 links (member:").unwrap();
     assert!(exact < links);
-    assert!(attach.contains("reduce $event-count = count groupby $ordinal, $thing, $thing-type"));
+    assert!(attach.contains("reduce $events3 = count groupby $ordinal0, $thing1;"));
     assert!(state.calls[2].1.rows.iter().flatten().any(
         |value| matches!(value, type_bridge_orm::session::backend::GivenValue::String(iid) if iid == "0xab")
     ));
@@ -1188,17 +1182,15 @@ async fn key_reference_uses_its_selected_key_and_scoped_roles_are_validated() {
             .1
             .variables
             .iter()
-            .position(|variable| variable == "reference-key-0")
+            .position(|variable| variable == "reference_key_0")
             .unwrap();
         assert!(matches!(
             &state.calls[0].1.rows[0][key_column],
             type_bridge_orm::session::backend::GivenValue::String(value) if value == "player-key"
         ));
-        assert!(
-            state.calls[0]
-                .0
-                .contains("$thing has identifier == $reference-key-0;")
-        );
+        assert!(state.calls[0].0.contains(
+            "$thing3 has identifier $key4; $key4 isa! identifier; $key4 == $reference_key_0;"
+        ));
     }
 
     let (database, state) = fixture(
@@ -1225,7 +1217,7 @@ async fn key_reference_uses_its_selected_key_and_scoped_roles_are_validated() {
         .execute(&database, &batch, control())
         .await
         .unwrap_err();
-    assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
+    assert_eq!(diagnostic.code().as_str(), "query_remote_v3_document_key");
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 3);
     assert_eq!(state.rollbacks, 1);
@@ -1279,24 +1271,16 @@ async fn mixed_iid_and_key_reference_arms_bind_shared_iid_evidence() {
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 3);
     let prerequisite = &state.calls[0].0;
-    assert_eq!(
-        prerequisite
-            .matches("let $actual-iid = iid($thing);")
-            .count(),
-        2
+    assert_eq!(prerequisite.matches("$thing3 isa! person;").count(), 2);
+    assert!(
+        prerequisite.contains("$route == 0; $thing3 isa! person; iid($thing3) == $wanted_iid;")
     );
-    assert!(prerequisite.contains(
-        "$route == 0;\n  $thing isa! person;\n  let $actual-iid = iid($thing);\n  $actual-iid == $wanted-iid;"
-    ));
-    assert!(prerequisite.contains(
-        "$route == 1;\n  $thing isa! person;\n  let $actual-iid = iid($thing);\n  $thing has identifier == $reference-key-1;"
-    ));
-    assert!(prerequisite.contains("\"iid\": $actual-iid"));
-    assert!(!prerequisite.contains("\"iid\": iid($thing)"));
+    assert!(prerequisite.contains("$route == 1; $thing3 isa! person; $thing3 has identifier $key4; $key4 isa! identifier; $key4 == $reference_key_1;"));
+    assert!(prerequisite.ends_with("select $kind0, $ordinal1, $reference2, $thing3;"));
 }
 
 #[tokio::test]
-async fn relation_put_is_three_calls_with_one_multirow_put_and_exact_replacement() {
+async fn mixed_relation_put_is_four_calls_and_keeps_key_hit_identity() {
     let installed = installed();
     let membership = type_id(TypeKind::Relation, "membership");
     let batch = ProjectedBatch::try_new(
@@ -1321,10 +1305,8 @@ async fn relation_put_is_three_calls_with_one_multirow_put_and_exact_replacement
                 json!({"kind": 0, "ordinal": 0, "iid": "0x30", "type": "membership"}),
                 json!({"kind": 1, "ordinal": 0, "reference_ordinal": 0, "iid": "0x10", "type": "person"}),
             ]),
-            Response::Documents(vec![
-                json!({"ordinal": 1, "iid": "0x31"}),
-                json!({"ordinal": 0, "iid": "0x30"}),
-            ]),
+            Response::Documents(vec![json!({"ordinal": 0, "iid": "0x30"})]),
+            Response::Documents(vec![json!({"ordinal": 1, "iid": "0x31"})]),
             Response::Documents(vec![
                 scoped_document(1, "0x31", "miss", "0x11"),
                 scoped_document(0, "0x30", "hit", "0x10"),
@@ -1346,27 +1328,27 @@ async fn relation_put_is_three_calls_with_one_multirow_put_and_exact_replacement
         ["0x30", "0x31"]
     );
     let state = state.lock().unwrap();
-    assert_eq!(state.calls.len(), 3);
+    assert_eq!(state.calls.len(), 4);
     assert_eq!(state.calls[0].1.rows.len(), 4);
-    let prerequisite = &state.calls[0].0;
-    assert!(prerequisite.contains(
-        "$kind == 0;\n  $thing isa! membership, has identifier == $put-key-0;\n  let $actual-iid = iid($thing);"
-    ));
-    assert_eq!(
-        prerequisite
-            .matches("let $actual-iid = iid($thing);")
-            .count(),
-        2
+    assert!(
+        state.calls[0]
+            .0
+            .contains("$kind == 0; $thing3 isa! membership; $thing3 has identifier $key4;")
     );
-    assert!(prerequisite.contains("\"iid\": $actual-iid"));
-    assert_eq!(state.calls[1].0.matches("\nput\n").count(), 1);
-    assert_eq!(state.calls[1].1.rows.len(), 2);
-    assert!(state.calls[1].0.contains("$thing isa! membership;"));
+    assert!(state.calls[1].0.contains("$thing1 isa! membership;"));
+    assert_eq!(state.calls[1].1.rows.len(), 1);
     assert!(
         state.calls[1]
             .0
-            .contains("delete try { links (member: $old-player-0) of $thing; }")
+            .contains("delete try { links (member: $PlanPlayers4x0) of $thing1; }")
     );
+    assert!(
+        state.calls[2]
+            .0
+            .contains("insert $thing1 isa membership, links (member: $first2);")
+    );
+    assert_eq!(state.calls[2].1.rows.len(), 1);
+    assert!(state.calls[3].0.contains("\"_role_0_players\""));
     assert!(state.responses.is_empty());
 }
 
@@ -1408,13 +1390,13 @@ async fn relation_update_is_three_calls_and_clears_keys_and_roles() {
         .unwrap();
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 3);
-    assert!(state.calls[1].0.contains("has $old-attribute-0 of $thing"));
+    assert!(state.calls[1].0.contains("has $PlanHas1x0 of $thing1"));
     assert!(
         state.calls[1]
             .0
-            .contains("delete try { links (member: $old-player-0) of $thing; }")
+            .contains("delete try { links (member: $PlanPlayers4x0) of $thing1; }")
     );
-    assert!(state.calls[2].0.contains("$thing links (member:"));
+    assert!(state.calls[2].0.contains("$thing1 links (member:"));
     assert!(state.responses.is_empty());
 }
 
@@ -1453,8 +1435,8 @@ async fn relation_delete_is_one_exact_idempotent_call() {
     );
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 1);
-    assert!(state.calls[0].0.contains("$thing isa! membership;"));
-    assert!(state.calls[0].0.contains("delete try { $thing; }"));
+    assert!(state.calls[0].0.contains("$thing1 isa! membership;"));
+    assert!(state.calls[0].0.contains("delete $thing1;"));
     assert!(!state.calls[0].0.contains(" links "));
     assert!(state.responses.is_empty());
 }
@@ -1491,7 +1473,7 @@ async fn delete_is_one_idempotent_call_and_accepts_absent_targets() {
     );
     let state = state.lock().unwrap();
     assert_eq!(state.calls.len(), 1);
-    assert!(state.calls[0].0.contains("delete try { $thing; }"));
+    assert!(state.calls[0].0.contains("delete $thing1;"));
     assert_eq!(state.commits, 1);
 }
 
@@ -1636,8 +1618,8 @@ async fn update_is_two_calls_clears_keys_and_rejects_a_changed_target_iid() {
             &state.calls[0].1.rows[0][1],
             type_bridge_orm::session::backend::GivenValue::String(iid) if iid == "0xab"
         ));
-        assert!(state.calls[0].0.contains("$thing isa! person;"));
-        assert!(state.calls[0].0.contains("has $old-attribute-0 of $thing"));
+        assert!(state.calls[0].0.contains("$thing1 isa! person;"));
+        assert!(state.calls[0].0.contains("has $PlanHas1x0 of $thing1"));
     }
 
     let (database, state) = fixture(
@@ -1883,7 +1865,7 @@ fn first_middle_last_validation_rejects_entity_and_relation_rows_without_io() {
         let relation_rows = (0..3)
             .map(|ordinal| {
                 ProjectedBatchRow::Create(if ordinal == failure_ordinal {
-                    roleless_membership_create(&installed, &format!("invalid-{ordinal}"))
+                    person_create(&installed, &format!("invalid-{ordinal}"))
                 } else {
                     membership_create(
                         &installed,
@@ -1900,7 +1882,7 @@ fn first_middle_last_validation_rejects_entity_and_relation_rows_without_io() {
             relation_rows,
         )
         .unwrap_err();
-        assert_eq!(diagnostic.code().as_str(), "relation_requires_role_player");
+        assert_eq!(diagnostic.code().as_str(), "batch_row_model_mismatch");
         assert!(
             diagnostic
                 .path()
@@ -2267,4 +2249,227 @@ async fn reply_bytes_and_projected_structure_are_bounded_before_publication() {
         "projected_batch_output_resource_limit"
     );
     assert_owned_atomic_failure(&state, 3);
+}
+
+#[tokio::test]
+async fn native_batch_splits_five_thousand_rows_in_one_atomic_transaction() {
+    for fail_last in [false, true] {
+        let installed = installed();
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            type_id(TypeKind::Entity, "person"),
+            ProjectedBatchOperation::Insert,
+            (0..5_000)
+                .map(|ordinal| {
+                    ProjectedBatchRow::Create(person_create(&installed, &format!("p-{ordinal}")))
+                })
+                .collect(),
+        )
+        .unwrap();
+        let mut responses = Vec::new();
+        for range in [0..4096, 4096..5000] {
+            responses.push(Response::Documents(range.map(|ordinal| json!({"ordinal":ordinal, "iid":format!("0x{:04x}", ordinal + 1)})).collect()));
+        }
+        for range in [0..4096, 4096..5000] {
+            let docs = range
+                .clone()
+                .map(|ordinal| {
+                    person_document(
+                        ordinal,
+                        &format!("0x{:04x}", ordinal + 1),
+                        &format!("p-{ordinal}"),
+                    )
+                })
+                .collect();
+            responses.push(if fail_last && range.start == 4096 {
+                Response::ProviderAfter(docs)
+            } else {
+                Response::Documents(docs)
+            });
+        }
+        let (database, state) = fixture(
+            responses,
+            Version::new(3, 13, 6),
+            true,
+            CommitBehavior::Success,
+        );
+        let result = ProjectedBatchExecutor::new(&installed)
+            .execute(&database, &batch, control())
+            .await;
+        if fail_last {
+            assert_eq!(
+                result.unwrap_err().code().as_str(),
+                "provider_operation_failed"
+            );
+        } else {
+            let ProjectedBatchResult::Things(things) = result.unwrap() else {
+                panic!("insert result");
+            };
+            assert_eq!(things.len(), 5000);
+            for (ordinal, thing) in things.iter().enumerate() {
+                assert_eq!(thing.iid(), format!("0x{:04x}", ordinal + 1));
+            }
+        }
+        let state = state.lock().unwrap();
+        assert_eq!(state.opens, [TxType::Write]);
+        assert_eq!(
+            state
+                .calls
+                .iter()
+                .map(|(_, rows)| rows.rows.len())
+                .collect::<Vec<_>>(),
+            [4096, 904, 4096, 904]
+        );
+        assert_eq!(
+            (state.commits, state.rollbacks),
+            if fail_last { (0, 1) } else { (1, 0) }
+        );
+        assert!(state.responses.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn homogeneous_relation_put_hits_and_misses_keep_three_provider_calls() {
+    for hit in [false, true] {
+        let installed = installed();
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            type_id(TypeKind::Relation, "membership"),
+            ProjectedBatchOperation::Put,
+            vec![ProjectedBatchRow::Create(membership_create(
+                &installed, "m", "0x10",
+            ))],
+        )
+        .unwrap();
+        let mut preread =
+            vec![json!({"kind":1,"ordinal":0,"reference_ordinal":0,"iid":"0x10","type":"person"})];
+        if hit {
+            preread.push(json!({"kind":0,"ordinal":0,"iid":"0x30","type":"membership"}));
+        }
+        let (database, state) = fixture(
+            vec![
+                Response::Documents(preread),
+                Response::Documents(vec![json!({"ordinal":0,"iid":"0x30"})]),
+                Response::Documents(vec![membership_document(0, "0x30", "m", "0x10")]),
+            ],
+            Version::new(3, 13, 6),
+            true,
+            CommitBehavior::Success,
+        );
+        let ProjectedBatchResult::Things(things) = ProjectedBatchExecutor::new(&installed)
+            .execute(&database, &batch, control())
+            .await
+            .unwrap()
+        else {
+            panic!("put result");
+        };
+        assert_eq!(things[0].iid(), "0x30");
+        let state = state.lock().unwrap();
+        assert_eq!(state.calls.len(), 3);
+        assert_eq!(
+            state.calls[1].0.contains("insert $thing1 isa membership"),
+            !hit
+        );
+        assert_eq!((state.commits, state.rollbacks), (1, 0));
+    }
+}
+
+#[tokio::test]
+async fn returning_batch_captures_all_chunks_before_any_deletion() {
+    let installed = installed();
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        ProjectedBatchOperation::Delete,
+        (0..5000)
+            .map(|ordinal| ProjectedBatchRow::Delete {
+                iid: format!("0x{:04x}", ordinal + 1),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let mut responses = Vec::new();
+    for range in [0..4096, 4096..5000] {
+        responses.push(Response::Documents(
+            range
+                .map(|ordinal| {
+                    person_document(
+                        ordinal,
+                        &format!("0x{:04x}", ordinal + 1),
+                        &format!("p-{ordinal}"),
+                    )
+                })
+                .collect(),
+        ));
+    }
+    responses.extend([Response::Documents(vec![]), Response::Documents(vec![])]);
+    let (database, state) = fixture(
+        responses,
+        Version::new(3, 13, 6),
+        true,
+        CommitBehavior::Success,
+    );
+    let ProjectedBatchResult::Things(things) = ProjectedBatchExecutor::new(&installed)
+        .returning_deleted()
+        .execute(&database, &batch, control())
+        .await
+        .unwrap()
+    else {
+        panic!("returning deletion");
+    };
+    assert_eq!(things.len(), 5000);
+    for (ordinal, thing) in things.iter().enumerate() {
+        assert!(thing.is_deleted());
+        assert_eq!(thing.iid(), format!("0x{:04x}", ordinal + 1));
+    }
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 4);
+    assert!(
+        state.calls[..2]
+            .iter()
+            .all(|(query, _)| query.contains("fetch") && !query.contains("delete"))
+    );
+    assert!(
+        state.calls[2..]
+            .iter()
+            .all(|(query, _)| query.contains("delete"))
+    );
+    assert_eq!(
+        state
+            .calls
+            .iter()
+            .map(|(_, rows)| rows.rows.len())
+            .collect::<Vec<_>>(),
+        [4096, 904, 4096, 904]
+    );
+    assert_eq!((state.commits, state.rollbacks), (1, 0));
+}
+
+#[tokio::test]
+async fn returning_capture_keeps_the_first_malformed_item_over_a_later_provider_failure() {
+    let installed = installed();
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        ProjectedBatchOperation::Delete,
+        vec![ProjectedBatchRow::Delete { iid: "0x10".into() }],
+    )
+    .unwrap();
+    let mut malformed = person_document(0, "0x10", "p");
+    malformed.as_object_mut().unwrap().remove("attributes");
+    let (database, state) = fixture(
+        vec![Response::ProviderAfter(vec![malformed])],
+        Version::new(3, 13, 6),
+        true,
+        CommitBehavior::Success,
+    );
+    let error = ProjectedBatchExecutor::new(&installed)
+        .returning_deleted()
+        .execute(&database, &batch, control())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "query_remote_v3_document_value");
+    let state = state.lock().unwrap();
+    assert_eq!(state.calls.len(), 1);
+    assert_eq!((state.commits, state.rollbacks), (0, 1));
 }

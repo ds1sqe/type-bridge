@@ -29,6 +29,15 @@ pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3"
 pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
 /// Read-only re-match after a selected window, retaining only visible bindings.
 pub const CAP_QUERY_PIPELINE_REMATCH: &str = "query.pipeline.rematch";
+/// Nonliteral IID predicates under negation; TypeDB 3.12 cannot safely execute them.
+pub const CAP_NEGATED_GIVEN_IID: &str = "query.pattern.negated-given-iid";
+
+/// Whether a frozen semantic profile admits nonliteral IID filters under negation.
+#[must_use]
+pub fn supports_negated_given_iid(profile: Option<&str>) -> bool {
+    profile == Some("typedb-3.13.6/v1")
+}
+
 /// String scalar values above the default one-MiB byte ceiling.
 pub const CAP_QUERY_INPUT_WIDE_STRINGS: &str = "query.input.wide-strings";
 
@@ -144,6 +153,7 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
             [
                 "query.plan.v3",
                 CAP_QUERY_PIPELINE_REMATCH,
+                CAP_NEGATED_GIVEN_IID,
                 CAP_QUERY_INPUT_WIDE_STRINGS,
                 "query.write.insert",
                 "query.write.update",
@@ -151,6 +161,9 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
                 "query.write.delete-snapshot",
                 "query.write.put",
                 "query.fetch.thing",
+                "query.fetch.scalar-fields",
+                "query.fetch.role-lists",
+                "query.pipeline.write-projection",
                 "query.write.attach",
                 "query.let",
                 "query.expr.add",
@@ -167,6 +180,10 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
                 "query.expr.max",
                 "query.expr.length",
                 "query.expr.iid",
+                "query.pattern.nested-iid",
+                "query.write.put-subtypes",
+                "query.write.optional-attach",
+                "query.write.attach-key",
             ]
             .map(|name| CapabilityId::new(name).expect("static capability")),
         )
@@ -250,17 +267,23 @@ pub enum DeleteItem {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AttachItem {
-    /// Add one value of a non-key ownership; existing values stay.
+    /// Add one ownership value; existing values stay.
     Has {
+        /// Skip this attachment when its operand is absent.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
         /// Bound owner.
         owner: BindingId,
-        /// Declared ownership; key fields cannot be attached.
+        /// Declared ownership; key additions carry their own capability.
         field: OwnsFactId,
         /// Value to add.
         operand: QueryOperand,
     },
     /// Add one player to a declared role; existing players stay.
     Links {
+        /// Skip this attachment when its player is absent.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
         /// Bound relation.
         relation: BindingId,
         /// Declared role.
@@ -274,6 +297,9 @@ pub enum AttachItem {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct DocumentRole {
+    /// Collect unordered players in one list instead of expanding rows.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub collect: bool,
     /// Declared role.
     pub role: RoleId,
     /// Whether the role must be filled; an unfilled required role drops
@@ -285,8 +311,31 @@ impl DocumentRole {
     /// One listed role.
     #[must_use]
     pub const fn new(role: RoleId, required: bool) -> Self {
-        Self { role, required }
+        Self {
+            role,
+            required,
+            collect: false,
+        }
     }
+
+    /// List unordered players as complete documents without Cartesian expansion.
+    #[must_use]
+    pub const fn collected(role: RoleId) -> Self {
+        Self {
+            role,
+            required: false,
+            collect: true,
+        }
+    }
+}
+
+/// One present typed scalar included in a thing document.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DocumentScalar {
+    /// Named output field, distinct from the hydration keys.
+    pub key: QueryVariable,
+    /// Present scalar binding to fetch.
+    pub binding: BindingId,
 }
 
 /// The hydration document of one thing: its IID, exact type label, every
@@ -299,6 +348,9 @@ impl DocumentRole {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[non_exhaustive]
 pub struct ThingDocument {
+    /// Additional typed scalar fields, such as a batch ordinal.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub scalars: Vec<DocumentScalar>,
     /// Entity or relation binding to describe.
     pub thing: BindingId,
     /// Listed roles, in key order.
@@ -309,7 +361,11 @@ impl ThingDocument {
     /// Describe one thing and the players of `roles`.
     #[must_use]
     pub const fn new(thing: BindingId, roles: Vec<DocumentRole>) -> Self {
-        Self { thing, roles }
+        Self {
+            thing,
+            roles,
+            scalars: Vec::new(),
+        }
     }
 }
 
@@ -346,6 +402,9 @@ pub enum Stage {
     },
     /// Match or create things.
     Put {
+        /// Reuse matching subtype instances; absent/false keeps exact matching.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        include_subtypes: bool,
         /// Things matched or created together.
         things: Vec<InsertThing>,
     },
@@ -525,10 +584,29 @@ impl QueryPlanV3 {
 
     /// Validate with caller-selected limits, which never enter canonical bytes.
     pub fn new_with_limits(
-        spec: PlanSpec,
+        mut spec: PlanSpec,
         schema: &DeclaredSchema,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
+        for stage in &mut spec.pipeline {
+            if let Stage::Match { patterns } = stage {
+                for pattern in patterns {
+                    if let Pattern::Read(QueryPattern::Iid {
+                        binding,
+                        iid:
+                            QueryOperand::Literal {
+                                value: crate::value::CanonicalValue::String(iid),
+                            },
+                    }) = pattern
+                    {
+                        *pattern = Pattern::Iid {
+                            binding: *binding,
+                            iid: iid.as_str().to_owned(),
+                        };
+                    }
+                }
+            }
+        }
         limits.validate_v3().map_err(|error| {
             let mut diagnostic = failure(
                 DiagnosticCategory::ResourceLimit,
@@ -653,7 +731,7 @@ impl QueryPlanV3 {
                 }
             }
             let operands: Vec<&QueryOperand> = match stage {
-                Stage::Insert { things } | Stage::Put { things } => things
+                Stage::Insert { things } | Stage::Put { things, .. } => things
                     .iter()
                     .flat_map(|thing| thing.fields.iter().map(|(_, operand)| operand))
                     .collect(),
@@ -687,9 +765,55 @@ impl QueryPlanV3 {
                 Stage::Insert { .. } => "query.write.insert",
                 Stage::Update { .. } => "query.write.update",
                 Stage::Delete { .. } => "query.write.delete",
-                Stage::Put { .. } => "query.write.put",
-                Stage::Fetch(_) => "query.fetch.thing",
-                Stage::Attach { .. } => "query.write.attach",
+                Stage::Put {
+                    include_subtypes, ..
+                } => {
+                    if *include_subtypes {
+                        insert_capability(&mut required_capabilities, "query.write.put-subtypes")?;
+                    }
+                    "query.write.put"
+                }
+                Stage::Fetch(document) => {
+                    if !document.scalars.is_empty() {
+                        insert_capability(&mut required_capabilities, "query.fetch.scalar-fields")?;
+                    }
+                    if document.roles.iter().any(|role| role.collect) {
+                        insert_capability(&mut required_capabilities, "query.fetch.role-lists")?;
+                    }
+                    "query.fetch.thing"
+                }
+                Stage::Attach { items } => {
+                    for item in items {
+                        match item {
+                            AttachItem::Has {
+                                field, optional, ..
+                            } => {
+                                if *optional {
+                                    insert_capability(
+                                        &mut required_capabilities,
+                                        "query.write.optional-attach",
+                                    )?;
+                                }
+                                let key = AnnotationFactId::new(
+                                    AnnotationSubjectId::Owns(field.clone()),
+                                    AnnotationKindId::Key,
+                                );
+                                if schema.fact(&SchemaFactId::Annotation(key)).is_some() {
+                                    insert_capability(
+                                        &mut required_capabilities,
+                                        "query.write.attach-key",
+                                    )?;
+                                }
+                            }
+                            AttachItem::Links { optional: true, .. } => insert_capability(
+                                &mut required_capabilities,
+                                "query.write.optional-attach",
+                            )?,
+                            _ => {}
+                        }
+                    }
+                    "query.write.attach"
+                }
                 _ => continue,
             };
             insert_capability(&mut required_capabilities, capability)?;
@@ -700,6 +824,14 @@ impl QueryPlanV3 {
             .any(|pair| matches!(pair, [Stage::Fetch(_), Stage::Delete { .. }]))
         {
             insert_capability(&mut required_capabilities, "query.write.delete-snapshot")?;
+        }
+        if spec.pipeline.windows(3).any(|stages| {
+            matches!(&stages[..2], [Stage::Select { .. }, Stage::Distinct]) && stages[2].is_write()
+        }) {
+            insert_capability(
+                &mut required_capabilities,
+                "query.pipeline.write-projection",
+            )?;
         }
         let plan = Self {
             bindings: spec.bindings,
@@ -946,7 +1078,7 @@ fn has_wide_strings(spec: &PlanSpec) -> bool {
                 Pattern::Let { expr: value, .. } => expr(value),
                 Pattern::Iid { .. } => false,
             }),
-            Stage::Insert { things } | Stage::Put { things } => things
+            Stage::Insert { things } | Stage::Put { things, .. } => things
                 .iter()
                 .flat_map(|thing| &thing.fields)
                 .any(|(_, value)| operand(value)),
@@ -1005,6 +1137,32 @@ fn validate_stages(
                 "query_plan_stage_limit",
                 "plan stages exceed the structural ceiling",
             ));
+        }
+        if reading && stage.is_write() {
+            if !matches!(
+                read_tail.as_slice(),
+                [ReadStage::Select { .. }, ReadStage::Distinct]
+            ) || !matches!(spec.operation, Operation::Write { .. })
+            {
+                return Err(invalid(
+                    "query_plan_stage_order",
+                    "only select followed by distinct may separate write stages",
+                ));
+            }
+            (mandatory, optional) = validate_v3_read_tail(
+                &read_tail,
+                mandatory,
+                optional,
+                &referenced,
+                spec.bindings.len(),
+                limits.structural,
+                &scalar_types,
+            )?;
+            types.retain(|binding, _| mandatory.contains(binding) || optional.contains(binding));
+            scalar_types
+                .retain(|binding, _| mandatory.contains(binding) || optional.contains(binding));
+            read_tail.clear();
+            reading = false;
         }
         match stage {
             Stage::Match { patterns } => {
@@ -1134,6 +1292,17 @@ fn validate_stages(
                     }
                 }
                 validate_comparisons(&reads, &scalar_types, &spec.inputs, &index)?;
+                if reads.iter().any(contains_nested_iid) {
+                    validate_nested_iids(
+                        &reads,
+                        &types,
+                        &mandatory,
+                        &index,
+                        &spec.inputs,
+                        spec.given_rows.as_deref(),
+                        &mut BTreeSet::new(),
+                    )?;
+                }
                 for pattern in patterns {
                     if let Pattern::Iid { binding, iid } = pattern {
                         check_binding(*binding, spec.bindings.len())?;
@@ -1162,7 +1331,7 @@ fn validate_stages(
                     }
                 }
             }
-            Stage::Insert { things } | Stage::Put { things } => {
+            Stage::Insert { things } | Stage::Put { things, .. } => {
                 if reading {
                     return Err(invalid(
                         "query_plan_stage_order",
@@ -1193,8 +1362,26 @@ fn validate_stages(
                             "relation insert and put require at least one player",
                         ));
                     }
-                    index.concrete(&thing.type_id)?;
-                    types.insert(thing.binding, BTreeSet::from([thing.type_id.clone()]));
+                    let mut candidates = BTreeSet::from([thing.type_id.clone()]);
+                    if matches!(
+                        stage,
+                        Stage::Put {
+                            include_subtypes: true,
+                            ..
+                        }
+                    ) {
+                        index.exists(&thing.type_id)?;
+                        for fact in index.schema.facts() {
+                            if let SchemaFact::Type(fact) = fact
+                                && index.ancestors(fact.id()).contains(&thing.type_id)
+                            {
+                                candidates.insert(fact.id().clone());
+                            }
+                        }
+                    } else {
+                        index.concrete(&thing.type_id)?;
+                    }
+                    types.insert(thing.binding, candidates);
                     referenced.insert(thing.binding);
                 }
                 for thing in things {
@@ -1256,20 +1443,63 @@ fn validate_stages(
                             owner,
                             field,
                             operand,
+                            optional: allow_absent,
                         } => {
                             bound(*owner, &mandatory)?;
-                            // A key is fixed at creation, as for update.
-                            index.ownership(*owner, field, &types, true)?;
-                            validate_operand(operand, &mandatory, &optional, spec.inputs.len())?;
-                            index.field_value(field, operand, &scalar_types, &spec.inputs)?;
+                            index.ownership(*owner, field, &types, false)?;
+                            if let QueryOperand::Input { column } = operand
+                                && *allow_absent
+                            {
+                                validate_operand(
+                                    operand,
+                                    &mandatory,
+                                    &optional,
+                                    spec.inputs.len(),
+                                )?;
+                                if index.attribute_domain(field.attribute())
+                                    != Some(spec.inputs[usize::from(column.get())].value_type())
+                                {
+                                    return Err(invalid(
+                                        "query_plan_write_value_type",
+                                        "write operand differs from the ownership scalar domain",
+                                    ));
+                                }
+                            } else if let QueryOperand::Binding { binding } = operand
+                                && *allow_absent
+                                && optional.contains(binding)
+                            {
+                                let domain = types
+                                    .get(binding)
+                                    .and_then(|types| index.scalar_domain(types))
+                                    .ok_or_else(|| {
+                                        invalid(
+                                            "query_plan_attach_operand_type",
+                                            "optional attachment requires a typed scalar",
+                                        )
+                                    })?;
+                                let mut local = scalar_types.clone();
+                                local.insert(*binding, domain);
+                                index.field_value(field, operand, &local, &spec.inputs)?;
+                            } else {
+                                validate_operand(
+                                    operand,
+                                    &mandatory,
+                                    &optional,
+                                    spec.inputs.len(),
+                                )?;
+                                index.field_value(field, operand, &scalar_types, &spec.inputs)?;
+                            }
                         }
                         AttachItem::Links {
                             relation,
                             role,
                             player,
+                            optional: allow_absent,
                         } => {
                             bound(*relation, &mandatory)?;
-                            bound(*player, &mandatory)?;
+                            if !(*allow_absent && optional.contains(player)) {
+                                bound(*player, &mandatory)?;
+                            }
                             index.role(*relation, role, *player, &types)?;
                         }
                     }
@@ -1374,7 +1604,22 @@ fn validate_stages(
                     ));
                 }
                 check_binding(document.thing, spec.bindings.len())?;
-                nonempty(document.roles.len() + 1, limits, nodes)?;
+                nonempty(
+                    document.roles.len() + document.scalars.len() + 1,
+                    limits,
+                    nodes,
+                )?;
+                let mut keys = BTreeSet::new();
+                for scalar in &document.scalars {
+                    check_binding(scalar.binding, spec.bindings.len())?;
+                    let key = scalar.key.as_str();
+                    if key.starts_with('_') || key == "attributes" || !keys.insert(key) {
+                        return Err(invalid(
+                            "query_plan_fetch_scalar_key",
+                            "scalar fetch keys must be unique and distinct from hydration keys",
+                        ));
+                    }
+                }
                 for (index, role) in document.roles.iter().enumerate() {
                     if document.roles[..index]
                         .iter()
@@ -1416,6 +1661,17 @@ fn validate_stages(
                 (mandatory, optional)
             });
         index.thing_document(document, answer_mandatory, answer_optional, &types)?;
+        for scalar in &document.scalars {
+            if !answer_mandatory.contains(&scalar.binding)
+                || answer_optional.contains(&scalar.binding)
+                || !scalar_types.contains_key(&scalar.binding)
+            {
+                return Err(invalid(
+                    "query_plan_fetch_scalar_binding",
+                    "scalar fetch fields require present scalar bindings",
+                ));
+            }
+        }
         let profile = crate::semantic_profile::SemanticProfile::resolve(
             spec.managed_semantics
                 .as_fingerprint()
@@ -1423,7 +1679,11 @@ fn validate_stages(
                 .expect("managed schema fingerprints carry a profile"),
         )?;
         return Ok(Some(FetchDocumentShape::new(
-            &index, document, &types, &profile,
+            &index,
+            document,
+            &types,
+            &scalar_types,
+            &profile,
         )));
     } else if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
     {
@@ -1846,6 +2106,14 @@ impl<'a> SchemaIndex<'a> {
                 listed.role.declaring_relation().as_str(),
             )?;
             let relates = RelatesFactId::new(owner.clone(), listed.role.clone())?;
+            if listed.collect
+                && matches!(self.schema.fact(&SchemaFactId::Relates(relates.clone())), Some(SchemaFact::Relates(fact)) if fact.collection_mode() == crate::schema::CollectionMode::OrderedList)
+            {
+                return Err(invalid(
+                    "query_plan_fetch_ordered_role",
+                    "collected role documents require unordered roles",
+                ));
+            }
             if self.schema.fact(&SchemaFactId::Relates(relates)).is_none() {
                 return Err(invalid(
                     "query_plan_undeclared_relates",
@@ -2094,11 +2362,15 @@ impl DeleteWire {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum AttachWire {
     Has {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
         owner: u16,
         field: OwnsWire,
         operand: QueryOperandWire,
     },
     Links {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
         relation: u16,
         role: RoleIdWire,
         player: u16,
@@ -2108,19 +2380,23 @@ impl AttachWire {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<AttachItem, Diagnostic> {
         Ok(match self {
             Self::Has {
+                optional,
                 owner,
                 field,
                 operand,
             } => AttachItem::Has {
+                optional,
                 owner: BindingId::new(owner)?,
                 field: field.rebuild()?,
                 operand: operand.rebuild_with_limits(limits)?,
             },
             Self::Links {
+                optional,
                 relation,
                 role,
                 player,
             } => AttachItem::Links {
+                optional,
                 relation: BindingId::new(relation)?,
                 role: role.rebuild()?,
                 player: BindingId::new(player)?,
@@ -2131,11 +2407,23 @@ impl AttachWire {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WriteWire {
-    Attach { items: Vec<AttachWire> },
-    Insert { things: Vec<ThingWire> },
-    Update { sets: Vec<SetWire> },
-    Delete { items: Vec<DeleteWire> },
-    Put { things: Vec<ThingWire> },
+    Attach {
+        items: Vec<AttachWire>,
+    },
+    Insert {
+        things: Vec<ThingWire>,
+    },
+    Update {
+        sets: Vec<SetWire>,
+    },
+    Delete {
+        items: Vec<DeleteWire>,
+    },
+    Put {
+        things: Vec<ThingWire>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_subtypes: bool,
+    },
 }
 impl WriteWire {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<Stage, Diagnostic> {
@@ -2152,7 +2440,11 @@ impl WriteWire {
                     .map(|value| value.rebuild(limits))
                     .collect::<Result<_, _>>()?,
             },
-            Self::Put { things } => Stage::Put {
+            Self::Put {
+                things,
+                include_subtypes,
+            } => Stage::Put {
+                include_subtypes,
                 things: things
                     .into_iter()
                     .map(|value| value.rebuild(limits))
@@ -2215,7 +2507,9 @@ fn decode_stage(
                             binding: BindingId::new(wire.binding)?,
                             expr: wire.expr.rebuild(limits)?,
                         })
-                    } else if value.get("kind").and_then(serde_json::Value::as_str) == Some("iid") {
+                    } else if value.get("kind").and_then(serde_json::Value::as_str) == Some("iid")
+                        && value.get("iid").is_some_and(serde_json::Value::is_string)
+                    {
                         let wire: IidWire = serde_json::from_value(value).map_err(|_| {
                             invalid("invalid_canonical_value", "invalid iid pattern")
                         })?;
@@ -2236,12 +2530,22 @@ fn decode_stage(
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RoleWire {
+            #[serde(default)]
+            collect: bool,
             required: bool,
             role: RoleIdWire,
         }
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
+        struct ScalarWire {
+            key: String,
+            binding: u16,
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct FetchWire {
+            #[serde(default)]
+            scalars: Vec<ScalarWire>,
             kind: String,
             roles: Vec<RoleWire>,
             thing: u16,
@@ -2249,13 +2553,28 @@ fn decode_stage(
         let wire: FetchWire = serde_json::from_value(value)
             .map_err(|_| invalid("invalid_canonical_value", "invalid fetch stage"))?;
         debug_assert_eq!(wire.kind, "fetch");
-        return Ok(Stage::Fetch(ThingDocument::new(
+        let mut document = ThingDocument::new(
             BindingId::new(wire.thing)?,
             wire.roles
                 .into_iter()
-                .map(|role| Ok(DocumentRole::new(role.role.rebuild()?, role.required)))
+                .map(|role| {
+                    let mut listed = DocumentRole::new(role.role.rebuild()?, role.required);
+                    listed.collect = role.collect;
+                    Ok(listed)
+                })
                 .collect::<Result<_, Diagnostic>>()?,
-        )));
+        );
+        document.scalars = wire
+            .scalars
+            .into_iter()
+            .map(|scalar| {
+                Ok(DocumentScalar {
+                    key: QueryVariable::new(scalar.key)?,
+                    binding: BindingId::new(scalar.binding)?,
+                })
+            })
+            .collect::<Result<_, Diagnostic>>()?;
+        return Ok(Stage::Fetch(document));
     }
     if matches!(
         value.get("kind").and_then(serde_json::Value::as_str),
@@ -2555,4 +2874,107 @@ impl AsRef<[QueryPlanV3]> for QueryPlanV3 {
     fn as_ref(&self) -> &[QueryPlanV3] {
         std::slice::from_ref(self)
     }
+}
+
+fn contains_nested_iid(pattern: &QueryPattern) -> bool {
+    match pattern {
+        QueryPattern::Iid { .. } => true,
+        QueryPattern::Or { branches } => branches.iter().flatten().any(contains_nested_iid),
+        QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+            patterns.iter().any(contains_nested_iid)
+        }
+        _ => false,
+    }
+}
+
+fn validate_nested_iids(
+    patterns: &[QueryPattern],
+    outer_types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+    outer_bound: &BTreeSet<BindingId>,
+    index: &SchemaIndex<'_>,
+    inputs: &[InputColumn],
+    rows: Option<&[InputRow]>,
+    checked_inputs: &mut BTreeSet<InputColumnId>,
+) -> Result<(), Diagnostic> {
+    let mut types = outer_types.clone();
+    let mut bound = outer_bound.clone();
+    for pattern in patterns {
+        index.pattern_types(pattern, &mut types)?;
+        collect_direct_positive_bindings(pattern, &mut bound);
+    }
+    for pattern in patterns {
+        match pattern {
+            QueryPattern::Iid { binding, iid } => {
+                let domain = match iid {
+                    QueryOperand::Literal { value } => Some(value.value_type()),
+                    QueryOperand::Input { column } => inputs
+                        .get(usize::from(column.get()))
+                        .map(InputColumn::value_type),
+                    QueryOperand::Binding { binding } if bound.contains(binding) => types
+                        .get(binding)
+                        .and_then(|types| index.scalar_domain(types)),
+                    QueryOperand::Binding { .. } => None,
+                };
+                if domain != Some(ValueTypeTag::String) {
+                    return Err(invalid(
+                        "query_plan_iid_operand_type",
+                        "IID comparisons require a present string operand",
+                    ));
+                }
+                if let QueryOperand::Input { column } = iid
+                    && checked_inputs.insert(*column)
+                {
+                    for row in rows.unwrap_or_default() {
+                        if let Some(value) = &row.values()[usize::from(column.get())]
+                            && !matches!(value, crate::value::CanonicalValue::String(iid) if crate::id::is_canonical_thing_iid(iid.as_str()))
+                        {
+                            return Err(invalid(
+                                "query_plan_invalid_iid",
+                                "IID inputs require canonical TypeDB thing IIDs",
+                            ));
+                        }
+                    }
+                }
+                if !bound.contains(binding)
+                    || !types.get(binding).is_some_and(|types| {
+                        !types.is_empty()
+                            && types.iter().all(|ty| {
+                                matches!(ty.kind(), TypeKind::Entity | TypeKind::Relation)
+                            })
+                    })
+                {
+                    return Err(invalid(
+                        "query_plan_iid_untyped_thing",
+                        "IID patterns require a positively typed thing in their lexical scope",
+                    ));
+                }
+            }
+            QueryPattern::Or { branches } => {
+                for branch in branches {
+                    validate_nested_iids(
+                        branch,
+                        &types,
+                        &bound,
+                        index,
+                        inputs,
+                        rows,
+                        checked_inputs,
+                    )?;
+                }
+            }
+            QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                validate_nested_iids(
+                    patterns,
+                    &types,
+                    &bound,
+                    index,
+                    inputs,
+                    rows,
+                    checked_inputs,
+                )?
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }

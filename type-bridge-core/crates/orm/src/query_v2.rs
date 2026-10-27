@@ -406,7 +406,8 @@ fn charge_lowered_pattern(
             }
             return Ok(());
         }
-        QueryPattern::Isa { .. }
+        QueryPattern::Iid { .. }
+        | QueryPattern::Isa { .. }
         | QueryPattern::Has { .. }
         | QueryPattern::Links { .. }
         | QueryPattern::Value { .. }
@@ -658,9 +659,75 @@ pub(crate) fn lower_scoped_patterns_with_values(
     values: Option<&[InputRow]>,
     literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
+    lower_scoped_patterns_inner(
+        inputs,
+        bindings,
+        patterns,
+        row,
+        validated,
+        values,
+        literal_policy,
+        &mut PatternScope::default(),
+    )
+}
+
+#[derive(Default)]
+struct PatternScope {
+    negative_depth: usize,
+    next_iid: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn lower_scoped_patterns_inner(
+    inputs: &[InputColumn],
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
+    patterns: &[QueryPattern],
+    row: Option<&InputRow>,
+    validated: Option<PatternTypeDomains<'_>>,
+    values: Option<&[InputRow]>,
+    literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
+    scope: &mut PatternScope,
+) -> Result<Vec<tql::Pattern>, Diagnostic> {
     let mut output = Vec::new();
     for (pattern_index, pattern) in patterns.iter().enumerate() {
         match pattern {
+            QueryPattern::Iid { binding, iid } => {
+                if let QueryOperand::Literal {
+                    value: type_bridge_contract::value::CanonicalValue::String(iid),
+                } = iid
+                {
+                    output.push(ast(tql::thing(
+                        local_variable(bindings, *binding)?,
+                        vec![ast(tql::iid(iid.as_str()))?],
+                    ))?);
+                } else if scope.negative_depth > 0 {
+                    // TypeDB 3.12.3 drops the connection for direct iid() filters in negated disjunctions.
+                    let actual = format!("PlanNestedIid{}", scope.next_iid);
+                    scope.next_iid += 1;
+                    output.push(ast(tql::let_value(
+                        &[&actual],
+                        ast(tql::function(
+                            "iid",
+                            vec![ast(tql::var(local_variable(bindings, *binding)?))?],
+                        ))?,
+                        false,
+                    ))?);
+                    output.push(ast(tql::compare(
+                        ast(tql::var(&actual))?,
+                        "==",
+                        lower_operand(inputs, bindings, iid, row)?,
+                    ))?);
+                } else {
+                    output.push(ast(tql::compare(
+                        ast(tql::function(
+                            "iid",
+                            vec![ast(tql::var(local_variable(bindings, *binding)?))?],
+                        ))?,
+                        "==",
+                        lower_operand(inputs, bindings, iid, row)?,
+                    ))?);
+                }
+            }
             QueryPattern::Isa {
                 binding,
                 include_subtypes,
@@ -743,7 +810,7 @@ pub(crate) fn lower_scoped_patterns_with_values(
                 branches
                     .iter()
                     .map(|branch| {
-                        lower_scoped_patterns_with_values(
+                        lower_scoped_patterns_inner(
                             inputs,
                             bindings,
                             branch,
@@ -751,12 +818,14 @@ pub(crate) fn lower_scoped_patterns_with_values(
                             validated,
                             values,
                             literal_policy,
+                            scope,
                         )
                     })
                     .collect::<Result<_, _>>()?,
             )),
             QueryPattern::Not { patterns } => {
-                output.push(tql::not(lower_scoped_patterns_with_values(
+                scope.negative_depth += 1;
+                let nested = lower_scoped_patterns_inner(
                     inputs,
                     bindings,
                     patterns,
@@ -764,10 +833,13 @@ pub(crate) fn lower_scoped_patterns_with_values(
                     validated,
                     values,
                     literal_policy,
-                )?))
+                    scope,
+                );
+                scope.negative_depth -= 1;
+                output.push(tql::not(nested?));
             }
             QueryPattern::Try { patterns } => {
-                output.push(tql::optional(lower_scoped_patterns_with_values(
+                output.push(tql::optional(lower_scoped_patterns_inner(
                     inputs,
                     bindings,
                     patterns,
@@ -775,6 +847,7 @@ pub(crate) fn lower_scoped_patterns_with_values(
                     validated,
                     values,
                     literal_policy,
+                    scope,
                 )?))
             }
             QueryPattern::Reachable {
@@ -913,7 +986,8 @@ fn contains_reachable(patterns: &[QueryPattern]) -> bool {
         QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
             contains_reachable(patterns)
         }
-        QueryPattern::Isa { .. }
+        QueryPattern::Iid { .. }
+        | QueryPattern::Isa { .. }
         | QueryPattern::Has { .. }
         | QueryPattern::Links { .. }
         | QueryPattern::Value { .. }

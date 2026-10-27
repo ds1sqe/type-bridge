@@ -312,11 +312,13 @@ pub fn attach() -> QueryPlanV3 {
                 Stage::Attach {
                     items: vec![
                         AttachItem::Has {
+                            optional: false,
                             owner: id(0),
                             field: field("score"),
                             operand: literal(3),
                         },
                         AttachItem::Links {
+                            optional: false,
                             relation: id(1),
                             role: role(),
                             player: id(0),
@@ -348,6 +350,7 @@ pub fn replace_players() -> QueryPlanV3 {
                 },
                 Stage::Attach {
                     items: vec![AttachItem::Links {
+                        optional: false,
                         relation: id(1),
                         role: role(),
                         player: id(0),

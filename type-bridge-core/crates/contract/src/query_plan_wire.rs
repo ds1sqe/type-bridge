@@ -888,6 +888,83 @@ pub(crate) fn rebuild_pattern_v3(
     value: Value,
     limits: crate::limits::CodecLimits,
 ) -> Result<QueryPattern, Diagnostic> {
+    match value.get("kind").and_then(Value::as_str) {
+        Some("iid") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct IidWire {
+                kind: String,
+                binding: u16,
+                iid: QueryOperandWire<PlanScalarWire>,
+            }
+            let wire: IidWire = serde_json::from_value(value).map_err(|_| {
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "invalid_canonical_value",
+                    "invalid nested IID pattern",
+                )
+            })?;
+            debug_assert_eq!(wire.kind, "iid");
+            return Ok(QueryPattern::Iid {
+                binding: BindingId::new(wire.binding)?,
+                iid: wire.iid.rebuild_with_limits(limits)?,
+            });
+        }
+        Some("or") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct OrWire {
+                kind: String,
+                branches: Vec<Vec<Value>>,
+            }
+            let wire: OrWire = serde_json::from_value(value).map_err(|_| {
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "invalid_canonical_value",
+                    "invalid disjunction pattern",
+                )
+            })?;
+            debug_assert_eq!(wire.kind, "or");
+            return Ok(QueryPattern::Or {
+                branches: wire
+                    .branches
+                    .into_iter()
+                    .map(|branch| {
+                        branch
+                            .into_iter()
+                            .map(|value| rebuild_pattern_v3(value, limits))
+                            .collect()
+                    })
+                    .collect::<Result<_, Diagnostic>>()?,
+            });
+        }
+        Some("not" | "try") => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct ScopeWire {
+                kind: String,
+                patterns: Vec<Value>,
+            }
+            let wire: ScopeWire = serde_json::from_value(value).map_err(|_| {
+                failure(
+                    DiagnosticCategory::InvalidContract,
+                    "invalid_canonical_value",
+                    "invalid scoped pattern",
+                )
+            })?;
+            let patterns = wire
+                .patterns
+                .into_iter()
+                .map(|value| rebuild_pattern_v3(value, limits))
+                .collect::<Result<_, _>>()?;
+            return Ok(if wire.kind == "not" {
+                QueryPattern::Not { patterns }
+            } else {
+                QueryPattern::Try { patterns }
+            });
+        }
+        _ => {}
+    }
     serde_json::from_value::<QueryPatternWireV2<PlanScalarWire>>(value)
         .map_err(|_| {
             failure(

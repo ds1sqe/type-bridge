@@ -144,16 +144,51 @@ impl StagedQuery {
             failure_context: FailureContext::default(),
         }
     }
-    /// Execute the shared provider program, retaining validated capture evidence.
-    #[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.stage", skip_all, fields(fingerprint = self.fingerprint.as_deref().unwrap_or("")))]
     pub(crate) async fn execute(
         &self,
         ops: &mut dyn super::backend::TransactionOps,
         limits: AnswerLimits,
     ) -> Result<QueryResult, OrmError> {
+        self.execute_inner(ops, limits, false, None)
+            .await
+            .map(|(answer, _)| answer)
+    }
+
+    pub(crate) async fn execute_counted(
+        &self,
+        ops: &mut dyn super::backend::TransactionOps,
+        limits: AnswerLimits,
+        plan: Option<&QueryPlanV3>,
+    ) -> Result<(QueryResult, super::backend::BoundedAnswerStats), OrmError> {
+        self.execute_inner(ops, limits, true, plan).await
+    }
+
+    /// Execute the shared provider program, retaining validated capture evidence.
+    #[tracing::instrument(target = "type_bridge.plan", name = "type_bridge.plan.stage", skip_all, fields(fingerprint = self.fingerprint.as_deref().unwrap_or("")))]
+    async fn execute_inner(
+        &self,
+        ops: &mut dyn super::backend::TransactionOps,
+        mut limits: AnswerLimits,
+        count: bool,
+        validation: Option<&QueryPlanV3>,
+    ) -> Result<(QueryResult, super::backend::BoundedAnswerStats), OrmError> {
         use tracing::Instrument;
+        let mut meter = (count || self.snapshot.is_some())
+            .then(|| crate::answer_meter::AnswerMeter::new(&limits.answer));
         let snapshot = if let Some((typeql, plan)) = &self.snapshot {
-            let answer = ops
+            let answer = if count && let Some(rows) = &self.rows {
+                collect_counted_given(
+                    ops,
+                    typeql,
+                    rows.clone(),
+                    limits.clone(),
+                    meter.as_mut().expect("snapshot meter"),
+                    true,
+                    validation,
+                )
+                .await?
+            } else {
+                ops
                 .query_materialized_bounded(
                     typeql,
                     self.rows.clone(),
@@ -162,8 +197,18 @@ impl StagedQuery {
                     self.redacted_snapshot.as_deref(),
                 )
                 .instrument(tracing::debug_span!(target: "type_bridge.io", "type_bridge.io.provider", index = 0, writes = false, bytes_sent = typeql.len()))
-                .await?;
-            crate::answer_meter::meter_result(&answer, &limits.answer)?;
+                .await?
+            };
+            let meter = meter.as_mut().expect("snapshot meter");
+            if !(count && self.rows.is_some())
+                && let QueryResult::Rows(items) | QueryResult::Documents(items) = &answer
+            {
+                for item in items {
+                    meter.accept_value(item)?;
+                }
+            }
+            limits.answer.max_items = limits.answer.max_items.saturating_sub(meter.items());
+            limits.answer.max_bytes = limits.answer.max_bytes.saturating_sub(meter.bytes());
             crate::query_plan_exec::validate_snapshot(
                 plan.plan().map_err(plan_answer_error)?,
                 &answer,
@@ -173,7 +218,20 @@ impl StagedQuery {
         } else {
             None
         };
-        let answer = ops
+        let streamed = count && self.rows.is_some();
+        let answer = if let Some(rows) = self.rows.as_ref().filter(|_| streamed) {
+            collect_counted_given(
+                ops,
+                &self.typeql,
+                rows.clone(),
+                limits.clone(),
+                meter.as_mut().expect("counted meter"),
+                !self.writes,
+                validation,
+            )
+            .await?
+        } else {
+            ops
             .query_materialized_bounded(
                 &self.typeql,
                 self.rows.clone(),
@@ -182,8 +240,24 @@ impl StagedQuery {
                 self.redacted_typeql.as_deref(),
             )
             .instrument(tracing::debug_span!(target: "type_bridge.io", "type_bridge.io.provider", index = usize::from(self.snapshot.is_some()), writes = self.writes, bytes_sent = self.typeql.len()))
-            .await?;
-        Ok(snapshot.unwrap_or(answer))
+            .await?
+        };
+        if !streamed
+            && let Some(meter) = &mut meter
+            && let QueryResult::Rows(items) | QueryResult::Documents(items) = &answer
+        {
+            for item in items {
+                meter.accept_value(item)?;
+            }
+        }
+        let stats = meter.map_or_else(super::backend::BoundedAnswerStats::default, |meter| {
+            super::backend::BoundedAnswerStats {
+                processed_items: meter.items(),
+                response_bytes: meter.bytes(),
+                stopped_early: false,
+            }
+        });
+        Ok((snapshot.unwrap_or(answer), stats))
     }
 
     /// Attach schema identities from the lowered plan, never provider prose.
@@ -247,6 +321,56 @@ pub enum PendingError {
         /// The server's refusal, under its stable code.
         diagnostic: Box<SdkExecutionDiagnostic>,
     },
+}
+
+async fn collect_counted_given(
+    ops: &mut dyn super::backend::TransactionOps,
+    typeql: &str,
+    rows: GivenRowsSpec,
+    limits: AnswerLimits,
+    meter: &mut crate::answer_meter::AnswerMeter,
+    documents: bool,
+    validation: Option<&QueryPlanV3>,
+) -> Result<QueryResult, OrmError> {
+    use super::backend::{AnswerControl, AnswerItem};
+    let mut answer = if documents {
+        QueryResult::Documents(Vec::new())
+    } else {
+        QueryResult::Rows(Vec::new())
+    };
+    let mut deferred = None;
+    let mut consumer = |item: AnswerItem| {
+        meter.accept(&item)?;
+        if let (Some(plan), AnswerItem::Document(document)) = (validation, &item)
+            && let Err(error) = crate::query_plan_exec::remote_document(document, plan)
+        {
+            deferred.get_or_insert_with(|| crate::query_plan_exec::plan_diagnostic_error(error));
+        }
+        if deferred.is_some() {
+            return Ok(AnswerControl::Continue);
+        }
+        match (&mut answer, item) {
+            (QueryResult::Documents(values), AnswerItem::Document(value))
+            | (QueryResult::Rows(values), AnswerItem::Row(value)) => values.push(value),
+            _ => {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::ResultDecode,
+                    "query_plan_batch_answer",
+                    "Returning deletion received the wrong provider answer kind",
+                )
+                .into());
+            }
+        }
+        Ok(AnswerControl::Continue)
+    };
+    let result = ops
+        .query_v2_with_rows_bounded(typeql, rows, limits, &mut consumer)
+        .await;
+    if let Some(error) = deferred {
+        return Err(error);
+    }
+    result?;
+    Ok(answer)
 }
 
 fn format_op_index(index: Option<usize>) -> String {
@@ -1079,16 +1203,20 @@ impl Transaction {
         self.admit_typed()?;
         let invalid = |diagnostic| PendingError::InvalidPlan(Box::new(diagnostic));
         let (query, remote) = match &self.backend {
-            Backend::Local(backend) => (
-                Some(
-                    crate::query_plan_exec::staged_query_with_source(
-                        &source,
-                        super::database::backend_supports_given_stage(backend.as_ref()),
-                    )
-                    .map_err(invalid)?,
-                ),
-                None,
-            ),
+            Backend::Local(backend) => {
+                crate::query_plan_exec::check_provider(plan, backend.server_version())
+                    .map_err(invalid)?;
+                (
+                    Some(
+                        crate::query_plan_exec::staged_query_with_source(
+                            &source,
+                            super::database::backend_supports_given_stage(backend.as_ref()),
+                        )
+                        .map_err(invalid)?,
+                    ),
+                    None,
+                )
+            }
             Backend::Proxy(proxy) => {
                 let rows = plan.given_rows().unwrap_or_default().to_vec();
                 (

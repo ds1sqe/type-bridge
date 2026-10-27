@@ -560,6 +560,10 @@ impl Database {
             ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
             dispatch_failed_execution_close,
         };
+        for plan in plans {
+            crate::query_plan_exec::check_provider(plan, self.server_version())
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+        }
         limits
             .validate()
             .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;

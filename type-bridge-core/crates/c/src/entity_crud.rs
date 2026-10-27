@@ -61,6 +61,17 @@ pub unsafe extern "C" fn type_bridge_database_entity_insert(
 }
 #[cfg(test)]
 pub(crate) mod tests {
+    mod native_batch_answer_item {
+        pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+    }
+    #[allow(dead_code)]
+    mod native_batch {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../orm/tests/support/native_batch.rs"
+        ));
+    }
+
     use std::collections::VecDeque;
     use std::mem::size_of;
     use std::ptr;
@@ -254,8 +265,11 @@ functions:
                 .unwrap()
                 .pop_front()
                 .expect("the C entity CRUD test issued an unexpected provider query");
+            let source = typeql.to_owned();
             match response {
-                Response::Result(value) => Box::pin(async move { Ok(value) }),
+                Response::Result(value) => {
+                    Box::pin(async move { Ok(native_batch::result(&source, value)) })
+                }
                 Response::Error => Box::pin(async {
                     Err(OrmError::QueryExecution(
                         "provider-secret-query-shape".to_owned(),
@@ -265,7 +279,7 @@ functions:
                 Response::Pending => Box::pin(std::future::pending()),
                 Response::Delayed(value) => Box::pin(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                    Ok(value)
+                    Ok(native_batch::result(&source, value))
                 }),
             }
         }
@@ -283,8 +297,11 @@ functions:
                 .unwrap()
                 .pop_front()
                 .expect("the C entity CRUD test issued an unexpected provider query");
+            let source = typeql.to_owned();
             match response {
-                Response::Result(value) => Box::pin(async move { Ok(value) }),
+                Response::Result(value) => {
+                    Box::pin(async move { Ok(native_batch::result(&source, value)) })
+                }
                 Response::Error => Box::pin(async {
                     Err(OrmError::QueryExecution(
                         "provider-secret-query-shape".to_owned(),
@@ -294,7 +311,7 @@ functions:
                 Response::Pending => Box::pin(std::future::pending()),
                 Response::Delayed(value) => Box::pin(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-                    Ok(value)
+                    Ok(native_batch::result(&source, value))
                 }),
             }
         }
@@ -512,12 +529,6 @@ functions:
             "_type": "person",
             "attributes": {"identifier": "ada"}
         })
-    }
-
-    pub(crate) fn insert_iid(iid: &str) -> Response {
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid": iid}),
-        ]))
     }
 
     pub(crate) fn documents(values: Vec<serde_json::Value>) -> Response {
@@ -1862,11 +1873,7 @@ functions:
         close_thing(&mut thing);
 
         let put = relation_fixture(
-            vec![
-                documents(vec![serde_json::json!({"iid": "0x10"})]),
-                insert_iid("0x21"),
-                documents(vec![membership_document("0x21")]),
-            ],
+            vec![documents(vec![membership_document("0x21")])],
             COMMIT_SUCCESS,
         );
         assert_eq!(
@@ -1884,7 +1891,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(unsafe { &*thing }.value.iid(), "0x21");
-        assert_eq!(put.state.query_count(), 3);
+        assert_eq!(put.state.query_count(), 1);
         assert_eq!(put.state.commits.load(Ordering::Acquire), 1);
         close_thing(&mut thing);
 
@@ -2025,8 +2032,6 @@ functions:
         let write_fixture = relation_fixture(
             vec![
                 documents(vec![membership_document("0x30")]),
-                documents(vec![serde_json::json!({"iid": "0x10"})]),
-                insert_iid("0x31"),
                 documents(vec![membership_document("0x31")]),
                 documents(vec![membership_document("0x31")]),
                 documents(vec![membership_document("0x31")]),
@@ -2127,7 +2132,7 @@ functions:
             TypeBridgeStatus::Ok
         );
         assert_eq!(count, 1);
-        assert_eq!(write_fixture.state.query_count(), 8);
+        assert_eq!(write_fixture.state.query_count(), 6);
         assert_eq!(write_fixture.state.commits.load(Ordering::Acquire), 0);
         assert_eq!(write_fixture.state.rollbacks.load(Ordering::Acquire), 0);
         assert_eq!(
@@ -2218,7 +2223,7 @@ functions:
         let source_state = FakeState::new(
             vec![documents(vec![serde_json::json!({
                 "_iid": "0x11",
-                "_type": "event"
+                "_type": "event", "attributes": {}
             })])],
             COMMIT_SUCCESS,
         );
@@ -2638,16 +2643,15 @@ functions:
         );
         close_diagnostics(&mut diagnostics);
 
-        let event_create = Box::new(TypeBridgeProjectedCreate {
-            package: Arc::clone(&fixture.package.state),
-            value: ProjectedCreate::try_new(
-                &fixture.package.state.installed_projection,
-                TypeId::new(TypeKind::Relation, "event").unwrap(),
-                vec![],
-                vec![],
-            )
-            .unwrap(),
-        });
+        let refusal = ProjectedCreate::try_new(
+            &fixture.package.state.installed_projection,
+            TypeId::new(TypeKind::Relation, "event").unwrap(),
+            vec![],
+            vec![],
+        )
+        .unwrap_err();
+        assert_eq!(refusal.code().as_str(), "relation_requires_player");
+        let event_create = person_create(&fixture.package);
         assert_eq!(
             unsafe {
                 type_bridge_database_relation_insert(
@@ -2661,10 +2665,7 @@ functions:
             },
             TypeBridgeStatus::InvalidArgument
         );
-        assert_eq!(
-            diagnostic(diagnostics).1,
-            "c_relation_create_model_mismatch"
-        );
+        assert_eq!(diagnostic(diagnostics).1, "c_relation_model_kind_invalid");
         close_diagnostics(&mut diagnostics);
 
         let entity_token = model_token(

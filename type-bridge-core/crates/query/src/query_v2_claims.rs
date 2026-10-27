@@ -314,7 +314,8 @@ fn validate_native_function_suffix(
                     ));
                 }
             }
-            QueryPattern::Isa { .. }
+            QueryPattern::Iid { .. }
+            | QueryPattern::Isa { .. }
             | QueryPattern::Links { .. }
             | QueryPattern::Or { .. }
             | QueryPattern::Not { .. }

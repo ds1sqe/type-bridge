@@ -306,6 +306,14 @@ pub enum QueryPattern {
         /// The exact schema type.
         type_id: TypeId,
     },
+    /// Constrain a positively typed thing by canonical IID, including nested scopes.
+    /// Admitted only by the capability-fenced native plan vocabulary.
+    Iid {
+        /// Thing binding established in this lexical scope or an outer one.
+        binding: BindingId,
+        /// Canonical IID string literal or declared string input.
+        iid: QueryOperand,
+    },
     /// Bind an owned attribute through an effective ownership.
     Has {
         /// The bound attribute instance.
@@ -994,6 +1002,16 @@ impl QueryPlan {
             &output,
             compatibility.as_ref(),
         )?;
+        if required_capabilities
+            .iter()
+            .any(|capability| capability.as_str() == "query.pattern.nested-iid")
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_nested_iid_requires_v3",
+                "IID patterns require the native plan vocabulary",
+            ));
+        }
         let format = if compatibility.is_some() {
             QUERY_PLAN_FORMAT_V2
         } else {
@@ -1375,6 +1393,13 @@ impl<'a> QueryPatternV1Projection<'a> {
                 left,
                 right,
             },
+            QueryPattern::Iid { .. } => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_nested_iid_requires_v3",
+                    "IID patterns require the native plan vocabulary",
+                ));
+            }
             QueryPattern::Or { .. } => {
                 return Err(failure(
                     DiagnosticCategory::InvalidContract,
@@ -1447,6 +1472,7 @@ fn validate_v1_reachability(pipeline: &[ReadStage]) -> Result<(), Diagnostic> {
                 QueryPattern::Isa { .. }
                 | QueryPattern::Has { .. }
                 | QueryPattern::Links { .. }
+                | QueryPattern::Iid { .. }
                 | QueryPattern::Value { .. }
                 | QueryPattern::Reachable { .. }
                 | QueryPattern::FunctionCall { .. } => {}
@@ -2241,6 +2267,20 @@ fn inspect_pattern(
     }
     match pattern {
         QueryPattern::Isa { binding, .. } => check_binding(*binding, binding_count),
+        QueryPattern::Iid { binding, iid } => {
+            check_binding(*binding, binding_count)?;
+            check_operand(iid, binding_count, input_count)?;
+            if let QueryOperand::Literal { value } = iid
+                && !matches!(value, CanonicalValue::String(value) if crate::id::is_canonical_thing_iid(value.as_str()))
+            {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_invalid_iid",
+                    "IID patterns require a canonical TypeDB thing IID",
+                ));
+            }
+            Ok(())
+        }
         QueryPattern::Has {
             owner, attribute, ..
         } => {
@@ -2426,6 +2466,10 @@ fn collect_pattern_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<Bind
         }
     };
     match pattern {
+        QueryPattern::Iid { binding, iid } => {
+            operand(iid);
+            bindings.insert(*binding);
+        }
         QueryPattern::Isa { binding, .. } => {
             bindings.insert(*binding);
         }
@@ -2516,7 +2560,10 @@ fn collect_direct_positive_bindings(pattern: &QueryPattern, bindings: &mut BTree
                 bindings.extend(intersection);
             }
         }
-        QueryPattern::Value { .. } | QueryPattern::Not { .. } | QueryPattern::Try { .. } => {}
+        QueryPattern::Iid { .. }
+        | QueryPattern::Value { .. }
+        | QueryPattern::Not { .. }
+        | QueryPattern::Try { .. } => {}
     }
 }
 
@@ -2541,6 +2588,7 @@ fn collect_negation_positive_bindings(pattern: &QueryPattern, bindings: &mut BTr
         QueryPattern::Isa { .. }
         | QueryPattern::Has { .. }
         | QueryPattern::Links { .. }
+        | QueryPattern::Iid { .. }
         | QueryPattern::Value { .. }
         | QueryPattern::Try { .. }
         | QueryPattern::Reachable { .. }
@@ -2595,7 +2643,7 @@ fn derive_capabilities(
         insert_capability(&mut capabilities, CAP_LOCAL_FUNCTIONS)?;
         for function in functions {
             for pattern in function.body() {
-                collect_pattern_capabilities(pattern, &mut capabilities)?;
+                collect_pattern_capabilities(pattern, &mut capabilities, false)?;
             }
         }
     }
@@ -2614,7 +2662,7 @@ fn derive_capabilities(
         match stage {
             ReadStage::Match { patterns } => {
                 for pattern in patterns {
-                    collect_pattern_capabilities(pattern, &mut capabilities)?;
+                    collect_pattern_capabilities(pattern, &mut capabilities, false)?;
                 }
             }
             ReadStage::Select { .. } => {
@@ -2651,6 +2699,16 @@ fn derive_capabilities(
         {
             insert_capability(&mut capabilities, CAP_INPUT_GIVEN_ROWS)?;
         }
+        if capabilities
+            .iter()
+            .any(|capability| capability.as_str() == "query.pattern.nested-iid")
+        {
+            return Err(failure(
+                DiagnosticCategory::InvalidContract,
+                "query_plan_nested_iid_requires_v3",
+                "IID patterns require the native plan vocabulary",
+            ));
+        }
         let vocabulary = query_plan_v2_capability_vocabulary();
         let unknown = capabilities.missing_from(&vocabulary);
         if !unknown.is_empty() {
@@ -2667,6 +2725,7 @@ fn derive_capabilities(
 fn collect_pattern_capabilities(
     pattern: &QueryPattern,
     capabilities: &mut CapabilitySet,
+    negative: bool,
 ) -> Result<(), Diagnostic> {
     match pattern {
         QueryPattern::Isa {
@@ -2675,6 +2734,12 @@ fn collect_pattern_capabilities(
             insert_capability(capabilities, CAP_ISA)?;
             if *include_subtypes {
                 insert_capability(capabilities, CAP_ISA_SUBTYPES)?;
+            }
+        }
+        QueryPattern::Iid { iid, .. } => {
+            insert_capability(capabilities, "query.pattern.nested-iid")?;
+            if negative && !matches!(iid, QueryOperand::Literal { .. }) {
+                insert_capability(capabilities, v3::CAP_NEGATED_GIVEN_IID)?;
             }
         }
         QueryPattern::Has { .. } => insert_capability(capabilities, CAP_HAS)?,
@@ -2695,14 +2760,14 @@ fn collect_pattern_capabilities(
             insert_capability(capabilities, CAP_DISJUNCTION)?;
             for branch in branches {
                 for child in branch {
-                    collect_pattern_capabilities(child, capabilities)?;
+                    collect_pattern_capabilities(child, capabilities, negative)?;
                 }
             }
         }
         QueryPattern::Try { patterns } => {
             insert_capability(capabilities, CAP_TRY)?;
             for child in patterns {
-                collect_pattern_capabilities(child, capabilities)?;
+                collect_pattern_capabilities(child, capabilities, negative)?;
             }
         }
         QueryPattern::Reachable { .. } => {
@@ -2711,7 +2776,7 @@ fn collect_pattern_capabilities(
         QueryPattern::Not { patterns } => {
             insert_capability(capabilities, CAP_NEGATION)?;
             for child in patterns {
-                collect_pattern_capabilities(child, capabilities)?;
+                collect_pattern_capabilities(child, capabilities, true)?;
             }
         }
         QueryPattern::FunctionCall { .. } => {
@@ -2731,6 +2796,7 @@ fn pattern_contains_function(pattern: &QueryPattern) -> bool {
         QueryPattern::Isa { .. }
         | QueryPattern::Has { .. }
         | QueryPattern::Links { .. }
+        | QueryPattern::Iid { .. }
         | QueryPattern::Value { .. }
         | QueryPattern::Reachable { .. } => false,
     }

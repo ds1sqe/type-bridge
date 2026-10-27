@@ -29,7 +29,7 @@ fn rows(answer: &QueryResult) -> usize {
 async fn live_database(stem: &str) -> Option<Database> {
     let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").ok()?;
     let name = format!(
-        "{stem}_{}_{}",
+        "tb270_04b_{stem}_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -164,6 +164,141 @@ attribute identifier, value string; attribute note, value string;
 entity party @abstract, owns identifier @key, plays membership:member;
 entity person sub party; entity company sub party;
 relation membership, relates member @card(1..2), owns note @card(0..1);";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_managers_and_nested_iids_match_legacy_results() {
+    use std::sync::Arc;
+    use type_bridge_orm::_dynamic::{DynamicComparisonOp, DynamicExpr, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    let Some(db) = live_database("tb270_04b_managers").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = party_projection_with_authority();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let person = registry.entity("person").unwrap();
+    let planned =
+        DynamicEntityManager::from_registry(&db, Arc::clone(&registry), Arc::clone(&person));
+    let legacy = DynamicEntityManager::new(&db, person);
+    let first = planned
+        .insert(&vec![(
+            "identifier".into(),
+            type_bridge_orm::AttributeValue::String("A".into()),
+        )])
+        .await
+        .unwrap();
+    let second = planned
+        .insert(&vec![(
+            "identifier".into(),
+            type_bridge_orm::AttributeValue::String("B".into()),
+        )])
+        .await
+        .unwrap();
+    assert_eq!(planned.count().await.unwrap(), 2);
+    let iid_expression = db
+        .execute_raw(
+            &format!("match $p isa person; iid($p) == \"{first}\"; select $p;"),
+            TxType::Read,
+        )
+        .await;
+    assert!(
+        iid_expression.is_ok(),
+        "native IID expression comparison: {iid_expression:?}"
+    );
+    let inside_try = db.execute_raw(&format!("match $p isa person; try {{ $p has identifier $key; iid($p) == \"{first}\"; }}; select $p;"), TxType::Read).await;
+    assert!(
+        inside_try.is_ok(),
+        "IID predicate inside Try: {inside_try:?}"
+    );
+    assert_eq!(planned.all().await.unwrap(), legacy.all().await.unwrap());
+    for expression in [
+        DynamicExpr::Or {
+            exprs: vec![
+                DynamicExpr::Iid { iid: first.clone() },
+                DynamicExpr::Iid {
+                    iid: second.clone(),
+                },
+            ],
+        },
+        DynamicExpr::Not {
+            expr: Box::new(DynamicExpr::Iid { iid: first.clone() }),
+        },
+    ] {
+        assert_eq!(
+            planned
+                .get_with_query(std::slice::from_ref(&expression), &[], None, None)
+                .await
+                .unwrap(),
+            legacy
+                .get_with_query(&[expression], &[], None, None)
+                .await
+                .unwrap()
+        );
+    }
+    assert!(
+        planned
+            .exists_exact_with_query(&[DynamicExpr::Compare {
+                attr_name: "identifier".into(),
+                operator: DynamicComparisonOp::Eq,
+                value: type_bridge_orm::AttributeValue::String("A".into())
+            }])
+            .await
+            .unwrap()
+    );
+    let membership = registry.relation("membership").unwrap();
+    let relations =
+        DynamicRelationManager::from_registry(&db, Arc::clone(&registry), Arc::clone(&membership));
+    let raw_relations = DynamicRelationManager::new(&db, membership);
+    let relation_iid = relations
+        .insert(
+            &vec![(
+                "note".into(),
+                type_bridge_orm::AttributeValue::String("joined".into()),
+            )],
+            &[DynamicRolePlayerInput {
+                role_name: "member".into(),
+                player_type_name: "person".into(),
+                iid: Some(first.clone()),
+                key: None,
+            }],
+        )
+        .await
+        .unwrap();
+    let expression = DynamicExpr::Not {
+        expr: Box::new(DynamicExpr::RolePlayer {
+            role_name: "member".into(),
+            expr: Box::new(DynamicExpr::Iid {
+                iid: second.clone(),
+            }),
+        }),
+    };
+    assert_eq!(
+        relations
+            .get_with_query(std::slice::from_ref(&expression), &[], None, None)
+            .await
+            .unwrap(),
+        raw_relations
+            .get_with_query(&[expression], &[], None, None)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        relations
+            .get_by_iid_exact(&relation_iid)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    relations.delete_by_iid_exact(&relation_iid).await.unwrap();
+    planned.delete_by_iid_exact(&first).await.unwrap();
+    planned.delete_by_iid_exact(&second).await.unwrap();
+    assert_eq!(planned.count().await.unwrap(), 0);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn helper_returning_deletes_hydrate_before_commit_on_both_execution_paths() {
@@ -395,6 +530,41 @@ fn party_projection() -> InstalledRuntimeProjection {
         .unwrap(),
     )
     .unwrap()
+}
+
+fn party_projection_with_authority() -> InstalledRuntimeProjection {
+    party_projection_for_schema(PARTY_SCHEMA_YAML)
+}
+
+fn party_projection_for_schema(yaml: &str) -> InstalledRuntimeProjection {
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("authority.yaml").unwrap(), yaml)]).unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        type_bridge_contract::managed_scope::ManagedScopeId::new("manager-live").unwrap(),
+        profile,
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    installed.with_schema_authority(&authority)
 }
 
 fn party_type(kind: TypeKind, label: &str) -> TypeId {
@@ -667,7 +837,13 @@ fn person(
 fn texts(thing: &type_bridge_orm::ProjectedThing, field: &str) -> Vec<String> {
     thing
         .fields()
-        .get(&person_field(field))
+        .get(
+            &OwnsFactId::new(
+                thing.type_id().clone(),
+                type_bridge_contract::id::AttributeId::new(field).unwrap(),
+            )
+            .unwrap(),
+        )
         .map(|values| {
             values
                 .iter()
@@ -1089,7 +1265,7 @@ async fn helper_relation_updates_with_many_players_and_none() {
         )],
     )
     .unwrap();
-    let tagged = crud
+    let _tagged = crud
         .insert_relation(
             &db,
             &ProjectedCreate::try_new(
@@ -1102,13 +1278,9 @@ async fn helper_relation_updates_with_many_players_and_none() {
         )
         .await
         .unwrap();
-    let empty = ProjectedCreate::try_new(&installed, tagging.clone(), vec![], vec![]).unwrap();
-    // The released update refuses an empty relation; the relation stays.
-    let refused = crud
-        .update_relation(&db, tagged.iid(), &empty)
-        .await
-        .unwrap_err();
-    assert_eq!(refused.code().as_str(), "provider_operation_failed");
+    let refused =
+        ProjectedCreate::try_new(&installed, tagging.clone(), vec![], vec![]).unwrap_err();
+    assert_eq!(refused.code().as_str(), "relation_requires_player");
     assert_eq!(crud.count_relations(&db, &tagging).await.unwrap(), 1);
     db.delete_database().await.unwrap();
     db.close().unwrap();
@@ -1296,4 +1468,1286 @@ async fn deletion_snapshots_preserve_optional_roles_and_refuse_missing_required_
         1
     );
     db.delete_database().await.unwrap();
+}
+
+const NATIVE_BATCH_YAML: &str = r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  tag: { value: string }
+  score: { value: integer }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      tag: { card: { min: 0 } }
+      score: { card: { min: 0 } }
+relations:
+  pair:
+    owns:
+      identifier: { key: true }
+    relates:
+      left: { card: { min: 0, max: 4 } }
+      right: { card: { min: 0, max: 4 } }
+plays:
+  person:
+    pair: [left, right]
+"#;
+
+fn native_batch_projection() -> InstalledRuntimeProjection {
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("native-batch.yaml").unwrap(),
+        NATIVE_BATCH_YAML,
+    )])
+    .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_batches_keep_key_identity_replace_players_and_collect_without_cartesian_rows() {
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::query_plan::v3::{
+        DocumentRole, DocumentScalar, Expr, Pattern, PlanSpec, QueryPlanV3, Stage, ThingDocument,
+    };
+    use type_bridge_contract::query_plan::{QueryOutput, QueryPattern};
+    use type_bridge_orm::{
+        ProjectedBatch, ProjectedBatchExecutor, ProjectedBatchOperation as Op,
+        ProjectedBatchResult, ProjectedBatchRow as Row, ProjectedThing,
+    };
+    let Some(db) = live_database("tb270_04b_native_batches").await else {
+        return;
+    };
+    db.execute_raw("define attribute identifier, value string; attribute tag, value string; attribute score, value integer; entity person, owns identifier @key, owns tag @card(0..), owns score @card(0..), plays pair:left, plays pair:right; relation pair, owns identifier @key, relates left @card(0..4), relates right @card(0..4);", TxType::Schema).await.unwrap();
+    let installed = native_batch_projection();
+    assert_schema_less_typed_read_refuses(&db, &installed).await;
+    let executor = ProjectedBatchExecutor::new(&installed);
+    let person = party_type(TypeKind::Entity, "person");
+    let pair = party_type(TypeKind::Relation, "pair");
+    let id_field = |owner: &TypeId| {
+        OwnsFactId::new(
+            owner.clone(),
+            type_bridge_contract::id::AttributeId::new("identifier").unwrap(),
+        )
+        .unwrap()
+    };
+    let create_person = |key: &str| {
+        ProjectedCreate::try_new(
+            &installed,
+            person.clone(),
+            vec![(
+                id_field(&person),
+                vec![party_text(&installed, "identifier", key)],
+            )],
+            vec![],
+        )
+        .unwrap()
+    };
+    let batch = |model: &TypeId, operation, rows| {
+        ProjectedBatch::try_new(&installed, model.clone(), operation, rows).unwrap()
+    };
+    let things = |result| {
+        let ProjectedBatchResult::Things(things) = result else {
+            panic!("expected things")
+        };
+        things
+    };
+    let people = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &person,
+                    Op::Insert,
+                    (0..6)
+                        .map(|index| Row::Create(create_person(&format!("p{index}"))))
+                        .collect(),
+                ),
+                type_bridge_orm::ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(people.len(), 6);
+    let create_pair = |key: &str, left: &[usize], right: &[usize]| {
+        ProjectedCreate::try_new(
+            &installed,
+            pair.clone(),
+            vec![(
+                id_field(&pair),
+                vec![party_text(&installed, "identifier", key)],
+            )],
+            [("left", left), ("right", right)]
+                .into_iter()
+                .map(|(name, indices)| {
+                    (
+                        RoleId::new("pair", name).unwrap(),
+                        indices
+                            .iter()
+                            .map(|index| people[*index].try_to_reference(&installed).unwrap())
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    let pairs = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &pair,
+                    Op::Insert,
+                    vec![
+                        Row::Create(create_pair("A", &[0, 1, 2], &[3, 4, 5])),
+                        Row::Create(create_pair("empty", &[0], &[])),
+                    ],
+                ),
+                type_bridge_orm::ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(pairs.len(), 2);
+    let old_iid = pairs[0].iid().to_owned();
+    let left = RoleId::new("pair", "left").unwrap();
+    let right = RoleId::new("pair", "right").unwrap();
+    assert_eq!(pairs[0].roles()[&left].len(), 3);
+    assert_eq!(pairs[0].roles()[&right].len(), 3);
+    assert!(pairs[1].roles().get(&right).is_none_or(Vec::is_empty));
+    // The same terminal shape used by the batch emits one root and charges six player documents.
+    let root = BindingId::new(0).unwrap();
+    let ordinal = BindingId::new(1).unwrap();
+    let mut document = ThingDocument::new(
+        root,
+        vec![
+            DocumentRole::collected(left.clone()),
+            DocumentRole::collected(right.clone()),
+        ],
+    );
+    document.scalars.push(DocumentScalar {
+        key: QueryVariable::new("ordinal").unwrap(),
+        binding: ordinal,
+    });
+    let declared = normalize_documents(
+        &SchemaDocumentSet::parse([(
+            DocumentId::new("native-batch.yaml").unwrap(),
+            NATIVE_BATCH_YAML,
+        )])
+        .unwrap(),
+    )
+    .unwrap();
+    let plan = QueryPlanV3::new(
+        PlanSpec {
+            bindings: vec![
+                AssertionBinding::new(root, QueryVariable::new("pair").unwrap()),
+                AssertionBinding::new(ordinal, QueryVariable::new("ordinal").unwrap()),
+            ],
+            inputs: vec![],
+            given_rows: None,
+            operation: Operation::Rows,
+            pipeline: vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Isa {
+                            binding: root,
+                            type_id: pair.clone(),
+                            include_subtypes: false,
+                        }
+                        .into(),
+                        Pattern::Iid {
+                            binding: root,
+                            iid: old_iid.clone(),
+                        },
+                        Pattern::Let {
+                            binding: ordinal,
+                            expr: Expr::Operand(
+                                type_bridge_contract::query_plan::QueryOperand::Literal {
+                                    value: CanonicalValue::Long(0),
+                                },
+                            ),
+                        },
+                    ],
+                },
+                Stage::Fetch(document),
+            ],
+            output: QueryOutput::Rows { columns: vec![] },
+            managed_semantics:
+                type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint::compute(
+                    SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                    b"batch-live",
+                )
+                .unwrap(),
+            compatibility: None,
+            functions: vec![],
+        },
+        &declared,
+    )
+    .unwrap();
+    let mut tx = db.transaction(TransactionOptions::default());
+    let pending = tx.stage_plan(&plan).unwrap();
+    tx.commit().await.unwrap();
+    let answer = pending.get().unwrap();
+    let PlanAnswer::Documents(documents) = answer.as_ref() else {
+        panic!("documents")
+    };
+    assert_eq!(documents.len(), 1);
+    let wire = answer.to_staged_v3(&plan).unwrap();
+    assert_eq!(wire.item_count(), 7);
+    assert_eq!(wire.resource_counts(), [7, 7, 13, 6]);
+    println!("collected role items: 7 (1 root + 6 players); Cartesian triples: 9 root documents");
+    let mut tight = db.transaction(TransactionOptions::default().with_answer_limits(
+        type_bridge_orm::session::backend::BoundedAnswerLimits {
+            max_items: 6,
+            ..Default::default()
+        },
+    ));
+    tight.stage_plan(&plan).unwrap();
+    assert_eq!(
+        tight
+            .commit()
+            .await
+            .unwrap_err()
+            .diagnostic()
+            .code()
+            .as_str(),
+        "processed_item_limit"
+    );
+    let put = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &pair,
+                    Op::Put,
+                    vec![
+                        Row::Create(create_pair("A", &[5], &[0])),
+                        Row::Create(create_pair("new", &[1], &[2])),
+                    ],
+                ),
+                type_bridge_orm::ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(put[0].iid(), old_iid);
+    assert_eq!(put[0].roles()[&left].len(), 1);
+    assert_eq!(put[0].roles()[&left][0].iid(), people[5].iid());
+    assert_eq!(put[0].roles()[&right][0].iid(), people[0].iid());
+    assert_eq!(put[1].roles()[&left][0].iid(), people[1].iid());
+    // Clearing two multi-valued fields must keep one root between deletes and permit key replacement.
+    let mut replacement = vec![(
+        id_field(&person),
+        vec![party_text(&installed, "identifier", "changed")],
+    )];
+    for (attribute, values) in [
+        ("tag", vec!["a", "b", "c"]),
+        ("score", vec!["1", "2", "3", "4"]),
+    ] {
+        let values = values
+            .into_iter()
+            .map(|value| {
+                if attribute == "tag" {
+                    party_text(&installed, attribute, value)
+                } else {
+                    ProjectedAttributeValue::try_new(
+                        &installed,
+                        party_type(TypeKind::Attribute, attribute),
+                        CanonicalValue::Long(value.parse().unwrap()),
+                    )
+                    .unwrap()
+                }
+            })
+            .collect();
+        replacement.push((
+            OwnsFactId::new(
+                person.clone(),
+                type_bridge_contract::id::AttributeId::new(attribute).unwrap(),
+            )
+            .unwrap(),
+            values,
+        ));
+    }
+    let target = people[0].iid().to_owned();
+    let update = |create| {
+        batch(
+            &person,
+            Op::Update,
+            vec![Row::Update {
+                iid: target.clone(),
+                replacement: create,
+            }],
+        )
+    };
+    let changed = things(
+        executor
+            .execute(
+                &db,
+                &update(
+                    ProjectedCreate::try_new(&installed, person.clone(), replacement, vec![])
+                        .unwrap(),
+                ),
+                type_bridge_orm::ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(changed[0].iid(), target);
+    let cleared: Vec<ProjectedThing> = things(
+        executor
+            .execute(
+                &db,
+                &update(create_person("changed-again")),
+                type_bridge_orm::ProjectedBatchInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(cleared[0].fields().len(), 3);
+    for attribute in ["tag", "score"] {
+        let field = OwnsFactId::new(
+            person.clone(),
+            type_bridge_contract::id::AttributeId::new(attribute).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            cleared[0].fields()[&field].is_empty(),
+            "cleared {attribute}"
+        );
+    }
+    assert_eq!(rows(&db.execute_raw("match $p isa person, has identifier \"changed-again\"; { $p has tag $v; } or { $p has score $v; }; select $p;", TxType::Read).await.unwrap()), 0);
+    assert_schema_less_typed_read_refuses(&db, &installed).await;
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+async fn assert_schema_less_typed_read_refuses(
+    db: &Database,
+    installed: &InstalledRuntimeProjection,
+) {
+    use std::sync::Arc;
+    use type_bridge_orm::match_request::SessionHandle;
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let session = SessionHandle::new(Arc::clone(&registry));
+    let person = session.exact("person").unwrap();
+    let query = session
+        .query(session.positional([person.one()]).unwrap())
+        .unwrap();
+    let request = query.validate_count_by(&person).unwrap();
+    let type_bridge_orm::OrmError::Match(error) =
+        db.execute_match(&registry, &request).await.unwrap_err()
+    else {
+        panic!("expected typed refusal")
+    };
+    assert_eq!(error.code().as_str(), "schema_authority_required");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn playerless_relations_do_not_survive_commit() {
+    let Some(db) = live_database("tb270_04b_playerless").await else {
+        return;
+    };
+    db.execute_raw(
+        "define relation optional-pair, relates left @card(0..), relates right @card(0..);",
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let inserted = db
+        .execute_raw("insert $r isa optional-pair;", TxType::Write)
+        .await;
+    let persisted = rows(
+        &db.execute_raw("match $r isa optional-pair; select $r;", TxType::Read)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        persisted, 0,
+        "native playerless creation requires a capability if this profile can persist it"
+    );
+    println!(
+        "playerless relation: insert_refused={}, persisted_after_commit={persisted}",
+        inserted.is_err()
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn negated_given_role_iid_preserves_the_provider_connection() {
+    let Some(db) = live_database("negated_given_iid").await else {
+        return;
+    };
+    db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    db.execute_raw(r#"insert $i isa item, has item-id "I1"; $a isa account, has account-id "A1"; $p isa purchase, links (buyer: $a, item: $i), has order-id "O1";"#, TxType::Write).await.unwrap();
+    let QueryResult::Documents(accounts) = db
+        .execute_raw(
+            r#"match $a isa account; fetch {"iid":iid($a)};"#,
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("account identity");
+    };
+    let iid = accounts[0]["iid"].as_str().unwrap();
+    let mut tx = db.transaction(TransactionOptions::default());
+    for (negative, optional, expected) in [(false, false, 1), (false, true, 1), (true, false, 0)] {
+        let staged = tx.stage_plan(&race::scoped_given_iid(iid, negative, optional));
+        if negative
+            && !type_bridge_contract::query_plan::v3::supports_negated_given_iid(
+                db.server_version()
+                    .as_ref()
+                    .and_then(type_bridge_core_lib::version::semantic_profile_id),
+            )
+        {
+            let Err(type_bridge_orm::session::staged::PendingError::InvalidPlan(diagnostic)) =
+                staged
+            else {
+                panic!("unsupported negated given IID must refuse before dispatch");
+            };
+            assert_eq!(
+                diagnostic.code().as_str(),
+                "query_plan_negated_given_iid_unsupported"
+            );
+            continue;
+        }
+        let pending = staged.unwrap();
+        tx.commit().await.unwrap();
+        assert!(
+            matches!(&*pending.get().unwrap(), PlanAnswer::Rows(rows) if rows.len() == expected)
+        );
+    }
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $p isa purchase; select $p;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        1
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[derive(Debug)]
+struct HandwrittenParty {
+    iid: Option<String>,
+    concrete: String,
+    identifier: String,
+}
+impl type_bridge_orm::_entity::TypeBridgeEntity for HandwrittenParty {
+    const TYPE_NAME: &'static str = "party";
+    fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+        &[]
+    }
+    fn iid(&self) -> Option<&str> {
+        self.iid.as_deref()
+    }
+    fn set_iid(&mut self, iid: String) {
+        self.iid = Some(iid);
+    }
+    fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+        vec![(
+            "identifier",
+            type_bridge_orm::AttributeValue::String(self.identifier.clone()),
+        )]
+    }
+    fn from_document(
+        document: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, type_bridge_orm::OrmError> {
+        Ok(Self {
+            iid: None,
+            concrete: document["_type"].as_str().unwrap().to_owned(),
+            identifier: document["identifier"].as_str().unwrap().to_owned(),
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handwritten_returning_delete_dispatches_exact_subtypes_and_preserves_relation_players() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::{EntityManager, RelationManager};
+    let Some(db) = live_database("handwritten_returning").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = party_projection_with_authority();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let mut parties = Vec::new();
+    for (name, key) in [("person", "p"), ("company", "c")] {
+        let kind = party_type(TypeKind::Entity, name);
+        let create = ProjectedCreate::try_new(
+            &installed,
+            kind.clone(),
+            vec![(
+                OwnsFactId::new(
+                    kind,
+                    type_bridge_contract::id::AttributeId::new("identifier").unwrap(),
+                )
+                .unwrap(),
+                vec![party_text(&installed, "identifier", key)],
+            )],
+            vec![],
+        )
+        .unwrap();
+        parties.push(crud.insert_entity(&db, &create).await.unwrap());
+    }
+    let relation = crud
+        .insert_relation(
+            &db,
+            &membership(
+                &installed,
+                parties[0].try_to_reference(&installed).unwrap(),
+                "preimage",
+            ),
+        )
+        .await
+        .unwrap();
+    #[derive(Debug)]
+    struct MembershipSnapshot {
+        iid: Option<String>,
+        players: Vec<String>,
+    }
+    impl type_bridge_orm::_relation::TypeBridgeRelation for MembershipSnapshot {
+        const TYPE_NAME: &'static str = "membership";
+        fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+            &[]
+        }
+        fn role_info() -> &'static [type_bridge_orm::_relation::RoleInfo] {
+            &[]
+        }
+        fn iid(&self) -> Option<&str> {
+            self.iid.as_deref()
+        }
+        fn set_iid(&mut self, iid: String) {
+            self.iid = Some(iid);
+        }
+        fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+            vec![]
+        }
+        fn to_role_player_refs(&self) -> Vec<type_bridge_orm::_relation::RolePlayerRef> {
+            vec![]
+        }
+        fn from_document(
+            document: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<Self, type_bridge_orm::OrmError> {
+            Ok(Self {
+                iid: None,
+                players: document["role_players"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|player| player["player_iid"].as_str().unwrap().to_owned())
+                    .collect(),
+            })
+        }
+    }
+    let relations =
+        RelationManager::<MembershipSnapshot>::from_registry(&db, Arc::clone(&registry)).unwrap();
+    let snapshots = relations
+        .delete_many_returning(&[MembershipSnapshot {
+            iid: Some(relation.iid().into()),
+            players: vec![],
+        }])
+        .await
+        .unwrap();
+    assert_eq!(snapshots[0].iid.as_deref(), Some(relation.iid()));
+    assert_eq!(snapshots[0].players, [parties[0].iid()]);
+    let manager = EntityManager::<HandwrittenParty>::from_registry(&db, registry).unwrap();
+    let input = parties
+        .iter()
+        .map(|party| HandwrittenParty {
+            iid: Some(party.iid().into()),
+            concrete: String::new(),
+            identifier: String::new(),
+        })
+        .collect::<Vec<_>>();
+    let deleted = manager.delete_many_returning(&input).await.unwrap();
+    assert_eq!(
+        deleted
+            .iter()
+            .map(|party| party.concrete.as_str())
+            .collect::<Vec<_>>(),
+        ["person", "company"]
+    );
+    assert_eq!(
+        deleted
+            .iter()
+            .map(|party| party.identifier.as_str())
+            .collect::<Vec<_>>(),
+        ["p", "c"]
+    );
+    assert_eq!(
+        rows(
+            &db.execute_raw("match $p isa party; select $p;", TxType::Read)
+                .await
+                .unwrap()
+        ),
+        0
+    );
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test]
+async fn native_batches_preserve_integer_keys_and_model_ownership_constraints() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    use type_bridge_orm::{
+        ProjectedBatch, ProjectedBatchExecutor, ProjectedBatchInvocationControl,
+        ProjectedBatchOperation, ProjectedBatchResult, ProjectedBatchRow,
+        QueryExecutionResourceLimits,
+    };
+    let Some(db) = live_database("integer_key_batch").await else {
+        return;
+    };
+    let documents = SchemaDocumentSet::parse([(
+        DocumentId::new("models.yaml").unwrap(),
+        include_str!("../../../../tests/contracts/sdk_conformance/models/schema.yaml"),
+    )])
+    .unwrap();
+    let declared = normalize_documents(&documents).unwrap();
+    let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+    let resolved = resolve(&declared, &profile).unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Python,
+            &ProjectionConfig::python(),
+            &[ProjectionHandler::python_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        type_bridge_contract::managed_scope::ManagedScopeId::new("integer-key-batch").unwrap(),
+        profile,
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    let installed = installed.with_schema_authority(&authority);
+    db.execute_raw(
+        include_str!("../../../../tests/contracts/sdk_conformance/models/provider-3.12.1.tql"),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let create = |model: &TypeId, fields: Vec<(&str, CanonicalValue)>| {
+        ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            fields
+                .into_iter()
+                .map(|(label, value)| {
+                    (
+                        OwnsFactId::new(model.clone(), AttributeId::new(label).unwrap()).unwrap(),
+                        vec![
+                            ProjectedAttributeValue::try_new(
+                                &installed,
+                                party_type(TypeKind::Attribute, label),
+                                value,
+                            )
+                            .unwrap(),
+                        ],
+                    )
+                })
+                .collect(),
+            vec![],
+        )
+        .unwrap()
+    };
+    let batch = |model: &TypeId, operation, rows| {
+        ProjectedBatch::try_new(&installed, model.clone(), operation, rows).unwrap()
+    };
+    let control = || {
+        ProjectedBatchInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+    };
+    let things = |result| {
+        let ProjectedBatchResult::Things(things) = result else {
+            panic!("model batch result");
+        };
+        things
+    };
+    let text = |value: &str| CanonicalValue::String(CanonicalString::new(value).unwrap());
+    let executor = ProjectedBatchExecutor::new(&installed);
+    let robot = party_type(TypeKind::Entity, "robot");
+    let input = create(
+        &robot,
+        vec![
+            ("robot_id", CanonicalValue::Long(100)),
+            ("val_constrained", CanonicalValue::Long(10)),
+        ],
+    );
+    let inserted = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &robot,
+                    ProjectedBatchOperation::Insert,
+                    vec![ProjectedBatchRow::Create(input)],
+                ),
+                control(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(inserted.len(), 1);
+    let iid = inserted[0].iid().to_owned();
+    let replacement = create(
+        &robot,
+        vec![
+            ("robot_id", CanonicalValue::Long(100)),
+            ("val_constrained", CanonicalValue::Long(11)),
+            ("nickname", text("Ada")),
+        ],
+    );
+    let updated = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &robot,
+                    ProjectedBatchOperation::Update,
+                    vec![ProjectedBatchRow::Update {
+                        iid: iid.clone(),
+                        replacement,
+                    }],
+                ),
+                control(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(updated[0].iid(), iid);
+    assert_eq!(texts(&updated[0], "nickname"), ["Ada"]);
+    let replacement = create(
+        &robot,
+        vec![
+            ("robot_id", CanonicalValue::Long(100)),
+            ("val_constrained", CanonicalValue::Long(12)),
+        ],
+    );
+    let replaced = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &robot,
+                    ProjectedBatchOperation::Put,
+                    vec![ProjectedBatchRow::Create(replacement)],
+                ),
+                control(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(replaced[0].iid(), iid);
+    assert!(texts(&replaced[0], "nickname").is_empty());
+    assert_eq!(
+        ProjectedCrudExecutor::new(&installed)
+            .count_entities(&db, &robot)
+            .await
+            .unwrap(),
+        1
+    );
+
+    let employee = party_type(TypeKind::Entity, "employee");
+    let input = create(
+        &employee,
+        vec![
+            ("identifier", text("native-employee")),
+            ("party_name", text("Native")),
+            ("rank", CanonicalValue::Long(1)),
+        ],
+    );
+    let inserted = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &employee,
+                    ProjectedBatchOperation::Put,
+                    vec![ProjectedBatchRow::Create(input)],
+                ),
+                control(),
+            )
+            .await
+            .unwrap(),
+    );
+    let iid = inserted[0].iid().to_owned();
+    let replacement = create(
+        &employee,
+        vec![
+            ("identifier", text("native-employee")),
+            ("party_name", text("Replaced")),
+            ("rank", CanonicalValue::Long(2)),
+        ],
+    );
+    let replaced = things(
+        executor
+            .execute(
+                &db,
+                &batch(
+                    &employee,
+                    ProjectedBatchOperation::Put,
+                    vec![ProjectedBatchRow::Create(replacement)],
+                ),
+                control(),
+            )
+            .await
+            .unwrap(),
+    );
+    assert_eq!(replaced[0].iid(), iid);
+    assert_eq!(texts(&replaced[0], "party_name"), ["Replaced"]);
+    assert_eq!(
+        ProjectedCrudExecutor::new(&installed)
+            .count_entities(&db, &employee)
+            .await
+            .unwrap(),
+        1
+    );
+    db.delete_database().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_relation_updates_refuse_unresolved_players_and_missing_roots() {
+    use std::sync::Arc;
+    use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkProviderOperation};
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::{AttributeValue, lower_execution_error};
+    let Some(db) = live_database("missing_update_players").await else {
+        return;
+    };
+    db.execute_raw(
+        &PARTY_SCHEMA_TYPEQL
+            .replace(
+                "owns note @card(0..1)",
+                "owns identifier @key, owns note @card(0..1)",
+            )
+            .replace(
+                "entity person sub party;",
+                "entity person sub party, owns note @card(0..1);",
+            ),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let installed = party_projection_for_schema(
+        &PARTY_SCHEMA_YAML
+            .replace(
+                "      note: { card: { min: 0, max: 1 } }",
+                "      identifier: { key: true }\n      note: { card: { min: 0, max: 1 } }",
+            )
+            .replace(
+                "  person:\n    sub: party",
+                "  person:\n    sub: party\n    owns:\n      note: { card: { min: 0, max: 1 } }",
+            ),
+    );
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    let person = people
+        .insert(&vec![
+            (
+                "identifier".into(),
+                AttributeValue::String("existing".into()),
+            ),
+            ("note".into(), AttributeValue::String("shared".into())),
+        ])
+        .await
+        .unwrap();
+    people
+        .insert(&vec![
+            ("identifier".into(), AttributeValue::String("other".into())),
+            ("note".into(), AttributeValue::String("shared".into())),
+        ])
+        .await
+        .unwrap();
+    let relations = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    let valid = DynamicRolePlayerInput {
+        role_name: "member".into(),
+        player_type_name: "person".into(),
+        iid: Some(person),
+        key: None,
+    };
+    let note = |value: &str| vec![("note".into(), AttributeValue::String(value.into()))];
+    let mut initial = note("before");
+    initial.push((
+        "identifier".into(),
+        AttributeValue::String("relation".into()),
+    ));
+    let iid = relations
+        .insert(&initial, std::slice::from_ref(&valid))
+        .await
+        .unwrap();
+    let missing_iid = DynamicRolePlayerInput {
+        iid: Some("0x00".into()),
+        ..valid.clone()
+    };
+    let missing_key = DynamicRolePlayerInput {
+        iid: None,
+        key: Some(("identifier".into(), AttributeValue::String("absent".into()))),
+        ..valid.clone()
+    };
+    for player in [missing_iid, missing_key] {
+        for exact in [false, true] {
+            let error = if exact {
+                relations
+                    .update_exact(&iid, &note("after"), std::slice::from_ref(&player))
+                    .await
+                    .unwrap_err()
+            } else {
+                relations
+                    .update(Some(&iid), &note("after"), std::slice::from_ref(&player))
+                    .await
+                    .unwrap_err()
+            };
+            let diagnostic = lower_execution_error(error, SdkProviderOperation::Write);
+            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+            assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
+        }
+        let error = relations
+            .update(Some(&iid), &vec![], std::slice::from_ref(&player))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            lower_execution_error(error, SdkProviderOperation::Write)
+                .code()
+                .as_str(),
+            "provider_hydration_failed"
+        );
+        let error = relations
+            .put_exact(&initial, std::slice::from_ref(&player))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            lower_execution_error(error, SdkProviderOperation::Write)
+                .code()
+                .as_str(),
+            "provider_hydration_failed"
+        );
+    }
+    let ambiguous = DynamicRolePlayerInput {
+        iid: None,
+        key: Some(("note".into(), AttributeValue::String("shared".into()))),
+        ..valid.clone()
+    };
+    let alias = DynamicRolePlayerInput {
+        iid: None,
+        key: Some((
+            "identifier".into(),
+            AttributeValue::String("existing".into()),
+        )),
+        ..valid.clone()
+    };
+    for players in [vec![ambiguous], vec![valid.clone(), alias]] {
+        for exact in [false, true] {
+            let result = if exact {
+                relations.update_exact(&iid, &note("after"), &players).await
+            } else {
+                relations.update(Some(&iid), &note("after"), &players).await
+            };
+            let diagnostic =
+                lower_execution_error(result.unwrap_err(), SdkProviderOperation::Write);
+            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+            assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
+        }
+        let error = relations.put_exact(&initial, &players).await.unwrap_err();
+        let reason = format!("{error:?}; players={players:?}");
+        let diagnostic = lower_execution_error(error, SdkProviderOperation::Write);
+        assert_eq!(
+            diagnostic.code().as_str(),
+            "provider_hydration_failed",
+            "{reason}"
+        );
+    }
+    for attributes in [note("after"), vec![]] {
+        let diagnostic = lower_execution_error(
+            relations
+                .update(Some("0x00"), &attributes, std::slice::from_ref(&valid))
+                .await
+                .unwrap_err(),
+            SdkProviderOperation::Write,
+        );
+        assert_eq!(diagnostic.code().as_str(), "provider_hydration_failed");
+    }
+    relations
+        .update(Some(&iid), &vec![], std::slice::from_ref(&valid))
+        .await
+        .unwrap();
+    let error = relations
+        .update_exact("0x00", &note("after"), std::slice::from_ref(&valid))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        lower_execution_error(error, SdkProviderOperation::Write)
+            .code()
+            .as_str(),
+        "provider_hydration_failed"
+    );
+    let row = relations.get_by_iid_exact(&iid).await.unwrap();
+    assert_eq!(row.len(), 1);
+    assert_eq!(row[0].role_players.len(), 1);
+    assert_eq!(
+        row[0].role_players[0].player_iid.as_deref(),
+        valid.iid.as_deref()
+    );
+    assert!(row[0].attributes.contains(&note("before")[0]));
+    assert!(row[0].attributes.contains(&(
+        "identifier".into(),
+        AttributeValue::String("relation".into())
+    )));
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_bulk_insert_splits_six_megabytes_and_rolls_back_later_chunk_failure() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::AttributeValue;
+    let Some(db) = live_database("large_manager_insert").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = party_projection_with_authority();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    let items = (0..200)
+        .map(|index| {
+            vec![(
+                "identifier".into(),
+                AttributeValue::String(format!("{index:04}{}", "x".repeat(30_000))),
+            )]
+        })
+        .collect::<Vec<_>>();
+    let mut duplicates = items.clone();
+    duplicates[199] = duplicates[0].clone();
+    assert!(people.insert_many(&duplicates).await.is_err());
+    assert_eq!(
+        people.count().await.unwrap(),
+        0,
+        "a later failed chunk must roll back earlier writes"
+    );
+    let ids = people.insert_many(&items).await.unwrap();
+    assert_eq!(ids.len(), 200);
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        200
+    );
+    assert_eq!(people.count().await.unwrap(), 200);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_relation_update_emits_one_root_after_two_values_and_three_players() {
+    use std::sync::Arc;
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::{AttributeValue, QueryExecutionResourceLimits};
+    let Some(db) = live_database("update_root_cardinality").await else {
+        return;
+    };
+    db.execute_raw(
+        &PARTY_SCHEMA_TYPEQL
+            .replace("relates member @card(1..2)", "relates member @card(1..3)")
+            .replace("owns note @card(0..1)", "owns note @card(0..2)"),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let yaml = PARTY_SCHEMA_YAML
+        .replace(
+            "member: { card: { min: 1, max: 2 } }",
+            "member: { card: { min: 1, max: 3 } }",
+        )
+        .replace(
+            "note: { card: { min: 0, max: 1 } }",
+            "note: { card: { min: 0, max: 2 } }",
+        );
+    let installed = party_projection_for_schema(&yaml);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    let mut players = Vec::new();
+    for index in 0..3 {
+        let iid = people
+            .insert(&vec![(
+                "identifier".into(),
+                AttributeValue::String(index.to_string()),
+            )])
+            .await
+            .unwrap();
+        players.push(DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: "person".into(),
+            iid: Some(iid),
+            key: None,
+        });
+    }
+    let relations = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    let notes = |a: &str, b: &str| {
+        vec![
+            ("note".into(), AttributeValue::String(a.into())),
+            ("note".into(), AttributeValue::String(b.into())),
+        ]
+    };
+    let iid = relations
+        .insert(&notes("old1", "old2"), &players)
+        .await
+        .unwrap();
+    let tx = db
+        .transaction_context_with_answer_limits(
+            TxType::Write,
+            QueryExecutionResourceLimits {
+                items: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let manager = DynamicRelationManager::with_registry_transaction(
+        tx.clone(),
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    manager
+        .update_exact(&iid, &notes("new1", "new2"), &players)
+        .await
+        .unwrap();
+    tx.commit_sdk().await.unwrap();
+    let rows = db
+        .execute_raw(
+            &format!("match $r iid {iid}, has note $n; select $r, $n;"),
+            TxType::Read,
+        )
+        .await
+        .unwrap();
+    assert_eq!(self::rows(&rows), 2);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_relation_update_without_iid_keeps_multiple_root_semantics() {
+    use std::sync::Arc;
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::AttributeValue;
+    let Some(db) = live_database("multi_root_update").await else {
+        return;
+    };
+    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
+        .await
+        .unwrap();
+    let installed = party_projection_with_authority();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    let iid = people
+        .insert(&vec![(
+            "identifier".into(),
+            AttributeValue::String("shared".into()),
+        )])
+        .await
+        .unwrap();
+    let player = DynamicRolePlayerInput {
+        role_name: "member".into(),
+        player_type_name: "person".into(),
+        iid: Some(iid),
+        key: None,
+    };
+    let relations = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    let note = |value: &str| vec![("note".into(), AttributeValue::String(value.into()))];
+    let first = relations
+        .insert(&note("first"), std::slice::from_ref(&player))
+        .await
+        .unwrap();
+    let second = relations
+        .insert(&note("second"), std::slice::from_ref(&player))
+        .await
+        .unwrap();
+    relations
+        .update(None, &note("updated"), &[player])
+        .await
+        .unwrap();
+    for iid in [first, second] {
+        let rows = relations.get_by_iid_exact(&iid).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].attributes, note("updated"));
+    }
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
 }

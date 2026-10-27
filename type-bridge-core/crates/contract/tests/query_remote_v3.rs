@@ -63,6 +63,14 @@ fn advertisement() -> RemoteCapabilities {
                         | "query.pipeline.rematch"
                         | "query.expr.iid"
                         | "query.input.wide-strings"
+                        | "query.fetch.scalar-fields"
+                        | "query.fetch.role-lists"
+                        | "query.pipeline.write-projection"
+                        | "query.pattern.nested-iid"
+                        | "query.pattern.negated-given-iid"
+                        | "query.write.put-subtypes"
+                        | "query.write.optional-attach"
+                        | "query.write.attach-key"
                 )
             })
             .collect();
@@ -1470,4 +1478,36 @@ fn typed_read_failure_projection_preserves_path_details_certainty_and_static_mes
         serde_json::to_value(projection.to_query_diagnostic().unwrap().host_json()).unwrap(),
         expected
     );
+}
+
+#[test]
+fn current_vocabulary_only_adds_explicitly_named_capabilities_to_frozen_advertisements() {
+    let frozen = RemoteCapabilities::decode(include_bytes!(
+        "fixtures/query-remote-v3/advertisement.json"
+    ))
+    .unwrap();
+    let mut current = query_plan_v3_capability_vocabulary();
+    for capability in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
+        current.insert(CapabilityId::new(capability).unwrap());
+    }
+    assert!(frozen.capabilities().missing_from(&current).is_empty());
+    let expected: type_bridge_contract::capability::CapabilitySet = [
+        "query.write.delete-snapshot",
+        "query.pipeline.rematch",
+        "query.expr.iid",
+        "query.input.wide-strings",
+        "query.fetch.scalar-fields",
+        "query.fetch.role-lists",
+        "query.pipeline.write-projection",
+        "query.pattern.nested-iid",
+        "query.pattern.negated-given-iid",
+        "query.write.put-subtypes",
+        "query.write.optional-attach",
+        "query.write.attach-key",
+    ]
+    .into_iter()
+    .map(|name| CapabilityId::new(name).unwrap())
+    .collect();
+    assert_eq!(current.missing_from(frozen.capabilities()), expected);
+    assert_eq!(advertisement().encode().unwrap(), frozen.encode().unwrap());
 }

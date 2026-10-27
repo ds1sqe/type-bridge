@@ -29,6 +29,7 @@ fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
         (
             "put",
             Stage::Put {
+                include_subtypes: false,
                 things: vec![thing(1)],
             },
         ),
@@ -1207,7 +1208,7 @@ fn thing_fetch_is_terminal_typed_and_lists_declared_roles_once() {
 }
 
 #[test]
-fn attach_adds_to_bound_things_and_refuses_keys_and_unbound_targets() {
+fn attach_adds_to_bound_things_and_refuses_unbound_targets() {
     use type_bridge_contract::query_plan::v3::AttachItem;
     let plan = examples::attach();
     let bytes = plan.canonical_bytes().unwrap();
@@ -1226,21 +1227,29 @@ fn attach_adds_to_bound_things_and_refuses_keys_and_unbound_targets() {
             vec![],
         )
     };
+    let key = QueryPlanV3::new(
+        attach(
+            vec![AttachItem::Has {
+                optional: false,
+                owner: id(0),
+                field: field("id"),
+                operand: string("account-c"),
+            }],
+            vec![pat(0, entity("account"))],
+        ),
+        &schema(),
+    )
+    .unwrap();
+    assert!(
+        key.required_capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.write.attach-key")
+    );
     for (plan, code) in [
         (
             attach(
                 vec![AttachItem::Has {
-                    owner: id(0),
-                    field: field("id"),
-                    operand: string("account-c"),
-                }],
-                vec![pat(0, entity("account"))],
-            ),
-            "query_plan_key_update",
-        ),
-        (
-            attach(
-                vec![AttachItem::Has {
+                    optional: false,
                     owner: id(1),
                     field: field("score"),
                     operand: literal(1),
@@ -1252,6 +1261,7 @@ fn attach_adds_to_bound_things_and_refuses_keys_and_unbound_targets() {
         (
             attach(
                 vec![AttachItem::Links {
+                    optional: false,
                     relation: id(0),
                     role: role(),
                     player: id(0),

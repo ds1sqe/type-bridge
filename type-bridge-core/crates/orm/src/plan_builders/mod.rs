@@ -8,8 +8,12 @@
 
 pub(crate) mod authority;
 pub(crate) mod batch;
+pub(crate) mod batch_native;
+pub(crate) mod input;
 pub(crate) mod insert;
+pub(crate) mod manager;
 pub(crate) mod put;
+pub(crate) mod read;
 pub(crate) mod reference;
 pub(crate) mod write;
 
@@ -62,6 +66,23 @@ impl PlanDraft {
         Ok(id)
     }
 
+    /// Declare one column of a homogeneous native batch.
+    pub(crate) fn input(
+        &mut self,
+        name: &str,
+        domain: type_bridge_contract::value::ValueTypeTag,
+        nullable: bool,
+    ) -> Result<QueryOperand, Diagnostic> {
+        let column = InputColumnId::new(u16::try_from(self.inputs.len()).unwrap_or(u16::MAX));
+        self.inputs.push(InputColumn::new(
+            column,
+            QueryVariable::new(name)?,
+            domain,
+            nullable,
+        ));
+        Ok(QueryOperand::Input { column })
+    }
+
     /// Carry one caller value as an input column or a plan literal.
     ///
     /// A literal string with a control character is refused: the adaptor
@@ -94,13 +115,25 @@ impl PlanDraft {
 
     /// Validate the program against the installed authority.
     pub(crate) fn finish(
-        self,
+        mut self,
         authority: &PlanAuthority,
         pipeline: Vec<Stage>,
         operation: Operation,
         output: QueryOutput,
     ) -> Result<BuiltPlan, Diagnostic> {
-        let given_rows = (!self.inputs.is_empty()).then(|| vec![InputRow::new(self.row)]);
+        let given_rows =
+            (!self.inputs.is_empty()).then(|| vec![InputRow::new(std::mem::take(&mut self.row))]);
+        self.finish_rows(authority, pipeline, operation, output, given_rows)
+    }
+
+    pub(crate) fn finish_rows(
+        self,
+        authority: &PlanAuthority,
+        pipeline: Vec<Stage>,
+        operation: Operation,
+        output: QueryOutput,
+        given_rows: Option<Vec<InputRow>>,
+    ) -> Result<BuiltPlan, Diagnostic> {
         let plan = QueryPlanV3::new(
             PlanSpec {
                 bindings: self.bindings,
@@ -182,6 +215,115 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn manager_player_guards_are_pinned_only_for_multi_player_roles() {
+        use sha2::{Digest, Sha256};
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::query_plan::QueryPattern;
+        use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+        let declared = race::schema();
+        let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+        let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
+        let installed = crate::InstalledRuntimeProjection::try_new(
+            type_bridge_schema::project(
+                &resolved,
+                BindingTarget::Python,
+                &ProjectionConfig::python(),
+                &[ProjectionHandler::python_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("manager-guard-test").unwrap(),
+            profile,
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let authority = type_bridge_schema::build_schema_authority(
+            &declared,
+            declared.required_capabilities(),
+            &context,
+        )
+        .unwrap();
+        let installed = installed.with_schema_authority(&authority);
+        let plans = super::manager::ManagerPlans::new(std::sync::Arc::new(
+            installed.match_registry().unwrap(),
+        ));
+        let player =
+            |role: &str, type_name: &str, iid: &str| crate::_dynamic::DynamicRolePlayerInput {
+                role_name: role.into(),
+                player_type_name: type_name.into(),
+                iid: Some(iid.into()),
+                key: None,
+            };
+        let cases = [
+            vec![player("item", "item", "0x10")],
+            vec![
+                player("item", "item", "0x10"),
+                player("buyer", "account", "0x11"),
+            ],
+            vec![
+                player("item", "item", "0x10"),
+                player("item", "item", "0x12"),
+            ],
+        ];
+        let actual = cases.into_iter().map(|players| {
+            let plan = plans.update("purchase", Some("0x20"), &vec![], &players, true).unwrap().unwrap();
+            let patterns = match &plan.local().pipeline()[0] { type_bridge_contract::query_plan::v3::Stage::Match { patterns } => patterns, _ => panic!("initial match") };
+            let iid_lets = patterns.iter().filter(|pattern| matches!(pattern, Pattern::Let { expr: Expr::Iid { .. }, .. })).count();
+            let guards = patterns.iter().filter(|pattern| matches!(pattern, Pattern::Read(QueryPattern::Value { comparator: type_bridge_contract::migration_assertion::ValueComparator::NotEqual, .. }))).count();
+            (format!("{:x}", Sha256::digest(plan.local().canonical_bytes().unwrap())), iid_lets, guards)
+        }).collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            [
+                (
+                    "9496a23bb3fcae34a05cbe9b8808bd165ec6e2a61d2355fd05a701b729a69ac0".into(),
+                    0,
+                    0
+                ),
+                (
+                    "779f4b2d08e6f29e924870ac33e815e0d2c5514b8823c7c35208aec35ef58ebf".into(),
+                    0,
+                    0
+                ),
+                (
+                    "ee6b240ab9274cd507f7294961590bece1e0e5a302b5a4ac7a65b59826cf5cb1".into(),
+                    2,
+                    1
+                )
+            ]
+        );
+        let scalar_update = plans
+            .update(
+                "doctor",
+                Some("0x20"),
+                &vec![("on-call".into(), crate::AttributeValue::Boolean(true))],
+                &[],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        let select = scalar_update
+            .local()
+            .pipeline()
+            .iter()
+            .rev()
+            .find_map(|stage| match stage {
+                type_bridge_contract::query_plan::v3::Stage::Select { bindings } => Some(bindings),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            select.as_slice(),
+            &[type_bridge_contract::migration_assertion::BindingId::new(0).unwrap()],
+            "replacement values leave scope after attachment"
+        );
     }
 
     #[test]
@@ -461,6 +603,8 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
         let on_call = [(owns("on-call"), CanonicalValue::Boolean(true))];
         let cleared = [owns("on-call")];
         let put = KeyedPut {
+            include_subtypes: false,
+            return_document: true,
             type_id: &doctor,
             keys: &keys,
             fields: if fields { &on_call } else { &[] },

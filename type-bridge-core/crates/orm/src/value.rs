@@ -32,6 +32,20 @@ pub enum AttributeValue {
 }
 
 impl AttributeValue {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::String(value)
+            | Self::Date(value)
+            | Self::DateTime(value)
+            | Self::DateTimeTZ(value)
+            | Self::Decimal(value)
+            | Self::Duration(value) => value.clone().into(),
+            Self::Long(value) => (*value).into(),
+            Self::Double(value) => serde_json::json!(value),
+            Self::Boolean(value) => (*value).into(),
+        }
+    }
+
     /// Convert to a core AST [`Value::Literal`].
     pub fn to_ast_value(&self) -> Value {
         let (json_val, type_name) = match self {

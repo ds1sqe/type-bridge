@@ -115,7 +115,12 @@ impl StagedExecutor {
     pub fn new(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Self {
         // The V2 advertisement's limits were validated when it was built, so
         // re-stating them under a wider capability set cannot fail.
-        let advertisement = staged_advertisement(&query.advertisement)
+        let profile = query
+            .database
+            .server_version()
+            .as_ref()
+            .and_then(type_bridge_core_lib::version::semantic_profile_id);
+        let advertisement = staged_advertisement_for_profile(&query.advertisement, profile)
             .and_then(|advertisement| match query.staged_query_limits {
                 Some(limits) => advertisement.with_query_limits(limits),
                 None => Ok(advertisement),
@@ -186,9 +191,28 @@ impl StagedExecutor {
 /// The staged V3 advertisement: the V2 capabilities plus the staged
 /// vocabulary, under the same executor binding, reply key and limits.
 pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilities, Diagnostic> {
-    let mut capabilities = v2.capabilities().clone();
+    staged_advertisement_for_profile(v2, Some("typedb-3.13.6/v1"))
+}
+
+fn staged_advertisement_for_profile(
+    v2: &RemoteCapabilities,
+    profile: Option<&str>,
+) -> Result<RemoteCapabilities, Diagnostic> {
+    let mut capabilities: type_bridge_contract::capability::CapabilitySet = v2
+        .capabilities()
+        .iter()
+        .filter(|capability| {
+            capability.as_str() != type_bridge_contract::query_plan::v3::CAP_NEGATED_GIVEN_IID
+                || type_bridge_contract::query_plan::v3::supports_negated_given_iid(profile)
+        })
+        .cloned()
+        .collect();
     for capability in query_plan_v3_capability_vocabulary().iter() {
-        capabilities.insert(capability.clone());
+        if capability.as_str() != type_bridge_contract::query_plan::v3::CAP_NEGATED_GIVEN_IID
+            || type_bridge_contract::query_plan::v3::supports_negated_given_iid(profile)
+        {
+            capabilities.insert(capability.clone());
+        }
     }
     for capability in [
         CAP_QUERY_REMOTE_STAGED_V3,
@@ -743,7 +767,7 @@ fn touched_types(plan: &QueryPlanV3) -> Vec<TypeId> {
                     }
                 }
             }
-            Stage::Insert { things } | Stage::Put { things } => {
+            Stage::Insert { things } | Stage::Put { things, .. } => {
                 types.extend(things.iter().map(|thing| thing.type_id.clone()));
             }
             _ => {}

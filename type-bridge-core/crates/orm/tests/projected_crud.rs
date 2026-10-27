@@ -1,3 +1,5 @@
+#[path = "support/allocations.rs"]
+mod allocations;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -635,20 +637,23 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
     let installed = installed_ordered();
     let create = ordered_collaboration_create(&installed).unwrap();
     let (backend, state) = RecordingBackend::new(
-        vec![documents(
-            ["0x10", "0x11"]
-                .map(|iid| {
-                    serde_json::json!({
-                        "_iid": "0x20",
-                        "_type": "collaboration",
-                        "attributes": {},
-                        "_role_0_iid": iid,
-                        "_role_0_type": "person",
-                        "_role_0_attributes": {"identifier": format!("person-{iid}")}
+        vec![
+            insert_iid("0x20"),
+            documents(
+                ["0x10", "0x11"]
+                    .map(|iid| {
+                        serde_json::json!({
+                            "_iid": "0x20",
+                            "_type": "collaboration",
+                            "attributes": {},
+                            "_role_0_iid": iid,
+                            "_role_0_type": "person",
+                            "_role_0_attributes": {"identifier": format!("person-{iid}")}
+                        })
                     })
-                })
-                .to_vec(),
-        )],
+                    .to_vec(),
+            ),
+        ],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
@@ -683,7 +688,7 @@ async fn ordered_role_order_survives_write_lowering_and_hydration() {
     let write = &state.queries[0];
     assert!(write.find("iid 0x10").unwrap() < write.find("iid 0x11").unwrap());
     assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 1);
+    assert_eq!(state.queries.len(), 2);
     assert_eq!(state.commits, 1);
     assert_eq!(state.rollbacks, 0);
 }
@@ -1150,11 +1155,7 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
     let create = membership_create(&installed);
 
     let (put_backend, put_state) = RecordingBackend::new(
-        vec![
-            documents(vec![serde_json::json!({"iid": "0x10"})]),
-            insert_iid("0x20"),
-            documents(vec![membership_document("0x20")]),
-        ],
+        vec![documents(vec![membership_document("0x20")])],
         CommitBehavior::Success,
     );
     let put_database = Database::with_backend(Box::new(put_backend), "test");
@@ -1177,11 +1178,11 @@ async fn owned_relation_put_and_update_rehydrate_before_commit() {
     {
         let state = put_state.lock().unwrap();
         assert_eq!(state.opens, [TxType::Write]);
-        assert_eq!(state.queries.len(), 3);
+        assert_eq!(state.queries.len(), 1);
         assert!(state.queries[0].contains("isa! person"));
-        assert!(state.queries[1].contains("insert"));
-        assert!(state.queries[2].contains("isa! membership"));
-        assert_eq!(state.query_modes, ["canonical"; 3]);
+        assert!(state.queries[0].contains("insert"));
+        assert!(state.queries[0].contains("fetch"));
+        assert_eq!(state.query_modes, ["canonical"]);
         assert_eq!(state.commits, 1);
         assert_eq!(state.rollbacks, 0);
     }
@@ -1216,7 +1217,9 @@ async fn relation_get_count_and_blind_delete_preserve_exact_behavior() {
     let (backend, state) = RecordingBackend::new(
         vec![
             documents(vec![membership_document("0x20")]),
-            RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 2})])),
+            RecordingResponse::Result(QueryResult::Rows(vec![
+                serde_json::json!({"count1": {"kind":"value", "value":CanonicalValue::Long(2)}}),
+            ])),
             RecordingResponse::Result(QueryResult::Rows(vec![])),
         ],
         CommitBehavior::Success,
@@ -1643,7 +1646,9 @@ async fn returning_delete_hydrates_entity_and_relation_snapshots_and_absence() {
         vec![
             documents(vec![person_document("0x10")]),
             RecordingResponse::Result(QueryResult::Ok),
-            documents(vec![membership_document("0x20")]),
+            documents(vec![
+                serde_json::json!({"_iid":"0x20", "_type":"membership", "attributes":{}, "_role_0_players":[person_document("0x10")]}),
+            ]),
             RecordingResponse::Result(QueryResult::Ok),
             documents(vec![]),
             RecordingResponse::Result(QueryResult::Ok),
@@ -1752,7 +1757,9 @@ async fn owned_reads_close_and_preserve_exact_get_and_count_behavior() {
     let (backend, state) = RecordingBackend::new(
         vec![
             documents(vec![person_document("0x10")]),
-            RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 3})])),
+            RecordingResponse::Result(QueryResult::Rows(vec![
+                serde_json::json!({"count1": {"kind":"value", "value":CanonicalValue::Long(3)}}),
+            ])),
         ],
         CommitBehavior::Success,
     );
@@ -2131,7 +2138,7 @@ async fn two_distinct_players_in_one_role_hydrate_from_several_documents() {
 }
 
 #[tokio::test]
-async fn relation_update_without_players_keeps_the_released_path() {
+async fn relation_update_without_players_refuses_before_provider_work() {
     let documents_set = SchemaDocumentSet::parse([(
         DocumentId::new("projected-crud-optional-role.yaml").unwrap(),
         r#"format: typebridge.schema/v2
@@ -2167,31 +2174,23 @@ plays:
         .unwrap(),
     )
     .unwrap();
-    let create = ProjectedCreate::try_new(
+    let diagnostic = ProjectedCreate::try_new(
         &installed,
         type_id(TypeKind::Relation, "tagging"),
         vec![],
         vec![],
     )
-    .unwrap();
-    let (backend, state) = RecordingBackend::new(
-        vec![RecordingResponse::Error("released path reached")],
-        CommitBehavior::Success,
-    );
-    let database = Database::with_backend(Box::new(backend), "test");
-    let _ = ProjectedCrudExecutor::new(&installed)
-        .update_relation(&database, "0x20", &create)
-        .await;
-    // No plan clears every role (which would delete the relation at
-    // commit); the released update runs instead.
-    let state = state.lock().unwrap();
-    assert!(
-        state
-            .queries
-            .iter()
-            .all(|query| !query.contains("PlanFetchType")),
-        "{:?}",
-        state.queries
+    .unwrap_err();
+    assert_eq!(diagnostic.category(), SdkDiagnosticCategory::InvalidInput);
+    assert_eq!(diagnostic.code().as_str(), "relation_requires_player");
+    assert_eq!(
+        diagnostic.path(),
+        &[
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticPathSegment::Type(type_id(
+                TypeKind::Relation,
+                "tagging"
+            ))
+        ]
     );
 }
 
@@ -2255,5 +2254,579 @@ async fn relation_update_matching_nothing_keeps_the_released_codes() {
         let state = state.lock().unwrap();
         assert_eq!(state.queries.len(), 2);
         assert_eq!(state.commits, 0);
+    }
+}
+
+fn installed_with_authority() -> InstalledRuntimeProjection {
+    let declared = normalize_documents(
+        &SchemaDocumentSet::parse([(DocumentId::new("manager-authority.yaml").unwrap(), SCHEMA)])
+            .unwrap(),
+    )
+    .unwrap();
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        type_bridge_contract::managed_scope::ManagedScopeId::new("manager-test").unwrap(),
+        SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let authority = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    installed().with_schema_authority(&authority)
+}
+
+#[derive(Debug, PartialEq)]
+struct NativePerson {
+    iid: Option<String>,
+    identifier: String,
+    email: String,
+}
+impl type_bridge_orm::_entity::TypeBridgeEntity for NativePerson {
+    const TYPE_NAME: &'static str = "person";
+    fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+        &[]
+    }
+    fn iid(&self) -> Option<&str> {
+        self.iid.as_deref()
+    }
+    fn set_iid(&mut self, iid: String) {
+        self.iid = Some(iid);
+    }
+    fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+        vec![]
+    }
+    fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self, OrmError> {
+        let identifier = doc["identifier"].as_str().unwrap().to_owned();
+        let email = doc["email"].as_str().unwrap().to_owned();
+        if email == "reject@example.test" {
+            return Err(OrmError::Hydration {
+                type_name: "person".into(),
+                message: "handwritten materializer rejected input".into(),
+            });
+        }
+        Ok(Self {
+            iid: None,
+            identifier,
+            email,
+        })
+    }
+}
+
+#[tokio::test]
+async fn handwritten_and_projected_returning_delete_share_queries_and_snapshots() {
+    let installed = installed_with_authority();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let make_backend = || {
+        let (mut backend, state) = RecordingBackend::new(
+            vec![
+                documents(vec![person_document("0x10")]),
+                RecordingResponse::Result(QueryResult::Ok),
+            ],
+            CommitBehavior::Success,
+        );
+        backend.given_enabled = true;
+        (backend, state)
+    };
+    let (backend, handwritten_state) = make_backend();
+    let handwritten_database = Database::with_backend(Box::new(backend), "test");
+    let manager = type_bridge_orm::_manager::EntityManager::<NativePerson>::from_registry(
+        &handwritten_database,
+        registry,
+    )
+    .unwrap();
+    let snapshot = manager
+        .delete_returning(&NativePerson {
+            iid: Some("0x10".into()),
+            identifier: String::new(),
+            email: String::new(),
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let (backend, projected_state) = make_backend();
+    let projected_database = Database::with_backend(Box::new(backend), "test");
+    let projected = ProjectedCrudExecutor::new(&installed)
+        .delete_entity_by_iid_returning(
+            &projected_database,
+            &type_id(TypeKind::Entity, "person"),
+            "0x10",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.iid.as_deref(), Some(projected.iid()));
+    let person = type_id(TypeKind::Entity, "person");
+    for (name, actual) in [
+        ("identifier", snapshot.identifier),
+        ("email", snapshot.email),
+    ] {
+        assert_eq!(
+            projected.fields()[&field(&person, name)][0].value(),
+            &CanonicalValue::String(CanonicalString::new(actual).unwrap())
+        );
+    }
+    let handwritten = handwritten_state.lock().unwrap();
+    let projected = projected_state.lock().unwrap();
+    assert_eq!(handwritten.queries, projected.queries);
+    assert_eq!(
+        serde_json::to_vec(&handwritten.given_rows).unwrap(),
+        serde_json::to_vec(&projected.given_rows).unwrap()
+    );
+    assert_eq!(handwritten.queries.len(), 2);
+    assert_eq!((handwritten.commits, handwritten.rollbacks), (1, 0));
+    assert_eq!((projected.commits, projected.rollbacks), (1, 0));
+}
+
+#[tokio::test]
+async fn handwritten_returning_materialization_failure_rolls_back_the_deletion() {
+    let installed = installed_with_authority();
+    let mut doc = person_document("0x10");
+    doc["attributes"]["email"] = serde_json::json!("reject@example.test");
+    let (mut backend, state) = RecordingBackend::new(
+        vec![
+            documents(vec![doc]),
+            RecordingResponse::Result(QueryResult::Ok),
+        ],
+        CommitBehavior::Success,
+    );
+    backend.given_enabled = true;
+    let database = Database::with_backend(Box::new(backend), "test");
+    let manager = type_bridge_orm::_manager::EntityManager::<NativePerson>::from_registry(
+        &database,
+        Arc::new(installed.match_registry().unwrap()),
+    )
+    .unwrap();
+    let error = manager
+        .delete_returning(&NativePerson {
+            iid: Some("0x10".into()),
+            identifier: String::new(),
+            email: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(error, OrmError::Hydration { .. }), "{error:?}");
+    let state = state.lock().unwrap();
+    assert_eq!(state.queries.len(), 2);
+    assert_eq!((state.commits, state.rollbacks), (0, 1));
+}
+
+#[derive(Debug, PartialEq)]
+struct NativeMembership {
+    iid: Option<String>,
+    players: Vec<String>,
+}
+impl type_bridge_orm::_relation::TypeBridgeRelation for NativeMembership {
+    const TYPE_NAME: &'static str = "membership";
+    fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+        &[]
+    }
+    fn role_info() -> &'static [type_bridge_orm::_relation::RoleInfo] {
+        &[]
+    }
+    fn iid(&self) -> Option<&str> {
+        self.iid.as_deref()
+    }
+    fn set_iid(&mut self, iid: String) {
+        self.iid = Some(iid);
+    }
+    fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+        vec![]
+    }
+    fn to_role_player_refs(&self) -> Vec<type_bridge_orm::_relation::RolePlayerRef> {
+        vec![]
+    }
+    fn from_document(doc: &serde_json::Map<String, serde_json::Value>) -> Result<Self, OrmError> {
+        Ok(Self {
+            iid: None,
+            players: doc["role_players"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|player| player["player_iid"].as_str().unwrap().to_owned())
+                .collect(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn handwritten_and_projected_relations_share_returning_deletion() {
+    let installed = installed_with_authority();
+    let make_backend = || {
+        let (mut backend, state) = RecordingBackend::new(
+            vec![
+                documents(vec![
+                    serde_json::json!({"_iid":"0x20", "_type":"membership", "attributes":{}, "_role_0_players":[person_document("0x10")]}),
+                ]),
+                RecordingResponse::Result(QueryResult::Ok),
+            ],
+            CommitBehavior::Success,
+        );
+        backend.given_enabled = true;
+        (backend, state)
+    };
+    let (backend, handwritten_state) = make_backend();
+    let database = Database::with_backend(Box::new(backend), "test");
+    let manager = type_bridge_orm::_manager::RelationManager::<NativeMembership>::from_registry(
+        &database,
+        Arc::new(installed.match_registry().unwrap()),
+    )
+    .unwrap();
+    let snapshot = manager
+        .delete_returning(&NativeMembership {
+            iid: Some("0x20".into()),
+            players: vec![],
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    let (backend, projected_state) = make_backend();
+    let projected_db = Database::with_backend(Box::new(backend), "test");
+    let projected = ProjectedCrudExecutor::new(&installed)
+        .delete_relation_by_iid_returning(
+            &projected_db,
+            &type_id(TypeKind::Relation, "membership"),
+            "0x20",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.iid.as_deref(), Some(projected.iid()));
+    assert_eq!(
+        snapshot.players,
+        projected.roles()[&RoleId::new("membership", "member").unwrap()]
+            .iter()
+            .map(|player| player.iid().to_owned())
+            .collect::<Vec<_>>()
+    );
+    let handwritten = handwritten_state.lock().unwrap();
+    let projected = projected_state.lock().unwrap();
+    assert_eq!(handwritten.queries, projected.queries);
+    assert_eq!(handwritten.queries.len(), 2);
+    assert_eq!(
+        serde_json::to_vec(&handwritten.given_rows).unwrap(),
+        serde_json::to_vec(&projected.given_rows).unwrap()
+    );
+    assert_eq!((handwritten.commits, handwritten.rollbacks), (1, 0));
+    assert_eq!((projected.commits, projected.rollbacks), (1, 0));
+}
+
+struct CommitHook {
+    state: Arc<Mutex<RecordingState>>,
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+impl type_bridge_orm::hooks::LifecycleHook for CommitHook {
+    fn name(&self) -> &str {
+        "returning-commit-order"
+    }
+    fn before_operation<'a>(
+        &'a self,
+        _: &'a mut type_bridge_orm::hooks::HookContext,
+    ) -> BoxFuture<
+        'a,
+        Result<type_bridge_orm::hooks::PreHookResult, type_bridge_orm::hooks::HookError>,
+    > {
+        Box::pin(async move {
+            assert_eq!(self.state.lock().unwrap().commits, 0);
+            self.events.lock().unwrap().push("pre");
+            Ok(type_bridge_orm::hooks::PreHookResult::Continue)
+        })
+    }
+    fn after_operation<'a>(
+        &'a self,
+        _: &'a type_bridge_orm::hooks::HookContext,
+    ) -> BoxFuture<'a, Result<(), type_bridge_orm::hooks::HookError>> {
+        Box::pin(async move {
+            assert_eq!(self.state.lock().unwrap().commits, 1);
+            self.events.lock().unwrap().push("post");
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn handwritten_returning_hooks_publish_only_after_successful_commit() {
+    for fail_commit in [false, true] {
+        let installed = installed_with_authority();
+        let (mut backend, state) = RecordingBackend::new(
+            vec![
+                documents(vec![person_document("0x10")]),
+                RecordingResponse::Result(QueryResult::Ok),
+            ],
+            if fail_commit {
+                CommitBehavior::Failure(
+                    CommitFailureCertainty::DefinitelyAborted,
+                    "provider-secret",
+                )
+            } else {
+                CommitBehavior::Success
+            },
+        );
+        backend.given_enabled = true;
+        let database = Database::with_backend(Box::new(backend), "test");
+        let mut manager = type_bridge_orm::_manager::EntityManager::<NativePerson>::from_registry(
+            &database,
+            Arc::new(installed.match_registry().unwrap()),
+        )
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        manager.add_hook(Arc::new(CommitHook {
+            state: Arc::clone(&state),
+            events: Arc::clone(&events),
+        }));
+        let result = manager
+            .delete_returning(&NativePerson {
+                iid: Some("0x10".into()),
+                identifier: String::new(),
+                email: String::new(),
+            })
+            .await;
+        if fail_commit {
+            let OrmError::ExecutionDiagnostic(error) = result.unwrap_err() else {
+                panic!("classified redacted refusal");
+            };
+            assert_eq!(error.code().as_str(), "commit_definitely_aborted");
+            assert!(!error.to_string().contains("provider-secret"));
+            assert_eq!(*events.lock().unwrap(), ["pre"]);
+        } else {
+            assert!(result.unwrap().is_some());
+            assert_eq!(*events.lock().unwrap(), ["pre", "post"]);
+        }
+        let state = state.lock().unwrap();
+        assert_eq!((state.commits, state.rollbacks), (1, 0));
+    }
+}
+
+#[test]
+fn native_manager_future_sizes_stay_bounded() {
+    fn size<F, Fut>(_: F) -> usize
+    where
+        F: FnOnce() -> Fut,
+    {
+        std::mem::size_of::<Fut>()
+    }
+    let installed = installed_with_authority();
+    let (backend, _) = RecordingBackend::new(vec![], CommitBehavior::Success);
+    let db = Database::with_backend(Box::new(backend), "size-only");
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let person = type_id(TypeKind::Entity, "person");
+    let relation = type_id(TypeKind::Relation, "membership");
+    let create = person_create(&installed);
+    let relation_create = membership_create(&installed);
+    for (name, bytes, ceiling) in [
+        (
+            "entity-get",
+            size(|| crud.get_entity_by_iid(&db, &person, "0x10")),
+            8192,
+        ),
+        (
+            "entity-count",
+            size(|| crud.count_entities(&db, &person)),
+            8192,
+        ),
+        (
+            "entity-insert",
+            size(|| crud.insert_entity(&db, &create)),
+            10240,
+        ),
+        (
+            "entity-returning",
+            size(|| crud.delete_entity_by_iid_returning(&db, &person, "0x10")),
+            8192,
+        ),
+        (
+            "relation-insert",
+            size(|| crud.insert_relation(&db, &relation_create)),
+            8192,
+        ),
+        (
+            "relation-get",
+            size(|| crud.get_relation_by_iid(&db, &relation, "0x20")),
+            8192,
+        ),
+        (
+            "relation-returning",
+            size(|| crud.delete_relation_by_iid_returning(&db, &relation, "0x20")),
+            8192,
+        ),
+    ] {
+        eprintln!("MANAGER_FUTURE {name} bytes={bytes} ceiling={ceiling}");
+        assert!(bytes <= ceiling, "{name}: {bytes} > {ceiling}");
+    }
+}
+
+#[tokio::test]
+async fn default_single_crud_does_not_allocate_the_controlled_execution_future() {
+    use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    use type_bridge_orm::{
+        ProjectedBatch, ProjectedBatchExecutor, ProjectedBatchInvocationControl,
+        ProjectedBatchOperation, ProjectedBatchRow, QueryExecutionResourceLimits,
+    };
+    let installed = installed_with_authority();
+    let create = person_create(&installed);
+    let model = create.type_id().clone();
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        model.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![ProjectedBatchRow::Create(create.clone())],
+    )
+    .unwrap();
+    let (backend, state) = RecordingBackend::new(
+        vec![documents(vec![person_document("0x10")])],
+        CommitBehavior::Success,
+    );
+    let db = Database::with_backend(Box::new(backend), "default-allocation");
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let executor = ProjectedBatchExecutor::new(&installed);
+    let mapper_model = model.clone();
+    let probe = executor.execute_mapped(
+        &db,
+        &batch,
+        ProjectedBatchInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        ),
+        None,
+        move |_| {
+            drop(mapper_model);
+            Ok::<Option<ProjectedThing>, SdkExecutionDiagnostic>(None)
+        },
+    );
+    let bytes = std::mem::size_of_val(&probe);
+    eprintln!("CONTROLLED_FUTURE_ALLOCATION bytes={bytes}");
+    drop(probe);
+    let (result, count) = allocations::count(bytes, crud.insert_entity(&db, &create)).await;
+    assert_eq!(result.unwrap().iid(), "0x10");
+    assert_eq!(
+        count, 0,
+        "default call allocated the {bytes}-byte controlled execution future"
+    );
+    assert_eq!(state.lock().unwrap().commits, 1);
+
+    let (mut backend, state) = RecordingBackend::new(
+        vec![RecordingResponse::Error("allocation probe")],
+        CommitBehavior::Success,
+    );
+    backend.given_enabled = true;
+    let db = Database::with_backend(Box::new(backend), "controlled-allocation");
+    let (result, count) = allocations::count(
+        bytes,
+        crud.insert_entity_controlled(
+            &db,
+            &create,
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        result.unwrap_err().code().as_str(),
+        "provider_operation_failed"
+    );
+    assert_eq!(
+        count, 1,
+        "controlled call must allocate its {bytes}-byte execution future exactly once"
+    );
+    assert_eq!(state.lock().unwrap().rollbacks, 1);
+}
+
+#[tokio::test]
+async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_provider_text() {
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::AttributeValue;
+    let installed = installed_with_authority();
+    let registry = Arc::new(installed.match_registry().unwrap());
+    for (certainty, code) in [
+        (
+            CommitFailureCertainty::DefinitelyAborted,
+            "commit_definitely_aborted",
+        ),
+        (CommitFailureCertainty::Unknown, "commit_outcome_unknown"),
+    ] {
+        for (relation, bulk) in [(false, false), (false, true), (true, false), (true, true)] {
+            let label = if relation { "membership" } else { "person" };
+            let kind = if relation { "relation" } else { "entity" };
+            let responses = (0..if bulk {2} else {1}).map(|index| RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"root0":{"kind":"thing","iid":if index==0 {"0x10"} else {"0x11"},"type_id":{"kind":kind,"label":label}}})]))).collect();
+            let (backend, state) = RecordingBackend::new(
+                responses,
+                CommitBehavior::Failure(certainty, "provider-secret"),
+            );
+            let db = Database::with_backend(Box::new(backend), "native-commit");
+            let result = if relation {
+                let manager = DynamicRelationManager::from_registry(
+                    &db,
+                    Arc::clone(&registry),
+                    registry.relation("membership").unwrap(),
+                );
+                let players = vec![DynamicRolePlayerInput {
+                    role_name: "member".into(),
+                    player_type_name: "person".into(),
+                    iid: Some("0x01".into()),
+                    key: None,
+                }];
+                if bulk {
+                    manager
+                        .insert_many(&[(vec![], players.clone()), (vec![], players)])
+                        .await
+                        .map(|_| ())
+                } else {
+                    manager.insert(&vec![], &players).await.map(|_| ())
+                }
+            } else {
+                let manager = DynamicEntityManager::from_registry(
+                    &db,
+                    Arc::clone(&registry),
+                    registry.entity("person").unwrap(),
+                );
+                let attributes = vec![
+                    ("identifier".into(), AttributeValue::String("ada".into())),
+                    (
+                        "email".into(),
+                        AttributeValue::String("ada@example.test".into()),
+                    ),
+                ];
+                if bulk {
+                    let mut second = attributes.clone();
+                    second.push(("nickname".into(), AttributeValue::String("Ada".into())));
+                    manager.insert_many(&[attributes, second]).await.map(|_| ())
+                } else {
+                    manager.insert(&attributes).await.map(|_| ())
+                }
+            };
+            let OrmError::ExecutionDiagnostic(error) = result.unwrap_err() else {
+                panic!("classified native manager commit");
+            };
+            use type_bridge_contract::sdk_diagnostic::{
+                SdkCommitFailureOutcome, SdkDiagnosticCategory, SdkDiagnosticDetailValue,
+            };
+            assert_eq!(error.category(), SdkDiagnosticCategory::Transaction);
+            let outcome = match certainty {
+                CommitFailureCertainty::DefinitelyAborted => {
+                    SdkCommitFailureOutcome::DefinitelyAborted
+                }
+                CommitFailureCertainty::Unknown => SdkCommitFailureOutcome::Unknown,
+            };
+            assert!(
+                error
+                    .details()
+                    .values()
+                    .any(|value| value == &SdkDiagnosticDetailValue::CommitOutcome(outcome))
+            );
+            assert_eq!(
+                type_bridge_orm::lower_execution_error(
+                    OrmError::ExecutionDiagnostic(error.clone()),
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write
+                ),
+                *error
+            );
+            assert_eq!(error.code().as_str(), code);
+            assert!(!error.to_string().contains("provider-secret"));
+            let state = state.lock().unwrap();
+            assert_eq!((state.commits, state.rollbacks), (1, 0));
+        }
     }
 }

@@ -155,6 +155,31 @@ impl PlanAnswer {
     }
 }
 
+pub(crate) fn check_provider(
+    plan: &QueryPlanV3,
+    version: Option<type_bridge_core_lib::version::Version>,
+) -> Result<(), Diagnostic> {
+    use type_bridge_contract::query_plan::v3::{CAP_NEGATED_GIVEN_IID, supports_negated_given_iid};
+    if plan
+        .required_capabilities()
+        .iter()
+        .any(|capability| capability.as_str() == CAP_NEGATED_GIVEN_IID)
+        && !supports_negated_given_iid(
+            version
+                .as_ref()
+                .and_then(type_bridge_core_lib::version::semantic_profile_id),
+        )
+    {
+        return Err(failure(
+            DiagnosticCategory::InvalidContract,
+            "query_plan_negated_given_iid_unsupported",
+            "This provider cannot safely execute nonliteral IID predicates under negation",
+        )
+        .with_detail("capability", CAP_NEGATED_GIVEN_IID));
+    }
+    Ok(())
+}
+
 /// Run a read-only plan stack on one provider snapshot. The owned and
 /// borrowed entry points differ only in transaction lifecycle ownership.
 pub(crate) async fn execute_plans(
@@ -165,6 +190,29 @@ pub(crate) async fn execute_plans(
     cancellation: &crate::session::backend::AnswerCancellation,
     deadline: crate::QueryExecutionDeadline,
 ) -> crate::error::Result<Vec<PlanAnswer>> {
+    execute_plans_counted(
+        provider,
+        supports_given,
+        plans,
+        policy,
+        cancellation,
+        deadline,
+        None,
+    )
+    .await
+    .map(|(answers, _)| answers)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_plans_counted(
+    provider: &mut dyn crate::session::backend::TransactionOps,
+    supports_given: bool,
+    plans: &[QueryPlanV3],
+    policy: crate::QueryExecutionResourceLimits,
+    cancellation: &crate::session::backend::AnswerCancellation,
+    deadline: crate::QueryExecutionDeadline,
+    prepared: Option<Vec<StagedQuery>>,
+) -> crate::error::Result<(Vec<PlanAnswer>, crate::session::backend::BoundedAnswerStats)> {
     use crate::session::backend::{BoundedAnswerReader, QueryResult};
     let limits = plan_answer_limits(policy, cancellation, deadline)?;
     let check = || BoundedAnswerReader::new(limits.answer.clone()).check_before_read();
@@ -183,11 +231,22 @@ pub(crate) async fn execute_plans(
         )
         .into());
     }
-    let mut queries = Vec::with_capacity(plans.len());
-    for plan in plans {
-        check()?;
-        queries.push(staged_query(plan, supports_given).map_err(plan_diagnostic_error)?);
-    }
+    let queries = if let Some(queries) = prepared {
+        if queries.len() != plans.len() || queries.iter().any(|query| query.writes) {
+            return Err(plan_execution_error(
+                "query_plan_read_only",
+                "Prepared captures must match the read-only plan stack",
+            ));
+        }
+        queries
+    } else {
+        let mut queries = Vec::with_capacity(plans.len());
+        for plan in plans {
+            check()?;
+            queries.push(staged_query(plan, supports_given).map_err(plan_diagnostic_error)?);
+        }
+        queries
+    };
     let mut meter = crate::answer_meter::AnswerMeter::new(&limits.answer);
     let mut semantic = crate::answer_meter::PlanMeter::new(&limits);
     let mut answers = Vec::with_capacity(plans.len());
@@ -210,7 +269,14 @@ pub(crate) async fn execute_plans(
         answers.push(PlanAnswer::from_staged_v3(&wire, plan).map_err(plan_diagnostic_error)?);
     }
     check()?;
-    Ok(answers)
+    Ok((
+        answers,
+        crate::session::backend::BoundedAnswerStats {
+            processed_items: meter.items(),
+            response_bytes: meter.bytes(),
+            stopped_early: false,
+        },
+    ))
 }
 
 pub(crate) fn plan_answer_limits(
@@ -253,7 +319,7 @@ fn plan_execution_error(code: &'static str, message: &'static str) -> crate::err
     .into()
 }
 
-fn plan_diagnostic_error(diagnostic: Diagnostic) -> crate::error::OrmError {
+pub(crate) fn plan_diagnostic_error(diagnostic: Diagnostic) -> crate::error::OrmError {
     crate::match_request::MatchError::new(
         crate::match_request::MatchErrorCategory::ResultDecode,
         diagnostic.code().as_str(),
@@ -295,7 +361,7 @@ pub(crate) fn parse_plan_scalar(
     }
 }
 
-fn remote_value(
+pub(crate) fn remote_value(
     row: &serde_json::Value,
     variable: &str,
     limits: type_bridge_contract::limits::CodecLimits,
@@ -438,16 +504,35 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
         }
     }
     if given.is_some() {
-        let mut columns: Vec<_> = inputs
-            .iter()
-            .map(|column| (column.public_name().as_str(), column.value_type()))
-            .collect();
-        columns.extend(
-            snapshot_iids
+        if inputs.iter().any(InputColumn::optional) {
+            let mut nullable: Vec<_> = inputs
                 .iter()
-                .map(|input| (input.input.as_str(), ValueTypeTag::String)),
-        );
-        stages.push(ast(tql::given(&columns))?);
+                .map(|column| {
+                    (
+                        column.public_name().as_str(),
+                        column.value_type(),
+                        column.optional(),
+                    )
+                })
+                .collect();
+            nullable.extend(
+                snapshot_iids
+                    .iter()
+                    .map(|input| (input.input.as_str(), ValueTypeTag::String, false)),
+            );
+            stages.push(ast(tql::given_nullable(&nullable))?);
+        } else {
+            let mut columns: Vec<_> = inputs
+                .iter()
+                .map(|column| (column.public_name().as_str(), column.value_type()))
+                .collect();
+            columns.extend(
+                snapshot_iids
+                    .iter()
+                    .map(|input| (input.input.as_str(), ValueTypeTag::String)),
+            );
+            stages.push(ast(tql::given(&columns))?);
+        }
     }
     let literal_policy = LiteralComparisonPolicy {
         inputs,
@@ -474,7 +559,10 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
             Stage::Insert { things } => stages.push(tql::insert(scope.things(things, false)?)),
             // A put matches before it inserts: `isa!` keeps the match to the
             // declared concrete type, so a subtype instance is never taken.
-            Stage::Put { things } => stages.push(tql::put(scope.things(things, true)?)),
+            Stage::Put {
+                things,
+                include_subtypes,
+            } => stages.push(tql::put(scope.things(things, !include_subtypes)?)),
             Stage::Update { sets } => stages.push(tql::update(
                 sets.iter()
                     .map(|set| scope.set(set))
@@ -744,23 +832,46 @@ pub(crate) fn resolve_plan(
     resolve(plan.operation(), result)
 }
 
-fn remote_document(
+pub(crate) fn remote_document(
     document: &serde_json::Value,
     plan: &QueryPlanV3,
 ) -> Result<BTreeMap<String, RemoteFieldValue>, Diagnostic> {
-    use type_bridge_contract::value::ValueTypeTag;
     let shape = plan
         .fetch_document_shape()
         .ok_or_else(staged_answer_shape)?;
+    let fields = decode_document(document, plan, shape, None)?;
+    shape.validate(&fields)?;
+    Ok(fields)
+}
+
+fn decode_document(
+    document: &serde_json::Value,
+    plan: &QueryPlanV3,
+    shape: &type_bridge_contract::query_plan::v3::FetchDocumentShape,
+    context_role: Option<usize>,
+) -> Result<BTreeMap<String, RemoteFieldValue>, Diagnostic> {
     let object = document.as_object().ok_or_else(staged_answer_shape)?;
-    let fields = object
+    object
         .iter()
         .map(|(key, value)| {
             let field = if value.is_null() {
                 RemoteFieldValue::Absent
+            } else if let Some(role) = key
+                .strip_prefix("_role_")
+                .and_then(|key| key.strip_suffix("_players"))
+                .and_then(|key| key.parse().ok())
+            {
+                RemoteFieldValue::Documents {
+                    documents: value
+                        .as_array()
+                        .ok_or_else(staged_answer_shape)?
+                        .iter()
+                        .map(|player| decode_document(player, plan, shape, Some(role)))
+                        .collect::<Result<_, _>>()?,
+                }
             } else if key == "attributes" || key.ends_with("_attributes") {
                 let role = if key == "attributes" {
-                    None
+                    context_role
                 } else {
                     Some(
                         key.strip_prefix("_role_")
@@ -769,20 +880,24 @@ fn remote_document(
                             .ok_or_else(staged_answer_shape)?,
                     )
                 };
-                let type_key =
-                    role.map_or_else(|| "_type".to_owned(), |i| format!("_role_{i}_type"));
+                let type_key = if key == "attributes" {
+                    "_type".to_owned()
+                } else {
+                    format!("_role_{}_type", role.ok_or_else(staged_answer_shape)?)
+                };
                 let type_label = object
                     .get(&type_key)
                     .and_then(serde_json::Value::as_str)
                     .ok_or_else(staged_answer_shape)?;
-                let attributes = value.as_object().ok_or_else(staged_answer_shape)?;
-                let fields = attributes
+                let fields = value
+                    .as_object()
+                    .ok_or_else(staged_answer_shape)?
                     .iter()
                     .map(|(name, values)| {
                         let domain = shape
                             .attribute_domain(role, type_label, name)
                             .ok_or_else(staged_answer_shape)?;
-                        let value = if let Some(values) = values.as_array() {
+                        let field = if let Some(values) = values.as_array() {
                             RemoteFieldValue::List {
                                 values: values
                                     .iter()
@@ -798,29 +913,41 @@ fn remote_document(
                                 value: parse_plan_scalar(values, domain, plan.limits().codec)?,
                             }
                         };
-                        Ok((name.clone(), value))
+                        Ok((name.clone(), field))
                     })
                     .collect::<Result<_, Diagnostic>>()?;
                 RemoteFieldValue::Document { fields }
             } else {
                 RemoteFieldValue::Scalar {
-                    value: parse_plan_scalar(value, ValueTypeTag::String, plan.limits().codec)?,
+                    value: parse_plan_scalar(
+                        value,
+                        if context_role.is_none() {
+                            shape.scalar_domain(key).unwrap_or(ValueTypeTag::String)
+                        } else {
+                            ValueTypeTag::String
+                        },
+                        plan.limits().codec,
+                    )?,
                 }
             };
             Ok((key.clone(), field))
         })
-        .collect::<Result<_, Diagnostic>>()?;
-    shape.validate(&fields)?;
-    Ok(fields)
+        .collect()
 }
 
-fn document_json(
+pub(crate) fn document_json(
     fields: &BTreeMap<String, RemoteFieldValue>,
 ) -> Result<serde_json::Value, Diagnostic> {
     fields
         .iter()
         .map(|(key, field)| {
             let value = match field {
+                RemoteFieldValue::Documents { documents } => serde_json::Value::Array(
+                    documents
+                        .iter()
+                        .map(document_json)
+                        .collect::<Result<_, _>>()?,
+                ),
                 RemoteFieldValue::Absent => serde_json::Value::Null,
                 RemoteFieldValue::Scalar { value } => scalar_json(value)?,
                 RemoteFieldValue::List { values } => serde_json::Value::Array(
@@ -834,7 +961,7 @@ fn document_json(
         .map(serde_json::Value::Object)
 }
 
-fn scalar_json(
+pub(crate) fn scalar_json(
     value: &type_bridge_contract::value::CanonicalValue,
 ) -> Result<serde_json::Value, Diagnostic> {
     use crate::value::AttributeValue;
@@ -897,7 +1024,7 @@ fn failure_context(plan: &QueryPlanV3) -> FailureContext {
                     return FailureContext::new(Some(field.owner().clone()), Some(field.clone()));
                 }
             }
-            Stage::Insert { things } | Stage::Put { things } => {
+            Stage::Insert { things } | Stage::Put { things, .. } => {
                 if let Some(thing) = things.first() {
                     return FailureContext::new(Some(thing.type_id.clone()), None);
                 }
@@ -1324,32 +1451,47 @@ impl Scope<'_> {
     }
 
     fn attach(&self, item: &AttachItem) -> Result<tql::Pattern, Diagnostic> {
-        match item {
+        let (pattern, optional) = match item {
             AttachItem::Has {
                 owner,
                 field,
                 operand,
-            } => ast(tql::thing(
-                self.name(*owner)?,
-                vec![self.has(field.attribute(), operand)?],
-            )),
+                optional,
+            } => (
+                ast(tql::thing(
+                    self.name(*owner)?,
+                    vec![self.has(field.attribute(), operand)?],
+                ))?,
+                *optional,
+            ),
             AttachItem::Links {
                 relation,
                 role,
                 player,
-            } => ast(tql::thing(
-                self.name(*relation)?,
-                vec![ast(tql::links(vec![(
-                    role.label().as_str(),
-                    self.name(*player)?,
-                )]))?],
-            )),
-            _ => Err(failure(
-                DiagnosticCategory::UnsupportedCapability,
-                "query_plan_stage_unsupported",
-                "this executor cannot lower the attach item",
-            )),
-        }
+                optional,
+            } => (
+                ast(tql::thing(
+                    self.name(*relation)?,
+                    vec![ast(tql::links(vec![(
+                        role.label().as_str(),
+                        self.name(*player)?,
+                    )]))?],
+                ))?,
+                *optional,
+            ),
+            _ => {
+                return Err(failure(
+                    DiagnosticCategory::UnsupportedCapability,
+                    "query_plan_stage_unsupported",
+                    "this executor cannot lower the attach item",
+                ));
+            }
+        };
+        Ok(if optional {
+            tql::optional(vec![pattern])
+        } else {
+            pattern
+        })
     }
 
     fn set(&self, set: &Set) -> Result<tql::Pattern, Diagnostic> {
@@ -1401,6 +1543,10 @@ impl Scope<'_> {
             tql::fetch_expr(ast(tql::function("label", vec![ast(tql::var(TYPE))?]))?),
             ast(tql::fetch_attributes(thing))?,
         ];
+        for scalar in &document.scalars {
+            keys.push(scalar.key.as_str().to_owned());
+            values.push(tql::fetch_expr(ast(tql::var(self.name(scalar.binding)?))?));
+        }
         for (index, listed) in document.roles.iter().enumerate() {
             let player = format!("PlanFetchRole{index}");
             let player_type = format!("PlanFetchRole{index}Type");
@@ -1417,6 +1563,33 @@ impl Scope<'_> {
                     vec![ast(tql::isa(&format!("${player_type}"), true))?],
                 ))?,
             ];
+            if listed.collect {
+                if listed.required {
+                    patterns.push(tql::not(vec![tql::not(bound.clone())]));
+                }
+                keys.push(format!("_role_{index}_players"));
+                values.push(tql::fetch_subquery(vec![
+                    tql::match_stage(bound),
+                    ast(tql::fetch(vec![
+                        (
+                            "_iid",
+                            tql::fetch_expr(ast(tql::function(
+                                "iid",
+                                vec![ast(tql::var(&player))?],
+                            ))?),
+                        ),
+                        (
+                            "_type",
+                            tql::fetch_expr(ast(tql::function(
+                                "label",
+                                vec![ast(tql::var(&player_type))?],
+                            ))?),
+                        ),
+                        ("attributes", ast(tql::fetch_attributes(&player))?),
+                    ]))?,
+                ]));
+                continue;
+            }
             if listed.required {
                 patterns.extend(bound);
             } else {
@@ -1530,6 +1703,94 @@ mod tests {
             tql::equivalent(actual, expected).unwrap(),
             "lowered:\n{actual}\nexpected:\n{expected}"
         );
+    }
+
+    #[test]
+    fn negated_given_iids_are_derived_and_refused_on_unsupported_providers() {
+        use type_bridge_contract::query_plan::v3::CAP_NEGATED_GIVEN_IID;
+        let negative = race::scoped_given_iid("0x10", true, false);
+        assert!(
+            negative
+                .required_capabilities()
+                .iter()
+                .any(|capability| capability.as_str() == CAP_NEGATED_GIVEN_IID)
+        );
+        for version in [None, Some("3.12.3".parse().unwrap())] {
+            assert_eq!(
+                check_provider(&negative, version)
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "query_plan_negated_given_iid_unsupported"
+            );
+        }
+        for version in ["3.13.6", "3.14.0"] {
+            check_provider(&negative, Some(version.parse().unwrap())).unwrap();
+        }
+        for optional in [false, true] {
+            let positive = race::scoped_given_iid("0x10", false, optional);
+            assert!(
+                !positive
+                    .required_capabilities()
+                    .iter()
+                    .any(|capability| capability.as_str() == CAP_NEGATED_GIVEN_IID)
+            );
+            check_provider(&positive, Some("3.12.3".parse().unwrap())).unwrap();
+        }
+    }
+
+    #[test]
+    fn scoped_given_iids_use_fresh_lets_only_under_negation() {
+        let (negative, _) = typeql(&race::scoped_given_iid("0x10", true, false));
+        assert!(
+            negative.contains("let $PlanNestedIid0 = iid($buyer);"),
+            "{negative}"
+        );
+        assert!(
+            negative.contains("let $PlanNestedIid1 = iid($buyer);"),
+            "{negative}"
+        );
+        assert!(
+            negative.contains("$PlanNestedIid0 == $wanted_iid;"),
+            "{negative}"
+        );
+        assert!(!negative.contains("iid($buyer) =="), "{negative}");
+        let branch = |index| {
+            format!(
+                "$buyer isa! account; $purchase isa! purchase, links (buyer: $buyer); let $PlanNestedIid{index} = iid($buyer); $PlanNestedIid{index} == $wanted_iid;"
+            )
+        };
+        let expected = format!(
+            "given $wanted_iid: string; match $purchase isa! purchase; not {{ {{ {} }} or {{ {} }}; }}; select $purchase; distinct; select $purchase;",
+            branch(0),
+            branch(1)
+        );
+        assert_eq!(
+            negative,
+            tql::render(&tql::parse(&expected).unwrap()).unwrap()
+        );
+        for optional in [false, true] {
+            let (positive, _) = typeql(&race::scoped_given_iid("0x10", false, optional));
+            assert_eq!(
+                positive.matches("iid($buyer) == $wanted_iid;").count(),
+                if optional { 1 } else { 2 },
+                "{positive}"
+            );
+            let branch = "$buyer isa! account; $purchase isa! purchase, links (buyer: $buyer); iid($buyer) == $wanted_iid;";
+            let scope = if optional {
+                format!("try {{ {branch} }};")
+            } else {
+                format!("{{ {branch} }} or {{ {branch} }};")
+            };
+            let expected = format!(
+                "given $wanted_iid: string; match $purchase isa! purchase; {scope} select $purchase; distinct; select $purchase;"
+            );
+            assert_eq!(
+                positive,
+                tql::render(&tql::parse(&expected).unwrap()).unwrap()
+            );
+            assert!(!positive.contains("PlanNestedIid"), "{positive}");
+        }
     }
 
     #[test]

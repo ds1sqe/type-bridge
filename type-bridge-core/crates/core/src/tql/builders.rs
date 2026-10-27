@@ -571,20 +571,35 @@ pub fn reduce_stage(assignments: Vec<(&str, Reducer)>, group: &[&str]) -> Result
     })
 }
 pub fn given(columns: &[(&str, ValueTypeTag)]) -> Result<Stage, TqlError> {
+    given_columns(columns.iter().map(|(name, domain)| (*name, *domain, false)))
+}
+
+/// Build a native given header retaining each scalar column's optionality.
+pub fn given_nullable(columns: &[(&str, ValueTypeTag, bool)]) -> Result<Stage, TqlError> {
+    given_columns(columns.iter().copied())
+}
+
+fn given_columns<'a>(
+    columns: impl Iterator<Item = (&'a str, ValueTypeTag, bool)>,
+) -> Result<Stage, TqlError> {
     let arguments = columns
-        .iter()
-        .map(|(name, domain)| {
-            Ok(Argument::new(
-                None,
-                variable(name)?,
-                builtin_value_type(*domain),
-            ))
+        .map(|(name, domain, optional)| {
+            let domain = if optional {
+                NamedTypeAny::Optional(type_::NamedTypeOptional::new(
+                    None,
+                    builtin_named_type(domain),
+                ))
+            } else {
+                builtin_value_type(domain)
+            };
+            Ok(Argument::new(None, variable(name)?, domain))
         })
         .collect::<Result<_, TqlError>>()?;
     Ok(Stage {
         inner: stage::Stage::Given(stage::Given::new(None, arguments)),
     })
 }
+
 pub fn pipeline(stages: Vec<Stage>) -> Query {
     pipeline_with_functions(Vec::new(), stages)
 }

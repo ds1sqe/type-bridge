@@ -467,6 +467,13 @@ fn lower_native_function_predicates(
     let mut predicates = Vec::new();
     for pattern in patterns {
         match pattern {
+            QueryPattern::Iid { .. } => {
+                return Err(failure(
+                    DiagnosticCategory::InvalidContract,
+                    "query_plan_nested_iid_requires_v3",
+                    "IID patterns require the native plan vocabulary",
+                ));
+            }
             QueryPattern::Has {
                 attribute,
                 attribute_id,

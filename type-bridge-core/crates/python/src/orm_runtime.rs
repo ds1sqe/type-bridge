@@ -2338,6 +2338,9 @@ pub(crate) fn py_orm_error(error: OrmError) -> PyErr {
         ));
     }
     match error {
+        OrmError::ExecutionDiagnostic(diagnostic) => {
+            crate::match_runtime::py_sdk_diagnostic(*diagnostic)
+        }
         OrmError::UnsupportedVersion(error) => VersionError::new_err(error.to_string()),
         OrmError::DescriptorValidation { .. } | OrmError::DescriptorConflict { .. } => {
             py_value_error(error.to_string())

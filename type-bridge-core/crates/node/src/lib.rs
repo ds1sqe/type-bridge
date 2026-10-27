@@ -846,6 +846,9 @@ pub(crate) fn napi_orm_error(error: OrmError) -> napi::Error {
         ));
     }
     match error {
+        OrmError::ExecutionDiagnostic(diagnostic) => {
+            match_runtime::napi_sdk_diagnostic(*diagnostic)
+        }
         OrmError::Match(error) => match_runtime::napi_match_error(error),
         OrmError::DescriptorValidation { .. }
         | OrmError::DescriptorConflict { .. }

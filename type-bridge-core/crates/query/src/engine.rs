@@ -535,7 +535,9 @@ fn ensure_value_bindings_stay_scalar(
 ) -> Result<(), Diagnostic> {
     for pattern in patterns {
         let misuse = match pattern {
-            QueryPattern::Isa { binding, .. } => value_bindings.contains_key(binding),
+            QueryPattern::Isa { binding, .. } | QueryPattern::Iid { binding, .. } => {
+                value_bindings.contains_key(binding)
+            }
             QueryPattern::Has {
                 attribute, owner, ..
             } => value_bindings.contains_key(attribute) || value_bindings.contains_key(owner),
@@ -773,7 +775,8 @@ fn refine_pattern(
             }
             Ok(changed)
         }
-        QueryPattern::Value { .. }
+        QueryPattern::Iid { .. }
+        | QueryPattern::Value { .. }
         | QueryPattern::Not { .. }
         | QueryPattern::Try { .. }
         | QueryPattern::FunctionCall { .. } => Ok(false),
@@ -794,6 +797,9 @@ fn collect_scope_topology(
 ) {
     for pattern in patterns {
         match pattern {
+            QueryPattern::Iid { binding, .. } => {
+                referenced.insert(*binding);
+            }
             QueryPattern::Isa { binding, .. } => {
                 referenced.insert(*binding);
                 positive.insert(*binding);
@@ -1206,7 +1212,7 @@ fn operand_value_type(
 fn collect_references(patterns: &[QueryPattern], output: &mut BTreeSet<BindingId>) {
     for pattern in patterns {
         match pattern {
-            QueryPattern::Isa { binding, .. } => {
+            QueryPattern::Isa { binding, .. } | QueryPattern::Iid { binding, .. } => {
                 output.insert(*binding);
             }
             QueryPattern::Has {

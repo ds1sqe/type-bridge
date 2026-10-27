@@ -4,6 +4,7 @@ use type_bridge_contract::projection::{BindingTarget, ProjectionConfig, Projecti
 use type_bridge_contract::schema::{DocumentId, OwnsFactId};
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCategory, SdkDiagnosticDetailValue, SdkDiagnosticName, SdkDiagnosticPathSegment,
+    SdkExecutionDiagnostic,
 };
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, TimeZoneDesignator};
 use type_bridge_contract::value::{CanonicalString, CanonicalValue, DecimalValue};
@@ -147,7 +148,7 @@ fn membership_create(installed: &InstalledRuntimeProjection, identifier: &str) -
 fn roleless_membership_create(
     installed: &InstalledRuntimeProjection,
     identifier: &str,
-) -> ProjectedCreate {
+) -> Result<ProjectedCreate, SdkExecutionDiagnostic> {
     let membership = type_id(TypeKind::Relation, "membership");
     ProjectedCreate::try_new(
         installed,
@@ -158,7 +159,6 @@ fn roleless_membership_create(
         )],
         vec![],
     )
-    .unwrap()
 }
 
 fn scalar_key_create(
@@ -893,36 +893,16 @@ fn all_operations_validate_empty_authority_and_store_ordinals() {
 }
 
 #[test]
-fn relation_writes_reject_a_roleless_final_row_before_io_but_delete_is_valid() {
+fn relation_creates_refuse_playerless_values_before_any_batch_or_provider_work() {
     let installed = installed(BindingTarget::Python);
     let membership = type_id(TypeKind::Relation, "membership");
-    for operation in [
-        ProjectedBatchOperation::Insert,
-        ProjectedBatchOperation::Put,
-        ProjectedBatchOperation::Update,
-    ] {
-        let row = if operation == ProjectedBatchOperation::Update {
-            ProjectedBatchRow::Update {
-                iid: "0x10".into(),
-                replacement: roleless_membership_create(&installed, "empty"),
-            }
-        } else {
-            ProjectedBatchRow::Create(roleless_membership_create(&installed, "empty"))
-        };
-        let error = ProjectedBatch::try_new(&installed, membership.clone(), operation, vec![row])
-            .unwrap_err();
-        assert_eq!(error.category(), SdkDiagnosticCategory::InvalidInput);
-        assert_eq!(error.code().as_str(), "relation_requires_role_player");
-        assert_eq!(
-            error.path(),
-            [
-                SdkDiagnosticPathSegment::Argument(name("rows")),
-                SdkDiagnosticPathSegment::Index(0),
-                SdkDiagnosticPathSegment::Type(membership.clone()),
-            ]
-        );
-    }
-
+    let error = roleless_membership_create(&installed, "empty").unwrap_err();
+    assert_eq!(error.category(), SdkDiagnosticCategory::InvalidInput);
+    assert_eq!(error.code().as_str(), "relation_requires_player");
+    assert_eq!(
+        error.path(),
+        [SdkDiagnosticPathSegment::Type(membership.clone())]
+    );
     ProjectedBatch::try_new(
         &installed,
         membership,
@@ -933,7 +913,7 @@ fn relation_writes_reject_a_roleless_final_row_before_io_but_delete_is_valid() {
 }
 
 #[test]
-fn roleless_relation_failure_reports_the_exact_later_ordinal() {
+fn relation_row_model_failure_reports_the_exact_later_ordinal() {
     let installed = installed(BindingTarget::Python);
     let membership = type_id(TypeKind::Relation, "membership");
     let error = ProjectedBatch::try_new(
@@ -942,17 +922,17 @@ fn roleless_relation_failure_reports_the_exact_later_ordinal() {
         ProjectedBatchOperation::Insert,
         vec![
             ProjectedBatchRow::Create(membership_create(&installed, "valid")),
-            ProjectedBatchRow::Create(roleless_membership_create(&installed, "empty")),
+            ProjectedBatchRow::Create(person_create(&installed, "wrong-model")),
         ],
     )
     .unwrap_err();
-    assert_eq!(error.code().as_str(), "relation_requires_role_player");
+    assert_eq!(error.code().as_str(), "batch_row_model_mismatch");
     assert_eq!(
         error.path(),
         [
             SdkDiagnosticPathSegment::Argument(name("rows")),
             SdkDiagnosticPathSegment::Index(1),
-            SdkDiagnosticPathSegment::Type(membership),
+            SdkDiagnosticPathSegment::Type(type_id(TypeKind::Entity, "person")),
         ]
     );
 }

@@ -1049,6 +1049,7 @@ pub fn build_dynamic_relation_player_lookup(
 /// The released public helper above remains entity-specific. Projected role
 /// domains can also contain relations, whose exact `isa!` assertion cannot be
 /// represented by the current relation AST node.
+// raw remainder: band-8 control-character literal transport; removed in 06.
 pub(crate) fn build_projected_role_player_lookup(
     player_type: &str,
     player_kind: TypeKind,

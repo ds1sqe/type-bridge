@@ -100,11 +100,99 @@ pub(crate) struct TransactionContextMutationLease {
     inner: OwnedMutexGuard<TransactionContextInner>,
     phase: MutationLeasePhase,
     exact_failure: Option<SdkExecutionDiagnostic>,
+    server_version: Option<Version>,
 }
 
 impl TransactionContextMutationLease {
+    pub(crate) fn prepare_plan(
+        &self,
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    ) -> Result<super::staged::StagedQuery> {
+        crate::query_plan_exec::check_provider(plan, self.server_version)
+            .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+        crate::query_plan_exec::staged_query(plan, true)
+            .map_err(crate::query_plan_exec::plan_diagnostic_error)
+    }
+
     fn transaction(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
         active_transaction(&mut self.inner)
+    }
+
+    /// Execute the shared capture/delete program without releasing lifecycle ownership.
+    pub(crate) async fn dispatch_plan_counted(
+        &mut self,
+        query: super::staged::StagedQuery,
+        limits: AnswerLimits,
+        validation: Option<&type_bridge_contract::query_plan::v3::QueryPlanV3>,
+    ) -> Result<(QueryResult, BoundedAnswerStats)> {
+        if query.writes {
+            if self.phase == MutationLeasePhase::Finished {
+                return Err(OrmError::Transaction(
+                    "Completed mutation lease cannot dispatch provider work".into(),
+                ));
+            }
+            self.phase = MutationLeasePhase::PossibleEffect;
+        }
+        let bounds = limits.answer.clone();
+        super::staged::bounded(
+            &bounds,
+            query.execute_counted(self.transaction()?, limits, validation),
+        )
+        .await
+    }
+
+    /// Capture a polymorphic model stack under the same deletion snapshot.
+    pub(crate) async fn execute_plans(
+        &mut self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        policy: QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+        queries: Option<Vec<super::staged::StagedQuery>>,
+    ) -> Result<(Vec<super::staged::PlanAnswer>, BoundedAnswerStats)> {
+        if self.phase != MutationLeasePhase::PreDispatch {
+            return Err(OrmError::Transaction(
+                "Deletion capture must precede mutation".into(),
+            ));
+        }
+        for plan in plans {
+            crate::query_plan_exec::check_provider(plan, self.server_version)
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+        }
+        crate::query_plan_exec::execute_plans_counted(
+            self.transaction()?,
+            true,
+            plans,
+            policy,
+            cancellation,
+            deadline,
+            queries,
+        )
+        .await
+    }
+
+    /// Stream one prepared native batch plan while retaining the mutation fence.
+    pub(crate) async fn dispatch_plan_bounded(
+        &mut self,
+        query: super::staged::StagedQuery,
+        limits: AnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        if query.snapshot.is_some() {
+            return Err(OrmError::Transaction(
+                "Streaming snapshots use a separate read plan".into(),
+            ));
+        }
+        let rows = query
+            .rows
+            .ok_or_else(|| OrmError::Transaction("Native batch plans require given rows".into()))?;
+        if query.writes {
+            self.mutate_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                .await
+        } else {
+            self.query_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                .await
+        }
     }
 
     /// Execute a bounded scalar-`given` prerequisite while retaining the
@@ -232,6 +320,7 @@ impl TransactionContext {
             inner,
             phase: MutationLeasePhase::PreDispatch,
             exact_failure: None,
+            server_version: self.server_version,
         })
     }
 
@@ -311,6 +400,8 @@ impl TransactionContext {
         &self,
         plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     ) -> Result<crate::session::staged::StagedQuery> {
+        crate::query_plan_exec::check_provider(plan, self.server_version)
+            .map_err(plan_diagnostic_error)?;
         let supports_given = self.supports_given_stage().await?;
         let query = crate::query_plan_exec::staged_query(plan, supports_given)
             .map_err(plan_diagnostic_error)?;
@@ -669,6 +760,10 @@ impl TransactionContext {
                 "plan execution requires a borrowed read transaction",
             )
             .into());
+        }
+        for plan in plans {
+            crate::query_plan_exec::check_provider(plan, self.server_version)
+                .map_err(plan_diagnostic_error)?;
         }
         limits
             .validate()
@@ -1412,6 +1507,48 @@ mod tests {
         assert!(context.commit().await.is_err());
         assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
         context.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mutation_lease_refuses_unsafe_provider_plans_before_io() {
+        let (mut context, calls) = active_context();
+        context.server_version = Some(Version::new(3, 12, 3));
+        let plan = crate::query_plan_exec::race::scoped_given_iid("0x10", true, false);
+        let mut lease = context.acquire_mutation_lease().await.unwrap();
+        let error = lease.prepare_plan(&plan).unwrap_err();
+        let OrmError::Match(error) = error else {
+            panic!("typed provider refusal");
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_negated_given_iid_unsupported"
+        );
+        // Already lowered queries must not bypass the same check at execution.
+        let query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+        let policy = QueryExecutionResourceLimits::default();
+        let error = lease
+            .execute_plans(
+                &[plan],
+                policy,
+                &crate::AnswerCancellation::default(),
+                crate::QueryExecutionDeadline::for_limits(policy),
+                Some(vec![query]),
+            )
+            .await
+            .unwrap_err();
+        let OrmError::Match(error) = error else {
+            panic!("typed provider refusal");
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_negated_given_iid_unsupported"
+        );
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        lease.complete_success();
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
     }
 
     #[tokio::test]

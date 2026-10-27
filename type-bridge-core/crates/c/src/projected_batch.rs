@@ -1343,6 +1343,17 @@ const _: unsafe extern "C" fn(*mut *mut TypeBridgeProjectedBatchResult) -> TypeB
 
 #[cfg(test)]
 mod tests {
+    mod native_batch_answer_item {
+        pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+    }
+    #[allow(dead_code)]
+    mod native_batch {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../orm/tests/support/native_batch.rs"
+        ));
+    }
+
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -1606,10 +1617,14 @@ plays:
                     .pop_front()
                     .expect("unexpected provider call")
             };
+            let source = typeql.to_owned();
             match response {
-                Response::Documents(values) => {
-                    Box::pin(async move { Ok(QueryResult::Documents(values)) })
-                }
+                Response::Documents(values) => Box::pin(async move {
+                    Ok(native_batch::result(
+                        &source,
+                        QueryResult::Documents(values),
+                    ))
+                }),
                 Response::Error => Box::pin(async {
                     Err(OrmError::QueryExecution(
                         "provider-secret-projected-batch".to_owned(),
@@ -2322,16 +2337,20 @@ plays:
                     assert_eq!(mutation.1.rows.len(), 2);
                     match operation {
                         ProjectedBatchOperation::Insert => {
-                            assert!(mutation.0.contains("\ninsert\n"));
+                            assert!(mutation.0.contains("insert $thing1 isa "));
                         }
                         ProjectedBatchOperation::Put => {
-                            assert!(mutation.0.contains("\nput\n"));
+                            assert!(mutation.0.contains(if kind == TypeKind::Entity {
+                                "put $thing1 isa! person"
+                            } else {
+                                "insert $thing1 isa membership"
+                            }));
                         }
                         ProjectedBatchOperation::Update => {
                             assert!(mutation.0.contains("delete try"));
                         }
                         ProjectedBatchOperation::Delete => {
-                            assert!(mutation.0.contains("delete try { $thing; }"));
+                            assert!(mutation.0.contains("delete $thing1;"));
                         }
                     }
                 }

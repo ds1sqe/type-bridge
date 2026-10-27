@@ -9305,6 +9305,17 @@ pub fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
+    mod native_batch_answer_item {
+        pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+    }
+    #[allow(dead_code)]
+    mod native_batch {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../orm/tests/support/native_batch.rs"
+        ));
+    }
+
     use std::collections::VecDeque;
     use std::fs::{self, OpenOptions};
     use std::io::Write;
@@ -9995,7 +10006,8 @@ plays:
                 .unwrap()
                 .pop_front()
                 .expect("successor Python origin test issued unexpected provider I/O");
-            Box::pin(async move { Ok(response) })
+            let source = typeql.to_owned();
+            Box::pin(async move { Ok(native_batch::result(&source, response)) })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -10127,7 +10139,8 @@ plays:
                     .pop_front()
                     .expect("predecessor Python batch issued unexpected provider I/O")
             };
-            Box::pin(async move { Ok(response) })
+            let source = typeql.to_owned();
+            Box::pin(async move { Ok(native_batch::result(&source, response)) })
         }
 
         fn query_with_rows(
@@ -10239,6 +10252,7 @@ plays:
                     .pop_front()
                     .expect("Python projected batch issued unexpected provider I/O")
             };
+            let source = typeql.to_owned();
             Box::pin(async move {
                 if let Some(gate) = gate {
                     gate.enter_and_wait();
@@ -10251,7 +10265,7 @@ plays:
                 let mut reader = BoundedAnswerReader::new(limits);
                 reader.check_before_read()?;
                 for document in documents {
-                    if reader.accept(AnswerItem::Document(document), consumer)?
+                    if reader.accept(native_batch::item(&source, document), consumer)?
                         == AnswerControl::Stop
                     {
                         break;
@@ -11006,7 +11020,7 @@ class StructBase:
         ]
     }
 
-    fn assert_successor_batch_route_fingerprint(
+    fn assert_legacy_batch_route_fingerprint(
         kind: TypeKind,
         operation: ProjectedBatchOperation,
         calls: &[(String, GivenRowsSpec)],
@@ -11163,6 +11177,208 @@ class StructBase:
                     rows.variables
                         .iter()
                         .any(|variable| variable.starts_with("player-iid-")),
+                );
+            }
+        }
+    }
+
+    fn assert_successor_batch_route_fingerprint(
+        kind: TypeKind,
+        operation: ProjectedBatchOperation,
+        calls: &[(String, GivenRowsSpec)],
+    ) {
+        if calls.iter().any(|(source, _)| source.contains("$thing1")) {
+            assert_native_batch_route_fingerprint(kind, operation, calls);
+        } else {
+            assert_legacy_batch_route_fingerprint(kind, operation, calls);
+        }
+    }
+
+    fn assert_native_batch_route_fingerprint(
+        kind: TypeKind,
+        operation: ProjectedBatchOperation,
+        calls: &[(String, GivenRowsSpec)],
+    ) {
+        let label = if kind == TypeKind::Entity {
+            "person"
+        } else {
+            "membership"
+        };
+        let has_prerequisite = (kind == TypeKind::Relation
+            && operation != ProjectedBatchOperation::Delete)
+            || operation == ProjectedBatchOperation::Put;
+        let mutation_index = usize::from(has_prerequisite);
+        let (mutation, rows) = &calls[mutation_index];
+
+        match operation {
+            ProjectedBatchOperation::Insert => {
+                assert!(
+                    mutation.contains(&format!("insert $thing1 isa {label}")),
+                    "insert batch reached the wrong mutation compiler: {mutation}",
+                );
+                assert!(!mutation.contains("put $thing1"));
+                assert_eq!(
+                    rows.variables,
+                    if kind == TypeKind::Entity {
+                        vec!["ordinal"]
+                    } else {
+                        vec!["ordinal", "first_iid"]
+                    }
+                );
+                assert_eq!(
+                    rows.rows,
+                    if kind == TypeKind::Entity {
+                        vec![vec![GivenValue::Integer(0)], vec![GivenValue::Integer(1)]]
+                    } else {
+                        vec![
+                            vec![GivenValue::Integer(0), GivenValue::String("0x10".into())],
+                            vec![GivenValue::Integer(1), GivenValue::String("0x11".into())],
+                        ]
+                    },
+                );
+            }
+            ProjectedBatchOperation::Put => {
+                if kind == TypeKind::Relation {
+                    assert!(
+                        mutation.contains("insert $thing1 isa membership, links (member: $first2)")
+                    );
+                    assert_eq!(rows.variables, ["ordinal", "first_iid"]);
+                    assert_eq!(
+                        rows.rows,
+                        vec![
+                            vec![GivenValue::Integer(0), GivenValue::String("0x10".into())],
+                            vec![GivenValue::Integer(1), GivenValue::String("0x11".into())]
+                        ]
+                    );
+                } else {
+                    assert_eq!(mutation.matches("put $thing1").count(), 1);
+                    assert!(mutation.contains(&format!("$thing1 isa! {label}")));
+                    assert!(mutation.contains("has identifier == $put_key_0"));
+                    assert_eq!(rows.variables, ["ordinal", "put_key_0"]);
+                    let prefix = if kind == TypeKind::Entity {
+                        "person"
+                    } else {
+                        "membership"
+                    };
+                    assert_eq!(
+                        rows.rows,
+                        [
+                            vec![
+                                GivenValue::Integer(0),
+                                GivenValue::String(format!("{prefix}-0")),
+                            ],
+                            vec![
+                                GivenValue::Integer(1),
+                                GivenValue::String(format!("{prefix}-1")),
+                            ],
+                        ],
+                    );
+                }
+            }
+            ProjectedBatchOperation::Update => {
+                assert!(mutation.contains(&format!("$thing1 isa! {label};")));
+                assert!(mutation.contains("iid($thing1) == $target_iid;"));
+                assert!(mutation.contains("has $PlanHas1x0 of $thing1"));
+                assert!(!mutation.contains("\nput\n"));
+                if kind == TypeKind::Relation {
+                    assert!(
+                        mutation
+                            .contains("delete try { links (member: $PlanPlayers4x0) of $thing1; }",),
+                        "relation update did not clear the authored role: {mutation}",
+                    );
+                }
+                assert_eq!(rows.variables, ["ordinal", "target_iid"]);
+                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
+                assert_eq!(
+                    rows.rows,
+                    [
+                        vec![
+                            GivenValue::Integer(0),
+                            GivenValue::String(format!("0x{base:x}")),
+                        ],
+                        vec![
+                            GivenValue::Integer(1),
+                            GivenValue::String(format!("0x{:x}", base + 1)),
+                        ],
+                    ],
+                );
+            }
+            ProjectedBatchOperation::Delete => {
+                assert!(mutation.contains(&format!("$thing1 isa! {label};")));
+                assert!(mutation.contains("delete $thing1;"));
+                assert!(!mutation.contains("\nput\n"));
+                assert_eq!(rows.variables, ["ordinal", "target_iid"]);
+                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
+                assert_eq!(
+                    rows.rows,
+                    [
+                        vec![
+                            GivenValue::Integer(0),
+                            GivenValue::String(format!("0x{base:x}")),
+                        ],
+                        vec![
+                            GivenValue::Integer(1),
+                            GivenValue::String(format!("0x{:x}", base + 1)),
+                        ],
+                    ],
+                );
+            }
+        }
+
+        if has_prerequisite {
+            let (prerequisite, rows) = &calls[0];
+            assert_eq!(
+                &rows.variables[..5],
+                [
+                    "kind",
+                    "ordinal",
+                    "reference_ordinal",
+                    "route",
+                    "wanted_iid"
+                ],
+            );
+            if operation == ProjectedBatchOperation::Put {
+                assert!(prerequisite.contains("$kind == 0;"));
+                assert!(prerequisite.contains("has identifier $key4;"));
+                assert_eq!(
+                    rows.rows
+                        .iter()
+                        .filter(|row| row[0] == GivenValue::Integer(0))
+                        .count(),
+                    2,
+                );
+            }
+            if kind == TypeKind::Relation {
+                assert!(prerequisite.contains("$kind == 1;"));
+                assert_eq!(
+                    rows.rows
+                        .iter()
+                        .filter(|row| row[0] == GivenValue::Integer(1))
+                        .count(),
+                    2,
+                );
+            }
+        }
+
+        if operation != ProjectedBatchOperation::Delete {
+            let (attach, rows) = calls.last().expect("non-delete batch has an attach stage");
+            assert!(attach.contains(&format!("$thing1 isa! {label};")));
+            assert_eq!(&rows.variables[..2], ["ordinal", "target_iid"]);
+            assert!(rows.rows.iter().any(|row| {
+                row[0] == GivenValue::Integer(0)
+                    && row[1]
+                        == GivenValue::String(if kind == TypeKind::Entity {
+                            "0x20".to_owned()
+                        } else {
+                            "0x30".to_owned()
+                        })
+            }));
+            if kind == TypeKind::Relation {
+                assert!(attach.contains("$thing1 links (member:"));
+                assert!(
+                    rows.variables
+                        .iter()
+                        .any(|variable| variable.starts_with("player_iid_")),
                 );
             }
         }
@@ -11834,9 +12050,18 @@ class StructBase:
             let runtime = PyRuntimeProjection {
                 package: local_package,
             };
-            runtime
+            let refusal = runtime
                 .validate_create(py, local_class.clone_ref(py), local_instance)
-                .unwrap();
+                .unwrap_err();
+            assert_eq!(
+                refusal
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "relation_requires_player"
+            );
 
             let foreign_instance = foreign_package
                 .class(&event_id, ProjectedModelForm::Complete)
@@ -13248,6 +13473,7 @@ def public_state(value):
             );
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb1"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb1", "0xa1")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
@@ -13270,7 +13496,7 @@ def public_state(value):
             {
                 let state = same_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.queries.len(), 2);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }
@@ -13355,6 +13581,7 @@ def public_state(value):
                 .expect("borrowed transaction hydration should succeed");
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb2"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb2", "0xa2")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
@@ -13500,6 +13727,7 @@ def public_state(value):
             .unwrap();
             let borrowed = hydrate_first_query_thing(py, package.as_ref(), borrowed_handle);
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb4"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb4", "0xa4")]),
             ]);
             let same_database = Arc::new(Database::with_backend_authority(
@@ -13562,6 +13790,7 @@ def public_state(value):
             assert!(remote_reference().origin_carrier().is_none());
 
             let (target_backend, target_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb5"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb5", "0xa5")]),
             ]);
             let target = Arc::new(Database::with_backend(
@@ -13584,7 +13813,7 @@ def public_state(value):
             {
                 let state = target_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.queries.len(), 2);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }
@@ -13735,6 +13964,8 @@ def public_state(value):
                 .expect("manager relation hydration should succeed");
 
             let (manager_same_backend, manager_same_state) = OriginRecordingBackend::new(vec![
+                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb6"})]),
+                QueryResult::Documents(vec![serde_json::json!({"iid":"0xc6"})]),
                 QueryResult::Documents(vec![origin_container_document("0xc6", "0xb6")]),
             ]);
             let manager_same = Arc::new(Database::with_backend_authority(
@@ -13758,12 +13989,17 @@ def public_state(value):
             );
             manager_same_manager
                 .insert(py, manager_same_container)
-                .expect("same authority must accept a hydrated relation-as-player reference");
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "relation player positive: {error}, code={:?}",
+                        error.value(py).getattr("code")
+                    )
+                });
             {
                 let state = manager_same_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                // The relation-as-player reference resolves inside the write.
-                assert_eq!(state.queries.len(), 1);
+                // Ordered transport resolves the reference, inserts its IID, then reads complete state.
+                assert_eq!(state.queries.len(), 3);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }

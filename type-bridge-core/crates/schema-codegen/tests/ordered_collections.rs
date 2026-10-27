@@ -1089,6 +1089,16 @@ const zeroCounters = {
 };
 const documents = (...values) => ({ Documents: values });
 const iidDocument = (iid) => documents({ iid });
+const scalar = (kind, value) => ({ kind: "value", value: { kind, value: String(value) } });
+const thing = (iid, kind, label) => ({ kind: "thing", iid, type_id: { kind, label } });
+const iidRow = (iid) => ({ Rows: [{ iid1: scalar("string", iid) }] });
+const mutationRow = (iid, kind, label) => ({ Rows: [{
+  ordinal0: scalar("long", 0), thing1: thing(iid, kind, label),
+}] });
+const temporalReferenceRow = () => ({ Rows: [{
+  kind0: scalar("long", 1), ordinal1: scalar("long", 0),
+  reference2: scalar("long", 0), thing3: thing("0xde", "entity", "temporal-record"),
+}] });
 const personDocument = (iid, tag = "sourcetag") => ({
   _iid: iid,
   _type: "person",
@@ -1141,24 +1151,19 @@ const temporalRecordDocument = (ordinal, iid) => ({
   _iid: iid,
   _type: "temporal-record",
   attributes: {
-    "occurred-on": [{ value: "+10000-01-02" }],
-    "observed-at": [{ value: "-9999-01-02T03:04:05" }],
-    "reported-at": [{ value: "-9999-01-02T03:04:05Z" }],
+    "occurred-on": "+10000-01-02",
+    "observed-at": "-9999-01-02T03:04:05",
+    "reported-at": "-9999-01-02T03:04:05Z",
   },
 });
 const temporalLinkDocument = (iid, playerIid) => ({
   _iid: iid,
   _type: "temporal-link",
   attributes: {},
-  role_players: [{
-    role: "temporal-link:subject",
-    iid: playerIid,
-    type_name: "temporal-record",
-    attributes: {
-      "occurred-on": [{ value: "+10000-01-02" }],
-      "observed-at": [{ value: "-9999-01-02T03:04:05" }],
-      "reported-at": [{ value: "-9999-01-02T03:04:05Z" }],
-    },
+  _role_0_players: [{
+    _iid: playerIid,
+    _type: "temporal-record",
+    attributes: temporalRecordDocument(0, playerIid).attributes,
   }],
 });
 
@@ -1421,6 +1426,7 @@ const nativeRoleDocument = (iid, type, playerIid, playerType) => ({
   _role_0_attributes: {},
 });
 const sameEntity = fixture([
+  iidDocument("0xb7"),
   documents(nativeRoleDocument("0xb7", "membership", "0xa7", "person")),
 ], sharedAuthority);
 const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
@@ -1428,6 +1434,7 @@ const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
 );
 assert.equal(sameMembership.participant[0].iid, "0xa7");
 assert.equal(counters(sameEntity).commits, 1);
+assert.equal(counters(sameEntity).queries.length, 2);
 
 const foreignEntity = fixture([]);
 assert.throws(() => Local.Membership.manager(foreignEntity.connection).insert(
@@ -1441,13 +1448,15 @@ const membershipSource = fixture([
 const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
 assert.equal(exactMembership.iid, "0xb8");
 const sameRelation = fixture([
+  iidRow("0xb8"),
+  iidDocument("0xc8"),
   documents(nativeRoleDocument("0xc8", "activity-link", "0xb8", "membership")),
 ], sharedAuthority);
 const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
 );
 assert.equal(sameLink.subject[0].iid, "0xb8");
-assert.equal(counters(sameRelation).queries.length, 1);
+assert.equal(counters(sameRelation).queries.length, 3);
 const foreignRelation = fixture([]);
 assert.throws(() => Local.ActivityLink.manager(foreignRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
@@ -1582,13 +1591,14 @@ assert.deepEqual(
 );
 for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
   const unboundTarget = fixture([
+    iidDocument("0xbe"),
     documents(nativeRoleDocument("0xbe", "membership", "0xa7", "person")),
   ]);
   const created = Local.Membership.manager(unboundTarget.connection).insert(
     Local.Membership.create({ participant: [unboundPlayer] }),
   );
   assert.equal(created.iid, "0xbe");
-  assert.equal(counters(unboundTarget).queries.length, 1);
+  assert.equal(counters(unboundTarget).queries.length, 2);
   assert.equal(counters(unboundTarget).commits, 1);
 }
 
@@ -1861,7 +1871,7 @@ assert.equal(
 
 const temporalDatabaseAuthority = Native.__newProjectionRecordingAuthority();
 const temporalBatch = fixture([
-  documents({ ordinal: 0, iid: "0xde" }),
+  mutationRow("0xde", "entity", "temporal-record"),
   documents(temporalRecordDocument(0, "0xde")),
 ], temporalDatabaseAuthority);
 Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
@@ -1894,14 +1904,8 @@ const activeTemporalProof = Runtime.__testOrderedFacadeProof(activeTemporalRecor
 assert.equal(activeTemporalProof.kind, "root");
 assert.equal(activeTemporalProof.row, 0);
 const temporalLinkTarget = fixture([
-  documents({
-    kind: 1,
-    ordinal: 0,
-    reference_ordinal: 0,
-    iid: "0xde",
-    type: "temporal-record",
-  }),
-  documents({ ordinal: 0, iid: "0xdf" }),
+  temporalReferenceRow(),
+  mutationRow("0xdf", "relation", "temporal-link"),
   documents({ ordinal: 0, ...temporalLinkDocument("0xdf", "0xde") }),
 ], temporalDatabaseAuthority);
 const [activeTemporalLink] = Local.TemporalLink.manager(
@@ -1918,14 +1922,8 @@ assert.equal(counters(temporalLinkTarget).commits, 1);
 
 Runtime.__testConfigureOrderedBatchMaterializer("none", -1);
 const abortedTemporalLinkBatch = fixture([
-  documents({
-    kind: 1,
-    ordinal: 0,
-    reference_ordinal: 0,
-    iid: "0xde",
-    type: "temporal-record",
-  }),
-  documents({ ordinal: 0, iid: "0xe0" }),
+  temporalReferenceRow(),
+  mutationRow("0xe0", "relation", "temporal-link"),
   documents({ ordinal: 0, ...temporalLinkDocument("0xe0", "0xde") }),
 ], temporalDatabaseAuthority, "definitely_aborted");
 assert.throws(() => Local.TemporalLink.manager(

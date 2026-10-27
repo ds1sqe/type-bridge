@@ -32,6 +32,7 @@ use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment
 use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
 use crate::plan_builders::put::{KeyedPut, keyed_entity_put};
+use crate::plan_builders::read::reference_identity;
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
 use crate::plan_builders::write::{
     ThingUpdate, delete_by_iid, delete_by_iid_returning, entity_insert, update_by_iid,
@@ -805,6 +806,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .await
     }
 
+    // Box only controlled execution so default single-CRUD futures stay small.
     async fn execute_controlled_single_delete_returning(
         &self,
         database: &Database,
@@ -812,12 +814,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: ProjectedBatchInvocationControl,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         let model = batch.model().clone();
-        ProjectedBatchExecutor::new(self.installed)
-            .returning_deleted()
-            .execute_mapped(database, batch, control, None, move |result| {
-                single_batch_deleted_thing(result, &model)
-            })
-            .await
+        Box::pin(
+            ProjectedBatchExecutor::new(self.installed)
+                .returning_deleted()
+                .execute_mapped(database, batch, control, None, move |result| {
+                    single_batch_deleted_thing(result, &model)
+                }),
+        )
+        .await
     }
 
     async fn execute_controlled_single_delete_returning_in_transaction(
@@ -827,12 +831,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: ProjectedBatchInvocationControl,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         let model = batch.model().clone();
-        ProjectedBatchExecutor::new(self.installed)
-            .returning_deleted()
-            .execute_in_transaction_mapped(transaction, batch, control, None, move |result| {
-                single_batch_deleted_thing(result, &model)
-            })
-            .await
+        Box::pin(
+            ProjectedBatchExecutor::new(self.installed)
+                .returning_deleted()
+                .execute_in_transaction_mapped(transaction, batch, control, None, move |result| {
+                    single_batch_deleted_thing(result, &model)
+                }),
+        )
+        .await
     }
 
     /// Count exact instances of one projected entity in an owned read transaction.
@@ -2731,6 +2737,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         )
     }
 
+    // Box only controlled execution so default single-CRUD futures stay small.
     async fn execute_controlled_single_thing(
         &self,
         database: &Database,
@@ -2739,12 +2746,15 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let model = batch.model().clone();
         let mapper_model = model.clone();
-        ProjectedBatchExecutor::new(self.installed)
-            .execute_mapped(database, batch, control, None, move |result| {
-                single_batch_thing(result, &mapper_model).map(Some)
-            })
-            .await?
-            .ok_or_else(|| single_batch_result_invalid(&model))
+        Box::pin(ProjectedBatchExecutor::new(self.installed).execute_mapped(
+            database,
+            batch,
+            control,
+            None,
+            move |result| single_batch_thing(result, &mapper_model).map(Some),
+        ))
+        .await?
+        .ok_or_else(|| single_batch_result_invalid(&model))
     }
 
     async fn execute_controlled_single_thing_in_transaction(
@@ -2755,12 +2765,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let model = batch.model().clone();
         let mapper_model = model.clone();
-        ProjectedBatchExecutor::new(self.installed)
-            .execute_in_transaction_mapped(transaction, batch, control, None, move |result| {
-                single_batch_thing(result, &mapper_model).map(Some)
-            })
-            .await?
-            .ok_or_else(|| single_batch_result_invalid(&model))
+        Box::pin(
+            ProjectedBatchExecutor::new(self.installed).execute_in_transaction_mapped(
+                transaction,
+                batch,
+                control,
+                None,
+                move |result| single_batch_thing(result, &mapper_model).map(Some),
+            ),
+        )
+        .await?
+        .ok_or_else(|| single_batch_result_invalid(&model))
     }
 
     async fn execute_controlled_single_delete(
@@ -2770,11 +2785,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: ProjectedBatchInvocationControl,
     ) -> Result<(), SdkExecutionDiagnostic> {
         let model = batch.model().clone();
-        ProjectedBatchExecutor::new(self.installed)
-            .execute_mapped(database, batch, control, (), move |result| {
-                single_batch_delete(result, &model)
-            })
-            .await
+        Box::pin(ProjectedBatchExecutor::new(self.installed).execute_mapped(
+            database,
+            batch,
+            control,
+            (),
+            move |result| single_batch_delete(result, &model),
+        ))
+        .await
     }
 
     async fn execute_controlled_single_delete_in_transaction(
@@ -2784,11 +2802,16 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: ProjectedBatchInvocationControl,
     ) -> Result<(), SdkExecutionDiagnostic> {
         let model = batch.model().clone();
-        ProjectedBatchExecutor::new(self.installed)
-            .execute_in_transaction_mapped(transaction, batch, control, (), move |result| {
-                single_batch_delete(result, &model)
-            })
-            .await
+        Box::pin(
+            ProjectedBatchExecutor::new(self.installed).execute_in_transaction_mapped(
+                transaction,
+                batch,
+                control,
+                (),
+                move |result| single_batch_delete(result, &model),
+            ),
+        )
+        .await
     }
 
     async fn open_controlled_read_transaction(
@@ -3052,6 +3075,87 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| mode.orm_at_type(error, operation, type_id))
     }
 
+    async fn entity_manager(
+        &self,
+        transaction: &TransactionContext,
+        descriptor: Arc<EntityDescriptor>,
+        type_id: &TypeId,
+        mode: ExecutionMode<'_>,
+    ) -> Result<DynamicEntityManager<'static>, SdkExecutionDiagnostic> {
+        if descriptor
+            .owned_attributes
+            .iter()
+            .any(|attribute| attribute.is_ordered)
+        {
+            // raw remainder: native plans do not yet represent ordered ownerships.
+            return Ok(DynamicEntityManager::with_canonical_transaction(
+                transaction.clone(),
+                descriptor,
+            ));
+        }
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let manager = DynamicEntityManager::with_registry_transaction(
+            transaction.clone(),
+            registry,
+            descriptor,
+        );
+        Ok(
+            if transaction
+                .supports_given_stage()
+                .await
+                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?
+            {
+                manager
+            } else {
+                manager.literal_values()
+            },
+        )
+    }
+
+    async fn relation_manager(
+        &self,
+        transaction: &TransactionContext,
+        descriptor: Arc<RelationDescriptor>,
+        type_id: &TypeId,
+        mode: ExecutionMode<'_>,
+    ) -> Result<DynamicRelationManager<'static>, SdkExecutionDiagnostic> {
+        if descriptor
+            .owned_attributes
+            .iter()
+            .any(|attribute| attribute.is_ordered)
+            || descriptor.roles.iter().any(|role| role.ordered)
+        {
+            // raw remainder: native plans do not yet represent ordered ownerships or roles.
+            return Ok(DynamicRelationManager::with_canonical_transaction(
+                transaction.clone(),
+                descriptor,
+            ));
+        }
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let manager = DynamicRelationManager::with_registry_transaction(
+            transaction.clone(),
+            registry,
+            descriptor,
+        );
+        Ok(
+            if transaction
+                .supports_given_stage()
+                .await
+                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?
+            {
+                manager
+            } else {
+                manager.literal_values()
+            },
+        )
+    }
+
     fn prepare_entity_create(
         &self,
         input: &ProjectedCreate,
@@ -3090,11 +3194,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(type_id, TypeKind::Entity)?;
         let descriptor = self
             .installed
-            .entity_descriptor(type_id)
+            .manager_registry()
+            .and_then(|registry| registry.entity(type_id.label().as_str()))
             .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
         Ok(PreparedEntityType {
             type_id: type_id.clone(),
-            descriptor: Arc::new(descriptor.clone()),
+            descriptor,
         })
     }
 
@@ -3105,11 +3210,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(type_id, TypeKind::Relation)?;
         let descriptor = self
             .installed
-            .relation_descriptor(type_id)
+            .manager_registry()
+            .and_then(|registry| registry.relation(type_id.label().as_str()))
             .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
         Ok(PreparedRelationType {
             type_id: type_id.clone(),
-            descriptor: Arc::new(descriptor.clone()),
+            descriptor,
         })
     }
 
@@ -3506,9 +3612,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedEntityCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        if let (Some(write), Ok(authority)) =
-            (&prepared.plan_write, self.installed.plan_authority())
-        {
+        if let Some(write) = &prepared.plan_write {
+            let authority = self
+                .installed
+                .plan_authority()
+                .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
             let type_id = &prepared.type_id;
             let transport = plan_transport(transaction, type_id, mode).await?;
             if let Some(plan) = plan_or_released(
@@ -3522,6 +3630,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return after_write(transaction, hydrated).await;
             }
         }
+        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
         let manager = DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -3554,23 +3663,32 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedEntityCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let manager = DynamicEntityManager::with_canonical_transaction(
+        let manager = self
+            .entity_manager(
+                transaction,
+                Arc::clone(&prepared.descriptor),
+                &prepared.type_id,
+                mode,
+            )
+            .await?;
+        if let Some(put) = &prepared.keyed_put {
+            let authority = self
+                .installed
+                .plan_authority()
+                .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+            if let Some(thing) = self
+                .put_entity_by_plan(transaction, prepared, put, &authority, mode)
+                .await?
+            {
+                return Ok(thing);
+            }
+        }
+        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+        let released = DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
         );
-        // Without a plan authority the released path runs unchanged.
-        let authority = prepared
-            .keyed_put
-            .as_ref()
-            .and_then(|put| Some((put, self.installed.plan_authority().ok()?)));
-        if let Some((put, authority)) = authority
-            && let Some(thing) = self
-                .put_entity_by_plan(transaction, prepared, put, &authority, mode)
-                .await?
-        {
-            return Ok(thing);
-        }
-        let iid = manager
+        let iid = released
             .put_exact(&prepared.attributes)
             .await
             .map_err(|error| {
@@ -3602,10 +3720,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedEntityIdentity,
         mode: ExecutionMode<'_>,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let manager = DynamicEntityManager::with_canonical_transaction(
-            transaction.clone(),
-            Arc::clone(&prepared.descriptor),
-        );
+        let manager = self
+            .entity_manager(
+                transaction,
+                Arc::clone(&prepared.descriptor),
+                &prepared.type_id,
+                mode,
+            )
+            .await?;
         manager
             .get_by_iid_exact(&prepared.iid)
             .await
@@ -3631,9 +3753,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedEntityCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        if let (Some(write), Ok(authority)) =
-            (&prepared.plan_write, self.installed.plan_authority())
-        {
+        if let Some(write) = &prepared.plan_write {
+            let authority = self
+                .installed
+                .plan_authority()
+                .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
             let type_id = &prepared.type_id;
             let transport = plan_transport(transaction, type_id, mode).await?;
             let built = update_by_iid(
@@ -3661,6 +3785,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return after_write(transaction, hydrated).await;
             }
         }
+        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
         let manager = DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -3694,54 +3819,87 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         mode: ExecutionMode<'_>,
         returning: bool,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let authority = self.installed.plan_authority();
-        if returning || authority.is_ok() {
-            let authority =
-                authority.map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
-            let roles = if returning { Some(Vec::new()) } else { None };
-            let documents = execute_delete_plan(
-                transaction,
-                &authority,
-                &prepared.type_id,
-                &prepared.iid,
-                roles,
-                mode,
-            )
-            .await?;
-            if documents.is_empty() {
-                return Ok(None);
-            }
-            let hydrate = || {
-                let mut thing = {
-                    if documents.len() != 1 {
-                        return Err(identity_cardinality(&prepared.type_id));
-                    }
-                    let row = hydrate_dynamic_entity(&prepared.descriptor, &documents[0]).map_err(
-                        |error| {
-                            mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-                        },
-                    )?;
-                    self.hydrate_entity(
-                        row,
-                        &prepared.type_id,
-                        &prepared.iid,
-                        transaction.execution_identity(),
-                        mode,
-                    )?
+        if returning
+            && prepared
+                .descriptor
+                .owned_attributes
+                .iter()
+                .all(|attribute| !attribute.is_ordered)
+        {
+            let registry = self.installed.manager_registry().map_err(|error| {
+                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+            })?;
+            let manager = DynamicEntityManager::with_registry_transaction(
+                transaction.clone(),
+                registry,
+                Arc::clone(&prepared.descriptor),
+            );
+            let manager = if !transaction.supports_given_stage().await.map_err(|error| {
+                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+            })? {
+                manager.literal_values()
+            } else {
+                manager
+            };
+            let mut rows = manager
+                .delete_models_returning(std::slice::from_ref(&prepared.iid), true)
+                .await
+                .map_err(|error| {
+                    mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
+                })?;
+            let mut hydrate = || {
+                let Some(row) = rows.pop() else {
+                    return Ok(None);
                 };
+                let mut thing = self.hydrate_entity(
+                    row,
+                    &prepared.type_id,
+                    &prepared.iid,
+                    transaction.execution_identity(),
+                    mode,
+                )?;
                 thing.mark_deleted()?;
                 Ok(Some(thing))
             };
             return after_write(transaction, hydrate()).await;
         }
-        DynamicEntityManager::with_canonical_transaction(
-            transaction.clone(),
-            Arc::clone(&prepared.descriptor),
+        let authority = self
+            .installed
+            .plan_authority()
+            .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+        let roles = if returning { Some(Vec::new()) } else { None };
+        let documents = execute_delete_plan(
+            transaction,
+            &authority,
+            &prepared.type_id,
+            &prepared.iid,
+            roles,
+            mode,
         )
-        .delete_by_iid_exact(&prepared.iid)
-        .await
-        .map(|()| None)
-        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id))
+        .await?;
+        if documents.is_empty() {
+            return Ok(None);
+        }
+        let hydrate = || {
+            let mut thing = {
+                if documents.len() != 1 {
+                    return Err(identity_cardinality(&prepared.type_id));
+                }
+                let row = hydrate_dynamic_entity(&prepared.descriptor, &documents[0]).map_err(
+                    |error| mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id),
+                )?;
+                self.hydrate_entity(
+                    row,
+                    &prepared.type_id,
+                    &prepared.iid,
+                    transaction.execution_identity(),
+                    mode,
+                )?
+            };
+            thing.mark_deleted()?;
+            Ok(Some(thing))
+        };
+        after_write(transaction, hydrate()).await
     }
 
     async fn count_entities_prepared(
@@ -3750,10 +3908,13 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedEntityType,
         mode: ExecutionMode<'_>,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        DynamicEntityManager::with_canonical_transaction(
-            transaction.clone(),
+        self.entity_manager(
+            transaction,
             Arc::clone(&prepared.descriptor),
+            &prepared.type_id,
+            mode,
         )
+        .await?
         .count_exact()
         .await
         .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id))
@@ -3765,18 +3926,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedRelationCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            transaction.clone(),
-            Arc::clone(&prepared.descriptor),
-        );
-        // A relation without players has nothing to resolve, and without a
-        // plan authority the released path runs unchanged.
-        let authority = if prepared.role_players.is_empty() {
-            None
-        } else {
-            self.installed.plan_authority().ok()
-        };
-        if let Some(authority) = authority
+        let manager = self
+            .relation_manager(
+                transaction,
+                Arc::clone(&prepared.descriptor),
+                &prepared.type_id,
+                mode,
+            )
+            .await?;
+        let authority = self
+            .installed
+            .plan_authority()
+            .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+        if prepared.plan_write.is_some()
             && let Some(thing) = self
                 .insert_relation_by_plan(transaction, prepared, &authority, mode)
                 .await?
@@ -3795,6 +3957,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -3811,6 +3974,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -3940,6 +4104,8 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             authority,
             transport,
             &KeyedPut {
+                include_subtypes: false,
+                return_document: true,
                 type_id,
                 keys: &put.keys,
                 fields: &put.fields,
@@ -4018,10 +4184,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         // was written. Only on this failure path, one read tells which, to
         // keep the released codes.
         if documents.is_empty() {
-            let manager = DynamicRelationManager::with_canonical_transaction(
-                transaction.clone(),
-                Arc::clone(&prepared.descriptor),
-            );
+            let manager = self
+                .relation_manager(
+                    transaction,
+                    Arc::clone(&prepared.descriptor),
+                    &prepared.type_id,
+                    mode,
+                )
+                .await?;
             let present = manager
                 .get_by_iid_exact(iid)
                 .await
@@ -4064,21 +4234,53 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         for player in &prepared.role_players {
             let mut matches = Vec::new();
             for candidate_type in &player.candidate_types {
-                let query = query_builder::build_projected_role_player_lookup(
-                    candidate_type.label().as_str(),
-                    candidate_type.kind(),
-                    player.iid.as_deref(),
-                    player
-                        .key
-                        .as_ref()
-                        .map(|(name, value)| (name.as_str(), value)),
-                )
-                .map_err(|error| {
-                    mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
-                })?;
-                let answer = transaction.query_canonical(&query).await.map_err(|error| {
-                    mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
-                })?;
+                let identity = match (&player.iid, &player.plan_key) {
+                    (Some(iid), _) => ReferenceIdentity::Iid(iid),
+                    (None, Some((attribute, value))) => ReferenceIdentity::Key {
+                        attribute,
+                        value: value.clone(),
+                    },
+                    _ => return Err(write_plan_invalid(&prepared.type_id)),
+                };
+                let authority = self
+                    .installed
+                    .plan_authority()
+                    .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+                let transport = plan_transport(transaction, &prepared.type_id, mode).await?;
+                let built = reference_identity(
+                    &authority,
+                    transport,
+                    &Reference {
+                        candidates: std::slice::from_ref(candidate_type),
+                        identity,
+                    },
+                );
+                let answer = match built {
+                    Ok(plan) => {
+                        execute_identity_plan(transaction, plan.local(), &prepared.type_id, mode)
+                            .await?
+                    }
+                    Err(error) if error.code().as_str() == LITERAL_CONTROL_CHARACTER => {
+                        // raw remainder: band-8 control-character literal transport; removed in 06.
+                        let query = query_builder::build_projected_role_player_lookup(
+                            candidate_type.label().as_str(),
+                            candidate_type.kind(),
+                            player.iid.as_deref(),
+                            player
+                                .key
+                                .as_ref()
+                                .map(|(name, value)| (name.as_str(), value)),
+                        )
+                        .map_err(|error| {
+                            mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+                        })?;
+                        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+                        transaction.query_canonical(&query).await.map_err(|error| {
+                            mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+                        })?
+                    }
+                    Err(error) => return Err(plan_build_failure(&error, &prepared.type_id)),
+                };
                 if let Some(iid) =
                     extract_optional_provider_iid(answer, &prepared.type_id, player.iid.as_deref())?
                 {
@@ -4116,6 +4318,43 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedRelationCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        let literal_control = prepared.plan_fields.iter().any(|(_, value)| matches!(value, CanonicalValue::String(value) if value.as_str().chars().any(char::is_control)))
+            || prepared.role_players.iter().any(|player| matches!(&player.plan_key, Some((_, CanonicalValue::String(value))) if value.as_str().chars().any(char::is_control)));
+        let released_literal = literal_control
+            && !transaction.supports_given_stage().await.map_err(|error| {
+                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+            })?;
+        if !released_literal && let Some(write) = &prepared.plan_write {
+            let authority = self
+                .installed
+                .plan_authority()
+                .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+            let manager = self
+                .relation_manager(
+                    transaction,
+                    Arc::clone(&prepared.descriptor),
+                    &prepared.type_id,
+                    mode,
+                )
+                .await?;
+            let existing = manager
+                .key_iid_exact(&prepared.attributes)
+                .await
+                .map_err(|error| {
+                    mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+                })?;
+            let thing = if let Some(iid) = existing {
+                self.update_relation_by_plan(transaction, &iid, prepared, write, &authority, mode)
+                    .await?
+            } else {
+                self.insert_relation_by_plan(transaction, prepared, &authority, mode)
+                    .await?
+            };
+            if let Some(thing) = thing {
+                return Ok(thing);
+            }
+        }
+        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
         let manager = DynamicRelationManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -4131,17 +4370,8 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             self.put_projected_relation_state(transaction, prepared, mode)
                 .await?
         };
-        let rows = manager.get_by_iid_exact(&iid).await.map_err(|error| {
-            mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-        })?;
-        let row = require_mutation_relation_row(rows, &prepared.type_id)?;
-        self.hydrate_relation(
-            row,
-            &prepared.type_id,
-            &iid,
-            transaction.execution_identity(),
-            mode,
-        )
+        self.rehydrate_relation(&manager, transaction, &prepared.type_id, &iid, mode)
+            .await
     }
 
     async fn get_relation_prepared(
@@ -4150,10 +4380,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedRelationIdentity,
         mode: ExecutionMode<'_>,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let manager = DynamicRelationManager::with_canonical_transaction(
-            transaction.clone(),
-            Arc::clone(&prepared.descriptor),
-        );
+        let manager = self
+            .relation_manager(
+                transaction,
+                Arc::clone(&prepared.descriptor),
+                &prepared.type_id,
+                mode,
+            )
+            .await?;
         let rows = manager
             .get_by_iid_exact(&prepared.iid)
             .await
@@ -4182,17 +4416,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedRelationCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        // Without players the released path runs: it refuses a role below
-        // its minimum, where clearing every role would delete the relation.
-        if !prepared.role_players.is_empty()
-            && let (Some(write), Ok(authority)) =
-                (&prepared.plan_write, self.installed.plan_authority())
-            && let Some(thing) = self
+        if let Some(write) = &prepared.plan_write {
+            let authority = self
+                .installed
+                .plan_authority()
+                .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+            if let Some(thing) = self
                 .update_relation_by_plan(transaction, iid, prepared, write, &authority, mode)
                 .await?
-        {
-            return Ok(thing);
+            {
+                return Ok(thing);
+            }
         }
+        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
         let manager = DynamicRelationManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -4239,6 +4475,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })? {
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4262,6 +4499,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4292,6 +4530,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4306,6 +4545,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4319,6 +4559,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
+            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
             transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4333,59 +4574,95 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         mode: ExecutionMode<'_>,
         returning: bool,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
-        let authority = self.installed.plan_authority();
-        if returning || authority.is_ok() {
-            let authority =
-                authority.map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
-            let roles = if returning {
-                Some(self.document_roles_for(&prepared.type_id, &prepared.descriptor)?)
+        if returning
+            && prepared.descriptor.roles.iter().all(|role| !role.ordered)
+            && prepared
+                .descriptor
+                .owned_attributes
+                .iter()
+                .all(|attribute| !attribute.is_ordered)
+        {
+            let registry = self.installed.manager_registry().map_err(|error| {
+                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+            })?;
+            let manager = DynamicRelationManager::with_registry_transaction(
+                transaction.clone(),
+                registry,
+                Arc::clone(&prepared.descriptor),
+            );
+            let manager = if !transaction.supports_given_stage().await.map_err(|error| {
+                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+            })? {
+                manager.literal_values()
             } else {
-                None
+                manager
             };
-            let documents = execute_delete_plan(
-                transaction,
-                &authority,
-                &prepared.type_id,
-                &prepared.iid,
-                roles,
-                mode,
-            )
-            .await?;
-            if documents.is_empty() {
-                return Ok(None);
-            }
-            let hydrate = || {
-                let mut thing = {
-                    let row = coalesce_dynamic_relation_by_iid(
-                        &prepared.descriptor,
-                        &documents,
-                        &prepared.iid,
-                    )
-                    .map_err(|error| {
-                        mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-                    })?;
-                    let row = require_mutation_relation_row(row, &prepared.type_id)?;
-                    self.hydrate_relation(
-                        row,
-                        &prepared.type_id,
-                        &prepared.iid,
-                        transaction.execution_identity(),
-                        mode,
-                    )?
+            let mut rows = manager
+                .delete_models_returning(std::slice::from_ref(&prepared.iid), true)
+                .await
+                .map_err(|error| {
+                    mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
+                })?;
+            let mut hydrate = || {
+                let Some(row) = rows.pop() else {
+                    return Ok(None);
                 };
+                let mut thing = self.hydrate_relation(
+                    row,
+                    &prepared.type_id,
+                    &prepared.iid,
+                    transaction.execution_identity(),
+                    mode,
+                )?;
                 thing.mark_deleted()?;
                 Ok(Some(thing))
             };
             return after_write(transaction, hydrate()).await;
         }
-        DynamicRelationManager::with_canonical_transaction(
-            transaction.clone(),
-            Arc::clone(&prepared.descriptor),
+        let authority = self
+            .installed
+            .plan_authority()
+            .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
+        let roles = if returning {
+            Some(self.document_roles_for(&prepared.type_id, &prepared.descriptor)?)
+        } else {
+            None
+        };
+        let documents = execute_delete_plan(
+            transaction,
+            &authority,
+            &prepared.type_id,
+            &prepared.iid,
+            roles,
+            mode,
         )
-        .delete_by_iid_exact(&prepared.iid)
-        .await
-        .map(|()| None)
-        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id))
+        .await?;
+        if documents.is_empty() {
+            return Ok(None);
+        }
+        let hydrate = || {
+            let mut thing = {
+                let row = coalesce_dynamic_relation_by_iid(
+                    &prepared.descriptor,
+                    &documents,
+                    &prepared.iid,
+                )
+                .map_err(|error| {
+                    mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
+                })?;
+                let row = require_mutation_relation_row(row, &prepared.type_id)?;
+                self.hydrate_relation(
+                    row,
+                    &prepared.type_id,
+                    &prepared.iid,
+                    transaction.execution_identity(),
+                    mode,
+                )?
+            };
+            thing.mark_deleted()?;
+            Ok(Some(thing))
+        };
+        after_write(transaction, hydrate()).await
     }
 
     async fn count_relations_prepared(
@@ -4394,10 +4671,13 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedRelationType,
         mode: ExecutionMode<'_>,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        DynamicRelationManager::with_canonical_transaction(
-            transaction.clone(),
+        self.relation_manager(
+            transaction,
             Arc::clone(&prepared.descriptor),
+            &prepared.type_id,
+            mode,
         )
+        .await?
         .count_exact()
         .await
         .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id))
@@ -5721,6 +6001,53 @@ async fn execute_write_rows(
     after_write(transaction, rows).await
 }
 
+async fn execute_identity_plan(
+    transaction: &TransactionContext,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    type_id: &TypeId,
+    mode: ExecutionMode<'_>,
+) -> Result<QueryResult, SdkExecutionDiagnostic> {
+    let limits = QueryExecutionResourceLimits::default();
+    let cancellation = AnswerCancellation::default();
+    let deadline = QueryExecutionDeadline::for_limits(limits);
+    let mut lease = transaction
+        .acquire_mutation_lease()
+        .await
+        .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+    let answer = lease
+        .execute_plans(
+            std::slice::from_ref(plan),
+            limits,
+            &cancellation,
+            deadline,
+            None,
+        )
+        .await;
+    lease.complete_success();
+    let (mut answers, _) =
+        answer.map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+    let answer = answers.pop().ok_or_else(|| write_plan_invalid(type_id))?;
+    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+        .to_staged_v3(plan)
+        .map_err(|_| write_plan_invalid(type_id))?
+    else {
+        return Err(write_plan_invalid(type_id));
+    };
+    let documents = rows
+        .into_iter()
+        .map(|mut row| match (row.len(), row.pop()) {
+            (
+                1,
+                Some(type_bridge_contract::query_remote::RemoteValue::Value {
+                    value: CanonicalValue::String(iid),
+                }),
+            ) => Ok(serde_json::json!({"iid": iid.as_str()})),
+            _ => Err(write_plan_invalid(type_id)),
+        })
+        .collect::<Result<Vec<_>, SdkExecutionDiagnostic>>()?;
+    Ok(QueryResult::Documents(documents))
+}
+
 /// Latch a borrowed transaction rollback-only when a failure follows a
 /// dispatched write. An owned transaction is rolled back by its caller.
 async fn after_write<T>(
@@ -6280,7 +6607,7 @@ mod tests {
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, crate::Result<BoundedAnswerStats>> {
             self.state.lock().unwrap().bounded_reads += 1;
-            stream_controlled_response(self.response(), limits.answer, consumer)
+            stream_controlled_response(self.response(), limits.answer, consumer, _typeql)
         }
 
         fn query_v2_with_rows_bounded<'a>(
@@ -6291,7 +6618,7 @@ mod tests {
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, crate::Result<BoundedAnswerStats>> {
             self.state.lock().unwrap().bounded_given += 1;
-            stream_controlled_response(self.response(), limits.answer, consumer)
+            stream_controlled_response(self.response(), limits.answer, consumer, _typeql)
         }
 
         fn commit(&mut self) -> BoxFuture<'_, crate::Result<()>> {
@@ -6321,6 +6648,7 @@ mod tests {
         response: ControlledProviderResponse,
         limits: BoundedAnswerLimits,
         consumer: &'consumer mut dyn AnswerConsumer,
+        source: &'consumer str,
     ) -> BoxFuture<'consumer, crate::Result<BoundedAnswerStats>> {
         Box::pin(async move {
             match response {
@@ -6328,6 +6656,12 @@ mod tests {
                     let mut reader = BoundedAnswerReader::new(limits);
                     reader.check_before_read()?;
                     for item in items {
+                        let item = match item {
+                            AnswerItem::Document(document) => {
+                                crate::native_batch_fixture::item(source, document)
+                            }
+                            item => item,
+                        };
                         if reader.accept(item, consumer)? == AnswerControl::Stop {
                             break;
                         }

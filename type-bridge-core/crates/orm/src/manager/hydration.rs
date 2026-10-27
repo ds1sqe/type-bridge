@@ -15,6 +15,58 @@ use crate::error::{OrmError, Result};
 use crate::session::backend::QueryResult;
 use crate::value::AttributeValue;
 
+fn dynamic_document(row: DynamicEntityRow) -> serde_json::Map<String, serde_json::Value> {
+    let mut document = serde_json::Map::new();
+    for (name, value) in row.attributes {
+        match document.entry(name) {
+            serde_json::map::Entry::Vacant(entry) => {
+                entry.insert(value.to_json());
+            }
+            serde_json::map::Entry::Occupied(mut entry) => {
+                let previous = entry.get_mut();
+                if let serde_json::Value::Array(values) = previous {
+                    values.push(value.to_json());
+                } else {
+                    *previous = serde_json::json!([previous.take(), value.to_json()]);
+                }
+            }
+        }
+    }
+    if let Some(type_name) = row.type_name {
+        document.insert("_type".into(), type_name.into());
+    }
+    document
+}
+
+pub(crate) fn materialize_entity_row<T: TypeBridgeEntity>(row: DynamicEntityRow) -> Result<T> {
+    let iid = row.iid.clone();
+    let mut entity = T::from_document(&dynamic_document(row))?;
+    if let Some(iid) = iid {
+        entity.set_iid(iid);
+    }
+    Ok(entity)
+}
+
+pub(crate) fn materialize_relation_row<R: TypeBridgeRelation>(
+    row: DynamicRelationRow,
+) -> Result<R> {
+    let iid = row.iid;
+    let mut document = dynamic_document(DynamicEntityRow {
+        iid: None,
+        type_name: row.type_name,
+        attributes: row.attributes,
+    });
+    document.insert(
+        "role_players".into(),
+        serde_json::to_value(row.role_players)?,
+    );
+    let mut relation = R::from_document(&document)?;
+    if let Some(iid) = iid {
+        relation.set_iid(iid);
+    }
+    Ok(relation)
+}
+
 /// Hydrate a single entity from a TypeDB fetch document.
 ///
 /// Expected document shape from a polymorphic fetch:

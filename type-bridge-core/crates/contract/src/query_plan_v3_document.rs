@@ -12,7 +12,8 @@ type Types = BTreeMap<String, BTreeMap<String, AttributeShape>>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FetchDocumentShape {
     types: Types,
-    roles: Vec<(bool, Types)>,
+    roles: Vec<(bool, Types, bool)>,
+    scalars: BTreeMap<String, ValueTypeTag>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,6 +28,7 @@ impl FetchDocumentShape {
         index: &SchemaIndex<'_>,
         document: &ThingDocument,
         bindings: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+        scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
         profile: &SemanticProfile,
     ) -> Self {
         let types = index.document_types(&bindings[&document.thing], profile);
@@ -52,10 +54,27 @@ impl FetchDocumentShape {
                             .then(|| fact.id().clone())
                     })
                     .collect();
-                (listed.required, index.document_types(&players, profile))
+                (
+                    listed.required,
+                    index.document_types(&players, profile),
+                    listed.collect,
+                )
             })
             .collect();
-        Self { types, roles }
+        Self {
+            types,
+            roles,
+            scalars: document
+                .scalars
+                .iter()
+                .map(|scalar| {
+                    (
+                        scalar.key.as_str().to_owned(),
+                        scalar_types[&scalar.binding],
+                    )
+                })
+                .collect(),
+        }
     }
 
     /// Concrete type labels admitted by this terminal fetch shape.
@@ -81,6 +100,11 @@ impl FetchDocumentShape {
             .map(|shape| shape.domain)
     }
 
+    /// Domain of one additional scalar output field.
+    pub fn scalar_domain(&self, key: &str) -> Option<ValueTypeTag> {
+        self.scalars.get(key).copied()
+    }
+
     /// Verify complete typed fetch evidence before materializing host objects.
     /// Optional players are either absent triples or three explicit absences.
     pub fn validate(&self, document: &Fields) -> Result<(), Diagnostic> {
@@ -89,7 +113,18 @@ impl FetchDocumentShape {
             "_type".to_owned(),
             "attributes".to_owned(),
         ]);
-        for index in 0..self.roles.len() {
+        allowed.extend(self.scalars.keys().cloned());
+        for (key, domain) in &self.scalars {
+            if !matches!(document.get(key), Some(RemoteFieldValue::Scalar { value }) if value.value_type() == *domain)
+            {
+                return Err(document_error("value"));
+            }
+        }
+        for (index, (_, _, collect)) in self.roles.iter().enumerate() {
+            if *collect {
+                allowed.insert(format!("_role_{index}_players"));
+                continue;
+            }
             for suffix in ["iid", "type", "attributes"] {
                 allowed.insert(format!("_role_{index}_{suffix}"));
             }
@@ -103,7 +138,35 @@ impl FetchDocumentShape {
             document.get("attributes"),
             &self.types,
         )?;
-        for (index, (required, types)) in self.roles.iter().enumerate() {
+        for (index, (required, types, collect)) in self.roles.iter().enumerate() {
+            if *collect {
+                let Some(RemoteFieldValue::Documents { documents }) =
+                    document.get(&format!("_role_{index}_players"))
+                else {
+                    return Err(document_error("role"));
+                };
+                if *required && documents.is_empty() {
+                    return Err(document_error("role"));
+                }
+                let mut iids = BTreeSet::new();
+                for player in documents {
+                    if player.len() != 3
+                        || !iids.insert(
+                            string(player.get("_iid")).ok_or_else(|| document_error("role"))?,
+                        )
+                    {
+                        return Err(document_error("role"));
+                    }
+                    validate_thing(
+                        player.get("_iid"),
+                        player.get("_type"),
+                        player.get("attributes"),
+                        types,
+                    )
+                    .map_err(|_| document_error("role"))?;
+                }
+                continue;
+            }
             let values = ["iid", "type", "attributes"]
                 .map(|suffix| document.get(&format!("_role_{index}_{suffix}")));
             if values.iter().all(Option::is_none)

@@ -3,7 +3,10 @@
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
+use crate::_dynamic::DynamicSort;
 use crate::_entity::TypeBridgeEntity;
+use crate::_manager::DynamicEntityManager;
+use crate::_manager::hydration::materialize_entity_row;
 use crate::_manager::hydration::{extract_count, hydrate_entity};
 use crate::_manager::query_builder;
 use crate::error::{OrmError, Result};
@@ -31,6 +34,7 @@ use crate::session::backend::{QueryResult, TxType};
 /// ```
 pub struct EntityQuery<'db, T: TypeBridgeEntity> {
     db: &'db Database,
+    dynamic: Option<DynamicEntityManager<'db>>,
     filters: Vec<Expr>,
     sort_fields: Vec<(String, SortDir)>,
     limit_val: Option<u64>,
@@ -43,12 +47,18 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     pub fn new(db: &'db Database) -> Self {
         Self {
             db,
+            dynamic: None,
             filters: Vec::new(),
             sort_fields: Vec::new(),
             limit_val: None,
             offset_val: None,
             _marker: PhantomData,
         }
+    }
+
+    pub(crate) fn with_manager(mut self, manager: DynamicEntityManager<'db>) -> Self {
+        self.dynamic = Some(manager);
+        self
     }
 
     /// Add a filter expression. Multiple filters are ANDed together.
@@ -80,12 +90,38 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     /// Returns a [`GroupByEntityQuery`] that can only be finalized via
     /// `.aggregate()`.
     pub fn group_by(self, attr: impl Into<String>) -> GroupByEntityQuery<'db, T> {
-        GroupByEntityQuery::new(self.db, self.filters, attr.into())
+        let query = GroupByEntityQuery::new(self.db, self.filters, attr.into());
+        match self.dynamic {
+            Some(manager) => query.with_manager(manager),
+            None => query,
+        }
     }
 
     /// Execute the query and return matching entities.
     #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn execute(self) -> Result<Vec<T>> {
+        if let Some(manager) = self.dynamic {
+            let expressions = self
+                .filters
+                .into_iter()
+                .map(Expr::into_dynamic)
+                .collect::<Vec<_>>();
+            let sorts = self
+                .sort_fields
+                .into_iter()
+                .map(|(attr_name, direction)| DynamicSort::Attribute {
+                    attr_name,
+                    direction,
+                })
+                .collect::<Vec<_>>();
+            return manager
+                .get_with_query(&expressions, &sorts, self.limit_val, self.offset_val)
+                .await?
+                .into_iter()
+                .map(materialize_entity_row::<T>)
+                .collect();
+        }
+
         let typeql = query_builder::build_expr_fetch::<T>(
             &self.filters,
             &self.sort_fields,
@@ -95,6 +131,7 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
         )?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "EXPR FETCH");
 
+        // raw remainder: no registry authority; removed in 06
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
         match result {
             QueryResult::Documents(docs) => {
@@ -122,8 +159,18 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     /// Count matching entities.
     #[tracing::instrument(skip(self), fields(entity_type = T::TYPE_NAME))]
     pub async fn count(self) -> Result<u64> {
+        if let Some(manager) = self.dynamic {
+            let expressions = self
+                .filters
+                .into_iter()
+                .map(Expr::into_dynamic)
+                .collect::<Vec<_>>();
+            return manager.count_with_query(&expressions).await;
+        }
+
         let typeql = query_builder::build_expr_count::<T>(&self.filters, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "EXPR COUNT");
+        // raw remainder: no registry authority; removed in 06
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
         extract_count(&result)
     }
@@ -131,8 +178,26 @@ impl<'db, T: TypeBridgeEntity> EntityQuery<'db, T> {
     /// Run aggregation queries.
     #[tracing::instrument(skip(self, aggs), fields(entity_type = T::TYPE_NAME))]
     pub async fn aggregate(self, aggs: &[Agg]) -> Result<AggResult> {
+        if let Some(manager) = self.dynamic {
+            let expressions = self
+                .filters
+                .into_iter()
+                .map(Expr::into_dynamic)
+                .collect::<Vec<_>>();
+            let aggregates = aggs.iter().map(Agg::to_dynamic).collect::<Vec<_>>();
+            let rows = manager
+                .aggregate_with_query(&expressions, &aggregates)
+                .await?;
+            let row = rows.into_iter().next().ok_or_else(|| OrmError::Hydration {
+                type_name: T::TYPE_NAME.into(),
+                message: "Aggregation returned no rows".into(),
+            })?;
+            return Ok(AggResult::new(row.into_iter().collect()));
+        }
+
         let typeql = query_builder::build_expr_aggregate::<T>(&self.filters, aggs, "$e")?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "EXPR AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
 
         match result {

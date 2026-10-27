@@ -3504,7 +3504,8 @@ mod completeness_guard {
         }
         fn pattern(value: &QueryPattern) {
             match value {
-                QueryPattern::Isa { .. }
+                QueryPattern::Iid { .. }
+                | QueryPattern::Isa { .. }
                 | QueryPattern::Has { .. }
                 | QueryPattern::Links { .. }
                 | QueryPattern::Value { .. }

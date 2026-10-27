@@ -92,6 +92,7 @@ pub(crate) fn update_by_iid(
     for (role, reference) in update.players {
         let player = reference_binding(&mut draft, reference, &mut patterns)?;
         links.push(AttachItem::Links {
+            optional: false,
             relation: thing,
             role: role.clone(),
             player,
@@ -106,6 +107,7 @@ pub(crate) fn update_by_iid(
         .iter()
         .map(|(field, value)| {
             Ok(AttachItem::Has {
+                optional: false,
                 owner: thing,
                 field: field.clone(),
                 operand: draft.value(value.clone())?,

@@ -573,6 +573,17 @@ jobs:
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-orm --lib
 
+      - name: Run negated given role IID regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
+          TYPE_BRIDGE_TRANSACTION_LIVE_VERSION: "3.12.3"
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          cargo test --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --test plan_execute_live
+          negated_given_role_iid_preserves_the_provider_connection -- --exact
+
       - name: Run fetch write commit failure regression
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:

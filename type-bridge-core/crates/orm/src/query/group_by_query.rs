@@ -30,6 +30,7 @@ use crate::session::backend::{QueryResult, TxType};
 /// ```
 pub struct GroupByEntityQuery<'db, T: TypeBridgeEntity> {
     db: &'db Database,
+    dynamic: Option<crate::_manager::DynamicEntityManager<'db>>,
     filters: Vec<crate::expr::Expr>,
     group_field: String,
     _marker: PhantomData<T>,
@@ -40,15 +41,44 @@ impl<'db, T: TypeBridgeEntity> GroupByEntityQuery<'db, T> {
     pub fn new(db: &'db Database, filters: Vec<crate::expr::Expr>, group_field: String) -> Self {
         Self {
             db,
+            dynamic: None,
             filters,
             group_field,
             _marker: PhantomData,
         }
     }
 
+    pub(crate) fn with_manager(
+        mut self,
+        manager: crate::_manager::DynamicEntityManager<'db>,
+    ) -> Self {
+        self.dynamic = Some(manager);
+        self
+    }
+
     /// Execute the grouped aggregation and return results.
     #[tracing::instrument(skip(self, aggs), fields(entity_type = T::TYPE_NAME))]
     pub async fn aggregate(self, aggs: &[Agg]) -> Result<GroupByResult> {
+        if let Some(manager) = self.dynamic {
+            let expressions = self
+                .filters
+                .into_iter()
+                .map(crate::expr::Expr::into_dynamic)
+                .collect::<Vec<_>>();
+            let aggregates = aggs.iter().map(Agg::to_dynamic).collect::<Vec<_>>();
+            let rows = manager
+                .group_by_aggregate_with_query(&expressions, &[self.group_field], &aggregates)
+                .await?;
+            return Ok(GroupByResult::new(
+                rows.into_iter()
+                    .map(|mut row| {
+                        let group = row.remove("group0").unwrap_or(serde_json::Value::Null);
+                        (group, AggResult::new(row.into_iter().collect()))
+                    })
+                    .collect(),
+            ));
+        }
+
         let typeql = query_builder::build_expr_group_by_aggregate::<T>(
             &self.filters,
             &self.group_field,
@@ -56,6 +86,7 @@ impl<'db, T: TypeBridgeEntity> GroupByEntityQuery<'db, T> {
             "$e",
         )?;
         tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "GROUP BY AGGREGATE");
+        // raw remainder: no registry authority; removed in 06
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
         parse_group_by_result::<T>(result)
     }
@@ -67,6 +98,7 @@ impl<'db, T: TypeBridgeEntity> GroupByEntityQuery<'db, T> {
 /// Can only be finalized via `.aggregate()`.
 pub struct GroupByRelationQuery<'db, R: TypeBridgeRelation> {
     db: &'db Database,
+    dynamic: Option<crate::_manager::DynamicRelationManager<'db>>,
     filters: Vec<crate::expr::Expr>,
     group_field: String,
     _marker: PhantomData<R>,
@@ -77,15 +109,44 @@ impl<'db, R: TypeBridgeRelation> GroupByRelationQuery<'db, R> {
     pub fn new(db: &'db Database, filters: Vec<crate::expr::Expr>, group_field: String) -> Self {
         Self {
             db,
+            dynamic: None,
             filters,
             group_field,
             _marker: PhantomData,
         }
     }
 
+    pub(crate) fn with_manager(
+        mut self,
+        manager: crate::_manager::DynamicRelationManager<'db>,
+    ) -> Self {
+        self.dynamic = Some(manager);
+        self
+    }
+
     /// Execute the grouped aggregation and return results.
     #[tracing::instrument(skip(self, aggs), fields(relation_type = R::TYPE_NAME))]
     pub async fn aggregate(self, aggs: &[Agg]) -> Result<GroupByResult> {
+        if let Some(manager) = self.dynamic {
+            let expressions = self
+                .filters
+                .into_iter()
+                .map(crate::expr::Expr::into_dynamic)
+                .collect::<Vec<_>>();
+            let aggregates = aggs.iter().map(Agg::to_dynamic).collect::<Vec<_>>();
+            let rows = manager
+                .group_by_aggregate_with_query(&expressions, &[self.group_field], &aggregates)
+                .await?;
+            return Ok(GroupByResult::new(
+                rows.into_iter()
+                    .map(|mut row| {
+                        let group = row.remove("group0").unwrap_or(serde_json::Value::Null);
+                        (group, AggResult::new(row.into_iter().collect()))
+                    })
+                    .collect(),
+            ));
+        }
+
         let typeql = query_builder::build_relation_group_by_aggregate::<R>(
             &self.filters,
             &self.group_field,
@@ -93,6 +154,7 @@ impl<'db, R: TypeBridgeRelation> GroupByRelationQuery<'db, R> {
             "$r",
         )?;
         tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "GROUP BY AGGREGATE RELATION");
+        // raw remainder: no registry authority; removed in 06
         let result = self.db.execute_raw(&typeql, TxType::Read).await?;
         parse_group_by_result::<R>(result)
     }

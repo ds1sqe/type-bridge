@@ -6077,6 +6077,7 @@ async fn sdk_models_data_model_runtime_live() {
     require_sdk_server_version(&entry).await;
     let db = database().await;
 
+    let (entity_batch_insert_put, entity_batch_update_delete_atomic, entity_observation) = async {
     let person_baseline = db.entities::<Person>().count().await.expect("person count");
     let empty_people = db
         .entities::<Person>()
@@ -6460,6 +6461,10 @@ async fn sdk_models_data_model_runtime_live() {
         "count_after_cleanup": count_after_cleanup - baseline,
     });
 
+        (entity_batch_insert_put, entity_batch_update_delete_atomic, entity_observation)
+    }.await;
+
+    let (relation_batch_insert_put, relation_batch_update_delete_atomic, relation_observation) = async {
     let person_baseline = db.entities::<Person>().count().await.expect("person count");
     let robot_baseline = db.entities::<Robot>().count().await.expect("robot count");
     let membership_baseline = db
@@ -6894,6 +6899,10 @@ async fn sdk_models_data_model_runtime_live() {
         "count_after_cleanup": membership_count_after_cleanup - membership_baseline,
     });
 
+        (relation_batch_insert_put, relation_batch_update_delete_atomic, relation_observation)
+    }.await;
+
+    let (borrowed_transaction_lifecycle, data_resource_lifecycle) = async {
     let transaction_seed = db
         .entities::<Person>()
         .insert(ownership_edge_person_input(
@@ -7208,6 +7217,9 @@ async fn sdk_models_data_model_runtime_live() {
         "projected_value_close_idempotent": true,
         "projected_thing_close_idempotent": true,
     });
+        (borrowed_transaction_lifecycle, data_resource_lifecycle)
+    }.await;
+
     let journey_bytes = fs::read(sdk_env_path("TYPE_BRIDGE_SDK_MODELS_JOURNEY"))
         .expect("Models journey is readable");
     let journey: Value =

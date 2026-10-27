@@ -2234,7 +2234,10 @@ fn validate_outcome_evidence_v2(
                     ));
                 }
                 for field in document {
-                    if matches!(field, RemoteFieldValue::Document { .. }) {
+                    if matches!(
+                        field,
+                        RemoteFieldValue::Document { .. } | RemoteFieldValue::Documents { .. }
+                    ) {
                         return Err(remote_evidence_mismatch_v2(
                             "V2 documents cannot contain nested fields",
                         ));

@@ -1,3 +1,13 @@
+mod native_batch_answer_item {
+    pub use type_bridge_orm::session::backend::{AnswerItem, QueryResult};
+}
+#[allow(dead_code)]
+mod native_batch {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../orm/tests/support/native_batch.rs"
+    ));
+}
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -406,9 +416,10 @@ impl Tx {
             .unwrap()
             .pop_front()
             .unwrap_or_else(|| panic!("unexpected recording query: {q}"));
+        let source = q.to_owned();
         Box::pin(async move {
             match result {
-                Response::Result(value) => Ok(value),
+                Response::Result(value) => Ok(native_batch::result(&source, value)),
                 Response::Error(error) => Err(OrmError::QueryExecution(error)),
             }
         })
@@ -990,9 +1001,6 @@ async fn public_relation_update_replaces_and_rehydrates() {
 async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
     let (db, state) = test_db(vec![
         iid_doc("0x1"),
-        iid_doc("0x9"),
-        Response::Result(QueryResult::Ok),
-        Response::Result(QueryResult::Ok),
         fetch("0x1", "captain", "0x9", "alice"),
     ]);
     let value = db
@@ -1015,7 +1023,7 @@ async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
             _ => None,
         })
         .collect();
-    assert_eq!(queries.len(), 5);
+    assert_eq!(queries.len(), 2);
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
 }
 
@@ -1023,8 +1031,6 @@ async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
 async fn public_relation_put_key_miss_inserts_and_rehydrates() {
     let (db, state) = test_db(vec![
         Response::Result(QueryResult::Documents(Vec::new())),
-        iid_doc("0x9"),
-        iid_doc("0x1"),
         fetch("0x1", "captain", "0x9", "alice"),
     ]);
     let value = db

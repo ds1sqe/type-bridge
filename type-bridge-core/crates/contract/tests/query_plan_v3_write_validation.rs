@@ -27,7 +27,10 @@ fn insert_and_put_reject_attribute_types_and_playerless_relations() {
                 players: vec![],
             }];
             let stage = if put {
-                Stage::Put { things }
+                Stage::Put {
+                    things,
+                    include_subtypes: false,
+                }
             } else {
                 Stage::Insert { things }
             };
