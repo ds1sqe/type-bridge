@@ -705,3 +705,45 @@ fn fixed_resources_are_distinct_and_content_addressed() {
         }
     }
 }
+
+#[test]
+fn scalar_authoring_factories_omit_many_valued_ownerships() {
+    let emitter = PythonEmitter::new();
+    let source = include_str!("acceptance/schema-plan-idioms.yaml");
+    let (projection, authority) = projected(source, &emitter.code_resources().unwrap());
+    let package = emitter.emit(&projection, &authority).unwrap();
+    let stub = std::str::from_utf8(package.get("_models.pyi").unwrap()).unwrap();
+    let item = stub
+        .split("class Item(")
+        .nth(1)
+        .unwrap()
+        .split("class ItemHandle")
+        .next()
+        .unwrap();
+    assert!(item.contains("def insert("));
+    let many = stub
+        .split("class Many(")
+        .nth(1)
+        .unwrap()
+        .split("class ManyHandle")
+        .next()
+        .unwrap();
+    assert!(!many.contains("def insert("));
+    let handle = stub
+        .split("class ManyHandle(")
+        .nth(1)
+        .unwrap()
+        .split("\nclass ")
+        .next()
+        .unwrap();
+    assert!(handle.contains("def tags("));
+    assert!(!handle.contains("def set("));
+    let inherited = stub
+        .split("class ManyItem(")
+        .nth(1)
+        .unwrap()
+        .split("class ManyItemHandle")
+        .next()
+        .unwrap();
+    assert!(inherited.contains("insert: None = None"));
+}

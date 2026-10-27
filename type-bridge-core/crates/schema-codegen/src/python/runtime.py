@@ -10,6 +10,7 @@ from enum import Enum, StrEnum
 from typing import (
     TYPE_CHECKING,
     Any,
+    ClassVar,
     Literal,
     Never,
     Protocol,
@@ -26,6 +27,7 @@ from weakref import ReferenceType, ref
 from type_bridge_core import canonical_enum_spelling
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
+from type_bridge.plan import FieldToken as _AuthoringFieldToken
 
 if TYPE_CHECKING:
     from type_bridge_core import (
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
         QueryCancellation,
         QueryExecutionResourceLimits,
         QueryLimits,
+        QueryV2Authority,
     )
 
     from type_bridge.session import Database, TransactionContext
@@ -121,7 +124,19 @@ class FieldToken:
         self.fact = fact
 
 
-_issued_field_tokens: dict[int, tuple[ReferenceType[FieldToken], type[ModelBase], str, str]] = {}
+class _PlanFieldToken(FieldToken, _AuthoringFieldToken[object]):
+    __slots__ = ()
+
+
+def plan_authority() -> QueryV2Authority:
+    from . import schema_authority
+
+    return schema_authority()
+
+
+_issued_field_tokens: dict[
+    int, tuple[ReferenceType[_PlanFieldToken], type[ModelBase], str, str]
+] = {}
 
 
 def _issue_field_token(
@@ -129,10 +144,10 @@ def _issue_field_token(
     name: str,
     fact: Mapping[str, object],
 ) -> FieldToken:
-    token = FieldToken(owner, fact)
+    token = _PlanFieldToken(owner, fact)
     token_id = id(token)
 
-    def forget(reference: ReferenceType[FieldToken]) -> None:
+    def forget(reference: ReferenceType[_PlanFieldToken]) -> None:
         issued = _issued_field_tokens.get(token_id)
         if issued is not None and issued[0] is reference:
             del _issued_field_tokens[token_id]
@@ -201,6 +216,7 @@ class ModelBase:
     __runtime_projection__: PyRuntimeProjection
     __type_id__: str
     __model_form__: str
+    __plan_roles__: ClassVar[Sequence[tuple[object, bool]]]
     _iid: str | None
     _values: dict[str, object]
 

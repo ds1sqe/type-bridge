@@ -1,16 +1,18 @@
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum, StrEnum
-from typing import Any, Literal, Never, TypedDict, Unpack, overload
+from typing import Any, ClassVar, Literal, Never, TypedDict, Unpack, overload
 
 from type_bridge_core import (
     PyRuntimeProjection,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
+    QueryV2Authority,
 )
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.session import Database, TransactionContext
+from type_bridge.plan import FieldToken as _AuthoringFieldToken
 
 from ._query import QueryConnection, QuerySession
 
@@ -45,6 +47,12 @@ class FieldToken[OwnerT: ModelBase, AttributeT: AttributeBase]:
     fact: Mapping[str, object]
     def _field_value_invariant(self, value: AttributeT) -> AttributeT: ...
 
+class _PlanFieldToken[OwnerT: ModelBase, AttributeT: AttributeBase, T](
+    FieldToken[OwnerT, AttributeT], _AuthoringFieldToken[T]
+): ...
+
+def plan_authority() -> QueryV2Authority: ...
+
 class RoleToken[OwnerT: ModelBase, PlayerT_co: ModelBase, CompatibleBindingT_contra]:
     owner: type[OwnerT]
     fact: Mapping[str, object]
@@ -66,6 +74,7 @@ class ModelBase:
     __runtime_projection__: PyRuntimeProjection
     __type_id__: str
     __model_form__: str
+    __plan_roles__: ClassVar[Sequence[tuple[object, bool]]]
     @property
     def iid(self) -> str | None: ...
     @property
@@ -320,13 +329,14 @@ class FieldDescriptor[
     AttributeT: AttributeBase,
     ReadT_co,
     AssignT_contra,
+    PlanScalarT,
 ]:
     @overload
     def __get__[AccessOwnerT: ModelBase](
         self,
         instance: None,
         owner: type[AccessOwnerT],
-    ) -> FieldToken[AccessOwnerT, AttributeT]: ...
+    ) -> _PlanFieldToken[AccessOwnerT, AttributeT, PlanScalarT]: ...
     @overload
     def __get__(
         self,

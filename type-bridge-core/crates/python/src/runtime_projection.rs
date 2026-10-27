@@ -49,6 +49,7 @@ use type_bridge_orm::_dynamic::{
     DynamicRolePlayer, DynamicRolePlayerInput,
 };
 use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::session::{Database, TransactionContext, TransactionContextState};
 use type_bridge_orm::value::AttributeValue;
@@ -1158,7 +1159,246 @@ pub struct PyRuntimeProjection {
     package: Arc<InstalledPackage>,
 }
 
+pub(crate) struct AuthoredPlanProjection {
+    pub(crate) stack: type_bridge_orm::match_request::PlanFetchStack,
+    pub(crate) registry: Arc<DescriptorRegistry>,
+    package: Arc<InstalledPackage>,
+    binding: type_bridge_contract::migration_assertion::BindingId,
+    declared: TypeId,
+    pub(crate) bulk: bool,
+    tuple: Option<Vec<(type_bridge_contract::migration_assertion::BindingId, TypeId)>>,
+}
+impl AuthoredPlanProjection {
+    pub(crate) fn with_plans(
+        &self,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+    ) -> PyResult<Self> {
+        Self::prepare(
+            Arc::clone(&self.package),
+            Arc::clone(&self.registry),
+            plans,
+            self.binding,
+            self.declared.clone(),
+            self.tuple.clone(),
+        )
+    }
+    fn prepare(
+        package: Arc<InstalledPackage>,
+        registry: Arc<DescriptorRegistry>,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        binding: type_bridge_contract::migration_assertion::BindingId,
+        declared: TypeId,
+        tuple: Option<Vec<(type_bridge_contract::migration_assertion::BindingId, TypeId)>>,
+    ) -> PyResult<Self> {
+        let descriptor = match declared.kind() {
+            TypeKind::Entity => format!("entity:{}", declared.label().as_str()),
+            TypeKind::Relation => format!("relation:{}", declared.label().as_str()),
+            _ => {
+                return Err(py_runtime_error(
+                    "model projection requires a thing descriptor",
+                ));
+            }
+        };
+        let bulk = plans.bulk_rows().is_some();
+        let stack = if let Some(slots) = &tuple {
+            let [plan] = plans.plans() else {
+                return Err(py_runtime_error(
+                    "model tuples require one authored selection",
+                ));
+            };
+            let slots = slots
+                .iter()
+                .map(|(binding, id)| {
+                    let kind = match id.kind() {
+                        TypeKind::Entity => "entity",
+                        TypeKind::Relation => "relation",
+                        _ => {
+                            return Err(py_runtime_error("model tuple requires thing descriptors"));
+                        }
+                    };
+                    Ok((
+                        *binding,
+                        type_bridge_orm::match_request::DescriptorId::new(format!(
+                            "{kind}:{}",
+                            id.label().as_str()
+                        )),
+                    ))
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            type_bridge_orm::match_request::build_plan_fetch_stack(&registry, plan, &slots)
+        } else {
+            type_bridge_orm::match_request::build_bulk_plan_fetch_stack(
+                &registry,
+                plans,
+                (
+                    binding,
+                    type_bridge_orm::match_request::DescriptorId::new(descriptor),
+                ),
+            )
+        }
+        .map_err(|error| crate::query_v2_runtime::value_error(&error))?;
+        Ok(Self {
+            stack,
+            registry,
+            package,
+            binding,
+            declared,
+            bulk,
+            tuple,
+        })
+    }
+    pub(crate) fn materialize(
+        &self,
+        py: Python<'_>,
+        proof: &type_bridge_orm::match_request::OwnedPlanFetchResult,
+        origin: type_bridge_orm::ProjectedQueryOrigin,
+        cache: &std::sync::OnceLock<
+            Result<type_bridge_orm::ProjectedQueryValue, SdkExecutionDiagnostic>,
+        >,
+    ) -> PyResult<Py<PyAny>> {
+        let projected = cache
+            .get_or_init(|| {
+                origin
+                    .materialize_borrowed_with_budget(
+                        &self.package.projection,
+                        &self.registry,
+                        proof.request(),
+                        proof.result(),
+                        Default::default(),
+                        &AnswerCancellation::default(),
+                        None,
+                    )
+                    .map(|(value, _)| value)
+            })
+            .as_ref()
+            .map_err(|error| py_sdk_diagnostic(error.clone()))?;
+        let type_bridge_orm::ProjectedQueryValue::Rows { rows } = projected else {
+            return Err(py_runtime_error(
+                "model projection did not publish model rows",
+            ));
+        };
+        if self.tuple.is_some() {
+            let hydration = ProjectedScalarHydration::capture(py)?;
+            let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
+            let output = PyList::empty(py);
+            for index in 0..proof.row_count() {
+                let values = proof
+                    .columns()
+                    .iter()
+                    .map(|binding| match proof.cell(index, *binding) {
+                        Some(type_bridge_orm::match_request::PlanFetchCell::Scalar(value)) => {
+                            hydration.projected_to_py(py, value, None, &pool)
+                        }
+                        Some(type_bridge_orm::match_request::PlanFetchCell::Model {
+                            row,
+                            slot,
+                        }) => {
+                            let slot = rows
+                                .get(row)
+                                .and_then(|row| row.slots().get(slot))
+                                .ok_or_else(|| {
+                                    py_runtime_error("model tuple ordinal is outside its proof")
+                                })?;
+                            let type_bridge_orm::ProjectedQuerySlotValue::One(thing) = slot.value()
+                            else {
+                                return Err(py_runtime_error(
+                                    "model tuple requires a singular model",
+                                ));
+                            };
+                            hydrate_projected_thing(py, &self.package, Arc::clone(thing))
+                        }
+                        None => Err(py_runtime_error("model tuple cell is outside its proof")),
+                    })
+                    .collect::<PyResult<Vec<_>>>()?;
+                output.append(PyTuple::new(py, values)?)?;
+            }
+            return Ok(output.into_any().unbind());
+        }
+        let output = PyList::empty(py);
+        for ordinal in proof.model_rows() {
+            let slot = rows
+                .get(*ordinal)
+                .and_then(|row| row.slots().first())
+                .ok_or_else(|| py_runtime_error("model projection ordinal is outside its proof"))?;
+            let type_bridge_orm::ProjectedQuerySlotValue::One(thing) = slot.value() else {
+                return Err(py_runtime_error(
+                    "model projection did not publish a singular model",
+                ));
+            };
+            output.append(hydrate_projected_thing(
+                py,
+                &self.package,
+                Arc::clone(thing),
+            )?)?;
+        }
+        Ok(output.into_any().unbind())
+    }
+}
+
 impl PyRuntimeProjection {
+    pub(crate) fn prepare_authored_plan(
+        &self,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        binding: type_bridge_contract::migration_assertion::BindingId,
+        declared: &str,
+    ) -> PyResult<AuthoredPlanProjection> {
+        let declared = type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
+            .map_err(|error| crate::query_v2_runtime::value_error(&error))?;
+        let registry = Arc::new(
+            self.package
+                .projection
+                .match_registry()
+                .map_err(py_orm_error)?,
+        );
+        AuthoredPlanProjection::prepare(
+            Arc::clone(&self.package),
+            registry,
+            plans,
+            binding,
+            declared,
+            None,
+        )
+    }
+
+    pub(crate) fn prepare_authored_tuple(
+        &self,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        slots: Vec<(u32, String)>,
+    ) -> PyResult<AuthoredPlanProjection> {
+        let slots = slots
+            .into_iter()
+            .map(|(binding, declared)| {
+                let binding = u16::try_from(binding)
+                    .ok()
+                    .and_then(|binding| {
+                        type_bridge_contract::migration_assertion::BindingId::new(binding).ok()
+                    })
+                    .ok_or_else(|| py_runtime_error("model tuple binding is invalid"))?;
+                let declared =
+                    type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
+                        .map_err(|error| crate::query_v2_runtime::value_error(&error))?;
+                Ok((binding, declared))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let (binding, declared) = slots
+            .first()
+            .cloned()
+            .ok_or_else(|| py_runtime_error("model tuple requires model bindings"))?;
+        let registry = Arc::new(
+            self.package
+                .projection
+                .match_registry()
+                .map_err(py_orm_error)?,
+        );
+        AuthoredPlanProjection::prepare(
+            Arc::clone(&self.package),
+            registry,
+            plans,
+            binding,
+            declared,
+            Some(slots),
+        )
+    }
     /// Build an opaque match session from this exact installed projection.
     fn match_session(
         &self,
@@ -8787,6 +9027,33 @@ fn canonical_projected_decimal(
     DecimalValue::new(text).map_err(|_| wrong())
 }
 
+pub(crate) fn canonical_plan_scalar_rows(
+    py: Python<'_>,
+    rows: &[Vec<CanonicalValue>],
+) -> PyResult<Py<PyAny>> {
+    let hydration = ProjectedScalarHydration::capture(py)?;
+    let pool = BatchHydrationPool::try_new(&[]).map_err(py_sdk_diagnostic)?;
+    let rows = rows
+        .iter()
+        .map(|row| {
+            let values = row
+                .iter()
+                .map(|value| hydration.projected_to_py(py, value, None, &pool))
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(PyTuple::new(py, values)?.into_any().unbind())
+        })
+        .collect::<PyResult<Vec<Py<PyAny>>>>()?;
+    Ok(PyList::new(py, rows)?.into_any().unbind())
+}
+
+pub(crate) fn canonical_plan_duration(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<CanonicalValue> {
+    let hydration = ProjectedScalarHydration::capture(py)?;
+    canonical_projected_duration(py, value, &hydration).map(CanonicalValue::Duration)
+}
+
 fn canonical_projected_duration(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
@@ -12962,6 +13229,250 @@ class StructBase:
             assert!(state.queries.is_empty());
             assert_eq!(state.commits, 0);
             assert_eq!(state.rollbacks, 0);
+        });
+    }
+
+    #[test]
+    fn authored_plan_mixed_tuples_consume_core_ordinals_and_canonical_scalars() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_ordered(py);
+            let person_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let compiled = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
+            let mut builder = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+            let person = builder.exact(person_id.clone());
+            let tag = builder.field(
+                person,
+                type_bridge_contract::id::AttributeId::new("tag").unwrap(),
+            );
+            builder.returning(vec![person, tag]);
+            let plan = builder
+                .build(
+                    compiled.declared_schema(),
+                    compiled.managed_state().managed_semantic_schema().clone(),
+                )
+                .unwrap();
+            let row = serde_json::Value::Object(
+                [
+                    (
+                        plan.bindings()[usize::from(person.get())]
+                            .variable()
+                            .as_str()
+                            .to_owned(),
+                        serde_json::to_value(
+                            type_bridge_contract::query_remote::RemoteValue::Thing {
+                                iid: "0xabc".into(),
+                                type_id: person_id.clone(),
+                            },
+                        )
+                        .unwrap(),
+                    ),
+                    (
+                        plan.bindings()[usize::from(tag.get())]
+                            .variable()
+                            .as_str()
+                            .to_owned(),
+                        serde_json::to_value(
+                            type_bridge_contract::query_remote::RemoteValue::Value {
+                                value: CanonicalValue::String(
+                                    type_bridge_contract::value::CanonicalString::new("source-tag")
+                                        .unwrap(),
+                                ),
+                            },
+                        )
+                        .unwrap(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            let projection = PyRuntimeProjection {
+                package: Arc::clone(&package),
+            };
+            let model = projection
+                .prepare_authored_tuple(
+                    type_bridge_contract::query_plan::v3::BuiltPlans::single(plan),
+                    vec![(
+                        u32::from(person.get()),
+                        String::from_utf8(to_canonical_json(&person_id).unwrap()).unwrap(),
+                    )],
+                )
+                .unwrap();
+            let responses = model.stack.plans().iter().map(|plan| {
+                if plan.fetch_document_shape().is_some() {
+                    QueryResult::Documents(vec![serde_json::json!({"_iid":"0xabc", "_type":"person", "attributes":{"tag":["source-tag"]}})])
+                } else { QueryResult::Rows(vec![row.clone(), row.clone()]) }
+            }).collect();
+            let registry = Arc::clone(&model.registry);
+            let source = Arc::new(crate::plan_builder_runtime::PyPlanProgram::Models(
+                Box::new(model),
+            ));
+            let (backend, _) = OriginRecordingBackend::new(responses);
+            let database = Database::with_backend(Box::new(backend), "authored-mixed-tuples");
+            let runtime = ProviderRuntimeOwner::new().unwrap();
+            let mut transaction = database.transaction(Default::default());
+            let pending = transaction
+                .stage_plan_fetch(Arc::clone(&source), registry, Default::default())
+                .unwrap();
+            provider_block_on(py, &runtime, transaction.commit()).unwrap();
+            let proof = pending.get().unwrap();
+            assert_eq!(proof.model_rows(), &[0, 0]);
+            let crate::plan_builder_runtime::PyPlanProgram::Models(model) = source.as_ref() else {
+                unreachable!()
+            };
+            let result = model
+                .materialize(
+                    py,
+                    &proof,
+                    ProjectedQueryOrigin::for_database(&database),
+                    &std::sync::OnceLock::new(),
+                )
+                .unwrap();
+            let rows = result.bind(py).cast::<PyList>().unwrap();
+            assert_eq!(rows.len(), 2);
+            for value in rows.iter() {
+                let tuple = value.cast::<PyTuple>().unwrap();
+                let person = tuple.get_item(0).unwrap();
+                assert!(
+                    person
+                        .is_instance(
+                            package
+                                .class(&person_id, ProjectedModelForm::Complete)
+                                .unwrap()
+                                .bind(py)
+                        )
+                        .unwrap()
+                );
+                assert!(
+                    package
+                        .facade_origins
+                        .proof(&person)
+                        .unwrap()
+                        .reference(&package.projection)
+                        .unwrap()
+                        .origin_carrier()
+                        .is_some()
+                );
+                assert_eq!(
+                    tuple.get_item(1).unwrap().extract::<String>().unwrap(),
+                    "source-tag"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn authored_plan_models_use_the_core_proof_and_retain_direct_deleted_origins() {
+        Python::initialize();
+        Python::attach(|py| {
+            for deleted in [false, true] {
+                let (_, package) = install_ordered(py);
+                let person_id = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let registry = Arc::new(package.projection.match_registry().unwrap());
+                let authority = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
+                let mut builder = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+                let person = builder.exact(person_id.clone());
+                builder.fetch_held(person, vec![]);
+                if deleted {
+                    builder.delete(person);
+                }
+                let plan = builder
+                    .build(
+                        authority.declared_schema(),
+                        authority.managed_state().managed_semantic_schema().clone(),
+                    )
+                    .unwrap();
+                let model = AuthoredPlanProjection::prepare(
+                    Arc::clone(&package),
+                    Arc::clone(&registry),
+                    type_bridge_contract::query_plan::v3::BuiltPlans::single(plan),
+                    person,
+                    person_id.clone(),
+                    None,
+                )
+                .unwrap();
+                let source = Arc::new(crate::plan_builder_runtime::PyPlanProgram::Models(
+                    Box::new(model),
+                ));
+                let mut responses = vec![QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0xabc", "_type":"person", "attributes":{"tag":["source-tag"]}}),
+                ])];
+                if deleted {
+                    responses.push(QueryResult::Rows(vec![serde_json::json!({})]));
+                }
+                let (backend, _) = OriginRecordingBackend::new(responses);
+                let database = Database::with_backend(Box::new(backend), "authored-model-proof");
+                let runtime = ProviderRuntimeOwner::new().unwrap();
+                let mut transaction = database.transaction(Default::default());
+                let pending = transaction
+                    .stage_plan_fetch(Arc::clone(&source), registry, Default::default())
+                    .unwrap();
+                provider_block_on(py, &runtime, transaction.commit()).unwrap();
+                let proof = pending.get().unwrap();
+                let crate::plan_builder_runtime::PyPlanProgram::Models(model) = source.as_ref()
+                else {
+                    unreachable!()
+                };
+                let cache = std::sync::OnceLock::new();
+                let output = model
+                    .materialize(
+                        py,
+                        &proof,
+                        ProjectedQueryOrigin::for_database(&database),
+                        &cache,
+                    )
+                    .unwrap();
+                let values = output.bind(py).cast::<PyList>().unwrap();
+                assert_eq!(values.len(), 1);
+                let value = values.get_item(0).unwrap();
+                assert!(
+                    value
+                        .is_instance(
+                            package
+                                .class(&person_id, ProjectedModelForm::Complete)
+                                .unwrap()
+                                .bind(py)
+                        )
+                        .unwrap()
+                );
+                let origin = package.facade_origins.proof(&value).unwrap();
+                if deleted {
+                    assert_eq!(
+                        origin
+                            .reference(&package.projection)
+                            .err()
+                            .unwrap()
+                            .code()
+                            .as_str(),
+                        "thing_deleted"
+                    );
+                } else {
+                    assert!(
+                        origin
+                            .reference(&package.projection)
+                            .unwrap()
+                            .origin_carrier()
+                            .is_some()
+                    );
+                }
+                assert_eq!(facade_is_deleted(&package, &value), deleted);
+                let original = std::ptr::from_ref(cache.get().unwrap());
+                model
+                    .materialize(
+                        py,
+                        &proof,
+                        ProjectedQueryOrigin::for_database(&database),
+                        &cache,
+                    )
+                    .unwrap();
+                assert_eq!(original, std::ptr::from_ref(cache.get().unwrap()));
+            }
         });
     }
 

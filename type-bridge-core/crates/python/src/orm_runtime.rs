@@ -1061,7 +1061,10 @@ impl PyRustDatabase {
             Arc::clone(&self.runtime),
             None,
             commit_on_exit,
-        ))
+        )
+        .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+            &self.db,
+        )))
     }
 }
 

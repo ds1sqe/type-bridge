@@ -16,6 +16,9 @@ use crate::{
     documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
+#[path = "plan.rs"]
+mod plan;
+
 const PUBLIC_RUNTIME_NAMES: &[&str] = &[
     "CrudEvent",
     "CrudHook",
@@ -85,6 +88,22 @@ const MODEL_RESERVED_NAMES: &[&str] = &[
     "query",
     "runtime_attribute_value",
     "runtime_values",
+    "match",
+    "subtypes",
+    "by_iid",
+    "insert",
+    "put",
+    "insert_many",
+    "put_many",
+    "Values",
+    "where",
+    "set",
+    "unset",
+    "link",
+    "unlink",
+    "delete",
+    "delete_returning",
+    "__plan_roles__",
 ];
 
 macro_rules! canonical_text {
@@ -251,6 +270,11 @@ fn render_init(projection: &RuntimeProjection, stub: bool, ordered: bool) -> Str
         let model = &projection.models()[id];
         import(&mut output, model.target_name().as_str());
         exports.push(model.target_name().as_str().to_owned());
+        if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+            let name = format!("{}Handle", model.target_name().as_str());
+            import(&mut output, &name);
+            exports.push(name);
+        }
         if let Some(reference) = model.reference_read().target_name() {
             import(&mut output, reference.as_str());
             exports.push(reference.as_str().to_owned());
@@ -397,6 +421,7 @@ fn render_models(
                     model.target_name().as_str(),
                     python_string(&metadata)?
                 );
+                plan::roles(&mut body, model);
             }
         }
         body.push_str("_install_runtime_projection(\n    _RUNTIME_PROJECTION_JSON,\n    _SEMANTIC_SCHEMA_FINGERPRINT_JSON,\n    _PROJECTION_FINGERPRINT_JSON,\n    [\n");
@@ -457,6 +482,9 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     if body.contains("Iterator[") {
         collections.push("Iterator");
     }
+    if body.contains("Iterable[") {
+        collections.push("Iterable");
+    }
     if body.contains("Sequence[") {
         collections.push("Sequence");
     }
@@ -484,6 +512,18 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
         output.push_str("from decimal import Decimal\n");
     }
     let mut typing = Vec::new();
+    if body.contains("TypedDict") {
+        typing.push("TypedDict");
+    }
+    if body.contains("Required[") {
+        typing.push("Required");
+    }
+    if body.contains("@overload") {
+        typing.push("overload");
+    }
+    if body.contains("cast(") {
+        typing.push("cast");
+    }
     if body.contains("Final[") {
         typing.push("Final");
     }
@@ -494,6 +534,13 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
         let _ = writeln!(output, "from typing import {}", typing.join(", "));
     }
     let mut runtime = Vec::new();
+    if body.contains("_PlanHandle[") {
+        output.push_str("from type_bridge.plan import Plan as _Plan, Handle as _PlanHandle, Value as _PlanValue, Expr as _PlanExpr, PlanInput as _PlanInput\n");
+        if !stub {
+            output.push_str("from type_bridge.plan import _match as _plan_match, _insert as _plan_insert, _bulk_insert as _plan_bulk_insert, _MISSING as _PLAN_MISSING  # pyright: ignore[reportPrivateUsage]\n");
+            runtime.push("plan_authority as _plan_authority");
+        }
+    }
     if body.contains("FunctionRef") {
         runtime.push("FunctionRef");
     }
@@ -640,6 +687,7 @@ fn render_model(
     } else if !stub {
         output.push_str("    pass\n");
     }
+    plan::model(output, projection, model, stub)?;
     output.push('\n');
 
     if let Some(reference) = model.reference_read().target_name() {
@@ -666,6 +714,7 @@ fn render_model(
         render_reference_constructor(output, projection, model, stub)?;
         output.push('\n');
     }
+    plan::handle(output, projection, model, stub)?;
     Ok(())
 }
 
@@ -753,9 +802,15 @@ fn render_descriptors(
         let attribute = TypeId::new(TypeKind::Attribute, id.attribute().label().as_str())?;
         let _ = writeln!(
             output,
-            "    {}: _FieldDescriptor[{owner}, {}, {read}, {assign}]",
+            "    {}: _FieldDescriptor[{owner}, {}, {read}, {assign}, {}]",
             token.target_name().as_str(),
-            projection.models()[&attribute].target_name().as_str()
+            projection.models()[&attribute].target_name().as_str(),
+            scalar_type(
+                projection.models()[&attribute]
+                    .declaration()
+                    .value_type()
+                    .ok_or_else(|| facet_error("plan field has no scalar domain"))?
+            )
         );
     }
     for (id, token) in model
@@ -1415,6 +1470,13 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
         }
         emitted.insert(id.clone());
         register_name(&mut public, model.target_name().as_str(), "model")?;
+        if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+            register_name(
+                &mut public,
+                &format!("{}Handle", model.target_name().as_str()),
+                "plan handle",
+            )?;
+        }
         if let Some(reference) = model.reference_read().target_name() {
             register_name(&mut public, reference.as_str(), "reference model")?;
         }

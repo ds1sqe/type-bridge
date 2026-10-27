@@ -15,17 +15,18 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 use pythonize::pythonize;
 use tracing::Instrument as _;
-use type_bridge_contract::query_plan::v3::decode_query_plan_v3;
+use type_bridge_contract::query_plan::v3::{BuiltPlans, decode_query_plan_v3};
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 use type_bridge_orm::ProviderRuntimeOwner;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
 use type_bridge_orm::session::staged::{
     CommitError, Pending, PendingError, PlanAnswer, Transaction, TransactionKind,
+    merge_plan_answers,
 };
 
 use crate::match_runtime::py_sdk_diagnostic;
 use crate::orm_runtime::{commit_outcome_class, provider_block_on, py_provider_diagnostic};
-use crate::plan_builder_runtime::PyPlan;
+use crate::plan_builder_runtime::{PyPlan, PyPlanProgram};
 use crate::query_v2_runtime::{PythonBytes, value_error};
 
 pub(crate) fn parse_kind(kind: &str) -> PyResult<TransactionKind> {
@@ -62,14 +63,7 @@ fn pending_error(error: &PendingError) -> PyErr {
         PendingError::InvalidPlan(diagnostic) | PendingError::NotAllowedInKind(diagnostic) => {
             value_error(diagnostic)
         }
-        PendingError::Failed {
-            failure: Some(failure),
-            context,
-            ..
-        } => staged_diagnostic(SdkExecutionDiagnostic::from_failure(
-            failure,
-            context.as_ref().clone(),
-        )),
+        PendingError::Failed { diagnostic, .. } => staged_diagnostic(diagnostic.as_ref().clone()),
         // The server's refusal keeps its stable code.
         PendingError::Refused { diagnostic, .. } => py_sdk_diagnostic(diagnostic.as_ref().clone()),
         other => PyRuntimeError::new_err(other.to_string()),
@@ -86,6 +80,7 @@ pub(crate) struct PyStagedTransaction {
     // Decodes staged plan bytes; a direct transaction stages built plans only.
     authority: Option<Arc<QueryAuthority>>,
     commit_on_exit: bool,
+    origin: type_bridge_orm::ProjectedQueryOrigin,
 }
 
 impl PyStagedTransaction {
@@ -100,7 +95,13 @@ impl PyStagedTransaction {
             runtime,
             authority,
             commit_on_exit,
+            origin: type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
         }
+    }
+
+    pub(crate) fn with_origin(mut self, origin: type_bridge_orm::ProjectedQueryOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 
     fn with<T>(&self, operation: impl FnOnce(&mut Transaction) -> PyResult<T>) -> PyResult<T> {
@@ -145,9 +146,14 @@ impl PyStagedTransaction {
     /// transaction cannot carry fails here.
     fn stage(&self, plan: &Bound<'_, PyAny>) -> PyResult<PyPending> {
         let _entry = crate::perf_stages::entry().entered();
-        let decoded;
-        let plan = if let Ok(built) = plan.cast::<PyPlan>() {
-            built.get().inner()
+        let mut decoder = None;
+        let plans = if let Ok(built) = plan.cast::<PyPlan>() {
+            let built = built.borrow();
+            decoder = built
+                .decoder
+                .as_ref()
+                .map(|decoder| decoder.clone_ref(plan.py()));
+            Arc::clone(built.built()?)
         } else {
             let authority = self.authority.as_ref().ok_or_else(|| {
                 pyo3::exceptions::PyTypeError::new_err(
@@ -158,16 +164,40 @@ impl PyStagedTransaction {
             let bytes = PythonBytes::extract(plan, "plan")?.bounded_snapshot(
                 type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES.saturating_add(1),
             );
-            decoded = decode_query_plan_v3(&bytes, authority.declared())
+            let decoded = decode_query_plan_v3(&bytes, authority.declared())
                 .map_err(|error| value_error(&error))?;
-            &decoded
+            Arc::new(PyPlanProgram::Raw(Box::new(BuiltPlans::single(decoded))))
         };
-        let pending = self.with(|transaction| {
-            transaction
-                .stage_plan(plan)
-                .map_err(|error| pending_error(&error))
-        })?;
-        Ok(PyPending { pending })
+        let (pending, models) = match plans.as_ref() {
+            PyPlanProgram::Models(model) => {
+                let answer = self.with(|transaction| {
+                    transaction
+                        .stage_plan_fetch(
+                            Arc::clone(&plans),
+                            Arc::clone(&model.registry),
+                            Default::default(),
+                        )
+                        .map_err(|error| pending_error(&error))
+                })?;
+                (vec![], Some(answer))
+            }
+            PyPlanProgram::Raw(_) => {
+                let answers = self.with(|transaction| {
+                    transaction
+                        .stage_plans(Arc::clone(&plans), plans.returns_documents())
+                        .map_err(|error| pending_error(&error))
+                })?;
+                (answers, None)
+            }
+        };
+        Ok(PyPending {
+            pending,
+            models,
+            plans,
+            decoder,
+            origin: self.origin.clone(),
+            projected: std::sync::OnceLock::new(),
+        })
     }
 
     /// Fire the staged plans as one transaction and resolve their answers.
@@ -219,17 +249,62 @@ impl PyStagedTransaction {
 /// An answer that resolves only after its transaction commits.
 #[pyclass(name = "Pending", frozen)]
 pub(crate) struct PyPending {
-    pending: Pending<PlanAnswer>,
+    pending: Vec<Pending<PlanAnswer>>,
+    plans: Arc<PyPlanProgram>,
+    models: Option<Pending<type_bridge_orm::match_request::OwnedPlanFetchResult>>,
+    origin: type_bridge_orm::ProjectedQueryOrigin,
+    projected:
+        std::sync::OnceLock<Result<type_bridge_orm::ProjectedQueryValue, SdkExecutionDiagnostic>>,
+    decoder: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl PyPending {
+    #[classmethod]
+    fn __class_getitem__(
+        cls: &Bound<'_, pyo3::types::PyType>,
+        _item: &Bound<'_, PyAny>,
+    ) -> Py<pyo3::types::PyType> {
+        cls.clone().unbind()
+    }
+
     /// The resolved answer: `Rows`, `Documents`, `Count`, `Exists` or `Matched`. Raises
     /// the commit's typed failure, or a lifecycle error before commit.
     fn result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let _entry = crate::perf_stages::entry().entered();
-        let answer = self.pending.get().map_err(|error| pending_error(&error))?;
-        answer_object(py, answer.as_ref())
+        if let Some(pending) = &self.models {
+            let proof = pending.get().map_err(|error| pending_error(&error))?;
+            let PyPlanProgram::Models(model) = self.plans.as_ref() else {
+                unreachable!("model pending retains its program")
+            };
+            return model.materialize(py, &proof, self.origin.clone(), &self.projected);
+        }
+        let answers = self
+            .pending
+            .iter()
+            .map(|pending| pending.get())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| pending_error(&error))?;
+        let correlations = self
+            .pending
+            .iter()
+            .map(|pending| pending.correlation())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| pending_error(&error))?;
+        let answer = merge_plan_answers(
+            match self.plans.as_ref() {
+                PyPlanProgram::Raw(plans) => plans,
+                _ => unreachable!("raw answer retains raw plans"),
+            },
+            &answers,
+            &correlations,
+        )
+        .map_err(|error| value_error(&error))?;
+        let answer = answer_object(py, answer.as_ref())?;
+        match &self.decoder {
+            Some(decoder) => decoder.call1(py, (answer,)),
+            None => Ok(answer),
+        }
     }
 }
 
@@ -274,7 +349,7 @@ pub(crate) struct PyPlanAnswer;
 #[pyclass(name = "Rows", extends = PyPlanAnswer, frozen)]
 pub(crate) struct PyRows {
     #[pyo3(get)]
-    rows: Py<PyAny>,
+    pub(crate) rows: Py<PyAny>,
 }
 
 #[pymethods]
@@ -399,6 +474,41 @@ mod document_answer_tests {
             let instance = answer.bind(py).cast::<PyDocuments>().unwrap();
             let expected = pythonize(py, &documents).unwrap();
             assert!(instance.get().documents.bind(py).eq(expected).unwrap());
+        });
+    }
+}
+
+#[cfg(test)]
+mod pending_diagnostic_redaction_tests {
+    use super::*;
+    #[test]
+    fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
+        let error = PendingError::Failed {
+            diagnostic: Box::new(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::commit_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown,
+                ),
+            ),
+            op_index: None,
+            message: "signed-server-secret".into(),
+            failure: Some(Box::new(
+                type_bridge_contract::failure::Failure::Indeterminate { code: None },
+            )),
+            context: Default::default(),
+        };
+        assert!(!error.to_string().contains("signed-server-secret"));
+        Python::initialize();
+        Python::attach(|py| {
+            let surfaced = pending_error(&error);
+            assert!(!surfaced.to_string().contains("signed-server-secret"));
+            assert!(
+                !surfaced
+                    .value(py)
+                    .str()
+                    .unwrap()
+                    .to_string()
+                    .contains("signed-server-secret")
+            );
         });
     }
 }

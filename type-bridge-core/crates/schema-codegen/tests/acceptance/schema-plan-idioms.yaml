@@ -1,0 +1,38 @@
+format: typebridge.schema/v2
+attributes:
+  item-id: { value: string }
+  stock: { value: integer }
+  price: { value: integer }
+  id: { value: string }
+  balance: { value: integer }
+  order-id: { value: string }
+  tags: { value: string }
+entities:
+  item:
+    owns:
+      item-id: { key: true }
+      price: { card: 1 }
+      stock: { card: { min: 0, max: 1 } }
+  account:
+    owns:
+      id: { key: true }
+      balance: { card: 1 }
+  many:
+    owns:
+      tags: { card: { min: 0, max: 3 } }
+  many-item:
+    sub: item
+    owns:
+      tags: { card: { min: 0, max: 3 } }
+relations:
+  purchase:
+    owns:
+      order-id: { key: true }
+    relates:
+      buyer: { card: 1 }
+      item: { card: 1 }
+plays:
+  account:
+    purchase: { buyer: {} }
+  item:
+    purchase: { item: {} }
