@@ -688,7 +688,7 @@ fn remote_limits(
             max_graph_nodes: policy.graph_nodes,
             max_attribute_values: policy.attribute_values,
             max_role_players: policy.role_players,
-            max_statements: policy.statements,
+            max_statements: policy.statement_limit(),
         })
     };
     build().map_err(|diagnostic| napi_error(&diagnostic))

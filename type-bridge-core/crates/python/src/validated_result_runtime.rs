@@ -925,8 +925,28 @@ mod tests {
     struct AccessorTransaction;
 
     impl TransactionOps for AccessorTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("validated accessor test used a legacy string query") })
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let result = if typeql.contains("fetch") {
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x01","_type":"person","attributes":{"person-name":"Alice"}}),
+                ])
+            } else if typeql.contains("reduce $") {
+                let name = typeql
+                    .split("reduce $")
+                    .nth(1)
+                    .unwrap()
+                    .split_whitespace()
+                    .next()
+                    .unwrap();
+                QueryResult::Rows(vec![
+                    serde_json::json!({name: {"category":"Value","value_type":"integer","value":1}}),
+                ])
+            } else {
+                QueryResult::Rows(vec![
+                    serde_json::json!({"b0":{"category":"Entity","label":"person","iid":"0x01"}}),
+                ])
+            };
+            Box::pin(async move { Ok(result) })
         }
 
         fn query_typed_bounded<'a>(
@@ -1262,8 +1282,38 @@ mod tests {
     }
 
     impl TransactionOps for ReductionTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("reduction accessor test used a legacy string query") })
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let result = if typeql.contains("fetch") {
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x1a","_type":"team","attributes":{"team-name":"Alpha"}}),
+                ])
+            } else {
+                let mut row = serde_json::Map::new();
+                if typeql.contains("groupby $b1") {
+                    row.insert("b1".into(),serde_json::json!({"kind":"thing","iid":"0x1a","type_id":{"kind":"entity","label":"team"}}));
+                }
+                let mut sums = 0;
+                for assignment in typeql
+                    .split("reduce ")
+                    .nth(1)
+                    .unwrap()
+                    .split(';')
+                    .next()
+                    .unwrap()
+                    .split(',')
+                {
+                    let (name, expression) = assignment.trim().split_once(" = ").unwrap();
+                    let value = if expression.starts_with("sum(") {
+                        sums += 1;
+                        if sums == 1 { 70 } else { 0 }
+                    } else {
+                        2
+                    };
+                    row.insert(name.trim_start_matches('$').to_owned(),serde_json::json!({"category":"Value","value_type":"integer","value":value}));
+                }
+                QueryResult::Rows(vec![serde_json::Value::Object(row)])
+            };
+            Box::pin(async move { Ok(result) })
         }
 
         fn query_typed_bounded<'a>(

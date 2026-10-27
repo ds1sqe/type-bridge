@@ -508,7 +508,7 @@ pub struct QueryPlanV3 {
 }
 
 impl QueryPlanV3 {
-    /// Schema-derived possible thing types for a binding, including subtypes.
+    /// Schema-derived possible types observed for a binding across the pipeline.
     pub fn binding_types(&self, binding: BindingId) -> Option<&BTreeSet<TypeId>> {
         self.binding_types.get(&binding)
     }
@@ -520,7 +520,7 @@ impl QueryPlanV3 {
 
     /// Validate one program against declared schema authority and fixed limits.
     pub fn new(spec: PlanSpec, schema: &DeclaredSchema) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(spec, schema, QueryLimits::CANONICAL)
+        Self::new_with_limits(spec, schema, QueryLimits::V3)
     }
 
     /// Validate with caller-selected limits, which never enter canonical bytes.
@@ -529,12 +529,19 @@ impl QueryPlanV3 {
         schema: &DeclaredSchema,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
-        limits.validate().map_err(|_| {
-            failure(
+        limits.validate_v3().map_err(|error| {
+            let mut diagnostic = failure(
                 DiagnosticCategory::ResourceLimit,
                 "query_plan_invalid_limits",
                 "plan limits are outside the supported protocol range",
             )
+            .with_detail("limit", error.limit())
+            .with_detail("source", crate::limits::LIMIT_SOURCE_CONFIGURED);
+            if let crate::limits::QueryLimitsError::OutOfRange { maximum, .. } = error {
+                diagnostic =
+                    diagnostic.with_detail("maximum", i64::try_from(maximum).unwrap_or(i64::MAX));
+            }
+            diagnostic
         })?;
         Self::build(spec, schema, limits).map_err(|diagnostic| limits.annotate(diagnostic))
     }
@@ -560,6 +567,47 @@ impl QueryPlanV3 {
         let mut binding_types = BTreeMap::new();
         let fetch_document_shape =
             validate_stages(&spec, schema, limits, &mut nodes, &mut binding_types)?;
+        fn extra_zero_hop_nodes(
+            pattern: &QueryPattern,
+            domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
+        ) -> usize {
+            match pattern {
+                QueryPattern::Reachable {
+                    min_depth: 0,
+                    source,
+                    ..
+                } => domains
+                    .get(source)
+                    .map_or(0, |types| types.len().saturating_sub(1)),
+                QueryPattern::Or { branches } => {
+                    branches.iter().flatten().fold(0usize, |total, pattern| {
+                        total.saturating_add(extra_zero_hop_nodes(pattern, domains))
+                    })
+                }
+                QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                    patterns.iter().fold(0usize, |total, pattern| {
+                        total.saturating_add(extra_zero_hop_nodes(pattern, domains))
+                    })
+                }
+                _ => 0,
+            }
+        }
+        for stage in &spec.pipeline {
+            if let Stage::Match { patterns } = stage {
+                for pattern in patterns {
+                    if let Pattern::Read(pattern) = pattern {
+                        nodes = nodes.saturating_add(extra_zero_hop_nodes(pattern, &binding_types));
+                        if nodes > limits.structural.predicate_nodes {
+                            return Err(failure(
+                                DiagnosticCategory::ResourceLimit,
+                                "query_plan_reachable_expansion_limit",
+                                "schema-derived zero-hop branches exceed the predicate-node ceiling",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         if let Some(compatibility) = &spec.compatibility {
             compatibility.validate(spec.bindings.len(), limits)?;
         }
@@ -690,7 +738,14 @@ impl QueryPlanV3 {
                 pipeline: plan.pipeline.iter().cloned().map(Stage::from).collect(),
             },
             schema,
-            plan.limits,
+            {
+                let mut limits = plan.limits;
+                limits.structural.selected_slots = limits
+                    .structural
+                    .selected_slots
+                    .min(limits.structural.bindings);
+                limits
+            },
         )
     }
 
@@ -742,6 +797,20 @@ impl QueryPlanV3 {
     pub fn compatibility(&self) -> Option<&QueryPlanV2Compatibility> {
         self.compatibility.as_ref()
     }
+    /// Whether the fetched root is deleted by this validated plan.
+    #[must_use]
+    pub fn fetched_thing_is_deleted(&self) -> bool {
+        let Some(Stage::Delete { items }) = self.pipeline.last() else {
+            return false;
+        };
+        let Some(Stage::Fetch(document)) = self.pipeline.iter().rev().nth(1) else {
+            return false;
+        };
+        items
+            .iter()
+            .any(|item| matches!(item, DeleteItem::Thing { binding } if *binding == document.thing))
+    }
+
     /// Bound given rows, absent for a reusable template.
     #[must_use]
     pub fn given_rows(&self) -> Option<&[InputRow]> {
@@ -1019,7 +1088,12 @@ fn validate_stages(
                         scalar_types.insert(*binding, domain);
                     }
                 }
-                binding_types.extend(types.clone());
+                for (binding, domains) in &types {
+                    binding_types
+                        .entry(*binding)
+                        .or_default()
+                        .extend(domains.iter().cloned());
+                }
                 index.function_values(&reads, &spec.functions, &mandatory, &mut scalar_types)?;
                 let mut produced = BTreeSet::new();
                 for pattern in &reads {
@@ -1329,7 +1403,12 @@ fn validate_stages(
         limits.structural,
         &scalar_types,
     )?;
-    binding_types.extend(types.clone());
+    for (binding, domains) in &types {
+        binding_types
+            .entry(*binding)
+            .or_default()
+            .extend(domains.iter().cloned());
+    }
     if let Some(document) = fetched {
         let (answer_mandatory, answer_optional) = captured_environment
             .as_ref()
@@ -1617,6 +1696,15 @@ impl<'a> SchemaIndex<'a> {
         pattern: &QueryPattern,
         types: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
     ) -> Result<(), Diagnostic> {
+        let constrain = |types: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
+                         binding,
+                         candidates: BTreeSet<TypeId>| {
+            if let Some(previous) = types.get_mut(&binding) {
+                previous.retain(|candidate| candidates.contains(candidate));
+            } else {
+                types.insert(binding, candidates);
+            }
+        };
         match pattern {
             QueryPattern::Isa {
                 binding,
@@ -1624,8 +1712,7 @@ impl<'a> SchemaIndex<'a> {
                 include_subtypes,
             } => {
                 self.exists(type_id)?;
-                let candidates = types.entry(*binding).or_default();
-                candidates.insert(type_id.clone());
+                let mut candidates = BTreeSet::from([type_id.clone()]);
                 if *include_subtypes {
                     for fact in self.schema.facts() {
                         if let SchemaFact::Type(fact) = fact
@@ -1635,6 +1722,7 @@ impl<'a> SchemaIndex<'a> {
                         }
                     }
                 }
+                constrain(types, *binding, candidates);
             }
             QueryPattern::Has {
                 attribute,
@@ -1643,7 +1731,7 @@ impl<'a> SchemaIndex<'a> {
             } => {
                 let id = TypeId::new(TypeKind::Attribute, attribute_id.label().as_str())?;
                 self.exists(&id)?;
-                types.entry(*attribute).or_default().insert(id);
+                constrain(types, *attribute, BTreeSet::from([id]));
             }
             QueryPattern::Links {
                 relation,
@@ -1651,21 +1739,28 @@ impl<'a> SchemaIndex<'a> {
                 ..
             } => {
                 self.exists(relation_id)?;
-                types
-                    .entry(*relation)
-                    .or_default()
-                    .insert(relation_id.clone());
+                constrain(types, *relation, BTreeSet::from([relation_id.clone()]));
             }
             QueryPattern::Or { branches } => {
+                let mut alternatives = BTreeMap::<BindingId, BTreeSet<TypeId>>::new();
                 for branch in branches {
+                    let mut local = types.clone();
                     for pattern in branch {
-                        self.pattern_types(pattern, types)?;
+                        self.pattern_types(pattern, &mut local)?;
+                    }
+                    for (binding, candidates) in local {
+                        alternatives.entry(binding).or_default().extend(candidates);
                     }
                 }
+                *types = alternatives;
             }
             QueryPattern::Try { patterns } => {
+                let mut local = types.clone();
                 for pattern in patterns {
-                    self.pattern_types(pattern, types)?;
+                    self.pattern_types(pattern, &mut local)?;
+                }
+                for (binding, candidates) in local {
+                    types.entry(binding).or_insert(candidates);
                 }
             }
             _ => {}
@@ -2179,7 +2274,7 @@ pub fn decode_query_plan_v3(
     bytes: &[u8],
     schema: &DeclaredSchema,
 ) -> Result<QueryPlanV3, Diagnostic> {
-    decode_query_plan_v3_with_limits(bytes, schema, QueryLimits::CANONICAL)
+    decode_query_plan_v3_with_limits(bytes, schema, QueryLimits::V3)
 }
 
 /// Decode under caller-selected codec and structural ceilings.
@@ -2453,5 +2548,11 @@ fn collect_produced_bindings(pattern: &QueryPattern, bindings: &mut BTreeSet<Bin
             }
         }
         _ => collect_direct_positive_bindings(pattern, bindings),
+    }
+}
+
+impl AsRef<[QueryPlanV3]> for QueryPlanV3 {
+    fn as_ref(&self) -> &[QueryPlanV3] {
+        std::slice::from_ref(self)
     }
 }

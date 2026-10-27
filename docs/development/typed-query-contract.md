@@ -658,7 +658,7 @@ an unset policy becomes a default; `Default` is the direct policy.
 | `attribute_values` | 4,000,000 | 65,536 | none | Hydrated attribute values |
 | `collection_members` | 1,000,000 | 65,536 | none | Collected identities, group keys, and reducer cells |
 | `role_players` | 1,000,000 | 65,536 | none | Role-player references |
-| `statements` | 3 | 3 | 3 | Provider statements of one terminal |
+| `statements` | unset (minimum 3) | unset (minimum 3) | 4,096 | Provider statements of one terminal |
 
 An answer between the two defaults is returned on a direct session and
 refused through a proxy with `limit` naming the dimension and `source`
@@ -929,3 +929,29 @@ keep the operation name and a fixed transport kind, with the driver code when
 available. Raw HTTP/TLS causes and endpoint values are discarded. Local
 validation messages and application-owned transport errors retain their
 existing contracts.
+
+An unset statement budget remains `None` in Rust and Python, and `undefined`
+in Node. At execution, a typed adapter resolves it to the larger of three
+and its complete static stack size; user-authored plan execution resolves it
+to three. An explicit value, including three, remains a strict ceiling.
+Intersecting an unset policy with an explicit connection ceiling retains the
+explicit ceiling. The existing C numeric limits struct stays unchanged:
+a NULL descriptor leaves the budget unset; a supplied descriptor is explicit.
+An advertisement omits an unset statement ceiling and retains an explicit
+`statements: 3`; other default-valued answer-limit entries remain forbidden.
+A 2.x peer refuses the explicit-three advertisement as noncanonical.
+
+
+The core `build_plan_fetch_stack(registry, plan, model_slots)` constructor owns
+native model projection for both released typed reads and generated plan
+facades. It preserves scalar columns and duplicate selection rows, hydrates each
+concrete model case, and returns one sealed model-tuple proof with core row/slot
+ordinals. Generated bindings consume `selection()`, `request()`, `result()` and
+`model_ordinal()` without reconstructing model graphs or joining IIDs. Unsupported
+split shapes fail with `plan_returning_models_shape`, optional inputs with
+`plan_returning_models_optional_input`, and distinct windows over multiple given
+rows with `plan_returning_models_given_window`; model projection after writes
+requires one complete model-only fetch or fails with
+`plan_returning_models_after_write`. Shared staged plan carriers retain the
+original canonical Arc allocation and refuse a source that changes its plan
+identity after admission.

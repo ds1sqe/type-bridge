@@ -81,6 +81,7 @@ struct InstalledMatchProjectionAuthority {
 /// proxy uses for the same package, instead of one rebuilt from descriptors.
 #[derive(Debug)]
 pub struct InstalledSchemaAuthority {
+    declared: type_bridge_contract::schema::DeclaredSchema,
     resolved: ResolvedSchema,
     managed: ManagedSchemaState,
 }
@@ -91,13 +92,26 @@ impl InstalledSchemaAuthority {
     #[must_use]
     pub fn from_verified(authority: &VerifiedSchemaAuthority) -> Self {
         Self {
+            declared: authority.declared_schema().clone(),
             resolved: authority.resolved_schema().clone(),
             managed: authority.managed_state().clone(),
         }
     }
 
-    pub(crate) const fn new(resolved: ResolvedSchema, managed: ManagedSchemaState) -> Self {
-        Self { resolved, managed }
+    pub(crate) const fn new(
+        declared: type_bridge_contract::schema::DeclaredSchema,
+        resolved: ResolvedSchema,
+        managed: ManagedSchemaState,
+    ) -> Self {
+        Self {
+            declared,
+            resolved,
+            managed,
+        }
+    }
+
+    pub(crate) const fn declared(&self) -> &type_bridge_contract::schema::DeclaredSchema {
+        &self.declared
     }
 
     pub(crate) const fn resolved(&self) -> &ResolvedSchema {

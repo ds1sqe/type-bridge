@@ -562,6 +562,17 @@ jobs:
               --test v2_query_integration_tests "$test_name" \
               -- --ignored --exact --nocapture
 
+      - name: Run given window partition deduplication regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          query_v2_wide_query_tests::second_distinct_given_window_provider_quirk
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --lib
+
       - name: Run fetch write commit failure regression
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
@@ -913,6 +924,16 @@ jobs:
           done
           docker logs ${{ job.services.typedb.id }} 2>&1 || true
           exit 1
+
+      - name: Run given window partition deduplication regression
+        env:
+          TYPEDB_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          query_v2_wide_query_tests::second_distinct_given_window_provider_quirk
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --lib
 
       - name: Run staged query-plan/v3 programs at commit
         env:

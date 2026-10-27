@@ -19,7 +19,7 @@ use crate::execution_diagnostic::lower_remote_query_diagnostic;
 use crate::match_request::{ValidatedMatchRequest, ValidatedMatchResult};
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_v2_model_remote::{
-    PendingRemoteModelQueryV2, RemoteModelQueryV2Error, prepare_remote_model_query_v2_with_budget,
+    PendingRemoteModelQueryV2, RemoteModelQueryV2Error, prepare_remote_model_query_with_policy,
 };
 use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
@@ -99,7 +99,7 @@ impl ProxyQueryConnection {
         let http = ProxyHttpTransport::open(endpoint)?;
         let advertisement = match advertisement {
             Some(pinned) => pinned,
-            None => http.capabilities(deadline, cancellation).await?,
+            None => http.staged_capabilities(deadline, cancellation).await?,
         };
         Self::new(Some(http), advertisement, authority, answer_limits)
     }
@@ -132,13 +132,20 @@ impl ProxyQueryConnection {
         authority: Arc<QueryAuthority>,
         answer_limits: QueryExecutionResourceLimits,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        RemoteCapabilities::decode(&advertisement).map_err(lower_remote_query_diagnostic)?;
+        let decoded =
+            RemoteCapabilities::decode(&advertisement).map_err(lower_remote_query_diagnostic)?;
+        let advertisement: Arc<[u8]> = advertisement.into();
+        let staged = decoded
+            .capabilities()
+            .iter()
+            .any(|capability| capability.as_str() == "query.plan.v3")
+            .then(|| Arc::clone(&advertisement));
         Ok(Self {
             http,
-            advertisement: advertisement.into(),
+            advertisement,
             authority,
             answer_limits: answer_limits.effective(),
-            staged_advertisement: Mutex::new(None),
+            staged_advertisement: Mutex::new(staged),
         })
     }
 
@@ -215,18 +222,29 @@ impl ProxyQueryConnection {
         let http = self.http.clone().ok_or_else(|| {
             SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Connect)
         })?;
-        let advertisement = match self.staged_advertisement() {
-            Some(advertisement) => advertisement,
-            None => {
-                let deadline = QueryExecutionDeadline::for_limits(self.answer_limits);
-                let fetched = http.staged_capabilities(deadline, cancellation).await?;
-                self.check_staged(&fetched)?;
-                let fetched: Arc<[u8]> = fetched.into();
-                *self.staged_cache() = Some(Arc::clone(&fetched));
-                fetched
-            }
-        };
+        let advertisement = self
+            .ensure_staged_advertisement(
+                QueryExecutionDeadline::for_limits(self.answer_limits),
+                cancellation,
+            )
+            .await?;
         self.staged(Some(http), None, &advertisement, options)
+    }
+
+    async fn ensure_staged_advertisement(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Arc<[u8]>, SdkExecutionDiagnostic> {
+        if let Some(advertisement) = self.staged_advertisement() {
+            return Ok(advertisement);
+        }
+        let http = self.http.as_ref().ok_or_else(caller_owned_exchange)?;
+        let fetched = http.staged_capabilities(deadline, cancellation).await?;
+        self.check_staged(&fetched)?;
+        let fetched: Arc<[u8]> = fetched.into();
+        *self.staged_cache() = Some(Arc::clone(&fetched));
+        Ok(fetched)
     }
 
     /// Open a staged transaction over a caller-owned exchange: `exchange`
@@ -292,12 +310,19 @@ impl ProxyQueryConnection {
     ) -> Result<PendingRemoteModelQueryV2, QueryTargetError> {
         deadline.check(cancellation)?;
         let resources = resources.constrained_by(self.answer_limits);
-        let pending = prepare_remote_model_query_v2_with_budget(
+        let advertisement = self.staged_advertisement().ok_or_else(|| {
+            lower_remote_query_diagnostic(Diagnostic::new(
+                DiagnosticCategory::UnsupportedCapability,
+                DiagnosticCode::new("unsupported_required_capability").expect("static code"),
+                "model queries require the pinned staged advertisement",
+            ))
+        })?;
+        let pending = prepare_remote_model_query_with_policy(
             &self.authority,
             registry,
             validated,
-            &self.advertisement,
-            resources.remote(),
+            &advertisement,
+            resources,
             deadline,
             cancellation,
         )
@@ -429,10 +454,13 @@ impl QueryTarget<'_> {
                 let Some(http) = &proxy.http else {
                     return Err(caller_owned_exchange().into());
                 };
+                proxy
+                    .ensure_staged_advertisement(deadline, cancellation)
+                    .await?;
                 let pending =
                     proxy.prepare(registry, validated, resources, cancellation, deadline)?;
                 let response = http
-                    .exchange(
+                    .exchange_staged(
                         pending.request_bytes().to_vec(),
                         MAX_REMOTE_ENVELOPE_BYTES,
                         deadline,

@@ -185,6 +185,7 @@ impl RemoteReplayStore for InMemoryReplayStore {
 /// Everything one V2 query executor needs to serve envelopes.
 pub struct V2QueryState {
     pub(super) advertisement: RemoteCapabilities,
+    pub(super) staged_query_limits: Option<type_bridge_contract::limits::QueryLimits>,
     advertisement_fingerprint: RemoteCapabilitiesFingerprint,
     pub(super) ceilings: AnswerLimits,
     pub(super) database: Database,
@@ -281,6 +282,7 @@ impl V2QueryState {
         let advertisement_fingerprint = advertisement.fingerprint()?;
         Ok(Self {
             advertisement,
+            staged_query_limits: None,
             advertisement_fingerprint,
             ceilings,
             database,
@@ -348,6 +350,22 @@ impl V2QueryState {
         let advertisement = self.advertisement.clone().with_query_limits(limits)?;
         self.advertisement_fingerprint = advertisement.fingerprint()?;
         self.advertisement = advertisement;
+        Ok(self)
+    }
+
+    /// Set V3 structural limits independently of the frozen V2 advertisement.
+    pub fn with_staged_query_limits(
+        mut self,
+        limits: type_bridge_contract::limits::QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        let limits = limits.validate_v3().map_err(|_| {
+            diagnostic(
+                DiagnosticCategory::ResourceLimit,
+                "query_remote_v3_query_limits",
+                "staged query limits exceed their supported range",
+            )
+        })?;
+        self.staged_query_limits = Some(limits);
         Ok(self)
     }
 

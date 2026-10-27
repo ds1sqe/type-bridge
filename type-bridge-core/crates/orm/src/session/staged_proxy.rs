@@ -70,12 +70,25 @@ impl ProxyStaging {
         &self.declared
     }
 
-    /// Build one request with a fresh nonce.
-    pub(crate) fn request(
+    pub(crate) fn match_limits(&self) -> Result<QueryExecutionResourceLimits, Diagnostic> {
+        let advertised = QueryExecutionResourceLimits::from_overrides(
+            crate::query_execution_limits::AnswerTransport::Proxy,
+            self.advertisement
+                .answer_limits()
+                .iter()
+                .map(|(key, value)| (key.as_str(), *value)),
+        )
+        .map_err(|_| super::staged::proxy_refusal("advertised answer limits are invalid"))?;
+        Ok(self.limits.constrained_by(advertised))
+    }
+
+    /// Build one request with a fresh nonce and an optional Match aggregate policy.
+    pub(crate) fn request_with_policy(
         &self,
         plans: Vec<StagedPlanV3>,
         kind: super::staged::TransactionKind,
         deadline_ms: Option<u64>,
+        policy: Option<QueryExecutionResourceLimits>,
     ) -> Result<StagedRequestV3, Diagnostic> {
         use type_bridge_contract::query_remote_v3::StagedKindV3;
         let mut nonce = [0u8; 16];
@@ -95,10 +108,28 @@ impl ProxyStaging {
             StagedRequestSpecV3 {
                 nonce,
                 kind: Some(kind),
-                limits: StagedLimitsV3 {
-                    deadline_ms,
-                    ..StagedLimitsV3::default()
-                },
+                limits: policy.map_or_else(
+                    || StagedLimitsV3 {
+                        deadline_ms,
+                        ..Default::default()
+                    },
+                    |policy| StagedLimitsV3 {
+                        deadline_ms: Some(
+                            deadline_ms
+                                .unwrap_or(policy.timeout_milliseconds)
+                                .min(policy.timeout_milliseconds),
+                        ),
+                        max_bytes: policy.bytes,
+                        max_items: policy.items,
+                        max_graph_nodes: Some(policy.graph_nodes),
+                        max_attribute_values: Some(policy.attribute_values),
+                        max_collection_members: Some(policy.collection_members),
+                        max_role_players: Some(policy.role_players),
+                        max_read_statements: policy.statement_limit(),
+                        max_write_statements: policy.statement_limit(),
+                        ..Default::default()
+                    },
+                ),
                 plans,
                 prepared_at_unix_ms: now,
             },
@@ -147,5 +178,85 @@ impl ProxyStaging {
             self.advertisement.reply_key(),
             &Ed25519RemoteReplyVerifier,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::match_request::*;
+    use crate::session::staged::{PendingError, Transaction, TransactionOptions};
+    use type_bridge_contract::query_remote::RemoteExecutorBinding;
+
+    #[tokio::test]
+    async fn invalid_proxy_match_limits_settle_every_pending_with_the_refusal() {
+        let registry = crate::_registry::DescriptorRegistry::new();
+        registry
+            .register_entity(crate::_descriptor::EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let authority =
+            crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
+                &registry,
+            )
+            .unwrap();
+        let signer = crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x62; 32]);
+        let advertisement = RemoteCapabilities::new(
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
+            RemoteExecutorBinding::new("invalid-match-limits", "epoch-00000000001").unwrap(),
+            signer.public_key(),
+        );
+        let mut proxy = ProxyStaging::new(
+            None,
+            Some(Arc::new(|_| {
+                Box::pin(async { panic!("a preflight refusal must not send") })
+            })),
+            &advertisement.encode().unwrap(),
+            authority.declared().clone(),
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap();
+        // Inject a future/invalid policy after wire admission to exercise the commit failure path.
+        let mut raw = serde_json::to_value(&advertisement).unwrap();
+        raw["answer_limits"] = serde_json::json!({"statements":4097});
+        proxy.advertisement = serde_json::from_value(raw).unwrap();
+        assert!(proxy.match_limits().is_err());
+        let mut transaction = Transaction::new_proxy(proxy, TransactionOptions::default());
+        let request = || {
+            validate_match_request(
+                &registry,
+                MatchRequest::v1(
+                    MatchPlan {
+                        bindings: vec![MatchBinding {
+                            id: BindingId::new(0),
+                            descriptor: DescriptorId::new("entity:person"),
+                            thing_kind: ThingKind::Entity,
+                            match_mode: MatchMode::Exact,
+                        }],
+                        predicate: None,
+                        allowed_cross_joins: Default::default(),
+                    },
+                    MatchOperation::CountBy {
+                        root: BindingId::new(0),
+                    },
+                ),
+            )
+            .unwrap()
+        };
+        let first = transaction.stage_match(&registry, request()).unwrap();
+        let second = transaction.stage_match(&registry, request()).unwrap();
+        transaction.commit().await.unwrap_err();
+        for pending in [first, second] {
+            let Err(PendingError::InvalidPlan(diagnostic)) = pending.get() else {
+                panic!("pending must carry the preflight refusal")
+            };
+            assert_eq!(diagnostic.code().as_str(), "staged_proxy_unsupported");
+        }
     }
 }

@@ -10,20 +10,20 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use type_bridge_contract::migration_assertion::BindingId as ContractBindingId;
-use type_bridge_contract::query_plan::ModelQueryV2;
+use type_bridge_contract::query_plan::QueryReductionGroupV2;
 use type_bridge_contract::query_remote_v2::{
     HydrationGraphV2, RemoteOutcomeV2, RemoteReducedValueV2, RemoteReductionRowV2,
 };
 
+use super::descriptor_plan::{adapt_field, adapt_reducers};
 use crate::_registry::DescriptorRegistry;
-use crate::query_v2_adapter::{MatchRequestAdapterAuthority, adapt_match_request};
 
 use super::capability::CapabilitySet;
 use super::error::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use super::ids::BindingId;
 use super::model::{MatchOperation, Window};
 use super::result::{ReducedValue, ValidatedMatchResult};
-use super::result_validation::validated_match_result_from_v2;
+use super::result_validation::validated_match_result_from_outcome;
 use super::selected_result_executor::adapter_match_error;
 use super::validation::ValidatedMatchRequest;
 
@@ -163,7 +163,7 @@ impl RecordingMatchExecutor {
             }
         };
 
-        validated_match_result_from_v2(&self.registry, validated, outcome)
+        validated_match_result_from_outcome(&self.registry, validated, outcome)
     }
 }
 
@@ -193,33 +193,52 @@ pub(crate) fn model_reduction_outcome(
             rows,
         });
     }
-    let authority =
-        MatchRequestAdapterAuthority::from_registry(registry).map_err(adapter_match_error)?;
-    let adapted = adapt_match_request(validated, registry, &authority.context())
-        .map_err(adapter_match_error)?;
-    let Some(ModelQueryV2::Reduction {
-        root,
-        group,
-        reducers,
-        ..
-    }) = adapted
-        .validated()
-        .plan()
-        .v2_compatibility()
-        .and_then(|compatibility| compatibility.model_query())
-    else {
-        return Err(MatchError::new(
-            MatchErrorCategory::ResultDecode,
-            "recording_reduction_contract_missing",
-            "adapted reduction plan lacks its model reduction contract",
-        )
-        .at(MatchErrorPathSegment::Operation));
+    let (root, group, reducers) = match &validated.request().operation {
+        MatchOperation::ReduceBy {
+            root,
+            group,
+            reducers,
+        } => (
+            *root,
+            group
+                .map(|binding| contract_binding(binding).map(QueryReductionGroupV2::binding))
+                .transpose()?,
+            reducers,
+        ),
+        MatchOperation::ReduceByField {
+            root,
+            group,
+            reducers,
+        } => (
+            *root,
+            Some(QueryReductionGroupV2::field(
+                adapt_field(group, validated.request(), registry).map_err(adapter_match_error)?,
+            )),
+            reducers,
+        ),
+        MatchOperation::ReduceByFields {
+            root,
+            groups,
+            reducers,
+        } => (
+            *root,
+            Some(QueryReductionGroupV2::fields(
+                groups
+                    .iter()
+                    .map(|field| adapt_field(field, validated.request(), registry))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(adapter_match_error)?,
+            )),
+            reducers,
+        ),
+        _ => unreachable!("reduction operation checked above"),
     };
     Ok(RemoteOutcomeV2::ModelReduction {
         graph,
-        root: *root,
-        group: group.clone(),
-        reducers: reducers.clone(),
+        root: contract_binding(root)?,
+        group,
+        reducers: adapt_reducers(reducers, validated.request(), registry)
+            .map_err(adapter_match_error)?,
         rows,
     })
 }

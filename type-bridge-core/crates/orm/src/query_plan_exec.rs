@@ -32,7 +32,7 @@ use crate::query_v2::{
     lower_scoped_patterns_with_values, reducer_keyword,
 };
 use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult};
-use crate::session::staged::StagedQuery;
+use crate::session::staged::{PlanSource, StagedQuery};
 
 /// The answer a committed plan resolves to.
 #[derive(Clone, Debug, PartialEq)]
@@ -175,7 +175,7 @@ pub(crate) async fn execute_plans(
             "one-shot plan execution requires read-only plans",
         ));
     }
-    if plans.len() > policy.statements as usize {
+    if plans.len() > policy.statement_limit() as usize {
         return Err(crate::match_request::MatchError::new(
             crate::match_request::MatchErrorCategory::ResourceLimit,
             "statement_count_limit",
@@ -450,6 +450,7 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
         stages.push(ast(tql::given(&columns))?);
     }
     let literal_policy = LiteralComparisonPolicy {
+        inputs,
         // Execution has already charged the real literals before redaction.
         remaining: std::cell::Cell::new(if redact_inputs {
             usize::MAX
@@ -459,8 +460,9 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
         redact_inputs,
     };
     let mut scope = Scope {
+        plan,
         bindings,
-        inputs,
+        inputs: std::borrow::Cow::Borrowed(inputs),
         snapshot_iids: snapshot_iids.iter(),
         rows: plan.given_rows().unwrap_or(&[]),
         literal_policy: &literal_policy,
@@ -479,7 +481,10 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
                     .collect::<Result<_, _>>()?,
             )),
             Stage::Delete { items } => scope.delete(index, items, &mut stages)?,
-            Stage::Select { bindings } => stages.push(ast(tql::select(&scope.names(bindings)?))?),
+            Stage::Select { bindings } => {
+                stages.push(ast(tql::select(&scope.names(bindings)?))?);
+                scope.retain_input_names(bindings)?;
+            }
             Stage::Require { bindings } => {
                 stages.push(ast(tql::require(&scope.names(bindings)?))?);
             }
@@ -603,11 +608,32 @@ pub(crate) fn staged_query(
     plan: &QueryPlanV3,
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
+    staged_query_for_source(plan, supports_given_rows, None)
+}
+
+pub(crate) fn staged_query_with_source(
+    source: &PlanSource,
+    supports_given_rows: bool,
+) -> Result<StagedQuery, Diagnostic> {
+    staged_query_for_source(source.plan()?, supports_given_rows, Some(source))
+}
+
+fn staged_query_for_source(
+    plan: &QueryPlanV3,
+    supports_given_rows: bool,
+    source: Option<&PlanSource>,
+) -> Result<StagedQuery, Diagnostic> {
     let _performance = tracing::info_span!("tb.query.compile").entered();
-    let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
-    let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.lower", %fingerprint, stages = plan.pipeline().len(), writes = plan.writes(), statements = tracing::field::Empty, outcome = tracing::field::Empty, refusal = tracing::field::Empty);
+    let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.lower", fingerprint = tracing::field::Empty, stages = plan.pipeline().len(), writes = plan.writes(), statements = tracing::field::Empty, outcome = tracing::field::Empty, refusal = tracing::field::Empty);
+    let fingerprint = if span.is_disabled() {
+        None
+    } else {
+        let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
+        span.record("fingerprint", &fingerprint);
+        Some(fingerprint)
+    };
     let _entered = span.enter();
-    let result = staged_query_inner(plan, supports_given_rows, fingerprint);
+    let result = staged_query_inner(plan, supports_given_rows, fingerprint, source);
     if result.is_ok() {
         span.record(
             "statements",
@@ -624,7 +650,8 @@ pub(crate) fn staged_query(
 fn staged_query_inner(
     plan: &QueryPlanV3,
     supports_given_rows: bool,
-    fingerprint: String,
+    fingerprint: Option<String>,
+    source: Option<&PlanSource>,
 ) -> Result<StagedQuery, Diagnostic> {
     let LoweredPlan {
         query,
@@ -650,7 +677,7 @@ fn staged_query_inner(
     let mut staged = StagedQuery::new(typeql, plan.writes())
         .canonical()
         .with_failure_context(failure_context(plan));
-    staged.fingerprint = Some(fingerprint);
+    staged.fingerprint = fingerprint;
     if let Some(snapshot) = snapshot {
         let snapshot = ast(tql::render(&snapshot))?;
         if snapshot.len() > plan.limits().codec.max_bytes {
@@ -660,7 +687,12 @@ fn staged_query_inner(
                 "lowered snapshot TypeQL exceeds the canonical protocol byte ceiling",
             )));
         }
-        staged.snapshot = Some((snapshot, plan.clone()));
+        staged.snapshot = Some((
+            snapshot,
+            source
+                .cloned()
+                .unwrap_or_else(|| PlanSource::Owned(std::sync::Arc::new(plan.clone()))),
+        ));
     }
     if !value_bearing_inputs.is_empty() {
         let redacted = lower_redacted(plan)?;
@@ -972,7 +1004,8 @@ fn given_regex_inputs(plan: &QueryPlanV3) -> BTreeSet<String> {
     columns
 }
 
-pub(crate) struct LiteralComparisonPolicy {
+pub(crate) struct LiteralComparisonPolicy<'a> {
+    inputs: &'a [InputColumn],
     remaining: std::cell::Cell<usize>,
     redact_inputs: bool,
 }
@@ -986,7 +1019,7 @@ pub(crate) fn string_comparison(
     left: &QueryOperand,
     right: &QueryOperand,
     rows: &[type_bridge_contract::query_plan::InputRow],
-    literal_policy: Option<&LiteralComparisonPolicy>,
+    literal_policy: Option<&LiteralComparisonPolicy<'_>>,
 ) -> Result<tql::Pattern, Diagnostic> {
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_contract::value::CanonicalValue;
@@ -1055,7 +1088,10 @@ pub(crate) fn string_comparison(
                         placeholder = CanonicalValue::String(
                             type_bridge_contract::value::CanonicalString::new(format!(
                                 "<input:{}>",
-                                inputs[usize::from(column.get())].public_name().as_str()
+                                literal_policy.map_or(inputs, |policy| policy.inputs)
+                                    [usize::from(column.get())]
+                                .public_name()
+                                .as_str()
                             ))?,
                         );
                         &placeholder
@@ -1089,14 +1125,60 @@ pub(crate) fn string_comparison(
 }
 
 struct Scope<'a> {
+    plan: &'a QueryPlanV3,
     bindings: &'a [AssertionBinding],
-    inputs: &'a [InputColumn],
+    inputs: std::borrow::Cow<'a, [InputColumn]>,
     snapshot_iids: std::slice::Iter<'a, SnapshotIidInput<'a>>,
     rows: &'a [type_bridge_contract::query_plan::InputRow],
-    literal_policy: &'a LiteralComparisonPolicy,
+    literal_policy: &'a LiteralComparisonPolicy<'a>,
 }
 
 impl Scope<'_> {
+    fn retain_input_names(&mut self, retained: &[BindingId]) -> Result<(), Diagnostic> {
+        if self.plan.inputs().is_empty()
+            || !self
+                .plan
+                .pipeline()
+                .iter()
+                .skip(1)
+                .any(|stage| matches!(stage, Stage::Match { .. }))
+        {
+            return Ok(());
+        }
+        let Some(Stage::Match { patterns }) = self.plan.pipeline().first() else {
+            return Ok(());
+        };
+        if !patterns.iter().any(|pattern| matches!(pattern,Pattern::Let { binding,expr:Expr::Operand(QueryOperand::Input { .. }) } if retained.contains(binding))) { return Ok(()); }
+        let mut inputs = Vec::with_capacity(self.plan.inputs().len());
+        let mut changed = false;
+        for input in self.plan.inputs() {
+            let alias = patterns.iter().find_map(|pattern| match pattern {
+                Pattern::Let {
+                    binding,
+                    expr: Expr::Operand(QueryOperand::Input { column }),
+                } if *column == input.id() && retained.contains(binding) => Some(*binding),
+                _ => None,
+            });
+            if let Some(alias) = alias {
+                inputs.push(InputColumn::new(
+                    input.id(),
+                    type_bridge_contract::migration_assertion::QueryVariable::new(
+                        self.name(alias)?,
+                    )?,
+                    input.value_type(),
+                    input.optional(),
+                ));
+                changed = true;
+            } else {
+                inputs.push(input.clone());
+            }
+        }
+        if changed {
+            self.inputs = std::borrow::Cow::Owned(inputs);
+        }
+        Ok(())
+    }
+
     fn name(&self, binding: BindingId) -> Result<&str, Diagnostic> {
         local_variable(self.bindings, binding)
     }
@@ -1106,7 +1188,7 @@ impl Scope<'_> {
     }
 
     fn operand(&self, operand: &QueryOperand) -> Result<tql::Expr, Diagnostic> {
-        lower_operand(self.inputs, self.bindings, operand, None)
+        lower_operand(&self.inputs, self.bindings, operand, None)
     }
 
     /// Read patterns keep their relative order and lower in one scope, so
@@ -1122,11 +1204,11 @@ impl Scope<'_> {
             })
             .collect();
         let mut output = lower_scoped_patterns_with_values(
-            self.inputs,
+            &self.inputs,
             self.bindings,
             &reads,
             None,
-            None,
+            Some(crate::query_v2::PatternTypeDomains::Plan(self.plan)),
             Some(self.rows),
             Some(self.literal_policy),
         )?;
@@ -1455,6 +1537,7 @@ mod tests {
         use type_bridge_contract::migration_assertion::ValueComparator;
         let plan = race::string_read(ValueComparator::Like, &["secret"]);
         let policy = LiteralComparisonPolicy {
+            inputs: plan.inputs(),
             remaining: std::cell::Cell::new(2),
             redact_inputs: false,
         };

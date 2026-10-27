@@ -479,5 +479,6 @@ pub(crate) fn remote_model_error(error: RemoteModelQueryV2Error) -> napi::Error 
             napi_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
         }
         RemoteModelQueryV2Error::Match(error) => napi_match_error(error),
+        RemoteModelQueryV2Error::Execution(error) => napi_sdk_diagnostic(error),
     }
 }

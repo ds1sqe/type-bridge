@@ -116,13 +116,13 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     # In addition to the CLI/recovery selectors, CI gates the production V2
     # server, generated Rust, generated C, C runtime and TLS live probes, and
     # the 3.13.6 lane's selectors exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 10 + len(lane_3_13_6_tests)
+    assert workflow.count(gate_call) == len(positive_tests) + 12 + len(lane_3_13_6_tests)
     for selector in (
         "fetch_write_commit_failure_reaches_driver_and_v1_query",
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 20
+    assert local.count(gate_call) == 21
     for selector in lane_3_13_6_tests:
         assert workflow.count(selector) == 1, selector
         assert local.count(selector) == 1, selector
@@ -392,3 +392,23 @@ def test_fresh_replay_and_documented_constraint_probes_cannot_regress_to_offline
     assert "fs::read(source.join(relative))" in documented
     assert documented.count('&["migration", "apply", "--environment", "development"]') == 2
     assert '&["migration", "verify", "--environment", "development"]' in documented
+
+
+def test_partition_deduplication_regression_runs_on_all_affected_servers() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    selector = "query_v2_wide_query_tests::second_distinct_given_window_provider_quirk"
+    for job in ("rust-integration", "live-3-13-6"):
+        step = next(
+            step
+            for step in workflow["jobs"][job]["steps"]
+            if step["name"] == "Run given window partition deduplication regression"
+        )
+        assert "scripts/ci/run_exact_ignored_rust_test.sh" in step["run"]
+        assert selector in step["run"]
+        assert "-p type-bridge-orm --lib" in step["run"]
+        if job == "rust-integration":
+            assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
+        else:
+            assert "if" not in step
+            assert workflow["jobs"][job]["strategy"]["matrix"]["typedb"] == ["3.13.6", "3.14.0"]
+    assert selector in (REPO_ROOT / "test.sh").read_text(encoding="utf-8")

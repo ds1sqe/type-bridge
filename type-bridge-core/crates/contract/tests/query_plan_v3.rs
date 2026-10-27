@@ -12,8 +12,8 @@ use type_bridge_contract::query_plan::v3::{
     DeleteItem, QueryPlanV3, Set, Stage, decode_query_plan_v3,
 };
 use type_bridge_contract::query_plan::{
-    OrderDirection, OrderTerm, QueryOutput, QueryPlan, ReadStage, ReduceAssignment, Reducer,
-    decode_query_plan,
+    OrderDirection, OrderTerm, QueryOutput, QueryPattern, QueryPlan, ReadStage, ReduceAssignment,
+    Reducer, decode_query_plan,
 };
 
 fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {
@@ -197,7 +197,12 @@ fn v2_lift_does_not_change_v2_bytes_or_fingerprint() {
     assert_eq!(old.fingerprint().unwrap(), fingerprint);
     assert_ne!(lifted.fingerprint().unwrap(), fingerprint);
     assert_eq!(
-        decode_query_plan_v3(&lifted.canonical_bytes().unwrap(), &schema()).unwrap(),
+        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
+            &lifted.canonical_bytes().unwrap(),
+            &schema(),
+            lifted.limits()
+        )
+        .unwrap(),
         lifted
     );
     assert!(decode_query_plan(&lifted.canonical_bytes().unwrap()).is_err());
@@ -828,7 +833,12 @@ fn v2_inputs_lift_to_a_reusable_v3_template_then_bind_without_mutating_v2() {
     let template = old.to_v3(&schema()).unwrap();
     assert!(template.given_rows().is_none());
     assert_eq!(
-        decode_query_plan_v3(&template.canonical_bytes().unwrap(), &schema()).unwrap(),
+        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
+            &template.canonical_bytes().unwrap(),
+            &schema(),
+            template.limits()
+        )
+        .unwrap(),
         template
     );
     let bound = template
@@ -845,7 +855,12 @@ fn v2_inputs_lift_to_a_reusable_v3_template_then_bind_without_mutating_v2() {
     );
     assert_eq!(old.canonical_bytes().unwrap(), old_bytes);
     assert_eq!(
-        decode_query_plan_v3(&bound.canonical_bytes().unwrap(), &schema()).unwrap(),
+        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
+            &bound.canonical_bytes().unwrap(),
+            &schema(),
+            bound.limits()
+        )
+        .unwrap(),
         bound
     );
 }
@@ -1716,4 +1731,96 @@ fn iid_expressions_require_present_things_and_infer_string_inside_calls() {
             "query_plan_iid_untyped_thing"
         );
     }
+}
+
+#[test]
+fn schema_derived_zero_hop_branches_share_the_predicate_node_budget() {
+    use type_bridge_contract::limits::QueryLimits;
+    let spec = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                QueryPattern::Isa {
+                    binding: id(0),
+                    type_id: entity("account"),
+                    include_subtypes: true,
+                }
+                .into(),
+                QueryPattern::Isa {
+                    binding: id(1),
+                    type_id: entity("account"),
+                    include_subtypes: true,
+                }
+                .into(),
+                QueryPattern::Reachable {
+                    min_depth: 0,
+                    max_depth: 0,
+                    relation: relation(),
+                    role_from: role(),
+                    role_to: role(),
+                    source: id(0),
+                    target: id(1),
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    QueryPlanV3::new(spec.clone(), &schema()).unwrap();
+    let mut limits = QueryLimits::CANONICAL;
+    limits.structural.predicate_nodes = 4;
+    let error = QueryPlanV3::new_with_limits(spec, &schema(), limits).unwrap_err();
+    assert_eq!(
+        error.code().as_str(),
+        "query_plan_reachable_expansion_limit"
+    );
+}
+
+#[test]
+fn native_output_columns_use_the_binding_budget_while_v1_remains_frozen() {
+    use type_bridge_contract::limits::{MAX_BINDINGS, QueryLimits};
+    let columns = (0..17).collect::<Vec<_>>();
+    let patterns = columns
+        .iter()
+        .map(|column| isa(*column, entity("account")))
+        .collect::<Vec<_>>();
+    let mut wide = spec(
+        vec![Stage::Match {
+            patterns: patterns.iter().cloned().map(Into::into).collect(),
+        }],
+        columns.clone(),
+    );
+    wide.bindings = columns
+        .iter()
+        .map(|column| binding(*column, &format!("b{column}")))
+        .collect();
+    let plan = QueryPlanV3::new(wide.clone(), &schema()).unwrap();
+    assert_eq!(plan.limits().structural.selected_slots, MAX_BINDINGS);
+    assert!(
+        QueryPlan::new(
+            wide.bindings.clone(),
+            vec![],
+            vec![ReadStage::Match { patterns }],
+            wide.output.clone(),
+            wide.managed_semantics.clone()
+        )
+        .is_err()
+    );
+    let lower =
+        QueryPlanV3::new_with_limits(wide.clone(), &schema(), QueryLimits::CANONICAL).unwrap_err();
+    assert_eq!(lower.code().as_str(), "query_plan_output_limit");
+    let mut invalid = QueryLimits::V3;
+    invalid.structural.bindings = 16;
+    invalid.structural.selected_slots = 17;
+    assert_eq!(invalid.validate_v3().unwrap_err().limit(), "selected_slots");
+    let invalid = QueryPlanV3::new_with_limits(wide, &schema(), invalid).unwrap_err();
+    assert_eq!(
+        invalid.details().get("limit"),
+        Some(
+            &type_bridge_contract::diagnostic::DiagnosticDetailValue::Text("selected_slots".into())
+        )
+    );
+    assert_eq!(
+        invalid.details().get("maximum"),
+        Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(16))
+    );
 }

@@ -349,11 +349,18 @@ lists therefore fail.
 | JSON depth (root = 1) | 64 |
 | Members in one collection | 65,536 |
 | One string/key | 1 MiB |
-| Bindings / output slots | 256 / 16 |
+| Bindings / native output columns | 256 / 256 |
 | Predicate/expression nodes / depth | 4,096 / 64 |
 | Boolean children / order terms | 256 / 64 |
 | Cross-join pairs | 1,024 |
 | Given rows / canonical row bytes | 4,096 / 4 MiB |
+
+V3 defaults output columns to the binding ceiling and refuses a column ceiling
+above the configured binding ceiling. The V3 advertisement carries this default;
+a receiver advertising fewer columns still enforces its named `selected_slots`
+limit. Released `MatchRequest`/`FetchShape` user slots and frozen V1/V2 outputs
+retain their limit of 16. Hidden matched things add identity/type columns only;
+complete attributes arrive through the separately bounded hydration plans.
 
 JSON depth may reject a tree before its semantic depth ceiling. Callers can raise `QueryLimits.canonical_string_bytes` through the existing
 query-limit options (Rust: `codec.max_string_bytes`). The default is 1 MiB;
@@ -640,6 +647,50 @@ attributes, values and roles fail with `query_remote_v3_document_key`,
 `query_remote_v3_document_type`, `query_remote_v3_document_attribute`,
 `query_remote_v3_document_value` and `query_remote_v3_document_role`.
 
+Staged byte and item budgets default to 32 MiB and 65,536; explicit values may
+raise them to the shared answer-policy maxima, subject to the caller, session
+and advertised ceilings. Canonical envelope and collection hard caps still apply
+independently, so a raised budget does not promise a larger encodable answer.
+
+Typed model reads fetch only selected bindings. Concrete types with identical
+owned-attribute and role shapes share one Fetch under an exact concrete
+allow-set; subtypes that add roles or attributes get separate partitions.
+Non-baseline partitions group by the target IID with a discarded Count after
+that exact server window, before Fetch. On TypeDB 3.12.3, 3.13.6 and 3.14.0,
+a second Select/Distinct after a bounded given-row window can still repeat
+fetched documents; grouping avoids that extra wire and item cost without
+another query. The provider-quirk regression pins when this workaround can
+be removed. Mapping keeps the complete correlated IID/scalar-witness tuple.
+Hidden bindings carry IID/type and same-row tuple correlation. Hidden field
+predicates add only the required scalar operand columns to the mapping plan,
+including explicit absence, and the client re-evaluates them. Missing operand
+columns or evidence that contradicts a selected model refuse the whole result.
+Role edges are rechecked on the client only from a selected relation's hydrated
+roles; other edges rest on the native match row and IID/type correlation.
+
+Typed reductions over root or group-key fields use bounded native aggregate
+plans. Long SUM and MEAN split values into high and low 32-bit halves and
+aggregate both halves with a count in the same Reduce. Rust recombines the
+partials in `i128`: SUM checked-converts to `i64` (`reduction_overflow` outside
+that domain), while MEAN computes `total as f64 / count as f64`. More than 2^31
+numeric inputs in one group fails with `reduction_input_bound` before
+recombination. SUM and MEAN share their partials when both are requested.
+
+Long MEDIAN and STD run on one shared binary64 projection of the input, as in
+2.x, preventing native integer intermediate wrap. MIN and MAX retain the
+original Long values. Double inputs keep native evaluation; native floating
+aggregate results can differ from 2.x client reduction in the last bit.
+Witness-dependent inputs on other bindings still use the bounded Rust reducer,
+choosing the minimum witness IID for each root/group and retaining that
+reducer's floating evaluation. No path adds a query or returns all numeric
+inputs solely to reproduce floating rounding.
+
+Proxy `stage_match` computes one fieldwise minimum across all staged typed
+programs and the connection and transaction bounds; a refusal identifies the
+limit and the program or bound that constrained it. Every typed projection must
+validate before any pending handle is published; a projection failure after an
+authenticated commit leaves every pending outcome unknown.
+
 Wire attributes are nested `RemoteFieldValue::Document` maps; each attribute
 contains a canonical scalar or list according to its ownership cardinality
 and collection mode. SDK documents expose ordinary
@@ -859,3 +910,11 @@ The SDK purchase program has profile-specific `purchase-sdk.*.json` fixtures
 beside it, compared exactly in the writes suite. See
 [Debugging plans](../guide/debugging.md) for the four SDK examples, host logger
 setup and event names.
+
+Model materialization coalesces fetch documents by root IID and rejects
+conflicting types, attributes or players before publishing a result. Relation
+fetches must list every effective role of the concrete model. Empty ordered
+roles can materialize; any populated ordered role is refused with
+`query_plan_hydration_ordered_role`, because the current fetch shape carries
+neither stored order nor repeated-player ordinals. This limit lifts when a
+provider-admitted ordered fetch shape supplies those witnesses.

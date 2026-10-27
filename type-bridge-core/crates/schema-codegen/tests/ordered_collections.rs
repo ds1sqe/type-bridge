@@ -1412,8 +1412,16 @@ assert.throws(() => Local.Membership.manager(detachedTarget.connection).insert(
 ), (error) => diagnostic(error).code === "projected_snapshot_detached");
 assert.deepEqual(counters(detachedTarget), zeroCounters);
 
+const nativeRoleDocument = (iid, type, playerIid, playerType) => ({
+  _iid: iid,
+  _type: type,
+  attributes: {},
+  _role_0_iid: playerIid,
+  _role_0_type: playerType,
+  _role_0_attributes: {},
+});
 const sameEntity = fixture([
-  documents(membershipDocument("0xb7", "0xa7")),
+  documents(nativeRoleDocument("0xb7", "membership", "0xa7", "person")),
 ], sharedAuthority);
 const sameMembership = Local.Membership.manager(sameEntity.connection).insert(
   Local.Membership.create({ participant: [exactPerson] }),
@@ -1433,7 +1441,7 @@ const membershipSource = fixture([
 const exactMembership = Local.Membership.manager(membershipSource.connection).getByIid("0xb8");
 assert.equal(exactMembership.iid, "0xb8");
 const sameRelation = fixture([
-  documents(activityLinkDocument("0xc8", "0xb8")),
+  documents(nativeRoleDocument("0xc8", "activity-link", "0xb8", "membership")),
 ], sharedAuthority);
 const sameLink = Local.ActivityLink.manager(sameRelation.connection).insert(
   Local.ActivityLink.create({ subject: [exactMembership] }),
@@ -1574,7 +1582,7 @@ assert.deepEqual(
 );
 for (const unboundPlayer of [exactPersonProxy, exactPersonCopy]) {
   const unboundTarget = fixture([
-    documents(membershipDocument("0xbe", "0xa7")),
+    documents(nativeRoleDocument("0xbe", "membership", "0xa7", "person")),
   ]);
   const created = Local.Membership.manager(unboundTarget.connection).insert(
     Local.Membership.create({ participant: [unboundPlayer] }),

@@ -1,0 +1,651 @@
+{
+  "format": "typebridge.typed-query-diagnostic-migration/v1",
+  "match_codes": [
+    {
+      "old_code": "answer_byte_counter_overflow",
+      "new_code": "answer_byte_counter_overflow",
+      "category": "resource_limit",
+      "core_codes": [
+        "answer_byte_counter_overflow"
+      ]
+    },
+    {
+      "old_code": "collected_concept_limit",
+      "new_code": "collected_concept_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "collected_concept_limit",
+        "query_v2_model_collection_limit"
+      ]
+    },
+    {
+      "old_code": "duplicate_hydrated_concept",
+      "new_code": "duplicate_hydrated_concept",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_hydration_conflict",
+        "query_v2_model_hydration_conflict"
+      ]
+    },
+    {
+      "old_code": "duplicate_provider_binding",
+      "new_code": "duplicate_provider_binding",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_solution_duplicate_binding"
+      ]
+    },
+    {
+      "old_code": "hydrated_attribute_value_limit",
+      "new_code": "hydrated_attribute_value_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "hydrated_attribute_value_limit",
+        "query_v2_model_attribute_limit"
+      ]
+    },
+    {
+      "old_code": "hydrated_attribute_value_type",
+      "new_code": "hydrated_attribute_value_type",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_hydration_value_order",
+        "query_v2_model_hydration_value_type"
+      ]
+    },
+    {
+      "old_code": "hydrated_role_player_limit",
+      "new_code": "hydrated_role_player_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "hydrated_role_player_limit",
+        "query_v2_model_role_player_limit"
+      ]
+    },
+    {
+      "old_code": "hydrated_thing_limit",
+      "new_code": "hydrated_thing_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "hydrated_thing_limit",
+        "query_v2_model_graph_limit",
+        "query_v2_model_hydration_limit"
+      ]
+    },
+    {
+      "old_code": "invalid_regex_pattern",
+      "new_code": "invalid_regex_pattern",
+      "category": "invalid_plan",
+      "core_codes": [
+        "query_v2_model_regex"
+      ]
+    },
+    {
+      "old_code": "malformed_hydrated_attributes",
+      "new_code": "malformed_hydrated_attributes",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_hydration_attributes"
+      ]
+    },
+    {
+      "old_code": "malformed_hydrated_role_player",
+      "new_code": "malformed_hydrated_role_player",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_hydration_role_player"
+      ]
+    },
+    {
+      "old_code": "malformed_hydrated_roles",
+      "new_code": "malformed_hydrated_roles",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_hydration_roles",
+        "query_v2_model_hydration_roles"
+      ]
+    },
+    {
+      "old_code": "malformed_hydration_document",
+      "new_code": "malformed_hydration_document",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_hydration_document",
+        "query_plan_hydration_fetch",
+        "query_plan_hydration_iid",
+        "query_plan_hydration_type",
+        "query_plan_result_documents",
+        "query_plan_result_type",
+        "query_v2_model_hydration_authority",
+        "query_v2_model_hydration_binding",
+        "query_v2_model_hydration_descriptor",
+        "query_v2_model_hydration_document",
+        "query_v2_model_hydration_iid",
+        "query_v2_model_hydration_kind",
+        "query_v2_model_hydration_state"
+      ]
+    },
+    {
+      "old_code": "malformed_page_rematch_binding",
+      "new_code": "malformed_page_rematch_binding",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_page_binding"
+      ]
+    },
+    {
+      "old_code": "malformed_page_rematch_document",
+      "new_code": "malformed_page_rematch_document",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_page_document"
+      ]
+    },
+    {
+      "old_code": "malformed_provider_concept_id",
+      "new_code": "malformed_provider_concept_id",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_solution_malformed_iid"
+      ]
+    },
+    {
+      "old_code": "malformed_reduction_row",
+      "new_code": "malformed_reduction_row",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_result_reduction",
+        "query_v2_model_reduction_descriptor",
+        "query_v2_model_reduction_group"
+      ]
+    },
+    {
+      "old_code": "malformed_root_row",
+      "new_code": "malformed_root_row",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_result_count",
+        "query_plan_result_exists",
+        "query_v2_model_root_malformed"
+      ]
+    },
+    {
+      "old_code": "malformed_solution_row",
+      "new_code": "malformed_solution_row",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_result_rows",
+        "query_remote_v3_answer_concept",
+        "query_remote_v3_answer_kind",
+        "query_v2_model_predicate_evidence",
+        "query_v2_model_role_edge_evidence",
+        "query_v2_model_solution_malformed"
+      ]
+    },
+    {
+      "old_code": "malformed_tuple_row",
+      "new_code": "malformed_tuple_row",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_tuple_evidence"
+      ]
+    },
+    {
+      "old_code": "missing_hydrated_concept",
+      "new_code": "missing_hydrated_concept",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_hydration_missing"
+      ]
+    },
+    {
+      "old_code": "missing_order_value",
+      "new_code": "missing_order_value",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_order_missing"
+      ]
+    },
+    {
+      "old_code": "missing_provider_binding",
+      "new_code": "missing_provider_binding",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_solution_binding"
+      ]
+    },
+    {
+      "old_code": "non_scalar_order_evidence",
+      "new_code": "non_scalar_order_evidence",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_order_non_scalar"
+      ]
+    },
+    {
+      "old_code": "order_value_type_mismatch",
+      "new_code": "order_value_type_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_order_value_type"
+      ]
+    },
+    {
+      "old_code": "page_operation_mismatch",
+      "new_code": "page_operation_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_page_total_plan"
+      ]
+    },
+    {
+      "old_code": "page_rematch_answer_kind",
+      "new_code": "page_rematch_answer_kind",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_page_kind"
+      ]
+    },
+    {
+      "old_code": "page_total_length_mismatch",
+      "new_code": "page_total_length_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_page_total_length"
+      ]
+    },
+    {
+      "old_code": "predicate_value_type_mismatch",
+      "new_code": "predicate_value_type_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_predicate_equal_type",
+        "query_v2_model_predicate_order_type",
+        "query_v2_model_predicate_string_type"
+      ]
+    },
+    {
+      "old_code": "processed_item_counter_overflow",
+      "new_code": "processed_item_counter_overflow",
+      "category": "resource_limit",
+      "core_codes": [
+        "processed_item_counter_overflow",
+        "query_v2_model_count_overflow"
+      ]
+    },
+    {
+      "old_code": "processed_item_limit",
+      "new_code": "processed_item_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "processed_item_limit",
+        "query_v2_model_item_limit"
+      ]
+    },
+    {
+      "old_code": "provider_cancelled",
+      "new_code": "provider_cancelled",
+      "category": "cancelled",
+      "core_codes": [
+        "provider_cancelled"
+      ]
+    },
+    {
+      "old_code": "provider_stream_not_exhausted",
+      "new_code": "provider_stream_not_exhausted",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_provider_not_exhausted"
+      ]
+    },
+    {
+      "old_code": "response_byte_limit",
+      "new_code": "response_byte_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "query_v2_model_byte_limit",
+        "response_byte_limit"
+      ]
+    },
+    {
+      "old_code": "result_operation_mismatch",
+      "new_code": "result_operation_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_result_operation",
+        "query_plan_result_stack",
+        "query_plan_result_state",
+        "query_v2_model_contract_missing",
+        "query_v2_model_provider_plan_mismatch",
+        "query_v2_model_provider_plan_missing",
+        "query_v2_model_tuple_plan"
+      ]
+    },
+    {
+      "old_code": "root_answer_kind",
+      "new_code": "root_answer_kind",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_root_kind"
+      ]
+    },
+    {
+      "old_code": "root_binding_mismatch",
+      "new_code": "root_binding_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_root_binding"
+      ]
+    },
+    {
+      "old_code": "row_window_exceeded",
+      "new_code": "row_window_exceeded",
+      "category": "resource_limit",
+      "core_codes": [
+        "query_v2_model_complete_rows_exceeded"
+      ]
+    },
+    {
+      "old_code": "selected_root_set_mismatch",
+      "new_code": "selected_root_set_mismatch",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_result_window",
+        "query_v2_model_page_root_set"
+      ]
+    },
+    {
+      "old_code": "solution_answer_kind",
+      "new_code": "solution_answer_kind",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_solution_kind"
+      ]
+    },
+    {
+      "old_code": "solution_scan_limit",
+      "new_code": "solution_scan_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "query_v2_model_solution_limit"
+      ]
+    },
+    {
+      "old_code": "statement_count_limit",
+      "new_code": "statement_count_limit",
+      "category": "resource_limit",
+      "core_codes": [
+        "statement_count_limit"
+      ]
+    },
+    {
+      "old_code": "transaction_deadline_exceeded",
+      "new_code": "transaction_deadline_exceeded",
+      "category": "resource_limit",
+      "core_codes": [
+        "transaction_deadline_exceeded"
+      ]
+    },
+    {
+      "old_code": "unexpected_hydrated_concept",
+      "new_code": "unexpected_hydrated_concept",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_hydration_unexpected"
+      ]
+    },
+    {
+      "old_code": "unexpected_hydrated_root",
+      "new_code": "unexpected_hydrated_root",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_page_unexpected_root"
+      ]
+    },
+    {
+      "old_code": "unknown_provider_binding",
+      "new_code": "unknown_provider_binding",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_solution_unknown_binding"
+      ]
+    },
+    {
+      "old_code": "unstable_provider_order",
+      "new_code": "unstable_provider_order",
+      "category": "result_decode",
+      "core_codes": [
+        "query_v2_model_unstable_provider_order"
+      ]
+    },
+    {
+      "old_code": "unsupported_collection_slot",
+      "new_code": "unsupported_collection_slot",
+      "category": "invalid_plan",
+      "core_codes": [
+        "query_v2_model_rows_collection"
+      ]
+    },
+    {
+      "old_code": "reduction_overflow",
+      "new_code": "reduction_overflow",
+      "category": "resource_limit",
+      "core_codes": [
+        "reduction_overflow"
+      ]
+    }
+  ],
+  "new_codes": [
+    {
+      "old_code": "query_plan_hydration_ordered_role",
+      "new_code": "query_plan_hydration_ordered_role",
+      "category": "result_decode",
+      "core_codes": [
+        "query_plan_hydration_ordered_role"
+      ]
+    },
+    {
+      "old_code": "reduction_input_bound",
+      "new_code": "reduction_input_bound",
+      "category": "resource_limit",
+      "core_codes": [
+        "reduction_input_bound"
+      ]
+    }
+  ],
+  "transport_codes": [
+    {
+      "old_code": "query_remote_v2_advertisement_invalid",
+      "new_code": "query_remote_advertisement_invalid",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_advertisement_mismatch",
+      "new_code": "query_remote_advertisement_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_attribute_value_limit",
+      "new_code": "query_remote_attribute_value_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_collection_member_limit",
+      "new_code": "query_remote_collection_member_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_deadline_limit",
+      "new_code": "query_remote_deadline_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_diagnostic_detail_key_invalid",
+      "new_code": "query_remote_diagnostic_detail_key_invalid",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_diagnostic_long_invalid",
+      "new_code": "query_remote_diagnostic_long_invalid",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_diagnostic_too_large",
+      "new_code": "query_remote_diagnostic_too_large",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_envelope_too_large",
+      "new_code": "query_remote_envelope_too_large",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_evidence_mismatch",
+      "new_code": "query_remote_evidence_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_expected_binding_mismatch",
+      "new_code": "query_remote_expected_binding_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_failure_unbound",
+      "new_code": "query_remote_failure_unbound",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_failure_unexpected_binding",
+      "new_code": "query_remote_failure_unexpected_binding",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_failure_wire_mismatch",
+      "new_code": "query_remote_failure_wire_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_format_missing",
+      "new_code": "query_remote_format_missing",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_format_unsupported",
+      "new_code": "query_remote_format_unsupported",
+      "category": "invalid_contract"
+    },
+    {
+      "old_code": "query_remote_v2_graph_node_limit",
+      "new_code": "query_remote_graph_node_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_invocation_plan_mismatch",
+      "new_code": "query_remote_invocation_plan_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_item_limit",
+      "new_code": "query_remote_item_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_limits_widened",
+      "new_code": "query_remote_limits_widened",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_nonce_invalid",
+      "new_code": "query_remote_nonce_invalid",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_nonce_mismatch",
+      "new_code": "query_remote_binding_mismatch",
+      "category": "integrity",
+      "reason": "nonce"
+    },
+    {
+      "old_code": "query_remote_v2_outcome_mismatch",
+      "new_code": "query_remote_outcome_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_plan_mismatch",
+      "new_code": "query_remote_binding_mismatch",
+      "category": "integrity",
+      "reason": "request",
+      "note": "The reply binds the whole request digest, so a foreign program is a request mismatch."
+    },
+    {
+      "old_code": "query_remote_v2_plan_unencodable",
+      "new_code": "query_remote_plan_unencodable",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_reply_malformed",
+      "new_code": "query_remote_reply_malformed",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_request_expired",
+      "new_code": "query_remote_request_expired",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_request_mismatch",
+      "new_code": "query_remote_binding_mismatch",
+      "category": "integrity",
+      "reason": "request"
+    },
+    {
+      "old_code": "query_remote_v2_request_wire_mismatch",
+      "new_code": "query_remote_request_wire_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_response_wire_mismatch",
+      "new_code": "query_remote_response_wire_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_result_contract_mismatch",
+      "new_code": "query_remote_result_contract_mismatch",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_role_player_limit",
+      "new_code": "query_remote_role_player_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_statement_limit",
+      "new_code": "query_remote_statement_limit",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_time_future",
+      "new_code": "query_remote_time_future",
+      "category": "unchanged"
+    },
+    {
+      "old_code": "query_remote_v2_time_invalid",
+      "new_code": "query_remote_time_invalid",
+      "category": "unchanged"
+    }
+  ],
+  "notes": [
+    "Typed model transport uses unversioned query_remote codes; frozen raw V2 wire diagnostics are unchanged.",
+    "Shared hydration helpers retain their internal diagnostics; typed callers observe the released match code.",
+    "Unreleased V3 reply validation checks format before nonce and request binding; binding refusals retain a closed reason detail."
+  ],
+  "predicate_depth_migration": {
+    "old_code": "canonical_json_too_deep",
+    "new_code": "predicate_limit_exceeded",
+    "category": "resource_limit",
+    "canonical_depth_default": 64,
+    "native_predicate_depth_default": 64,
+    "default_alternating_terminal_maximum": 39,
+    "note": "Default canonical depth remains independently binding: alternating AND/OR depth39 is admitted,40 refuses canonical_json_too_deep. With only fixture session/advertisement canonical_depth raised to126, native depth64 is admitted and65 refuses predicate_limit_exceeded; depth38 now reaches capability negotiation. Production limits unchanged."
+  }
+}

@@ -19,9 +19,6 @@ use crate::match_request::{
 use type_bridge_contract::sdk_diagnostic::{
     SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic, SdkProviderOperation,
 };
-use type_bridge_core_lib::ast::{
-    TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
-};
 use type_bridge_core_lib::version::Version;
 
 /// Binding-neutral lifecycle state shared by every clone of a transaction context.
@@ -384,7 +381,7 @@ impl TransactionContext {
     {
         let mut limits = AnswerLimits::default();
         if let Some(policy) = self.answer_limits() {
-            if policy.statements < 2 {
+            if policy.statement_limit() < 2 {
                 return Err(crate::match_request::MatchError::new(
                     crate::match_request::MatchErrorCategory::ResourceLimit,
                     "statement_count_limit",
@@ -518,19 +515,6 @@ impl TransactionContext {
         tx.query_with_rows(typeql, rows).await
     }
 
-    /// Execute one internal typed selected-row statement without consuming the
-    /// caller-owned transaction context.
-    pub(crate) async fn query_typed_bounded(
-        &self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_typed_bounded(query, limits, consumer).await
-    }
-
     /// Return whether this borrowed transaction can transport canonical given rows.
     pub(crate) async fn supports_given_rows(&self) -> Result<bool> {
         let guard = self.inner.lock().await;
@@ -548,60 +532,6 @@ impl TransactionContext {
             .is_some_and(|server| check_feature_supported(Feature::GivenStage, &server).is_ok());
         let transport_supported = self.supports_given_rows().await?;
         Ok(server_supported && transport_supported)
-    }
-
-    pub(crate) async fn supports_exactly_one_tuple_proof(&self) -> Result<bool> {
-        let guard = self.inner.lock().await;
-        let tx = active_transaction_ref(&guard)?;
-        Ok(tx.supports_exactly_one_tuple_proof())
-    }
-
-    /// Execute one distinct selected-tuple identity scan without consuming this context.
-    pub(crate) async fn query_tuple_typed_bounded(
-        &self,
-        query: &TypedFetchRows,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_tuple_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one complete batched hydration without consuming this context.
-    pub(crate) async fn hydrate_typed_bounded(
-        &self,
-        query: &TypedHydrateThings,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.hydrate_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one typed distinct-root stream without consuming this context.
-    pub(crate) async fn query_root_typed_bounded(
-        &self,
-        query: &TypedRootScan,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.query_root_typed_bounded(query, limits, consumer).await
-    }
-
-    /// Execute one exact batched page re-match without consuming this context.
-    pub(crate) async fn rematch_page_typed_bounded(
-        &self,
-        query: &TypedPageRematch,
-        limits: BoundedAnswerLimits,
-        consumer: &mut dyn AnswerConsumer,
-    ) -> Result<BoundedAnswerStats> {
-        let mut guard = self.inner.lock().await;
-        let tx = active_transaction(&mut guard)?;
-        tx.rematch_page_typed_bounded(query, limits, consumer).await
     }
 
     /// Commit the shared transaction.

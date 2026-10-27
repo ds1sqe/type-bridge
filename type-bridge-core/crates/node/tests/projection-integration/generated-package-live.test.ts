@@ -756,7 +756,7 @@ async function sdkQueriesResourceLimits(
     }
   };
   const pastMaximumRefused =
-    refusedByName({ statements: 4n }, "statements") &&
+    refusedByName({ statements: 4097n }, "statements") &&
     refusedByName({ timeoutMilliseconds: 86_400_001n }, "timeout_milliseconds");
   const zero = new generated.QueryExecutionResourceLimits({
     timeoutMilliseconds: 0n,
@@ -2644,13 +2644,13 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     server.stderr?.on("data", (chunk: Buffer) => { serverStderr += chunk.toString(); });
     try {
       await waitForPort(port, server, 300_000);
-      const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v2/capabilities`);
+      const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v3/capabilities`);
       assert.equal(advertisementResponse.status, 200);
       const advertisement = Buffer.from(await advertisementResponse.arrayBuffer());
       const requests: Buffer[] = [];
       async function exchange(request: Uint8Array): Promise<Buffer> {
         requests.push(Buffer.from(request));
-        const response = await fetch(`http://127.0.0.1:${port}/v2/query`, {
+        const response = await fetch(`http://127.0.0.1:${port}/v3/staged`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: new Uint8Array(request),
@@ -3482,7 +3482,7 @@ test(
         },
       );
       await waitForPort(port, server, 300_000);
-      const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v2/capabilities`);
+      const advertisementResponse = await fetch(`http://127.0.0.1:${port}/v3/capabilities`);
       assert.equal(advertisementResponse.status, 200);
       const advertisement = Buffer.from(await advertisementResponse.arrayBuffer());
       const requests: Buffer[] = [];
@@ -3490,7 +3490,7 @@ test(
         advertisement,
         async (request: Uint8Array): Promise<Buffer> => {
           requests.push(Buffer.from(request));
-          const response = await fetch(`http://127.0.0.1:${port}/v2/query`, {
+          const response = await fetch(`http://127.0.0.1:${port}/v3/staged`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: new Uint8Array(request),

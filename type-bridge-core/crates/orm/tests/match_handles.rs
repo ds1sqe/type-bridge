@@ -874,9 +874,9 @@ async fn direct_schema_function_execution_uses_one_canonical_given_row() {
     let [(typeql, rows)] = given.as_slice() else {
         panic!("direct function execution must dispatch exactly one given statement")
     };
-    assert!(typeql.starts_with("given $g0: integer; match "));
-    assert!(typeql.contains("let $c0 = qualifying-score($b0, $g0)"));
-    assert_eq!(rows.variables, ["g0"]);
+    assert!(typeql.starts_with("given $input0: integer; match "));
+    assert!(typeql.contains("let $b1 = qualifying-score($b0, $input0)"));
+    assert_eq!(rows.variables, ["input0"]);
     assert_eq!(rows.rows, [vec![GivenValue::Integer(40)]]);
     assert!(events.plain.lock().unwrap().is_empty());
 }
@@ -908,7 +908,7 @@ async fn direct_model_only_schema_function_keeps_empty_inputs_but_requires_full_
         panic!("model-only function execution dispatches one ordinary typed statement")
     };
     assert!(typeql.starts_with("match "));
-    assert!(typeql.contains("let $c0 = person-score($b0)"));
+    assert!(typeql.contains("let $b1 = person-score($b0)"));
 }
 
 #[tokio::test]

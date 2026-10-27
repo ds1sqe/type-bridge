@@ -6821,7 +6821,13 @@ mod tests {
             DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
             DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
-        assert_eq!(effective, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            effective,
+            QueryExecutionResourceLimits {
+                statements: Some(DEFAULT_DIRECT_QUERY_STATEMENTS),
+                ..Default::default()
+            }
+        );
         let policy = DirectConnectionPolicy::new("localhost:1729", "sdk", "admin", "secret")
             .connection_limits(effective)
             .answer_limits(effective);
@@ -6837,7 +6843,7 @@ mod tests {
             ("attribute_values", wire_limits.attribute_values),
             ("collection_members", wire_limits.collection_members),
             ("role_players", wire_limits.role_players),
-            ("statements", u64::from(wire_limits.statements)),
+            ("statements", u64::from(wire_limits.statement_limit())),
         ]
         .into_iter()
         .map(|(dimension, hard_max)| {

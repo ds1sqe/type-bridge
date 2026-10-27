@@ -4,10 +4,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use type_bridge_orm::{
-    DEFAULT_PROXY_QUERY_STATEMENTS, DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
-    QueryExecutionResourceLimits,
-};
+use type_bridge_orm::{DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionResourceLimits};
 
 use super::{ProxyConnectionPolicy, ProxyDatabase, ProxyExchange};
 use crate::Result;
@@ -121,7 +118,7 @@ impl RemoteQueryLimits {
                 attribute_values: max_attribute_values,
                 collection_members: max_collection_members,
                 role_players: max_role_players,
-                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+                statements: None,
             },
         }
     }
@@ -201,7 +198,7 @@ mod tests {
                 attribute_values: 1_000,
                 collection_members: 1_000,
                 role_players: 1_000,
-                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+                statements: None,
             }
         );
 

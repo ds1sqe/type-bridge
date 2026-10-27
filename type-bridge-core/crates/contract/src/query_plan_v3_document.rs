@@ -58,6 +58,11 @@ impl FetchDocumentShape {
         Self { types, roles }
     }
 
+    /// Concrete type labels admitted by this terminal fetch shape.
+    pub fn type_labels(&self) -> impl Iterator<Item = &str> {
+        self.types.keys().map(String::as_str)
+    }
+
     /// Scalar domain of an owned attribute for an exact fetched type.
     /// `role` selects a listed player; `None` selects the fetched thing.
     pub fn attribute_domain(

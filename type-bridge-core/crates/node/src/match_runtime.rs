@@ -304,7 +304,10 @@ impl NodeQueryExecutionResources {
         let dimension = |value: Option<BigInt>, default: u64, name: &str| {
             value.map_or(Ok(default), |value| bigint_u64(&value, name))
         };
-        let statements = dimension(statements, u64::from(defaults.statements), "statements")?;
+        let statements = statements
+            .map(|value| bigint_u64(&value, "statements"))
+            .transpose()?
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
             timeout_milliseconds: dimension(
                 timeout_milliseconds,
@@ -325,7 +328,7 @@ impl NodeQueryExecutionResources {
                 "collectionMembers",
             )?,
             role_players: dimension(role_players, defaults.role_players, "rolePlayers")?,
-            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+            statements,
         }
         .validate()
         .map_err(|refusal| invalid_arg(refusal.to_string()))?;
@@ -368,8 +371,10 @@ impl NodeQueryExecutionResources {
     }
 
     #[napi(getter)]
-    pub fn statements(&self) -> BigInt {
-        u64_bigint(u64::from(self.inner.statements))
+    pub fn statements(&self) -> Option<BigInt> {
+        self.inner
+            .statements
+            .map(|value| u64_bigint(u64::from(value)))
     }
 }
 
@@ -3139,23 +3144,9 @@ plays:
     }
 
     fn projected_query_responses(iid: &str) -> Vec<QueryResult> {
-        vec![
-            QueryResult::Rows(vec![serde_json::json!({
-                "bindings": [{"binding": 0, "concept_id": iid}],
-                "satisfied_role_edges": [],
-            })]),
-            QueryResult::Documents(vec![serde_json::json!({
-                "binding": 0,
-                "concept_id": iid,
-                "concrete_type": "person",
-                "kind": "entity",
-                "attributes": [
-                    {"field": "identifier", "value_type": "string", "values": ["ada"]},
-                    {"field": "tag", "value_type": "string", "values": ["engineer"]},
-                ],
-                "roles": [],
-            })]),
-        ]
+        vec![QueryResult::Documents(vec![
+            serde_json::json!({"_iid":iid,"_type":"person","attributes":{"identifier":"ada","tag":["engineer"]}}),
+        ])]
     }
 
     fn projected_membership_create(
@@ -3325,7 +3316,7 @@ plays:
         assert_eq!(foreign_events.rollbacks.load(Ordering::SeqCst), 0);
 
         assert_eq!(events.opens.load(Ordering::SeqCst), 3);
-        assert_eq!(events.queries.load(Ordering::SeqCst), 6);
+        assert_eq!(events.queries.load(Ordering::SeqCst), 3);
         assert_eq!(events.commits.load(Ordering::SeqCst), 0);
         assert_eq!(events.rollbacks.load(Ordering::SeqCst), 0);
         transaction.close().await.unwrap();
@@ -3410,7 +3401,7 @@ plays:
         assert_eq!(payload["code"], "transaction_deadline_exceeded");
 
         assert_eq!(events.opens.load(Ordering::SeqCst), 3);
-        assert_eq!(events.queries.load(Ordering::SeqCst), 6);
+        assert_eq!(events.queries.load(Ordering::SeqCst), 3);
     }
 
     /// A proxy connection to the ordered-query schema whose ceiling is
@@ -3601,7 +3592,7 @@ plays:
                 attribute_values: default.attribute_values + 1,
                 collection_members: default.collection_members + 1,
                 role_players: default.role_players + 1,
-                statements: default.statements,
+                statements: Some(type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS),
             },
             "a raised dimension keeps what the caller asked for"
         );

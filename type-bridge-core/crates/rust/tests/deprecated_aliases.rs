@@ -99,7 +99,7 @@ fn remote_query_limits_convert_to_resource_limits() {
             graph_nodes: 2_000,
             attribute_values: 3_000,
             role_players: 4_000,
-            statements: type_bridge::DEFAULT_PROXY_QUERY_STATEMENTS,
+            statements: None,
         }
     );
 }

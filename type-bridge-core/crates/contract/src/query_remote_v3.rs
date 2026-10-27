@@ -50,6 +50,27 @@ fn mismatch() -> Diagnostic {
     )
 }
 
+fn validate_reply_binding(
+    format: &str,
+    nonce: &str,
+    fingerprint: &str,
+    request: &StagedRequestV3,
+) -> Result<(), Diagnostic> {
+    if format != QUERY_REMOTE_REPLY_FORMAT_V3 {
+        return Err(invalid(
+            "query_remote_v3_format_unsupported",
+            "unsupported staged reply format",
+        ));
+    }
+    if nonce != request.nonce() {
+        return Err(mismatch().with_detail("reason", "nonce"));
+    }
+    if fingerprint != request.fingerprint()?.digest().to_hex() {
+        return Err(mismatch().with_detail("reason", "request"));
+    }
+    Ok(())
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -144,9 +165,9 @@ impl StagedLimitsV3 {
         .zip(&crate::limits::ANSWER_LIMIT_FIELDS[3..7])
         .any(|(value, field)| value.is_some_and(|value| value > field.maximum))
             || self.max_bytes == 0
-            || self.max_bytes > MAX_REMOTE_ENVELOPE_BYTES as u64
+            || self.max_bytes > crate::limits::ANSWER_LIMIT_FIELDS[2].maximum
             || self.max_items == 0
-            || self.max_items > MAX_STAGED_ITEMS_V3
+            || self.max_items > crate::limits::ANSWER_LIMIT_FIELDS[1].maximum
             || self.max_staged_plans == 0
             || self.max_staged_plans > MAX_STAGED_PLANS_V3
             || self.max_read_statements == 0
@@ -276,6 +297,11 @@ impl StagedPlanV3 {
     pub fn plan(&self) -> &QueryPlanV3 {
         &self.plan
     }
+    /// Consume this entry and return its validated plan, without copying it.
+    pub fn into_plan(self) -> QueryPlanV3 {
+        self.plan
+    }
+
     /// Exact positional invocation rows.
     pub fn rows(&self) -> &[InputRow] {
         &self.wire.rows
@@ -329,7 +355,7 @@ impl StagedRequestV3 {
         schema: &DeclaredSchema,
         advertisement: &RemoteCapabilities,
     ) -> Result<Self, Diagnostic> {
-        Self::new_with_limits(spec, schema, advertisement, QueryLimits::CANONICAL)
+        Self::new_with_limits(spec, schema, advertisement, QueryLimits::V3)
     }
 
     /// Construct under caller query limits, constrained by the advertised receiver limits.
@@ -339,7 +365,7 @@ impl StagedRequestV3 {
         advertisement: &RemoteCapabilities,
         query_limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
-        query_limits.validate().map_err(|_| {
+        query_limits.validate_v3().map_err(|_| {
             invalid(
                 "query_remote_v3_query_limits",
                 "caller query limits are invalid",
@@ -451,6 +477,17 @@ impl StagedRequestV3 {
                 "staged plans exceed their minimum statement budget",
             ));
         }
+        if let Some(maximum) = advertisement.answer_limits().get("statements")
+            && reads.saturating_add(writes) as u64 > *maximum
+        {
+            return Err(limit(
+                "query_remote_v3_statement_limit",
+                "staged plans exceed the receiver's explicit statement ceiling",
+            )
+            .with_detail("limit", "statements")
+            .with_detail("maximum", i64::try_from(*maximum).unwrap_or(i64::MAX))
+            .with_detail("source", crate::limits::LIMIT_SOURCE_CONFIGURED));
+        }
         let mut capabilities = CapabilitySet::new();
         capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3)?);
         if [
@@ -486,7 +523,7 @@ impl StagedRequestV3 {
         schema: &DeclaredSchema,
         advertisement: &RemoteCapabilities,
     ) -> Result<Self, Diagnostic> {
-        Self::decode_with_limits(bytes, schema, advertisement, QueryLimits::CANONICAL)
+        Self::decode_with_limits(bytes, schema, advertisement, QueryLimits::V3)
     }
     /// Decode with receiver-owned query limits; senders cannot widen them.
     pub fn decode_with_limits(
@@ -495,7 +532,7 @@ impl StagedRequestV3 {
         advertisement: &RemoteCapabilities,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
-        limits.validate().map_err(|_| {
+        limits.validate_v3().map_err(|_| {
             invalid(
                 "query_remote_v3_query_limits",
                 "receiver query limits are invalid",
@@ -576,6 +613,11 @@ impl StagedRequestV3 {
     pub fn plans(&self) -> &[StagedPlanV3] {
         &self.plans
     }
+    /// Consume this request and return its validated entries, without copying them.
+    pub fn into_plans(self) -> Vec<StagedPlanV3> {
+        self.plans
+    }
+
     /// Selected or inferred transaction kind.
     pub fn kind(&self) -> StagedKindV3 {
         self.wire.kind.unwrap_or_else(|| {
@@ -768,6 +810,169 @@ impl SdkDiagnosticProjectionV3 {
     pub fn host_json(&self) -> Result<serde_json::Value, Diagnostic> {
         serde_json::to_value(self).map_err(|_| bad_diagnostic())
     }
+    /// Reconstruct an authenticated typed-read failure with a static SDK message.
+    /// The checked path, typed details and failure certainty are retained.
+    pub fn to_query_diagnostic(&self) -> Result<SdkExecutionDiagnostic, Diagnostic> {
+        use crate::sdk_diagnostic::*;
+        self.validate()?;
+        let category = match self.query_category.as_deref().unwrap_or(&self.sdk_category) {
+            "invalid_plan" | "invalid_input" => SdkQueryDiagnosticCategory::InvalidPlan,
+            "cardinality" => SdkQueryDiagnosticCategory::Cardinality,
+            "unsupported_capability" => SdkQueryDiagnosticCategory::UnsupportedCapability,
+            "stale_schema" => SdkQueryDiagnosticCategory::StaleSchema,
+            "resource_limit" => SdkQueryDiagnosticCategory::ResourceLimit,
+            "cancelled" => SdkQueryDiagnosticCategory::Cancelled,
+            "provider" | "transaction" => SdkQueryDiagnosticCategory::Provider,
+            _ => SdkQueryDiagnosticCategory::ResultDecode,
+        };
+        let identity = |value: &serde_json::Value| {
+            SdkQueryDiagnosticIdentity::new(value.as_str().ok_or_else(bad_diagnostic)?)
+                .map_err(|_| bad_diagnostic())
+        };
+        let ownership = |value: &serde_json::Value| {
+            crate::schema::OwnsFactId::new(
+                serde_json::from_value(value["owner"].clone()).map_err(|_| bad_diagnostic())?,
+                crate::id::AttributeId::new(
+                    value["attribute"].as_str().ok_or_else(bad_diagnostic)?,
+                )
+                .map_err(|_| bad_diagnostic())?,
+            )
+            .map_err(|_| bad_diagnostic())
+        };
+        let mut diagnostic = SdkExecutionDiagnostic::query_failure(
+            category,
+            SdkDiagnosticCode::new(self.code.clone()).map_err(|_| bad_diagnostic())?,
+        );
+        for segment in &self.path {
+            let (kind, value) = tagged(segment)?;
+            let value = value.unwrap_or(&serde_json::Value::Null);
+            let path = match kind {
+                "request" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Request),
+                "plan" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Plan),
+                "operation" => {
+                    SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Operation)
+                }
+                "predicate" => {
+                    SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Predicate)
+                }
+                "output" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Output),
+                "provider_evidence" => {
+                    SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::ProviderEvidence)
+                }
+                "result" => SdkDiagnosticPathSegment::Query(SdkQueryDiagnosticPathKind::Result),
+                "argument" => SdkDiagnosticPathSegment::Argument(
+                    SdkDiagnosticName::new(value.as_str().ok_or_else(bad_diagnostic)?)
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "index" => {
+                    SdkDiagnosticPathSegment::Index(value.as_u64().ok_or_else(bad_diagnostic)?)
+                }
+                "binding" => SdkDiagnosticPathSegment::QueryBinding(
+                    value.as_u64().ok_or_else(bad_diagnostic)? as u16,
+                ),
+                "role_edge" => SdkDiagnosticPathSegment::QueryRoleEdge(
+                    value.as_u64().ok_or_else(bad_diagnostic)? as u16,
+                ),
+                "output_slot" => SdkDiagnosticPathSegment::QueryOutputSlot(
+                    value.as_u64().ok_or_else(bad_diagnostic)?,
+                ),
+                "output_name" => SdkDiagnosticPathSegment::QueryOutputName(identity(value)?),
+                "contract_field" => SdkDiagnosticPathSegment::ContractField(identity(value)?),
+                "contract_identity" => SdkDiagnosticPathSegment::ContractIdentity(identity(value)?),
+                "type" => SdkDiagnosticPathSegment::Type(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                "field" if owned_name(value) => SdkDiagnosticPathSegment::QueryField {
+                    owner: identity(&value["owner"])?,
+                    name: identity(&value["name"])?,
+                },
+                "role" if owned_name(value) => SdkDiagnosticPathSegment::QueryRole {
+                    owner: identity(&value["owner"])?,
+                    name: identity(&value["name"])?,
+                },
+                "field" => SdkDiagnosticPathSegment::Field(ownership(value)?),
+                "role" => SdkDiagnosticPathSegment::Role(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                _ => return Err(bad_diagnostic()),
+            };
+            diagnostic = diagnostic.try_at(path).map_err(|_| bad_diagnostic())?;
+        }
+        for (name, detail) in &self.details {
+            if name == "query_category" {
+                continue;
+            }
+            let (kind, value) = tagged(detail)?;
+            let value = value.ok_or_else(bad_diagnostic)?;
+            let detail = match kind {
+                "boolean" => {
+                    SdkDiagnosticDetailValue::Boolean(value.as_bool().ok_or_else(bad_diagnostic)?)
+                }
+                "count" => SdkDiagnosticDetailValue::Count(
+                    value
+                        .as_str()
+                        .ok_or_else(bad_diagnostic)?
+                        .parse()
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "byte_count" => SdkDiagnosticDetailValue::ByteCount(
+                    value
+                        .as_str()
+                        .ok_or_else(bad_diagnostic)?
+                        .parse()
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "signed" => SdkDiagnosticDetailValue::Signed(
+                    value
+                        .as_str()
+                        .ok_or_else(bad_diagnostic)?
+                        .parse()
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "query_identity" => SdkDiagnosticDetailValue::QueryIdentity(identity(value)?),
+                "query_identity_list" => SdkDiagnosticDetailValue::QueryIdentityList(
+                    value
+                        .as_array()
+                        .ok_or_else(bad_diagnostic)?
+                        .iter()
+                        .map(identity)
+                        .collect::<Result<_, _>>()?,
+                ),
+                "text" if value.is_string() => SdkDiagnosticDetailValue::Capability(
+                    CapabilityId::new(value.as_str().ok_or_else(bad_diagnostic)?)
+                        .map_err(|_| bad_diagnostic())?,
+                ),
+                "text" if typed_identity::<crate::id::TypeId>(value) => {
+                    SdkDiagnosticDetailValue::Type(
+                        serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                    )
+                }
+                "text" if typed_identity::<crate::id::RoleId>(value) => {
+                    SdkDiagnosticDetailValue::Role(
+                        serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                    )
+                }
+                "text" if ownership_identity(value) => {
+                    SdkDiagnosticDetailValue::Field(ownership(value)?)
+                }
+                "text" => SdkDiagnosticDetailValue::Fingerprint(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
+                _ => return Err(bad_diagnostic()),
+            };
+            diagnostic = diagnostic
+                .try_with_detail(
+                    SdkDiagnosticName::new(name.clone()).map_err(|_| bad_diagnostic())?,
+                    detail,
+                )
+                .map_err(|_| bad_diagnostic())?;
+        }
+        if let Some(failure) = self.failure() {
+            diagnostic = diagnostic.with_failure(&failure, FailureContext::default());
+        }
+        Ok(diagnostic)
+    }
+
     /// Stable diagnostic code.
     pub fn code(&self) -> &str {
         &self.code
@@ -1132,12 +1337,7 @@ impl VerifiedStagedReplyV3 {
     }
 }
 fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Diagnostic> {
-    if wire.format != QUERY_REMOTE_REPLY_FORMAT_V3
-        || wire.nonce != request.nonce()
-        || wire.request != request.fingerprint()?.digest().to_hex()
-    {
-        return Err(mismatch());
-    }
+    validate_reply_binding(&wire.format, &wire.nonce, &wire.request, request)?;
     if let OutcomeWire::Failed { diagnostic } = &wire.outcome {
         diagnostic.validate()?;
         return if wire.answers.is_empty() {
@@ -1179,6 +1379,11 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
             return Err(limit(
                 "query_remote_v3_answer_items",
                 "aggregate staged answers exceed their item budget",
+            )
+            .with_detail("actual", i64::try_from(items).unwrap_or(i64::MAX))
+            .with_detail(
+                "maximum",
+                i64::try_from(request.limits().max_items).unwrap_or(i64::MAX),
             ));
         }
     }
@@ -1505,12 +1710,7 @@ fn preflight_reply_payload(
             "staged reply has an invalid framing shape",
         )
     })?;
-    if peek.format != QUERY_REMOTE_REPLY_FORMAT_V3
-        || peek.nonce != request.nonce()
-        || peek.request != request.fingerprint()?.digest().to_hex()
-    {
-        return Err(mismatch());
-    }
+    validate_reply_binding(peek.format, peek.nonce, peek.request, request)?;
     let outcome: OutcomePeek<'_> = serde_json::from_str(peek.outcome.get()).map_err(|_| {
         invalid(
             "query_remote_v3_reply_shape",

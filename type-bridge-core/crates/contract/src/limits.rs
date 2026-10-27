@@ -249,7 +249,7 @@ pub const MAX_SUPPORTED_CANONICAL_DEPTH: usize = 126;
 ///
 /// Generated query, grouping, and aggregate typing is sealed at sixteen
 /// positions, so this limit can be lowered but not raised.
-pub const MAX_SUPPORTED_SELECTED_SLOTS: usize = MAX_SELECTED_SLOTS;
+pub const MAX_SUPPORTED_SELECTED_SLOTS: usize = MAX_SUPPORTED_BINDINGS;
 
 /// Largest binding count addressable by a 16-bit binding identity.
 pub const MAX_SUPPORTED_BINDINGS: usize = 1 << 16;
@@ -425,6 +425,30 @@ impl QueryLimits {
         remote_request_bytes: MAX_REMOTE_ENVELOPE_BYTES,
     };
 
+    /// Native V3 columns may expose every bounded binding as identity evidence.
+    /// Released V1/V2 and typed model output slots retain `CANONICAL`.
+    pub const V3: Self = Self {
+        structural: StructuralLimits {
+            selected_slots: MAX_BINDINGS,
+            ..StructuralLimits::CANONICAL
+        },
+        ..Self::CANONICAL
+    };
+
+    /// Admit V3 limits, where every output column consumes a binding.
+    pub fn validate_v3(self) -> Result<Self, QueryLimitsError> {
+        let limits = self.validate()?;
+        if limits.structural.selected_slots > limits.structural.bindings {
+            return Err(QueryLimitsError::OutOfRange {
+                limit: "selected_slots",
+                value: limits.structural.selected_slots as u64,
+                minimum: 1,
+                maximum: limits.structural.bindings as u64,
+            });
+        }
+        Ok(limits)
+    }
+
     /// Admit one untrusted limits value.
     ///
     /// Every limit must be at least one and no larger than the
@@ -539,8 +563,8 @@ pub struct AnswerLimitField {
 /// maxima. A direct session keeps the 2.2 in-process defaults; a proxy
 /// connection defaults to the wire ceilings, which bound what one remote
 /// envelope carries. Only the timeout and the statement count have a maximum
-/// below the type's: a day keeps deadline arithmetic exact, and no terminal
-/// issues more than three provider statements.
+/// below the type's: a day keeps deadline arithmetic exact, and the statement
+/// budget is bounded independently of the adapter's static stack size.
 pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
     AnswerLimitField {
         name: "timeout_milliseconds",
@@ -588,7 +612,7 @@ pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
         name: "statements",
         direct_default: 3,
         proxy_default: 3,
-        maximum: 3,
+        maximum: 4096,
     },
 ];
 

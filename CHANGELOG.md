@@ -6,6 +6,33 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Typed Long SUM/MEAN share exact high/low partial aggregates, preventing
+  native integer wrap without an extra query. SUM checks the final `i64`
+  domain (`reduction_overflow`); MEAN divides the exact total by the count in
+  binary64. More than 2^31 inputs per group fails as `reduction_input_bound`.
+  Long MEDIAN/STD share a binary64 input projection, matching the 2.x numeric
+  domain; MIN/MAX retain exact Long values.
+- Native floating aggregates can differ from 2.x in the last bit.
+  Witness-dependent reductions keep the bounded client reducer and choose
+  the minimum witness IID per root/group.
+- V3 native output columns now default to the binding ceiling (256), allowing
+  complete hidden-witness identity evidence. The configured column ceiling
+  cannot exceed the binding ceiling. Frozen V1/V2 outputs and released typed
+  model selections retain 16 slots; lower advertised V3 caps remain binding.
+- Explicit V3 staged byte/item budgets can rise to the shared answer-policy
+  maxima, while defaults and independent codec/envelope hard caps stay fixed.
+- Typed reads execute native plan stacks directly and through `/v3/staged`.
+  Proxy `stage_match` shares the tightest program, connection and transaction
+  budget across the complete commit and reports which bound constrained it;
+  projection failures after commit publish no partial results.
+- Explicitly raised string limits now survive final model projection and size
+  measurement, including nested role-player keys and scalar group values.
+- Unset typed-read statement limits now cover the complete static adapter
+  stack, with a minimum of three. Explicit limits remain strict; Rust stores
+  `statements: Option<u32>` and Python/Node preserve an omitted value.
+  The supported explicit maximum is 4,096. An explicitly advertised
+  `statements: 3` remains distinct from an unset ceiling; a 2.x receiver
+  refuses that explicit advertisement as noncanonical.
 - Typed string values default to a 1 MiB ceiling in 3.0. The existing
   `canonical_string_bytes` query-limit option can raise it up to the complete
   artifact budget (16 MiB by default); servers retain their own configured
@@ -56,6 +83,24 @@ All notable changes to TypeBridge will be documented in this file.
   documented on the V3 interceptor hooks and pinned by a test.
 
 ### Changed
+
+- Native typed queries refuse a populated ordered relation role with
+  `query_plan_hydration_ordered_role`: native role evidence cannot prove
+  its authored order. Empty ordered roles remain queryable. Canonical
+  snapshot codecs continue to preserve ordered role values.
+
+- Predicate nesting is bounded by canonical encoding depth (default 64) and
+  native predicate depth (64), whichever is reached first. The alternating
+  AND/OR typed terminal now admits depth 39; depth 40 refuses with
+  `canonical_json_too_deep`. Raising the caller and receiver codec depth
+  explicitly admits native depth 64; depth 65 refuses with
+  `predicate_limit_exceeded`. The former depth 38 encoding refusal now
+  reaches normal capability negotiation. Production limits are unchanged.
+- Native typed reply binding failures use `query_remote_binding_mismatch`
+  with `reason` equal to `nonce` or `request`; foreign embedded programs
+  differ through the whole request digest. Unsupported reply formats use
+  `query_remote_format_unsupported` before binding checks. Frozen raw V2
+  diagnostics remain unchanged.
 
 - TypeDB 3.14's query rules are refused at plan build on every profile and
   in every language (#268): a sort on a duration (`query_plan_sort_unordered_value`,

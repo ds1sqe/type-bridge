@@ -314,6 +314,8 @@ async fn build_v2_state(
     .with_query_limits(config.v2.resolved_query_limits()?)
     .map_err(|error| format!("v2 query limits rejected: {error:?}"))?;
     let state = state
+        .with_staged_query_limits(config.v2.resolved_staged_query_limits()?)
+        .map_err(|error| format!("staged query limits rejected: {error:?}"))?
         .with_answer_limits(config.v2.resolved_answer_limits()?)
         .map_err(|error| format!("v2 answer limits rejected: {error:?}"))?
         .with_unauthenticated_staged_writes(config.v2.allow_unauthenticated_staged_writes);

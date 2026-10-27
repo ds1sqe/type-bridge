@@ -165,7 +165,7 @@ export interface NativeQueryExecutionResources {
     readonly attributeValues: bigint;
     readonly collectionMembers: bigint;
     readonly rolePlayers: bigint;
-    readonly statements: bigint;
+    readonly statements: bigint | null;
 }
 export interface NativeQueryCancellation {
     readonly isCancelled: boolean;

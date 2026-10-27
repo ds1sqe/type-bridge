@@ -499,7 +499,14 @@ const remoteCapabilities = [
   "query.stage.require",
   "query.stage.select",
   "query.stage.sort",
-];
+    "query.fetch.thing",
+    "query.let",
+    "query.expr.iid",
+    "query.pipeline.rematch",
+    "query.plan.v3",
+    "query.remote.envelope-v3",
+    "query.remote.answer-dimensions",
+].sort();
 const signingSeed = Buffer.alloc(32, 0x42);
 const signingPrivateKey = crypto.createPrivateKey({
   key: Buffer.concat([
@@ -553,6 +560,14 @@ function remoteAdvertisement() {
 }
 
 function remoteSignedReply(payload, advertisement) {
+  if (payload.format === "typebridge.query-remote-failure/v2") {
+    const kinds = {long:"signed", text_list:"query_identity_list", text:"query_identity"};
+    const details = Object.fromEntries(Object.entries(payload.details).map(([name,value]) => [name,{kind:kinds[value.kind]??value.kind,value:value.value}]));
+    const pathKinds = {field:"contract_field",identifier:"contract_identity"};
+    const diagnostic = {version:1,category:"result_decode",sdk_category:"integrity",query_category:"result_decode",code:payload.code,message:"Typed query evidence does not match the validated request invocation",path:payload.path.map(item=>({kind:pathKinds[item.kind]??item.kind,value:item.value})),details};
+    payload = {answers:[],format:"typebridge.query-remote-response/v3",nonce:payload.nonce,outcome:{kind:"failed",diagnostic},request:payload.request};
+  }
+
   const advertisementFingerprint = remoteFingerprint(
     "typebridge.query.remote-capabilities",
     "typebridge.query-remote-capabilities/v1",
@@ -564,7 +579,7 @@ function remoteSignedReply(payload, advertisement) {
       `"format":"typebridge.query-remote-signed-reply/v1",` +
       `"key":"${key}","key_id":"${signingKeyId}","payload":`,
   );
-  const payloadBytes = Buffer.from(JSON.stringify(payload));
+  const payloadBytes = Buffer.from(JSON.stringify(canonicalProofValue(payload)));
   const digest = crypto
     .createHash("sha256")
     .update(Buffer.from("typebridge.query.remote-reply-signature/v1\0"))
@@ -615,7 +630,7 @@ const generatedRemoteSession = new QuerySession(
           ],
           request: remoteFingerprint(
             "typebridge.query.remote-request",
-            "typebridge.query-remote-request/v2",
+            "typebridge.query-remote-request/v3",
             request,
           ),
         },
@@ -726,7 +741,7 @@ await assert.rejects(
     // The protected native pending is captured only to prove the shared
     // one-shot authority was consumed by the public generated execution.
     assert(error instanceof Error);
-    assert.match(error.message, /query_remote_v2_reply_replayed/);
+    assert.match(error.message, /query_remote_reply_replayed/);
     return true;
   },
 );
@@ -934,7 +949,7 @@ const duringDecodeSession = new QuerySession(
           path: [],
           request: remoteFingerprint(
             "typebridge.query.remote-request",
-            "typebridge.query-remote-request/v2",
+            "typebridge.query-remote-request/v3",
             request,
           ),
         },
@@ -1380,13 +1395,14 @@ assert.equal(coreRuleExchanges, 0);
 // capability, so preparation now ends one step later, at capability
 // negotiation, which only an adapted plan reaches.
 let wideRemoteRequests = 0;
+async function wideRemoteExchange() {
+  wideRemoteRequests += 1;
+  return new TextEncoder().encode("{}");
+}
 const wideRemoteSession = new QuerySession(
   new ExchangeConnection(
     generatedAdvertisement,
-    async () => {
-      wideRemoteRequests += 1;
-      return new TextEncoder().encode("{}");
-    },
+    wideRemoteExchange,
   ),
   {
     resources: new QueryExecutionResourceLimits({
@@ -1419,25 +1435,39 @@ await assert.rejects(
 );
 assert.equal(wideRemoteRequests, 0);
 
-// Nesting the caller actually wrote is still bounded: alternating conjunction
-// and disjunction thirty-eight deep is refused during adaptation, before
-// capability negotiation, and the refusal names the limit to raise.
-let nestedRemotePredicate = wideRemotePerson.field(Person.score).gte(Score.create(1n));
-for (let depth = 1; depth < 38; depth += 1) {
-  const term = wideRemotePerson.field(Person.score).gte(Score.create(1n));
-  nestedRemotePredicate =
-    depth % 2 === 0 ? nestedRemotePredicate.and(term) : nestedRemotePredicate.or(term);
+// Measured default encoding boundary for this alternating AND/OR terminal.
+const nativePredicateDepth = Number(new QueryLimits().get("predicate_depth"));
+function nestedPredicate(binding,nesting) {
+  let predicate=binding.field(Person.score).gte(Score.create(1n));
+  for(let depth=1;depth<nesting;depth+=1) {
+    const term=binding.field(Person.score).gte(Score.create(1n));
+    predicate=depth%2===0 ? predicate.and(term) : predicate.or(term);
+  }
+  return predicate;
 }
-await assert.rejects(
-  async () =>
-    wideRemoteSession.query(wideRemotePerson).where(nestedRemotePredicate).one(),
-  (error) => {
-    assert.equal(error.category, "resource_limit");
-    assert.equal(error.code, "canonical_json_too_deep");
+for(const nesting of [38,39,40]) {
+  await assert.rejects(async()=>wideRemoteSession.query(wideRemotePerson).where(nestedPredicate(wideRemotePerson,nesting)).one(),error=> {
+    assert.equal(error.category,nesting<=39 ? "unsupported_capability" : "resource_limit");
+    assert.equal(error.code,nesting<=39 ? "unsupported_required_capability" : "canonical_json_too_deep");
     return true;
-  },
-);
-assert.equal(wideRemoteRequests, 0);
+  });
+  assert.equal(wideRemoteRequests,0);
+}
+// Raise only this fixture's codec ceiling to isolate the native structural bound.
+const raisedCanonicalDepth=2*nativePredicateDepth-2;
+const raisedAdvertisement=JSON.parse(generatedAdvertisement);
+raisedAdvertisement.query_limits={canonical_depth:raisedCanonicalDepth};
+const raisedSession=new QuerySession(new ExchangeConnection(Buffer.from(JSON.stringify(canonicalProofValue(raisedAdvertisement))),wideRemoteExchange),{queryLimits:new QueryLimits({canonical_depth:BigInt(raisedCanonicalDepth)})});
+const raisedPerson=raisedSession.exact(Person);
+for(const nesting of [nativePredicateDepth,nativePredicateDepth+1]) {
+  await assert.rejects(async()=>raisedSession.query(raisedPerson).where(nestedPredicate(raisedPerson,nesting)).one(),error=> {
+    assert.equal(error.category,nesting===nativePredicateDepth ? "unsupported_capability" : "resource_limit");
+    assert.equal(error.code,nesting===nativePredicateDepth ? "unsupported_required_capability" : "predicate_limit_exceeded");
+    return true;
+  });
+  assert.equal(wideRemoteRequests,0);
+}
+raisedSession.close();
 wideRemoteSession.close();
 
 const remoteLifecycle = generatedRemoteSession.query(generatedRemotePerson);

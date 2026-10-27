@@ -100,7 +100,7 @@ pub(crate) fn parse_common_limits(
         attribute_values: value.attribute_values,
         collection_members: value.collection_members,
         role_players: value.role_players,
-        statements: value.statements,
+        statements: Some(value.statements),
     }
     .validate()
     .map_err(|_| invalid_limits())

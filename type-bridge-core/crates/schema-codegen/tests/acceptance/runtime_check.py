@@ -841,37 +841,46 @@ def _canonical(payload: dict[str, object]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
-_REMOTE_CAPABILITIES = [
-    "query.execution.batch-identity-rebind",
-    "query.execution.same-snapshot-hydration",
-    "query.input.given-rows",
-    "query.operation.distinct-count",
-    "query.operation.distinct-exists",
-    "query.operation.exactly-one",
-    "query.operation.page",
-    "query.order.stable-collection",
-    "query.order.stable-root",
-    "query.order.stable-selected",
-    "query.output.collect",
-    "query.output.collect-distinct",
-    "query.output.hydrated",
-    "query.output.named",
-    "query.output.rows",
-    "query.pattern.has",
-    "query.pattern.iid",
-    "query.pattern.isa",
-    "query.pattern.isa-subtypes",
-    "query.plan",
-    "query.plan.v2",
-    "query.remote.envelope-v2",
-    "query.remote.structured-diagnostic",
-    "query.stage.distinct",
-    "query.stage.limit",
-    "query.stage.offset",
-    "query.stage.require",
-    "query.stage.select",
-    "query.stage.sort",
-]
+_REMOTE_CAPABILITIES = sorted(
+    [
+        "query.execution.batch-identity-rebind",
+        "query.execution.same-snapshot-hydration",
+        "query.input.given-rows",
+        "query.operation.distinct-count",
+        "query.operation.distinct-exists",
+        "query.operation.exactly-one",
+        "query.operation.page",
+        "query.order.stable-collection",
+        "query.order.stable-root",
+        "query.order.stable-selected",
+        "query.output.collect",
+        "query.output.collect-distinct",
+        "query.output.hydrated",
+        "query.output.named",
+        "query.output.rows",
+        "query.pattern.has",
+        "query.pattern.iid",
+        "query.pattern.isa",
+        "query.pattern.isa-subtypes",
+        "query.plan",
+        "query.plan.v2",
+        "query.remote.envelope-v2",
+        "query.remote.structured-diagnostic",
+        "query.stage.distinct",
+        "query.stage.limit",
+        "query.stage.offset",
+        "query.stage.require",
+        "query.stage.select",
+        "query.stage.sort",
+        "query.fetch.thing",
+        "query.let",
+        "query.expr.iid",
+        "query.pipeline.rematch",
+        "query.plan.v3",
+        "query.remote.envelope-v3",
+        "query.remote.answer-dimensions",
+    ]
+)
 
 
 def _remote_advertisement() -> bytes:
@@ -890,6 +899,36 @@ def _remote_advertisement() -> bytes:
 
 
 def _remote_signed_reply(payload: dict[str, object], advertisement: bytes) -> bytes:
+    if payload.get("format") == "typebridge.query-remote-failure/v2":
+        kinds = {"long": "signed", "text_list": "query_identity_list", "text": "query_identity"}
+        details = {
+            name: {
+                "kind": kinds.get(value["kind"], value["kind"]),
+                "value": value["value"],
+            }
+            for name, value in payload["details"].items()
+        }
+        path_kinds = {"field": "contract_field", "identifier": "contract_identity"}
+        diagnostic = {
+            "version": 1,
+            "category": "result_decode",
+            "sdk_category": "integrity",
+            "query_category": "result_decode",
+            "code": payload["code"],
+            "message": "Typed query evidence does not match the validated request invocation",
+            "path": [
+                {"kind": path_kinds.get(item["kind"], item["kind"]), "value": item["value"]}
+                for item in payload["path"]
+            ],
+            "details": details,
+        }
+        payload = {
+            "answers": [],
+            "format": "typebridge.query-remote-response/v3",
+            "nonce": payload["nonce"],
+            "outcome": {"kind": "failed", "diagnostic": diagnostic},
+            "request": payload["request"],
+        }
     payload_bytes = _canonical(payload)
     advertisement_fingerprint = _remote_fingerprint(
         b"typebridge.query.remote-capabilities",
@@ -938,7 +977,7 @@ async def generated_failure_exchange(request: bytes) -> bytes:
             ],
             "request": _remote_fingerprint(
                 b"typebridge.query.remote-request",
-                b"typebridge.query-remote-request/v2",
+                b"typebridge.query-remote-request/v3",
                 request,
             ),
         },
@@ -1211,33 +1250,69 @@ else:
     raise AssertionError("the fixture advertisement cannot execute a field comparison")
 assert wide_remote_requests == []
 
-# Nesting the caller actually wrote is still bounded: alternating conjunction
-# and disjunction thirty-eight deep is refused during adaptation, before
-# capability negotiation, and the refusal names the limit to raise.
-nested_remote_predicate = wide_remote_person.field(Person.score).gte(Score(1))
-for depth in range(1, 38):
-    nested_remote_term = wide_remote_person.field(Person.score).gte(Score(1))
-    nested_remote_predicate = (
-        nested_remote_predicate.and_(nested_remote_term)
-        if depth % 2 == 0
-        else nested_remote_predicate.or_(nested_remote_term)
-    )
-try:
-    asyncio.run(
-        wide_remote_session.query(wide_remote_person).where(nested_remote_predicate).rows(limit=1)
-    )
-except MatchRequestError as error:
-    assert error.category == "resource_limit", (error.category, error.code)
-    assert error.code == "canonical_json_too_deep"
-else:
-    raise AssertionError("a predicate nested past the encoding depth must be refused")
-assert wide_remote_requests == []
+# Measured default encoding boundary for this alternating AND/OR terminal.
+native_predicate_depth = QueryLimits().get("predicate_depth")
+
+
+def nested_predicate(binding, nesting):
+    predicate = binding.field(Person.score).gte(Score(1))
+    for depth in range(1, nesting):
+        term = binding.field(Person.score).gte(Score(1))
+        predicate = predicate.and_(term) if depth % 2 == 0 else predicate.or_(term)
+    return predicate
+
+
+for nesting in (38, 39, 40):
+    try:
+        asyncio.run(
+            wide_remote_session.query(wide_remote_person)
+            .where(nested_predicate(wide_remote_person, nesting))
+            .rows(limit=1)
+        )
+    except MatchRequestError as error:
+        expected = (
+            ("unsupported_capability", "unsupported_required_capability")
+            if nesting <= 39
+            else ("resource_limit", "canonical_json_too_deep")
+        )
+        assert (error.category, error.code) == expected, (nesting, error.category, error.code)
+    else:
+        raise AssertionError("fixture comparison capability is intentionally absent")
+    assert wide_remote_requests == []
+
+# Raise only this fixture's codec ceiling to isolate the native structural bound.
+raised_canonical_depth = 2 * native_predicate_depth - 2
+raised_advertisement = json.loads(generated_advertisement)
+raised_advertisement["query_limits"] = {"canonical_depth": raised_canonical_depth}
+raised_session = QuerySession(
+    ExchangeConnection(_canonical(raised_advertisement), wide_remote_exchange),
+    query_limits=QueryLimits(canonical_depth=raised_canonical_depth),
+)
+raised_person = raised_session.exact(Person)
+for nesting in (native_predicate_depth, native_predicate_depth + 1):
+    try:
+        asyncio.run(
+            raised_session.query(raised_person)
+            .where(nested_predicate(raised_person, nesting))
+            .rows(limit=1)
+        )
+    except MatchRequestError as error:
+        expected = (
+            ("unsupported_capability", "unsupported_required_capability")
+            if nesting == native_predicate_depth
+            else ("resource_limit", "predicate_limit_exceeded")
+        )
+        assert (error.category, error.code) == expected, (nesting, error.category, error.code)
+    else:
+        raise AssertionError("fixture comparison capability is intentionally absent")
+    assert wide_remote_requests == []
+raised_session.close()
 wide_remote_session.close()
 assert generated_failure_reply is not None
 try:
     getattr(captured_failure_pending[0], "decode_reply")(generated_failure_reply)
 except MatchRequestError as error:
-    assert error.code == "query_remote_v2_reply_replayed", error.code
+    assert error.code == "query_remote_reply_replayed", error.code
 else:
     raise AssertionError("authenticated remote application failure did not consume its claim")
 remote_diagnostic_observation["claim_consumed"] = True
@@ -1286,7 +1361,7 @@ async def _cancelled_after_remote_exchange() -> tuple[int, bool, str, str]:
                 "path": [],
                 "request": _remote_fingerprint(
                     b"typebridge.query.remote-request",
-                    b"typebridge.query-remote-request/v2",
+                    b"typebridge.query-remote-request/v3",
                     request,
                 ),
             },
@@ -1403,7 +1478,7 @@ async def _remote_example_outcome(legacy: bool) -> tuple[dict[str, object], str,
         # Drop the per-request nonce and clock readings; the rest must match.
         assert 0 < decoded["limits"]["deadline_ms"] <= 30_000, decoded["limits"]
         for clock in ("nonce", "prepared_at_unix_ms", "expires_at_unix_ms"):
-            del decoded[clock]
+            decoded.pop(clock, None)
         del decoded["limits"]["deadline_ms"]
         sent.append(decoded)
         return b"{}"

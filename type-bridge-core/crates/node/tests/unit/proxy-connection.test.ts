@@ -149,7 +149,7 @@ test("a proxy connection without answer limits runs at the proxy defaults", asyn
       native.DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
       native.DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
       native.DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
-      native.DEFAULT_PROXY_QUERY_STATEMENTS,
+      undefined,
     ],
   );
   assert.notEqual(limits.items, new QueryExecutionResourceLimits().items);

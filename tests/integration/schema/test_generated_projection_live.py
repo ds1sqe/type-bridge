@@ -917,12 +917,12 @@ def _sdk_queries_resource_limits(
     zero = generated.QueryExecutionResourceLimits(**dict.fromkeys(defaults, 0))
     plus_one_kept_all = (
         all(getattr(plus, name) == value for name, value in raisable.items())
-        and plus.statements == defaults["statements"]
+        and plus.statements is None
     )
     zero_tightening_all = all(getattr(zero, name) == 0 for name in defaults)
     # Past a supported maximum a value is refused by name, never clamped.
     past_maximum_refused = True
-    for arguments in ({"statements": 4}, {"timeout_milliseconds": 86_400_001}):
+    for arguments in ({"statements": 4097}, {"timeout_milliseconds": 86_400_001}):
         try:
             generated.QueryExecutionResourceLimits(**arguments)
         except ValueError as error:
@@ -2766,7 +2766,7 @@ def test_sdk_serialization_live(
     try:
         _wait_for_port(remote_port, server, timeout=300)
         with urllib_request.urlopen(
-            f"http://127.0.0.1:{remote_port}/v2/capabilities", timeout=30
+            f"http://127.0.0.1:{remote_port}/v3/capabilities", timeout=30
         ) as response:
             advertisement = response.read()
 
@@ -2775,7 +2775,7 @@ def test_sdk_serialization_live(
 
             def post() -> bytes:
                 http_request = urllib_request.Request(
-                    f"http://127.0.0.1:{remote_port}/v2/query",
+                    f"http://127.0.0.1:{remote_port}/v3/staged",
                     data=request,
                     headers={"content-type": "application/json"},
                     method="POST",
@@ -3567,9 +3567,13 @@ def test_generated_projection_round_trips_live_models(
         ),
     )
     for scalar_name, predicate in scalar_predicates:
-        assert query_session.query(person_var).where(predicate).count_by(person_var) == 1, (
-            scalar_name
-        )
+        try:
+            count = query_session.query(person_var).where(predicate).count_by(person_var)
+        except Exception as error:
+            raise AssertionError(
+                (scalar_name, getattr(error, "code", None), getattr(error, "details", None))
+            ) from error
+        assert count == 1, scalar_name
     scalar_domain_person = (
         query_session.query(person_var)
         .where(*(predicate for _, predicate in scalar_predicates))
@@ -4347,7 +4351,7 @@ def test_generated_projection_round_trips_live_models(
     try:
         _wait_for_port(remote_port, server, timeout=300)
         with urllib_request.urlopen(
-            f"http://127.0.0.1:{remote_port}/v2/capabilities",
+            f"http://127.0.0.1:{remote_port}/v3/capabilities",
             timeout=30,
         ) as response:
             advertisement = response.read()
@@ -4359,7 +4363,7 @@ def test_generated_projection_round_trips_live_models(
 
             def post() -> bytes:
                 http_request = urllib_request.Request(
-                    f"http://127.0.0.1:{remote_port}/v2/query",
+                    f"http://127.0.0.1:{remote_port}/v3/staged",
                     data=request,
                     headers={"content-type": "application/json"},
                     method="POST",

@@ -152,6 +152,8 @@ impl HydratedRole {
 /// Complete typed hydration evidence for one selected or matched thing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HydratedThing {
+    #[serde(skip)]
+    deleted: bool,
     concept_id: ConceptId,
     declared_descriptor: DescriptorId,
     concrete_descriptor: DescriptorId,
@@ -172,6 +174,7 @@ impl HydratedThing {
         roles: Vec<HydratedRole>,
     ) -> Self {
         Self {
+            deleted: false,
             concept_id,
             declared_descriptor,
             concrete_descriptor,
@@ -179,6 +182,15 @@ impl HydratedThing {
             attributes,
             roles,
         }
+    }
+
+    /// Whether this root is a snapshot captured before deletion.
+    pub const fn is_deleted(&self) -> bool {
+        self.deleted
+    }
+
+    pub(crate) fn set_deleted(&mut self, deleted: bool) {
+        self.deleted = deleted;
     }
 
     /// Return the TypeDB concept identity used for result distinctness.

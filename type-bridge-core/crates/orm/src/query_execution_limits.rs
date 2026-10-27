@@ -53,8 +53,7 @@ pub const DEFAULT_PROXY_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].proxy_def
 
 /// Longest execution duration a policy may ask for, in milliseconds.
 pub const MAX_QUERY_TIMEOUT_MILLISECONDS: u64 = ANSWER_LIMIT_FIELDS[0].maximum;
-/// Most provider statements a terminal can need. No terminal issues more,
-/// so a larger value would be accepted and ignored.
+/// Largest explicit provider-statement budget admitted by the common policy.
 pub const MAX_QUERY_STATEMENTS: u32 = ANSWER_LIMIT_FIELDS[7].maximum as u32;
 
 /// The 2.2 name of [`DEFAULT_PROXY_QUERY_ITEMS`], with the same value.
@@ -302,8 +301,10 @@ pub struct QueryExecutionResourceLimits {
     pub collection_members: u64,
     /// Role-player reference ceiling.
     pub role_players: u64,
-    /// Provider statement ceiling.
-    pub statements: u32,
+    /// Explicit provider-statement ceiling; `None` resolves at execution.
+    /// Typed adapters allow their complete static stack, with a minimum of
+    /// three; user-authored plans default to three.
+    pub statements: Option<u32>,
 }
 
 impl QueryExecutionResourceLimits {
@@ -334,7 +335,7 @@ impl QueryExecutionResourceLimits {
                 attribute_values: DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES,
                 collection_members: DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
                 role_players: DEFAULT_DIRECT_QUERY_ROLE_PLAYERS,
-                statements: DEFAULT_DIRECT_QUERY_STATEMENTS,
+                statements: None,
             },
             AnswerTransport::Proxy => Self {
                 timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
@@ -344,7 +345,7 @@ impl QueryExecutionResourceLimits {
                 attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES,
                 collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
                 role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
-                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+                statements: None,
             },
         }
     }
@@ -379,7 +380,7 @@ impl QueryExecutionResourceLimits {
                 "attribute_values" => policy.attribute_values = value,
                 "collection_members" => policy.collection_members = value,
                 "role_players" => policy.role_players = value,
-                _ => policy.statements = u32::try_from(value).unwrap_or(u32::MAX),
+                _ => policy.statements = Some(u32::try_from(value).unwrap_or(u32::MAX)),
             }
         }
         Ok(policy)
@@ -394,7 +395,12 @@ impl QueryExecutionResourceLimits {
             .iter()
             .filter_map(|field| {
                 let value = self.get(field.name)?;
-                (value != field.proxy_default).then(|| (field.name.to_owned(), value))
+                (if field.name == "statements" {
+                    self.statements.is_some()
+                } else {
+                    value != field.proxy_default
+                })
+                .then(|| (field.name.to_owned(), value))
             })
             .collect()
     }
@@ -427,7 +433,7 @@ impl QueryExecutionResourceLimits {
                 DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS,
             ),
             role_players: min_u64(role_players, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS),
-            statements: min_u32(statements, DEFAULT_DIRECT_QUERY_STATEMENTS),
+            statements: Some(min_u32(statements, DEFAULT_DIRECT_QUERY_STATEMENTS)),
         }
     }
 
@@ -443,10 +449,12 @@ impl QueryExecutionResourceLimits {
                 maximum: MAX_QUERY_TIMEOUT_MILLISECONDS,
             });
         }
-        if self.statements > MAX_QUERY_STATEMENTS {
+        if let Some(statements) = self.statements
+            && statements > MAX_QUERY_STATEMENTS
+        {
             return Err(QueryExecutionLimitOutOfRange {
                 limit: "statements",
-                value: self.statements as u64,
+                value: statements as u64,
                 maximum: MAX_QUERY_STATEMENTS as u64,
             });
         }
@@ -467,7 +475,7 @@ impl QueryExecutionResourceLimits {
             attribute_values: limits.max_attribute_values,
             collection_members: limits.max_collection_members,
             role_players: limits.max_role_players,
-            statements: limits.max_statements,
+            statements: Some(limits.max_statements),
         }
     }
 
@@ -486,7 +494,13 @@ impl QueryExecutionResourceLimits {
             .iter()
             .find_map(|(refusal, name)| (*refusal == code).then_some(*name))?;
         let value = self.get(name)?;
-        let source = if Self::default_for(transport).get(name) == Some(value) {
+        let source = if name == "statements" {
+            if self.statements.is_some() {
+                LIMIT_SOURCE_CONFIGURED
+            } else {
+                LIMIT_SOURCE_DEFAULT
+            }
+        } else if Self::default_for(transport).get(name) == Some(value) {
             LIMIT_SOURCE_DEFAULT
         } else {
             LIMIT_SOURCE_CONFIGURED
@@ -505,13 +519,31 @@ impl QueryExecutionResourceLimits {
             "attribute_values" => self.attribute_values,
             "collection_members" => self.collection_members,
             "role_players" => self.role_players,
-            "statements" => u64::from(self.statements),
+            "statements" => u64::from(self.statement_limit()),
             _ => return None,
         })
     }
 
     /// Bound a struct-literal policy by the supported maxima.
     ///
+    /// Resolve the default for a user-authored plan execution.
+    #[must_use]
+    pub const fn statement_limit(self) -> u32 {
+        match self.statements {
+            Some(value) => value,
+            None => DEFAULT_DIRECT_QUERY_STATEMENTS,
+        }
+    }
+
+    /// Resolve an unset budget for one complete static typed-read stack.
+    pub(crate) fn for_adapter_statements(mut self, need: usize) -> Self {
+        if self.statements.is_none() {
+            self.statements =
+                Some(DEFAULT_DIRECT_QUERY_STATEMENTS.max(u32::try_from(need).unwrap_or(u32::MAX)));
+        }
+        self
+    }
+
     /// Internal stages call this so no arithmetic sees an unsupported
     /// value; a public entry point validates first and refuses instead.
     #[doc(hidden)]
@@ -522,7 +554,10 @@ impl QueryExecutionResourceLimits {
                 self.timeout_milliseconds,
                 MAX_QUERY_TIMEOUT_MILLISECONDS,
             ),
-            statements: min_u32(self.statements, MAX_QUERY_STATEMENTS),
+            statements: match self.statements {
+                Some(value) => Some(min_u32(value, MAX_QUERY_STATEMENTS)),
+                None => None,
+            },
             ..self
         }
     }
@@ -544,7 +579,13 @@ impl QueryExecutionResourceLimits {
             attribute_values: min_u64(this.attribute_values, ceiling.attribute_values),
             collection_members: min_u64(this.collection_members, ceiling.collection_members),
             role_players: min_u64(this.role_players, ceiling.role_players),
-            statements: min_u32(this.statements, ceiling.statements),
+            statements: match (this.statements, ceiling.statements) {
+                (Some(left), Some(right)) => Some(min_u32(left, right)),
+                (left, right) => match left {
+                    Some(_) => left,
+                    None => right,
+                },
+            },
         }
     }
 
@@ -593,7 +634,7 @@ impl QueryExecutionResourceLimits {
             max_graph_nodes: this.graph_nodes,
             max_attribute_values: this.attribute_values,
             max_role_players: this.role_players,
-            max_statements: this.statements,
+            max_statements: this.statement_limit(),
         }
     }
 }
@@ -623,6 +664,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_unset_statement_budget_preserves_adapter_need_and_explicit_limits() {
+        let unset = QueryExecutionResourceLimits::default();
+        assert_eq!(unset.statements, None);
+        assert!(!unset.overrides().contains_key("statements"));
+        assert_eq!(
+            QueryExecutionResourceLimits {
+                statements: Some(3),
+                ..unset
+            }
+            .overrides()
+            .get("statements"),
+            Some(&3)
+        );
+        assert_eq!(unset.statement_limit(), 3);
+        assert_eq!(unset.for_adapter_statements(4).statement_limit(), 4);
+        let explicit = QueryExecutionResourceLimits {
+            statements: Some(3),
+            ..unset
+        };
+        assert_eq!(explicit.for_adapter_statements(4).statement_limit(), 3);
+        assert_eq!(unset.constrained_by(explicit).statements, Some(3));
+        assert_eq!(explicit.constrained_by(unset).statements, Some(3));
+        assert_eq!(unset.constrained_by(unset).statements, None);
+        assert_eq!(
+            explicit.refusal_details(AnswerTransport::Direct, "statement_count_limit"),
+            Some(("statements", 3, LIMIT_SOURCE_CONFIGURED))
+        );
+        assert_eq!(
+            unset.refusal_details(AnswerTransport::Direct, "statement_count_limit"),
+            Some(("statements", 3, LIMIT_SOURCE_DEFAULT))
+        );
+    }
+
+    #[test]
     fn common_policy_clamps_and_derives_every_direct_and_projected_dimension() {
         let limits = QueryExecutionResourceLimits::tightened(17, 2, 19, 3, 5, 7, 11, 1);
         let projected = limits.projected();
@@ -632,7 +707,7 @@ mod tests {
         assert_eq!(projected.attribute_values(), 5);
         assert_eq!(projected.bytes(), 19);
         assert_eq!(limits.role_players, 11);
-        assert_eq!(limits.statements, 1);
+        assert_eq!(limits.statements, Some(1));
         assert_eq!(
             limits
                 .direct(AnswerCancellation::default())
@@ -666,7 +741,13 @@ mod tests {
             DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
             DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
-        assert_eq!(plus_one, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            plus_one,
+            QueryExecutionResourceLimits {
+                statements: Some(3),
+                ..Default::default()
+            }
+        );
 
         let literal = QueryExecutionResourceLimits {
             timeout_milliseconds: u64::MAX,
@@ -676,7 +757,7 @@ mod tests {
             attribute_values: u64::MAX,
             collection_members: u64::MAX,
             role_players: u64::MAX,
-            statements: u32::MAX,
+            statements: Some(u32::MAX),
         };
         // A configured policy keeps what it asked for. Only the timeout and
         // the statement count have a supported maximum: internal stages
@@ -686,7 +767,7 @@ mod tests {
             bounded,
             QueryExecutionResourceLimits {
                 timeout_milliseconds: MAX_QUERY_TIMEOUT_MILLISECONDS,
-                statements: MAX_QUERY_STATEMENTS,
+                statements: Some(MAX_QUERY_STATEMENTS),
                 ..literal
             }
         );
@@ -700,7 +781,7 @@ mod tests {
         );
         assert_eq!(
             QueryExecutionResourceLimits {
-                statements: MAX_QUERY_STATEMENTS + 1,
+                statements: Some(MAX_QUERY_STATEMENTS + 1),
                 ..QueryExecutionResourceLimits::default()
             }
             .validate()
@@ -766,7 +847,7 @@ mod tests {
                 attribute_values: 4_000_000,
                 collection_members: 1_000_000,
                 role_players: 1_000_000,
-                statements: 3,
+                statements: None,
             },
             "a direct session keeps the 2.2 in-process defaults"
         );
@@ -783,7 +864,7 @@ mod tests {
                 attribute_values: 65_536,
                 collection_members: 65_536,
                 role_players: 65_536,
-                statements: 3,
+                statements: None,
             },
             "a proxy connection defaults to the wire ceilings"
         );
@@ -850,7 +931,7 @@ mod tests {
         assert!(matches!(
             QueryExecutionResourceLimits::from_overrides(
                 AnswerTransport::Proxy,
-                [("statements", 4)]
+                [("statements", u64::from(MAX_QUERY_STATEMENTS) + 1)]
             ),
             Err(QueryExecutionLimitsError::OutOfRange(_))
         ));

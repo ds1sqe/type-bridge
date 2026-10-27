@@ -1250,11 +1250,20 @@ fn advertised_answer_limits_are_omitted_at_default_and_canonical_otherwise() {
         "a request cannot bind one advertisement and be admitted under another's ceilings"
     );
 
+    let explicit = advertisement()
+        .with_answer_limits(BTreeMap::from([("statements".to_owned(), 3)]))
+        .unwrap();
+    assert_eq!(
+        RemoteCapabilities::decode(&explicit.encode().unwrap()).unwrap(),
+        explicit
+    );
+    assert_eq!(explicit.answer_limits().get("statements"), Some(&3));
+
     // An unknown name, a redundant default, and a value past its maximum.
     for refused in [
         ("made_up", 1_u64),
         ("items", 65_536),
-        ("statements", 4),
+        ("statements", 4097),
         ("timeout_milliseconds", 24 * 60 * 60 * 1000 + 1),
     ] {
         assert_eq!(

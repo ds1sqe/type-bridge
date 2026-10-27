@@ -5007,13 +5007,13 @@ impl ControlledCrudLedger {
 
     fn charge_statement(&mut self, request_bytes: u64) -> Result<(), SdkExecutionDiagnostic> {
         let statements = self.statements.saturating_add(1);
-        if statements > self.limits.statements {
+        if statements > self.limits.statement_limit() {
             return Err(crud_resource_limit(
                 "projected_crud_statement_limit",
                 "Controlled CRUD exceeds the provider statement ceiling",
                 "statements",
                 u64::from(statements),
-                u64::from(self.limits.statements),
+                u64::from(self.limits.statement_limit()),
             ));
         }
         self.charge_bytes(

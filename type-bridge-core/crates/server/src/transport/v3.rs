@@ -116,6 +116,10 @@ impl StagedExecutor {
         // The V2 advertisement's limits were validated when it was built, so
         // re-stating them under a wider capability set cannot fail.
         let advertisement = staged_advertisement(&query.advertisement)
+            .and_then(|advertisement| match query.staged_query_limits {
+                Some(limits) => advertisement.with_query_limits(limits),
+                None => Ok(advertisement),
+            })
             .expect("validated V2 advertisement re-states under the staged capabilities");
         let fingerprint = advertisement
             .fingerprint()
@@ -193,8 +197,13 @@ pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilitie
     ] {
         capabilities.insert(CapabilityId::new(capability)?);
     }
+    let mut limits = v2.query_limits();
+    if limits.structural.selected_slots == type_bridge_contract::limits::MAX_SELECTED_SLOTS {
+        limits.structural.selected_slots =
+            type_bridge_contract::limits::MAX_BINDINGS.min(limits.structural.bindings);
+    }
     RemoteCapabilities::new(capabilities, v2.executor().clone(), v2.reply_key())
-        .with_query_limits(v2.query_limits())?
+        .with_query_limits(limits)?
         .with_answer_limits(v2.answer_limits().clone())
 }
 
@@ -329,7 +338,7 @@ async fn execute(
             &body,
             &query.declared,
             &advertisement,
-            query.advertisement.query_limits(),
+            advertisement.query_limits(),
         )
     });
     let staged = match await_before_deadline(deadline, decode).await {

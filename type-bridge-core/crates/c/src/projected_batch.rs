@@ -1685,7 +1685,7 @@ plays:
             attribute_values: limits.attribute_values,
             collection_members: limits.collection_members,
             role_players: limits.role_players,
-            statements: limits.statements,
+            statements: limits.statement_limit(),
             reserved0: 0,
             reserved: [0; 4],
         }
@@ -2400,7 +2400,7 @@ plays:
         let (mut batch, _) = finish_builder(builder);
         let ceiling = QueryExecutionResourceLimits {
             items: 0,
-            statements: 0,
+            statements: Some(0),
             timeout_milliseconds: 0,
             ..QueryExecutionResourceLimits::default()
         };
@@ -2588,7 +2588,7 @@ plays:
         }
 
         let tight = QueryExecutionResourceLimits {
-            statements: 1,
+            statements: Some(1),
             ..QueryExecutionResourceLimits::default()
         };
         for (target_ceiling, call_limits) in

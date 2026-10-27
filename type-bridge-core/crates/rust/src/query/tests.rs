@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{future::Future, pin::Pin};
@@ -539,74 +540,70 @@ impl crate::remote::ProxyExchange for RemoteOriginTransport {
         &'a self,
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = crate::Result<Vec<u8>>> + Send + 'a>> {
-        use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
-        use type_bridge_contract::query_plan::CompatibilityValueV2;
-        use type_bridge_contract::query_remote_v2::{
-            HydratedRowV2, HydrationAttributeEvidenceV2, HydrationGraphV2, HydrationNodeIdV2,
-            HydrationNodeKindV2, HydrationNodeV2, HydrationReferenceV2, HydrationSlotV2,
-            RemoteOutcomeV2, RemoteQueryRequestV2, RemoteQueryResponseV2,
+        use type_bridge_contract::query_remote::RemoteFieldValue;
+        use type_bridge_contract::query_remote_v3::{
+            StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
         };
         use type_bridge_contract::value::{CanonicalString, CanonicalValue};
-
+        use type_bridge_orm::query_v2_prepared::QueryAuthority;
         self.exchanges.fetch_add(1, Ordering::SeqCst);
-        let request = RemoteQueryRequestV2::decode(request).unwrap();
-        request
-            .validate_advertisement(&self.advertisement_contract)
-            .unwrap();
-        let plan = request.plan().unwrap();
-        let record = TypeId::new(TypeKind::Entity, "record").unwrap();
-        let node = HydrationNodeIdV2::new(0);
-        let graph = HydrationGraphV2::new(vec![HydrationNodeV2::new(
-            node,
-            "0x01".into(),
-            record.clone(),
-            HydrationNodeKindV2::Entity,
-            vec![
-                HydrationAttributeEvidenceV2::new(
-                    AttributeId::new("name").unwrap(),
-                    vec![CompatibilityValueV2::canonical(CanonicalValue::String(
-                        CanonicalString::new("Alice").unwrap(),
-                    ))],
-                ),
-                HydrationAttributeEvidenceV2::new(
-                    AttributeId::new("tally").unwrap(),
-                    vec![CompatibilityValueV2::canonical(CanonicalValue::Long(1))],
-                ),
-            ],
-            vec![],
-        )])
+        let authority = QueryAuthority::from_declared_bytes(
+            successor_package()
+                .declared_schema_json()
+                .unwrap()
+                .as_bytes(),
+            "query-origin-test",
+            "typedb-3.12.1/v1",
+        )
         .unwrap();
-        let outcome = RemoteOutcomeV2::HydratedRows {
-            graph,
-            rows: vec![HydratedRowV2::new(vec![HydrationSlotV2::Singular {
-                value: HydrationReferenceV2::new(record, node),
-            }])],
-        };
-        let response = RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().unwrap(),
-            request.result_kind(),
-            outcome,
+        let request =
+            StagedRequestV3::decode(request, authority.declared(), &self.advertisement_contract)
+                .unwrap();
+        assert_eq!(request.plans().len(), 1);
+        let scalar = |value| RemoteFieldValue::Scalar { value };
+        let string = |value| scalar(CanonicalValue::String(CanonicalString::new(value).unwrap()));
+        let document = BTreeMap::from([
+            ("_iid".into(), string("0x01")),
+            ("_type".into(), string("record")),
+            (
+                "attributes".into(),
+                RemoteFieldValue::Document {
+                    fields: BTreeMap::from([
+                        ("name".into(), string("Alice")),
+                        ("tally".into(), scalar(CanonicalValue::Long(1))),
+                    ]),
+                },
+            ),
+        ]);
+        let response = StagedReplyV3::new(
+            &request,
+            StagedOutcomeV3::Committed,
+            vec![StagedAnswerV3::Documents {
+                documents: vec![document],
+            }],
         )
         .unwrap()
-        .encode_signed(
-            &self.advertisement_contract.fingerprint().unwrap(),
-            &self.signer,
-        )
+        .encode_signed(&request, &self.advertisement_contract, &self.signer)
         .unwrap();
         Box::pin(async move { Ok(response) })
     }
 }
 
 fn remote_origin_transport() -> (RemoteOriginTransport, Arc<AtomicUsize>) {
-    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
     use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
     use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
 
     let signer = RemoteReplySigningKey::from_secret_bytes([0x52; 32]);
-    let mut capabilities = query_plan_v2_capability_vocabulary();
+    let mut capabilities = query_plan_v3_capability_vocabulary();
+    for capability in [
+        type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+        type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+    ] {
+        capabilities
+            .insert(type_bridge_contract::capability::CapabilityId::new(capability).unwrap());
+    }
     for capability in query_remote_v2_required_capabilities(true) {
         capabilities.insert(capability);
     }
@@ -687,84 +684,78 @@ impl TransactionOps for SuccessorTransaction {
             .lock()
             .unwrap()
             .push(typeql.to_owned());
-        let statement = self.statement;
         self.statement += 1;
-        let answer = self.answer;
-        Box::pin(async move {
-            match (statement, answer) {
-                (0, SuccessorAnswer::Record) => Ok(QueryResult::Rows(vec![serde_json::json!({
-                    "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                    "satisfied_role_edges": [],
-                })])),
-                (1, SuccessorAnswer::Record) => {
-                    Ok(QueryResult::Documents(vec![record_hydration(0, "0x01")]))
-                }
-                (0, SuccessorAnswer::RecordGrouped) => {
-                    Ok(QueryResult::Rows(vec![serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                        "satisfied_role_edges": [],
-                    })]))
-                }
-                (1, SuccessorAnswer::RecordGrouped) => {
-                    Ok(QueryResult::Documents(vec![serde_json::json!({
-                        "bindings": [
-                            record_hydration(0, "0x01"),
-                            record_hydration_with_name(1, "0x02", "Bob"),
-                        ],
-                        "satisfied_role_edges": [],
-                    })]))
-                }
-                (0, SuccessorAnswer::RecordMany) => Ok(QueryResult::Rows(vec![
-                    serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                        "satisfied_role_edges": [],
-                    }),
-                    serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x02"}],
-                        "satisfied_role_edges": [],
-                    }),
-                ])),
-                (1, SuccessorAnswer::RecordMany) => Ok(QueryResult::Documents(vec![
+        let captures = |pattern: &str| regex::Regex::new(pattern).unwrap();
+        let tuples = match self.answer {
+            SuccessorAnswer::Record | SuccessorAnswer::RecordPair => vec![vec![
+                record_hydration(0, "0x01"),
+                record_hydration(1, "0x01"),
+            ]],
+            SuccessorAnswer::RecordMany => vec![
+                vec![record_hydration(0, "0x01")],
+                vec![record_hydration_with_name(0, "0x02", "Bob")],
+            ],
+            SuccessorAnswer::RecordGrouped => vec![vec![
+                record_hydration(0, "0x01"),
+                record_hydration_with_name(1, "0x02", "Bob"),
+            ]],
+            SuccessorAnswer::RecordGraphPage => vec![
+                vec![
                     record_hydration(0, "0x01"),
-                    record_hydration_with_name(0, "0x02", "Bob"),
-                ])),
-                // `name` is a key, so the only pair with equal names is one
-                // record matched by both bindings.
-                (0, SuccessorAnswer::RecordPair) => {
-                    Ok(QueryResult::Rows(vec![serde_json::json!({
-                        "bindings": [
-                            {"binding": 0, "concept_id": "0x01"},
-                            {"binding": 1, "concept_id": "0x01"},
-                        ],
-                        "satisfied_role_edges": [],
-                    })]))
-                }
-                (1, SuccessorAnswer::RecordPair) => Ok(QueryResult::Documents(vec![
+                    record_hydration_with_name(1, "0x02", "Bob"),
+                ],
+                vec![
                     record_hydration(0, "0x01"),
-                    record_hydration(1, "0x01"),
-                ])),
-                (0, SuccessorAnswer::RecordGraphPage) => {
-                    Ok(QueryResult::Rows(vec![serde_json::json!({
-                        "bindings": [{"binding": 0, "concept_id": "0x01"}],
-                        "satisfied_role_edges": [],
-                    })]))
+                    record_hydration_with_name(1, "0x03", "Carol"),
+                ],
+            ],
+            SuccessorAnswer::Route => vec![vec![route_hydration(0, "0x10")]],
+        };
+        let result = if let Some(fetch) = captures(r#""_iid": iid\(\$b(\d+)\)"#).captures(typeql) {
+            let binding: usize = fetch[1].parse().unwrap();
+            let mut documents = BTreeMap::new();
+            for tuple in &tuples {
+                let node = &tuple[binding];
+                let mut document = native_origin_document(node);
+                for role in captures(r"([a-z]+): \$PlanFetchRole(\d+)").captures_iter(typeql) {
+                    let player = node["roles"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|item| item["role"] == role[1])
+                        .unwrap()["players"][0]
+                        .clone();
+                    let index = &role[2];
+                    document[format!("_role_{index}_iid")] = player["concept_id"].clone();
+                    document[format!("_role_{index}_type")] = player["concrete_type"].clone();
+                    document[format!("_role_{index}_attributes")] =
+                        native_origin_document(&player)["attributes"].clone();
                 }
-                (1, SuccessorAnswer::RecordGraphPage) => Ok(QueryResult::Documents(vec![
-                    rematched_records("0x01", "0x02"),
-                    rematched_records("0x01", "0x03"),
-                ])),
-                (0, SuccessorAnswer::Route) => Ok(QueryResult::Rows(vec![serde_json::json!({
-                    "bindings": [{"binding": 0, "concept_id": "0x10"}],
-                    "satisfied_role_edges": [],
-                })])),
-                (1, SuccessorAnswer::Route) => {
-                    Ok(QueryResult::Documents(vec![route_hydration(0, "0x10")]))
-                }
-                _ => Err(OrmError::QueryExecution(format!(
-                    "unexpected successor query statement {statement}"
-                ))),
+                documents.insert(node["concept_id"].as_str().unwrap().to_owned(), document);
             }
-        })
+            QueryResult::Documents(documents.into_values().collect())
+        } else if let Some(reduce) = captures(r"reduce \$(b\d+) = count").captures(typeql) {
+            let mut row = serde_json::json!({&reduce[1]:{"category":"Value","value_type":"integer","value":1}});
+            if typeql.contains("groupby $b1") {
+                row["b1"] = serde_json::json!({"category":"Entity","label":"record","iid":"0x02"});
+            }
+            QueryResult::Rows(vec![row])
+        } else {
+            let selected = captures(r"select ([^;]+);")
+                .captures_iter(typeql)
+                .last()
+                .unwrap()[1]
+                .to_owned();
+            let columns = captures(r"\$b(\d+)")
+                .captures_iter(&selected)
+                .map(|capture| capture[1].parse::<usize>().unwrap())
+                .collect::<Vec<_>>();
+            QueryResult::Rows(tuples.iter().map(|tuple| serde_json::Value::Object(columns.iter().map(|column| {
+                let node=&tuple[*column];
+                (format!("b{column}"),serde_json::json!({"category":"Entity","label":node["concrete_type"],"iid":node["concept_id"]}))
+            }).collect())).collect())
+        };
+        Box::pin(async move { Ok(result) })
     }
 
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -799,15 +790,19 @@ fn record_hydration_with_name(binding: u16, concept_id: &str, name: &str) -> ser
     })
 }
 
-fn rematched_records(root: &str, member: &str) -> serde_json::Value {
-    let member_name = if member == "0x02" { "Bob" } else { "Carol" };
-    serde_json::json!({
-        "bindings": [
-            record_hydration(0, root),
-            record_hydration_with_name(1, member, member_name),
-        ],
-        "satisfied_role_edges": [],
-    })
+fn native_origin_document(node: &serde_json::Value) -> serde_json::Value {
+    let attributes = node["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| {
+            (
+                field["field"].as_str().unwrap().to_owned(),
+                field["values"][0].clone(),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({"_iid":node["concept_id"],"_type":node["concrete_type"],"attributes":attributes})
 }
 
 fn route_hydration(binding: u16, concept_id: &str) -> serde_json::Value {
@@ -1316,7 +1311,12 @@ async fn successor_cancellation_during_generated_materialization_publishes_no_pa
     let record = session.exact::<SuccessorSlowRecord>().unwrap();
     let query = session.query(record).unwrap();
     let canceller = std::thread::spawn(move || {
+        let started = std::time::Instant::now();
         while SUCCESSOR_SLOW_MATERIALIZATION_CALLS.load(Ordering::SeqCst) == 0 {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "materialization never started"
+            );
             std::thread::yield_now();
         }
         cancellation.cancel();

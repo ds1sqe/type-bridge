@@ -1207,7 +1207,7 @@
               "path": "type-bridge-core/crates/rust/src/remote.rs",
               "anchors": [
                 "generated_remote_query_preserves_complete_authenticated_structured_diagnostic",
-                "RemoteQueryFailureV2::bound(",
+                "StagedOutcomeV3::Failed {",
                 "error.diagnostic_path()",
                 "crate::ErrorDetail::QueryIdentityList",
                 "assert_eq!(exchanges.lock().unwrap().len(), 1)"

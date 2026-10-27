@@ -35,8 +35,8 @@ pub use deprecated::{
 /// authenticate requests themselves. [`ProxyConnectionPolicy::new`] uses the
 /// built-in HTTP transport instead.
 ///
-/// Implementations return the exact `/v2/capabilities` bytes and perform
-/// exactly one `/v2/query` exchange per terminal.
+/// Implementations return the exact `/v3/capabilities` bytes and perform
+/// exactly one `/v3/staged` exchange per terminal.
 pub trait ProxyExchange: Send + Sync + 'static {
     /// Fetch the executor's exact signed capability advertisement.
     fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>>;
@@ -48,28 +48,19 @@ pub trait ProxyExchange: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
 
     /// Fetch the executor's staged (`GET /v3/capabilities`) advertisement.
-    /// The default refuses: an exchange that predates staged transactions
-    /// cannot open one.
+    /// Defaults to the same advertisement used by typed terminals.
     fn staged_capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
-        Box::pin(async { Err(staged_unsupported()) })
+        self.capabilities()
     }
 
     /// Exchange one exact staged request (`POST /v3/staged`) for its exact
-    /// signed reply. The default refuses.
+    /// signed reply. Defaults to the typed terminal exchange.
     fn exchange_staged<'a>(
         &'a self,
-        _request: &'a [u8],
+        request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
-        Box::pin(async { Err(staged_unsupported()) })
+        self.exchange(request)
     }
-}
-
-fn staged_unsupported() -> Error {
-    connect_error(
-        type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
-            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect,
-        ),
-    )
 }
 
 enum ProxyRoute {
@@ -217,7 +208,7 @@ impl ProxyDatabase<Unbound> {
         let advertisement = match (options.advertisement.take(), &options.route) {
             (Some(pinned), _) => pinned,
             (None, ProxyRoute::Http(http)) => http
-                .capabilities(deadline, &cancellation)
+                .staged_capabilities(deadline, &cancellation)
                 .await
                 .map_err(connect_error)?,
             (None, ProxyRoute::Exchange(exchange)) => {
@@ -544,6 +535,9 @@ fn remote_diagnostic(error: type_bridge_contract::diagnostic::Diagnostic) -> Err
 
 fn remote_model_input_error(error: RemoteModelQueryV2Error) -> Error {
     match error {
+        RemoteModelQueryV2Error::Execution(error) => {
+            Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
+        }
         RemoteModelQueryV2Error::Diagnostic(error) => Error::from_sdk_execution(
             lower_remote_query_diagnostic(error),
             crate::ModelValidationPhase::Input,
@@ -556,6 +550,9 @@ fn remote_model_input_error(error: RemoteModelQueryV2Error) -> Error {
 
 fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
     match error {
+        RemoteModelQueryV2Error::Execution(error) => {
+            Error::from_sdk_execution(error, crate::ModelValidationPhase::Hydration)
+        }
         RemoteModelQueryV2Error::Diagnostic(error) => Error::from_sdk_execution(
             lower_remote_query_diagnostic(error),
             crate::ModelValidationPhase::Hydration,
@@ -601,14 +598,17 @@ mod tests {
     };
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::managed_scope::ManagedScopeId;
-    use type_bridge_contract::migration_assertion::BindingId;
     use type_bridge_contract::projection::{BindingTarget, ProjectionConfig};
-    use type_bridge_contract::query_plan::{ModelQueryV2, query_plan_v2_capability_vocabulary};
+    use type_bridge_contract::query_plan::v3::{
+        Operation, Stage, query_plan_v3_capability_vocabulary,
+    };
     use type_bridge_contract::query_remote::RemoteExecutorBinding;
     use type_bridge_contract::query_remote_v2::{
-        CAP_QUERY_REMOTE_STATEMENT_LIMIT, HydrationGraphV2, RemoteOutcomeV2, RemoteQueryFailureV2,
-        RemoteQueryRequestV2, RemoteQueryResponseV2, RemoteReducedValueV2, RemoteReductionRowV2,
-        RemoteResultKindV2, query_remote_v2_required_capabilities,
+        CAP_QUERY_REMOTE_STATEMENT_LIMIT, query_remote_v2_required_capabilities,
+    };
+    use type_bridge_contract::query_remote_v3::{
+        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
+        StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
     };
     use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
     use type_bridge_orm::OrmError;
@@ -1053,6 +1053,15 @@ mod tests {
         assert!(error.to_string().contains("no embedded managed scope"));
     }
 
+    fn remote_fixture_authority() -> QueryAuthority {
+        QueryAuthority::from_declared_bytes(
+            package().declared_schema_json().unwrap().as_bytes(),
+            "rust-client-test",
+            "typedb-3.12.1/v1",
+        )
+        .unwrap()
+    }
+
     struct Transport {
         advertisement_contract: RemoteCapabilities,
         advertisement: Vec<u8>,
@@ -1075,90 +1084,44 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
             self.exchanges.lock().unwrap().push(request.to_vec());
             let response = (|| {
-                let request = RemoteQueryRequestV2::decode(request).map_err(remote_diagnostic)?;
-                request
-                    .validate_advertisement(&self.advertisement_contract)
-                    .map_err(remote_diagnostic)?;
-                if let Some(diagnostic) = &self.failure {
-                    return RemoteQueryFailureV2::bound(
-                        request.nonce(),
-                        &request.fingerprint().map_err(remote_diagnostic)?,
-                        diagnostic,
-                    )
-                    .and_then(|failure| {
-                        failure.encode_signed(
-                            &self.advertisement_contract.fingerprint()?,
-                            &self.signer,
-                        )
-                    })
-                    .map_err(remote_diagnostic);
-                }
-                let plan = request.plan().map_err(remote_diagnostic)?;
-                let root = BindingId::new(0).map_err(remote_diagnostic)?;
-                let outcome = match request.result_kind() {
-                    RemoteResultKindV2::DistinctCount => {
-                        RemoteOutcomeV2::DistinctCount { root, value: 7 }
-                    }
-                    RemoteResultKindV2::DistinctExists => {
-                        RemoteOutcomeV2::DistinctExists { root, value: true }
-                    }
-                    RemoteResultKindV2::HydratedRows => RemoteOutcomeV2::HydratedRows {
-                        graph: HydrationGraphV2::new(vec![]).map_err(remote_diagnostic)?,
-                        rows: vec![],
-                    },
-                    RemoteResultKindV2::HydratedPage => RemoteOutcomeV2::HydratedPage {
-                        entries: vec![],
-                        graph: HydrationGraphV2::new(vec![]).map_err(remote_diagnostic)?,
-                        limit: 2,
-                        offset: 0,
-                        root,
-                        total: Some(0),
-                    },
-                    RemoteResultKindV2::ModelReduction => {
-                        let Some(ModelQueryV2::Reduction {
-                            root,
-                            group,
-                            reducers,
-                            ..
-                        }) = plan
-                            .v2_compatibility()
-                            .and_then(|compatibility| compatibility.model_query())
-                        else {
-                            return Err(Error::Other {
-                                message: "test reduction lacks its model contract".into(),
-                                source: None,
-                            });
-                        };
-                        RemoteOutcomeV2::ModelReduction {
-                            graph: HydrationGraphV2::new(vec![]).map_err(remote_diagnostic)?,
-                            root: *root,
-                            group: group.clone(),
-                            reducers: reducers.clone(),
-                            rows: vec![RemoteReductionRowV2::new(
-                                None,
-                                vec![RemoteReducedValueV2::Count { value: 7 }],
-                            )],
-                        }
-                    }
-                    _ => {
-                        return Err(Error::Other {
-                            message: "test transport received an unexpected terminal".into(),
-                            source: None,
-                        });
-                    }
-                };
-                RemoteQueryResponseV2::new(
-                    request.nonce(),
-                    &plan,
-                    &request.fingerprint().map_err(remote_diagnostic)?,
-                    request.result_kind(),
-                    outcome,
+                let authority = remote_fixture_authority();
+                let request = StagedRequestV3::decode(
+                    request,
+                    authority.declared(),
+                    &self.advertisement_contract,
                 )
-                .and_then(|response| {
-                    response
-                        .encode_signed(&self.advertisement_contract.fingerprint()?, &self.signer)
-                })
-                .map_err(remote_diagnostic)
+                .map_err(remote_diagnostic)?;
+                let (outcome, answers) = if let Some(diagnostic) = &self.failure {
+                    (
+                        StagedOutcomeV3::Failed {
+                            diagnostic: type_bridge_orm::lower_remote_query_diagnostic(
+                                diagnostic.clone(),
+                            ),
+                        },
+                        vec![],
+                    )
+                } else {
+                    let has_fetch = request
+                        .plans()
+                        .iter()
+                        .any(|entry| entry.plan().fetch_document_shape().is_some());
+                    let answers = request.plans().iter().map(|entry| {
+                        let plan=entry.plan();
+                        if plan.operation() == Operation::Exists { return StagedAnswerV3::Exists {value:true}; }
+                        if plan.fetch_document_shape().is_some() {return StagedAnswerV3::Documents {documents:vec![]};}
+                        let rows = if plan.pipeline().iter().any(|stage| matches!(stage, Stage::Reduce {..})) {
+                            let type_bridge_contract::query_plan::QueryOutput::Rows {columns} = plan.output() else {panic!("scalar output");};
+                            vec![columns.iter().map(|_| type_bridge_contract::query_remote::RemoteValue::Value {value:type_bridge_contract::value::CanonicalValue::Long(if has_fetch {0} else {7})}).collect()]
+                        } else {vec![]};
+                        StagedAnswerV3::Rows {rows}
+                    }).collect();
+                    (StagedOutcomeV3::Committed, answers)
+                };
+                StagedReplyV3::new(&request, outcome, answers)
+                    .and_then(|reply| {
+                        reply.encode_signed(&request, &self.advertisement_contract, &self.signer)
+                    })
+                    .map_err(remote_diagnostic)
             })();
             Box::pin(async move { response })
         }
@@ -1225,7 +1188,13 @@ mod tests {
 
     fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
+        let mut capabilities = query_plan_v3_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED_V3,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
         for capability in query_remote_v2_required_capabilities(true) {
             capabilities.insert(capability);
         }
@@ -1465,7 +1434,13 @@ mod tests {
 
     async fn observe_sdk_queries_remote_structured_diagnostic() -> serde_json::Value {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
+        let mut capabilities = query_plan_v3_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED_V3,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
         for capability in query_remote_v2_required_capabilities(true) {
             capabilities.insert(capability);
         }
@@ -1632,7 +1607,13 @@ mod tests {
     #[tokio::test]
     async fn remote_database_fetches_capabilities_once_and_exchanges_once_per_terminal() {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x31; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
+        let mut capabilities = query_plan_v3_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED_V3,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
         for capability in query_remote_v2_required_capabilities(true) {
             capabilities.insert(capability);
         }
@@ -1771,9 +1752,24 @@ mod tests {
         assert!(
             std::str::from_utf8(&requests[0])
                 .unwrap()
-                .contains("\"format\":\"typebridge.query-remote-request/v2\"")
+                .contains("\"format\":\"typebridge.query-remote-request/v3\"")
         );
-        let request = RemoteQueryRequestV2::decode(&requests[5]).unwrap();
+        let authority = remote_fixture_authority();
+        let request = StagedRequestV3::decode(
+            &requests[5],
+            authority.declared(),
+            &RemoteCapabilities::decode(
+                &remote
+                    .runtime
+                    .as_ref()
+                    .unwrap()
+                    .connection
+                    .staged_advertisement()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         let limits = request.limits();
         assert!(
             limits
@@ -1783,17 +1779,23 @@ mod tests {
         );
         assert_eq!(limits.max_items, 10);
         assert_eq!(limits.max_bytes, 900_000);
-        assert_eq!(limits.max_graph_nodes, 90);
-        assert_eq!(limits.max_attribute_values, 70);
-        assert_eq!(limits.max_collection_members, 70);
-        assert_eq!(limits.max_role_players, 50);
-        assert_eq!(limits.max_statements, 1);
+        assert_eq!(limits.max_graph_nodes, Some(90));
+        assert_eq!(limits.max_attribute_values, Some(70));
+        assert_eq!(limits.max_collection_members, Some(70));
+        assert_eq!(limits.max_role_players, Some(50));
+        assert_eq!(limits.max_read_statements, 1);
     }
 
     #[tokio::test]
     async fn generated_remote_query_preserves_complete_authenticated_structured_diagnostic() {
         let signer = RemoteReplySigningKey::from_secret_bytes([0x42; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
+        let mut capabilities = query_plan_v3_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED_V3,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
         for capability in query_remote_v2_required_capabilities(true) {
             capabilities.insert(capability);
         }

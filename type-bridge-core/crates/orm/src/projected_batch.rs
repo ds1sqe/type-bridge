@@ -1247,7 +1247,7 @@ fn validate_limits(
             "statements",
             "batch_statement_limit",
             u64::from(measure.statements),
-            u64::from(limits.statements),
+            u64::from(limits.statement_limit()),
         ),
     ] {
         if actual > ceiling {

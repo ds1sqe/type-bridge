@@ -210,11 +210,10 @@ impl PyQueryExecutionResourceLimits {
         statements: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let defaults = QueryExecutionResourceLimits::default();
-        let statements = python_optional_resource_limit(
-            statements,
-            u64::from(defaults.statements),
-            "statements",
-        )?;
+        let statements = statements
+            .map(|value| python_optional_resource_limit(Some(value), 0, "statements"))
+            .transpose()?
+            .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
             timeout_milliseconds: python_optional_resource_limit(
                 timeout_milliseconds,
@@ -243,7 +242,7 @@ impl PyQueryExecutionResourceLimits {
                 defaults.role_players,
                 "role_players",
             )?,
-            statements: u32::try_from(statements).unwrap_or(u32::MAX),
+            statements,
         }
         .validate()
         .map_err(|refusal| PyValueError::new_err(refusal.to_string()))?;
@@ -286,7 +285,7 @@ impl PyQueryExecutionResourceLimits {
     }
 
     #[getter]
-    const fn statements(&self) -> u32 {
+    const fn statements(&self) -> Option<u32> {
         self.inner.statements
     }
 }
@@ -1731,6 +1730,7 @@ pub(crate) fn py_remote_model_error(error: RemoteModelQueryV2Error) -> PyErr {
             py_sdk_diagnostic(lower_remote_query_diagnostic(diagnostic))
         }
         RemoteModelQueryV2Error::Match(error) => py_match_error(error),
+        RemoteModelQueryV2Error::Execution(error) => py_sdk_diagnostic(error),
     }
 }
 
@@ -2772,7 +2772,7 @@ mod tests {
             globals.set_item("m", &module).unwrap();
             py.run(
                 pyo3::ffi::c_str!(
-                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nfor arguments in ({'timeout_milliseconds': 86400001}, {'statements': 4}):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
+                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nfor arguments in ({'timeout_milliseconds': 86400001}, {'statements': 4097}):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
                 ),
                 Some(&globals),
                 None,

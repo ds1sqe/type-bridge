@@ -63,6 +63,7 @@ mod query_connection;
 mod query_execution_limits;
 mod query_plan_exec;
 pub mod query_v2;
+#[cfg(any(test, feature = "integration-tests"))]
 mod query_v2_adapter;
 #[cfg(test)]
 mod query_v2_adapter_tests;
@@ -83,7 +84,7 @@ pub mod value;
 ///
 /// This public test seam exists only when the explicitly test-only
 /// `integration-tests` feature is enabled. The adapter itself is compiled in
-/// normal/release builds but remains crate-private.
+/// the frozen V2 parity feature; production uses the native plan adapter.
 #[cfg(feature = "integration-tests")]
 #[doc(hidden)]
 pub mod integration_test_support {

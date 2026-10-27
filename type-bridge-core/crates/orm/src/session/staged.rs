@@ -122,7 +122,7 @@ pub struct StagedQuery {
     pub(crate) fingerprint: Option<String>,
     pub(crate) redacted_typeql: Option<String>,
     pub(crate) redacted_snapshot: Option<String>,
-    pub(crate) snapshot: Option<(String, QueryPlanV3)>,
+    pub(crate) snapshot: Option<(String, PlanSource)>,
     /// Given columns rendered into literal terms; explain and traces must redact them.
     pub value_bearing_inputs: std::collections::BTreeSet<String>,
     /// Value-free schema context supplied by the plan lowering layer.
@@ -164,7 +164,11 @@ impl StagedQuery {
                 .instrument(tracing::debug_span!(target: "type_bridge.io", "type_bridge.io.provider", index = 0, writes = false, bytes_sent = typeql.len()))
                 .await?;
             crate::answer_meter::meter_result(&answer, &limits.answer)?;
-            crate::query_plan_exec::validate_snapshot(plan, &answer).map_err(plan_answer_error)?;
+            crate::query_plan_exec::validate_snapshot(
+                plan.plan().map_err(plan_answer_error)?,
+                &answer,
+            )
+            .map_err(plan_answer_error)?;
             Some(answer)
         } else {
             None
@@ -382,6 +386,7 @@ fn close_if_pending<T>(state: &AnswerState<T>) {
 /// which fixed staged queries cannot express. It receives the commit's
 /// bounded answer limits (row/byte caps and the commit deadline) and must
 /// read under them, as fixed staged queries do.
+#[cfg(test)]
 pub(crate) type Program<T> = Box<
     dyn for<'t> FnOnce(
             &'t mut OwnedTransaction,
@@ -399,16 +404,39 @@ trait StagedProgram: Send + Sync {
         transaction: &'t mut OwnedTransaction,
         limits: BoundedAnswerLimits,
     ) -> BoxFuture<'t, Result<(), OrmError>>;
+    fn remote_limits(&self) -> Option<&MatchExecutionLimits> {
+        None
+    }
+    fn prepare_remote(
+        &mut self,
+        _schema: &type_bridge_contract::schema::DeclaredSchema,
+        _bounds: &BoundedAnswerLimits,
+    ) -> Result<(Vec<StagedPlanV3>, crate::QueryExecutionResourceLimits), OrmError> {
+        Err(OrmError::Transaction(
+            "this staged program cannot run through a proxy".into(),
+        ))
+    }
+    fn resolve_remote(
+        &mut self,
+        _plans: &mut dyn Iterator<Item = StagedPlanV3>,
+        _answers: &[type_bridge_contract::query_remote_v3::StagedAnswerV3],
+    ) -> Result<(), OrmError> {
+        Err(OrmError::Transaction(
+            "this staged program cannot resolve proxy answers".into(),
+        ))
+    }
     fn publish(&mut self);
     fn fail(&self, error: PendingError);
     fn close_if_pending(&self);
 }
+#[cfg(test)]
 struct ProgramSlot<T> {
     state: AnswerState<T>,
     // Only commit's exclusive borrow takes it; the mutex supplies `Sync`.
     program: Mutex<Option<Program<T>>>,
     answer: Option<T>,
 }
+#[cfg(test)]
 impl<T: Send + Sync + 'static> StagedProgram for ProgramSlot<T> {
     fn run<'t>(
         &'t mut self,
@@ -436,12 +464,164 @@ impl<T: Send + Sync + 'static> StagedProgram for ProgramSlot<T> {
     }
 }
 
+struct MatchProgram {
+    state: AnswerState<ValidatedMatchResult>,
+    input: Option<(
+        crate::error::Result<DescriptorRegistry>,
+        ValidatedMatchRequest,
+    )>,
+    remote: Option<(
+        DescriptorRegistry,
+        ValidatedMatchRequest,
+        crate::match_request::plan_adapter::AdaptedMatchRequest,
+        crate::QueryExecutionResourceLimits,
+    )>,
+    limits: MatchExecutionLimits,
+    capabilities: crate::match_request::CapabilitySet,
+    supports_given: bool,
+    answer: Option<ValidatedMatchResult>,
+}
+impl StagedProgram for MatchProgram {
+    fn remote_limits(&self) -> Option<&MatchExecutionLimits> {
+        Some(&self.limits)
+    }
+    fn run<'t>(
+        &'t mut self,
+        transaction: &'t mut OwnedTransaction,
+        bounds: BoundedAnswerLimits,
+    ) -> BoxFuture<'t, Result<(), OrmError>> {
+        let input = self.input.take();
+        Box::pin(async move {
+            let (registry, request) = input
+                .ok_or_else(|| OrmError::Transaction("staged model program already ran".into()))?;
+            let registry = registry?;
+            let limits = self.limits.clone().bounded_by(&bounds);
+            self.answer = Some(
+                SelectedResultExecutor::new(&registry, self.capabilities.clone(), limits)
+                    .execute_compatible_staged(transaction, &request, self.supports_given)
+                    .await?,
+            );
+            Ok(())
+        })
+    }
+    fn prepare_remote(
+        &mut self,
+        schema: &type_bridge_contract::schema::DeclaredSchema,
+        _bounds: &BoundedAnswerLimits,
+    ) -> Result<(Vec<StagedPlanV3>, crate::QueryExecutionResourceLimits), OrmError> {
+        if let Some(deadline) = self.limits.deadline() {
+            self.limits.capture_deadline(deadline);
+        }
+        let (registry, request) = self
+            .input
+            .take()
+            .ok_or_else(|| OrmError::Transaction("staged model program already ran".into()))?;
+        let registry = registry?;
+        let executor =
+            SelectedResultExecutor::new(&registry, self.capabilities.clone(), self.limits.clone());
+        let mut stack = executor.adapt_owned(&request, self.supports_given)?;
+        let policy = self.limits.policy();
+        let plans = stack
+            .plans
+            .iter()
+            .map(|plan| {
+                StagedPlanV3::new(plan, plan.given_rows().unwrap_or_default().to_vec(), schema)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(plan_answer_error)?;
+        stack.plans.clear();
+        self.remote = Some((registry, request, stack, policy));
+        Ok((plans, policy))
+    }
+    fn resolve_remote(
+        &mut self,
+        plans: &mut dyn Iterator<Item = StagedPlanV3>,
+        answers: &[type_bridge_contract::query_remote_v3::StagedAnswerV3],
+    ) -> Result<(), OrmError> {
+        let (registry, request, stack, policy) = self
+            .remote
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("staged model program was not prepared".into()))?;
+        SelectedResultExecutor::new(registry, self.capabilities.clone(), self.limits.clone())
+            .check_lifecycle_budget()?;
+        stack
+            .plans
+            .extend(plans.take(answers.len()).map(StagedPlanV3::into_plan));
+        let answers = answers
+            .iter()
+            .zip(&stack.plans)
+            .map(|(answer, plan)| PlanAnswer::from_staged_v3(answer, plan))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(plan_answer_error)?;
+        self.answer = Some(
+            crate::match_request::result_validation::validated_match_result_from_plan_stack(
+                registry,
+                request,
+                stack,
+                &answers,
+                policy.for_adapter_statements(stack.plans.len()),
+            )?,
+        );
+        Ok(())
+    }
+    fn publish(&mut self) {
+        if let Some(answer) = self.answer.take() {
+            *self.state.lock().unwrap() = Ok(Arc::new(answer));
+        }
+    }
+    fn fail(&self, error: PendingError) {
+        *self.state.lock().unwrap() = Err(error);
+    }
+    fn close_if_pending(&self) {
+        close_if_pending(&self.state);
+    }
+}
+
+pub(crate) trait SharedPlanSource: Send + Sync {
+    fn plans(&self) -> &[QueryPlanV3];
+}
+impl<T: AsRef<[QueryPlanV3]> + Send + Sync> SharedPlanSource for T {
+    fn plans(&self) -> &[QueryPlanV3] {
+        self.as_ref()
+    }
+}
+#[derive(Clone)]
+pub(crate) enum PlanSource {
+    Owned(Arc<QueryPlanV3>),
+    Shared {
+        source: Arc<dyn SharedPlanSource>,
+        index: usize,
+        identity: usize,
+    },
+}
+impl std::fmt::Debug for PlanSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CanonicalPlanSource([REDACTED])")
+    }
+}
+impl PlanSource {
+    pub(crate) fn plan(&self) -> Result<&QueryPlanV3, Diagnostic> {
+        match self {
+            Self::Owned(plan) => Ok(plan),
+            Self::Shared {
+                source,
+                index,
+                identity,
+            } => source
+                .plans()
+                .get(*index)
+                .filter(|plan| std::ptr::from_ref(*plan) as usize == *identity)
+                .ok_or_else(|| proxy_refusal("shared canonical plan source changed after staging")),
+        }
+    }
+}
+
 /// Where one staged item's answer goes, and how it resolves.
 enum Slot {
     Query(AnswerState<QueryResult>),
     Plan {
         state: AnswerState<PlanAnswer>,
-        plan: Box<QueryPlanV3>,
+        plan: PlanSource,
     },
     Program(Box<dyn StagedProgram>),
 }
@@ -471,8 +651,12 @@ impl Slot {
         match self {
             Self::Query(_) => Ok(Resolved::Query(answer)),
             Self::Plan { plan, .. } => {
-                let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
-                let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", %fingerprint).entered();
+                let plan = plan.plan()?;
+                let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", fingerprint = tracing::field::Empty);
+                if !span.is_disabled() {
+                    span.record("fingerprint", plan.shape_fingerprint()?.digest().to_hex());
+                }
+                let _span = span.entered();
                 let result = crate::query_plan_exec::resolve_plan(plan, answer);
                 tracing::debug!(target: "type_bridge.plan", outcome = if result.is_ok() { "ok" } else { "error" }, "plan answer resolved");
                 result.map(Resolved::Plan)
@@ -589,18 +773,90 @@ pub(crate) fn proxy_refusal(message: &'static str) -> Diagnostic {
 /// Type a signed staged failure like the direct commit would: the released
 /// commit codes keep their certainty and the provider code (`STC2`) its
 /// typed failure; any other code stays a transaction failure under its code.
-fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
+fn constrain_match_policy(
+    current: &mut Option<crate::QueryExecutionResourceLimits>,
+    origins: &mut std::collections::BTreeMap<&'static str, (&'static str, Option<usize>)>,
+    candidate: crate::QueryExecutionResourceLimits,
+    scope: &'static str,
+    program: Option<usize>,
+) {
+    let previous = *current;
+    let next = previous.map_or(candidate, |policy| policy.constrained_by(candidate));
+    for field in type_bridge_contract::limits::ANSWER_LIMIT_FIELDS {
+        let changed = previous.is_none_or(|policy| {
+            if field.name == "statements" {
+                policy.statements != next.statements
+            } else {
+                policy.get(field.name) != next.get(field.name)
+            }
+        });
+        if changed {
+            origins.insert(field.name, (scope, program));
+        }
+    }
+    *current = Some(next);
+}
+
+fn annotate_match_limit(
+    error: &mut CommitError,
+    code: &str,
+    policy: crate::QueryExecutionResourceLimits,
+    origins: &std::collections::BTreeMap<&'static str, (&'static str, Option<usize>)>,
+) {
+    use type_bridge_contract::sdk_diagnostic::{
+        SdkDiagnosticDetailValue, SdkDiagnosticName, SdkQueryDiagnosticIdentity,
+    };
+    let Some((limit, maximum, source)) =
+        policy.refusal_details(crate::query_execution_limits::AnswerTransport::Proxy, code)
+    else {
+        return;
+    };
+    let Some((scope, program)) = origins.get(limit) else {
+        return;
+    };
+    let mut diagnostic = error.diagnostic();
+    for (name, value) in [
+        (
+            "limit",
+            SdkDiagnosticDetailValue::QueryIdentity(
+                SdkQueryDiagnosticIdentity::new(limit).expect("static limit"),
+            ),
+        ),
+        ("maximum", SdkDiagnosticDetailValue::Count(maximum)),
+        (
+            "source",
+            SdkDiagnosticDetailValue::QueryIdentity(
+                SdkQueryDiagnosticIdentity::new(source).expect("static source"),
+            ),
+        ),
+        (
+            "limit_scope",
+            SdkDiagnosticDetailValue::QueryIdentity(
+                SdkQueryDiagnosticIdentity::new(*scope).expect("static scope"),
+            ),
+        ),
+    ] {
+        if let Ok(next) = diagnostic
+            .clone()
+            .try_with_detail(SdkDiagnosticName::new(name).expect("static detail"), value)
+        {
+            diagnostic = next;
+        }
+    }
+    if let Some(index) = program
+        && let Ok(next) = diagnostic.clone().try_with_detail(
+            SdkDiagnosticName::new("program_index").expect("static detail"),
+            SdkDiagnosticDetailValue::Count(*index as u64),
+        )
+    {
+        diagnostic = next;
+    }
+    error.remote = Some(Box::new(diagnostic));
+}
+
+pub(crate) fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
     let json = projection.host_json().unwrap_or_default();
     let field = |key: &str| json.get(key).and_then(serde_json::Value::as_str);
-    let message = field("message").unwrap_or_default();
-    let provider = json
-        .get("details")
-        .and_then(|details| details.get("code"))
-        .and_then(serde_json::Value::as_str);
-    let rendered = match provider {
-        Some(code) => format!("[{code}] {message}"),
-        None => message.to_owned(),
-    };
     // The server signs `commit_outcome_unknown` for anything that may have
     // committed, so every other signed failure applied nothing.
     let unknown = projection.code() == "commit_outcome_unknown";
@@ -611,11 +867,13 @@ fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitError {
         } else {
             crate::error::CommitFailureCertainty::Unknown
         },
-        message: if unknown || projection.code() == "commit_definitely_aborted" {
-            rendered
-        } else {
-            format!("[{}] {rendered}", projection.code())
-        },
+        // Driver errors are public through CommitError::Display, too.
+        message: match projection.code() {
+            "commit_outcome_unknown" => "The server could not establish the staged commit outcome",
+            "commit_definitely_aborted" => "The server aborted the staged transaction",
+            _ => "The server refused the staged transaction",
+        }
+        .to_owned(),
     };
     let op_index = json
         .get("path")
@@ -767,21 +1025,64 @@ impl Transaction {
     /// A `Schema` transaction refuses plans; the schema transaction stays
     /// in eager mode.
     pub fn stage_plan(&mut self, plan: &QueryPlanV3) -> Result<Pending<PlanAnswer>, PendingError> {
+        self.stage_plan_source(PlanSource::Owned(Arc::new(plan.clone())))
+    }
+
+    /// Retain one chunk of a shared canonical plan source without copying it.
+    ///
+    /// The source can be one plan or a generated plan batch implementing
+    /// `AsRef<[QueryPlanV3]>`; erasing its type retains the same Arc allocation.
+    pub fn stage_shared_plan<T>(
+        &mut self,
+        source: Arc<T>,
+        index: usize,
+    ) -> Result<Pending<PlanAnswer>, PendingError>
+    where
+        T: AsRef<[QueryPlanV3]> + Send + Sync + 'static,
+    {
+        let identity = source
+            .as_ref()
+            .as_ref()
+            .get(index)
+            .map(|plan| std::ptr::from_ref(plan) as usize)
+            .ok_or_else(|| {
+                PendingError::InvalidPlan(Box::new(proxy_refusal(
+                    "shared plan chunk index is outside its canonical source",
+                )))
+            })?;
+        self.stage_plan_source(PlanSource::Shared {
+            source,
+            index,
+            identity,
+        })
+    }
+
+    fn stage_plan_source(
+        &mut self,
+        source: PlanSource,
+    ) -> Result<Pending<PlanAnswer>, PendingError> {
+        let plan = source
+            .plan()
+            .map_err(|d| PendingError::InvalidPlan(Box::new(d)))?;
         let _performance = tracing::info_span!("tb.orm.plan").entered();
-        let fingerprint = plan
-            .shape_fingerprint()
-            .map_err(|d| PendingError::InvalidPlan(Box::new(d)))?
-            .digest()
-            .to_hex();
-        let _stage = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.stage", %fingerprint, writes = plan.writes(), stages = plan.pipeline().len(), outcome = "refused").entered();
+        let stage = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.stage", fingerprint = tracing::field::Empty, writes = plan.writes(), stages = plan.pipeline().len(), outcome = "refused");
+        if !stage.is_disabled() {
+            let fingerprint = plan
+                .shape_fingerprint()
+                .map_err(|d| PendingError::InvalidPlan(Box::new(d)))?
+                .digest()
+                .to_hex();
+            stage.record("fingerprint", &fingerprint);
+        }
+        let _stage = stage.entered();
         self.admit(plan.writes())?;
         self.admit_typed()?;
         let invalid = |diagnostic| PendingError::InvalidPlan(Box::new(diagnostic));
         let (query, remote) = match &self.backend {
             Backend::Local(backend) => (
                 Some(
-                    crate::query_plan_exec::staged_query(
-                        plan,
+                    crate::query_plan_exec::staged_query_with_source(
+                        &source,
                         super::database::backend_supports_given_stage(backend.as_ref()),
                     )
                     .map_err(invalid)?,
@@ -802,7 +1103,7 @@ impl Transaction {
             remote,
             slot: Slot::Plan {
                 state: Arc::clone(&state),
-                plan: Box::new(plan.clone()),
+                plan: source,
             },
         });
         tracing::Span::current().record("outcome", "ok");
@@ -831,23 +1132,37 @@ impl Transaction {
         validated: ValidatedMatchRequest,
         limits: MatchExecutionLimits,
     ) -> Result<Pending<ValidatedMatchResult>, PendingError> {
-        // A snapshot failure surfaces at commit with its typed error, so
-        // staging keeps one lifecycle error type.
-        let backend = self.local()?;
-        let registry = registry.owned_registry_snapshot();
-        let capabilities = backend.match_capabilities();
-        let supports_given_stage = super::database::backend_supports_given_stage(backend.as_ref());
-        self.stage_program(Box::new(move |transaction, bounds| {
-            Box::pin(async move {
-                let registry = registry?;
-                let limits = limits.bounded_by(&bounds);
-                SelectedResultExecutor::new(&registry, capabilities, limits)
-                    .execute_compatible_staged(transaction, &validated, supports_given_stage)
-                    .await
-            })
-        }))
+        self.admit(false)?;
+        self.admit_typed()?;
+        let (capabilities, supports_given) = match &self.backend {
+            Backend::Local(backend) => (
+                backend.match_capabilities(),
+                super::database::backend_supports_given_stage(backend.as_ref()),
+            ),
+            Backend::Proxy(_) => (
+                crate::match_request::Capability::ALL.into_iter().collect(),
+                true,
+            ),
+        };
+        let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
+        self.stack.0.push(Item {
+            query: None,
+            remote: None,
+            slot: Slot::Program(Box::new(MatchProgram {
+                state: Arc::clone(&state),
+                input: Some((registry.owned_registry_snapshot(), validated)),
+                remote: None,
+                limits,
+                capabilities,
+                supports_given,
+                answer: None,
+            })),
+        });
+        Ok(Pending { state })
     }
+
     /// Queue one crate-private read program.
+    #[cfg(test)]
     pub(crate) fn stage_program<T: Send + Sync + 'static>(
         &mut self,
         program: Program<T>,
@@ -904,6 +1219,19 @@ impl Transaction {
         let mut execution = std::mem::replace(&mut self.stack, Execution(Vec::new()));
         if execution.0.is_empty() {
             return Ok(());
+        }
+        for (index, item) in execution.0.iter().enumerate() {
+            if let Slot::Plan { plan, .. } = &item.slot
+                && let Err(diagnostic) = plan.plan()
+            {
+                let error = CommitError::new(
+                    plan_answer_error(diagnostic).into(),
+                    Some(index),
+                    Default::default(),
+                );
+                execution.fail(error.pending());
+                return Err(error);
+            }
         }
         let backend = match &self.backend {
             Backend::Local(backend) => Arc::clone(backend),
@@ -971,7 +1299,7 @@ impl Transaction {
                             ) = (&item.slot, &resolved)
                             {
                                 plan_meter.accept(
-                                    &answer.to_staged_v3(plan).map_err(plan_answer_error)?,
+                                    &answer.to_staged_v3(plan.plan().map_err(plan_answer_error)?).map_err(plan_answer_error)?,
                                 )?;
                             }
                             Ok(resolved)
@@ -1051,7 +1379,7 @@ impl Transaction {
     async fn commit_proxy(
         &mut self,
         proxy: Arc<ProxyStaging>,
-        execution: Execution,
+        mut execution: Execution,
     ) -> Result<(), CommitError> {
         let kind = self.options.kind.unwrap_or_else(|| {
             if execution.0.iter().any(|item| {
@@ -1065,15 +1393,136 @@ impl Transaction {
             }
         });
         let timeout = self.commit_timeout();
+        let mut plans = Vec::new();
+        let mut counts = Vec::with_capacity(execution.0.len());
+        let mut policy = None;
+        let mut origins = std::collections::BTreeMap::new();
+        for (index, item) in execution.0.iter_mut().enumerate() {
+            match &mut item.slot {
+                Slot::Program(program) => {
+                    match program
+                        .prepare_remote(proxy.declared(), &self.options.answer_limits.answer)
+                    {
+                        Ok((remote, limits)) => {
+                            counts.push(remote.len());
+                            plans.extend(remote);
+                            constrain_match_policy(
+                                &mut policy,
+                                &mut origins,
+                                limits,
+                                "program",
+                                Some(index),
+                            );
+                        }
+                        Err(error) => {
+                            let code = match &error {
+                                OrmError::Match(error) => Some(error.code().as_str().to_owned()),
+                                _ => None,
+                            };
+                            let mut error =
+                                CommitError::new(error.into(), Some(index), Default::default());
+                            if let (Some(code), Some(limits)) = (code, program.remote_limits()) {
+                                let mut origins = std::collections::BTreeMap::new();
+                                let mut policy = None;
+                                constrain_match_policy(
+                                    &mut policy,
+                                    &mut origins,
+                                    limits.policy(),
+                                    "program",
+                                    Some(index),
+                                );
+                                annotate_match_limit(&mut error, &code, limits.policy(), &origins);
+                            }
+                            execution.fail(error.pending());
+                            return Err(error);
+                        }
+                    }
+                }
+                _ => {
+                    counts.push(1);
+                    plans.push(item.remote.take().expect("proxy plan entry"));
+                }
+            }
+        }
+        if policy.is_some() {
+            let connection = match proxy.match_limits() {
+                Ok(connection) => connection,
+                Err(diagnostic) => {
+                    let pending = PendingError::InvalidPlan(Box::new(diagnostic));
+                    execution.fail(pending.clone());
+                    return Err(CommitError::lifecycle(pending));
+                }
+            };
+            constrain_match_policy(&mut policy, &mut origins, connection, "connection", None);
+            let bounds = &self.options.answer_limits;
+            let transaction = crate::QueryExecutionResourceLimits {
+                timeout_milliseconds: timeout.map_or(u64::MAX, |value| {
+                    u64::try_from(value.as_millis()).unwrap_or(u64::MAX)
+                }),
+                items: bounds.answer.max_items,
+                bytes: bounds.answer.max_bytes,
+                graph_nodes: bounds.max_graph_nodes,
+                attribute_values: bounds.max_attribute_values,
+                collection_members: bounds.max_collection_members,
+                role_players: bounds.max_role_players,
+                statements: None,
+            };
+            constrain_match_policy(&mut policy, &mut origins, transaction, "transaction", None);
+            let need = plans
+                .iter()
+                .map(|entry| {
+                    let (read, write) = entry.plan().statement_counts();
+                    read + write
+                })
+                .sum();
+            if let Some(cap) = policy.and_then(|policy| policy.statements)
+                && need > cap as usize
+            {
+                let mut error = CommitError::new(
+                    OrmError::from(MatchError::new(
+                        MatchErrorCategory::ResourceLimit,
+                        "statement_count_limit",
+                        "staged model stack exceeds its aggregate statement ceiling",
+                    ))
+                    .into(),
+                    None,
+                    Default::default(),
+                );
+                annotate_match_limit(
+                    &mut error,
+                    "statement_count_limit",
+                    policy.expect("match policy"),
+                    &origins,
+                );
+                execution.fail(error.pending());
+                return Err(error);
+            }
+            policy = policy.map(|policy| policy.for_adapter_statements(need));
+        }
+        let timeout = if policy.is_some() {
+            let now = tokio::time::Instant::now().into_std();
+            let program = execution
+                .0
+                .iter()
+                .filter_map(|item| match &item.slot {
+                    Slot::Program(program) => program
+                        .remote_limits()
+                        .and_then(MatchExecutionLimits::deadline),
+                    _ => None,
+                })
+                .min()
+                .map(|deadline| deadline.saturating_duration_since(now));
+            match (timeout, program) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (left, right) => left.or(right),
+            }
+        } else {
+            timeout
+        };
         let deadline_ms =
             timeout.map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
-        let plans = execution
-            .0
-            .iter()
-            .filter_map(|item| item.remote.clone())
-            .collect();
         let built = proxy
-            .request(plans, kind, deadline_ms)
+            .request_with_policy(plans, kind, deadline_ms, policy)
             .and_then(|request| request.encode().map(|bytes| (request, bytes)));
         let (request, bytes) = match built {
             Ok(built) => built,
@@ -1087,7 +1536,16 @@ impl Transaction {
         if !span.is_disabled() {
             span.record("nonce", request.nonce());
         }
-        Self::attempt(&proxy, &request, bytes, execution, timeout).await
+        Self::attempt(
+            &proxy,
+            (request, bytes),
+            execution,
+            timeout,
+            counts,
+            policy,
+            origins,
+        )
+        .await
     }
     fn commit_timeout(&self) -> Option<Duration> {
         match (self.options.deadline, self.options.answer_timeout) {
@@ -1097,49 +1555,116 @@ impl Transaction {
     }
     async fn attempt(
         proxy: &ProxyStaging,
-        request: &StagedRequestV3,
-        bytes: Vec<u8>,
+        encoded: (StagedRequestV3, Vec<u8>),
         mut execution: Execution,
         timeout: Option<Duration>,
+        counts: Vec<usize>,
+        policy: Option<crate::QueryExecutionResourceLimits>,
+        origins: std::collections::BTreeMap<&'static str, (&'static str, Option<usize>)>,
     ) -> Result<(), CommitError> {
+        let (request, bytes) = encoded;
         // Anything short of a verified reply may have committed.
         let unknown = |message: &str| {
-            CommitError::new(
+            let mut error = CommitError::new(
                 ClassifiedCommitError::Driver {
                     certainty: crate::error::CommitFailureCertainty::Unknown,
                     message: message.to_owned(),
                 },
                 None,
                 Default::default(),
-            )
+            );
+            error.failure = Some(Box::new(Failure::Indeterminate { code: None }));
+            error
         };
         // Unknown from before the first byte is sent: a cancelled commit
         // leaves its handles unknown.
         execution.fail(unknown("the proxy commit outcome is not known").pending());
-        let outcome = match proxy.send(bytes, timeout).await {
+        let sent = {
+            let mut cancellations = execution
+                .0
+                .iter()
+                .filter_map(|item| match &item.slot {
+                    Slot::Program(program) => program.remote_limits(),
+                    _ => None,
+                })
+                .map(|limits| Box::pin(limits.cancellation().cancelled()))
+                .collect::<Vec<_>>();
+            let cancelled = std::future::poll_fn(|context| {
+                for cancellation in &mut cancellations {
+                    if std::future::Future::poll(cancellation.as_mut(), context).is_ready() {
+                        return std::task::Poll::Ready(());
+                    }
+                }
+                std::task::Poll::Pending
+            });
+            let expired = async {
+                match (policy, timeout) {
+                    (Some(_), Some(timeout)) => tokio::time::sleep(timeout).await,
+                    _ => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                biased;
+                () = cancelled => Err(SdkExecutionDiagnostic::internal_failure()),
+                () = expired => Err(SdkExecutionDiagnostic::internal_failure()),
+                result = proxy.send(bytes, timeout) => result,
+            }
+        };
+        let outcome = match sent {
             Err(_) => Err(unknown("the proxy reply was not received")),
-            Ok(reply) => match proxy.verify(&reply, request) {
+            Ok(reply) => match proxy.verify(&reply, &request) {
                 Err(_) => Err(unknown("the proxy reply could not be verified")),
                 Ok(verified) => match verified.diagnostic() {
-                    Some(projection) => Err(proxy_failure(projection)),
-                    None => execution
-                        .0
-                        .iter()
-                        .zip(verified.answers())
-                        .enumerate()
-                        .map(|(index, (item, answer))| {
-                            let plan = item.remote.as_ref().expect("proxy items carry plans");
-                            PlanAnswer::from_staged_v3(answer, plan.plan())
-                                .map(Resolved::Plan)
-                                .map_err(|diagnostic| {
-                                    CommitError::new(
-                                        plan_answer_error(diagnostic).into(),
-                                        Some(index),
-                                        Default::default(),
-                                    )
-                                })
-                        })
-                        .collect::<Result<Vec<_>, _>>(),
+                    Some(projection) => {
+                        let mut failure = proxy_failure(projection);
+                        if let Some(policy) = policy {
+                            annotate_match_limit(&mut failure, projection.code(), policy, &origins);
+                        }
+                        Err(failure)
+                    }
+                    None => {
+                        let mut entries = request.into_plans().into_iter();
+                        let mut cursor = 0;
+                        let mut resolved = Vec::with_capacity(execution.0.len());
+                        let mut error = None;
+                        for (index, (item, count)) in execution.0.iter_mut().zip(counts).enumerate()
+                        {
+                            let Some(answers) = verified.answers().get(cursor..cursor + count)
+                            else {
+                                error = Some(unknown("proxy model answer ranges are invalid"));
+                                break;
+                            };
+                            cursor += count;
+                            let result = match &mut item.slot {
+                                Slot::Program(program) => program
+                                    .resolve_remote(&mut entries, answers)
+                                    .map(|()| Resolved::Program),
+                                Slot::Plan { plan, .. } => {
+                                    entries.next();
+                                    plan.plan()
+                                        .and_then(|plan| {
+                                            PlanAnswer::from_staged_v3(&answers[0], plan)
+                                        })
+                                        .map(Resolved::Plan)
+                                        .map_err(plan_answer_error)
+                                }
+                                Slot::Query(_) => unreachable!("proxy stages canonical plans"),
+                            };
+                            match result {
+                                Ok(answer) => resolved.push(answer),
+                                Err(_) => {
+                                    let _ = index;
+                                    error =
+                                        Some(unknown("proxy model projection failed after commit"));
+                                    break;
+                                }
+                            }
+                        }
+                        match error {
+                            Some(error) => Err(error),
+                            None => Ok(resolved),
+                        }
+                    }
                 },
             },
         };
@@ -1225,6 +1750,314 @@ mod tests {
             commit.diagnostic().code().as_str(),
             "provider_operation_failed"
         );
+    }
+
+    #[test]
+    fn signed_proxy_failure_messages_never_reach_public_errors() {
+        use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCode, SdkDiagnosticMessage};
+        for code in [
+            "provider_operation_failed",
+            "commit_definitely_aborted",
+            "commit_outcome_unknown",
+        ] {
+            let diagnostic = SdkExecutionDiagnostic::transaction_failure(
+                SdkDiagnosticCode::new(code).unwrap(),
+                SdkDiagnosticMessage::new("signed-server-secret").unwrap(),
+            );
+            let projection = signed(&diagnostic);
+            let error = proxy_failure(&projection);
+            for rendered in [
+                error.to_string(),
+                format!("{:?}", error),
+                error.pending().to_string(),
+                serde_json::to_string(&error.diagnostic().host_json()).unwrap(),
+            ] {
+                assert!(!rendered.contains("signed-server-secret"), "{rendered}");
+            }
+            assert_eq!(error.diagnostic().code().as_str(), code);
+        }
+    }
+
+    fn proxy_match_fixture(
+        options: TransactionOptions,
+        bad_projection: bool,
+        pending_reply: Option<Arc<tokio::sync::Notify>>,
+    ) -> (Transaction, DescriptorRegistry, Arc<Mutex<usize>>) {
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+        use type_bridge_contract::query_remote_v3::{
+            StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        };
+        let registry = DescriptorRegistry::new();
+        registry
+            .register_entity(crate::_descriptor::EntityDescriptor {
+                type_name: "person".into(),
+                is_abstract: false,
+                parent_type: None,
+                owned_attributes: vec![],
+                doc: None,
+                meta: Default::default(),
+            })
+            .unwrap();
+        let authority =
+            crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
+                &registry,
+            )
+            .unwrap();
+        let schema = authority.declared().clone();
+        let mut capabilities =
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        for name in [
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
+        }
+        let signer =
+            Arc::new(crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x45; 32]));
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("proxy-match-tests", "epoch-00000000001").unwrap(),
+            signer.public_key(),
+        );
+        let ad_bytes = advertisement.encode().unwrap();
+        let committed = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&committed);
+        let captured_schema = schema.clone();
+        let exchange: super::super::staged_proxy::StagedExchangeFn = Arc::new(move |bytes| {
+            let schema = captured_schema.clone();
+            let ad = advertisement.clone();
+            let signer = Arc::clone(&signer);
+            let committed = Arc::clone(&observed);
+            let pending_reply = pending_reply.clone();
+            Box::pin(async move {
+                if let Some(entered) = pending_reply {
+                    *committed.lock().unwrap() += 1;
+                    entered.notify_one();
+                    std::future::pending::<()>().await;
+                }
+                let request = StagedRequestV3::decode(&bytes, &schema, &ad).unwrap();
+                let (outcome, answers) = if request.plans().len() as u64
+                    > request.limits().max_items
+                {
+                    (StagedOutcomeV3::Failed { diagnostic:SdkExecutionDiagnostic::query_failure(type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticCategory::ResourceLimit,type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("processed_item_limit").unwrap()) },vec![])
+                } else {
+                    *committed.lock().unwrap() += 1;
+                    (
+                        StagedOutcomeV3::Committed,
+                        request
+                            .plans()
+                            .iter()
+                            .map(|_| StagedAnswerV3::Rows {
+                                rows: vec![vec![
+                                    type_bridge_contract::query_remote::RemoteValue::Value {
+                                        value: type_bridge_contract::value::CanonicalValue::Long(
+                                            if bad_projection { -1 } else { 7 },
+                                        ),
+                                    },
+                                ]],
+                            })
+                            .collect(),
+                    )
+                };
+                Ok(StagedReplyV3::new(&request, outcome, answers)
+                    .unwrap()
+                    .encode_signed(&request, &ad, signer.as_ref())
+                    .unwrap())
+            })
+        });
+        let proxy = super::super::staged_proxy::ProxyStaging::new(
+            None,
+            Some(exchange),
+            &ad_bytes,
+            schema,
+            crate::QueryExecutionResourceLimits::default_for(
+                crate::query_execution_limits::AnswerTransport::Proxy,
+            ),
+        )
+        .unwrap();
+        (Transaction::new_proxy(proxy, options), registry, committed)
+    }
+    fn proxy_count_request(registry: &DescriptorRegistry) -> ValidatedMatchRequest {
+        use crate::match_request::*;
+        validate_match_request(
+            registry,
+            MatchRequest::v1(
+                MatchPlan {
+                    bindings: vec![MatchBinding {
+                        id: BindingId::new(0),
+                        descriptor: DescriptorId::new("entity:person"),
+                        thing_kind: ThingKind::Entity,
+                        match_mode: MatchMode::Exact,
+                    }],
+                    predicate: None,
+                    allowed_cross_joins: Default::default(),
+                },
+                MatchOperation::CountBy {
+                    root: BindingId::new(0),
+                },
+            ),
+        )
+        .unwrap()
+    }
+    #[tokio::test]
+    async fn proxy_match_aggregate_limit_names_the_tighter_program_or_transaction() {
+        for transaction_bound in [false, true] {
+            let options = if transaction_bound {
+                TransactionOptions::default().with_answer_limits(BoundedAnswerLimits {
+                    max_items: 1,
+                    ..Default::default()
+                })
+            } else {
+                TransactionOptions::default()
+            };
+            let (mut tx, registry, committed) = proxy_match_fixture(options, false, None);
+            let limits = |items| {
+                MatchExecutionLimits::from_policy(
+                    crate::QueryExecutionResourceLimits {
+                        items,
+                        ..Default::default()
+                    },
+                    super::super::backend::AnswerCancellation::default(),
+                )
+            };
+            let first = tx
+                .stage_match_with_limits(&registry, proxy_count_request(&registry), limits(20))
+                .unwrap();
+            let second = tx
+                .stage_match_with_limits(
+                    &registry,
+                    proxy_count_request(&registry),
+                    limits(if transaction_bound { 10 } else { 1 }),
+                )
+                .unwrap();
+            let error = tx.commit().await.unwrap_err();
+            assert_eq!(*committed.lock().unwrap(), 0);
+            let host = serde_json::to_value(error.diagnostic().host_json()).unwrap();
+            assert_eq!(host["details"]["limit"]["value"], "items");
+            assert_eq!(
+                host["details"]["limit_scope"]["value"],
+                if transaction_bound {
+                    "transaction"
+                } else {
+                    "program"
+                }
+            );
+            if !transaction_bound {
+                assert_eq!(host["details"]["program_index"]["value"], "1");
+            }
+            assert!(first.get().is_err());
+            assert!(second.get().is_err());
+        }
+    }
+    #[tokio::test]
+    async fn proxy_match_publishes_all_or_keeps_every_projection_unknown() {
+        for bad in [false, true] {
+            let (mut tx, registry, committed) =
+                proxy_match_fixture(TransactionOptions::default(), bad, None);
+            let first = tx
+                .stage_match(&registry, proxy_count_request(&registry))
+                .unwrap();
+            let second = tx
+                .stage_match(&registry, proxy_count_request(&registry))
+                .unwrap();
+            assert!(matches!(first.get(), Err(PendingError::NotCommitted)));
+            let outcome = tx.commit().await;
+            assert_eq!(*committed.lock().unwrap(), 1);
+            if bad {
+                assert!(outcome.is_err());
+                assert!(matches!(first.get(), Err(PendingError::Failed { .. })));
+                assert!(matches!(second.get(), Err(PendingError::Failed { .. })));
+                assert_eq!(
+                    outcome.unwrap_err().diagnostic().code().as_str(),
+                    "commit_outcome_unknown"
+                );
+            } else {
+                outcome.unwrap();
+                assert!(first.get().is_ok());
+                assert!(second.get().is_ok());
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn proxy_match_cancel_and_absolute_deadline_interrupt_a_pending_reply_as_unknown() {
+        for cancel in [true, false] {
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let (mut tx, registry, committed) = proxy_match_fixture(
+                TransactionOptions::default(),
+                false,
+                Some(Arc::clone(&entered)),
+            );
+            let cancellation = super::super::backend::AnswerCancellation::default();
+            let limits = MatchExecutionLimits::from_policy(
+                crate::QueryExecutionResourceLimits {
+                    timeout_milliseconds: 5000,
+                    ..Default::default()
+                },
+                cancellation.clone(),
+            )
+            .with_absolute_deadline(crate::QueryExecutionDeadline::from_instant(
+                (tokio::time::Instant::now() + Duration::from_secs(5)).into_std(),
+            ));
+            let first = tx
+                .stage_match_with_limits(&registry, proxy_count_request(&registry), limits)
+                .unwrap();
+            let second = tx
+                .stage_match(&registry, proxy_count_request(&registry))
+                .unwrap();
+            let execution = tokio::spawn(async move { tx.commit().await });
+            entered.notified().await;
+            assert_eq!(*committed.lock().unwrap(), 1);
+            if cancel {
+                cancellation.cancel();
+            } else {
+                tokio::time::advance(Duration::from_secs(5)).await;
+            }
+            tokio::task::yield_now().await;
+            assert!(execution.is_finished());
+            let error = execution.await.unwrap().unwrap_err();
+            assert!(matches!(
+                error.error.as_ref(),
+                ClassifiedCommitError::Driver {
+                    certainty: crate::error::CommitFailureCertainty::Unknown,
+                    ..
+                }
+            ));
+            for pending in [first, second] {
+                assert!(matches!(pending.get(), Err(PendingError::Failed { .. })));
+                assert!(matches!(
+                    pending.get().unwrap_err().failure(),
+                    Some(Failure::Indeterminate { .. })
+                ));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_match_aggregate_statement_refusal_names_its_program_before_send() {
+        let (mut tx, registry, committed) =
+            proxy_match_fixture(TransactionOptions::default(), false, None);
+        let limits = MatchExecutionLimits::from_policy(
+            crate::QueryExecutionResourceLimits {
+                statements: Some(1),
+                ..Default::default()
+            },
+            super::super::backend::AnswerCancellation::default(),
+        );
+        let first = tx
+            .stage_match_with_limits(&registry, proxy_count_request(&registry), limits)
+            .unwrap();
+        let second = tx
+            .stage_match(&registry, proxy_count_request(&registry))
+            .unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert_eq!(*committed.lock().unwrap(), 0);
+        let host = serde_json::to_value(error.diagnostic().host_json()).unwrap();
+        assert_eq!(host["code"], "statement_count_limit");
+        assert_eq!(host["details"]["limit_scope"]["value"], "program");
+        assert_eq!(host["details"]["program_index"]["value"], "0");
+        assert!(first.get().is_err());
+        assert!(second.get().is_err());
     }
 
     #[derive(Default)]
@@ -1348,6 +2181,73 @@ mod tests {
             state,
         )
     }
+    #[test]
+    fn shared_plan_stage_retains_the_original_batch_allocation() {
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        let source = Arc::new(vec![crate::query_plan_exec::race::stock_read(
+            type_bridge_contract::query_plan::v3::Operation::Rows,
+        )]);
+        tx.stage_shared_plan(Arc::clone(&source), 0).unwrap();
+        assert_eq!(Arc::strong_count(&source), 2);
+        let Slot::Plan { plan, .. } = &tx.stack.0[0].slot else {
+            panic!("plan slot");
+        };
+        assert!(std::ptr::eq(plan.plan().unwrap(), &source[0]));
+        assert!(state.lock().unwrap().events.is_empty());
+        assert!(matches!(
+            tx.stage_shared_plan(Arc::clone(&source), 1),
+            Err(PendingError::InvalidPlan(_))
+        ));
+        assert_eq!(Arc::strong_count(&source), 2);
+    }
+
+    #[test]
+    fn shared_snapshot_stage_reuses_the_original_plan_for_capture_validation() {
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        let source = Arc::new(crate::query_plan_exec::race::delete_doctors_returning());
+        tx.stage_shared_plan(Arc::clone(&source), 0).unwrap();
+        let item = &tx.stack.0[0];
+        let (_, capture) = item.query.as_ref().unwrap().snapshot.as_ref().unwrap();
+        assert!(std::ptr::eq(capture.plan().unwrap(), source.as_ref()));
+        let Slot::Plan { plan, .. } = &item.slot else {
+            panic!("plan slot");
+        };
+        assert!(std::ptr::eq(plan.plan().unwrap(), source.as_ref()));
+        assert_eq!(Arc::strong_count(&source), 3);
+        assert!(state.lock().unwrap().events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shared_plan_source_changes_refuse_before_opening_the_provider() {
+        struct Switching {
+            changed: std::sync::atomic::AtomicBool,
+            original: Vec<QueryPlanV3>,
+        }
+        impl AsRef<[QueryPlanV3]> for Switching {
+            fn as_ref(&self) -> &[QueryPlanV3] {
+                if self.changed.load(std::sync::atomic::Ordering::SeqCst) {
+                    &[]
+                } else {
+                    &self.original
+                }
+            }
+        }
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        let source = Arc::new(Switching {
+            changed: std::sync::atomic::AtomicBool::new(false),
+            original: vec![crate::query_plan_exec::race::stock_read(
+                type_bridge_contract::query_plan::v3::Operation::Rows,
+            )],
+        });
+        let pending = tx.stage_shared_plan(Arc::clone(&source), 0).unwrap();
+        source
+            .changed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(tx.commit().await.is_err());
+        assert!(pending.get().is_err());
+        assert!(state.lock().unwrap().events.is_empty());
+    }
+
     #[tokio::test]
     async fn plan_trace_records_seams_and_metering_without_given_values() {
         use tracing::instrument::WithSubscriber;

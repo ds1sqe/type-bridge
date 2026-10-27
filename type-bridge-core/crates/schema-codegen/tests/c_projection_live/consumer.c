@@ -2244,8 +2244,6 @@ static int observe_connection_terminals(
     const fixture_query_exists_terminal *exists_terminal,
     connection_terminals_observation_t *observation,
     type_bridge_execution_diagnostics_t **out_diagnostics) {
-  type_bridge_query_execution_limits_v1_t limits =
-      TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   type_bridge_query_execution_limits_v1_t one_item =
       TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   type_bridge_execution_diagnostic_view_v1_t diagnostic = {0};
@@ -2256,26 +2254,26 @@ static int observe_connection_terminals(
   fixture_person *page_person = NULL;
   memset(observation, 0, sizeof(*observation));
 
-  CHECK(CONNECTION_EXECUTE(rows, connection, rows_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(rows, connection, rows_terminal, NULL,
                            &rows_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(observe_person_rows(rows_result, &observation->rows,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(CONNECTION_EXECUTE(first, connection, first_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(first, connection, first_terminal, NULL,
                            &rows_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(observe_person_rows(rows_result, &observation->first,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(CONNECTION_EXECUTE(rows, connection, nickname_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(rows, connection, nickname_terminal, NULL,
                            &rows_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(observe_person_rows(rows_result, &observation->nickname,
                             out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&rows_result) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(CONNECTION_EXECUTE(page, connection, page_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(page, connection, page_terminal, NULL,
                            &page_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_page_metadata(page_result, &observation->page_metadata,
@@ -2290,7 +2288,7 @@ static int observe_connection_terminals(
   CHECK(fixture_person_close(&page_person) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_page_result_close(&page_result) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(CONNECTION_EXECUTE(count, connection, count_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(count, connection, count_terminal, NULL,
                            &count_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_value(count_result, &observation->count,
@@ -2298,7 +2296,7 @@ static int observe_connection_terminals(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_close(&count_result) ==
         TYPE_BRIDGE_STATUS_OK);
-  CHECK(CONNECTION_EXECUTE(exists, connection, exists_terminal, &limits,
+  CHECK(CONNECTION_EXECUTE(exists, connection, exists_terminal, NULL,
                            &exists_result, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_exists_result_value(exists_result, &observation->exists,
@@ -2591,14 +2589,14 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_rows(filtered, orders, 1u, 0u, 16u, &terminal,
                            out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_database_query_execute_rows(
-            database, terminal, &limits, NULL, &direct_result,
+            database, terminal, NULL, NULL, &direct_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_result(direct_result, 2u, minimum_number,
                           out_diagnostics) == 0);
   CHECK(observe_person_rows(direct_result, &direct_function_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_rows(
-            database, nickname_terminal, &limits, NULL, &nickname_result,
+            database, nickname_terminal, NULL, NULL, &nickname_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(nickname_result, expected_ada, 1u,
                                out_diagnostics) == 0);
@@ -2643,28 +2641,28 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(fixture_database_query_execute_rows(
-            database, one_terminal, &limits, NULL, &one_result,
+            database, one_terminal, NULL, NULL, &one_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(one_result, expected_dana, 1u,
                                out_diagnostics) == 0);
   CHECK(observe_person_rows(one_result, &direct_one_rows, out_diagnostics) ==
         0);
   CHECK(fixture_database_query_execute_first(
-            database, first_terminal, &limits, NULL, &first_result,
+            database, first_terminal, NULL, NULL, &first_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(first_result, expected_ada, 1u,
                                out_diagnostics) == 0);
   CHECK(observe_person_rows(first_result, &direct_first_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_rows(
-            database, rows_terminal, &limits, NULL, &rows_result,
+            database, rows_terminal, NULL, NULL, &rows_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(rows_result, expected_rows, 2u,
                                out_diagnostics) == 0);
   CHECK(observe_person_rows(rows_result, &direct_sdk_rows,
                             out_diagnostics) == 0);
   CHECK(fixture_database_query_execute_page(
-            database, page_terminal, &limits, NULL, &page_result,
+            database, page_terminal, NULL, NULL, &page_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_page_metadata(page_result, &page_metadata,
                                     out_diagnostics) ==
@@ -2690,7 +2688,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_person_close(&page_person) == TYPE_BRIDGE_STATUS_OK);
   }
   CHECK(fixture_database_query_execute_count(
-            database, count_terminal, &limits, NULL, &count_result,
+            database, count_terminal, NULL, NULL, &count_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_value(count_result, &count_value,
                                          out_diagnostics) ==
@@ -2698,7 +2696,7 @@ static int run_typed_query_function_and_remote(
   CHECK(count_value == 2u);
   direct_terminal_count = count_value;
   CHECK(fixture_database_query_execute_exists(
-            database, exists_terminal, &limits, NULL, &exists_result,
+            database, exists_terminal, NULL, NULL, &exists_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_exists_result_value(exists_result, &exists_value,
                                           out_diagnostics) ==
@@ -2715,14 +2713,14 @@ static int run_typed_query_function_and_remote(
                                           out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_rows(
-            read_transaction, rows_terminal, &limits, NULL,
+            read_transaction, rows_terminal, NULL, NULL,
             &read_rows_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(check_rows_identifiers(read_rows_result, expected_rows, 2u,
                                out_diagnostics) == 0);
   CHECK(fixture_query_rows_result_close(&read_rows_result) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_count(
-            read_transaction, count_terminal, &limits, NULL, &count_result,
+            read_transaction, count_terminal, NULL, NULL, &count_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_count_result_value(count_result, &count_value,
                                          out_diagnostics) ==
@@ -2731,7 +2729,7 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_count_result_close(&count_result) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_read_transaction_query_execute_exists(
-            read_transaction, exists_terminal, &limits, NULL, &exists_result,
+            read_transaction, exists_terminal, NULL, NULL, &exists_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_exists_result_value(exists_result, &exists_value,
                                           out_diagnostics) ==
@@ -2748,13 +2746,13 @@ static int run_typed_query_function_and_remote(
   CHECK(fixture_query_rows_result_close(&first_result) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_rows_result_close(&one_result) == TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL,
+  CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                              0u, 1024u * 1024u, &advertisement));
   CHECK(fixture_query_remote_context_open(
             package,
             (type_bridge_byte_view_t){advertisement.data,
                                       advertisement.length},
-            &limits, &remote_context, out_diagnostics) ==
+            NULL, &remote_context, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   free(advertisement.data);
   advertisement.data = NULL;
@@ -2769,7 +2767,7 @@ static int run_typed_query_function_and_remote(
             pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
   CHECK(response_limit != 0u);
   /* Exactly one caller-owned terminal request/response exchange. */
-  CHECK(caller_http_exchange(remote_port, "POST", "/v2/query", request.data,
+  CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged", request.data,
                              request.length, response_limit, &response));
   ++remote_exchange_count;
   CHECK(fixture_query_rows_remote_pending_claim(
@@ -2809,7 +2807,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_##family##_remote_pending_response_snapshot_limit(      \
               round_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);         \
     CHECK(response_limit != 0u);                                                 \
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",             \
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",             \
                                request.data, request.length, response_limit,     \
                                &response));                                      \
     ++remote_exchange_count;                                                     \
@@ -2966,7 +2964,7 @@ static int run_typed_query_function_and_remote(
                              &nested_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, nested_terminal, &limits, NULL, &nested_result,
+              database, nested_terminal, NULL, NULL, &nested_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_result(nested_result, 2u, minimum_number,
                             out_diagnostics) == 0);
@@ -3013,7 +3011,7 @@ static int run_typed_query_function_and_remote(
               count_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_count_remote_pending_response_snapshot_limit(
               count_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",
                                request.data, request.length, response_limit,
                                &response));
     ++remote_exchange_count;
@@ -3062,7 +3060,7 @@ static int run_typed_query_function_and_remote(
                             &not_unique_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, not_unique_terminal, &limits, NULL,
+              database, not_unique_terminal, NULL, NULL,
               &not_unique_result, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
     CHECK(not_unique_result == NULL);
@@ -3077,7 +3075,7 @@ static int run_typed_query_function_and_remote(
               failure_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_rows_remote_pending_response_snapshot_limit(
               failure_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query", request.data,
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged", request.data,
                                request.length, response_limit, &response));
     ++remote_exchange_count;
     CHECK(fixture_query_rows_remote_pending_claim(
@@ -3192,7 +3190,7 @@ static int run_typed_query_function_and_remote(
     CHECK(type_bridge_cancellation_request(cancellation) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, rows_terminal, &limits, cancellation,
+              database, rows_terminal, NULL, cancellation,
               &rejected_result, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_CANCELLED);
     CHECK(rejected_result == NULL);
@@ -3214,7 +3212,7 @@ static int run_typed_query_function_and_remote(
           TYPE_BRIDGE_STATUS_OK);
 
     zero_remote_limits.timeout_milliseconds = 0u;
-    CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL,
+    CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                                0u, 1024u * 1024u, &advertisement));
     CHECK(fixture_query_remote_context_open(
               package,
@@ -3249,7 +3247,7 @@ static int run_typed_query_function_and_remote(
     plus_one_limits[4].attribute_values += 1u;
     plus_one_limits[5].collection_members += 1u;
     plus_one_limits[6].role_players += 1u;
-    plus_one_limits[7].statements += 1u;
+    plus_one_limits[7].statements = 4097u;
     /* Every dimension but the statement count may be raised past its
      * default and is kept as given. */
     for (limit_index = 0u; limit_index < 7u; ++limit_index) {
@@ -3295,7 +3293,7 @@ static int run_typed_query_function_and_remote(
     CHECK(count_value == 2u);
     CHECK(fixture_query_count_result_close(&clamped_direct) ==
           TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL,
+    CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL,
                                0u, 1024u * 1024u, &advertisement));
     CHECK(fixture_query_remote_context_open(
               package,
@@ -3313,7 +3311,7 @@ static int run_typed_query_function_and_remote(
               clamped_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_count_remote_pending_response_snapshot_limit(
               clamped_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",
                                request.data, request.length, response_limit,
                                &response));
     ++remote_exchange_count;
@@ -3381,7 +3379,7 @@ static int run_typed_query_function_and_remote(
                              &ancestor_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, ancestor_terminal, &limits, NULL, &ancestor_result,
+              database, ancestor_terminal, NULL, NULL, &ancestor_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     lifecycle_observation.ancestor_usable_after_descendant_close = 1;
     CHECK(fixture_query_rows_terminal_close(&ancestor_terminal) ==
@@ -3418,7 +3416,7 @@ static int run_typed_query_function_and_remote(
                              &lifecycle_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, lifecycle_terminal, &limits, NULL, &lifecycle_result,
+              database, lifecycle_terminal, NULL, NULL, &lifecycle_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(lifecycle_result, expected_dana, 1u,
                                  out_diagnostics) == 0);
@@ -3431,7 +3429,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_terminal_close(&lifecycle_terminal) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, lifecycle_terminal, &limits, NULL, &lifecycle_result,
+              database, lifecycle_terminal, NULL, NULL, &lifecycle_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_INVALID_ARGUMENT);
     CHECK(lifecycle_result == NULL && *out_diagnostics == NULL);
     CHECK(fixture_query_rows_terminal_close(&lifecycle_terminal) ==
@@ -3461,7 +3459,7 @@ static int run_typed_query_function_and_remote(
               replay_pending, &request) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_count_remote_pending_response_snapshot_limit(
               replay_pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-    CHECK(caller_http_exchange(remote_port, "POST", "/v2/query",
+    CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged",
                                request.data, request.length, response_limit,
                                &response));
     ++remote_exchange_count;
@@ -3558,7 +3556,7 @@ static int run_typed_query_function_and_remote(
                              &subtype_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, exact_terminal, &limits, NULL, &exact_result,
+              database, exact_terminal, NULL, NULL, &exact_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_result_row_count(
               fixture_query_rows_result_ref(exact_result), &row_count,
@@ -3587,7 +3585,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&exact_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, subtype_terminal, &limits, NULL, &subtype_result,
+              database, subtype_terminal, NULL, NULL, &subtype_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_result_row_count(
               fixture_query_rows_result_ref(subtype_result), &row_count,
@@ -3754,7 +3752,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_reduce(root, reducers, 7u, &global_terminal,
                                out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_reduction(
-              database, global_terminal, &limits, NULL, &global_result,
+              database, global_terminal, NULL, NULL, &global_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_reducers(
               fixture_query_reduction_result_ref(global_result),
@@ -3775,7 +3773,7 @@ static int run_typed_query_function_and_remote(
               count_reducer, 1u, &binding_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_reduction(
-              database, binding_terminal, &limits, NULL, &binding_result,
+              database, binding_terminal, NULL, NULL, &binding_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_binding_groups(
               fixture_query_reduction_result_ref(binding_result),
@@ -3796,7 +3794,7 @@ static int run_typed_query_function_and_remote(
               count_reducer, 1u, &field_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_field_reduction(
-              database, field_terminal, &limits, NULL, &field_result,
+              database, field_terminal, NULL, NULL, &field_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_field_groups(
               fixture_query_field_reduction_result_ref(field_result),
@@ -3814,7 +3812,7 @@ static int run_typed_query_function_and_remote(
               root, tuple_groups, 2u, count_reducer, 1u, &tuple_terminal,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_field_tuple_reduction(
-              database, tuple_terminal, &limits, NULL, &tuple_result,
+              database, tuple_terminal, NULL, NULL, &tuple_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_sdk_field_tuple_groups(
               fixture_query_field_tuple_reduction_result_ref(tuple_result),
@@ -3953,7 +3951,7 @@ static int run_typed_query_function_and_remote(
       puts("G06 all-eight independent zero ceilings: passed");
     }
     CHECK(fixture_database_query_execute_rows(
-              database, role_terminal, &limits, NULL, &role_result,
+              database, role_terminal, NULL, NULL, &role_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_query_result_row_count(
               fixture_query_rows_result_ref(role_result), &row_count,
@@ -4011,7 +4009,7 @@ static int run_typed_query_function_and_remote(
               reducers, 2u, &reduction_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_reduction(
-              database, reduction_terminal, &limits, NULL, &reduction_result,
+              database, reduction_terminal, NULL, NULL, &reduction_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     {
       fixture_query_reduction_result_ref_v1_t reduction_ref =
@@ -4205,7 +4203,7 @@ static int run_typed_query_function_and_remote(
                              &topology_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, topology_terminal, &limits, NULL, &topology_result,
+              database, topology_terminal, NULL, NULL, &topology_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_network_topology_result(
               topology_result, direct_topology_source_key,
@@ -4292,7 +4290,7 @@ static int run_typed_query_function_and_remote(
                              &reachable_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, reachable_terminal, &limits, NULL, &reachable_result,
+              database, reachable_terminal, NULL, NULL, &reachable_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_reachable_result(reachable_result, &direct_topology,
                                  reachable_max_hops, out_diagnostics) == 0);
@@ -4497,7 +4495,7 @@ static int run_typed_query_function_and_remote(
                              &field_comparison_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, or_terminal, &limits, NULL, &or_result,
+              database, or_terminal, NULL, NULL, &or_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(or_result, expected_rows, 2u,
                                  out_diagnostics) == 0);
@@ -4513,7 +4511,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&or_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, not_terminal, &limits, NULL, &not_result,
+              database, not_terminal, NULL, NULL, &not_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(not_result, expected_ada, 1u,
                                  out_diagnostics) == 0);
@@ -4522,7 +4520,7 @@ static int run_typed_query_function_and_remote(
     CHECK(fixture_query_rows_result_close(&not_result) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, field_comparison_terminal, &limits, NULL,
+              database, field_comparison_terminal, NULL, NULL,
               &field_comparison_result, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(check_rows_identifiers(field_comparison_result, expected_dana, 1u,
@@ -4562,7 +4560,7 @@ static int run_typed_query_function_and_remote(
                              &cross_terminal, out_diagnostics) ==
           TYPE_BRIDGE_STATUS_OK);
     CHECK(fixture_database_query_execute_rows(
-              database, cross_terminal, &limits, NULL, &cross_result,
+              database, cross_terminal, NULL, NULL, &cross_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_cross_join_result(cross_result, &direct_topology,
                                   out_diagnostics) == 0);
@@ -4779,7 +4777,7 @@ static int run_typed_query_function_and_remote(
             TYPE_BRIDGE_STATUS_OK);
     }
     CHECK(fixture_database_query_execute_page(
-              database, named_terminal, &limits, NULL, &named_result,
+              database, named_terminal, NULL, NULL, &named_result,
               out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_selection_shape_result(
               named_result, direct_selection_shape.named_origin,
@@ -4828,7 +4826,7 @@ static int run_typed_query_function_and_remote(
             TYPE_BRIDGE_STATUS_OK);
     }
     CHECK(fixture_database_query_execute_page(
-              database, positional_terminal, &limits, NULL,
+              database, positional_terminal, NULL, NULL,
               &positional_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
     CHECK(check_selection_shape_result(
               positional_result, direct_selection_shape.positional_origin,
@@ -5011,8 +5009,6 @@ static int run_sdk_serialization_live_codec(
     type_bridge_execution_diagnostics_t **out_diagnostics) {
   const char *directory = getenv("TYPE_BRIDGE_SDK_SERIALIZATION_C_EVIDENCE_DIR");
   const uint16_t remote_port = required_remote_port();
-  type_bridge_query_execution_limits_v1_t limits =
-      TYPE_BRIDGE_QUERY_EXECUTION_LIMITS_V1_DEFAULT;
   fixture_person_create *person_create = NULL;
   fixture_person *inserted_person = NULL;
   fixture_person_ref *inserted_person_ref = NULL;
@@ -5138,7 +5134,7 @@ static int run_sdk_serialization_live_codec(
   CHECK(fixture_query_one(query, NULL, 0u, &terminal, out_diagnostics) ==
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_database_query_execute_rows(
-            database, terminal, &limits, NULL, &direct_result,
+            database, terminal, NULL, NULL, &direct_result,
             out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_result_row_count(
             fixture_query_rows_result_ref(direct_result), &row_count,
@@ -5165,13 +5161,13 @@ static int run_sdk_serialization_live_codec(
                                          &direct_relation_view) ==
         TYPE_BRIDGE_STATUS_OK);
 
-  CHECK(caller_http_exchange(remote_port, "GET", "/v2/capabilities", NULL, 0u,
+  CHECK(caller_http_exchange(remote_port, "GET", "/v3/capabilities", NULL, 0u,
                              1024u * 1024u, &advertisement));
   CHECK(fixture_query_remote_context_open(
             package,
             (type_bridge_byte_view_t){advertisement.data,
                                       advertisement.length},
-            &limits, &remote_context, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+            NULL, &remote_context, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   free(advertisement.data);
   CHECK(fixture_query_remote_prepare_rows(remote_context, terminal, NULL,
                                           &pending, out_diagnostics) ==
@@ -5180,7 +5176,7 @@ static int run_sdk_serialization_live_codec(
         TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_query_rows_remote_pending_response_snapshot_limit(
             pending, &response_limit) == TYPE_BRIDGE_STATUS_OK);
-  CHECK(caller_http_exchange(remote_port, "POST", "/v2/query", request.data,
+  CHECK(caller_http_exchange(remote_port, "POST", "/v3/staged", request.data,
                              request.length, response_limit, &response));
   CHECK(fixture_query_rows_remote_pending_claim(
             pending, NULL, &claim, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);

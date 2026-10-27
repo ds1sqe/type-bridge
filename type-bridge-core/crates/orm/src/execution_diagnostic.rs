@@ -14,7 +14,7 @@ use crate::_schema::SchemaError;
 use crate::error::{ClassifiedCommitError, CommitFailureCertainty, OrmError};
 use crate::hooks::HookError;
 use crate::match_request::result_validation::exactly_one_cardinality_error;
-use crate::match_request::selected_result_executor::released_model_execution_error;
+use crate::match_request::selected_result_executor::released_plan_execution_error;
 use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorDetailValue, MatchErrorPathSegment,
 };
@@ -230,7 +230,7 @@ pub fn lower_remote_query_diagnostic(error: Diagnostic) -> SdkExecutionDiagnosti
     }
 
     if error.code().as_str().starts_with("query_v2_model_") {
-        return lower_match_error(&released_model_execution_error(&error));
+        return lower_match_error(&released_plan_execution_error(&error));
     }
 
     let category = match error.category() {
@@ -293,6 +293,9 @@ fn lower_remote_detail(
         DiagnosticDetailValue::Long(value) => Some(SdkDiagnosticDetailValue::Signed(*value)),
         DiagnosticDetailValue::Boolean(value) => {
             Some(SdkDiagnosticDetailValue::Boolean(*value))
+        }
+        DiagnosticDetailValue::Text(value) if key == "reason" && matches!(value.as_str(),"nonce" | "request") => {
+            SdkQueryDiagnosticIdentity::new(value.clone()).ok().map(SdkDiagnosticDetailValue::QueryIdentity)
         }
         DiagnosticDetailValue::Text(value) if is_admissible_remote_identity_detail(key) => {
             SdkQueryDiagnosticIdentity::new(value.clone())

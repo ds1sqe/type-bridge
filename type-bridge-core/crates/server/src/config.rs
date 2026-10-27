@@ -290,6 +290,20 @@ impl V2Section {
         )
         .map_err(|error| format!("v2.query_limits is rejected: {error}"))
     }
+    /// Resolve V3 output columns without widening the released V2 policy.
+    #[cfg(feature = "v2-query")]
+    pub fn resolved_staged_query_limits(
+        &self,
+    ) -> Result<type_bridge_contract::limits::QueryLimits, String> {
+        let mut limits = self.resolved_query_limits()?;
+        if !self.query_limits.contains_key("selected_slots") {
+            limits.structural.selected_slots =
+                type_bridge_contract::limits::MAX_BINDINGS.min(limits.structural.bindings);
+        }
+        limits
+            .validate_v3()
+            .map_err(|error| format!("staged query limits are rejected: {error}"))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -3438,6 +3452,23 @@ enabled = ["audit-log", "rate-limiter", "custom"]
             section(&[]).resolved_query_limits().expect("defaults"),
             QueryLimits::CANONICAL
         );
+        assert_eq!(
+            section(&[]).resolved_staged_query_limits().unwrap(),
+            QueryLimits::V3
+        );
+        assert_eq!(
+            section(&[("selected_slots", 16)])
+                .resolved_staged_query_limits()
+                .unwrap()
+                .structural
+                .selected_slots,
+            16
+        );
+        assert!(
+            section(&[("bindings", 8), ("selected_slots", 16)])
+                .resolved_staged_query_limits()
+                .is_err()
+        );
         let raised = section(&[
             ("canonical_bytes", 64 << 20),
             ("remote_request_bytes", 128 << 20),
@@ -3508,7 +3539,7 @@ enabled = ["audit-log", "rate-limiter", "custom"]
                 .contains("not a known answer limit")
         );
         assert!(
-            section(&[("statements", 4)])
+            section(&[("statements", 4097)])
                 .resolved_answer_limits()
                 .unwrap_err()
                 .contains("statements")

@@ -9438,7 +9438,13 @@ mod tests {
             DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
             DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
-        assert_eq!(effective, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            effective,
+            QueryExecutionResourceLimits {
+                statements: Some(DEFAULT_DIRECT_QUERY_STATEMENTS),
+                ..Default::default()
+            }
+        );
         let policy = DirectConnectionPolicy::new("localhost:1729", "sdk", "admin", "secret")
             .connection_limits(effective)
             .answer_limits(effective);
@@ -9455,7 +9461,7 @@ mod tests {
             ("attribute_values", wire_limits.attribute_values),
             ("collection_members", wire_limits.collection_members),
             ("role_players", wire_limits.role_players),
-            ("statements", u64::from(wire_limits.statements)),
+            ("statements", u64::from(wire_limits.statement_limit())),
         ]
         .into_iter()
         .map(|(dimension, hard_max)| {
@@ -9741,6 +9747,7 @@ plays:
     enum QueryOriginKind {
         Person,
         Gathering,
+        GatheringPopulated,
     }
 
     impl QueryOriginBackend {
@@ -9818,8 +9825,24 @@ plays:
     }
 
     impl TransactionOps for QueryOriginTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("successor Python query-origin test used a string query") })
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            assert!(typeql.contains("fetch"));
+            let mut state = self.state.lock().unwrap();
+            state.selected += 1;
+            state.hydrated += 1;
+            drop(state);
+            let document = match self.kind {
+                QueryOriginKind::Person => {
+                    serde_json::json!({"_iid":self.iid,"_type":"person","attributes":{"tag":["query-tag"]}})
+                }
+                QueryOriginKind::Gathering => {
+                    serde_json::json!({"_iid":self.iid,"_type":"gathering","attributes":{}})
+                }
+                QueryOriginKind::GatheringPopulated => {
+                    serde_json::json!({"_iid":self.iid,"_type":"gathering","attributes":{},"_role_0_iid":"0xa6","_role_0_type":"person","_role_0_attributes":{"tag":["nested-query-tag"]}})
+                }
+            };
+            Box::pin(async move { Ok(QueryResult::Documents(vec![document])) })
         }
 
         fn query_typed_bounded<'a>(
@@ -9861,27 +9884,29 @@ plays:
                     }],
                     "roles": [],
                 }),
-                QueryOriginKind::Gathering => serde_json::json!({
-                    "binding": 0,
-                    "concept_id": iid,
-                    "concrete_type": "gathering",
-                    "kind": "relation",
-                    "attributes": [],
-                    "roles": [{
-                        "role": "participant",
-                        "players": [{
-                            "concept_id": "0xa6",
-                            "declared_type": "person",
-                            "concrete_type": "person",
-                            "kind": "entity",
-                            "attributes": [{
-                                "field": "tag",
-                                "value_type": "string",
-                                "values": ["nested-query-tag"],
+                QueryOriginKind::Gathering | QueryOriginKind::GatheringPopulated => {
+                    serde_json::json!({
+                        "binding": 0,
+                        "concept_id": iid,
+                        "concrete_type": "gathering",
+                        "kind": "relation",
+                        "attributes": [],
+                        "roles": [{
+                            "role": "participant",
+                            "players": [{
+                                "concept_id": "0xa6",
+                                "declared_type": "person",
+                                "concrete_type": "person",
+                                "kind": "entity",
+                                "attributes": [{
+                                    "field": "tag",
+                                    "value_type": "string",
+                                    "values": ["nested-query-tag"],
+                                }],
                             }],
                         }],
-                    }],
-                }),
+                    })
+                }
             };
             Box::pin(async move {
                 feed_query_origin(vec![AnswerItem::Document(document)], limits, consumer)
@@ -13645,6 +13670,30 @@ def public_state(value):
                     .extract::<String>()
                     .unwrap(),
                 "projected_query_result_mismatch"
+            );
+        });
+    }
+
+    #[test]
+    fn ordered_query_role_refuses_population_with_a_pinned_evidence_path() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_ordered(py);
+            let (mut backend, _) = QueryOriginBackend::gathering("0xb8");
+            backend.kind = QueryOriginKind::GatheringPopulated;
+            let database = Database::with_backend(Box::new(backend), "ordered-query-refusal");
+            let (registry, request) = thing_query(package.as_ref(), "gathering");
+            let runtime = ProviderRuntimeOwner::new().unwrap();
+            let error =
+                provider_block_on(py, &runtime, database.execute_match(&registry, &request))
+                    .unwrap_err();
+            let OrmError::Match(error) = error else {
+                panic!("typed refusal");
+            };
+            assert_eq!(error.code().as_str(), "query_plan_hydration_ordered_role");
+            assert_eq!(
+                error.path().segments(),
+                &[type_bridge_orm::MatchErrorPathSegment::ProviderEvidence]
             );
         });
     }

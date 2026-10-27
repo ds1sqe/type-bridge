@@ -34,7 +34,7 @@ def _core_defaults(transport: str) -> dict[str, int]:
     }
 
 
-def _reported(limits: QueryExecutionResourceLimits) -> dict[str, int]:
+def _reported(limits: QueryExecutionResourceLimits) -> dict[str, int | None]:
     return {name: getattr(limits, name) for name in _DIMENSIONS}
 
 
@@ -76,7 +76,10 @@ def test_both_transport_default_sets_are_exported() -> None:
 
 def test_session_default_answer_policy_is_the_direct_default() -> None:
     # QuerySession uses `QueryExecutionResourceLimits()` when given none.
-    assert _reported(QueryExecutionResourceLimits()) == _core_defaults("DIRECT")
+    assert _reported(QueryExecutionResourceLimits()) == {
+        **_core_defaults("DIRECT"),
+        "statements": None,
+    }
 
 
 def test_omitted_dimension_keeps_the_direct_default_beside_a_given_one() -> None:
@@ -91,7 +94,7 @@ def test_proxy_connection_without_answer_limits_runs_at_the_proxy_defaults() -> 
         _closed_endpoint(),
         advertisement=_advertisement(PLAN_CAPABILITIES),
     )
-    assert _reported(connection.answer_limits) == _core_defaults("PROXY")
+    assert _reported(connection.answer_limits) == {**_core_defaults("PROXY"), "statements": None}
 
 
 def test_proxy_connection_keeps_explicit_answer_limits() -> None:
@@ -101,4 +104,25 @@ def test_proxy_connection_keeps_explicit_answer_limits() -> None:
         advertisement=_advertisement(PLAN_CAPABILITIES),
         answer_limits=QueryExecutionResourceLimits(items=8),
     )
-    assert _reported(connection.answer_limits) == {**_core_defaults("DIRECT"), "items": 8}
+    assert _reported(connection.answer_limits) == {
+        **_core_defaults("DIRECT"),
+        "items": 8,
+        "statements": None,
+    }
+
+
+def test_omitted_statement_limit_remains_unset_and_explicit_three_is_retained() -> None:
+    assert QueryExecutionResourceLimits().statements is None
+    assert QueryExecutionResourceLimits(statements=3).statements == 3
+
+
+def test_raised_byte_and_item_limits_refuse_values_outside_the_shared_integer_domain() -> None:
+    import pytest
+
+    maximum = (1 << 64) - 1
+    limits = QueryExecutionResourceLimits(bytes=maximum, items=maximum)
+    assert limits.bytes == maximum
+    assert limits.items == maximum
+    for name in ("bytes", "items"):
+        with pytest.raises(ValueError, match=name):
+            QueryExecutionResourceLimits(**{name: maximum + 1})

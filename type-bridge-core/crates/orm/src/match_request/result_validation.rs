@@ -329,7 +329,32 @@ fn reduction_group_value_key(value: &AttributeValue) -> Result<String, MatchErro
 /// complete model projection; this function checks the released operation
 /// contract (root, window, total, cardinality, reduction echo and values) and
 /// performs the lossless released representation mapping.
+#[cfg(any(test, feature = "integration-tests"))]
 pub(crate) fn validated_match_result_from_v2(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    outcome: RemoteOutcomeV2,
+) -> Result<ValidatedMatchResult, MatchError> {
+    validated_match_result_from_outcome(registry, validated, outcome)
+}
+
+pub(crate) fn validated_match_result_from_plan_stack(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    stack: &super::plan_adapter::AdaptedMatchRequest,
+    answers: &[crate::query_plan_exec::PlanAnswer],
+    limits: crate::QueryExecutionResourceLimits,
+) -> Result<ValidatedMatchResult, MatchError> {
+    validated.recheck_schema(registry)?;
+    if let super::plan_adapter::Layout::WitnessReduction { inner, request } = &stack.layout {
+        return validated_witness_reduction(registry, validated, inner, request, answers, limits);
+    }
+    let outcome = super::plan_result::resolve(stack, validated, answers, limits)
+        .map_err(|error| super::selected_result_executor::released_plan_execution_error(&error))?;
+    validated_match_result_from_outcome(registry, validated, outcome)
+}
+
+pub(crate) fn validated_match_result_from_outcome(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
     outcome: RemoteOutcomeV2,
@@ -484,6 +509,170 @@ pub(crate) fn validated_match_result_from_v2(
         validated.shape_id().clone(),
         result,
     ))
+}
+
+/// Validate and materialize the complete documents of one fetched model plan.
+///
+/// `declared` is the caller's model descriptor. The core checks it against the
+/// fetched binding and issues both invocation and result proofs; callers do
+/// not construct a synthetic match request themselves.
+pub fn validated_match_result_from_plan(
+    registry: &DescriptorRegistry,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    documents: &[serde_json::Value],
+    declared: &DescriptorId,
+    limits: crate::QueryExecutionResourceLimits,
+) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), MatchError> {
+    use super::descriptor_plan::{MatchRequestAdapterAuthority, descriptor_id_type};
+    use type_bridge_contract::query_plan::v3::Stage;
+    let authority = MatchRequestAdapterAuthority::from_registry(registry)
+        .map_err(|error| super::selected_result_executor::released_plan_execution_error(&error))?;
+    if plan.managed_semantics()
+        != authority
+            .context()
+            .managed_state()
+            .managed_semantic_schema()
+    {
+        return Err(result_error(
+            "query_plan_hydration_schema",
+            "fetch plan and model registry have different schema authority",
+        ));
+    }
+    let declared_type = descriptor_id_type(declared.as_str()).map_err(|_| {
+        result_error(
+            "query_plan_hydration_declared",
+            "declared model descriptor is invalid",
+        )
+    })?;
+    let document = plan
+        .pipeline()
+        .iter()
+        .find_map(|stage| match stage {
+            Stage::Fetch(document) => Some(document),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            result_error(
+                "query_plan_hydration_fetch",
+                "model materialization requires a thing fetch",
+            )
+        })?;
+    let domains = plan.binding_types(document.thing).ok_or_else(|| {
+        result_error(
+            "query_plan_hydration_declared",
+            "fetched binding has no thing type evidence",
+        )
+    })?;
+    let concrete = plan
+        .fetch_document_shape()
+        .ok_or_else(|| {
+            result_error(
+                "query_plan_hydration_fetch",
+                "model plan has no terminal fetch shape",
+            )
+        })?
+        .type_labels()
+        .map(|label| {
+            TypeId::new(declared_type.kind(), label).map_err(|_| {
+                result_error(
+                    "query_plan_hydration_declared",
+                    "fetched model type is invalid",
+                )
+            })
+        })
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let domains = if concrete.is_empty() {
+        domains
+    } else {
+        &concrete
+    };
+    let schema = authority.context().resolved_schema();
+    if !schema.types().contains_key(&declared_type)
+        || domains.iter().any(|actual| {
+            actual != &declared_type
+                && !schema
+                    .types()
+                    .get(actual)
+                    .is_some_and(|actual| actual.supertypes().contains(&declared_type))
+        })
+    {
+        return Err(result_error(
+            "query_plan_hydration_declared",
+            "declared model does not cover the fetched binding",
+        ));
+    }
+    let binding = BindingId::new(0);
+    let request = super::validate_match_request_with_limits(
+        registry,
+        super::MatchRequest::v1(
+            super::MatchPlan {
+                bindings: vec![super::MatchBinding {
+                    id: binding,
+                    descriptor: declared.clone(),
+                    thing_kind: match declared_type.kind() {
+                        TypeKind::Entity => ThingKind::Entity,
+                        TypeKind::Relation => ThingKind::Relation,
+                        _ => {
+                            return Err(result_error(
+                                "query_plan_hydration_declared",
+                                "declared model is not a thing",
+                            ));
+                        }
+                    },
+                    match_mode: MatchMode::Subtypes,
+                }],
+                predicate: None,
+                allowed_cross_joins: BTreeSet::new(),
+            },
+            MatchOperation::FetchRows {
+                output: FetchShape::Positional {
+                    slots: vec![FetchSlot::One { binding }],
+                },
+                order: vec![],
+                window: Window {
+                    offset: 0,
+                    limit: limits.items.max(1),
+                },
+                cardinality: RowCardinality::Complete,
+            },
+        ),
+        plan.limits(),
+    )?;
+    let (graph, references) = super::plan_hydration::graph_from_plan_documents(
+        registry, &request, plan, documents, limits,
+    )
+    .map_err(|error| match error {
+        crate::query_v2::QueryV2ExecutionError::Validation(error) => {
+            if error.code().as_str().starts_with("query_plan_hydration_") {
+                MatchError::new(
+                    MatchErrorCategory::ResultDecode,
+                    error.code().as_str().to_owned(),
+                    "fetch evidence cannot materialize a complete model",
+                )
+                .at(MatchErrorPathSegment::Result)
+            } else {
+                super::selected_result_executor::released_plan_execution_error(&error)
+            }
+        }
+        crate::query_v2::QueryV2ExecutionError::Provider(_) => {
+            result_error("query_plan_hydration_document", "model hydration failed")
+        }
+    })?;
+    let rows = references
+        .iter()
+        .map(|reference| {
+            let mut thing = released_thing(registry, &graph, reference)?;
+            thing.set_deleted(plan.fetched_thing_is_deleted());
+            Ok(MatchRow::new(vec![SlotValue::One(thing)]))
+        })
+        .collect::<Result<Vec<_>, MatchError>>()?;
+    let result = ValidatedMatchResult::new(
+        ValidatedResultSeal(()),
+        request.request_token(),
+        request.shape_id().clone(),
+        MatchResult::Rows { rows },
+    );
+    Ok((request, result))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1424,6 +1613,22 @@ struct DurationKey {
     nanoseconds: u128,
 }
 
+/// Normalize the released duration spelling for native scalar input columns.
+pub(crate) fn native_duration(value: &str) -> Option<CanonicalDuration> {
+    if let Ok(value) = value.parse() {
+        return Some(value);
+    }
+    let value = parse_duration(value)?;
+    CanonicalDuration::new(
+        false,
+        value.months,
+        value.days,
+        u64::try_from(value.nanoseconds / 1_000_000_000).ok()?,
+        (value.nanoseconds % 1_000_000_000) as u32,
+    )
+    .ok()
+}
+
 fn parse_duration(value: &str) -> Option<DurationKey> {
     let value = value.strip_prefix('P')?;
     if value.is_empty() {
@@ -1576,6 +1781,162 @@ fn resource_error(code: &'static str, message: &'static str) -> MatchError {
         .at(MatchErrorPathSegment::Result)
 }
 
+fn validated_witness_reduction(
+    registry: &DescriptorRegistry,
+    validated: &ValidatedMatchRequest,
+    inner: &super::plan_adapter::AdaptedMatchRequest,
+    request: &ValidatedMatchRequest,
+    answers: &[crate::query_plan_exec::PlanAnswer],
+    limits: crate::QueryExecutionResourceLimits,
+) -> Result<ValidatedMatchResult, MatchError> {
+    use super::reducer::{
+        LoweredReduceGroup, LoweredReduceInput, LoweredReduceTerm, ReduceDomain, reduce_rows,
+    };
+    use super::result::{BoundConceptEvidence, ProviderSolutionEvidence};
+    let result = validated_match_result_from_plan_stack(registry, request, inner, answers, limits)?;
+    let MatchResult::Rows { rows } = result.for_request(request)? else {
+        return Err(result_error(
+            "reduction_evidence_kind",
+            "witness evidence did not return model rows",
+        ));
+    };
+    let mut solutions = rows
+        .iter()
+        .map(|row| {
+            row.slots()
+                .iter()
+                .zip(&validated.request().plan.bindings)
+                .map(|(slot, binding)| match slot {
+                    SlotValue::One(thing) => {
+                        Ok(BoundConceptEvidence::new(binding.id, thing.clone()))
+                    }
+                    _ => Err(result_error(
+                        "reduction_evidence_kind",
+                        "witness evidence omitted a singular binding",
+                    )),
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map(ProviderSolutionEvidence::new)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // Lexicographic witness IIDs refine the formerly unspecified provider-first choice.
+    solutions.sort_by(|left, right| {
+        left.bindings()
+            .iter()
+            .map(|bound| bound.thing().concept_id().as_str())
+            .cmp(
+                right
+                    .bindings()
+                    .iter()
+                    .map(|bound| bound.thing().concept_id().as_str()),
+            )
+    });
+    let (root, group, reducers) = match &validated.request().operation {
+        MatchOperation::ReduceBy {
+            root,
+            group,
+            reducers,
+        } => (*root, group.map(LoweredReduceGroup::Binding), reducers),
+        MatchOperation::ReduceByField {
+            root,
+            group,
+            reducers,
+        } => (
+            *root,
+            Some(LoweredReduceGroup::Field(group.clone())),
+            reducers,
+        ),
+        MatchOperation::ReduceByFields {
+            root,
+            groups,
+            reducers,
+        } => (
+            *root,
+            Some(LoweredReduceGroup::Fields(groups.clone())),
+            reducers,
+        ),
+        _ => {
+            return Err(result_error(
+                "reduction_evidence_kind",
+                "witness evidence belongs to a non-reduction operation",
+            ));
+        }
+    };
+    let terms = reducers
+        .iter()
+        .map(|term| {
+            let input = term
+                .input
+                .as_ref()
+                .map(|field| {
+                    let attribute =
+                        super::descriptor_plan::registered_attribute(registry, &field.field)
+                            .map_err(|_| {
+                                result_error(
+                                    "reduction_input_domain",
+                                    "reducer field is absent from the schema",
+                                )
+                            })?;
+                    let domain = match attribute.value_type {
+                        crate::ValueType::Long => ReduceDomain::Long,
+                        crate::ValueType::Double => ReduceDomain::Double,
+                        _ => {
+                            return Err(result_error(
+                                "reduction_input_domain",
+                                "reducer field is outside its numeric domain",
+                            ));
+                        }
+                    };
+                    Ok(LoweredReduceInput {
+                        binding: field.binding,
+                        field: field.field.clone(),
+                        domain,
+                    })
+                })
+                .transpose()?;
+            Ok(LoweredReduceTerm {
+                reduction: term.reduction,
+                input,
+            })
+        })
+        .collect::<Result<Vec<_>, MatchError>>()?;
+    let roots = solutions
+        .iter()
+        .filter_map(|solution| {
+            solution
+                .bindings()
+                .iter()
+                .find(|bound| bound.binding() == root)
+                .map(|bound| bound.thing().concept_id().as_str().to_owned())
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let reduced = reduce_rows(
+        root,
+        group.as_ref(),
+        &terms,
+        &roots,
+        &solutions,
+        usize::try_from(limits.items).unwrap_or(usize::MAX),
+        usize::try_from(limits.collection_members).unwrap_or(usize::MAX),
+    )
+    .map_err(|error| match error {
+        crate::OrmError::Match(error) => error,
+        _ => result_error(
+            "reduction_evidence_invalid",
+            "witness reduction failed canonical validation",
+        ),
+    })?;
+    let result = validate_reduction_rows(registry, validated, reduced)?;
+    Ok(ValidatedMatchResult::new(
+        ValidatedResultSeal(()),
+        validated.request_token(),
+        validated.shape_id().clone(),
+        result,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use type_bridge_contract::query_plan::QueryReductionGroupV2;
@@ -1723,6 +2084,395 @@ mod tests {
             })
             .unwrap();
         registry
+    }
+
+    fn model_fetch_registry(ordered_roles: bool) -> DescriptorRegistry {
+        let original = registry();
+        let inherited = original.entity("person").unwrap().owned_attributes.clone();
+        let registry = DescriptorRegistry::new();
+        for descriptor in original.snapshot() {
+            match descriptor {
+                crate::_descriptor::TypeDescriptor::Entity(mut entity) => {
+                    if entity.type_name == "employee" {
+                        for field in &inherited {
+                            if !entity
+                                .owned_attributes
+                                .iter()
+                                .any(|own| own.attr_name == field.attr_name)
+                            {
+                                entity.owned_attributes.push(field.clone());
+                            }
+                        }
+                    }
+                    registry.register_entity(entity).unwrap();
+                }
+                crate::_descriptor::TypeDescriptor::Relation(mut relation) => {
+                    for role in &mut relation.roles {
+                        role.ordered = ordered_roles;
+                        if !ordered_roles {
+                            role.distinct = false;
+                        }
+                    }
+                    registry.register_relation(relation).unwrap();
+                }
+            }
+        }
+        registry
+    }
+
+    fn fetched_model_plan(
+        registry: &DescriptorRegistry,
+        label: &str,
+        deleted: bool,
+    ) -> type_bridge_contract::query_plan::v3::QueryPlanV3 {
+        use super::super::descriptor_plan::MatchRequestAdapterAuthority;
+        use type_bridge_contract::migration_assertion::{
+            AssertionBinding, BindingId as PlanBinding, QueryVariable,
+        };
+        use type_bridge_contract::query_plan::{
+            QueryOutput, QueryPattern,
+            v3::{
+                DeleteItem, DocumentRole, Operation, Pattern, PlanSpec, QueryPlanV3, Stage,
+                ThingDocument, WriteReturns,
+            },
+        };
+        let authority = MatchRequestAdapterAuthority::from_registry(registry).unwrap();
+        let kind = if label == "employment" {
+            TypeKind::Relation
+        } else {
+            TypeKind::Entity
+        };
+        let thing = TypeId::new(kind, label).unwrap();
+        let mut pipeline = vec![
+            Stage::Match {
+                patterns: vec![Pattern::Read(QueryPattern::Isa {
+                    binding: PlanBinding::new(0).unwrap(),
+                    type_id: thing,
+                    include_subtypes: true,
+                })],
+            },
+            Stage::Fetch(ThingDocument::new(
+                PlanBinding::new(0).unwrap(),
+                if label == "employment" {
+                    vec!["employee", "distinct_employee"]
+                        .into_iter()
+                        .map(|role| {
+                            DocumentRole::new(
+                                type_bridge_contract::id::RoleId::new("employment", role).unwrap(),
+                                false,
+                            )
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                },
+            )),
+        ];
+        if deleted {
+            pipeline.push(Stage::Delete {
+                items: vec![DeleteItem::Thing {
+                    binding: PlanBinding::new(0).unwrap(),
+                }],
+            });
+        }
+        QueryPlanV3::new(
+            PlanSpec {
+                bindings: vec![AssertionBinding::new(
+                    PlanBinding::new(0).unwrap(),
+                    QueryVariable::new("root").unwrap(),
+                )],
+                inputs: vec![],
+                given_rows: None,
+                operation: if deleted {
+                    Operation::Write {
+                        returns: WriteReturns::Rows,
+                    }
+                } else {
+                    Operation::Rows
+                },
+                pipeline,
+                output: QueryOutput::Rows { columns: vec![] },
+                managed_semantics: authority
+                    .context()
+                    .managed_state()
+                    .managed_semantic_schema()
+                    .clone(),
+                compatibility: None,
+                functions: vec![],
+            },
+            authority.declared(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fetched_models_receive_core_request_result_proofs_and_deleted_status() {
+        let registry = model_fetch_registry(true);
+        let document =
+            serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Alice"}});
+        for deleted in [false, true] {
+            let plan = fetched_model_plan(&registry, "person", deleted);
+            assert_eq!(plan.fetched_thing_is_deleted(), deleted);
+            let (request, result) = validated_match_result_from_plan(
+                &registry,
+                &plan,
+                &[document.clone(), document.clone()],
+                &DescriptorId::new("entity:person"),
+                crate::QueryExecutionResourceLimits::default(),
+            )
+            .unwrap();
+            let MatchResult::Rows { rows } = result.for_request(&request).unwrap() else {
+                panic!("rows");
+            };
+            assert_eq!(rows.len(), 1);
+            let SlotValue::One(thing) = &rows[0].slots()[0] else {
+                panic!("one");
+            };
+            assert_eq!(thing.is_deleted(), deleted);
+            assert_eq!(thing.concept_id().as_str(), "0x01");
+            let stack = super::super::build_plan_fetch_stack(
+                &registry,
+                &plan,
+                &[(
+                    type_bridge_contract::migration_assertion::BindingId::new(0).unwrap(),
+                    DescriptorId::new("entity:person"),
+                )],
+            )
+            .unwrap();
+            assert_eq!(stack.plans().len(), 1);
+            let answers = [crate::query_plan_exec::PlanAnswer::Documents(vec![
+                document.clone(),
+            ])];
+            let projected = stack
+                .resolve(
+                    &registry,
+                    &answers,
+                    crate::QueryExecutionResourceLimits::default(),
+                )
+                .unwrap();
+            let MatchResult::Rows { rows } =
+                projected.result().for_request(projected.request()).unwrap()
+            else {
+                panic!("rows");
+            };
+            assert!(
+                matches!(&rows[0].slots()[0], SlotValue::One(thing) if thing.is_deleted() == deleted)
+            );
+        }
+    }
+
+    #[test]
+    fn model_fetch_refuses_write_projection_that_requires_another_query() {
+        use type_bridge_contract::query_plan::v3::{
+            Operation, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+        };
+        let registry = model_fetch_registry(true);
+        let source = fetched_model_plan(&registry, "person", true);
+        let authority =
+            super::super::descriptor_plan::MatchRequestAdapterAuthority::from_registry(&registry)
+                .unwrap();
+        let plan = QueryPlanV3::new(
+            PlanSpec {
+                bindings: source.bindings().to_vec(),
+                inputs: vec![],
+                given_rows: None,
+                operation: Operation::Write {
+                    returns: WriteReturns::Matched,
+                },
+                pipeline: source
+                    .pipeline()
+                    .iter()
+                    .filter(|stage| !matches!(stage, Stage::Fetch(_)))
+                    .cloned()
+                    .collect(),
+                output: source.output().clone(),
+                managed_semantics: source.managed_semantics().clone(),
+                compatibility: None,
+                functions: vec![],
+            },
+            authority.declared(),
+        )
+        .unwrap();
+        let result = super::super::build_plan_fetch_stack(
+            &registry,
+            &plan,
+            &[(
+                type_bridge_contract::migration_assertion::BindingId::new(0).unwrap(),
+                DescriptorId::new("entity:person"),
+            )],
+        );
+        assert!(
+            matches!(result, Err(error) if error.code().as_str() == "plan_returning_models_after_write")
+        );
+    }
+
+    #[test]
+    fn model_fetch_rejects_wrong_declared_types_conflicts_and_excess_evidence() {
+        let registry = model_fetch_registry(true);
+        let plan = fetched_model_plan(&registry, "person", false);
+        let first =
+            serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{"name":"Alice"}});
+        assert_eq!(
+            validated_match_result_from_plan(
+                &registry,
+                &plan,
+                std::slice::from_ref(&first),
+                &DescriptorId::new("entity:company"),
+                crate::QueryExecutionResourceLimits::default()
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "query_plan_hydration_declared"
+        );
+        let mut second = first.clone();
+        second["attributes"]["name"] = serde_json::json!("Bob");
+        assert!(
+            validated_match_result_from_plan(
+                &registry,
+                &plan,
+                &[first.clone(), second],
+                &DescriptorId::new("entity:person"),
+                crate::QueryExecutionResourceLimits::default()
+            )
+            .is_err()
+        );
+        let limits = crate::QueryExecutionResourceLimits {
+            items: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            validated_match_result_from_plan(
+                &registry,
+                &plan,
+                &[first],
+                &DescriptorId::new("entity:person"),
+                limits
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "processed_item_limit"
+        );
+    }
+
+    #[test]
+    fn model_fetch_dispatches_subtypes_and_coalesces_unordered_player_combinations() {
+        let registry = model_fetch_registry(false);
+        let policy = crate::QueryExecutionResourceLimits::default();
+        let plan = fetched_model_plan(&registry, "person", false);
+        let document = serde_json::json!({"_iid":"0x01", "_type":"employee", "attributes":{"name":"Alice", "badge":"E1", "age":i64::MAX}});
+        let (request, result) = validated_match_result_from_plan(
+            &registry,
+            &plan,
+            &[document],
+            &DescriptorId::new("entity:person"),
+            policy,
+        )
+        .unwrap();
+        let MatchResult::Rows { rows } = result.for_request(&request).unwrap() else {
+            panic!("rows");
+        };
+        let SlotValue::One(thing) = &rows[0].slots()[0] else {
+            panic!("one");
+        };
+        assert_eq!(thing.declared_descriptor().as_str(), "entity:person");
+        assert_eq!(thing.concrete_descriptor().as_str(), "entity:employee");
+        assert_eq!(
+            thing
+                .attributes()
+                .iter()
+                .find(|attribute| attribute.field().name == "age")
+                .unwrap()
+                .values(),
+            &[AttributeValue::Long(i64::MAX)]
+        );
+
+        let plan = fetched_model_plan(&registry, "employment", false);
+        let player = |iid, name| {
+            serde_json::json!({
+                "_iid":"0x03", "_type":"employment", "attributes":{"code":"C1"},
+                "_role_0_iid":iid, "_role_0_type":"person", "_role_0_attributes":{"name":name},
+            })
+        };
+        let documents = vec![
+            player("0x01", "Alice"),
+            player("0x02", "Bob"),
+            player("0x01", "Alice"),
+        ];
+        let (request, result) = validated_match_result_from_plan(
+            &registry,
+            &plan,
+            &documents,
+            &DescriptorId::new("relation:employment"),
+            policy,
+        )
+        .unwrap();
+        let MatchResult::Rows { rows } = result.for_request(&request).unwrap() else {
+            panic!("rows");
+        };
+        assert_eq!(rows.len(), 1);
+        let SlotValue::One(thing) = &rows[0].slots()[0] else {
+            panic!("one");
+        };
+        assert_eq!(
+            thing
+                .roles()
+                .iter()
+                .find(|role| role.role().name == "employee")
+                .unwrap()
+                .players()
+                .len(),
+            2
+        );
+        let policy = crate::QueryExecutionResourceLimits {
+            role_players: 1,
+            ..policy
+        };
+        assert_eq!(
+            validated_match_result_from_plan(
+                &registry,
+                &plan,
+                &documents,
+                &DescriptorId::new("relation:employment"),
+                policy
+            )
+            .unwrap_err()
+            .code()
+            .as_str(),
+            "hydrated_role_player_limit"
+        );
+    }
+
+    #[test]
+    fn model_fetch_allows_empty_ordered_roles_and_refuses_populated_roles() {
+        let registry = model_fetch_registry(true);
+        let plan = fetched_model_plan(&registry, "employment", false);
+        let empty =
+            serde_json::json!({"_iid":"0x03", "_type":"employment", "attributes":{"code":"C1"}});
+        let policy = crate::QueryExecutionResourceLimits::default();
+        validated_match_result_from_plan(
+            &registry,
+            &plan,
+            std::slice::from_ref(&empty),
+            &DescriptorId::new("relation:employment"),
+            policy,
+        )
+        .unwrap();
+        let mut populated = empty;
+        populated["_role_0_iid"] = serde_json::json!("0x01");
+        populated["_role_0_type"] = serde_json::json!("person");
+        populated["_role_0_attributes"] = serde_json::json!({"name":"Alice"});
+        let error = validated_match_result_from_plan(
+            &registry,
+            &plan,
+            &[populated],
+            &DescriptorId::new("relation:employment"),
+            policy,
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "query_plan_hydration_ordered_role");
+        assert!(error.details().is_empty());
     }
 
     fn binding(
@@ -2525,5 +3275,18 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.category(), MatchErrorCategory::InvalidPlan);
         assert_eq!(error_code(&error), "invalid_regex_pattern");
+    }
+
+    #[test]
+    fn native_duration_preserves_released_components_and_refuses_overflow() {
+        assert_eq!(native_duration("P0DT0H0M3S").unwrap().to_string(), "PT3S");
+        assert_eq!(
+            native_duration("P1Y2M3DT4H5M6.000000007S")
+                .unwrap()
+                .components(),
+            (false, 14, 3, 14706, 7)
+        );
+        assert!(native_duration("PT18446744073709551616S").is_none());
+        assert!(native_duration("provider-secret").is_none());
     }
 }

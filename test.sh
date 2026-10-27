@@ -853,6 +853,16 @@ run_live_lane() {
             --test transaction_options_live --test staged_transaction_live \
             --test exact_integer_live
 
+    if [[ "$lane_given_rows" == 1 ]]; then
+        run_step "given window partition deduplication (TypeDB $typedb_server_version)" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                query_v2_wide_query_tests::second_distinct_given_window_provider_quirk \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-orm --lib
+    fi
+
     # The staged V3 suites run on every server of the typedb-3.13.6/v1 profile.
     if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
         run_step "staged query-plan/v3 programs resolve at commit (TypeDB $typedb_server_version)" \

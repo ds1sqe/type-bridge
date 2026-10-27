@@ -20,7 +20,7 @@ function coreDefaults(transport: "DIRECT" | "PROXY"): Record<string, bigint> {
   };
 }
 
-function reported(limits: QueryExecutionResourceLimits): Record<string, bigint> {
+function reported(limits: QueryExecutionResourceLimits): Record<string, bigint | undefined> {
   return {
     timeoutMilliseconds: limits.timeoutMilliseconds,
     items: limits.items,
@@ -66,7 +66,7 @@ test("both transport default sets are exported", () => {
 
 test("a session's default answer policy is the direct default", () => {
   // QuerySession uses `new QueryExecutionResourceLimits()` when given none.
-  assert.deepEqual(reported(new QueryExecutionResourceLimits()), coreDefaults("DIRECT"));
+  assert.deepEqual(reported(new QueryExecutionResourceLimits()), { ...coreDefaults("DIRECT"), statements: undefined });
 });
 
 test("an omitted dimension keeps the direct default beside a given one", () => {
@@ -86,5 +86,21 @@ test("byte and code ceilings are exported by the addon", () => {
     native.MAX_DIAGNOSTIC_CODE_BYTES,
   ]) {
     assert.ok(Number.isSafeInteger(value) && value > 0);
+  }
+});
+
+
+test("omitted statements stay unset and explicit three stays strict", () => {
+  assert.equal(new QueryExecutionResourceLimits().statements, undefined);
+  assert.equal(new QueryExecutionResourceLimits({ statements: 3n }).statements, 3n);
+});
+
+test("raised byte and item limits retain the shared integer boundary", () => {
+  const maximum = (1n << 64n) - 1n;
+  const limits = new QueryExecutionResourceLimits({ bytes: maximum, items: maximum });
+  assert.equal(limits.bytes, maximum);
+  assert.equal(limits.items, maximum);
+  for (const name of ["bytes", "items"] as const) {
+    assert.throws(() => new QueryExecutionResourceLimits({ [name]: maximum + 1n }), new RegExp(name));
   }
 });

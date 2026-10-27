@@ -627,7 +627,7 @@ fn lifecycle_statement_limit() -> SdkExecutionDiagnostic {
 fn require_lifecycle_dispatch(
     limits: QueryExecutionResourceLimits,
 ) -> Result<(), SdkExecutionDiagnostic> {
-    if limits.effective().statements == 0 {
+    if limits.effective().statement_limit() == 0 {
         Err(lifecycle_statement_limit())
     } else {
         Ok(())
@@ -2945,7 +2945,7 @@ entities:
             let version = self.version;
             Box::pin(async move {
                 check_control(input.deadline, &input.cancellation)?;
-                if input.limits.effective().statements == 0 {
+                if input.limits.effective().statement_limit() == 0 {
                     return Err(lifecycle_statement_limit());
                 }
                 state.connects.fetch_add(1, Ordering::AcqRel);
@@ -3201,7 +3201,7 @@ entities:
             attribute_values: limits.attribute_values,
             collection_members: limits.collection_members,
             role_players: limits.role_players,
-            statements: limits.statements,
+            statements: limits.statement_limit(),
             reserved0: 0,
             reserved: [0; 4],
         }
@@ -3550,7 +3550,7 @@ entities:
         unsafe { close_diagnostics(&mut diagnostics) };
 
         let zero_statement_connection_limits = QueryExecutionResourceLimits {
-            statements: 0,
+            statements: Some(0),
             ..QueryExecutionResourceLimits::default()
         };
         let zero_statement_connection = DatabaseConfigV2Fixture::new(
@@ -4214,7 +4214,7 @@ entities:
         );
 
         let zero_statement_answer = QueryExecutionResourceLimits {
-            statements: 0,
+            statements: Some(0),
             ..QueryExecutionResourceLimits::default()
         };
         let zero_statement_fixture = DatabaseConfigV2Fixture::plaintext(zero_statement_answer);
@@ -4525,7 +4525,7 @@ entities:
         assert_eq!(status, TypeBridgeStatus::Ok);
 
         let zero_statement = QueryExecutionResourceLimits {
-            statements: 0,
+            statements: Some(0),
             ..QueryExecutionResourceLimits::default()
         };
         let context = unsafe { &*database }
@@ -5698,7 +5698,13 @@ entities:
             type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1,
             type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS + 1,
         );
-        assert_eq!(limits, QueryExecutionResourceLimits::default());
+        assert_eq!(
+            limits,
+            QueryExecutionResourceLimits {
+                statements: Some(3),
+                ..QueryExecutionResourceLimits::default()
+            }
+        );
 
         let root = sdk_models_repository_root();
         let journey: Value = serde_json::from_slice(

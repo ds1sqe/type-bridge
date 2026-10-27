@@ -74,6 +74,8 @@ fn advertisement() -> RemoteCapabilities {
         RemoteExecutorBinding::new("fixture-executor-0001", "fixture-epoch-0000001").unwrap(),
         Keys::new().public_key(),
     )
+    .with_query_limits(type_bridge_contract::limits::QueryLimits::CANONICAL)
+    .unwrap()
 }
 fn entry(plan: QueryPlanV3) -> StagedPlanV3 {
     let rows = plan.given_rows().unwrap_or(&[]).to_vec();
@@ -352,7 +354,16 @@ fn capability_admission_and_aggregate_answer_budgets_fail_closed() {
     let mut spec = spec();
     spec.limits.max_items = 2;
     let request = StagedRequestV3::new(spec, &support::schema(), &advertisement()).unwrap();
-    assert!(StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers()).is_err());
+    let refusal = StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers()).unwrap_err();
+    assert_eq!(refusal.code().as_str(), "query_remote_v3_answer_items");
+    assert_eq!(
+        refusal.details()["maximum"],
+        type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(2)
+    );
+    assert_eq!(
+        refusal.details()["actual"],
+        type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(3)
+    );
     let mut spec = crate::spec();
     spec.limits.max_bytes = 1;
     let request = StagedRequestV3::new(spec, &support::schema(), &advertisement()).unwrap();
@@ -882,7 +893,9 @@ fn deletion_snapshots_require_capability_and_verify_signed_pre_images() {
         caps,
         RemoteExecutorBinding::new("fixture-executor-0001", "fixture-epoch-0000001").unwrap(),
         Keys::new().public_key(),
-    );
+    )
+    .with_query_limits(type_bridge_contract::limits::QueryLimits::CANONICAL)
+    .unwrap();
     let root =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/query-remote-v3");
     let mut fixtures = BTreeMap::new();
@@ -969,7 +982,9 @@ fn optional_answer_dimensions_round_trip_and_require_receiver_capability() {
     let old = advertisement();
     let mut capabilities = old.capabilities().clone();
     capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS).unwrap());
-    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key())
+        .with_query_limits(old.query_limits())
+        .unwrap();
     let mut legacy_spec = spec();
     let mut spec = spec();
     spec.limits.max_graph_nodes = Some(2);
@@ -1028,7 +1043,9 @@ fn signed_fetch_evidence_cannot_exceed_requested_semantic_dimensions() {
     let old = advertisement();
     let mut capabilities = old.capabilities().clone();
     capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS).unwrap());
-    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key())
+        .with_query_limits(old.query_limits())
+        .unwrap();
     let (_, documents) = fetch_documents(true);
     assert_eq!(
         StagedAnswerV3::Documents {
@@ -1085,7 +1102,9 @@ fn read_rematch_is_fenced_by_receiver_capability() {
     );
     let mut capabilities = old.capabilities().clone();
     capabilities.insert(CapabilityId::new("query.pipeline.rematch").unwrap());
-    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key())
+        .with_query_limits(old.query_limits())
+        .unwrap();
     let request = StagedRequestV3::new(request_spec(), &support::schema(), &current).unwrap();
     assert_eq!(
         StagedRequestV3::decode(&request.encode().unwrap(), &support::schema(), &current).unwrap(),
@@ -1110,7 +1129,9 @@ fn iid_expression_requires_receiver_capability() {
     );
     let mut capabilities = old.capabilities().clone();
     capabilities.insert(CapabilityId::new("query.expr.iid").unwrap());
-    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key())
+        .with_query_limits(old.query_limits())
+        .unwrap();
     let request = StagedRequestV3::new(request_spec(), &support::schema(), &current).unwrap();
     assert_eq!(
         StagedRequestV3::decode(&request.encode().unwrap(), &support::schema(), &current).unwrap(),
@@ -1343,5 +1364,110 @@ fn unbound_templates_require_wide_string_capability_for_invocation_rows() {
                 "canonical_string_bytes".into()
             )
         )
+    );
+}
+
+#[test]
+fn explicitly_advertised_statement_limits_remain_strict_at_the_default_value() {
+    let make_spec = || {
+        let mut request = spec();
+        request.plans.push(entry(examples::batch()));
+        request
+    };
+    StagedRequestV3::new(make_spec(), &support::schema(), &advertisement()).unwrap();
+    let explicit = advertisement()
+        .with_answer_limits(BTreeMap::from([("statements".to_owned(), 3)]))
+        .unwrap();
+    let error = StagedRequestV3::new(make_spec(), &support::schema(), &explicit).unwrap_err();
+    assert_eq!(error.code().as_str(), "query_remote_v3_statement_limit");
+    assert_eq!(
+        error.details().get("maximum"),
+        Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(3))
+    );
+}
+
+#[test]
+fn explicit_staged_answer_budgets_share_policy_maxima_without_changing_defaults() {
+    let defaults = StagedLimitsV3::default();
+    assert_eq!(defaults.max_bytes, 32 * 1024 * 1024);
+    assert_eq!(defaults.max_items, 65_536);
+    for (bytes, items) in [(1 << 30, 1_000_000), (u64::MAX, u64::MAX)] {
+        let limits = StagedLimitsV3 {
+            max_bytes: bytes,
+            max_items: items,
+            ..defaults
+        };
+        assert_eq!(limits.validate().unwrap(), limits);
+    }
+    let wire = serde_json::to_string(&defaults).unwrap().replace(
+        "\"max_bytes\":33554432",
+        "\"max_bytes\":18446744073709551616",
+    );
+    assert!(serde_json::from_str::<StagedLimitsV3>(&wire).is_err());
+}
+
+#[test]
+fn staged_advertisements_state_native_columns_and_retain_explicit_lower_caps() {
+    use type_bridge_contract::limits::{MAX_BINDINGS, QueryLimits};
+    let old = advertisement();
+    assert_eq!(old.query_limits(), QueryLimits::CANONICAL);
+    let native = RemoteCapabilities::new(
+        old.capabilities().clone(),
+        old.executor().clone(),
+        old.reply_key(),
+    );
+    assert_eq!(native.query_limits(), QueryLimits::V3);
+    let json: serde_json::Value = serde_json::from_slice(&native.encode().unwrap()).unwrap();
+    assert_eq!(json["query_limits"]["selected_slots"], MAX_BINDINGS);
+    let lower = native.with_query_limits(QueryLimits::CANONICAL).unwrap();
+    assert_eq!(lower.query_limits().structural.selected_slots, 16);
+}
+
+#[test]
+fn typed_read_failure_projection_preserves_path_details_certainty_and_static_message() {
+    use type_bridge_contract::sdk_diagnostic::{
+        SdkDiagnosticDetailValue, SdkDiagnosticName, SdkDiagnosticPathSegment,
+        SdkQueryDiagnosticCategory, SdkQueryDiagnosticIdentity,
+    };
+    let identity = |value| SdkQueryDiagnosticIdentity::new(value).unwrap();
+    let diagnostic = SdkExecutionDiagnostic::query_failure(
+        SdkQueryDiagnosticCategory::ResultDecode,
+        SdkDiagnosticCode::new("remote_application_failure").unwrap(),
+    )
+    .try_at(SdkDiagnosticPathSegment::ContractField(identity("plan")))
+    .unwrap()
+    .try_at(SdkDiagnosticPathSegment::Index(2))
+    .unwrap()
+    .try_at(SdkDiagnosticPathSegment::ContractIdentity(identity(
+        "person",
+    )))
+    .unwrap()
+    .try_with_detail(
+        SdkDiagnosticName::new("attempt").unwrap(),
+        SdkDiagnosticDetailValue::Signed(-7),
+    )
+    .unwrap()
+    .try_with_detail(
+        SdkDiagnosticName::new("actual").unwrap(),
+        SdkDiagnosticDetailValue::Count(u64::MAX),
+    )
+    .unwrap()
+    .try_with_detail(
+        SdkDiagnosticName::new("subject").unwrap(),
+        SdkDiagnosticDetailValue::QueryIdentity(identity("person")),
+    )
+    .unwrap()
+    .with_failure(
+        &type_bridge_contract::failure::Failure::Indeterminate { code: None },
+        Default::default(),
+    );
+    let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+    let mut wire = expected.clone();
+    wire["message"] = json!("provider secret must not escape");
+    let projection: type_bridge_contract::query_remote_v3::SdkDiagnosticProjectionV3 =
+        serde_json::from_value(wire).unwrap();
+    assert_eq!(
+        serde_json::to_value(projection.to_query_diagnostic().unwrap().host_json()).unwrap(),
+        expected
     );
 }

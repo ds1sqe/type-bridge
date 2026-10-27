@@ -1067,7 +1067,7 @@ mod tests {
             attribute_values: limits.attribute_values,
             collection_members: limits.collection_members,
             role_players: limits.role_players,
-            statements: limits.statements,
+            statements: limits.statement_limit(),
             reserved0: 0,
             reserved: [0; 4],
         }

@@ -158,7 +158,7 @@ impl type_bridge::LifecycleHook for RecordingLifecycleHook {
     }
 }
 
-/// An HTTP exchange that counts its `/v2/query` requests, for journeys that
+/// An HTTP exchange that counts its `/v3/staged` requests, for journeys that
 /// assert how many exchanges a terminal performs. Connections that only need
 /// a working proxy use the built-in transport through [`ProxyEndpoint`].
 struct HttpTransport {
@@ -184,7 +184,7 @@ impl ProxyExchange for HttpTransport {
         Box::pin(async move {
             let response = self
                 .client
-                .get(format!("{}/v2/capabilities", self.base_url))
+                .get(format!("{}/v3/capabilities", self.base_url))
                 .send()
                 .await
                 .map_err(transport_error)?
@@ -216,7 +216,7 @@ impl ProxyExchange for HttpTransport {
             self.exchange_count.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .client
-                .post(format!("{}/v2/query", self.base_url))
+                .post(format!("{}/v3/staged", self.base_url))
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(request.to_vec())
                 .send()
@@ -2157,7 +2157,7 @@ fn sdk_queries_resource_limit_base() -> Value {
     let plus_one_kept_all = raised.validate() == Ok(raised) && raised.effective() == raised;
     // Past a supported maximum a value is refused by name, never clamped.
     let past_maximum_refused = QueryExecutionResourceLimits {
-        statements: hard.statements + 1,
+        statements: Some(type_bridge::MAX_QUERY_STATEMENTS + 1),
         ..hard
     }
     .validate()
@@ -2176,7 +2176,7 @@ fn sdk_queries_resource_limit_base() -> Value {
         && zero.attribute_values == 0
         && zero.collection_members == 0
         && zero.role_players == 0
-        && zero.statements == 0;
+        && zero.statements == Some(0);
     json!({
         "defaults": {
             "timeout_milliseconds": hard.timeout_milliseconds,
@@ -2186,7 +2186,7 @@ fn sdk_queries_resource_limit_base() -> Value {
             "attribute_values": hard.attribute_values,
             "collection_members": hard.collection_members,
             "role_players": hard.role_players,
-            "statements": hard.statements,
+            "statements": hard.statements.unwrap_or(3),
         },
         "plus_one_kept_all": plus_one_kept_all,
         "past_maximum_refused": past_maximum_refused,

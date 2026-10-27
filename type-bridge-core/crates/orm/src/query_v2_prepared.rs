@@ -1301,7 +1301,7 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     limits.max_graph_nodes = limits.max_graph_nodes.min(advertised.graph_nodes);
     limits.max_attribute_values = limits.max_attribute_values.min(advertised.attribute_values);
     limits.max_role_players = limits.max_role_players.min(advertised.role_players);
-    limits.max_statements = limits.max_statements.min(advertised.statements);
+    limits.max_statements = limits.max_statements.min(advertised.statement_limit());
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let prepared_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1462,7 +1462,7 @@ mod tests {
             max_graph_nodes: policy.graph_nodes,
             max_attribute_values: policy.attribute_values,
             max_role_players: policy.role_players,
-            max_statements: policy.statements,
+            max_statements: policy.statement_limit(),
         }
     }
 

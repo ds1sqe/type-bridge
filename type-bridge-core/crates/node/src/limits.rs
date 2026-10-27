@@ -123,7 +123,7 @@ mod tests {
         );
         assert_eq!(direct.role_players, DEFAULT_DIRECT_QUERY_ROLE_PLAYERS);
         assert_eq!(
-            u64::from(direct.statements),
+            u64::from(direct.statement_limit()),
             DEFAULT_DIRECT_QUERY_STATEMENTS
         );
         let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
@@ -140,6 +140,9 @@ mod tests {
             DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS
         );
         assert_eq!(proxy.role_players, DEFAULT_PROXY_QUERY_ROLE_PLAYERS);
-        assert_eq!(u64::from(proxy.statements), DEFAULT_PROXY_QUERY_STATEMENTS);
+        assert_eq!(
+            u64::from(proxy.statement_limit()),
+            DEFAULT_PROXY_QUERY_STATEMENTS
+        );
     }
 }

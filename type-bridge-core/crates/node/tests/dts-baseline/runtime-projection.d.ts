@@ -68,7 +68,7 @@ export declare class QueryExecutionResourceLimits {
     get attributeValues(): bigint;
     get collectionMembers(): bigint;
     get rolePlayers(): bigint;
-    get statements(): bigint;
+    get statements(): bigint | undefined;
     /** @internal Exact native policy owner. */
     nativeHandle(): NativeQueryExecutionResources;
 }

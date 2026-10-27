@@ -214,7 +214,7 @@ async fn statement_and_aggregate_item_limits_refuse_without_partial_answers() {
     for (policy, events, code) in [
         (
             QueryExecutionResourceLimits {
-                statements: 1,
+                statements: Some(1),
                 ..Default::default()
             },
             vec!["open", "close"],

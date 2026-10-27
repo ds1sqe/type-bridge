@@ -1454,6 +1454,7 @@ pub struct QueryPlanBuilder {
 /// algebra. It does not construct a `QueryPlan` directly: this value enters
 /// the same component constructor and schema-aware validator used by ordinary
 /// incremental authoring.
+#[cfg(any(test, feature = "integration-tests"))]
 pub(crate) struct QueryCompatibilityPlanInput {
     bindings: Vec<AssertionBinding>,
     inputs: Vec<InputColumn>,
@@ -1462,6 +1463,7 @@ pub(crate) struct QueryCompatibilityPlanInput {
     compatibility: QueryPlanV2Compatibility,
 }
 
+#[cfg(any(test, feature = "integration-tests"))]
 impl QueryCompatibilityPlanInput {
     /// Package one closed compatibility projection for builder-owned
     /// finalization.
@@ -1532,6 +1534,7 @@ impl QueryPlanBuilder {
     /// Finalize one adapter-authored closed compatibility projection through
     /// the same V2 construction and schema-validation gate as incremental
     /// plans.
+    #[cfg(any(test, feature = "integration-tests"))]
     pub(crate) fn finalize_compatibility(
         input: QueryCompatibilityPlanInput,
         context: &MigrationAssertionValidationContext<'_>,

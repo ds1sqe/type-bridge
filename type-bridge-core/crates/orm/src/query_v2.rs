@@ -9,6 +9,7 @@
 use type_bridge_core_lib::__internal as tql;
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
+use type_bridge_contract::id::TypeId;
 use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::{
@@ -21,9 +22,7 @@ use type_bridge_query::{
 
 use crate::migration_assertion::render_comparator;
 
-pub(crate) use crate::query_v2_model::{
-    execute_validated_model_query_borrowed, execute_validated_model_query_with_statement_limit,
-};
+pub(crate) use crate::query_v2_model::execute_validated_model_query_with_statement_limit;
 
 /// Exact provider text and typed shape for one lowered invocation.
 #[derive(Clone, Debug, PartialEq)]
@@ -615,6 +614,23 @@ fn variable_names<'a>(
         .collect()
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum PatternTypeDomains<'a> {
+    Query(&'a ValidatedQuery),
+    Plan(&'a type_bridge_contract::query_plan::v3::QueryPlanV3),
+}
+
+impl<'a> PatternTypeDomains<'a> {
+    fn types(self, binding: &BindingId) -> Option<&'a std::collections::BTreeSet<TypeId>> {
+        match self {
+            Self::Query(query) => query
+                .binding_domain(binding)
+                .map(|domain| domain.type_ids()),
+            Self::Plan(plan) => plan.binding_types(*binding),
+        }
+    }
+}
+
 pub(crate) fn lower_scoped_patterns(
     inputs: &[InputColumn],
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
@@ -622,7 +638,15 @@ pub(crate) fn lower_scoped_patterns(
     row: Option<&InputRow>,
     validated: Option<&ValidatedQuery>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
-    lower_scoped_patterns_with_values(inputs, bindings, patterns, row, validated, None, None)
+    lower_scoped_patterns_with_values(
+        inputs,
+        bindings,
+        patterns,
+        row,
+        validated.map(PatternTypeDomains::Query),
+        None,
+        None,
+    )
 }
 
 pub(crate) fn lower_scoped_patterns_with_values(
@@ -630,9 +654,9 @@ pub(crate) fn lower_scoped_patterns_with_values(
     bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
     patterns: &[QueryPattern],
     row: Option<&InputRow>,
-    validated: Option<&ValidatedQuery>,
+    validated: Option<PatternTypeDomains<'_>>,
     values: Option<&[InputRow]>,
-    literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy>,
+    literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy<'_>>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
     let mut output = Vec::new();
     for (pattern_index, pattern) in patterns.iter().enumerate() {
@@ -771,8 +795,8 @@ pub(crate) fn lower_scoped_patterns_with_values(
                         // TypeDB requires an exact typed witness in each identity branch.
                         let validated = validated.ok_or_else(|| failure(DiagnosticCategory::Integrity, "query_v2_reachable_scope", "a validated reachable pattern appears outside the root query scope"))?;
                         let domain = validated
-                            .binding_domain(&source_id)
-                            .filter(|domain| !domain.type_ids().is_empty())
+                            .types(&source_id)
+                            .filter(|domain| !domain.is_empty())
                             .ok_or_else(|| {
                                 failure(
                                     DiagnosticCategory::Integrity,
@@ -781,7 +805,7 @@ pub(crate) fn lower_scoped_patterns_with_values(
                                 )
                             })?;
                         // Distinct witness names keep mutually exclusive branches independent.
-                        for (ordinal, type_id) in domain.type_ids().iter().enumerate() {
+                        for (ordinal, type_id) in domain.iter().enumerate() {
                             let name = format!("R{pattern_index}z{ordinal}");
                             branches.push(vec![
                                 ast(tql::thing(

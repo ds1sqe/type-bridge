@@ -965,6 +965,16 @@ impl QueryPlan {
         managed_semantics: ManagedSemanticSchemaFingerprint,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
+        if limits.structural.selected_slots > crate::limits::MAX_SELECTED_SLOTS {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_output_limit",
+                "V1/V2 output slots exceed their frozen ceiling",
+            )
+            .with_detail("limit", "selected_slots")
+            .with_detail("maximum", crate::limits::MAX_SELECTED_SLOTS as i64)
+            .with_detail("source", crate::limits::LIMIT_SOURCE_DEFAULT));
+        }
         if compatibility.is_none() {
             validate_v1_reachability(&pipeline)?;
         }

@@ -404,7 +404,7 @@ impl Database {
         let control = type_bridge_typedb_runtime::RuntimeConnectionControl::new(
             limits.items,
             limits.bytes,
-            limits.statements,
+            limits.statement_limit(),
             deadline.instant(),
             type_bridge_typedb_runtime::RuntimeAnswerCancellation::from_shared(
                 cancellation.shared(),
@@ -1095,7 +1095,7 @@ mod tests {
         .prepare_transport()
         .expect("prepare transport before supplying credentials");
         let limits = QueryExecutionResourceLimits {
-            statements: 0,
+            statements: Some(0),
             ..QueryExecutionResourceLimits::default()
         };
         let deadline = QueryExecutionDeadline::for_limits(limits);

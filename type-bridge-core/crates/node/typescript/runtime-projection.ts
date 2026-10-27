@@ -130,7 +130,7 @@ export class QueryExecutionResourceLimits {
   get attributeValues(): bigint { return this.#native.attributeValues; }
   get collectionMembers(): bigint { return this.#native.collectionMembers; }
   get rolePlayers(): bigint { return this.#native.rolePlayers; }
-  get statements(): bigint { return this.#native.statements; }
+  get statements(): bigint | undefined { return this.#native.statements ?? undefined; }
 
   /** @internal Exact native policy owner. */
   nativeHandle(): NativeQueryExecutionResources { return this.#native; }
@@ -1262,7 +1262,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
       attributeValues: limits.attributeValues,
       collectionMembers: limits.collectionMembers,
       rolePlayers: limits.rolePlayers,
-      statements: limits.statements,
+      statements: limits.statements ?? undefined,
     });
   }
 

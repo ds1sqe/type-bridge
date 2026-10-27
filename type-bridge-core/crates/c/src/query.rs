@@ -614,6 +614,7 @@ fn lower(error: type_bridge_orm::OrmError) -> SdkExecutionDiagnostic {
 fn lower_remote(error: RemoteModelQueryV2Error) -> SdkExecutionDiagnostic {
     match error {
         RemoteModelQueryV2Error::Match(error) => type_bridge_orm::lower_match_error(&error),
+        RemoteModelQueryV2Error::Execution(error) => error,
         RemoteModelQueryV2Error::Diagnostic(error) => {
             type_bridge_orm::lower_remote_query_diagnostic(error)
         }
@@ -5103,7 +5104,7 @@ pub unsafe extern "C" fn type_bridge_query_remote_pending_claim(
             return return_execution_error(error, out_diagnostics);
         }
         let response_snapshot_limit = claimed.response_snapshot_limit();
-        debug_assert_eq!(response_snapshot_limit, REMOTE_RESPONSE_SNAPSHOT_LIMIT);
+        debug_assert_eq!(response_snapshot_limit, MAX_REMOTE_ENVELOPE_BYTES);
         let claim = reservation.initialize(TypeBridgeQueryRemoteClaim {
             state: Arc::clone(&pending.state),
             terminal: pending.terminal.clone(),
@@ -6412,16 +6413,16 @@ mod tests {
         Diagnostic, DiagnosticCategory, DiagnosticCode, DiagnosticPath, DiagnosticPathSegment,
     };
     use type_bridge_contract::id::{AttributeId, FunctionId, RoleId, TypeId, TypeKind};
-    use type_bridge_contract::migration_assertion::BindingId as ContractBindingId;
     use type_bridge_contract::projection::{
         ProjectedTokenKind, TYPE_BRIDGE_PROJECTED_TOKEN_VERSION,
     };
-    use type_bridge_contract::query_plan::{ModelQueryV2, query_plan_v2_capability_vocabulary};
+    use type_bridge_contract::query_plan::v3::{
+        Operation, Stage, query_plan_v3_capability_vocabulary,
+    };
     use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-    use type_bridge_contract::query_remote_v2::{
-        HydrationGraphV2, RemoteOutcomeV2, RemoteQueryFailureV2, RemoteQueryRequestV2,
-        RemoteQueryResponseV2, RemoteReducedValueV2, RemoteReductionRowV2, RemoteResultKindV2,
-        query_remote_v2_required_capabilities,
+    use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
+    use type_bridge_contract::query_remote_v3::{
+        StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
     };
     use type_bridge_core_lib::ast::{
         TypedFetchRows, TypedHydrateThings, TypedPageRematch, TypedRootScan,
@@ -6510,6 +6511,7 @@ mod tests {
                 queries: Arc::clone(&self.queries),
                 hydrations: Arc::clone(&self.hydrations),
                 close_failure: self.close_failure,
+                native: None,
             };
             Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
         }
@@ -6517,13 +6519,81 @@ mod tests {
         fn is_open(&self) -> bool {
             true
         }
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
     }
 
     struct FakeTransaction {
+        native: Option<(Vec<serde_json::Value>, Vec<Vec<serde_json::Value>>)>,
         events: Arc<Events>,
         queries: Arc<Mutex<VecDeque<Response>>>,
         hydrations: Arc<Mutex<VecDeque<Response>>>,
         close_failure: bool,
+    }
+
+    fn native_test_variables(value: &str) -> Vec<String> {
+        value
+            .split('$')
+            .skip(1)
+            .map(|variable| {
+                variable
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
+                    .collect()
+            })
+            .collect()
+    }
+    fn native_test_attributes(node: &serde_json::Value) -> serde_json::Value {
+        serde_json::Value::Object(
+            node["attributes"]
+                .as_array()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|value| {
+                            (
+                                value["field"]
+                                    .as_str()
+                                    .unwrap()
+                                    .rsplit('_')
+                                    .next()
+                                    .unwrap()
+                                    .to_owned(),
+                                value["values"][0].clone(),
+                            )
+                        })
+                        .collect::<serde_json::Map<_, _>>()
+                })
+                .unwrap_or_default(),
+        )
+    }
+    fn native_test_documents(node: &serde_json::Value) -> Vec<serde_json::Value> {
+        let mut documents = vec![
+            serde_json::json!({"_iid":node["concept_id"],"_type":node["concrete_type"],"attributes":native_test_attributes(node)}),
+        ];
+        let mut roles = node["roles"].as_array().cloned().unwrap_or_default();
+        roles.sort_by(|left, right| left["role"].as_str().cmp(&right["role"].as_str()));
+        for (index, role) in roles.iter().enumerate() {
+            let players = role["players"].as_array().unwrap();
+            if players.is_empty() {
+                continue;
+            }
+            documents = documents
+                .into_iter()
+                .flat_map(|document| {
+                    players.iter().map(move |player| {
+                        let mut document = document.clone();
+                        document[format!("_role_{index}_iid")] = player["concept_id"].clone();
+                        document[format!("_role_{index}_type")] = player["concrete_type"].clone();
+                        document[format!("_role_{index}_attributes")] =
+                            native_test_attributes(player);
+                        document
+                    })
+                })
+                .collect();
+        }
+        documents
     }
 
     fn feed(
@@ -6544,8 +6614,235 @@ mod tests {
     }
 
     impl TransactionOps for FakeTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            Box::pin(async { panic!("typed-query tests must not use raw TypeQL") })
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
+        fn query_with_rows(
+            &mut self,
+            typeql: &str,
+            _rows: type_bridge_orm::session::backend::GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.query(typeql)
+        }
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            let typeql = typeql.to_owned();
+            Box::pin(async move {
+                if self.native.is_none() {
+                    self.events.queries.fetch_add(1, Ordering::AcqRel);
+                    let response = self
+                        .queries
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| Response::Items(vec![]));
+                    let items = match response {
+                        Response::Items(items) => items,
+                        Response::Error => {
+                            return Err(OrmError::QueryExecution(
+                                "provider-secret-query-failure".into(),
+                            ));
+                        }
+                        Response::Panic => panic!("injected native query panic"),
+                        Response::Pending => self.events.pending().await,
+                    };
+                    let roots = items
+                        .into_iter()
+                        .map(|item| match item {
+                            AnswerItem::Row(row) | AnswerItem::Document(row) => row,
+                        })
+                        .collect::<Vec<_>>();
+                    self.native = Some((roots, vec![]));
+                }
+                let needs_models = typeql.contains("fetch") || typeql.contains("groupby");
+                let needs_hydration = needs_models
+                    && self.native.as_ref().unwrap().1.is_empty()
+                    && !self.native.as_ref().unwrap().0.is_empty();
+                if needs_hydration {
+                    self.events.hydrations.fetch_add(1, Ordering::AcqRel);
+                    let response = self
+                        .hydrations
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_else(|| Response::Items(vec![]));
+                    let items = match response {
+                        Response::Items(items) => items,
+                        Response::Error => {
+                            return Err(OrmError::QueryExecution(
+                                "provider-secret-hydration-failure".into(),
+                            ));
+                        }
+                        Response::Panic => panic!("injected native hydration panic"),
+                        Response::Pending => self.events.pending().await,
+                    };
+                    let tuples = items
+                        .into_iter()
+                        .map(|item| {
+                            let row = match item {
+                                AnswerItem::Row(row) | AnswerItem::Document(row) => row,
+                            };
+                            row.get("bindings")
+                                .and_then(serde_json::Value::as_array)
+                                .cloned()
+                                .unwrap_or_else(|| vec![row])
+                        })
+                        .collect();
+                    self.native.as_mut().unwrap().1 = tuples;
+                }
+                let (roots, tuples) = self.native.as_ref().unwrap();
+                let selected = typeql
+                    .rsplit("select ")
+                    .next()
+                    .and_then(|tail| tail.split(';').next())
+                    .unwrap_or("");
+                let columns = native_test_variables(selected);
+                let words = typeql.split_whitespace().collect::<Vec<_>>();
+                let fields = words
+                    .windows(4)
+                    .filter(|part| {
+                        part[1] == "has" && part[0].starts_with("$b") && part[3].starts_with("$b")
+                    })
+                    .map(|part| {
+                        (
+                            part[3]
+                                .trim_start_matches('$')
+                                .trim_end_matches([';', ','])
+                                .to_owned(),
+                            (
+                                part[0].trim_start_matches("$b").parse::<usize>().unwrap(),
+                                part[2].trim_end_matches(',').to_owned(),
+                            ),
+                        )
+                    })
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                let cell = |variable: &str, tuple: &Vec<serde_json::Value>| {
+                    if let Some((owner, field)) = fields.get(variable) {
+                        let attribute = tuple[*owner]["attributes"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|item| {
+                                item["field"].as_str().is_some_and(|name| {
+                                    name == field || name.ends_with(&format!("_{field}"))
+                                })
+                            })
+                            .unwrap();
+                        return serde_json::json!({"category":"Attribute","label":field,"value_type":attribute["value_type"],"value":attribute["values"][0]});
+                    }
+                    let index = variable.trim_start_matches('b').parse::<usize>().unwrap();
+                    let node = &tuple[index];
+                    serde_json::json!({"category":if node["kind"]=="relation" {"Relation"} else {"Entity"},"label":node.get("concrete_type").and_then(serde_json::Value::as_str).unwrap_or("person"),"iid":node["concept_id"]})
+                };
+                let fallback = roots
+                    .iter()
+                    .map(|root| {
+                        root.get("bindings")
+                            .and_then(serde_json::Value::as_array)
+                            .cloned()
+                            .unwrap_or_else(|| vec![root.clone()])
+                    })
+                    .collect::<Vec<_>>();
+                let source = if tuples.is_empty() { &fallback } else { tuples };
+                if let Some(reduce) = typeql
+                    .split("reduce ")
+                    .nth(1)
+                    .filter(|_| !typeql.contains("fetch"))
+                {
+                    let grouping = typeql
+                        .split("groupby ")
+                        .nth(1)
+                        .map(|text| native_test_variables(text.split(';').next().unwrap()))
+                        .unwrap_or_default();
+                    let mut groups = std::collections::BTreeMap::<
+                        Vec<String>,
+                        (Vec<serde_json::Value>, std::collections::BTreeSet<String>),
+                    >::new();
+                    for tuple in source {
+                        let values = grouping
+                            .iter()
+                            .map(|variable| cell(variable, tuple))
+                            .collect::<Vec<_>>();
+                        let key = values.iter().map(|value| value.to_string()).collect();
+                        groups
+                            .entry(key)
+                            .or_insert_with(|| (values, Default::default()))
+                            .1
+                            .insert(tuple[0]["concept_id"].as_str().unwrap().to_owned());
+                    }
+                    if grouping.is_empty() && groups.is_empty() {
+                        groups.insert(vec![], (vec![], Default::default()));
+                    }
+                    let assignments = reduce
+                        .split(';')
+                        .next()
+                        .unwrap()
+                        .split("groupby")
+                        .next()
+                        .unwrap()
+                        .split(',')
+                        .map(|assignment| {
+                            assignment
+                                .split_whitespace()
+                                .next()
+                                .unwrap()
+                                .trim_start_matches('$')
+                                .to_owned()
+                        })
+                        .collect::<Vec<_>>();
+                    let rows=groups.into_values().map(|(values,roots)| {
+                        let mut row=grouping.iter().cloned().zip(values).collect::<serde_json::Map<_,_>>();
+                        for name in &assignments {row.insert(name.clone(),serde_json::json!({"category":"Value","value_type":"integer","value":roots.len()}));}
+                        serde_json::Value::Object(row)
+                    }).collect();
+                    if (!grouping.is_empty()
+                        && grouping
+                            .iter()
+                            .all(|variable| fields.contains_key(variable)))
+                        || (grouping.is_empty() && self.hydrations.lock().unwrap().is_empty())
+                    {
+                        self.native = None;
+                    }
+                    return Ok(QueryResult::Rows(rows));
+                }
+                if let Some(fetch) = typeql.split("\"_iid\": iid($b").nth(1) {
+                    let binding = fetch.split(')').next().unwrap().parse::<usize>().unwrap();
+                    let mut documents = std::collections::BTreeMap::new();
+                    for tuple in tuples {
+                        let node = &tuple[binding];
+                        documents.insert(
+                            node["concept_id"].as_str().unwrap().to_owned(),
+                            node.clone(),
+                        );
+                    }
+                    let number = |name: &str| {
+                        words
+                            .windows(2)
+                            .find(|part| part[0] == name)
+                            .and_then(|part| part[1].trim_end_matches(';').parse::<usize>().ok())
+                    };
+                    let documents = documents
+                        .into_values()
+                        .skip(number("offset").unwrap_or(0))
+                        .take(number("limit").unwrap_or(usize::MAX))
+                        .flat_map(|node| native_test_documents(&node))
+                        .collect();
+                    self.native = None;
+                    return Ok(QueryResult::Documents(documents));
+                }
+                Ok(QueryResult::Rows(
+                    source
+                        .iter()
+                        .map(|tuple| {
+                            serde_json::Value::Object(
+                                columns
+                                    .iter()
+                                    .map(|variable| (variable.clone(), cell(variable, tuple)))
+                                    .collect(),
+                            )
+                        })
+                        .collect(),
+                ))
+            })
         }
 
         fn query_typed_bounded<'a>(
@@ -7196,6 +7493,8 @@ mod tests {
     }
 
     struct RemoteFixture {
+        seed: u8,
+        schema: type_bridge_contract::schema::DeclaredSchema,
         contract: RemoteCapabilities,
         advertisement: Vec<u8>,
         signer: RemoteReplySigningKey,
@@ -7203,7 +7502,13 @@ mod tests {
 
     fn remote_fixture(seed: u8) -> RemoteFixture {
         let signer = RemoteReplySigningKey::from_secret_bytes([seed; 32]);
-        let mut capabilities = query_plan_v2_capability_vocabulary();
+        let mut capabilities = query_plan_v3_capability_vocabulary();
+        for capability in [
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
         for capability in query_remote_v2_required_capabilities(true) {
             capabilities.insert(capability);
         }
@@ -7218,38 +7523,82 @@ mod tests {
         );
         let advertisement = contract.encode().expect("test advertisement");
         RemoteFixture {
+            seed,
+            schema: package("remotefixture")
+                .state()
+                ._authority
+                .declared_schema()
+                .clone(),
             contract,
             advertisement,
             signer,
         }
     }
 
-    fn remote_count_reply(request: &[u8], fixture: &RemoteFixture, value: u64) -> Vec<u8> {
-        let request = RemoteQueryRequestV2::decode(request).expect("test request envelope");
-        request
-            .validate_advertisement(&fixture.contract)
-            .expect("request binds exact advertisement");
-        let plan = request.plan().expect("test request plan");
-        assert_eq!(request.result_kind(), RemoteResultKindV2::DistinctCount);
-        RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().expect("request fingerprint"),
-            RemoteResultKindV2::DistinctCount,
-            RemoteOutcomeV2::DistinctCount {
-                root: ContractBindingId::new(0).expect("test root binding"),
-                value,
-            },
+    fn remote_envelope(bytes: &[u8], fixture: &RemoteFixture) -> StagedRequestV3 {
+        StagedRequestV3::decode(bytes, &fixture.schema, &fixture.contract)
+            .expect("native test request")
+    }
+
+    // Mirrors the contract's outer envelope and signing digest for hostile test payloads.
+    fn sign_hostile_payload(
+        payload: &serde_json::Value,
+        fixture: &RemoteFixture,
+        advertisement: &RemoteCapabilities,
+    ) -> Vec<u8> {
+        use ed25519_dalek::Signer;
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[fixture.seed; 32]);
+        let key = fixture.signer.public_key().to_hex();
+        assert_eq!(
+            signing.verifying_key().to_bytes().as_slice(),
+            fixture.signer.public_key().as_bytes()
+        );
+        let key_id = type_bridge_contract::query_remote::RemoteSigningKeyId::for_public_key(
+            fixture.signer.public_key(),
         )
-        .expect("request-bound count reply")
-        .encode_signed(
-            &fixture
-                .contract
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            &fixture.signer,
+        .to_hex();
+        let advertisement = advertisement.fingerprint().unwrap().digest_hex();
+        let prefix = format!(
+            "{{\"advertisement\":\"{advertisement}\",\"format\":\"typebridge.query-remote-signed-reply/v1\",\"key\":\"{key}\",\"key_id\":\"{key_id}\",\"payload\":"
+        );
+        let payload = type_bridge_contract::codec::to_canonical_json(payload).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(b"typebridge.query.remote-reply-signature/v1\0");
+        hasher.update(prefix.as_bytes());
+        hasher.update(&payload);
+        hasher.update(b"}");
+        let signature = signing
+            .sign(&hasher.finalize())
+            .to_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        [
+            prefix.into_bytes(),
+            payload,
+            format!(",\"signature\":\"{signature}\"}}").into_bytes(),
+        ]
+        .concat()
+    }
+
+    fn remote_count_reply(bytes: &[u8], fixture: &RemoteFixture, value: u64) -> Vec<u8> {
+        let request = remote_envelope(bytes, fixture);
+        assert_eq!(request.plans().len(), 1);
+        let answer = StagedAnswerV3::Rows {
+            rows: vec![vec![
+                type_bridge_contract::query_remote::RemoteValue::Value {
+                    value: type_bridge_contract::value::CanonicalValue::Long(
+                        i64::try_from(value).unwrap(),
+                    ),
+                },
+            ]],
+        };
+        let reply = StagedReplyV3::new(&request, StagedOutcomeV3::Committed, vec![answer]).unwrap();
+        sign_hostile_payload(
+            &serde_json::from_slice(&reply.encode_payload().unwrap()).unwrap(),
+            fixture,
+            &fixture.contract,
         )
-        .expect("signed count reply")
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -7271,66 +7620,56 @@ mod tests {
         if matches!(kind, HostileRemoteReply::MalformedOuter) {
             return br#"{"secret-provider-reply":"must-not-escape""#.to_vec();
         }
-        let request = RemoteQueryRequestV2::decode(request).expect("test request envelope");
-        let plan = request.plan().expect("test request plan");
-        let response = RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().expect("request fingerprint"),
-            RemoteResultKindV2::DistinctCount,
-            RemoteOutcomeV2::DistinctCount {
-                root: ContractBindingId::new(0).expect("test root binding"),
-                value: 19,
-            },
-        )
-        .expect("request-bound count reply");
-        let response = match kind {
+        let valid: serde_json::Value =
+            serde_json::from_slice(&remote_count_reply(request, fixture, 19)).unwrap();
+        let mut payload = valid["payload"].clone();
+        match kind {
             HostileRemoteReply::WrongNonce => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["nonce"] = serde_json::json!("foreign-nonce-0000000000000000");
-                serde_json::from_value(value).expect("syntactically valid foreign nonce response")
+                payload["nonce"] = serde_json::json!("foreign-nonce-0000000000000000")
             }
             HostileRemoteReply::WrongRequest => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["request"] = serde_json::json!("11".repeat(32));
-                serde_json::from_value(value).expect("syntactically valid foreign request response")
+                payload["request"] = serde_json::json!("11".repeat(32))
             }
             HostileRemoteReply::ForeignSchemaOrProfilePlan => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["plan"] = serde_json::json!("22".repeat(32));
-                serde_json::from_value(value).expect("syntactically valid foreign plan response")
+                let mut foreign: serde_json::Value = serde_json::from_slice(request).unwrap();
+                let hex = foreign["plans"][0]["plan_bytes"].as_str().unwrap();
+                let bytes = hex
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect::<Vec<_>>();
+                let mut plan: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                plan["managed_semantics"]["digest"] = serde_json::json!("22".repeat(32));
+                let plan = type_bridge_contract::codec::to_canonical_json(&plan)
+                    .unwrap()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>();
+                foreign["plans"][0]["plan_bytes"] = serde_json::json!(plan);
+                let foreign = remote_envelope(
+                    &type_bridge_contract::codec::to_canonical_json(&foreign).unwrap(),
+                    fixture,
+                );
+                payload["request"] =
+                    serde_json::json!(foreign.fingerprint().unwrap().digest().to_hex());
             }
             HostileRemoteReply::UnknownPayloadFormat => {
-                let mut value = serde_json::to_value(response).expect("response JSON");
-                value["format"] = serde_json::json!("typebridge.query-remote-response/v999");
-                serde_json::from_value(value).expect("syntactically valid unknown response")
+                payload["format"] = serde_json::json!("typebridge.query-remote-response/v999")
             }
-            HostileRemoteReply::MalformedOuter
-            | HostileRemoteReply::BadSignature
-            | HostileRemoteReply::ForeignCapabilityAdvertisement => response,
-        };
+            _ => {}
+        }
         let advertisement = if matches!(kind, HostileRemoteReply::ForeignCapabilityAdvertisement) {
             let mut capabilities = fixture.contract.capabilities().clone();
-            capabilities.insert(
-                CapabilityId::new("c.remote.hostile.extra-capability")
-                    .expect("test extra capability"),
-            );
+            capabilities.insert(CapabilityId::new("c.remote.hostile.extra-capability").unwrap());
             RemoteCapabilities::new(
                 capabilities,
                 fixture.contract.executor().clone(),
                 fixture.signer.public_key(),
             )
-            .fingerprint()
-            .expect("foreign advertisement fingerprint")
         } else {
-            fixture
-                .contract
-                .fingerprint()
-                .expect("advertisement fingerprint")
+            fixture.contract.clone()
         };
-        let mut bytes = response
-            .encode_signed(&advertisement, &fixture.signer)
-            .expect("signed hostile response");
+        let mut bytes = sign_hostile_payload(&payload, fixture, &advertisement);
         if matches!(kind, HostileRemoteReply::BadSignature) {
             let marker = b"\"signature\":\"";
             let index = bytes
@@ -7343,91 +7682,45 @@ mod tests {
         bytes
     }
 
-    fn remote_terminal_reply(request: &[u8], fixture: &RemoteFixture) -> Vec<u8> {
-        let request = RemoteQueryRequestV2::decode(request).expect("test request envelope");
-        request
-            .validate_advertisement(&fixture.contract)
-            .expect("request binds exact advertisement");
-        let plan = request.plan().expect("test request plan");
-        let outcome = match request.result_kind() {
-            RemoteResultKindV2::HydratedRows => RemoteOutcomeV2::HydratedRows {
-                graph: HydrationGraphV2::new(vec![]).expect("empty hydration graph"),
-                rows: vec![],
-            },
-            RemoteResultKindV2::HydratedPage => {
-                let Some(ModelQueryV2::Page {
-                    include_total,
-                    root,
-                    window,
-                    ..
-                }) = plan
-                    .v2_compatibility()
-                    .and_then(|compatibility| compatibility.model_query())
-                else {
-                    panic!("page request lacks its model contract")
-                };
-                RemoteOutcomeV2::HydratedPage {
-                    entries: vec![],
-                    graph: HydrationGraphV2::new(vec![]).expect("empty hydration graph"),
-                    limit: window.limit(),
-                    offset: window.offset(),
-                    root: *root,
-                    total: include_total.then_some(0),
+    fn remote_terminal_reply(bytes: &[u8], fixture: &RemoteFixture) -> Vec<u8> {
+        let request = remote_envelope(bytes, fixture);
+        let has_fetch = request
+            .plans()
+            .iter()
+            .any(|entry| entry.plan().fetch_document_shape().is_some());
+        let answers = request
+            .plans()
+            .iter()
+            .map(|entry| {
+                let plan = entry.plan();
+                if plan.operation() == Operation::Exists {
+                    return StagedAnswerV3::Exists { value: true };
                 }
-            }
-            RemoteResultKindV2::DistinctExists => {
-                let Some(ModelQueryV2::DistinctExists { root, .. }) = plan
-                    .v2_compatibility()
-                    .and_then(|compatibility| compatibility.model_query())
-                else {
-                    panic!("exists request lacks its model contract")
-                };
-                RemoteOutcomeV2::DistinctExists {
-                    root: *root,
-                    value: true,
+                if plan.fetch_document_shape().is_some() {
+                    return StagedAnswerV3::Documents { documents: vec![] };
                 }
-            }
-            RemoteResultKindV2::ModelReduction => {
-                let Some(ModelQueryV2::Reduction {
-                    root,
-                    group,
-                    reducers,
-                    ..
-                }) = plan
-                    .v2_compatibility()
-                    .and_then(|compatibility| compatibility.model_query())
-                else {
-                    panic!("reduction request lacks its model contract")
+                let rows = if plan
+                    .pipeline()
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Reduce { .. }))
+                {
+                    vec![vec![
+                        type_bridge_contract::query_remote::RemoteValue::Value {
+                            value: type_bridge_contract::value::CanonicalValue::Long(
+                                if has_fetch { 0 } else { 13 },
+                            ),
+                        },
+                    ]]
+                } else {
+                    vec![]
                 };
-                RemoteOutcomeV2::ModelReduction {
-                    graph: HydrationGraphV2::new(vec![]).expect("empty hydration graph"),
-                    root: *root,
-                    group: group.clone(),
-                    reducers: reducers.clone(),
-                    rows: vec![RemoteReductionRowV2::new(
-                        None,
-                        vec![RemoteReducedValueV2::Count { value: 13 }],
-                    )],
-                }
-            }
-            other => panic!("unexpected test remote result kind {other:?}"),
-        };
-        RemoteQueryResponseV2::new(
-            request.nonce(),
-            &plan,
-            &request.fingerprint().expect("request fingerprint"),
-            request.result_kind(),
-            outcome,
-        )
-        .expect("request-bound terminal reply")
-        .encode_signed(
-            &fixture
-                .contract
-                .fingerprint()
-                .expect("advertisement fingerprint"),
-            &fixture.signer,
-        )
-        .expect("signed terminal reply")
+                StagedAnswerV3::Rows { rows }
+            })
+            .collect();
+        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+            .unwrap()
+            .encode_signed(&request, &fixture.contract, &fixture.signer)
+            .unwrap()
     }
 
     unsafe fn open_remote_context(
@@ -8008,7 +8301,7 @@ mod tests {
         let request =
             unsafe { std::slice::from_raw_parts(request_view.data, request_view.length).to_vec() };
         let mut claim = unsafe { claim_remote(pending) };
-        let envelope = RemoteQueryRequestV2::decode(&request).expect("test request envelope");
+        let envelope = remote_envelope(&request, &remote);
         let failure = Diagnostic::new(
             DiagnosticCategory::Integrity,
             DiagnosticCode::new("remote_application_failure").expect("test code"),
@@ -8024,21 +8317,16 @@ mod tests {
         .with_detail("retryable", false)
         .with_detail("subject", "person")
         .with_detail("provider_secret", "must-not-cross");
-        let response = RemoteQueryFailureV2::bound(
-            envelope.nonce(),
-            &envelope.fingerprint().expect("request fingerprint"),
-            &failure,
+        let response = StagedReplyV3::new(
+            &envelope,
+            StagedOutcomeV3::Failed {
+                diagnostic: type_bridge_orm::lower_remote_query_diagnostic(failure),
+            },
+            vec![],
         )
-        .and_then(|failure| {
-            failure.encode_signed(
-                &remote
-                    .contract
-                    .fingerprint()
-                    .expect("advertisement fingerprint"),
-                &remote.signer,
-            )
-        })
-        .expect("signed failure reply");
+        .unwrap()
+        .encode_signed(&envelope, &remote.contract, &remote.signer)
+        .unwrap();
         let response_view = TypeBridgeByteView {
             data: response.as_ptr(),
             length: response.len(),
@@ -9017,7 +9305,10 @@ mod tests {
         let database = fake_database(
             &package,
             vec![Response::Items(vec![solution("0x01"), solution("0x02")])],
-            Vec::new(),
+            vec![Response::Items(vec![
+                hydration(&package, "0x01", "Ada"),
+                hydration(&package, "0x02", "Ada"),
+            ])],
         );
         assert_eq!(
             unsafe {
@@ -10856,7 +11147,7 @@ mod tests {
         let metadata = unsafe { metadata.assume_init() };
         assert_eq!((metadata.offset, metadata.limit), (0, 1));
         assert_eq!((metadata.has_total, metadata.total), (1, 2));
-        assert_eq!(page_database.events.queries.load(Ordering::Acquire), 2);
+        assert_eq!(page_database.events.queries.load(Ordering::Acquire), 1);
         assert_eq!(page_database.events.hydrations.load(Ordering::Acquire), 1);
         assert_eq!(page_database.events.closes.load(Ordering::Acquire), 1);
         assert_eq!(
@@ -12320,7 +12611,7 @@ mod tests {
                 attribute_values: DEFAULT_PROXY_QUERY_ATTRIBUTE_VALUES + 1,
                 collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS + 1,
                 role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS + 1,
-                statements: DEFAULT_PROXY_QUERY_STATEMENTS,
+                statements: Some(DEFAULT_PROXY_QUERY_STATEMENTS),
             },
         );
         // Past a supported maximum it is refused, never clamped.
@@ -12809,6 +13100,48 @@ mod tests {
     }
 
     #[test]
+    fn hostile_payload_signer_accepts_an_unmodified_native_reply() {
+        let package = package("nativesigningsanity");
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let fixture = remote_fixture(0x51);
+        let mut context = unsafe { open_remote_context(&package, &fixture.advertisement) };
+        let mut pending = unsafe { prepare_remote(context, built.terminal, TERMINAL_COUNT) };
+        let view = unsafe { pending_request(pending) };
+        let request = remote_envelope(
+            unsafe { std::slice::from_raw_parts(view.data, view.length) },
+            &fixture,
+        );
+        let bytes = remote_count_reply(
+            unsafe { std::slice::from_raw_parts(view.data, view.length) },
+            &fixture,
+            17,
+        );
+        let verified = type_bridge_contract::query_remote_v3::VerifiedStagedReplyV3::decode(
+            &bytes,
+            &request,
+            &fixture.contract,
+            fixture.signer.public_key(),
+            &type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier,
+        )
+        .unwrap();
+        assert!(verified.committed());
+        assert!(matches!(&verified.answers()[0],StagedAnswerV3::Rows {rows} if rows.len()==1));
+        assert_eq!(
+            unsafe { type_bridge_query_remote_pending_close(&mut pending) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_query_remote_context_close(&mut context) },
+            TypeBridgeStatus::Ok
+        );
+        unsafe { built.close_builders() };
+        assert_eq!(
+            unsafe { type_bridge_query_terminal_close(&mut built.terminal) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
     fn remote_count_round_trip_retains_exact_lineage_and_one_shot_lifetimes() {
         let mut package_handle = Box::into_raw(Box::new(package("queryremote")));
         // SAFETY: package remains live through construction.
@@ -12950,9 +13283,8 @@ mod tests {
             std::slice::from_raw_parts(second_request_view.data, second_request_view.length)
                 .to_vec()
         };
-        let first_envelope = RemoteQueryRequestV2::decode(&request).expect("first request");
-        let second_envelope =
-            RemoteQueryRequestV2::decode(&second_request).expect("second request");
+        let first_envelope = remote_envelope(&request, &remote);
+        let second_envelope = remote_envelope(&second_request, &remote);
         assert_ne!(first_envelope.nonce(), second_envelope.nonce());
         assert_ne!(request, second_request);
         assert_eq!(
@@ -12992,6 +13324,12 @@ mod tests {
 
         // SAFETY: pending has one unclaimed reply slot.
         let mut claim = unsafe { claim_remote(pending) };
+        assert_eq!(response_limit, MAX_REMOTE_ENVELOPE_BYTES + 1);
+        // Signed failure evidence uses the fixed envelope ceiling even under a smaller success budget.
+        assert_eq!(
+            unsafe { &*claim }.response_snapshot_limit,
+            MAX_REMOTE_ENVELOPE_BYTES
+        );
         let mut duplicate = ptr::null_mut();
         assert_eq!(
             unsafe {
@@ -13784,17 +14122,17 @@ mod tests {
             (
                 HostileRemoteReply::WrongNonce,
                 TypeBridgeStatus::ExecutionFailed,
-                "query_remote_v2_nonce_mismatch",
+                "query_remote_binding_mismatch",
             ),
             (
                 HostileRemoteReply::WrongRequest,
                 TypeBridgeStatus::ExecutionFailed,
-                "query_remote_v2_request_mismatch",
+                "query_remote_binding_mismatch",
             ),
             (
                 HostileRemoteReply::ForeignSchemaOrProfilePlan,
                 TypeBridgeStatus::ExecutionFailed,
-                "query_remote_v2_plan_mismatch",
+                "query_remote_binding_mismatch",
             ),
             (
                 HostileRemoteReply::ForeignCapabilityAdvertisement,
@@ -13804,7 +14142,7 @@ mod tests {
             (
                 HostileRemoteReply::UnknownPayloadFormat,
                 TypeBridgeStatus::InvalidArgument,
-                "query_remote_v2_format_unsupported",
+                "query_remote_format_unsupported",
             ),
         ];
 
@@ -13843,6 +14181,54 @@ mod tests {
                 expected_code,
                 "{kind:?}"
             );
+            if matches!(
+                kind,
+                HostileRemoteReply::WrongNonce
+                    | HostileRemoteReply::WrongRequest
+                    | HostileRemoteReply::ForeignSchemaOrProfilePlan
+            ) {
+                let expected = if matches!(kind, HostileRemoteReply::WrongNonce) {
+                    "nonce"
+                } else {
+                    "request"
+                };
+                let mut diagnostic =
+                    std::mem::MaybeUninit::<TypeBridgeExecutionDiagnosticViewV1>::uninit();
+                assert_eq!(
+                    unsafe {
+                        type_bridge_execution_diagnostics_get_v1(
+                            diagnostics,
+                            0,
+                            diagnostic.as_mut_ptr(),
+                        )
+                    },
+                    TypeBridgeStatus::Ok
+                );
+                let count = unsafe { diagnostic.assume_init() }.detail_count;
+                let mut found = false;
+                for index in 0..count {
+                    let mut detail = std::mem::MaybeUninit::<
+                        TypeBridgeExecutionDiagnosticDetailViewV1,
+                    >::uninit();
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_execution_diagnostics_detail_get_v1(
+                                diagnostics,
+                                0,
+                                index,
+                                detail.as_mut_ptr(),
+                            )
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    let detail = unsafe { detail.assume_init() };
+                    if unsafe { view_string(detail.key) } == "reason" {
+                        assert_eq!(unsafe { view_string(detail.primary) }, expected);
+                        found = true;
+                    }
+                }
+                assert!(found, "binding mismatch omitted its reason");
+            }
             let diagnostic_evidence = unsafe { diagnostic_visible_text(diagnostics) };
             assert!(
                 !diagnostic_evidence

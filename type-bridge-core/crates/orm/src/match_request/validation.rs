@@ -2198,18 +2198,18 @@ fn selected_slot_cap(
     message: &'static str,
     path: MatchErrorPathSegment,
 ) -> Result<(), MatchError> {
-    if count <= limits.selected_slots {
+    let maximum = limits
+        .selected_slots
+        .min(type_bridge_contract::limits::MAX_SELECTED_SLOTS);
+    if count <= maximum {
         return Ok(());
     }
     Err(invalid(code, message)
         .at(path)
         .with_detail("actual", usize_detail(count))
-        .with_detail("maximum", usize_detail(limits.selected_slots))
+        .with_detail("maximum", usize_detail(maximum))
         .with_detail("limit", "selected_slots")
-        .with_detail(
-            "source",
-            limit_source("selected_slots", limits.selected_slots),
-        ))
+        .with_detail("source", limit_source("selected_slots", maximum)))
 }
 
 fn check_limit(

@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
 use type_bridge_contract::limits::{MAX_CANONICAL_BYTES, MAX_CANONICAL_COLLECTION_LEN};
 use type_bridge_contract::projection::{
@@ -2488,7 +2487,8 @@ fn cardinality_diagnostic(
 }
 
 fn canonical_value_bytes(value: &CanonicalValue) -> Result<usize, SdkExecutionDiagnostic> {
-    to_canonical_json(value)
+    // Canonical scalars are already admitted; measurement must retain their explicit codec policy.
+    serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .map_err(|_| {
             integrity(
@@ -2801,6 +2801,36 @@ pub(crate) mod tests {
     use type_bridge_contract::schema::DocumentId;
     use type_bridge_contract::value::{CanonicalDouble, CanonicalString};
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+
+    #[test]
+    fn scalar_measurement_matches_canonical_bytes_without_reapplying_default_limits() {
+        for value in [
+            CanonicalValue::String(CanonicalString::new("한\n\"\\").unwrap()),
+            CanonicalValue::Long(i64::MAX),
+            CanonicalValue::Double(CanonicalDouble::new(-0.0).unwrap()),
+            CanonicalValue::Boolean(true),
+        ] {
+            assert_eq!(
+                canonical_value_bytes(&value).unwrap(),
+                type_bridge_contract::codec::to_canonical_json(&value)
+                    .unwrap()
+                    .len()
+            );
+        }
+        let limits = type_bridge_contract::limits::CodecLimits {
+            max_string_bytes: 2 * 1024 * 1024,
+            ..Default::default()
+        };
+        let value = CanonicalValue::String(
+            CanonicalString::new_with_limits("x".repeat(1024 * 1024 + 1), limits).unwrap(),
+        );
+        assert_eq!(
+            canonical_value_bytes(&value).unwrap(),
+            type_bridge_contract::codec::to_canonical_json_with_limits(&value, limits)
+                .unwrap()
+                .len()
+        );
+    }
 
     const ORIGIN_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:

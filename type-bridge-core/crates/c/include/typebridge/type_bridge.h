@@ -496,7 +496,7 @@ typedef struct type_bridge_query_execution_limits_v1 {
  * initializer keep their 2.2 values, which are the proxy defaults. A
  * non-NULL descriptor's values are kept as given, never clamped: a
  * dimension may tighten or raise its default, and a value past its
- * supported maximum (a timeout past one day, more than 3 statements) is
+ * supported maximum (a timeout past one day, more than 4,096 statements) is
  * refused. A connection's answer limits are a ceiling every call on it is
  * constrained by. Every zero field is an actual zero ceiling, never a
  * request to substitute a default.

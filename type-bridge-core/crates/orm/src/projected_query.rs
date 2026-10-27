@@ -575,6 +575,7 @@ struct Materializer<'a> {
     cancellation: &'a AnswerCancellation,
     deadline: Option<QueryExecutionDeadline>,
     measure: ProjectedQueryResourceMeasure,
+    codec: type_bridge_contract::limits::CodecLimits,
 }
 
 impl<'a> Materializer<'a> {
@@ -593,6 +594,7 @@ impl<'a> Materializer<'a> {
             limits,
             cancellation,
             deadline,
+            codec: type_bridge_contract::limits::CodecLimits::CANONICAL,
             measure: ProjectedQueryResourceMeasure {
                 rows: 0,
                 cells: 0,
@@ -613,6 +615,7 @@ impl<'a> Materializer<'a> {
         result: &MatchResult,
     ) -> Result<ProjectedQueryValue, SdkExecutionDiagnostic> {
         self.checkpoint()?;
+        self.codec = request.limits().codec;
         match result {
             MatchResult::Rows { rows } => Ok(ProjectedQueryValue::Rows {
                 rows: self.rows(request, rows)?,
@@ -826,7 +829,7 @@ impl<'a> Materializer<'a> {
         let projected = ProjectedAttributeValue::try_new(
             self.installed,
             attribute_type,
-            canonical_attribute_value(value).map_err(|_| result_integrity())?,
+            canonical_attribute_value(value, self.codec).map_err(|_| result_integrity())?,
         )?;
         self.add_attribute_value(&projected)?;
         Ok(Arc::new(projected))
@@ -842,7 +845,7 @@ impl<'a> Materializer<'a> {
         let fields = self.attributes(&type_id, thing.attributes())?;
         let roles = self.roles(&type_id, thing)?;
         self.checkpoint()?;
-        let projected = match &self.origin.database_identity {
+        let mut projected = match &self.origin.database_identity {
             Some(identity) => ProjectedThing::try_new_for_database(
                 self.installed,
                 type_id,
@@ -859,6 +862,9 @@ impl<'a> Materializer<'a> {
                 roles,
             ),
         }?;
+        if thing.is_deleted() {
+            projected.mark_deleted()?;
+        }
         let projected_things = projected
             .roles()
             .values()
@@ -948,7 +954,7 @@ impl<'a> Materializer<'a> {
                 let value = ProjectedAttributeValue::try_new(
                     self.installed,
                     attribute_type.clone(),
-                    canonical_attribute_value(value).map_err(|_| result_integrity())?,
+                    canonical_attribute_value(value, self.codec).map_err(|_| result_integrity())?,
                 )?;
                 values.push(value);
             }
@@ -1128,7 +1134,8 @@ impl<'a> Materializer<'a> {
                         ProjectedAttributeValue::try_new(
                             self.installed,
                             attribute_type.clone(),
-                            canonical_attribute_value(value).map_err(|_| result_integrity())?,
+                            canonical_attribute_value(value, self.codec)
+                                .map_err(|_| result_integrity())?,
                         )?,
                     ));
                 }
@@ -1304,8 +1311,18 @@ fn descriptor_type_id(descriptor: &DescriptorId) -> Result<TypeId, SdkExecutionD
     .map_err(|_| result_integrity())
 }
 
-fn canonical_attribute_value(value: &AttributeValue) -> Result<CanonicalValue, ()> {
-    crate::runtime_projection::canonical_attribute_value(value).map_err(|_| ())
+fn canonical_attribute_value(
+    value: &AttributeValue,
+    limits: type_bridge_contract::limits::CodecLimits,
+) -> Result<CanonicalValue, ()> {
+    match value {
+        AttributeValue::String(value) => {
+            type_bridge_contract::value::CanonicalString::new_with_limits(value, limits)
+                .map(CanonicalValue::String)
+                .map_err(|_| ())
+        }
+        _ => crate::runtime_projection::canonical_attribute_value(value).map_err(|_| ()),
+    }
 }
 
 fn add_limit(
@@ -2924,5 +2941,32 @@ plays:
                 SdkQueryDiagnosticPathKind::ProviderEvidence,
             )]
         );
+    }
+    #[test]
+    fn projected_models_preserve_explicitly_raised_string_limits() {
+        let (installed, registry) = fixture();
+        let mut limits = type_bridge_contract::limits::QueryLimits::CANONICAL;
+        limits.codec.max_string_bytes = 2 * 1024 * 1024;
+        let request = crate::match_request::validate_match_request_with_limits(
+            &registry,
+            one_rows_request(&registry),
+            limits,
+        )
+        .unwrap();
+        let wide = "x".repeat(1024 * 1024 + 1);
+        let rows = vec![one(employee(&registry, "0xaa", "person", &wide, i64::MAX))];
+        let result =
+            validated_match_result_from_v2(&registry, &request, hydrated_rows(&registry, rows))
+                .unwrap();
+        let value = materialize_projected_query_result(
+            &installed,
+            &registry,
+            ProjectedQueryOrigin::remote_unbound(),
+            request,
+            result,
+            ProjectedQueryMaterializationLimits::default(),
+        )
+        .unwrap();
+        assert!(matches!(value.value(), ProjectedQueryValue::Rows { rows } if rows.len() == 1));
     }
 }

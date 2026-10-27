@@ -2222,13 +2222,13 @@ impl ExecutionLedger {
         request_bytes: u64,
         statements: u32,
     ) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        if statements > self.limits.statements {
+        if statements > self.limits.statement_limit() {
             return Err(resource_limit(
                 "projected_batch_statement_limit",
                 "Projected batch execution exceeds the provider statement ceiling",
                 "statements",
                 u64::from(statements),
-                u64::from(self.limits.statements),
+                u64::from(self.limits.statement_limit()),
             ));
         }
         let total = self.bytes.checked_add(request_bytes).ok_or_else(|| {
@@ -4144,7 +4144,7 @@ plays:
                 "refused-delete",
             );
             let limits = QueryExecutionResourceLimits {
-                statements: statement_limit,
+                statements: Some(statement_limit),
                 ..QueryExecutionResourceLimits::default()
             };
             assert!(

@@ -389,11 +389,24 @@ impl RemoteCapabilities {
         reply_key: RemoteSigningPublicKey,
     ) -> Self {
         let reply_key_id = RemoteSigningKeyId::for_public_key(reply_key);
+        let query_limits = if capabilities.contains(
+            &crate::capability::CapabilityId::new(
+                crate::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            )
+            .expect("static staged capability"),
+        ) {
+            BTreeMap::from([(
+                "selected_slots".to_owned(),
+                crate::limits::MAX_BINDINGS as u64,
+            )])
+        } else {
+            BTreeMap::new()
+        };
         Self {
             capabilities,
             executor,
             format: QUERY_REMOTE_CAPABILITIES_FORMAT_V1.to_owned(),
-            query_limits: BTreeMap::new(),
+            query_limits,
             answer_limits: BTreeMap::new(),
             reply_key,
             reply_key_id,
@@ -426,7 +439,9 @@ impl RemoteCapabilities {
     fn validate_answer_limits(&self) -> Result<(), Diagnostic> {
         for (name, value) in &self.answer_limits {
             let field = answer_limit_field(name).ok_or_else(advertised_limits_invalid)?;
-            if *value == field.proxy_default || *value > field.maximum {
+            if (field.name != "statements" && *value == field.proxy_default)
+                || *value > field.maximum
+            {
                 return Err(advertised_limits_invalid());
             }
         }
@@ -438,7 +453,7 @@ impl RemoteCapabilities {
     /// `limits` is admitted through [`QueryLimits::validate`]. Only limits
     /// that differ from the canonical defaults reach the wire.
     pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self, Diagnostic> {
-        let limits = limits.validate().map_err(|_| advertised_limits_invalid())?;
+        let limits = self.validate_format_query_limits(limits)?;
         self.query_limits = QueryLimits::FIELDS
             .iter()
             .filter_map(|name| {
@@ -473,10 +488,25 @@ impl RemoteCapabilities {
                 return Err(advertised_limits_invalid());
             }
         }
-        self.query_limits()
-            .validate()
+        self.validate_format_query_limits(self.query_limits())
             .map(|_| ())
-            .map_err(|_| advertised_limits_invalid())
+    }
+
+    fn validate_format_query_limits(&self, limits: QueryLimits) -> Result<QueryLimits, Diagnostic> {
+        if self.capabilities.contains(
+            &crate::capability::CapabilityId::new(
+                crate::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            )
+            .expect("static staged capability"),
+        ) {
+            limits
+                .validate_v3()
+                .map_err(|_| advertised_limits_invalid())
+        } else if limits.structural.selected_slots > crate::limits::MAX_SELECTED_SLOTS {
+            Err(advertised_limits_invalid())
+        } else {
+            limits.validate().map_err(|_| advertised_limits_invalid())
+        }
     }
 
     /// Encode exact canonical envelope bytes.

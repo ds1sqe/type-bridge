@@ -1416,7 +1416,7 @@ async fn dynamic_returning_delete_enforces_batch_answer_and_statement_limits() {
             type_bridge_orm::AnswerTransport::Direct,
         );
         match dimension {
-            "statements" => limits.statements = ceiling as u32,
+            "statements" => limits.statements = Some(ceiling as u32),
             "items" => limits.items = ceiling,
             "graph_nodes" => limits.graph_nodes = ceiling,
             "attribute_values" => limits.attribute_values = ceiling,
