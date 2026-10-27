@@ -1,5 +1,6 @@
-from type_bridge.plan import Plan
 from generated_idioms import Account, Item, Many, ManyItem, Purchase
+
+from type_bridge.plan import Plan
 
 with Plan():
     item = Item.match("I1")

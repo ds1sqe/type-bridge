@@ -1,5 +1,7 @@
 """Generated purchase authoring must equal the explicit shared-builder form."""
+
 from generated_idioms import Account, Item, ManyItem, Purchase, schema_authority
+
 from type_bridge.plan import Plan
 
 with Plan():

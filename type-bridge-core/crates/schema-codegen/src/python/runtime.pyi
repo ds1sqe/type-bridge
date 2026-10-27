@@ -11,8 +11,8 @@ from type_bridge_core import (
 )
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
-from type_bridge.session import Database, TransactionContext
 from type_bridge.plan import FieldToken as _AuthoringFieldToken
+from type_bridge.session import Database, TransactionContext
 
 from ._query import QueryConnection, QuerySession
 

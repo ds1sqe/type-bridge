@@ -1,7 +1,8 @@
 from typing import assert_type
 
-from type_bridge.plan import Expr, Matched, Pending, Plan, Transaction, Value
 from generated_idioms import Account, AccountHandle, Item, ItemHandle, Purchase
+
+from type_bridge.plan import Expr, Matched, Pending, Plan, Transaction, Value
 
 
 def purchase(transaction: Transaction, item_id: str, account_id: str, order_id: str) -> None:

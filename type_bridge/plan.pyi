@@ -359,7 +359,9 @@ class Plan[R](_Plan[R]):
     @overload
     def returning[A](self, a: Value[A] | Handle[A], /) -> Plan[list[tuple[A]]]: ...
     @overload
-    def returning[A, B](self, a: Value[A] | Handle[A], b: Value[B] | Handle[B], /) -> Plan[list[tuple[A, B]]]: ...
+    def returning[A, B](
+        self, a: Value[A] | Handle[A], b: Value[B] | Handle[B], /
+    ) -> Plan[list[tuple[A, B]]]: ...
     @overload
     def returning[A, B, C](
         self, a: Value[A] | Handle[A], b: Value[B] | Handle[B], c: Value[C] | Handle[C], /
