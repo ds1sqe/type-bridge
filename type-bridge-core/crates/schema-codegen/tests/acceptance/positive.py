@@ -91,9 +91,17 @@ assert_type(
     Membership.member,
     RoleToken[Membership, Person | Robot, MembershipRoleBinding],
 )
-assert_type(Person.identifier, FieldToken[Person, Identifier])
-assert_type(Person.nickname, FieldToken[Person, Nickname])
-assert_type(Person.aliases, FieldToken[Person, Aliases])
+
+
+def person_field[AttributeT: Identifier | Nickname | Aliases](
+    field: FieldToken[Person, AttributeT],
+) -> FieldToken[Person, AttributeT]:
+    return field
+
+
+assert_type(person_field(Person.identifier), FieldToken[Person, Identifier])
+assert_type(person_field(Person.nickname), FieldToken[Person, Nickname])
+assert_type(person_field(Person.aliases), FieldToken[Person, Aliases])
 
 person = Person(
     identifier=Identifier("person-1"),

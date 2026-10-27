@@ -59,6 +59,7 @@ fn configured_v3_fixture(
     let authority = authority_fixture(false);
     let declared = authority.declared.clone();
     let metrics = Arc::new(BackendMetrics::default());
+    metrics.staged_insert_rows.store(true, Ordering::SeqCst);
     let database = Database::with_backend(
         Box::new(CountingBackend::new([], Arc::clone(&metrics))),
         "server-v3-route",
@@ -554,7 +555,7 @@ async fn vouched_or_explicitly_allowed_staged_writes_commit() {
         assert_eq!(
             reply.answers(),
             [
-                StagedAnswerV3::Matched { value: 0 },
+                StagedAnswerV3::Matched { value: 1 },
                 StagedAnswerV3::Count { value: 0 }
             ]
         );
@@ -564,14 +565,29 @@ async fn vouched_or_explicitly_allowed_staged_writes_commit() {
 }
 
 #[tokio::test]
+async fn staged_standalone_inserts_refuse_missing_or_extra_provider_rows() {
+    for count in [0, 2] {
+        let fixture = v3_fixture(vouching_pipeline(), false);
+        fixture.metrics.staged_insert_rows.store(false, Ordering::SeqCst);
+        *fixture.metrics.rows.lock().expect("rows lock") = vec![serde_json::json!({}); count];
+        let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
+        let reply = verify(&fixture, &request, &post(&fixture, &request).await);
+        assert!(!reply.committed());
+        assert_eq!(failure_code(&reply), "query_remote_v3_document_value");
+        assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
 async fn unsignable_reply_after_a_committed_write_reports_an_unknown_outcome() {
     let fixture = v3_fixture(default_pipeline(), true);
-    // A budget below any signed reply: the write commits, then cannot sign.
+    // The provider row fits, but the signed reply does not: commit stays unknown.
     let spec = StagedRequestSpecV3 {
         nonce: TEST_NONCE.into(),
         kind: None,
         limits: StagedLimitsV3 {
-            max_bytes: 1,
+            max_bytes: 128,
             ..StagedLimitsV3::default()
         },
         plans: vec![
@@ -686,10 +702,9 @@ async fn reply_withheld_after_a_committed_write_reports_an_unknown_outcome() {
 }
 
 #[tokio::test]
-async fn unmappable_answers_after_a_committed_write_report_an_unknown_outcome() {
+async fn unmappable_write_answers_are_refused_before_commit() {
     let fixture = v3_fixture(vouching_pipeline(), false);
-    // The provider row lacks the projected column: its answer resolves
-    // before the commit but cannot map into a reply after it.
+    // The provider row lacks the projected column and must fail before commit.
     *fixture.metrics.rows.lock().expect("rows lock") = vec![serde_json::json!({})];
     let binding = BindingId::new(0).expect("binding");
     let plan = insert_returning(&fixture.declared, WriteReturns::Rows, vec![binding]);
@@ -697,8 +712,8 @@ async fn unmappable_answers_after_a_committed_write_report_an_unknown_outcome() 
     let first = post(&fixture, &request).await;
     let reply = verify(&fixture, &request, &first);
     assert!(!reply.committed());
-    assert_eq!(failure_code(&reply), "commit_outcome_unknown");
-    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(failure_code(&reply), "query_remote_v3_answer_concept");
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 1);
 
     // A read keeps its mapping diagnostic.
@@ -1261,7 +1276,7 @@ async fn sdk_proxy_commit_resolves_answers_with_a_fresh_nonce_per_commit() {
     let counted = tx.stage_plan(&count_plan(&fixture.declared)).unwrap();
     assert!(inserted.get().is_err(), "nothing resolves before commit");
     tx.commit().await.expect("commit");
-    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(0));
+    assert_eq!(*inserted.get().unwrap(), PlanAnswer::Matched(1));
     assert_eq!(*counted.get().unwrap(), PlanAnswer::Count(0));
     tx.stage_plan(&insert_plan(&fixture.declared)).unwrap();
     tx.commit().await.expect("second commit");
@@ -1330,7 +1345,10 @@ async fn sdk_cancelled_commit_leaves_its_answers_unknown() {
     let Err(error) = inserted.get() else {
         panic!("a cancelled commit resolves nothing");
     };
-    assert!(error.to_string().contains("not known"), "{error}");
+    assert_eq!(
+        error.diagnostic().expect("unknown outcome").code().as_str(),
+        "commit_outcome_unknown"
+    );
 
     // The server still commits the detached request.
     fixture.metrics.release_commit.notify_one();

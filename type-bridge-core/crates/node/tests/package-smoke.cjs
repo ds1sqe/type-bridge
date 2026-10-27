@@ -217,6 +217,7 @@ assert.deepEqual(Object.keys(runtimeProjection).sort(), [
   "QueryLimits",
   "installGeneratedSchemaAuthority",
   "installRuntimeProjection",
+  "projectedBatchDeleted",
   "projectedManagerNativeCall",
 ]);
 // Query execution enters through one connection-bound executor per kind.

@@ -1108,6 +1108,10 @@ fn typescript_runtime_reserved_model_members_are_escaped() {
         let label = match *reserved {
             "iid" => "Iid",
             "plays" => "Plays",
+            "delete" => "Delete",
+            "insert" => "Insert",
+            "match" => "Match",
+            "put" => "Put",
             other => other,
         };
         let source = format!(

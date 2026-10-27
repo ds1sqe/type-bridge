@@ -1601,6 +1601,7 @@ mod tests {
         /// Rows every query answers with; empty by default.
         rows: Mutex<Vec<serde_json::Value>>,
         documents: AtomicBool,
+        staged_insert_rows: AtomicBool,
     }
 
     struct CountingBackend {
@@ -1690,10 +1691,16 @@ mod tests {
     }
 
     impl TransactionOps for CountingTransaction {
-        fn query(&mut self, _typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.metrics.query_executions.fetch_add(1, Ordering::SeqCst);
             let fail = self.metrics.fail_query.load(Ordering::SeqCst);
-            let rows = self.metrics.rows.lock().expect("rows lock").clone();
+            let mut rows = self.metrics.rows.lock().expect("rows lock").clone();
+            if rows.is_empty()
+                && self.metrics.staged_insert_rows.load(Ordering::SeqCst)
+                && typeql.split_whitespace().any(|token| token == "insert")
+            {
+                rows.push(serde_json::json!({"person": {"kind": "thing", "type_id": {"kind": "entity", "label": "transport-person"}, "iid": "0x1e"}}));
+            }
             let documents = self.metrics.documents.load(Ordering::SeqCst);
             Box::pin(async move {
                 if fail {
