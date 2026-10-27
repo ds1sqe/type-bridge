@@ -1271,8 +1271,11 @@ impl ManagerPlans {
             pipeline.push(Stage::Attach { items: attached });
         }
         drop(retained.drain(1..player_start));
-        pipeline.push(Stage::Select { bindings: retained });
-        pipeline.push(Stage::Distinct);
+        if !matches!(pipeline.as_slice(), [.., Stage::Select { bindings }, Stage::Distinct] if bindings == &retained)
+        {
+            pipeline.push(Stage::Select { bindings: retained });
+            pipeline.push(Stage::Distinct);
+        }
         draft
             .finish(
                 self.authority()?,
@@ -1520,6 +1523,91 @@ impl ManagerRead {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clear_only_updates_keep_one_projection_after_each_delete() {
+        use sha2::{Digest, Sha256};
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(
+                DocumentId::new("clear-update.yaml").unwrap(),
+                "format: typebridge.schema/v2\nattributes:\n  note: { value: string }\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      note: { card: { min: 0, max: 1 } }\n      tag: { card: { min: 0, max: 1 } }\nrelations:\n  membership:\n    owns:\n      note: { card: { min: 0, max: 1 } }\n      tag: { card: { min: 0, max: 1 } }\n    relates:\n      member: { card: { min: 1, max: 1 } }\nplays:\n  person:\n    membership: [member]\n",
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = crate::InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let plans = ManagerPlans::new(installed.manager_registry().unwrap());
+        let mut digests = Vec::new();
+        for name in ["person", "membership"] {
+            for attributes in [
+                vec![],
+                vec![("note".into(), crate::AttributeValue::String("after".into()))],
+            ] {
+                let plan = plans
+                    .update(name, Some("0x10"), &attributes, &[], true)
+                    .unwrap()
+                    .unwrap();
+                let stages = plan.local().pipeline();
+                let [
+                    Stage::Match { .. },
+                    Stage::Delete { .. },
+                    Stage::Select { bindings: first },
+                    Stage::Distinct,
+                    Stage::Delete { .. },
+                    Stage::Select { bindings: second },
+                    Stage::Distinct,
+                    tail @ ..,
+                ] = stages
+                else {
+                    panic!("each delete must retain its deduplication pair: {stages:?}");
+                };
+                assert_eq!(first, second);
+                if attributes.is_empty() {
+                    assert_eq!(first.len(), 1);
+                    assert!(tail.is_empty(), "clear-only already selects the root");
+                } else {
+                    assert_eq!(first.len(), 2);
+                    assert!(
+                        matches!(tail, [Stage::Attach { .. }, Stage::Select { bindings }, Stage::Distinct] if bindings == &first[..1])
+                    );
+                }
+                digests.push(format!(
+                    "{:x}",
+                    Sha256::digest(plan.local().canonical_bytes().unwrap())
+                ));
+            }
+        }
+        assert_eq!(
+            digests,
+            [
+                "9036347ec757cdef5445d7bf9aa25b2a0e7eea7d8ad3c600dbe0a33cea4d54c5",
+                "5c8876b7a256fb61abb6c0404f852a8e79f298155195d640d20ed3742299d671",
+                "bd9b9adc58609d815addadb097c424efca90383c0db698cc6e6202f3e5ce9eec",
+                "53b0015b36d771158d4ef3ed76f7e91fcdf5ac3fa3ec700197a4e9ab56879578",
+            ]
+        );
+    }
 
     #[test]
     fn leaf_manager_reads_use_one_shared_plan_and_returning_variants_have_identical_bytes() {

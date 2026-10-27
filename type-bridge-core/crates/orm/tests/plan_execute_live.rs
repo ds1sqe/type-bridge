@@ -549,10 +549,14 @@ fn party_projection_with_authority() -> InstalledRuntimeProjection {
 }
 
 fn party_projection_for_schema(yaml: &str) -> InstalledRuntimeProjection {
+    party_projection_for_profile(yaml, "typedb-3.13.6/v1")
+}
+
+fn party_projection_for_profile(yaml: &str, profile: &str) -> InstalledRuntimeProjection {
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("authority.yaml").unwrap(), yaml)]).unwrap();
     let declared = normalize_documents(&documents).unwrap();
-    let profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
+    let profile = SemanticProfileId::new(profile).unwrap();
     let resolved = resolve(&declared, &profile).unwrap();
     let installed = InstalledRuntimeProjection::try_new(
         project(
@@ -577,6 +581,100 @@ fn party_projection_for_schema(yaml: &str) -> InstalledRuntimeProjection {
     )
     .unwrap();
     installed.with_schema_authority(&authority)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_exact_updates_clear_optional_entity_and_relation_fields() {
+    use std::sync::Arc;
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::AttributeValue;
+    let Ok(address) = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS") else {
+        return;
+    };
+    let name = format!("tb270_04c_clear_{}", std::process::id());
+    let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
+    let db = Database::connect_with_options(
+        &address,
+        &name,
+        "admin",
+        "password",
+        ConnectOptions {
+            http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+            tls: false,
+            server_version: Some(version.parse().unwrap()),
+        },
+    )
+    .await
+    .unwrap();
+    db.create_database().await.unwrap();
+    db.execute_raw(
+        &PARTY_SCHEMA_TYPEQL.replace(
+            "entity person sub party;",
+            "entity person sub party, owns note @card(0..1);",
+        ),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let profile = if version.starts_with("3.12.") {
+        "typedb-3.12.1/v1"
+    } else {
+        "typedb-3.13.6/v1"
+    };
+    let installed = party_projection_for_profile(
+        &PARTY_SCHEMA_YAML.replace(
+            "  person:\n    sub: party",
+            "  person:\n    sub: party\n    owns:\n      note: { card: { min: 0, max: 1 } }",
+        ),
+        profile,
+    );
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("person").unwrap(),
+    );
+    let relations = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    let iid = people
+        .insert(&vec![
+            ("identifier".into(), AttributeValue::String("clear".into())),
+            ("note".into(), AttributeValue::String("before".into())),
+        ])
+        .await
+        .unwrap();
+    let player = DynamicRolePlayerInput {
+        role_name: "member".into(),
+        player_type_name: "person".into(),
+        iid: Some(iid.clone()),
+        key: None,
+    };
+    let relation = relations
+        .insert(
+            &vec![("note".into(), AttributeValue::String("before".into()))],
+            std::slice::from_ref(&player),
+        )
+        .await
+        .unwrap();
+    people.update_exact(&iid, &vec![]).await.unwrap();
+    relations
+        .update_exact(&relation, &vec![], &[player])
+        .await
+        .unwrap();
+    let people_after = people.get_by_iid_exact(&iid).await.unwrap().unwrap();
+    assert_eq!(
+        people_after.attributes,
+        vec![("identifier".into(), AttributeValue::String("clear".into()))]
+    );
+    let relations_after = relations.get_by_iid_exact(&relation).await.unwrap();
+    assert_eq!(relations_after.len(), 1);
+    assert!(relations_after[0].attributes.is_empty());
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
 }
 
 fn party_type(kind: TypeKind, label: &str) -> TypeId {
