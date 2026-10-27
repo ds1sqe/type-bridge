@@ -597,6 +597,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let emp_read: Employment = materialize_model_for_test(&emp_row)?;
     let family = MembershipFamily::Employment(emp_read);
     assert_eq!(family.iid(), "emp-iid-1");
+    assert_eq!(family.exact_type(), "employment");
+    let membership_row = HydratedRow::new(Membership::TYPE_ID_JSON, "membership-iid".to_owned(), vec![], vec![(MembershipType::member.role_id_json(), emp_row.roles()[0].1.clone())]);
+    let membership = MembershipFamily::Membership(materialize_model_for_test(&membership_row)?);
+    assert_eq!(membership.exact_type(), "membership");
     assert!(family.as_employment().is_some());
 
     let role: RoleToken<Container, ContainerItemPlayer> = ContainerType::item;

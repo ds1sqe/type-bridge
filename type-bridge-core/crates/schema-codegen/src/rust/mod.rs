@@ -1,3 +1,4 @@
+mod plan;
 mod render;
 
 use type_bridge_contract::diagnostic::Diagnostic;

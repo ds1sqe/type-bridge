@@ -267,12 +267,11 @@ the price, and records the purchase:
 
 <!-- rust-plan-example:begin -->
 ```rust
-use models::{Account, AccountType, AppSchema, Item, ItemType, Purchase, PurchaseType};
-use type_bridge::plan::Plan;
+use models::{Account, AccountType, AppSchema, Item, ItemType, Plan, Purchase, PurchaseType};
 use type_bridge::staged::{PlanAnswer, TransactionOptions};
 use type_bridge::Database;
 
-fn purchase(order: &str, item_id: &str, account_id: &str) -> type_bridge::Result<Plan<AppSchema>> {
+fn purchase(order: &str, item_id: &str, account_id: &str) -> type_bridge::Result<Plan<PlanAnswer>> {
     let mut plan = Plan::builder();
     let item = plan.exact::<Item>();
     let buyer = plan.exact::<Account>();
@@ -313,6 +312,25 @@ async fn buy(db: &Database<AppSchema>) -> type_bridge::Result<bool> {
 }
 ```
 <!-- rust-plan-example:end -->
+
+Generated models also expose a closure recorder. Class conditions use the
+existing token namespace (`ItemType::stock.gt(0)`), while a matched handle's
+`stock()` returns a typed plan value. A named match finishes explicitly:
+
+```rust
+let count: models::Plan<i64> = models::Plan::build(|p| {
+    models::Item::matching_by(p)
+        .item_id("I1")
+        .stock(2_i64)
+        .handle();
+    p.count()
+})?;
+```
+
+Supplying the same named field twice refuses the build with
+`plan_duplicate_match_field`. The raw builder remains available; its value,
+expression, and condition types are `PlanValue`, `PlanExpr`, and
+`PlanCondition`. Generated helpers use `Value<T>`, `Expr<T>`, and `Condition`.
 
 The builder's handles (`item`, `stock`, `order_input`) come from generated
 model and field tokens, so a field another model owns does not compile.

@@ -607,6 +607,29 @@ fn assert_post_write_events(events: &[Event], insert_value_needle: &str) {
     }
 }
 
+fn assert_precommit_insert_correlation_error(error: &crate::Error) {
+    assert_eq!(
+        error.category(),
+        crate::error::ErrorCategory::ModelValidation
+    );
+    assert_eq!(error.code(), Some("query_remote_v3_document_value"));
+    assert_eq!(
+        error.model_validation_phase(),
+        Some(crate::error::ModelValidationPhase::Input)
+    );
+    assert_eq!(error.path(), Some([].as_slice()));
+    assert_eq!(error.diagnostic_path(), Some([].as_slice()));
+    assert_eq!(
+        error.message(),
+        "Typed query evidence does not match the validated request invocation"
+    );
+    let source = std::error::Error::source(error)
+        .unwrap()
+        .downcast_ref::<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>()
+        .unwrap();
+    assert_eq!(source.category().as_str(), "integrity");
+}
+
 #[tokio::test]
 async fn public_insert_missing_post_write_row_rolls_back() {
     let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
@@ -618,21 +641,7 @@ async fn public_insert_missing_post_write_row_rolls_back() {
         })
         .await
         .unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "missing_post_write_row");
-    assert_eq!(path, &["iid"]);
-    assert_eq!(message, "written entity was not returned");
-    assert!(std::error::Error::source(&error).is_none());
+    assert_precommit_insert_correlation_error(&error);
     assert_post_write_events(&state.lock().unwrap().events, "\"v\"");
 }
 
@@ -1621,7 +1630,7 @@ async fn public_insert_zero_iid_documents_rolls_back() {
         })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("missing_post_write_row"));
+    assert_precommit_insert_correlation_error(&err);
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 
@@ -1639,7 +1648,7 @@ async fn public_insert_multiple_iid_documents_rolls_back() {
         })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("provider_identity_cardinality_invalid"));
+    assert_precommit_insert_correlation_error(&err);
     assert_insert_failure_events(&state.lock().unwrap().events);
 }
 

@@ -9,11 +9,12 @@
 
 use std::marker::PhantomData;
 
+pub use crate::plan::Pending;
 pub use type_bridge_orm::session::staged::{
-    CommitError, Pending, PendingError, PlanAnswer, TransactionKind, TransactionOptions,
+    CommitError, PendingError, PlanAnswer, TransactionKind, TransactionOptions,
 };
 
-use crate::plan::Plan;
+use crate::plan::{Plan, PlanResult, StageSchema};
 use crate::schema::Schema;
 
 /// A reusable staged transaction over plans of schema `S`.
@@ -31,6 +32,7 @@ use crate::schema::Schema;
 /// its queue without committing.
 pub struct Transaction<S: Schema> {
     inner: type_bridge_orm::session::staged::Transaction,
+    origin: type_bridge_orm::ProjectedQueryOrigin,
     marker: PhantomData<fn() -> S>,
 }
 
@@ -44,8 +46,14 @@ impl<S: Schema> Transaction<S> {
     pub(crate) fn new(inner: type_bridge_orm::session::staged::Transaction) -> Self {
         Self {
             inner,
+            origin: type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
             marker: PhantomData,
         }
+    }
+
+    pub(crate) fn with_origin(mut self, origin: type_bridge_orm::ProjectedQueryOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 
     /// Queue `plan` without opening a provider transaction.
@@ -56,8 +64,38 @@ impl<S: Schema> Transaction<S> {
     /// transaction, [`PendingError::NotAllowedInKind`] in a `Schema`
     /// transaction, [`PendingError::InvalidPlan`] when the plan cannot run
     /// on this backend, and [`PendingError::Closed`] after [`Self::close`].
-    pub fn stage(&mut self, plan: &Plan<S>) -> Result<Pending<PlanAnswer>, PendingError> {
-        self.inner.stage_plan(plan.inner())
+    ///
+    /// A branded plan cannot cross generated schema packages:
+    ///
+    /// ```compile_fail
+    /// use type_bridge::schema::{Schema, sealed};
+    /// use type_bridge::plan::{Plan, StageSchema};
+    /// use type_bridge::staged::{PlanAnswer, Transaction};
+    /// struct A;
+    /// struct B;
+    /// impl sealed::Sealed for A {}
+    /// impl sealed::Sealed for B {}
+    /// impl Schema for A {}
+    /// impl Schema for B {}
+    /// impl StageSchema<A> for A {}
+    /// impl StageSchema<B> for B {}
+    /// fn reject(tx: &mut Transaction<A>, plan: &Plan<PlanAnswer, B>) {
+    ///     tx.stage(plan).unwrap();
+    /// }
+    /// ```
+    pub fn stage<R: PlanResult, P: StageSchema<S>>(
+        &mut self,
+        plan: &Plan<R, P>,
+    ) -> Result<Pending<R>, PendingError> {
+        plan.inner().map_err(|_| {
+            PendingError::InvalidPlan(Box::new(type_bridge_contract::diagnostic::Diagnostic::new(
+                type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                type_bridge_contract::diagnostic::DiagnosticCode::new("plan_context_missing")
+                    .expect("static plan diagnostic code"),
+                "finish the recording before staging its held result",
+            )))
+        })?;
+        plan.stage(&mut self.inner, self.origin.clone())
     }
 
     /// Run every staged plan in order as one provider transaction and
@@ -104,16 +142,10 @@ impl From<CommitError> for crate::Error {
 /// A staging or pending-answer failure as an SDK [`Error`](crate::Error).
 impl From<PendingError> for crate::Error {
     fn from(error: PendingError) -> Self {
-        use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
         match error {
-            PendingError::Failed {
-                failure: Some(failure),
-                context,
-                ..
-            } => Self::from_sdk_execution(
-                SdkExecutionDiagnostic::from_failure(&failure, *context),
-                crate::ModelValidationPhase::Input,
-            ),
+            PendingError::Failed { diagnostic, .. } => {
+                Self::from_sdk_execution(*diagnostic, crate::ModelValidationPhase::Input)
+            }
             PendingError::Refused { diagnostic, .. } => {
                 Self::from_sdk_execution(*diagnostic, crate::ModelValidationPhase::Input)
             }
@@ -141,5 +173,30 @@ mod document_answers {
             PlanAnswer::Documents(documents) => assert_eq!(documents[0]["_type"], "person"),
             other => panic!("expected documents, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod pending_diagnostic_redaction_tests {
+    use super::*;
+    #[test]
+    fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
+        let error = PendingError::Failed {
+            diagnostic: Box::new(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::commit_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown,
+                ),
+            ),
+            op_index: None,
+            message: "signed-server-secret".into(),
+            failure: Some(Box::new(
+                type_bridge_contract::failure::Failure::Indeterminate { code: None },
+            )),
+            context: Default::default(),
+        };
+        assert!(!error.to_string().contains("signed-server-secret"));
+        let surfaced = crate::Error::from(error);
+        assert!(!surfaced.to_string().contains("signed-server-secret"));
+        assert!(!format!("{surfaced:?}").contains("signed-server-secret"));
     }
 }
