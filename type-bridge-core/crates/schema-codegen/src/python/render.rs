@@ -535,9 +535,32 @@ fn render_model_header(body: &str, stub: bool, defer_query_imports: bool) -> Str
     }
     let mut runtime = Vec::new();
     if body.contains("_PlanHandle[") {
-        output.push_str("from type_bridge.plan import Plan as _Plan, Handle as _PlanHandle, Value as _PlanValue, Expr as _PlanExpr, PlanInput as _PlanInput\n");
+        let plan = [
+            ("Plan as _Plan", "_Plan["),
+            ("Handle as _PlanHandle", "_PlanHandle["),
+            ("Value as _PlanValue", "_PlanValue["),
+            ("Expr as _PlanExpr", "_PlanExpr["),
+            ("PlanInput as _PlanInput", "_PlanInput["),
+        ]
+        .into_iter()
+        .filter_map(|(import, usage)| body.contains(usage).then_some(import))
+        .collect::<Vec<_>>();
+        let _ = writeln!(output, "from type_bridge.plan import {}", plan.join(", "));
         if !stub {
-            output.push_str("from type_bridge.plan import _match as _plan_match, _insert as _plan_insert, _bulk_insert as _plan_bulk_insert, _MISSING as _PLAN_MISSING  # pyright: ignore[reportPrivateUsage]\n");
+            let calls = [
+                ("_match as _plan_match", "_plan_match("),
+                ("_insert as _plan_insert", "_plan_insert("),
+                ("_bulk_insert as _plan_bulk_insert", "_plan_bulk_insert("),
+                ("_MISSING as _PLAN_MISSING", "_PLAN_MISSING"),
+            ]
+            .into_iter()
+            .filter_map(|(import, usage)| body.contains(usage).then_some(import))
+            .collect::<Vec<_>>();
+            let _ = writeln!(
+                output,
+                "from type_bridge.plan import {}  # pyright: ignore[reportPrivateUsage]",
+                calls.join(", ")
+            );
             runtime.push("plan_authority as _plan_authority");
         }
     }

@@ -161,6 +161,19 @@ def main() -> None:
     ordered = pyright(STAGE / "generated_ordered", expected_exit=0)
     if ordered["summary"]["errorCount"] != 0:
         raise AssertionError(f"ordered generated package Pyright failed: {ordered}")
+    command(
+        [
+            "uv",
+            "run",
+            "ruff",
+            "check",
+            "--isolated",
+            "--select",
+            "F401",
+            str(STAGE / "generated_ordered" / "_models.py"),
+            str(STAGE / "generated_ordered" / "_models.pyi"),
+        ]
+    )
 
     variant_source = (
         (HERE / "schema.yaml")
