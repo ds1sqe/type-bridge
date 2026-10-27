@@ -39,7 +39,7 @@ pub fn assert_live_server(database: &Database) {
         .expect("negotiated server version");
     assert!(
         expected.admits(&server),
-        "{PROFILE_ENV}={} requires exactly TypeDB {expected}, got {server}",
+        "{PROFILE_ENV}={} requires TypeDB {expected} (later patches on the same minor lines), got {server}",
         profile.as_str()
     );
 }

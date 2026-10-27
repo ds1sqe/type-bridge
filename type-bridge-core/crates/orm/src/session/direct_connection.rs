@@ -222,7 +222,7 @@ pub(super) fn lower_secure_connection(error: SecureConnectError) -> SdkExecution
     lower_execution_error(error, SdkProviderOperation::Connect)
 }
 
-/// Resolve the exact provider release the package's semantic profile binds.
+/// Resolve the provider patch floors the package's semantic profile binds.
 fn require_exact_package_profile(
     installed: &InstalledRuntimeProjection,
 ) -> Result<GeneratedPackageRelease, SdkExecutionDiagnostic> {

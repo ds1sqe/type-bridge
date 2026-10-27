@@ -20,10 +20,10 @@ CORE_DIR="$ROOT_DIR/type-bridge-core"
 NODE_DIR="$CORE_DIR/crates/node"
 ACCEPTANCE_DIR="$CORE_DIR/crates/schema-codegen/tests/acceptance"
 SDK_MODELS_DIR="$ROOT_DIR/tests/contracts/sdk_conformance/models"
-# The fixture packages admit exactly the TypeDB server their profile names
-# (typedb-3.12.1/v1 -> 3.12.3, typedb-3.13.6/v1 -> 3.13.6). The default
-# follows the default TypeDB image. The models ordered/projected packages are
-# built for every profile the models version matrix lists.
+# Fixtures use measured releases; generated packages also admit later patches
+# on the same minor lines through the Rust core. The default follows the
+# default TypeDB image. Models ordered/projected packages are built for every
+# profile the models version matrix lists.
 semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
 output_dir="$(realpath -m "$requested_output")"
 

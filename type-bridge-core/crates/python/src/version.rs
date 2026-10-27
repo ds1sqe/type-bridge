@@ -9,7 +9,7 @@
 //! |--------|------|-------------|
 //! | `VersionError` | exception | Raised for window, band-mismatch, probe, and parse failures |
 //! | `min_supported_version` | function | Returns the floor as `"3.11.0"` |
-//! | `max_supported_line` | function | Returns the ceiling line as `"3.12"` |
+//! | `max_supported_line` | function | Returns the newest measured line as `"3.14"` |
 //! | `band` | function | Protocol-band lookup; `None` for unmapped versions |
 //! | `check_supported` | function | Window + band gate (installed driver); raises `VersionError` on failure |
 //! | `check_server_supported` | function | Embedded-runtime gate (band-set membership); raises `VersionError` on failure |
@@ -99,9 +99,9 @@ pub fn min_supported_version() -> String {
     core_version::MIN_SUPPORTED.to_string()
 }
 
-/// Return the maximum supported TypeDB line as `"major.minor"` (e.g. `"3.12"`).
+/// Return the newest measured TypeDB line as `"major.minor"` (e.g. `"3.14"`).
 ///
-/// Any patch release on this line is in-window; the next minor is not.
+/// Newer lines are admitted using this line's assumptions, not refused.
 #[pyfunction]
 pub fn max_supported_line() -> String {
     let (major, minor) = core_version::MAX_SUPPORTED_LINE;
@@ -131,13 +131,13 @@ pub fn band(version: &str) -> PyResult<Option<u8>> {
 
 /// Assert that `driver` and `server` versions are mutually compatible.
 ///
-/// Both the support window and the protocol band must agree.  See the Rust
+/// Both endpoints must meet the admission floor and agree on protocol bands.  See the Rust
 /// `check_supported` documentation for the exact rules.
 ///
 /// # Errors
 ///
 /// Raises `VersionError` when either version string is unparseable or when the
-/// versions are incompatible (window violation or band mismatch).
+/// versions are incompatible (below the admission floor or a band mismatch).
 #[pyfunction]
 pub fn check_supported(driver: &str, server: &str) -> PyResult<()> {
     let d = driver.parse::<core_version::Version>().map_err(to_py_err)?;
@@ -187,7 +187,9 @@ pub fn embedded_driver_versions(py: Python<'_>) -> PyResult<Py<PyDict>> {
 ///
 /// Uses band-set intersection: the server is accepted when any band it
 /// accepts connections from is compiled into this build. For the default
-/// build (both retained bands embedded), any in-window server passes. Confirmed
+/// build (both retained bands embedded), any admitted server passes. Newer
+/// lines reuse the newest measured assumptions and are not tested or supported
+/// by this TypeBridge release; the runtime warns once per connection. Confirmed
 /// 3.12 servers normally negotiate native band 9, with band 8 retained for
 /// discovery/fallback.
 ///
@@ -199,8 +201,8 @@ pub fn embedded_driver_versions(py: Python<'_>) -> PyResult<Py<PyDict>> {
 ///
 /// Raises `VersionError` when:
 /// - `server` cannot be parsed.
-/// - `server` is outside the support window (`Unsupported`).
-/// - `server` is in-window but no band it accepts is compiled into this build
+/// - `server` is below the admission floor (`Unsupported`).
+/// - `server` is admitted but no band it accepts is compiled into this build
 ///   (`EmbeddedUnavailable` — only reachable in non-default single-band builds).
 #[pyfunction]
 pub fn check_server_supported(server: &str) -> PyResult<()> {

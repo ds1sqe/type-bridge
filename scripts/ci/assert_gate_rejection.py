@@ -24,8 +24,8 @@ CLASS_MARKERS = {
     "embedded": "TypeBridge's embedded runtime",
     # The installed Python driver band check — pip-level remediation.
     "installed": "is not protocol-compatible with",
-    # The support-window check (either component below floor / above ceiling).
-    "window": "outside the supported window",
+    # The version-range check (either component below floor).
+    "window": "outside the admitted range",
 }
 
 # These must never appear in any user-facing gate message.

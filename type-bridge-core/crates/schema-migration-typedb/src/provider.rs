@@ -62,7 +62,7 @@ pub struct TypeDbExecutionBinding {
 }
 
 impl TypeDbExecutionBinding {
-    /// Validate and bind one database pair on the exact TypeDB release the
+    /// Validate and bind one database pair on a TypeDB minor line and patch floor the
     /// context's semantic profile requires (see [`migration_server_for_profile`]).
     ///
     /// Reuse this value (or a clone) for every provider and store that must
@@ -700,13 +700,13 @@ async fn finish_provider_data_guard<T>(
     finish_provider_schema_guard(transaction, primary, operation).await
 }
 
-/// Return the exact TypeDB release connected migrations require for a
+/// Return the newest measured TypeDB release connected migrations use for a
 /// workspace semantic profile, or `None` when the profile cannot run them.
 ///
 /// The pairing is the generated-package release map, so a workspace's
 /// migrations and its generated packages always target the same server:
 ///
-/// | Semantic profile | Admitted servers (newest returned) |
+/// | Semantic profile | Measured floors (newest returned) |
 /// |------------------|------------------------------------|
 /// | `typedb-3.12.1/v1` | `3.12.3` |
 /// | `typedb-3.13.6/v1` | `3.13.6`, `3.14.0` |
@@ -717,7 +717,7 @@ pub fn migration_server_for_profile(semantic_profile: &SemanticProfileId) -> Opt
 }
 
 /// Require a semantic profile that connected migrations support and return
-/// the newest exact server release it pairs with.
+/// the newest measured server release it pairs with.
 ///
 /// This check is pure: it performs no credential, filesystem, or database work.
 pub fn require_supported_migration_profile(
@@ -726,7 +726,7 @@ pub fn require_supported_migration_profile(
     migration_release(semantic_profile).map(GeneratedPackageRelease::server)
 }
 
-/// The exact server releases a semantic profile's migrations run on.
+/// The patch floors a semantic profile's migrations run on.
 fn migration_release(
     semantic_profile: &SemanticProfileId,
 ) -> Result<GeneratedPackageRelease, Diagnostic> {
@@ -755,7 +755,7 @@ fn supported_migration_profiles() -> Vec<String> {
         .collect()
 }
 
-/// Require the exact TypeDB server a semantic profile's migrations run on.
+/// Require a TypeDB server meeting a semantic profile's patch floors.
 ///
 /// The profile is checked first. This check reads only the version
 /// negotiated by the existing connection; it performs no database lookup,
@@ -772,7 +772,7 @@ pub fn require_supported_migration_server_for_profile(
     )
 }
 
-/// Require TypeDB 3.12.3, the server for semantic profile `typedb-3.12.1/v1`.
+/// Require TypeDB 3.12.3+, the patch floor for semantic profile `typedb-3.12.1/v1`.
 #[deprecated(
     since = "2.3.0",
     note = "use require_supported_migration_server_for_profile; removed in 3.0"
@@ -785,7 +785,7 @@ pub fn require_supported_migration_server(database: &Database) -> Result<(), Dia
 }
 
 /// Require a supported semantic profile and, on both members of one
-/// managed/journal pair, the exact server that profile pairs with.
+/// managed/journal pair, a server meeting that profile's patch floors.
 ///
 /// The profile gate runs first, followed by pair identity, managed-server
 /// identity, and journal-server identity. Every check consumes only
@@ -912,7 +912,7 @@ fn require_supported_server_version(
             DiagnosticCategory::InvalidContract,
             "migration_typedb_server_version_unsupported",
             format!(
-                "migration execution on semantic profile {} requires exactly TypeDB {admitted}",
+                "migration execution on semantic profile {} requires TypeDB {admitted}",
                 semantic_profile.as_str()
             ),
         )
@@ -1104,11 +1104,16 @@ mod tests {
     }
 
     #[test]
-    fn migration_server_gate_accepts_exactly_the_profile_pairs() {
+    fn migration_server_gate_accepts_the_profile_patch_floors() {
         let accepted = [
             ("typedb-3.12.1/v1", (3, 12, 3)),
             ("typedb-3.13.6/v1", (3, 13, 6)),
             ("typedb-3.13.6/v1", (3, 14, 0)),
+            ("typedb-3.12.1/v1", (3, 12, 7)),
+            ("typedb-3.13.6/v1", (3, 13, 9)),
+            ("typedb-3.13.6/v1", (3, 14, 1)),
+            ("typedb-3.13.6/v1", (3, 15, 0)),
+            ("typedb-3.13.6/v1", (4, 0, 0)),
         ];
         for (id, (major, minor, patch)) in accepted {
             let semantic_profile = profile(id);
@@ -1118,7 +1123,7 @@ mod tests {
                 expected,
                 version(major, minor, patch),
             )
-            .expect("the exact pair is accepted");
+            .expect("the profile patch floor is accepted");
 
             let unknown = require_supported_server_version(&semantic_profile, expected, None)
                 .expect_err("unknown must reject");
@@ -1136,7 +1141,8 @@ mod tests {
             ("typedb-3.12.1/v1", (3, 12, 2)),
             ("typedb-3.13.6/v1", (3, 13, 5)),
             ("typedb-3.12.1/v1", (3, 14, 0)),
-            ("typedb-3.13.6/v1", (3, 15, 0)),
+            ("typedb-3.12.1/v1", (3, 15, 0)),
+            ("typedb-3.12.1/v1", (4, 0, 0)),
         ];
         for (id, (major, minor, patch)) in refused {
             let semantic_profile = profile(id);

@@ -84,6 +84,15 @@ duplicated directory snapshot here.
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io
   graph; the historical 2.0.0 SDK resolves from its exact release Git revision.
+- General TypeDB version admission requires at least 3.11.0 and has no upper
+  ceiling. Measured, supported lines remain 3.11–3.14. Newer lines reuse the
+  newest measured profile and protocol assumptions, with one warning per
+  connection: "not tested or supported by this TypeBridge release".
+  Admission does not guarantee compatibility.
+- Generated packages, the C runtime, and connected migrations enforce profile
+  floors: `3.12.3+` on the 3.12 line for `typedb-3.12.1/v1`; `3.13.6+`,
+  `3.14.0+`, and newer lines for `typedb-3.13.6/v1`. Older-profile mismatches
+  remain refused. Test lanes and migration targets retain measured pins.
 - Release-specific compatibility, trust, resource-limit, and security
   boundaries are contracts, not illustrative prose.
 

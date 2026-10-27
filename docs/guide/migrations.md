@@ -39,9 +39,14 @@ one named environment and enforce its `migrate` policy. TypeDB-backed
 `migration apply`, `migration verify`, `migration rollback --execute`,
 `migration adopt`, and `migration upgrade-profile` run only on these
 profile/server pairs: workspace semantic profile `typedb-3.12.1/v1` with a
-negotiated TypeDB 3.12.3 server, or `typedb-3.13.6/v1` with TypeDB 3.13.6 or
-3.14.0. Any other pair is refused. Generated applications and offline
-authoring retain the wider 3.11–3.14 support window.
+negotiated TypeDB 3.12.3+ server, or `typedb-3.13.6/v1` with TypeDB 3.13.6+ or
+3.14.0+ and newer lines. Here, `+` admits later patches on the same minor
+line. Newer lines reuse the newest measured profile and protocol assumptions
+and warn once per connection that they are
+"not tested or supported by this TypeBridge release". No compatibility is
+guaranteed. Older profiles still reject other server lines. General version
+admission requires >=3.11.0; supported lines remain the measured 3.11–3.14.
+Offline authoring remains available for supported semantic profiles.
 
 ## Author and apply a change
 

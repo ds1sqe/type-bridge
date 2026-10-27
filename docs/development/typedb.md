@@ -2,14 +2,20 @@
 
 ## Server and driver compatibility
 
-TypeBridge supports TypeDB 3.11.x–3.14.x. The live release matrix uses
-3.11.5, 3.12.3, 3.13.6 and 3.14.0; 3.14.0 is the recommended server, and
-3.13.6 remains the V2 conformance baseline. Generated Python, TypeScript/Node, and Rust applications
-share this exact window.
+TypeBridge supports the measured TypeDB lines 3.11.x–3.14.x, subject to the
+profile patch floors below. General version admission accepts any version
+at or above 3.11.0; only versions below that floor are refused by the general
+version gate. Each connection to a newer line emits one warning naming the
+server, newest measured line and fallback profile. Newer lines are
+"not tested or supported by this TypeBridge release". Admission does not
+guarantee compatibility.
 
-Run the newest supported TypeDB. TypeBridge adds each new TypeDB minor line in
-its next release; a server newer than the window is refused until then. The
-window of each earlier TypeBridge release is listed in
+The live release matrix uses 3.11.5, 3.12.3, 3.13.6 and 3.14.0; 3.14.0 remains
+the recommended server and 3.13.6 the V2 conformance baseline. Newer lines,
+including 3.15 and 4.x, reuse `typedb-3.13.6/v1`, protocol band 9 and the newest
+measured accepted-band set `[9, 8]`. These are assumptions, not new support
+claims. Generated Python, TypeScript/Node, Rust and C use the same Rust rule.
+Earlier releases' windows are listed in
 [TypeDB versions](../getting-started/installation.md#typedb-versions).
 
 Generated live acceptance executes the same application operation set on every
@@ -19,36 +25,40 @@ difference from the 3.12 and 3.13 fixtures, which 3.14 shares.
 
 | Dimension | Supported value |
 | --- | --- |
-| TypeDB servers | 3.11.x–3.14.x |
+| Supported TypeDB lines | Measured 3.11.x–3.14.x with profile patch floors |
+| General version admission | >=3.11.0; newer lines warn and are not tested or supported |
 | Verified tags | 3.11.5, 3.12.3, 3.13.6, 3.14.0 |
 | Recommended server | 3.14.0 |
 | Generated CRUD/query acceptance | 3.11.5, 3.12.3, 3.13.6 and 3.14.0 |
-| Connected V2 migration execution | exactly 3.12.3, 3.13.6 or 3.14.0, matching the workspace profile |
+| Connected V2 migration execution | Profile floors below; newest profile also admits newer lines |
 | Protocol providers | band 8 and band 9 |
 | V2 conformance baseline | 3.13.6 |
 | CPython | 3.12–3.14 |
 | Node | 18+; primary lane 20 |
 | Public Rust SDK | Rust 1.88+ |
 
-Versions outside the window fail before TypeBridge opens an application data
+Here, `+` admits later patches on the same minor line; it does not admit a new minor line.
+
+Versions below 3.11.0 fail before TypeBridge opens an application data
 transaction.
 
-The wider window applies to generated application operations and query
-execution. `migration apply`, `migration verify`, `migration adopt`,
+General admission applies to application operations and query execution. `migration apply`, `migration verify`, `migration adopt`,
 `migration rollback --execute`, and `migration upgrade-profile` have a
 narrower authority contract. They run only on these pairs of workspace
 semantic profile and negotiated server:
 
 | Semantic profile | TypeDB server |
 | --- | --- |
-| `typedb-3.12.1/v1` | exactly 3.12.3 |
-| `typedb-3.13.6/v1` | exactly 3.13.6 or 3.14.0 |
+| `typedb-3.12.1/v1` | 3.12.3+ |
+| `typedb-3.13.6/v1` | 3.13.6+, 3.14.0+, and newer lines (unmeasured) |
 
 A profile name identifies frozen schema semantics, not the selected compatible
 server patch. TypeDB 3.14 changed no schema syntax, default or lowering, so it
 shares `typedb-3.13.6/v1`; generated packages on that profile connect to 3.13.6
-and 3.14.0 alike. Connected commands reject any other pair before database creation
-or migration state work. Offline `schema check`, `schema generate`,
+and 3.14.0 and later patches on those minor lines. That newest profile also
+admits newer lines with the warning above. Older profiles retain their own
+lines; a 3.12 package on 3.14 is a profile mismatch. Connected commands reject
+mismatched pairs before database creation or migration state work. Offline `schema check`, `schema generate`,
 `migration make`, and `migration plan` remain available for every supported
 semantic profile. To move an existing history from 3.12 to 3.13, see
 [Move a history to a new TypeDB line](../guide/migrations.md#move-a-history-to-a-new-typedb-line).
@@ -73,7 +83,8 @@ exists for direct driver calls and accepts `typedb-driver>=3.11,<3.15`. On
 CPython 3.14, where only band-9 drivers publish wheels, it accepts
 `>=3.12.3,<3.15`, so direct driver calls there need a 3.12, 3.13 or 3.14
 server; the
-embedded TypeBridge runtime still supports every server line in the window.
+embedded TypeBridge runtime admits newer servers using the measured drivers,
+with the warning above and without a compatibility guarantee.
 
 ### Version discovery
 
@@ -167,8 +178,8 @@ operations. Repeated `close()` calls are safe.
 
 ### Feature gates
 
-The support window determines whether TypeBridge can connect; individual
-features may have a higher minimum inside that window.
+The admission floor and profile constraints determine whether TypeBridge can
+attempt a connection; individual features may have a higher minimum.
 
 | Feature | Minimum server | Behavior on 3.11 |
 | --- | --- | --- |

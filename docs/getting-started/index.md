@@ -15,12 +15,17 @@ remote server later without changing semantic systems.
 
 ## Before connecting
 
-You need a supported TypeDB 3.x server for database operations. TypeBridge
-supports generated CRUD/query operations on TypeDB 3.11–3.14; run the newest
-supported release, 3.14.0. Connected V2 migration apply/verify/adopt requires
-exactly 3.12.3, 3.13.6 or 3.14.0, matching the workspace semantic profile. The
+TypeBridge admits TypeDB versions >=3.11.0 for database operations. Supported
+lines remain the measured 3.11–3.14 lines; 3.14.0 is recommended. Newer lines
+are admitted with a warning that they are
+"not tested or supported by this TypeBridge release" and no compatibility
+guarantee. They reuse the newest measured profile and protocol assumptions.
+Connected migrations enforce the workspace profile floors: 3.12.3+ on 3.12,
+or 3.13.6+/3.14.0+ and newer lines on the newest profile. The
 selected C release matrix is verified against TypeDB 3.12.3. The exact
 interpreter, native-target, provider-band, and server matrix is maintained in [TypeDB compatibility](../development/typedb.md#server-and-driver-compatibility).
+
+Here, `+` admits later patches on the same minor line; it does not admit a new minor line.
 
 Schema parsing, validation, comparison, migration planning, and code generation
 can run offline.

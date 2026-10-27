@@ -154,6 +154,25 @@ All notable changes to TypeBridge will be documented in this file.
   `query_remote_v3_document_value` before commit, replacing
   `missing_post_write_row` and `provider_identity_cardinality_invalid`.
 
+## [2.3.3] - 2026-10-27
+
+### Fixed
+
+- The C runtime's `type_bridge_database_server_version` reports the
+  version of the connected TypeDB server. Since 2.3.1 it reported the
+  newest version admitted by the profile, so a connection to 3.13.6 said
+  3.14.0.
+- TypeDB versions at or above 3.11.0 are now admitted without an upper
+  version ceiling. Measured, supported lines remain 3.11–3.14. A connection
+  to a newer line reuses the newest measured semantic profile and protocol
+  assumptions and warns that it is
+  "not tested or supported by this TypeBridge release". Admission does not
+  guarantee compatibility; versions below 3.11.0 remain refused (#286).
+- Generated SDK packages, the C runtime, and connected migrations admit
+  `3.12.3+` on the 3.12 line for profile `typedb-3.12.1/v1`, and `3.13.6+`,
+  `3.14.0+`, and newer lines for `typedb-3.13.6/v1`. Older profiles retain
+  their line and patch-floor constraints. Measured test pins are unchanged.
+
 ## [2.3.2] - 2026-10-23
 
 ### Added
