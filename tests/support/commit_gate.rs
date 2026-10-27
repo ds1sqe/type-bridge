@@ -170,9 +170,10 @@ impl TransactionOps for GatedTransaction {
         rows: Option<GivenRowsSpec>,
         limits: type_bridge_orm::session::backend::AnswerLimits,
         canonical: bool,
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         self.inner
-            .query_materialized_bounded(typeql, rows, limits, canonical)
+            .query_materialized_bounded(typeql, rows, limits, canonical, statement_display)
     }
 
     fn query_bounded<'a>(

@@ -246,7 +246,26 @@ pub fn query_builder_type_kind(value: &str) -> Result<TypeKind, Diagnostic> {
 /// Parse the exact low-level comparator spelling shared by both bindings.
 #[doc(hidden)]
 pub fn query_builder_comparator(value: &str) -> Result<ValueComparator, Diagnostic> {
-    value.parse().map_err(Diagnostic::from)
+    const ACCEPTED: &[&str] = &[
+        "equal",
+        "not_equal",
+        "less",
+        "less_or_equal",
+        "greater",
+        "greater_or_equal",
+    ];
+    QUERY_BUILDER_COMPARATORS
+        .iter()
+        .find(|(_, name)| *name == value)
+        .map(|(comparator, _)| *comparator)
+        .ok_or_else(|| {
+            type_bridge_contract::enum_spelling::UnknownEnumValue::new(
+                ValueComparator::KIND,
+                value,
+                ACCEPTED,
+            )
+            .into()
+        })
 }
 
 /// Parse the exact low-level sort-direction spelling shared by both bindings.
@@ -3543,7 +3562,11 @@ mod completeness_guard {
                 | ValueComparator::Less
                 | ValueComparator::LessOrEqual
                 | ValueComparator::Greater
-                | ValueComparator::GreaterOrEqual => {}
+                | ValueComparator::GreaterOrEqual
+                | ValueComparator::Contains
+                | ValueComparator::StartsWith
+                | ValueComparator::EndsWith
+                | ValueComparator::Like => {}
             }
         }
         fn value_type(value: ValueTypeTag) {

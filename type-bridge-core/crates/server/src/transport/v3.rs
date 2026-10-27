@@ -186,7 +186,11 @@ pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilitie
     for capability in query_plan_v3_capability_vocabulary().iter() {
         capabilities.insert(capability.clone());
     }
-    for capability in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
+    for capability in [
+        CAP_QUERY_REMOTE_STAGED_V3,
+        CAP_QUERY_REMOTE_WRITE_V3,
+        type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+    ] {
         capabilities.insert(CapabilityId::new(capability)?);
     }
     RemoteCapabilities::new(capabilities, v2.executor().clone(), v2.reply_key())
@@ -629,6 +633,18 @@ async fn execute_staged(
     let mut limits = state.query.ceilings.clone();
     limits.answer.max_items = limits.answer.max_items.min(requested.max_items);
     limits.answer.max_bytes = limits.answer.max_bytes.min(requested.max_bytes);
+    if let Some(maximum) = requested.max_graph_nodes {
+        limits.max_graph_nodes = limits.max_graph_nodes.min(maximum);
+    }
+    if let Some(maximum) = requested.max_attribute_values {
+        limits.max_attribute_values = limits.max_attribute_values.min(maximum);
+    }
+    if let Some(maximum) = requested.max_collection_members {
+        limits.max_collection_members = limits.max_collection_members.min(maximum);
+    }
+    if let Some(maximum) = requested.max_role_players {
+        limits.max_role_players = limits.max_role_players.min(maximum);
+    }
     limits.answer.deadline = Some(
         limits
             .answer

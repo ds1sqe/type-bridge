@@ -1355,3 +1355,223 @@ async fn deletion_snapshots_preserve_subtypes_and_players_across_routes() {
     }
     drop_database(db).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::layer::SubscriberExt;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_orm::session::backend::AnswerLimits;
+    let name = format!(
+        "tb270_04a_strings_{}_{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    eprintln!("TB270_RUNNER pid={} database={name}", std::process::id());
+    let db = staged_live::connect(&name).await;
+    db.create_database().await.unwrap();
+    db.execute_raw(
+        &race::SCHEMA_TYPEQL
+            .replace(" @key", "")
+            .replace(" @card(0..1)", ""),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    db.execute_raw(r#"insert $a isa doctor, has name "Ada.L", has on-call true; $b isa doctor, has name "Grace", has on-call false;"#, TxType::Write).await.unwrap();
+    let proxy = proxy(&name, LivePolicy::default(), true).await;
+    for (comparator, needles) in [
+        (ValueComparator::Contains, vec!["Ada", "Grace"]),
+        (ValueComparator::StartsWith, vec!["Ada."]),
+        (ValueComparator::EndsWith, vec![".L"]),
+        (ValueComparator::Like, vec!["^Ada.*", "^Grace$"]),
+    ] {
+        let plan = race::string_read(comparator, &needles);
+        let mut tx = db.transaction(TransactionOptions::default());
+        let pending = tx.stage_plan(&plan).unwrap();
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = Arc::clone(&records);
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new("type_bridge=trace"))
+                .with(type_bridge_orm::debug::DebugLayer(Arc::new(move |event| {
+                    captured.lock().unwrap().push(event.clone());
+                }))),
+        );
+        tx.commit().with_subscriber(dispatch).await.unwrap();
+        let statements: Vec<_> = records
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| {
+                event
+                    .fields
+                    .get("statement")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(
+            statements,
+            type_bridge_orm::plan_explain::explain(&plan)
+                .unwrap()
+                .statements
+        );
+        let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+        let entry =
+            StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
+        let staged = request(&proxy, vec![entry]);
+        let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
+        assert_eq!(reply.answers(), &[direct]);
+    }
+    let type_bridge_orm::session::backend::QueryResult::Documents(identities) = db
+        .execute_raw(
+            r#"match $doctor isa doctor; fetch {"iid":iid($doctor)};"#,
+            TxType::Read,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("IID probe must return documents")
+    };
+    for (iid, name) in [
+        (identities[0]["iid"].as_str().unwrap(), "nobody"),
+        ("0x1e0000000000000000ffff", "Grace"),
+    ] {
+        let plan = race::doctor_iid_or_name(iid, name);
+        let explanation = type_bridge_orm::plan_explain::explain(&plan).unwrap();
+        assert!(!explanation.statements.join("\n").contains(iid));
+        let mut tx = db.transaction(TransactionOptions::default());
+        let pending = tx.stage_plan(&plan).unwrap();
+        tx.commit().await.unwrap();
+        let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+        assert!(matches!(&direct, StagedAnswerV3::Documents { documents } if documents.len() == 1));
+        let entry =
+            StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
+        let staged = request(&proxy, vec![entry]);
+        let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
+        assert_eq!(reply.answers(), &[direct]);
+    }
+    let plan = race::rematch_doctor_window();
+    let mut tx = db.transaction(TransactionOptions::default());
+    let pending = tx.stage_plan(&plan).unwrap();
+    tx.commit().await.unwrap();
+    let direct = pending.get().unwrap().to_staged_v3(&plan).unwrap();
+    assert!(matches!(&direct, StagedAnswerV3::Documents { documents } if documents.len() == 1));
+    let entry = StagedPlanV3::new(&plan, vec![], &proxy.declared).unwrap();
+    let staged = request(&proxy, vec![entry]);
+    let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
+    assert_eq!(reply.answers(), &[direct]);
+    let plan = race::string_read(ValueComparator::Contains, &["Ada"]);
+    let mut tx = db.transaction(
+        TransactionOptions::default().with_answer_limits(AnswerLimits {
+            max_attribute_values: 0,
+            ..AnswerLimits::default()
+        }),
+    );
+    tx.stage_plan(&plan).unwrap();
+    let error = tx.commit().await.unwrap_err();
+    assert_eq!(
+        error.diagnostic().code().as_str(),
+        "hydrated_attribute_value_limit"
+    );
+    let entry =
+        StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap();
+    let staged = StagedRequestV3::new(
+        StagedRequestSpecV3 {
+            nonce: format!(
+                "tb270-04a-limits-{}",
+                SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ),
+            kind: None,
+            limits: StagedLimitsV3 {
+                max_attribute_values: Some(0),
+                ..StagedLimitsV3::default()
+            },
+            plans: vec![entry],
+            prepared_at_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        },
+        &proxy.declared,
+        &proxy.advertisement,
+    )
+    .unwrap();
+    let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
+    assert_eq!(failure_code(&reply), "hydrated_attribute_value_limit");
+    drop_database(db).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn explicitly_raised_string_limits_round_trip_large_values_direct_and_staged() {
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_orm::session::staged::PlanAnswer;
+    println!("WIDE_RUNNER pid={}", std::process::id());
+    let name = format!(
+        "tb270_04a_wide_{}_{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let db = staged_live::connect(&name).await;
+    db.create_database().await.unwrap();
+    db.execute_raw(
+        &race::SCHEMA_TYPEQL
+            .replace(" @key", "")
+            .replace(" @card(0..1)", ""),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let large = "x".repeat(1024 * 1024 + 1);
+    db.execute_raw(
+        &format!("insert $d isa doctor, has name \"{large}\", has on-call true;"),
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let limits =
+        QueryLimits::from_overrides([("canonical_string_bytes", 2 * 1024 * 1024)]).unwrap();
+    let proxy = proxy(
+        &name,
+        LivePolicy {
+            query_limits: Some(limits),
+            ..Default::default()
+        },
+        true,
+    )
+    .await;
+    let plan = race::string_read_with_limits(ValueComparator::Equal, &[&large], limits);
+    let mut direct_tx = db.transaction(TransactionOptions::default().with_never_commit(true));
+    let pending = direct_tx.stage_plan(&plan).unwrap();
+    direct_tx.commit().await.unwrap();
+    let direct = pending.get().unwrap();
+    assert!(matches!(&*direct, PlanAnswer::Documents(documents) if documents.len() == 1));
+    let request_spec = || StagedRequestSpecV3 {
+        nonce: format!("tb270-04a-wide-request-{}", std::process::id()),
+        kind: None,
+        limits: StagedLimitsV3::default(),
+        plans: vec![
+            StagedPlanV3::new(&plan, plan.given_rows().unwrap().to_vec(), &proxy.declared).unwrap(),
+        ],
+        prepared_at_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+    };
+    assert!(StagedRequestV3::new(request_spec(), &proxy.declared, &proxy.advertisement).is_err());
+    let staged = StagedRequestV3::new_with_limits(
+        request_spec(),
+        &proxy.declared,
+        &proxy.advertisement,
+        limits,
+    )
+    .unwrap();
+    let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
+    assert!(reply.committed(), "{:?}", reply.diagnostic());
+    assert_eq!(reply.answers(), [direct.to_staged_v3(&plan).unwrap()]);
+    drop_database(db).await;
+}

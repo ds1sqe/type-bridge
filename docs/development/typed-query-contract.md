@@ -557,9 +557,14 @@ whole operation; no partial row or page is exposed.
 
 A query is held to one set of limits from authoring to execution: the plan's
 canonical encoding, its structure, and its remote request envelope. The limits
-are a value, `QueryLimits`, not library constants. Defaults reproduce the
-ceilings every earlier release enforced, so a caller who sets nothing sees
-unchanged plan bytes, fingerprints, and refusals.
+are a value, `QueryLimits`, not library constants. Small plans keep their
+existing canonical bytes and fingerprints. In 3.0, typed predicate strings
+also observe the default 1 MiB `canonical_string_bytes` ceiling; 2.x typed
+predicates could reach the caller's artifact ceiling. Raise
+`canonical_string_bytes` explicitly to retain that larger-value behavior,
+subject to the artifact ceiling and the receiver's own limits. V3 requests
+with actual strings above 1 MiB require `query.input.wide-strings`;
+refusals name the configured `canonical_string_bytes` limit.
 
 | Limit | Default | Supported maximum | Bounds |
 | --- | ---: | ---: | --- |

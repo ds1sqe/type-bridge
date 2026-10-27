@@ -98,6 +98,7 @@ fn server_ceilings() -> AnswerLimits {
             cancellation: AnswerCancellation::default(),
         },
         max_collection_members: proxy.collection_members,
+        ..Default::default()
     }
 }
 

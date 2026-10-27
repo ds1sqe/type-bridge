@@ -466,6 +466,7 @@ fn prepares_and_is_admitted(evidence: bool) {
                 cancellation: AnswerCancellation::default(),
             },
             max_collection_members: 1 << 16,
+            ..Default::default()
         },
     )
     .unwrap_or_else(|_| panic!("the executor admits the request"));

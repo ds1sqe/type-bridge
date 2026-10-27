@@ -2147,6 +2147,7 @@ async fn dispatch_rows(
             cancellation: prepared.cancellation().clone(),
         },
         max_collection_members: prepared.limits().collection_members,
+        ..Default::default()
     };
     let operation = if mutation {
         SdkProviderOperation::Write

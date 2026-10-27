@@ -3016,6 +3016,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 cancellation: control.cancellation.clone(),
             },
             max_collection_members: control.limits.collection_members,
+            ..Default::default()
         };
         let mut collector = ControlledAnswerCollector::new(expected, type_id.label().as_str());
         let mut observed = LocallyBoundedCrudConsumer::new(&mut collector, limits.answer.clone());

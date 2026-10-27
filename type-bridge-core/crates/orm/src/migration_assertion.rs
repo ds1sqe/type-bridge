@@ -396,6 +396,7 @@ async fn execute_with_provider<P: AssertionProviderCall + ?Sized>(
                 // Assertion evidence is selected rows. Documents are rejected,
                 // so no document-list allocation belongs to this execution.
                 max_collection_members: 0,
+                ..Default::default()
             },
             &mut consumer,
         )
@@ -617,6 +618,8 @@ pub(crate) const fn render_comparator(comparator: ValueComparator) -> &'static s
         ValueComparator::LessOrEqual => "<=",
         ValueComparator::Greater => ">",
         ValueComparator::GreaterOrEqual => ">=",
+        ValueComparator::Contains => "contains",
+        ValueComparator::StartsWith | ValueComparator::EndsWith | ValueComparator::Like => "like",
     }
 }
 

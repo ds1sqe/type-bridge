@@ -46,6 +46,11 @@ pub enum Builtin {
 pub enum Expr {
     /// A scalar binding, literal or declared input.
     Operand(QueryOperand),
+    /// Canonical provider IID of a present entity or relation binding.
+    Iid {
+        /// The typed thing binding.
+        binding: BindingId,
+    },
     /// Binary numeric expression.
     Arith {
         /// Closed numeric operator.
@@ -67,19 +72,28 @@ pub enum Expr {
 impl Expr {
     /// Infer the scalar result from present scalar bindings and declared inputs.
     ///
-    /// This uses the same bounded inference as trusted plan construction.
+    /// This scalar-only context cannot admit IID expressions; those require
+    /// the thing-binding evidence supplied by trusted plan construction.
     pub fn value_type(
         &self,
         bindings: &BTreeMap<BindingId, ValueTypeTag>,
         inputs: &[InputColumn],
     ) -> Result<ValueTypeTag, Diagnostic> {
-        self.infer(bindings, inputs, QueryLimits::CANONICAL, 1, &mut 0)
+        self.infer(
+            bindings,
+            inputs,
+            &BTreeSet::new(),
+            QueryLimits::CANONICAL,
+            1,
+            &mut 0,
+        )
     }
 
     pub(super) fn infer(
         &self,
         bindings: &BTreeMap<BindingId, ValueTypeTag>,
         inputs: &[InputColumn],
+        things: &BTreeSet<BindingId>,
         limits: QueryLimits,
         depth: usize,
         nodes: &mut usize,
@@ -94,9 +108,19 @@ impl Expr {
         }
         match self {
             Self::Operand(operand) => operand_type(operand, bindings, inputs),
+            Self::Iid { binding } => {
+                if things.contains(binding) {
+                    Ok(ValueTypeTag::String)
+                } else {
+                    Err(invalid(
+                        "query_plan_iid_untyped_thing",
+                        "iid expressions require a present entity or relation binding",
+                    ))
+                }
+            }
             Self::Arith { op, lhs, rhs } => {
-                let left = lhs.infer(bindings, inputs, limits, depth + 1, nodes)?;
-                let right = rhs.infer(bindings, inputs, limits, depth + 1, nodes)?;
+                let left = lhs.infer(bindings, inputs, things, limits, depth + 1, nodes)?;
+                let right = rhs.infer(bindings, inputs, things, limits, depth + 1, nodes)?;
                 if !numeric(left) || !numeric(right) {
                     return Err(invalid(
                         "query_plan_expression_type",
@@ -132,7 +156,7 @@ impl Expr {
                         "builtin has the wrong argument count",
                     ));
                 }
-                let first = args[0].infer(bindings, inputs, limits, depth + 1, nodes)?;
+                let first = args[0].infer(bindings, inputs, things, limits, depth + 1, nodes)?;
                 match func {
                     Builtin::Length if first == ValueTypeTag::String => Ok(ValueTypeTag::Long),
                     Builtin::Abs if numeric(first) => Ok(first),
@@ -142,7 +166,8 @@ impl Expr {
                         Ok(ValueTypeTag::Long)
                     }
                     Builtin::Min | Builtin::Max if numeric(first) => {
-                        let second = args[1].infer(bindings, inputs, limits, depth + 1, nodes)?;
+                        let second =
+                            args[1].infer(bindings, inputs, things, limits, depth + 1, nodes)?;
                         if first != second {
                             return Err(invalid(
                                 "query_plan_expression_type",
@@ -162,6 +187,7 @@ impl Expr {
 
     pub(super) fn capabilities(&self, capabilities: &mut CapabilitySet) -> Result<(), Diagnostic> {
         let capability = match self {
+            Self::Iid { .. } => "query.expr.iid",
             Self::Operand(operand) => {
                 if matches!(
                     operand,
@@ -252,6 +278,9 @@ pub(super) fn operand_type(
 )]
 pub(super) enum ExprWire {
     Operand(QueryOperandWire),
+    Iid {
+        binding: u16,
+    },
     Arith {
         op: ArithOp,
         lhs: Box<ExprWire>,
@@ -263,19 +292,22 @@ pub(super) enum ExprWire {
     },
 }
 impl ExprWire {
-    pub(super) fn rebuild(self) -> Result<Expr, Diagnostic> {
+    pub(super) fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<Expr, Diagnostic> {
         Ok(match self {
-            Self::Operand(value) => Expr::Operand(value.rebuild()?),
+            Self::Operand(value) => Expr::Operand(value.rebuild_with_limits(limits)?),
+            Self::Iid { binding } => Expr::Iid {
+                binding: BindingId::new(binding)?,
+            },
             Self::Arith { op, lhs, rhs } => Expr::Arith {
                 op,
-                lhs: Box::new(lhs.rebuild()?),
-                rhs: Box::new(rhs.rebuild()?),
+                lhs: Box::new(lhs.rebuild(limits)?),
+                rhs: Box::new(rhs.rebuild(limits)?),
             },
             Self::Call { func, args } => Expr::Call {
                 func,
                 args: args
                     .into_iter()
-                    .map(Self::rebuild)
+                    .map(|value| value.rebuild(limits))
                     .collect::<Result<_, _>>()?,
             },
         })

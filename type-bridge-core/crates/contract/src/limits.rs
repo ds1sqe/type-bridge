@@ -618,6 +618,7 @@ const LIMIT_BY_DIAGNOSTIC_CODE: &[(&str, &str)] = &[
     ("canonical_json_too_large", "canonical_bytes"),
     ("canonical_collection_too_large", "canonical_collection_len"),
     ("canonical_string_too_large", "canonical_string_bytes"),
+    ("canonical_string_limit_exceeded", "canonical_string_bytes"),
     ("query_builder_authored_binding_limit", "bindings"),
     ("query_invocation_input_byte_limit", "input_bytes"),
     ("query_invocation_row_limit", "input_rows"),

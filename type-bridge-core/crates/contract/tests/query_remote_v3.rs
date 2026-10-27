@@ -56,7 +56,15 @@ fn advertisement() -> RemoteCapabilities {
     let mut caps: type_bridge_contract::capability::CapabilitySet =
         query_plan_v3_capability_vocabulary()
             .into_iter()
-            .filter(|cap| cap.as_str() != "query.write.delete-snapshot")
+            .filter(|cap| {
+                !matches!(
+                    cap.as_str(),
+                    "query.write.delete-snapshot"
+                        | "query.pipeline.rematch"
+                        | "query.expr.iid"
+                        | "query.input.wide-strings"
+                )
+            })
             .collect();
     for cap in [CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3] {
         caps.insert(CapabilityId::new(cap).unwrap());
@@ -954,4 +962,386 @@ fn deletion_snapshot_capture_consumes_the_read_statement_budget() {
             );
         }
     }
+}
+
+#[test]
+fn optional_answer_dimensions_round_trip_and_require_receiver_capability() {
+    let old = advertisement();
+    let mut capabilities = old.capabilities().clone();
+    capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS).unwrap());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let mut legacy_spec = spec();
+    let mut spec = spec();
+    spec.limits.max_graph_nodes = Some(2);
+    spec.limits.max_attribute_values = Some(3);
+    spec.limits.max_collection_members = Some(4);
+    spec.limits.max_role_players = Some(0);
+
+    legacy_spec.limits = spec.limits;
+    assert_eq!(
+        StagedRequestV3::new(legacy_spec, &support::schema(), &old)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "unsupported_required_capability"
+    );
+    let request = StagedRequestV3::new(spec, &support::schema(), &current).unwrap();
+    let bytes = request.encode().unwrap();
+    assert_eq!(
+        StagedRequestV3::decode(&bytes, &support::schema(), &current).unwrap(),
+        request
+    );
+    let root =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/query-remote-v3");
+    for (name, fixture) in [
+        (
+            "advertisement-answer-dimensions.json",
+            current.encode().unwrap(),
+        ),
+        ("request-answer-dimensions.json", bytes.clone()),
+    ] {
+        let path = root.join(name);
+        if std::env::var_os("TYPE_BRIDGE_UPDATE_REMOTE_V3_FIXTURES").is_some() {
+            std::fs::write(&path, &fixture).unwrap();
+        }
+        assert_eq!(std::fs::read(path).unwrap(), fixture);
+    }
+
+    // Released receivers use deny_unknown_fields and refuse these additions.
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct ReleasedLimits {
+        deadline_ms: Option<u64>,
+        max_bytes: u64,
+        max_items: u64,
+        max_staged_plans: u32,
+        max_read_statements: u32,
+        max_write_statements: u32,
+    }
+    let wire: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(serde_json::from_value::<ReleasedLimits>(wire["limits"].clone()).is_err());
+}
+
+#[test]
+fn signed_fetch_evidence_cannot_exceed_requested_semantic_dimensions() {
+    let old = advertisement();
+    let mut capabilities = old.capabilities().clone();
+    capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS).unwrap());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let (_, documents) = fetch_documents(true);
+    assert_eq!(
+        StagedAnswerV3::Documents {
+            documents: documents.clone()
+        }
+        .resource_counts(),
+        [2, 1, 2, 1]
+    );
+    let mut repeated = documents.clone();
+    repeated.extend(documents.clone());
+    assert_eq!(
+        StagedAnswerV3::Documents {
+            documents: repeated
+        }
+        .resource_counts(),
+        [2, 1, 2, 1]
+    );
+    for index in 0..4 {
+        let mut spec = spec();
+        spec.plans = vec![entry(examples::fetch_written(true))];
+        match index {
+            0 => spec.limits.max_graph_nodes = Some(1),
+            1 => spec.limits.max_attribute_values = Some(0),
+            2 => spec.limits.max_collection_members = Some(1),
+            _ => spec.limits.max_role_players = Some(0),
+        }
+        let request = StagedRequestV3::new(spec, &support::schema(), &current).unwrap();
+        let error = StagedReplyV3::new(
+            &request,
+            StagedOutcomeV3::Committed,
+            vec![StagedAnswerV3::Documents {
+                documents: documents.clone(),
+            }],
+        )
+        .unwrap_err();
+        assert_eq!(error.code().as_str(), "query_remote_v3_answer_dimensions");
+    }
+}
+
+#[test]
+fn read_rematch_is_fenced_by_receiver_capability() {
+    let old = advertisement();
+    let request_spec = || {
+        let mut spec = spec();
+        spec.plans = vec![entry(examples::rematch_window())];
+        spec
+    };
+    assert_eq!(
+        StagedRequestV3::new(request_spec(), &support::schema(), &old)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "unsupported_required_capability"
+    );
+    let mut capabilities = old.capabilities().clone();
+    capabilities.insert(CapabilityId::new("query.pipeline.rematch").unwrap());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let request = StagedRequestV3::new(request_spec(), &support::schema(), &current).unwrap();
+    assert_eq!(
+        StagedRequestV3::decode(&request.encode().unwrap(), &support::schema(), &current).unwrap(),
+        request
+    );
+}
+
+#[test]
+fn iid_expression_requires_receiver_capability() {
+    let old = advertisement();
+    let request_spec = || {
+        let mut spec = spec();
+        spec.plans = vec![entry(examples::iid_expression())];
+        spec
+    };
+    assert_eq!(
+        StagedRequestV3::new(request_spec(), &support::schema(), &old)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "unsupported_required_capability"
+    );
+    let mut capabilities = old.capabilities().clone();
+    capabilities.insert(CapabilityId::new("query.expr.iid").unwrap());
+    let current = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key());
+    let request = StagedRequestV3::new(request_spec(), &support::schema(), &current).unwrap();
+    assert_eq!(
+        StagedRequestV3::decode(&request.encode().unwrap(), &support::schema(), &current).unwrap(),
+        request
+    );
+}
+
+#[test]
+fn wide_scalars_require_explicit_caller_and_receiver_limits_and_capability() {
+    let mut invalid_limits = QueryLimits::CANONICAL;
+    invalid_limits.codec.max_depth = 127;
+    assert_eq!(
+        StagedRequestV3::new_with_limits(
+            spec(),
+            &support::schema(),
+            &advertisement(),
+            invalid_limits
+        )
+        .unwrap_err()
+        .code()
+        .as_str(),
+        "query_remote_v3_query_limits"
+    );
+    use type_bridge_contract::query_plan::{
+        QueryOperand,
+        v3::{Expr, Pattern, Stage},
+    };
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    let text = "x".repeat(1024 * 1024 + 1);
+    let limits =
+        QueryLimits::from_overrides([("canonical_string_bytes", 2 * 1024 * 1024)]).unwrap();
+    assert!(CanonicalString::new(&text).is_err());
+    let value =
+        CanonicalValue::String(CanonicalString::new_with_limits(text, limits.codec).unwrap());
+    let plan_spec = support::spec(
+        vec![Stage::Match {
+            patterns: vec![Pattern::Let {
+                binding: support::id(0),
+                expr: Expr::Operand(QueryOperand::Literal {
+                    value: value.clone(),
+                }),
+            }],
+        }],
+        vec![0],
+    );
+    assert!(QueryPlanV3::new(plan_spec.clone(), &support::schema()).is_err());
+    let plan = QueryPlanV3::new_with_limits(plan_spec, &support::schema(), limits).unwrap();
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.input.wide-strings")
+    );
+    let mut thing = support::thing(0);
+    thing.fields[0].1 = QueryOperand::Literal {
+        value: value.clone(),
+    };
+    let write = QueryPlanV3::new_with_limits(
+        support::spec(
+            vec![Stage::Insert {
+                things: vec![thing],
+            }],
+            vec![0],
+        ),
+        &support::schema(),
+        limits,
+    )
+    .unwrap();
+    assert_eq!(
+        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
+            &write.canonical_bytes().unwrap(),
+            &support::schema(),
+            limits,
+        )
+        .unwrap(),
+        write
+    );
+    let bytes = plan.canonical_bytes().unwrap();
+    assert!(
+        type_bridge_contract::query_plan::v3::decode_query_plan_v3(&bytes, &support::schema())
+            .is_err()
+    );
+    assert_eq!(
+        type_bridge_contract::query_plan::v3::decode_query_plan_v3_with_limits(
+            &bytes,
+            &support::schema(),
+            limits
+        )
+        .unwrap(),
+        plan
+    );
+    // The frozen scalar decoder keeps its default ceiling.
+    assert!(
+        serde_json::from_value::<CanonicalValue>(serde_json::to_value(&value).unwrap()).is_err()
+    );
+    let request_spec = || {
+        let mut request_spec = spec();
+        request_spec.plans = vec![entry(plan.clone())];
+        request_spec
+    };
+    assert!(
+        StagedRequestV3::new_with_limits(
+            request_spec(),
+            &support::schema(),
+            &advertisement(),
+            limits
+        )
+        .is_err()
+    );
+    let old = advertisement();
+    let mut capabilities = old.capabilities().clone();
+    capabilities.insert(CapabilityId::new("query.input.wide-strings").unwrap());
+    let ad = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key())
+        .with_query_limits(limits)
+        .unwrap();
+    assert!(StagedRequestV3::new(request_spec(), &support::schema(), &ad).is_err());
+    let request =
+        StagedRequestV3::new_with_limits(request_spec(), &support::schema(), &ad, limits).unwrap();
+    let bytes = request.encode().unwrap();
+    assert!(StagedRequestV3::decode(&bytes, &support::schema(), &ad).is_err());
+    assert_eq!(
+        StagedRequestV3::decode_with_limits(&bytes, &support::schema(), &ad, limits).unwrap(),
+        request
+    );
+    let mut small_spec = spec();
+    small_spec.plans = vec![entry(examples::expression_plan(Expr::Operand(
+        support::string("small"),
+    )))];
+    let small_request = StagedRequestV3::new(small_spec, &support::schema(), &ad).unwrap();
+    assert!(
+        StagedReplyV3::new(
+            &small_request,
+            StagedOutcomeV3::Committed,
+            vec![StagedAnswerV3::Rows {
+                rows: vec![vec![RemoteValue::Value {
+                    value: value.clone()
+                }]]
+            }],
+        )
+        .is_err()
+    );
+    let reply = StagedReplyV3::new(
+        &request,
+        StagedOutcomeV3::Committed,
+        vec![StagedAnswerV3::Rows {
+            rows: vec![vec![RemoteValue::Value { value }]],
+        }],
+    )
+    .unwrap();
+    let bytes = reply.encode_signed(&request, &ad, &Keys::new()).unwrap();
+    VerifiedStagedReplyV3::decode(
+        &bytes,
+        &request,
+        &ad,
+        Keys::new().public_key(),
+        &Keys::new(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn unbound_templates_require_wide_string_capability_for_invocation_rows() {
+    use type_bridge_contract::migration_assertion::QueryVariable;
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, InputRow, QueryOperand,
+        v3::{Expr, Pattern, Stage},
+    };
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    let limits =
+        QueryLimits::from_overrides([("canonical_string_bytes", 2 * 1024 * 1024)]).unwrap();
+    let mut template = support::spec(
+        vec![Stage::Match {
+            patterns: vec![Pattern::Let {
+                binding: support::id(0),
+                expr: Expr::Operand(QueryOperand::Input {
+                    column: InputColumnId::new(0),
+                }),
+            }],
+        }],
+        vec![0],
+    );
+    template.inputs = vec![InputColumn::new(
+        InputColumnId::new(0),
+        QueryVariable::new("input").unwrap(),
+        ValueTypeTag::String,
+        false,
+    )];
+    let template = QueryPlanV3::new_with_limits(template, &support::schema(), limits).unwrap();
+    assert!(
+        !template
+            .required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.input.wide-strings")
+    );
+    let value = CanonicalValue::String(
+        CanonicalString::new_with_limits("x".repeat(1024 * 1024 + 1), limits.codec).unwrap(),
+    );
+    let make_spec = || {
+        let mut request = spec();
+        request.plans = vec![
+            StagedPlanV3::new(
+                &template,
+                vec![InputRow::new(vec![Some(value.clone())])],
+                &support::schema(),
+            )
+            .unwrap(),
+        ];
+        request
+    };
+    let old = advertisement().with_query_limits(limits).unwrap();
+    assert!(
+        StagedRequestV3::new_with_limits(make_spec(), &support::schema(), &old, limits).is_err()
+    );
+    let mut capabilities = old.capabilities().clone();
+    capabilities.insert(CapabilityId::new("query.input.wide-strings").unwrap());
+    let ad = RemoteCapabilities::new(capabilities, old.executor().clone(), old.reply_key())
+        .with_query_limits(limits)
+        .unwrap();
+    let request =
+        StagedRequestV3::new_with_limits(make_spec(), &support::schema(), &ad, limits).unwrap();
+    let bytes = request.encode().unwrap();
+    assert_eq!(
+        StagedRequestV3::decode_with_limits(&bytes, &support::schema(), &ad, limits).unwrap(),
+        request
+    );
+    let error = StagedRequestV3::decode(&bytes, &support::schema(), &ad).unwrap_err();
+    assert_eq!(
+        error.details().get("limit"),
+        Some(
+            &type_bridge_contract::diagnostic::DiagnosticDetailValue::Text(
+                "canonical_string_bytes".into()
+            )
+        )
+    );
 }

@@ -8,11 +8,14 @@ use super::*;
 use crate::codec::from_canonical_json_with_limits;
 use crate::id::TypeKind;
 use crate::migration_assertion_wire::{FingerprintWire, RoleIdWire, TypeIdWire};
-use crate::query_plan_wire::rebuild_pattern_v2;
 use crate::query_plan_wire::{
-    InputColumnWire, LocalFunctionWire, QueryBindingWire, QueryOperandWire, rebuild_output,
-    rebuild_read_stage_v2,
+    InputColumnWire, LocalFunctionWire as CommonLocalFunctionWire, QueryBindingWire,
+    QueryOperandWire as CommonOperandWire, rebuild_output, rebuild_read_stage_v2,
 };
+use crate::query_plan_wire::{PlanScalarWire, WireScalar, rebuild_pattern_v3};
+type QueryOperandWire = CommonOperandWire<PlanScalarWire>;
+type LocalFunctionWire = CommonLocalFunctionWire<PlanScalarWire>;
+
 use crate::schema::{
     AnnotationFactId, AnnotationKindId, AnnotationSubjectId, DeclaredSchema, OwnsFactId,
     PlaysFactId, RelatesFactId, SchemaFact, SchemaFactId,
@@ -24,6 +27,10 @@ pub const QUERY_PLAN_FORMAT_V3: &str = "typebridge.query-plan/v3";
 pub const QUERY_PLAN_CANONICALIZATION_V3: &str = "typebridge.query-plan-c14n/v3";
 /// Domain for diagnostic plan shapes, excluding transported caller values.
 pub const QUERY_PLAN_SHAPE_FINGERPRINT_DOMAIN: &str = "typebridge.query.plan-shape";
+/// Read-only re-match after a selected window, retaining only visible bindings.
+pub const CAP_QUERY_PIPELINE_REMATCH: &str = "query.pipeline.rematch";
+/// String scalar values above the default one-MiB byte ceiling.
+pub const CAP_QUERY_INPUT_WIDE_STRINGS: &str = "query.input.wide-strings";
 
 #[path = "query_plan_v3_document.rs"]
 mod document;
@@ -136,6 +143,8 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
         .chain(
             [
                 "query.plan.v3",
+                CAP_QUERY_PIPELINE_REMATCH,
+                CAP_QUERY_INPUT_WIDE_STRINGS,
                 "query.write.insert",
                 "query.write.update",
                 "query.write.delete",
@@ -157,6 +166,7 @@ pub fn query_plan_v3_capability_vocabulary() -> CapabilitySet {
                 "query.expr.min",
                 "query.expr.max",
                 "query.expr.length",
+                "query.expr.iid",
             ]
             .map(|name| CapabilityId::new(name).expect("static capability")),
         )
@@ -562,6 +572,17 @@ impl QueryPlanV3 {
             spec.compatibility.as_ref(),
         )?;
         insert_capability(&mut required_capabilities, "query.plan.v3")?;
+        if has_wide_strings(&spec) {
+            insert_capability(&mut required_capabilities, CAP_QUERY_INPUT_WIDE_STRINGS)?;
+        }
+        if spec
+            .pipeline
+            .iter()
+            .skip(1)
+            .any(|stage| matches!(stage, Stage::Match { .. }))
+        {
+            insert_capability(&mut required_capabilities, CAP_QUERY_PIPELINE_REMATCH)?;
+        }
         add_read_given_capability(
             &spec.pipeline,
             &spec.functions,
@@ -813,6 +834,63 @@ impl QueryPlanV3 {
     }
 }
 
+fn has_wide_strings(spec: &PlanSpec) -> bool {
+    fn wide(value: &CanonicalValue) -> bool {
+        matches!(value, CanonicalValue::String(text) if text.as_str().len() > crate::limits::MAX_CANONICAL_STRING_BYTES)
+    }
+    fn operand(value: &QueryOperand) -> bool {
+        matches!(value, QueryOperand::Literal { value } if wide(value))
+    }
+    fn read(pattern: &QueryPattern) -> bool {
+        match pattern {
+            QueryPattern::Value { left, right, .. } => operand(left) || operand(right),
+            QueryPattern::FunctionCall { arguments, .. } => arguments.iter().any(operand),
+            QueryPattern::Or { branches } => branches.iter().flatten().any(read),
+            QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                patterns.iter().any(read)
+            }
+            _ => false,
+        }
+    }
+    fn expr(value: &Expr) -> bool {
+        match value {
+            Expr::Operand(value) => operand(value),
+            Expr::Arith { lhs, rhs, .. } => expr(lhs) || expr(rhs),
+            Expr::Call { args, .. } => args.iter().any(expr),
+            Expr::Iid { .. } => false,
+        }
+    }
+    spec.given_rows
+        .iter()
+        .flatten()
+        .flat_map(|row| row.values())
+        .flatten()
+        .any(wide)
+        || spec
+            .functions
+            .iter()
+            .flat_map(|function| function.body())
+            .any(read)
+        || spec.pipeline.iter().any(|stage| match stage {
+            Stage::Match { patterns } => patterns.iter().any(|pattern| match pattern {
+                Pattern::Read(pattern) => read(pattern),
+                Pattern::Let { expr: value, .. } => expr(value),
+                Pattern::Iid { .. } => false,
+            }),
+            Stage::Insert { things } | Stage::Put { things } => things
+                .iter()
+                .flat_map(|thing| &thing.fields)
+                .any(|(_, value)| operand(value)),
+            Stage::Update { sets } => sets
+                .iter()
+                .any(|set| matches!(set, Set::Field { operand: value, .. } if operand(value))),
+            Stage::Attach { items } => items.iter().any(
+                |item| matches!(item, AttachItem::Has { operand: value, .. } if operand(value)),
+            ),
+            _ => false,
+        })
+}
+
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     failure(DiagnosticCategory::InvalidContract, code, message)
 }
@@ -838,6 +916,7 @@ fn validate_stages(
     let mut scalar_types = BTreeMap::new();
     let mut read_tail = Vec::new();
     let mut reading = false;
+    let mut rematched = false;
     let mut fetched: Option<&ThingDocument> = None;
     let mut captured_environment = None;
     if !matches!(
@@ -860,12 +939,50 @@ fn validate_stages(
         }
         match stage {
             Stage::Match { patterns } => {
-                if stage_index != 0 {
-                    return Err(invalid(
-                        "query_plan_stage_order",
-                        "match occurs only at the start",
-                    ));
-                }
+                let retained = if stage_index == 0 {
+                    None
+                } else {
+                    if rematched
+                        || matches!(spec.operation, Operation::Write { .. })
+                        || !matches!(read_tail.first(), Some(ReadStage::Select { .. }))
+                        || !read_tail
+                            .iter()
+                            .any(|stage| matches!(stage, ReadStage::Distinct))
+                        || read_tail.iter().any(|stage| {
+                            !matches!(
+                                stage,
+                                ReadStage::Select { .. }
+                                    | ReadStage::Distinct
+                                    | ReadStage::Sort { .. }
+                                    | ReadStage::Offset { .. }
+                                    | ReadStage::Limit { .. }
+                            )
+                        })
+                    {
+                        return Err(invalid(
+                            "query_plan_stage_order",
+                            "match occurs only at the start or after a read-only selected window",
+                        ));
+                    }
+                    let visible = validate_v3_read_tail(
+                        &read_tail,
+                        std::mem::take(&mut mandatory),
+                        std::mem::take(&mut optional),
+                        &referenced,
+                        spec.bindings.len(),
+                        limits.structural,
+                        &scalar_types,
+                    )?;
+                    read_tail.clear();
+                    types.retain(|binding, _| {
+                        visible.0.contains(binding) || visible.1.contains(binding)
+                    });
+                    scalar_types.retain(|binding, _| {
+                        visible.0.contains(binding) || visible.1.contains(binding)
+                    });
+                    rematched = true;
+                    Some(visible)
+                };
                 nonempty(patterns.len(), limits, nodes)?;
                 let reads: Vec<_> = patterns
                     .iter()
@@ -886,6 +1003,11 @@ fn validate_stages(
                         nodes,
                     )?;
                 }
+                if let Some((retained_mandatory, retained_optional)) = retained {
+                    mandatory.extend(retained_mandatory);
+                    optional.extend(retained_optional);
+                    optional.retain(|binding| !mandatory.contains(binding));
+                }
                 for pattern in &reads {
                     collect_pattern_bindings(pattern, &mut referenced);
                     index.pattern_types(pattern, &mut types)?;
@@ -897,6 +1019,7 @@ fn validate_stages(
                         scalar_types.insert(*binding, domain);
                     }
                 }
+                binding_types.extend(types.clone());
                 index.function_values(&reads, &spec.functions, &mandatory, &mut scalar_types)?;
                 let mut produced = BTreeSet::new();
                 for pattern in &reads {
@@ -914,13 +1037,29 @@ fn validate_stages(
                                 "let requires a fresh value binding",
                             ));
                         }
-                        let domain = expr.infer(&scalar_types, &spec.inputs, limits, 1, nodes)?;
+                        let things = mandatory
+                            .iter()
+                            .filter(|binding| {
+                                types.get(binding).is_some_and(|domains| {
+                                    !domains.is_empty()
+                                        && domains.iter().all(|domain| {
+                                            matches!(
+                                                domain.kind(),
+                                                TypeKind::Entity | TypeKind::Relation
+                                            )
+                                        })
+                                })
+                            })
+                            .copied()
+                            .collect();
+                        let domain =
+                            expr.infer(&scalar_types, &spec.inputs, &things, limits, 1, nodes)?;
                         mandatory.insert(*binding);
                         referenced.insert(*binding);
                         scalar_types.insert(*binding, domain);
                     }
                 }
-                refuse_duration_ranges(&reads, &scalar_types, &spec.inputs)?;
+                validate_comparisons(&reads, &scalar_types, &spec.inputs, &index)?;
                 for pattern in patterns {
                     if let Pattern::Iid { binding, iid } = pattern {
                         check_binding(*binding, spec.bindings.len())?;
@@ -1181,37 +1320,16 @@ fn validate_stages(
             }
         }
     }
-    let (mandatory, optional, has_sort) = validate_read_stages(
+    let (mandatory, optional) = validate_v3_read_tail(
         &read_tail,
         mandatory,
         optional,
         &referenced,
         spec.bindings.len(),
         limits.structural,
+        &scalar_types,
     )?;
-    for stage in &read_tail {
-        if let ReadStage::Sort { terms } = stage
-            && terms
-                .iter()
-                .any(|term| scalar_types.get(&term.binding()) == Some(&ValueTypeTag::Duration))
-        {
-            return Err(invalid(
-                "query_plan_sort_unordered_value",
-                "sort requires an ordered value type; durations have no total order",
-            ));
-        }
-    }
-    if !has_sort
-        && read_tail
-            .iter()
-            .any(|stage| matches!(stage, ReadStage::Offset { .. } | ReadStage::Limit { .. }))
-    {
-        return Err(invalid(
-            "query_plan_unordered_truncation",
-            "offset and limit require explicit sort",
-        ));
-    }
-    *binding_types = types.clone();
+    binding_types.extend(types.clone());
     if let Some(document) = fetched {
         let (answer_mandatory, answer_optional) = captured_environment
             .as_ref()
@@ -1235,16 +1353,69 @@ fn validate_stages(
     Ok(None)
 }
 
+fn validate_v3_read_tail(
+    read_tail: &[ReadStage],
+    mandatory: BTreeSet<BindingId>,
+    optional: BTreeSet<BindingId>,
+    referenced: &BTreeSet<BindingId>,
+    binding_count: usize,
+    limits: StructuralLimits,
+    scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
+) -> Result<(BTreeSet<BindingId>, BTreeSet<BindingId>), Diagnostic> {
+    let (mandatory, optional, has_sort) = validate_read_stages(
+        read_tail,
+        mandatory,
+        optional,
+        referenced,
+        binding_count,
+        limits,
+    )?;
+    for stage in read_tail {
+        if let ReadStage::Sort { terms } = stage
+            && terms
+                .iter()
+                .any(|term| scalar_types.get(&term.binding()) == Some(&ValueTypeTag::Duration))
+        {
+            return Err(invalid(
+                "query_plan_sort_unordered_value",
+                "sort requires an ordered value type; durations have no total order",
+            ));
+        }
+    }
+    if !has_sort
+        && read_tail
+            .iter()
+            .any(|stage| matches!(stage, ReadStage::Offset { .. } | ReadStage::Limit { .. }))
+    {
+        return Err(invalid(
+            "query_plan_unordered_truncation",
+            "offset and limit require explicit sort",
+        ));
+    }
+    Ok((mandatory, optional))
+}
+
 /// TypeDB 3.14 refuses range comparisons of durations (3.13 accepted them);
 /// refuse them at build time on every profile so a plan fails the same way
 /// before reaching any server. Operands whose domain is unknown here
 /// (branch-local bindings) are left to the server.
-fn refuse_duration_ranges(
+fn validate_comparisons(
     patterns: &[QueryPattern],
     scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
     inputs: &[InputColumn],
+    index: &SchemaIndex<'_>,
 ) -> Result<(), Diagnostic> {
     use crate::migration_assertion::ValueComparator;
+    let mut scalar_types = scalar_types.clone();
+    let mut local_types = BTreeMap::new();
+    for pattern in patterns {
+        index.pattern_types(pattern, &mut local_types)?;
+    }
+    for (binding, types) in local_types {
+        if let Some(domain) = index.scalar_domain(&types) {
+            scalar_types.insert(binding, domain);
+        }
+    }
     let duration = |operand: &QueryOperand| match operand {
         QueryOperand::Literal { value } => value.value_type() == ValueTypeTag::Duration,
         QueryOperand::Binding { binding } => {
@@ -1255,6 +1426,38 @@ fn refuse_duration_ranges(
             .is_some_and(|input| input.value_type() == ValueTypeTag::Duration),
     };
     for pattern in patterns {
+        if let QueryPattern::Value {
+            comparator,
+            left,
+            right,
+        } = pattern
+            && matches!(
+                comparator,
+                ValueComparator::Contains
+                    | ValueComparator::StartsWith
+                    | ValueComparator::EndsWith
+                    | ValueComparator::Like
+            )
+        {
+            if matches!(
+                comparator,
+                ValueComparator::StartsWith | ValueComparator::EndsWith | ValueComparator::Like
+            ) && matches!(right, QueryOperand::Binding { .. })
+            {
+                return Err(invalid(
+                    "query_plan_compare_regex_literal",
+                    "like requires a literal or bound string input",
+                ));
+            }
+            for operand in [left, right] {
+                if operand_type(operand, &scalar_types, inputs).ok() != Some(ValueTypeTag::String) {
+                    return Err(invalid(
+                        "query_plan_compare_string_type",
+                        "string comparisons require string operands",
+                    ));
+                }
+            }
+        }
         match pattern {
             QueryPattern::Value {
                 comparator,
@@ -1275,11 +1478,11 @@ fn refuse_duration_ranges(
             }
             QueryPattern::Or { branches } => {
                 for branch in branches {
-                    refuse_duration_ranges(branch, scalar_types, inputs)?;
+                    validate_comparisons(branch, &scalar_types, inputs, index)?;
                 }
             }
             QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
-                refuse_duration_ranges(patterns, scalar_types, inputs)?;
+                validate_comparisons(patterns, &scalar_types, inputs, index)?;
             }
             _ => {}
         }
@@ -1663,7 +1866,7 @@ struct PlanWire {
     functions: Vec<LocalFunctionWire>,
     inputs: Vec<InputColumnWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    given_rows: Option<Vec<Vec<Option<CanonicalValue>>>>,
+    given_rows: Option<Vec<Vec<Option<PlanScalarWire>>>>,
     operation: Operation,
     managed_semantics: FingerprintWire,
     output: serde_json::Value,
@@ -1691,14 +1894,14 @@ struct ThingWire {
     players: Vec<(RoleIdWire, u16)>,
 }
 impl ThingWire {
-    fn rebuild(self) -> Result<InsertThing, Diagnostic> {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<InsertThing, Diagnostic> {
         Ok(InsertThing {
             binding: BindingId::new(self.binding)?,
             type_id: self.type_id.rebuild()?,
             fields: self
                 .fields
                 .into_iter()
-                .map(|(field, value)| Ok((field.rebuild()?, value.rebuild()?)))
+                .map(|(field, value)| Ok((field.rebuild()?, value.rebuild_with_limits(limits)?)))
                 .collect::<Result<_, Diagnostic>>()?,
             players: self
                 .players
@@ -1723,7 +1926,7 @@ enum SetWire {
     },
 }
 impl SetWire {
-    fn rebuild(self) -> Result<Set, Diagnostic> {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<Set, Diagnostic> {
         Ok(match self {
             Self::Field {
                 owner,
@@ -1732,7 +1935,7 @@ impl SetWire {
             } => Set::Field {
                 owner: BindingId::new(owner)?,
                 field: field.rebuild()?,
-                operand: operand.rebuild()?,
+                operand: operand.rebuild_with_limits(limits)?,
             },
             Self::Link {
                 relation,
@@ -1807,7 +2010,7 @@ enum AttachWire {
     },
 }
 impl AttachWire {
-    fn rebuild(self) -> Result<AttachItem, Diagnostic> {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<AttachItem, Diagnostic> {
         Ok(match self {
             Self::Has {
                 owner,
@@ -1816,7 +2019,7 @@ impl AttachWire {
             } => AttachItem::Has {
                 owner: BindingId::new(owner)?,
                 field: field.rebuild()?,
-                operand: operand.rebuild()?,
+                operand: operand.rebuild_with_limits(limits)?,
             },
             Self::Links {
                 relation,
@@ -1840,30 +2043,30 @@ enum WriteWire {
     Put { things: Vec<ThingWire> },
 }
 impl WriteWire {
-    fn rebuild(self) -> Result<Stage, Diagnostic> {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<Stage, Diagnostic> {
         Ok(match self {
             Self::Attach { items } => Stage::Attach {
                 items: items
                     .into_iter()
-                    .map(AttachWire::rebuild)
+                    .map(|value| value.rebuild(limits))
                     .collect::<Result<_, _>>()?,
             },
             Self::Insert { things } => Stage::Insert {
                 things: things
                     .into_iter()
-                    .map(ThingWire::rebuild)
+                    .map(|value| value.rebuild(limits))
                     .collect::<Result<_, _>>()?,
             },
             Self::Put { things } => Stage::Put {
                 things: things
                     .into_iter()
-                    .map(ThingWire::rebuild)
+                    .map(|value| value.rebuild(limits))
                     .collect::<Result<_, _>>()?,
             },
             Self::Update { sets } => Stage::Update {
                 sets: sets
                     .into_iter()
-                    .map(SetWire::rebuild)
+                    .map(|value| value.rebuild(limits))
                     .collect::<Result<_, _>>()?,
             },
             Self::Delete { items } => Stage::Delete {
@@ -1875,7 +2078,10 @@ impl WriteWire {
         })
     }
 }
-fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
+fn decode_stage(
+    value: serde_json::Value,
+    limits: crate::limits::CodecLimits,
+) -> Result<Stage, Diagnostic> {
     if value.get("kind").and_then(serde_json::Value::as_str) == Some("match") {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -1912,7 +2118,7 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
                         debug_assert_eq!(wire.kind, "let");
                         Ok(Pattern::Let {
                             binding: BindingId::new(wire.binding)?,
-                            expr: wire.expr.rebuild()?,
+                            expr: wire.expr.rebuild(limits)?,
                         })
                     } else if value.get("kind").and_then(serde_json::Value::as_str) == Some("iid") {
                         let wire: IidWire = serde_json::from_value(value).map_err(|_| {
@@ -1924,7 +2130,7 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
                             iid: wire.iid,
                         })
                     } else {
-                        Ok(Pattern::Read(rebuild_pattern_v2(value)?))
+                        Ok(Pattern::Read(rebuild_pattern_v3(value, limits)?))
                     }
                 })
                 .collect::<Result<_, Diagnostic>>()?,
@@ -1962,7 +2168,7 @@ fn decode_stage(value: serde_json::Value) -> Result<Stage, Diagnostic> {
     ) {
         serde_json::from_value::<WriteWire>(value)
             .map_err(|_| invalid("invalid_canonical_value", "invalid write stage"))?
-            .rebuild()
+            .rebuild(limits)
     } else {
         Ok(rebuild_read_stage_v2(value)?.into())
     }
@@ -1982,7 +2188,8 @@ pub fn decode_query_plan_v3_with_limits(
     schema: &DeclaredSchema,
     limits: QueryLimits,
 ) -> Result<QueryPlanV3, Diagnostic> {
-    let wire: PlanWire = from_canonical_json_with_limits(bytes, limits.codec)?;
+    let wire: PlanWire = from_canonical_json_with_limits(bytes, limits.codec)
+        .map_err(|error| limits.annotate(error))?;
     if wire.format != QUERY_PLAN_FORMAT_V3 {
         return Err(invalid(
             "query_plan_format_unsupported",
@@ -1999,7 +2206,19 @@ pub fn decode_query_plan_v3_with_limits(
                 .collect::<Result<_, _>>()?,
             given_rows: wire
                 .given_rows
-                .map(|rows| rows.into_iter().map(InputRow::new).collect()),
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|row| {
+                            row.into_iter()
+                                .map(|value| {
+                                    value.map(|value| value.rebuild(limits.codec)).transpose()
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                                .map(InputRow::new)
+                        })
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
             operation: wire.operation,
             inputs: wire
                 .inputs
@@ -2009,7 +2228,7 @@ pub fn decode_query_plan_v3_with_limits(
             pipeline: wire
                 .pipeline
                 .into_iter()
-                .map(decode_stage)
+                .map(|stage| decode_stage(stage, limits.codec))
                 .collect::<Result<_, _>>()?,
             output: rebuild_output(wire.output)?,
             managed_semantics: ManagedSemanticSchemaFingerprint::from_wire(
@@ -2019,7 +2238,7 @@ pub fn decode_query_plan_v3_with_limits(
             functions: wire
                 .functions
                 .into_iter()
-                .map(LocalFunctionWire::rebuild)
+                .map(|function| function.rebuild_with_limits(limits.codec))
                 .collect::<Result<_, _>>()?,
         },
         schema,

@@ -29,7 +29,7 @@ use type_bridge_contract::value::ValueTypeTag;
 
 use crate::query_v2::{
     ast, failure, given_rows_spec, local_variable, lower_functions, lower_operand,
-    lower_scoped_patterns, reducer_keyword,
+    lower_scoped_patterns_with_values, reducer_keyword,
 };
 use crate::session::backend::{GivenRowsSpec, GivenValue, QueryResult};
 use crate::session::staged::StagedQuery;
@@ -90,7 +90,12 @@ impl PlanAnswer {
                     .collect::<Result<Vec<_>, _>>()?;
                 let rows = rows
                     .iter()
-                    .map(|row| names.iter().map(|name| remote_value(row, name)).collect())
+                    .map(|row| {
+                        names
+                            .iter()
+                            .map(|name| remote_value(row, name, plan.limits().codec))
+                            .collect()
+                    })
                     .collect::<Result<_, _>>()?;
                 StagedAnswerV3::Rows { rows }
             }
@@ -171,10 +176,27 @@ fn staged_answer_shape() -> Diagnostic {
     )
 }
 
-fn remote_value(row: &serde_json::Value, variable: &str) -> Result<RemoteValue, Diagnostic> {
-    use crate::migration_assertion::{
-        parse_provider_value, provider_concept_kind, provider_value_type,
-    };
+pub(crate) fn parse_plan_scalar(
+    value: &serde_json::Value,
+    domain: ValueTypeTag,
+    limits: type_bridge_contract::limits::CodecLimits,
+) -> Result<type_bridge_contract::value::CanonicalValue, Diagnostic> {
+    if domain == ValueTypeTag::String
+        && let Some(text) = value.as_str()
+    {
+        type_bridge_contract::value::CanonicalString::new_with_limits(text, limits)
+            .map(type_bridge_contract::value::CanonicalValue::String)
+    } else {
+        crate::migration_assertion::parse_provider_value(value, domain)
+    }
+}
+
+fn remote_value(
+    row: &serde_json::Value,
+    variable: &str,
+    limits: type_bridge_contract::limits::CodecLimits,
+) -> Result<RemoteValue, Diagnostic> {
+    use crate::migration_assertion::{provider_concept_kind, provider_value_type};
     let bad = || {
         failure(
             DiagnosticCategory::Integrity,
@@ -182,6 +204,14 @@ fn remote_value(row: &serde_json::Value, variable: &str) -> Result<RemoteValue, 
             "provider row evidence is not a typed concept",
         )
     };
+    if let Some(value) = row.get(variable)
+        && value.get("kind").is_some()
+    {
+        return type_bridge_contract::query_remote_v3::decode_remote_value_with_limits(
+            value.clone(),
+            limits,
+        );
+    }
     let concept = match row.get(variable) {
         Some(serde_json::Value::Null) => return Ok(RemoteValue::Absent),
         Some(serde_json::Value::Object(concept)) => concept,
@@ -190,7 +220,7 @@ fn remote_value(row: &serde_json::Value, variable: &str) -> Result<RemoteValue, 
     let field = |name: &str| concept.get(name).and_then(|v| v.as_str()).ok_or_else(bad);
     let scalar = || {
         let tag = provider_value_type(field("value_type")?).ok_or_else(bad)?;
-        parse_provider_value(concept.get("value").ok_or_else(bad)?, tag)
+        parse_plan_scalar(concept.get("value").ok_or_else(bad)?, tag, limits)
     };
     let category = field("category")?;
     if matches!(category, "value" | "Value") {
@@ -216,9 +246,18 @@ pub(crate) struct LoweredPlan {
     pub(crate) query: tql::Query,
     pub(crate) snapshot: Option<tql::Query>,
     pub(crate) given: Option<GivenRowsSpec>,
+    pub(crate) value_bearing_inputs: BTreeSet<String>,
 }
 
 pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
+    lower_inner(plan, false)
+}
+
+pub(crate) fn lower_redacted(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
+    lower_inner(plan, true)
+}
+
+fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, Diagnostic> {
     // A lifted V2 plan keeps its released predicate and model terminal as
     // frozen compatibility evidence beside the pipeline. Only the pipeline
     // lowers here, so running such a plan would drop its filter and its
@@ -306,10 +345,21 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
         );
         stages.push(ast(tql::given(&columns))?);
     }
+    let literal_policy = LiteralComparisonPolicy {
+        // Execution has already charged the real literals before redaction.
+        remaining: std::cell::Cell::new(if redact_inputs {
+            usize::MAX
+        } else {
+            plan.limits().codec.max_bytes
+        }),
+        redact_inputs,
+    };
     let mut scope = Scope {
         bindings,
         inputs,
         snapshot_iids: snapshot_iids.iter(),
+        rows: plan.given_rows().unwrap_or(&[]),
+        literal_policy: &literal_policy,
     };
     let mut snapshot = None;
     for (index, stage) in plan.pipeline().iter().enumerate() {
@@ -438,6 +488,7 @@ pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
     let functions = lower_functions(inputs, plan.functions())?;
     Ok(LoweredPlan {
         query: tql::pipeline_with_functions(functions, stages),
+        value_bearing_inputs: given_regex_inputs(plan),
         snapshot,
         given,
     })
@@ -475,6 +526,7 @@ fn staged_query_inner(
         query,
         snapshot,
         given,
+        value_bearing_inputs,
     } = lower(plan)?;
     if given.is_some() && !supports_given_rows {
         return Err(failure(
@@ -506,6 +558,15 @@ fn staged_query_inner(
         }
         staged.snapshot = Some((snapshot, plan.clone()));
     }
+    if !value_bearing_inputs.is_empty() {
+        let redacted = lower_redacted(plan)?;
+        staged.redacted_typeql = Some(ast(tql::render(&redacted.query))?);
+        staged.redacted_snapshot = redacted
+            .snapshot
+            .map(|query| ast(tql::render(&query)))
+            .transpose()?;
+    }
+    staged.value_bearing_inputs = value_bearing_inputs;
     if let Some(rows) = given {
         staged = staged.with_rows(rows);
     }
@@ -590,9 +651,7 @@ fn remote_document(
                                 values: values
                                     .iter()
                                     .map(|value| {
-                                        crate::migration_assertion::parse_provider_value(
-                                            value, domain,
-                                        )
+                                        parse_plan_scalar(value, domain, plan.limits().codec)
                                     })
                                     .collect::<Result<_, _>>()?,
                             }
@@ -600,9 +659,7 @@ fn remote_document(
                             RemoteFieldValue::Absent
                         } else {
                             RemoteFieldValue::Scalar {
-                                value: crate::migration_assertion::parse_provider_value(
-                                    values, domain,
-                                )?,
+                                value: parse_plan_scalar(values, domain, plan.limits().codec)?,
                             }
                         };
                         Ok((name.clone(), value))
@@ -611,10 +668,7 @@ fn remote_document(
                 RemoteFieldValue::Document { fields }
             } else {
                 RemoteFieldValue::Scalar {
-                    value: crate::migration_assertion::parse_provider_value(
-                        value,
-                        ValueTypeTag::String,
-                    )?,
+                    value: parse_plan_scalar(value, ValueTypeTag::String, plan.limits().codec)?,
                 }
             };
             Ok((key.clone(), field))
@@ -768,10 +822,174 @@ fn snapshot_iid_inputs(plan: &QueryPlanV3) -> Vec<SnapshotIidInput<'_>> {
     result
 }
 
+fn given_regex_inputs(plan: &QueryPlanV3) -> BTreeSet<String> {
+    fn collect(patterns: &[QueryPattern], plan: &QueryPlanV3, columns: &mut BTreeSet<String>) {
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        for pattern in patterns {
+            match pattern {
+                QueryPattern::Value {
+                    comparator:
+                        ValueComparator::StartsWith | ValueComparator::EndsWith | ValueComparator::Like,
+                    right: QueryOperand::Input { column },
+                    ..
+                } => {
+                    columns.insert(
+                        plan.inputs()[usize::from(column.get())]
+                            .public_name()
+                            .as_str()
+                            .to_owned(),
+                    );
+                }
+                QueryPattern::Or { branches } => {
+                    for branch in branches {
+                        collect(branch, plan, columns);
+                    }
+                }
+                QueryPattern::Not { patterns } | QueryPattern::Try { patterns } => {
+                    collect(patterns, plan, columns)
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut columns = BTreeSet::new();
+    for stage in plan.pipeline() {
+        if let Stage::Match { patterns } = stage {
+            let reads: Vec<_> = patterns
+                .iter()
+                .filter_map(|pattern| match pattern {
+                    Pattern::Read(pattern) => Some(pattern.clone()),
+                    _ => None,
+                })
+                .collect();
+            collect(&reads, plan, &mut columns);
+        }
+    }
+    columns
+}
+
+pub(crate) struct LiteralComparisonPolicy {
+    remaining: std::cell::Cell<usize>,
+    redact_inputs: bool,
+}
+
+/// TypeDB requires literal regexes. Each input value is guarded by its
+/// given-column value, preserving correlated multi-row invocations.
+pub(crate) fn string_comparison(
+    inputs: &[InputColumn],
+    bindings: &[AssertionBinding],
+    comparator: type_bridge_contract::migration_assertion::ValueComparator,
+    left: &QueryOperand,
+    right: &QueryOperand,
+    rows: &[type_bridge_contract::query_plan::InputRow],
+    literal_policy: Option<&LiteralComparisonPolicy>,
+) -> Result<tql::Pattern, Diagnostic> {
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::value::CanonicalValue;
+    use type_bridge_core_lib::ast::{TypedComparisonOperator, TypedLiteral};
+    let operator = match comparator {
+        ValueComparator::StartsWith => TypedComparisonOperator::StartsWith,
+        ValueComparator::EndsWith => TypedComparisonOperator::EndsWith,
+        ValueComparator::Like => TypedComparisonOperator::Regex,
+        _ => unreachable!("only literal regex comparators use the adapter"),
+    };
+    let bad = || {
+        failure(
+            DiagnosticCategory::InvalidContract,
+            "query_plan_compare_regex_literal",
+            "like requires a literal or bound string input",
+        )
+    };
+    let fallback = std::cell::Cell::new(
+        type_bridge_contract::limits::QueryLimits::default()
+            .codec
+            .max_bytes,
+    );
+    let remaining = literal_policy.map_or(&fallback, |policy| &policy.remaining);
+    let charge = |pattern: tql::Pattern| {
+        let bytes = ast(tql::render_pattern(&pattern))?.len();
+        let Some(next) = remaining.get().checked_sub(bytes) else {
+            return Err(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_lowered_typeql_byte_limit",
+                "literal comparison terms exceed the lowered TypeQL byte ceiling",
+            ));
+        };
+        remaining.set(next);
+        Ok(pattern)
+    };
+    let render = |value: &CanonicalValue| {
+        let CanonicalValue::String(value) = value else {
+            return Err(bad());
+        };
+        charge(
+            type_bridge_core_lib::compiler::render_typed_comparison(
+                lower_operand(inputs, bindings, left, None)?,
+                operator,
+                &TypedLiteral::String(value.as_str().to_owned()),
+            )
+            .map_err(|_| bad())?,
+        )
+    };
+    match right {
+        QueryOperand::Literal { value } => render(value),
+        QueryOperand::Input { column } => {
+            let mut branches = Vec::new();
+            let mut seen = BTreeSet::new();
+            for row in rows {
+                let value = row
+                    .values()
+                    .get(usize::from(column.get()))
+                    .and_then(Option::as_ref)
+                    .ok_or_else(bad)?;
+                let CanonicalValue::String(text) = value else {
+                    return Err(bad());
+                };
+                if seen.insert(text.as_str()) {
+                    let placeholder;
+                    let value = if literal_policy.is_some_and(|policy| policy.redact_inputs) {
+                        placeholder = CanonicalValue::String(
+                            type_bridge_contract::value::CanonicalString::new(format!(
+                                "<input:{}>",
+                                inputs[usize::from(column.get())].public_name().as_str()
+                            ))?,
+                        );
+                        &placeholder
+                    } else {
+                        value
+                    };
+                    branches.push(vec![
+                        charge(ast(tql::compare(
+                            lower_operand(inputs, bindings, right, None)?,
+                            "==",
+                            lower_operand(
+                                inputs,
+                                bindings,
+                                &QueryOperand::Literal {
+                                    value: value.clone(),
+                                },
+                                None,
+                            )?,
+                        ))?)?,
+                        render(value)?,
+                    ]);
+                }
+            }
+            if branches.is_empty() {
+                return Err(bad());
+            }
+            Ok(tql::or(branches))
+        }
+        QueryOperand::Binding { .. } => Err(bad()),
+    }
+}
+
 struct Scope<'a> {
     bindings: &'a [AssertionBinding],
     inputs: &'a [InputColumn],
     snapshot_iids: std::slice::Iter<'a, SnapshotIidInput<'a>>,
+    rows: &'a [type_bridge_contract::query_plan::InputRow],
+    literal_policy: &'a LiteralComparisonPolicy,
 }
 
 impl Scope<'_> {
@@ -799,7 +1017,15 @@ impl Scope<'_> {
                 Pattern::Let { .. } | Pattern::Iid { .. } => None,
             })
             .collect();
-        let mut output = lower_scoped_patterns(self.inputs, self.bindings, &reads, None, None)?;
+        let mut output = lower_scoped_patterns_with_values(
+            self.inputs,
+            self.bindings,
+            &reads,
+            None,
+            None,
+            Some(self.rows),
+            Some(self.literal_policy),
+        )?;
         for pattern in patterns {
             if let Pattern::Iid { binding, iid } = pattern {
                 if let Some(input) = self.snapshot_iids.next() {
@@ -839,6 +1065,10 @@ impl Scope<'_> {
     fn expr(&self, expr: &Expr) -> Result<tql::Expr, Diagnostic> {
         match expr {
             Expr::Operand(operand) => self.operand(operand),
+            Expr::Iid { binding } => ast(tql::function(
+                "iid",
+                vec![ast(tql::var(self.name(*binding)?))?],
+            )),
             Expr::Arith { op, lhs, rhs } => ast(tql::arithmetic(
                 self.expr(lhs)?,
                 match op {
@@ -1114,6 +1344,53 @@ mod tests {
             tql::equivalent(actual, expected).unwrap(),
             "lowered:\n{actual}\nexpected:\n{expected}"
         );
+    }
+
+    #[test]
+    fn regex_literals_are_charged_before_accumulating_lowered_patterns() {
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        let plan = race::string_read(ValueComparator::Like, &["secret"]);
+        let policy = LiteralComparisonPolicy {
+            remaining: std::cell::Cell::new(2),
+            redact_inputs: false,
+        };
+        let error = string_comparison(
+            plan.inputs(),
+            plan.bindings(),
+            ValueComparator::Like,
+            &QueryOperand::Binding {
+                binding: BindingId::new(1).unwrap(),
+            },
+            &QueryOperand::Input {
+                column: type_bridge_contract::query_plan::InputColumnId::new(0),
+            },
+            plan.given_rows().unwrap(),
+            Some(&policy),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_lowered_typeql_byte_limit"
+        );
+    }
+
+    #[test]
+    fn string_comparisons_reuse_compiler_escaping_and_correlate_input_rows() {
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        for (comparator, expected) in [
+            (ValueComparator::Contains, "$name contains $needle;"),
+            (ValueComparator::StartsWith, r#"$name like "^x\\.y.*";"#),
+            (ValueComparator::EndsWith, r#"$name like ".*x\\.y$";"#),
+            (ValueComparator::Like, r#"$name like "x.y";"#),
+        ] {
+            let (source, given) = typeql(&race::string_read(comparator, &["x.y", "Ada"]));
+            assert!(source.contains(expected), "{source}");
+            assert_eq!(given.unwrap().rows.len(), 2);
+            if comparator != ValueComparator::Contains {
+                assert!(source.contains(r#"$needle == "x.y""#), "{source}");
+                assert!(source.contains(r#"$needle == "Ada""#), "{source}");
+            }
+        }
     }
 
     #[test]

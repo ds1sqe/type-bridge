@@ -878,6 +878,18 @@ fn shared_plan_v3_fixtures() {
     );
     plans.insert("attach", examples::attach());
     plans.insert("replace_players", examples::replace_players());
+    plans.insert("rematch_window", examples::rematch_window());
+    plans.insert("iid_expression", examples::iid_expression());
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    for (name, comparator) in [
+        ("compare_contains", ValueComparator::Contains),
+        ("compare_starts_with", ValueComparator::StartsWith),
+        ("compare_ends_with", ValueComparator::EndsWith),
+        ("compare_like", ValueComparator::Like),
+    ] {
+        plans.insert(name, examples::compare_string(comparator));
+    }
+
     let mut manifest = BTreeMap::new();
     for (name, plan) in plans {
         let bytes = plan.canonical_bytes().unwrap();
@@ -1486,4 +1498,222 @@ fn diagnostic_shape_fingerprint_omits_given_rows_and_uses_its_own_domain() {
     assert_ne!(original_fingerprint, other.fingerprint().unwrap());
     assert_eq!(original_bytes, plan.canonical_bytes().unwrap());
     assert_eq!(original_fingerprint, plan.fingerprint().unwrap());
+}
+
+#[test]
+fn string_comparators_require_string_domains_and_bind_input_values() {
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{InputRow, QueryPattern};
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+    for comparator in [
+        ValueComparator::Contains,
+        ValueComparator::StartsWith,
+        ValueComparator::EndsWith,
+        ValueComparator::Like,
+    ] {
+        let plan = examples::compare_string(comparator);
+        assert!(
+            plan.required_capabilities()
+                .iter()
+                .any(|c| c.as_str() == "query.pattern.string-operators")
+        );
+        let different = plan
+            .with_given_rows(
+                vec![InputRow::new(vec![Some(CanonicalValue::String(
+                    CanonicalString::new("secret").unwrap(),
+                ))])],
+                &schema(),
+            )
+            .unwrap();
+        assert_ne!(
+            plan.fingerprint().unwrap(),
+            different.fingerprint().unwrap()
+        );
+        let mut bad = serde_json::to_value(&plan).unwrap();
+        // Both operands are present and typed, but integer comparisons are invalid.
+        let value = &mut bad["pipeline"][0]["patterns"][2];
+        *value = serde_json::to_value(QueryPattern::Value {
+            comparator,
+            left: literal(1),
+            right: literal(2),
+        })
+        .unwrap();
+        let error = decode_query_plan_v3(&to_canonical_json(&bad).unwrap(), &schema()).unwrap_err();
+        assert_eq!(error.code().as_str(), "query_plan_compare_string_type");
+    }
+}
+
+#[test]
+fn string_comparisons_validate_branch_local_attribute_domains() {
+    use type_bridge_contract::id::AttributeId;
+    use type_bridge_contract::migration_assertion::ValueComparator;
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, QueryOperand, QueryPattern,
+    };
+    use type_bridge_contract::value::ValueTypeTag;
+    let inner = vec![
+        QueryPattern::Has {
+            owner: id(0),
+            attribute: id(1),
+            attribute_id: AttributeId::new("id").unwrap(),
+        },
+        QueryPattern::Value {
+            comparator: ValueComparator::Contains,
+            left: QueryOperand::Binding { binding: id(1) },
+            right: QueryOperand::Input {
+                column: InputColumnId::new(0),
+            },
+        },
+    ];
+    for nested in [
+        QueryPattern::Not {
+            patterns: inner.clone(),
+        },
+        QueryPattern::Try {
+            patterns: inner.clone(),
+        },
+        QueryPattern::Or {
+            branches: vec![inner.clone(), inner],
+        },
+    ] {
+        let mut spec = spec(
+            vec![Stage::Match {
+                patterns: vec![isa(0, entity("account")).into(), nested.into()],
+            }],
+            vec![0],
+        );
+        spec.inputs = vec![InputColumn::new(
+            InputColumnId::new(0),
+            type_bridge_contract::migration_assertion::QueryVariable::new("needle").unwrap(),
+            ValueTypeTag::String,
+            false,
+        )];
+        QueryPlanV3::new(spec, &schema()).unwrap();
+    }
+}
+
+#[test]
+fn rematch_retains_only_the_selected_scope_and_preserves_other_order_refusals() {
+    let plan = examples::rematch_window();
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.pipeline.rematch")
+    );
+    assert_eq!(plan.statement_counts(), (1, 0));
+    let bytes = plan.canonical_bytes().unwrap();
+    assert_eq!(decode_query_plan_v3(&bytes, &schema()).unwrap(), plan);
+    let original: Value = serde_json::from_slice(&bytes).unwrap();
+    let mut hidden = original.clone();
+    hidden["pipeline"][6]["patterns"] = json!([{
+        "kind": "value", "comparator": "equal",
+        "left": {"kind": "binding", "binding": 2},
+        "right": {"kind": "literal", "value": {"kind": "string", "value": "A"}}
+    }]);
+    assert_eq!(
+        decode_query_plan_v3(&to_canonical_json(&hidden).unwrap(), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_fetch_untyped_thing"
+    );
+    for case in 0..4 {
+        let mut invalid = original.clone();
+        let stages = invalid["pipeline"].as_array_mut().unwrap();
+        match case {
+            0 => stages.insert(7, stages[6].clone()),
+            1 => {
+                stages.drain(1..6);
+            }
+            2 => {
+                stages.swap(2, 3);
+            }
+            _ => {
+                stages.insert(
+                    1,
+                    json!({"kind":"update", "sets":[{
+                        "kind":"field", "owner":0,
+                        "field":{"owner":{"kind":"entity","label":"account"}, "attribute":"score"},
+                        "operand":{"kind":"literal","value":{"kind":"long","value":"1"}}
+                    }]}),
+                );
+                invalid["operation"] = json!({"kind":"write", "returns":"rows"});
+            }
+        }
+        assert_eq!(
+            decode_query_plan_v3(&to_canonical_json(&invalid).unwrap(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_stage_order"
+        );
+    }
+}
+
+#[test]
+fn iid_expressions_require_present_things_and_infer_string_inside_calls() {
+    use type_bridge_contract::query_plan::v3::{Builtin, Expr, Pattern};
+    let plan = examples::iid_expression();
+    assert!(
+        plan.required_capabilities()
+            .iter()
+            .any(|cap| cap.as_str() == "query.expr.iid")
+    );
+    assert_eq!(
+        decode_query_plan_v3(&plan.canonical_bytes().unwrap(), &schema()).unwrap(),
+        plan
+    );
+    for typed in [entity("account"), relation()] {
+        QueryPlanV3::new(
+            spec(
+                vec![Stage::Match {
+                    patterns: vec![
+                        isa(0, typed).into(),
+                        Pattern::Let {
+                            binding: id(2),
+                            expr: Expr::Call {
+                                func: Builtin::Length,
+                                args: vec![Expr::Iid { binding: id(0) }],
+                            },
+                        },
+                    ],
+                }],
+                vec![2],
+            ),
+            &schema(),
+        )
+        .unwrap();
+    }
+    for patterns in [
+        vec![isa(0, entity("account")).into()],
+        vec![
+            isa(0, entity("account")).into(),
+            type_bridge_contract::query_plan::QueryPattern::Has {
+                owner: id(0),
+                attribute: id(1),
+                attribute_id: type_bridge_contract::id::AttributeId::new("id").unwrap(),
+            }
+            .into(),
+        ],
+        vec![
+            isa(0, entity("account")).into(),
+            type_bridge_contract::query_plan::QueryPattern::Try {
+                patterns: vec![isa(1, entity("account"))],
+            }
+            .into(),
+        ],
+    ] {
+        let mut patterns = patterns;
+        patterns.push(Pattern::Let {
+            binding: id(2),
+            expr: Expr::Iid { binding: id(1) },
+        });
+        assert_eq!(
+            QueryPlanV3::new(spec(vec![Stage::Match { patterns }], vec![2]), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_iid_untyped_thing"
+        );
+    }
 }

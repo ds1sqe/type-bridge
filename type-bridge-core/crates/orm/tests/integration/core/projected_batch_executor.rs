@@ -949,12 +949,13 @@ impl TransactionOps for CountingTransaction {
         rows: Option<GivenRowsSpec>,
         limits: type_bridge_orm::session::backend::AnswerLimits,
         canonical: bool,
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         if let Some(rows) = &rows {
             self.record(typeql, rows);
         }
         self.inner
-            .query_materialized_bounded(typeql, rows, limits, canonical)
+            .query_materialized_bounded(typeql, rows, limits, canonical, statement_display)
     }
     fn query_bounded<'a>(
         &'a mut self,

@@ -284,6 +284,7 @@ fn limits() -> AnswerLimits {
             cancellation: AnswerCancellation::default(),
         },
         max_collection_members: 1 << 16,
+        ..Default::default()
     }
 }
 
@@ -2732,6 +2733,7 @@ async fn deadlines_and_cancellation_bound_both_executors_live() {
             cancellation: AnswerCancellation::default(),
         },
         max_collection_members: 1 << 16,
+        ..Default::default()
     };
     let error = execute_validated_query(&mut transaction, &validated, &invocation, expired)
         .await

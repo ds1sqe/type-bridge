@@ -143,7 +143,8 @@ Member names are literal wire names, and each listed member is required.
 | let | `binding:B`, `expr:expression` |
 | iid | `binding:B`, `iid:string` |
 
-Comparators are `equal`, `not_equal`, `less`, `less_or_equal`, `greater`,
+Comparators are `contains`, `starts_with`, `ends_with`, `like`,
+`equal`, `not_equal`, `less`, `less_or_equal`, `greater`,
 `greater_or_equal`. Boolean branches are nonempty. Reachability bounds satisfy
 `0 <= min_depth <= max_depth <= 64` (the receiver's predicate-depth limit),
 with root-only reachability and expanded-hop node-budget checks. Functions use checked declarations and
@@ -290,8 +291,21 @@ input declarations. The ceiling is 4,096 rows and 4 MiB canonical row-array
 bytes. Bound rows participate in the plan fingerprint.
 
 Omission preserves a reusable template. A template with inputs must be bound
-before execution. User values, including literals, become typed given
-parameters; they are never interpolated into TypeQL text.
+before execution. User values become typed given parameters, with one provider
+exception: TypeDB requires a literal regex for `like`. The string-only
+`starts_with`, `ends_with` and `like` comparisons reuse the shared compiler's
+escaped literal rendering; starts/ends escape regex metacharacters and add
+anchors. `contains` accepts a given variable. A regex right operand must be a
+literal or a required string input, never an attribute binding. Invalid domains
+fail with `query_plan_compare_string_type`.
+
+Given regexes are guarded by their input value when several input rows differ.
+The entire rendered statement remains bounded by
+`query_plan_lowered_typeql_byte_limit`. Given-sourced literal terms are marked
+value-bearing and shown as placeholders naming their input column in explain
+and traces. Embedded plan constants remain visible. Fingerprints hash canonical
+plan bytes (including bound given rows), never rendered TypeQL. All four string
+comparators require `query.pattern.string-operators`.
 
 ## Batch splitting
 
@@ -341,8 +355,14 @@ lists therefore fail.
 | Cross-join pairs | 1,024 |
 | Given rows / canonical row bytes | 4,096 / 4 MiB |
 
-JSON depth may reject a tree before its semantic depth ceiling. Receivers can
-choose tighter supported limits; limits are local policy and not hashed.
+JSON depth may reject a tree before its semantic depth ceiling. Callers can raise `QueryLimits.canonical_string_bytes` through the existing
+query-limit options (Rust: `codec.max_string_bytes`). The default is 1 MiB;
+the complete artifact ceiling still applies (16 MiB by default). V3 plans or
+invocation rows containing a larger string require `query.input.wide-strings`.
+The receiver applies its own configured ceiling, and refusals name
+`canonical_string_bytes`. Frozen V1/V2 scalar decoders retain their default
+ceiling. Receivers can choose tighter supported limits; limits are local
+policy and not hashed.
 Diagnostics contain stable bounded metadata without user values or fragments.
 
 The plan fingerprint uses domain `typebridge.query.plan`, canonicalization
@@ -436,6 +456,30 @@ once (`query_plan_builder_fetch_once`) and cannot be combined with
 
 The builder has no attach, players-deletion or iid call; such plans are constructed as a
 `PlanSpec` and validated by `QueryPlanV3::new`.
+
+## IID scalar expressions
+
+`{"kind":"iid","value":{"binding":0}}` reads the canonical provider IID
+of a present, schema-typed entity or relation binding and has string type. It
+requires `query.expr.iid`. Unbound, optional, attribute and scalar bindings are
+refused with `query_plan_iid_untyped_thing`.
+
+Assign it with `let` and compare the scalar inside ordinary boolean scopes.
+Caller IID values stay in `given` rows; the expression adds no inlined value.
+It lowers through the shared AST's `iid($thing)` builtin.
+
+## Selected-window re-matching
+
+A read plan may append one `match` after `select; distinct` and its optional
+`sort; offset; limit` window. Only bindings retained by the selection remain
+visible; the second match may reintroduce discarded bindings under those roots.
+The remaining read tail and fetch use the ordinary stage order. Writes, a
+second re-match, and re-matching after reduction remain refused with
+`query_plan_stage_order`. This order requires `query.pipeline.rematch`.
+
+The window and re-match run in one TypeQL pipeline and consume one provider
+statement. Its complete answer is metered normally. Static hydration stacks
+repeat the selection prefix for each slot and join by IID under one transaction.
 
 ## TypeQL lowering
 
@@ -628,7 +672,7 @@ are positional canonical scalar/null arrays under that plan's input columns.
 A bound plan's rows must exactly equal the envelope rows. For an unbound
 template, the envelope rows must satisfy its declared columns. A plan without
 columns has `rows:[]`. Execution materializes the same validated values through
-`given`; no value interpolation is permitted.
+`given`, except for the escaped literal regex terms described above.
 
 Kind defaults to write if any plan writes, otherwise read. Explicit read
 refuses writes; explicit write permits reads. Schema refuses query plans. The
@@ -659,6 +703,15 @@ The complete `limits` object always includes these fields, including defaults:
 | `max_staged_plans` | 64 | 1..64 |
 | `max_read_statements` | 192 | 1..4,096 |
 | `max_write_statements` | 256 | 1..4,096 |
+
+Optional `max_graph_nodes`, `max_attribute_values`, `max_collection_members`
+and `max_role_players` tighten the receiver's semantic answer ceilings. Zero
+refuses any evidence in that dimension; omission keeps the receiver's policy
+and is omitted from canonical bytes. Any present dimension requires
+`query.remote.answer-dimensions`; older receivers refuse the unknown fields.
+Execution and signed-reply verification charge these dimensions across the
+entire stack. Local execution uses the same semantic counters.
+
 
 Read and write provider statements are separate dimensions; the frozen V2
 three-statement limit is unchanged. Request validation checks the minimum of
@@ -772,7 +825,8 @@ canonical JSON. All four use the execution lowerer and renderer, without
 provider IO. A plan with declared inputs needs bound rows. Explanation can
 fail with the same lowering or resource-limit diagnostic as staging.
 
-Caller values transported in `given` rows never appear. Embedded plan
+Caller values transported in `given` rows never appear. Input-derived regex
+literals and correlation guards use `<input:column>` placeholders. Embedded plan
 constants are shown exactly as execution sends them. The `fingerprint` is a
 shape fingerprint: it uses the same canonical encoding with `given_rows`
 omitted, domain `typebridge.query.plan-shape`, canonicalization

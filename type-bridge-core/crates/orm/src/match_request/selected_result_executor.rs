@@ -687,6 +687,7 @@ impl<'a> SelectedResultExecutor<'a> {
                     cancellation: self.limits.cancellation.clone(),
                 },
                 max_collection_members: self.limits.policy.collection_members,
+                ..Default::default()
             },
             RemoteReplyDecodeLimitsV2 {
                 max_bytes: self.limits.policy.bytes,

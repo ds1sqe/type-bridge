@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::decimal::parse_decimal;
 use crate::diagnostic::{Diagnostic, DiagnosticCategory};
-use crate::limits::MAX_CANONICAL_STRING_BYTES;
+use crate::limits::CodecLimits;
 use crate::temporal::{CanonicalDate, CanonicalDateTime, CanonicalDateTimeTz, CanonicalDuration};
 
 /// Validated UTF-8 text bounded by the canonical per-string byte ceiling.
@@ -21,22 +21,48 @@ impl CanonicalString {
     /// Construct canonical text, rejecting values above the byte ceiling.
     pub fn new(value: impl Into<String>) -> Result<Self, Diagnostic> {
         let value = value.into();
-        if value.len() > MAX_CANONICAL_STRING_BYTES {
+        Self::check_length(value.len(), CodecLimits::CANONICAL)?;
+        Ok(Self(value))
+    }
+
+    /// Construct text under an explicit string and artifact byte budget.
+    /// Frozen scalar decoders continue to use [`Self::new`].
+    pub fn new_with_limits(
+        value: impl Into<String>,
+        limits: CodecLimits,
+    ) -> Result<Self, Diagnostic> {
+        let value = value.into();
+        Self::check_length(value.len(), limits).map_err(|error| {
+            crate::limits::QueryLimits::annotate_refusal(
+                error,
+                limits.max_string_bytes.min(limits.max_bytes),
+            )
+        })?;
+        Ok(Self(value))
+    }
+
+    /// Recheck existing text against the current caller's byte budgets.
+    pub fn validate_limits(&self, limits: CodecLimits) -> Result<(), Diagnostic> {
+        Self::check_length(self.0.len(), limits).map_err(|error| {
+            crate::limits::QueryLimits::annotate_refusal(
+                error,
+                limits.max_string_bytes.min(limits.max_bytes),
+            )
+        })
+    }
+
+    fn check_length(actual: usize, limits: CodecLimits) -> Result<(), Diagnostic> {
+        let maximum = limits.max_string_bytes.min(limits.max_bytes);
+        if actual > maximum {
             return Err(Diagnostic::stable(
                 DiagnosticCategory::ResourceLimit,
                 "canonical_string_limit_exceeded",
                 "canonical string exceeds the UTF-8 byte ceiling",
             )
-            .with_detail(
-                "actual_bytes",
-                i64::try_from(value.len()).unwrap_or(i64::MAX),
-            )
-            .with_detail(
-                "maximum_bytes",
-                i64::try_from(MAX_CANONICAL_STRING_BYTES).expect("canonical string limit fits i64"),
-            ));
+            .with_detail("actual_bytes", i64::try_from(actual).unwrap_or(i64::MAX))
+            .with_detail("maximum_bytes", i64::try_from(maximum).unwrap_or(i64::MAX)));
         }
-        Ok(Self(value))
+        Ok(())
     }
 
     /// Return the validated text.
@@ -210,6 +236,37 @@ pub enum CanonicalValue {
 }
 
 impl CanonicalValue {
+    /// Decode one tagged scalar under explicit string and artifact byte budgets.
+    /// Frozen scalar decoders retain their default one-MiB construction policy.
+    pub fn from_json_with_limits(
+        value: serde_json::Value,
+        limits: CodecLimits,
+    ) -> Result<Self, Diagnostic> {
+        if value.get("kind").and_then(serde_json::Value::as_str) == Some("string") {
+            #[derive(Deserialize)]
+            #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+            enum StringWire {
+                String { value: String },
+            }
+            let StringWire::String { value } = serde_json::from_value(value).map_err(|_| {
+                Diagnostic::stable(
+                    DiagnosticCategory::InvalidContract,
+                    "invalid_canonical_value",
+                    "invalid string scalar",
+                )
+            })?;
+            CanonicalString::new_with_limits(value, limits).map(Self::String)
+        } else {
+            serde_json::from_value(value).map_err(|_| {
+                Diagnostic::stable(
+                    DiagnosticCategory::InvalidContract,
+                    "invalid_canonical_value",
+                    "invalid canonical scalar",
+                )
+            })
+        }
+    }
+
     /// Return the closed scalar-domain tag.
     pub const fn value_type(&self) -> ValueTypeTag {
         match self {
@@ -457,6 +514,7 @@ pub enum AnnotationValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::MAX_CANONICAL_STRING_BYTES;
 
     #[test]
     fn long_decimal_double_and_cardinality_have_binding_safe_shapes() {

@@ -18,6 +18,7 @@ use std::sync::Arc;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::fingerprint::SemanticProfileId;
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+use type_bridge_contract::limits::QueryLimits;
 use type_bridge_contract::managed_scope::ManagedScopeId;
 use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
@@ -199,23 +200,7 @@ pub(crate) fn adapt_match_request(
             ));
         }
     }
-    if let Some(actual) = request
-        .plan
-        .predicate
-        .as_ref()
-        .and_then(|predicate| artifact_sized_literal_bytes(predicate, limits.codec.max_bytes))
-    {
-        return Err(limits.annotate(
-            Diagnostic::new(
-                DiagnosticCategory::ResourceLimit,
-                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
-                    .expect("static adapter diagnostic code"),
-                "a predicate literal exceeds the canonical artifact byte ceiling",
-            )
-            .with_detail("actual_bytes", byte_count(actual))
-            .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
-        ));
-    }
+    validate_match_literal_limits(request.plan.predicate.as_ref(), limits)?;
 
     let schema = context.resolved_schema();
     let hydration = build_hydration(request, registry, schema)?;
@@ -320,6 +305,44 @@ pub(crate) fn adapt_match_request(
         operation,
         validated: Box::new(validated),
     })
+}
+
+/// One literal policy for released and native-plan typed-read adaptation.
+pub(crate) fn validate_match_literal_limits(
+    predicate: Option<&MatchExpr>,
+    limits: QueryLimits,
+) -> Result<(), Diagnostic> {
+    if let Some(actual) = predicate
+        .and_then(|predicate| artifact_sized_literal_bytes(predicate, limits.codec.max_bytes))
+    {
+        return Err(limits.annotate(
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_v2_adapter_literal_byte_limit")
+                    .expect("static adapter diagnostic code"),
+                "a predicate literal exceeds the canonical artifact byte ceiling",
+            )
+            .with_detail("actual_bytes", byte_count(actual))
+            .with_detail("maximum_bytes", byte_count(limits.codec.max_bytes)),
+        ));
+    }
+    let maximum = limits.codec.max_string_bytes.min(limits.codec.max_bytes);
+    if let Some(actual) =
+        predicate.and_then(|predicate| artifact_sized_literal_bytes(predicate, maximum))
+    {
+        return Err(limits.annotate_limit(
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_string_value_byte_limit")
+                    .expect("static adapter diagnostic code"),
+                "a string value exceeds the configured byte ceiling",
+            )
+            .with_detail("actual_bytes", byte_count(actual))
+            .with_detail("maximum_bytes", byte_count(maximum)),
+            "canonical_string_bytes",
+        ));
+    }
+    Ok(())
 }
 
 /// Compile-time completeness guard for the released provider vocabulary.

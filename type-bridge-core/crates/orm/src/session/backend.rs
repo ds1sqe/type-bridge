@@ -162,6 +162,12 @@ impl Default for BoundedAnswerLimits {
 pub struct AnswerLimits {
     /// Released row/document, byte, deadline, and cancellation limits.
     pub answer: BoundedAnswerLimits,
+    /// Maximum graph nodes in plan documents.
+    pub max_graph_nodes: u64,
+    /// Maximum attribute values in plan documents.
+    pub max_attribute_values: u64,
+    /// Maximum role players in plan documents.
+    pub max_role_players: u64,
     /// Maximum aggregate list members decoded across fetched documents.
     pub max_collection_members: u64,
 }
@@ -171,6 +177,9 @@ impl Default for AnswerLimits {
         Self {
             answer: BoundedAnswerLimits::default(),
             max_collection_members: 65_536,
+            max_graph_nodes: 65_536,
+            max_attribute_values: 65_536,
+            max_role_players: 65_536,
         }
     }
 }
@@ -656,12 +665,14 @@ pub trait TransactionOps: Send {
 
     /// Materialize a bounded answer while preserving empty answer kinds.
     /// Real providers enforce these limits while polling their streams.
+    /// `statement_display` replaces input-derived literals in provider traces.
     fn query_materialized_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
         rows: Option<GivenRowsSpec>,
         limits: AnswerLimits,
         canonical: bool,
+        _statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits.answer);

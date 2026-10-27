@@ -14,6 +14,7 @@ use crate::query_plan::v3::{
     Operation, QueryPlanV3, WriteReturns, decode_query_plan_v3_with_limits,
 };
 use crate::query_plan::{InputRow, QueryOutput};
+use crate::query_plan_wire::{PlanScalarWire, WireScalar};
 use crate::query_remote::{
     DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
     QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN, RemoteCapabilities, RemoteFieldValue,
@@ -30,6 +31,8 @@ pub const QUERY_REMOTE_REQUEST_FORMAT_V3: &str = "typebridge.query-remote-reques
 pub const QUERY_REMOTE_REPLY_FORMAT_V3: &str = "typebridge.query-remote-response/v3";
 /// Admission capability for the staged envelope.
 pub const CAP_QUERY_REMOTE_STAGED_V3: &str = "query.remote.envelope-v3";
+/// Admission capability for additional semantic answer budgets.
+pub const CAP_QUERY_REMOTE_ANSWER_DIMENSIONS: &str = "query.remote.answer-dimensions";
 /// Admission capability for authenticated write staging.
 pub const CAP_QUERY_REMOTE_WRITE_V3: &str = "query.remote.write";
 
@@ -92,6 +95,18 @@ pub struct StagedLimitsV3 {
     pub max_bytes: u64,
     /// Maximum aggregate answer items across all plans.
     pub max_items: u64,
+    /// Optional maximum hydrated graph nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_graph_nodes: Option<u64>,
+    /// Optional maximum attribute values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attribute_values: Option<u64>,
+    /// Optional maximum collection members.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_collection_members: Option<u64>,
+    /// Optional maximum role-player references.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_role_players: Option<u64>,
     /// Maximum ordered plans, at most 64.
     pub max_staged_plans: u32,
     /// Maximum read provider statements, charged during execution.
@@ -105,6 +120,11 @@ impl Default for StagedLimitsV3 {
             deadline_ms: None,
             max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,
             max_items: MAX_STAGED_ITEMS_V3,
+            max_graph_nodes: None,
+            max_attribute_values: None,
+            max_collection_members: None,
+            max_role_players: None,
+
             max_staged_plans: MAX_STAGED_PLANS_V3,
             max_read_statements: DEFAULT_STAGED_READ_STATEMENTS_V3,
             max_write_statements: DEFAULT_STAGED_WRITE_STATEMENTS_V3,
@@ -112,9 +132,18 @@ impl Default for StagedLimitsV3 {
     }
 }
 impl StagedLimitsV3 {
-    /// Refuse unsupported, zero, or above-ceiling execution budgets.
+    /// Refuse unsupported execution budgets; semantic ceilings may be zero.
     pub fn validate(self) -> Result<Self, Diagnostic> {
-        if self.max_bytes == 0
+        if [
+            self.max_graph_nodes,
+            self.max_attribute_values,
+            self.max_collection_members,
+            self.max_role_players,
+        ]
+        .into_iter()
+        .zip(&crate::limits::ANSWER_LIMIT_FIELDS[3..7])
+        .any(|(value, field)| value.is_some_and(|value| value > field.maximum))
+            || self.max_bytes == 0
             || self.max_bytes > MAX_REMOTE_ENVELOPE_BYTES as u64
             || self.max_items == 0
             || self.max_items > MAX_STAGED_ITEMS_V3
@@ -157,6 +186,30 @@ impl<'de> Deserialize<'de> for PlanWire {
         })
     }
 }
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawPlanWire {
+    plan_bytes: String,
+    rows: Vec<Vec<Option<PlanScalarWire>>>,
+}
+impl RawPlanWire {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<PlanWire, Diagnostic> {
+        Ok(PlanWire {
+            plan_bytes: self.plan_bytes,
+            rows: self
+                .rows
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|value| value.map(|value| value.rebuild(limits)).transpose())
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(InputRow::new)
+                })
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
 /// One canonical plan and positional invocation rows in an ordered stack.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StagedPlanV3 {
@@ -184,6 +237,8 @@ impl StagedPlanV3 {
         schema: &DeclaredSchema,
         limits: QueryLimits,
     ) -> Result<Self, Diagnostic> {
+        to_canonical_json_with_limits(&wire.rows, limits.codec)
+            .map_err(|error| limits.annotate(error))?;
         // The outer codec bounds the string before the embedded bytes are allocated.
         if wire.plan_bytes.len() > limits.codec.max_bytes.saturating_mul(2) {
             return Err(limit(
@@ -250,7 +305,7 @@ pub struct StagedRequestSpecV3 {
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct RequestWire {
+struct RequestWire<P = PlanWire> {
     advertisement: String,
     expires_at_unix_ms: u64,
     format: String,
@@ -258,7 +313,7 @@ struct RequestWire {
     kind: Option<StagedKindV3>,
     limits: StagedLimitsV3,
     nonce: String,
-    plans: Vec<PlanWire>,
+    plans: Vec<P>,
     prepared_at_unix_ms: u64,
 }
 /// Validated canonical staged request; no execution opens at construction.
@@ -274,6 +329,22 @@ impl StagedRequestV3 {
         schema: &DeclaredSchema,
         advertisement: &RemoteCapabilities,
     ) -> Result<Self, Diagnostic> {
+        Self::new_with_limits(spec, schema, advertisement, QueryLimits::CANONICAL)
+    }
+
+    /// Construct under caller query limits, constrained by the advertised receiver limits.
+    pub fn new_with_limits(
+        spec: StagedRequestSpecV3,
+        schema: &DeclaredSchema,
+        advertisement: &RemoteCapabilities,
+        query_limits: QueryLimits,
+    ) -> Result<Self, Diagnostic> {
+        query_limits.validate().map_err(|_| {
+            invalid(
+                "query_remote_v3_query_limits",
+                "caller query limits are invalid",
+            )
+        })?;
         let limits = spec.limits.validate()?;
         let expires = spec
             .prepared_at_unix_ms
@@ -289,7 +360,7 @@ impl StagedRequestV3 {
             plans: spec.plans.into_iter().map(|p| p.wire).collect(),
             prepared_at_unix_ms: spec.prepared_at_unix_ms,
         };
-        Self::rebuild(wire, schema, advertisement, QueryLimits::CANONICAL)
+        Self::rebuild(wire, schema, advertisement, query_limits)
     }
     fn rebuild(
         wire: RequestWire,
@@ -382,8 +453,22 @@ impl StagedRequestV3 {
         }
         let mut capabilities = CapabilitySet::new();
         capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3)?);
+        if [
+            wire.limits.max_graph_nodes,
+            wire.limits.max_attribute_values,
+            wire.limits.max_collection_members,
+            wire.limits.max_role_players,
+        ]
+        .iter()
+        .any(Option::is_some)
+        {
+            capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_ANSWER_DIMENSIONS)?);
+        }
         if writes > 0 {
             capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_WRITE_V3)?);
+        }
+        if plans.iter().flat_map(|entry| entry.rows()).flat_map(|row| row.values()).flatten().any(|value| matches!(value, crate::value::CanonicalValue::String(text) if text.as_str().len() > crate::limits::MAX_CANONICAL_STRING_BYTES)) {
+            capabilities.insert(CapabilityId::new(crate::query_plan::v3::CAP_QUERY_INPUT_WIDE_STRINGS)?);
         }
         for plan in &plans {
             for capability in plan.plan.required_capabilities().iter() {
@@ -416,13 +501,27 @@ impl StagedRequestV3 {
                 "receiver query limits are invalid",
             )
         })?;
-        let wire = from_canonical_json_with_limits(
+        let wire: RequestWire<RawPlanWire> = from_canonical_json_with_limits(
             bytes,
             crate::limits::CodecLimits {
                 max_bytes: limits.remote_request_bytes.min(MAX_REMOTE_ENVELOPE_BYTES),
                 ..STAGED_REMOTE_CODEC_LIMITS_V3
             },
         )?;
+        let wire = RequestWire {
+            advertisement: wire.advertisement,
+            expires_at_unix_ms: wire.expires_at_unix_ms,
+            format: wire.format,
+            kind: wire.kind,
+            limits: wire.limits,
+            nonce: wire.nonce,
+            plans: wire
+                .plans
+                .into_iter()
+                .map(|plan| plan.rebuild(limits.codec))
+                .collect::<Result<_, _>>()?,
+            prepared_at_unix_ms: wire.prepared_at_unix_ms,
+        };
         let request = Self::rebuild(wire, schema, advertisement, limits)?;
         if request.encode()?.as_slice() != bytes {
             return Err(invalid(
@@ -523,6 +622,79 @@ pub enum StagedAnswerV3 {
         value: u64,
     },
 }
+impl StagedAnswerV3 {
+    /// Semantic resource counts: graph nodes, attribute values, collection
+    /// members and role players, shared by local execution and reply verification.
+    pub fn resource_counts(&self) -> [u64; 4] {
+        let mut counts = [0_u64; 4];
+        match self {
+            Self::Rows { rows } => {
+                for value in rows.iter().flatten() {
+                    match value {
+                        RemoteValue::Thing { .. } => counts[0] = counts[0].saturating_add(1),
+                        RemoteValue::Attribute { .. } => counts[1] = counts[1].saturating_add(1),
+                        _ => {}
+                    }
+                    counts[2] = counts[2].saturating_add(1);
+                }
+            }
+            Self::Documents { documents } => {
+                fn iid(field: Option<&RemoteFieldValue>) -> Option<&str> {
+                    match field? {
+                        RemoteFieldValue::Scalar {
+                            value: crate::value::CanonicalValue::String(value),
+                        } => Some(value.as_str()),
+                        _ => None,
+                    }
+                }
+                // Role Cartesian products repeat complete nodes; charge logical
+                // nodes and edges once, as the projected materializer does.
+                let mut nodes = std::collections::BTreeSet::new();
+                let mut edges = std::collections::BTreeSet::new();
+                for document in documents {
+                    let root = iid(document.get("_iid"));
+                    for (key, field) in document {
+                        if key.starts_with("_role_")
+                            && key.ends_with("_iid")
+                            && let Some(player) = iid(Some(field))
+                            && edges.insert((root, key, player))
+                        {
+                            counts[3] = counts[3].saturating_add(1);
+                            counts[2] = counts[2].saturating_add(1);
+                        }
+                        if (key == "attributes" || key.ends_with("_attributes"))
+                            && let RemoteFieldValue::Document { fields } = field
+                        {
+                            let owner_key = if key == "attributes" {
+                                "_iid".to_owned()
+                            } else {
+                                key.replace("_attributes", "_iid")
+                            };
+                            if let Some(owner) = iid(document.get(&owner_key))
+                                && !nodes.insert(owner)
+                            {
+                                continue;
+                            }
+                            counts[0] = counts[0].saturating_add(1);
+                            for field in fields.values() {
+                                let count = match field {
+                                    RemoteFieldValue::Scalar { .. } => 1,
+                                    RemoteFieldValue::List { values } => values.len() as u64,
+                                    _ => 0,
+                                };
+                                counts[1] = counts[1].saturating_add(count);
+                                counts[2] = counts[2].saturating_add(count);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        counts
+    }
+}
+
 /// Typed server outcome, sharing the existing SDK diagnostic authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -797,8 +969,8 @@ enum OutcomeWire {
 }
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ReplyWire {
-    answers: Vec<StagedAnswerV3>,
+struct ReplyWire<A = StagedAnswerV3> {
+    answers: Vec<A>,
     format: String,
     nonce: String,
     outcome: OutcomeWire,
@@ -893,8 +1065,28 @@ impl VerifiedStagedReplyV3 {
             verifier,
         )?;
         preflight_reply_payload(payload, bytes.len(), request)?;
-        let wire: ReplyWire =
+        let raw: ReplyWire<serde_json::Value> =
             from_canonical_json_with_limits(payload, STAGED_REMOTE_CODEC_LIMITS_V3)?;
+        if raw.answers.len() != request.plans().len()
+            && matches!(raw.outcome, OutcomeWire::Committed)
+        {
+            return Err(invalid(
+                "query_remote_v3_answer_count",
+                "staged reply answer count differs from its plan stack",
+            ));
+        }
+        let wire = ReplyWire {
+            answers: raw
+                .answers
+                .into_iter()
+                .zip(request.plans())
+                .map(|(answer, entry)| decode_answer(answer, entry.plan().limits().codec))
+                .collect::<Result<_, _>>()?,
+            format: raw.format,
+            nonce: raw.nonce,
+            outcome: raw.outcome,
+            request: raw.request,
+        };
         validate_reply(&wire, request)?;
         if to_canonical_json_with_limits(&wire, STAGED_REMOTE_CODEC_LIMITS_V3)?.as_slice()
             != payload
@@ -959,8 +1151,25 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
         ));
     }
     let mut items = 0_u64;
+    let mut dimensions = [0_u64; 4];
+    let limits = request.limits();
+    let ceilings = [
+        limits.max_graph_nodes,
+        limits.max_attribute_values,
+        limits.max_collection_members,
+        limits.max_role_players,
+    ];
     for (answer, entry) in wire.answers.iter().zip(request.plans()) {
         items = items.saturating_add(validate_answer(answer, entry.plan())?);
+        for (index, count) in answer.resource_counts().into_iter().enumerate() {
+            dimensions[index] = dimensions[index].saturating_add(count);
+            if ceilings[index].is_some_and(|maximum| dimensions[index] > maximum) {
+                return Err(limit(
+                    "query_remote_v3_answer_dimensions",
+                    "aggregate staged evidence exceeds its semantic answer budget",
+                ));
+            }
+        }
         if items > request.limits().max_items {
             return Err(limit(
                 "query_remote_v3_answer_items",
@@ -970,7 +1179,195 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
     }
     Ok(())
 }
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ValueWireV3 {
+    Thing {
+        iid: String,
+        type_id: crate::id::TypeId,
+    },
+    Attribute {
+        type_id: crate::id::TypeId,
+        value: PlanScalarWire,
+    },
+    Value {
+        value: PlanScalarWire,
+    },
+    Absent,
+}
+impl ValueWireV3 {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteValue, Diagnostic> {
+        Ok(match self {
+            Self::Thing { iid, type_id } => RemoteValue::Thing { iid, type_id },
+            Self::Attribute { type_id, value } => RemoteValue::Attribute {
+                type_id,
+                value: value.rebuild(limits)?,
+            },
+            Self::Value { value } => RemoteValue::Value {
+                value: value.rebuild(limits)?,
+            },
+            Self::Absent => RemoteValue::Absent,
+        })
+    }
+}
+
+/// Decode one V3 row cell under the caller's scalar byte budgets.
+pub fn decode_remote_value_with_limits(
+    value: serde_json::Value,
+    limits: crate::limits::CodecLimits,
+) -> Result<RemoteValue, Diagnostic> {
+    serde_json::from_value::<ValueWireV3>(value)
+        .map_err(|_| invalid("query_remote_v3_answer_concept", "invalid V3 row cell"))?
+        .rebuild(limits)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum FieldWireV3 {
+    Document {
+        fields: BTreeMap<String, FieldWireV3>,
+    },
+    Scalar {
+        value: PlanScalarWire,
+    },
+    Absent,
+    List {
+        values: Vec<PlanScalarWire>,
+    },
+}
+impl FieldWireV3 {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<RemoteFieldValue, Diagnostic> {
+        Ok(match self {
+            Self::Document { fields } => RemoteFieldValue::Document {
+                fields: fields
+                    .into_iter()
+                    .map(|(name, value)| Ok((name, value.rebuild(limits)?)))
+                    .collect::<Result<_, Diagnostic>>()?,
+            },
+            Self::Scalar { value } => RemoteFieldValue::Scalar {
+                value: value.rebuild(limits)?,
+            },
+            Self::Absent => RemoteFieldValue::Absent,
+            Self::List { values } => RemoteFieldValue::List {
+                values: values
+                    .into_iter()
+                    .map(|value| value.rebuild(limits))
+                    .collect::<Result<_, _>>()?,
+            },
+        })
+    }
+}
+
+fn decode_answer(
+    value: serde_json::Value,
+    limits: crate::limits::CodecLimits,
+) -> Result<StagedAnswerV3, Diagnostic> {
+    #[derive(Deserialize)]
+    #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+    enum Wire {
+        Rows {
+            rows: Vec<Vec<ValueWireV3>>,
+        },
+        Documents {
+            documents: Vec<BTreeMap<String, FieldWireV3>>,
+        },
+        Count {
+            value: u64,
+        },
+        Exists {
+            value: bool,
+        },
+        Matched {
+            value: u64,
+        },
+    }
+    Ok(
+        match serde_json::from_value(value)
+            .map_err(|_| invalid("query_remote_v3_answer_kind", "invalid staged answer"))?
+        {
+            Wire::Rows { rows } => StagedAnswerV3::Rows {
+                rows: rows
+                    .into_iter()
+                    .map(|row| {
+                        row.into_iter()
+                            .map(|value| value.rebuild(limits))
+                            .collect::<Result<_, _>>()
+                    })
+                    .collect::<Result<_, _>>()?,
+            },
+            Wire::Documents { documents } => StagedAnswerV3::Documents {
+                documents: documents
+                    .into_iter()
+                    .map(|document| {
+                        document
+                            .into_iter()
+                            .map(|(name, value)| Ok((name, value.rebuild(limits)?)))
+                            .collect::<Result<_, Diagnostic>>()
+                    })
+                    .collect::<Result<_, _>>()?,
+            },
+            Wire::Count { value } => StagedAnswerV3::Count { value },
+            Wire::Exists { value } => StagedAnswerV3::Exists { value },
+            Wire::Matched { value } => StagedAnswerV3::Matched { value },
+        },
+    )
+}
+
+fn validate_answer_strings(
+    answer: &StagedAnswerV3,
+    limits: crate::limits::CodecLimits,
+) -> Result<(), Diagnostic> {
+    fn scalar(
+        value: &crate::value::CanonicalValue,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<(), Diagnostic> {
+        if let crate::value::CanonicalValue::String(value) = value {
+            value.validate_limits(limits)?;
+        }
+        Ok(())
+    }
+    fn field(
+        value: &RemoteFieldValue,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<(), Diagnostic> {
+        match value {
+            RemoteFieldValue::Document { fields } => {
+                for value in fields.values() {
+                    field(value, limits)?;
+                }
+            }
+            RemoteFieldValue::Scalar { value } => scalar(value, limits)?,
+            RemoteFieldValue::List { values } => {
+                for value in values {
+                    scalar(value, limits)?;
+                }
+            }
+            RemoteFieldValue::Absent => {}
+        }
+        Ok(())
+    }
+    match answer {
+        StagedAnswerV3::Rows { rows } => {
+            for value in rows.iter().flatten() {
+                if let RemoteValue::Value { value } | RemoteValue::Attribute { value, .. } = value {
+                    scalar(value, limits)?;
+                }
+            }
+        }
+        StagedAnswerV3::Documents { documents } => {
+            for value in documents.iter().flat_map(|document| document.values()) {
+                field(value, limits)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, Diagnostic> {
+    validate_answer_strings(answer, plan.limits().codec)
+        .map_err(|error| plan.limits().annotate(error))?;
+
     let bad = || {
         invalid(
             "query_remote_v3_answer_kind",

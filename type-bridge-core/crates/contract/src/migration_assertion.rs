@@ -179,6 +179,14 @@ pub enum ValueComparator {
     Greater,
     /// Greater or equal.
     GreaterOrEqual,
+    /// String contains the right operand.
+    Contains,
+    /// String starts with the right operand.
+    StartsWith,
+    /// String ends with the right operand.
+    EndsWith,
+    /// String matches the right regular expression.
+    Like,
 }
 
 crate::enum_spellings!(ValueComparator, "value_comparator", canonical {
@@ -188,6 +196,10 @@ crate::enum_spellings!(ValueComparator, "value_comparator", canonical {
     "less_or_equal" => LessOrEqual,
     "greater" => Greater,
     "greater_or_equal" => GreaterOrEqual,
+    "contains" => Contains,
+    "starts_with" => StartsWith,
+    "ends_with" => EndsWith,
+    "like" => Like,
 });
 
 /// One typed operand in a value comparison.

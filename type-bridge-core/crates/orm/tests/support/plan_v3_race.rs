@@ -760,3 +760,146 @@ pub fn delete_doctor_subtypes_returning() -> QueryPlanV3 {
     )
     .unwrap()
 }
+
+/// Read doctor documents using a correlated given string comparator.
+pub fn string_read(comparator: ValueComparator, needles: &[&str]) -> QueryPlanV3 {
+    string_read_with_limits(
+        comparator,
+        needles,
+        type_bridge_contract::limits::QueryLimits::CANONICAL,
+    )
+}
+
+pub fn string_read_with_limits(
+    comparator: ValueComparator,
+    needles: &[&str],
+    limits: type_bridge_contract::limits::QueryLimits,
+) -> QueryPlanV3 {
+    let mut plan = spec(
+        &["doctor", "name"],
+        vec![
+            Stage::Match {
+                patterns: vec![
+                    isa(0, entity("doctor")),
+                    has(0, 1, "name"),
+                    QueryPattern::Value {
+                        comparator,
+                        left: binding(1),
+                        right: input(0),
+                    }
+                    .into(),
+                ],
+            },
+            Stage::Fetch(ThingDocument::new(id(0), vec![])),
+        ],
+        Operation::Rows,
+        vec![],
+    );
+    plan.inputs = vec![InputColumn::new(
+        InputColumnId::new(0),
+        QueryVariable::new("needle").unwrap(),
+        ValueTypeTag::String,
+        false,
+    )];
+    plan.given_rows = Some(
+        needles
+            .iter()
+            .map(|value| {
+                InputRow::new(vec![Some(CanonicalValue::String(
+                    CanonicalString::new_with_limits(*value, limits.codec).unwrap(),
+                ))])
+            })
+            .collect(),
+    );
+    QueryPlanV3::new_with_limits(plan, &schema(), limits).unwrap()
+}
+
+/// Reintroduce a discarded doctor under the selected name window.
+pub fn rematch_doctor_window() -> QueryPlanV3 {
+    use type_bridge_contract::query_plan::{OrderDirection, OrderTerm};
+    QueryPlanV3::new(
+        spec(
+            &["doctor", "name", "peer"],
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        isa(0, entity("doctor")),
+                        has(0, 1, "name"),
+                        isa(2, entity("doctor")),
+                        has(2, 1, "name"),
+                    ],
+                },
+                Stage::Select {
+                    bindings: vec![id(0), id(1)],
+                },
+                Stage::Distinct,
+                Stage::Sort {
+                    terms: vec![OrderTerm::new(id(1), OrderDirection::Ascending)],
+                },
+                Stage::Offset { rows: 0 },
+                Stage::Limit { rows: 1 },
+                Stage::Match {
+                    patterns: vec![isa(2, entity("doctor")), has(2, 1, "name")],
+                },
+                Stage::Fetch(ThingDocument::new(id(2), vec![])),
+            ],
+            Operation::Rows,
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Mix a given IID comparison and an ordinary field predicate in one OR.
+pub fn doctor_iid_or_name(iid: &str, name: &str) -> QueryPlanV3 {
+    let mut plan = spec(
+        &["doctor", "name", "identity"],
+        vec![
+            Stage::Match {
+                patterns: vec![
+                    isa(0, entity("doctor")),
+                    has(0, 1, "name"),
+                    Pattern::Let {
+                        binding: id(2),
+                        expr: Expr::Iid { binding: id(0) },
+                    },
+                    QueryPattern::Or {
+                        branches: vec![
+                            vec![QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: binding(2),
+                                right: input(0),
+                            }],
+                            vec![QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: binding(1),
+                                right: input(1),
+                            }],
+                        ],
+                    }
+                    .into(),
+                ],
+            },
+            Stage::Fetch(ThingDocument::new(id(0), vec![])),
+        ],
+        Operation::Rows,
+        vec![],
+    );
+    plan.inputs = vec![
+        InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("wanted_iid").unwrap(),
+            ValueTypeTag::String,
+            false,
+        ),
+        InputColumn::new(
+            InputColumnId::new(1),
+            QueryVariable::new("wanted_name").unwrap(),
+            ValueTypeTag::String,
+            false,
+        ),
+    ];
+    plan.given_rows = Some(vec![InputRow::new(vec![Some(text(iid)), Some(text(name))])]);
+    QueryPlanV3::new(plan, &schema()).unwrap()
+}

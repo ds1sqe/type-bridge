@@ -485,3 +485,103 @@ pub fn purchase_read_back() -> QueryPlanV3 {
     ))]);
     plan.build(&schema(), semantics()).unwrap()
 }
+
+/// String comparator template with given input values.
+pub fn compare_string(comparator: ValueComparator) -> QueryPlanV3 {
+    let mut spec = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                pat(0, entity("account")),
+                has(0, 1, "id"),
+                QueryPattern::Value {
+                    comparator,
+                    left: operand(1),
+                    right: input(0),
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    spec.inputs = vec![column(0, "needle", ValueTypeTag::String)];
+    spec.given_rows = Some(vec![InputRow::new(vec![Some(text("Ada"))])]);
+    QueryPlanV3::new(spec, &schema()).unwrap()
+}
+
+/// Rehydrate a discarded binding under an already selected, ordered window.
+pub fn rematch_window() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        pat(0, entity("account")),
+                        pat(1, entity("account")),
+                        has(0, 2, "id"),
+                        has(1, 2, "id"),
+                    ],
+                },
+                Stage::Select {
+                    bindings: vec![id(0), id(2)],
+                },
+                Stage::Distinct,
+                Stage::Sort {
+                    terms: vec![type_bridge_contract::query_plan::OrderTerm::new(
+                        id(2),
+                        type_bridge_contract::query_plan::OrderDirection::Ascending,
+                    )],
+                },
+                Stage::Offset { rows: 0 },
+                Stage::Limit { rows: 2 },
+                Stage::Match {
+                    patterns: vec![pat(1, entity("account")), has(1, 2, "id")],
+                },
+                Stage::Fetch(type_bridge_contract::query_plan::v3::ThingDocument::new(
+                    id(1),
+                    vec![],
+                )),
+            ],
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Compare a canonical thing IID as a scalar inside a boolean scope.
+pub fn iid_expression() -> QueryPlanV3 {
+    let mut spec = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                pat(0, entity("account")),
+                Pattern::Let {
+                    binding: id(2),
+                    expr: Expr::Iid { binding: id(0) },
+                },
+                QueryPattern::Or {
+                    branches: vec![
+                        vec![QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: operand(2),
+                            right: input(0),
+                        }],
+                        vec![QueryPattern::Not {
+                            patterns: vec![QueryPattern::Value {
+                                comparator: ValueComparator::Equal,
+                                left: operand(2),
+                                right: input(0),
+                            }],
+                        }],
+                    ],
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    spec.inputs = vec![column(0, "wanted_iid", ValueTypeTag::String)];
+    spec.given_rows = Some(vec![InputRow::new(vec![Some(text(
+        "0x1e00000000000000000001",
+    ))])]);
+    QueryPlanV3::new(spec, &schema()).unwrap()
+}

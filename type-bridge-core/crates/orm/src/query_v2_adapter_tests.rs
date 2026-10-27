@@ -1454,23 +1454,6 @@ fn the_complete_released_shape_inventory_adapts() {
         Some(QueryPatternV2::Or { patterns }) if patterns.len() == 4
     ));
 
-    let released_string = adapt_ok(
-        with_predicate(MatchExpr::FieldValue {
-            field: name_field(),
-            operator: ComparisonOp::Equal,
-            value: AttributeValue::String("x".repeat(1024 * 1024 + 1)),
-        }),
-        fetch_rows_operation(),
-    );
-    assert!(matches!(
-        released_string
-            .validated()
-            .plan()
-            .v2_compatibility()
-            .and_then(|compatibility| compatibility.predicate()),
-        Some(QueryPatternV2::FieldValue { value, .. }) if value.released_text().is_some()
-    ));
-
     let mut subtype_links = representative_plan();
     subtype_links.bindings[1].match_mode = MatchMode::Subtypes;
     let subtype_links = adapt_ok(subtype_links, fetch_rows_operation());
@@ -1631,9 +1614,17 @@ fn a_request_beyond_the_artifact_envelope_is_refused_with_its_limit() {
             }),
             allowed_cross_joins: BTreeSet::new(),
         };
-        let validated =
-            validate_match_request(&registry, MatchRequest::v1(plan, fetch_rows_operation()))
-                .expect("released V1 validation admits arbitrary string bytes");
+        let limits = type_bridge_contract::limits::QueryLimits::from_overrides([(
+            "canonical_string_bytes",
+            16 * 1024 * 1024,
+        )])
+        .unwrap();
+        let validated = crate::match_request::validate_match_request_with_limits(
+            &registry,
+            MatchRequest::v1(plan, fetch_rows_operation()),
+            limits,
+        )
+        .expect("released V1 validation admits arbitrary string bytes");
         adapt_match_request(
             &validated,
             &registry,
@@ -1724,5 +1715,67 @@ fn a_plan_nested_past_the_codec_depth_reports_that_limit() {
     assert_eq!(
         cause.details().get("maximum_depth"),
         Some(&DiagnosticDetailValue::Long(64))
+    );
+}
+
+fn adapt_large_string(
+    limits: type_bridge_contract::limits::QueryLimits,
+) -> Result<AdaptedMatchRequest, type_bridge_contract::diagnostic::Diagnostic> {
+    let fixture = schema_fixture();
+    let registry = registry();
+    let plan = MatchPlan {
+        bindings: vec![MatchBinding {
+            id: V1BindingId::new(0),
+            descriptor: DescriptorId::new("entity:person"),
+            thing_kind: ThingKind::Entity,
+            match_mode: MatchMode::Exact,
+        }],
+        predicate: Some(MatchExpr::FieldValue {
+            field: name_field(),
+            operator: ComparisonOp::Equal,
+            value: AttributeValue::String("x".repeat(1024 * 1024 + 1)),
+        }),
+        allowed_cross_joins: BTreeSet::new(),
+    };
+    let request = crate::match_request::validate_match_request_with_limits(
+        &registry,
+        MatchRequest::v1(plan, fetch_rows_operation()),
+        limits,
+    )
+    .unwrap();
+    adapt_match_request(
+        &request,
+        &registry,
+        &MigrationAssertionValidationContext::new(&fixture.resolved, &fixture.managed),
+    )
+}
+
+#[test]
+fn typed_strings_default_to_one_mib_with_a_named_refusal() {
+    let error =
+        adapt_large_string(type_bridge_contract::limits::QueryLimits::CANONICAL).unwrap_err();
+    assert_eq!(error.code().as_str(), "query_string_value_byte_limit");
+    assert_eq!(
+        error.details().get("limit"),
+        Some(&DiagnosticDetailValue::Text(
+            "canonical_string_bytes".into()
+        ))
+    );
+    assert_eq!(
+        error.details().get("maximum"),
+        Some(&DiagnosticDetailValue::Long(1024 * 1024))
+    );
+}
+
+#[test]
+fn typed_strings_honor_an_explicitly_raised_string_limit() {
+    let limits = type_bridge_contract::limits::QueryLimits::from_overrides([(
+        "canonical_string_bytes",
+        2 * 1024 * 1024,
+    )])
+    .unwrap();
+    let adapted = adapt_large_string(limits).unwrap();
+    assert!(
+        matches!(adapted.validated().plan().v2_compatibility().and_then(|compatibility| compatibility.predicate()), Some(QueryPatternV2::FieldValue { value, .. }) if value.released_text().is_some())
     );
 }

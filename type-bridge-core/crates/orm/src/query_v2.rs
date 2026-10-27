@@ -622,6 +622,18 @@ pub(crate) fn lower_scoped_patterns(
     row: Option<&InputRow>,
     validated: Option<&ValidatedQuery>,
 ) -> Result<Vec<tql::Pattern>, Diagnostic> {
+    lower_scoped_patterns_with_values(inputs, bindings, patterns, row, validated, None, None)
+}
+
+pub(crate) fn lower_scoped_patterns_with_values(
+    inputs: &[InputColumn],
+    bindings: &[type_bridge_contract::migration_assertion::AssertionBinding],
+    patterns: &[QueryPattern],
+    row: Option<&InputRow>,
+    validated: Option<&ValidatedQuery>,
+    values: Option<&[InputRow]>,
+    literal_policy: Option<&crate::query_plan_exec::LiteralComparisonPolicy>,
+) -> Result<Vec<tql::Pattern>, Diagnostic> {
     let mut output = Vec::new();
     for (pattern_index, pattern) in patterns.iter().enumerate() {
         match pattern {
@@ -677,6 +689,27 @@ pub(crate) fn lower_scoped_patterns(
                 comparator,
                 left,
                 right,
+            } if matches!(
+                comparator,
+                type_bridge_contract::migration_assertion::ValueComparator::StartsWith
+                    | type_bridge_contract::migration_assertion::ValueComparator::EndsWith
+                    | type_bridge_contract::migration_assertion::ValueComparator::Like
+            ) =>
+            {
+                output.push(crate::query_plan_exec::string_comparison(
+                    inputs,
+                    bindings,
+                    *comparator,
+                    left,
+                    right,
+                    values.unwrap_or(&[]),
+                    literal_policy,
+                )?);
+            }
+            QueryPattern::Value {
+                comparator,
+                left,
+                right,
             } => output.push(ast(tql::compare(
                 lower_operand(inputs, bindings, left, row)?,
                 render_comparator(*comparator),
@@ -685,15 +718,41 @@ pub(crate) fn lower_scoped_patterns(
             QueryPattern::Or { branches } => output.push(tql::or(
                 branches
                     .iter()
-                    .map(|branch| lower_scoped_patterns(inputs, bindings, branch, row, validated))
+                    .map(|branch| {
+                        lower_scoped_patterns_with_values(
+                            inputs,
+                            bindings,
+                            branch,
+                            row,
+                            validated,
+                            values,
+                            literal_policy,
+                        )
+                    })
                     .collect::<Result<_, _>>()?,
             )),
-            QueryPattern::Not { patterns } => output.push(tql::not(lower_scoped_patterns(
-                inputs, bindings, patterns, row, validated,
-            )?)),
-            QueryPattern::Try { patterns } => output.push(tql::optional(lower_scoped_patterns(
-                inputs, bindings, patterns, row, validated,
-            )?)),
+            QueryPattern::Not { patterns } => {
+                output.push(tql::not(lower_scoped_patterns_with_values(
+                    inputs,
+                    bindings,
+                    patterns,
+                    row,
+                    validated,
+                    values,
+                    literal_policy,
+                )?))
+            }
+            QueryPattern::Try { patterns } => {
+                output.push(tql::optional(lower_scoped_patterns_with_values(
+                    inputs,
+                    bindings,
+                    patterns,
+                    row,
+                    validated,
+                    values,
+                    literal_policy,
+                )?))
+            }
             QueryPattern::Reachable {
                 min_depth,
                 max_depth,
@@ -2031,6 +2090,7 @@ mod tests {
                 cancellation: AnswerCancellation::default(),
             },
             max_collection_members: 1 << 16,
+            ..Default::default()
         }
     }
 

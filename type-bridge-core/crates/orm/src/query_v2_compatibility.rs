@@ -656,6 +656,10 @@ const fn lower_native_comparator(comparator: ValueComparator) -> TypedComparison
         ValueComparator::LessOrEqual => TypedComparisonOperator::LessThanOrEqual,
         ValueComparator::Greater => TypedComparisonOperator::GreaterThan,
         ValueComparator::GreaterOrEqual => TypedComparisonOperator::GreaterThanOrEqual,
+        ValueComparator::Contains => TypedComparisonOperator::Contains,
+        ValueComparator::StartsWith => TypedComparisonOperator::StartsWith,
+        ValueComparator::EndsWith => TypedComparisonOperator::EndsWith,
+        ValueComparator::Like => TypedComparisonOperator::Regex,
     }
 }
 

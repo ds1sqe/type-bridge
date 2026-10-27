@@ -8,6 +8,9 @@ same diagnostics as staging. Plans with declared inputs must have bound rows.
 Caller values travel as `given` rows and are never shown. Embedded plan
 constants are part of the plan and are shown, just as they appear in canonical
 plan bytes. Keep sensitive values in input rows rather than embedded literals.
+TypeDB requires literal regexes for `starts_with`, `ends_with` and `like`.
+Explain and TRACE replace input-derived regexes and their correlation guards
+with `<input:column>` placeholders; explicit plan constants remain visible.
 The explanation includes only the row count and canonical byte count of the
 transported rows, including internal snapshot inputs.
 

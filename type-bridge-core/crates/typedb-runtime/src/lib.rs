@@ -3173,10 +3173,11 @@ impl RuntimeTransaction {
         rows: Option<GivenRowsSpec>,
         limits: QueryV2RuntimeAnswerLimits,
         canonical: bool,
+        statement_display: Option<&str>,
     ) -> Result<QueryResult> {
         let started = std::time::Instant::now();
         if canonical {
-            tracing::trace!(target: "type_bridge.io", statement = typeql, "type_bridge.io.provider.statement");
+            tracing::trace!(target: "type_bridge.io", statement = statement_display.unwrap_or(typeql), "type_bridge.io.provider.statement");
         }
         let mut items = Vec::new();
         let mut consumer = |item| {

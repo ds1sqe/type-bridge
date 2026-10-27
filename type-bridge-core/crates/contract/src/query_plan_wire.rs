@@ -21,6 +21,25 @@ use crate::query_plan::{
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::{CanonicalValue, ValueTypeTag};
 
+// V3 honors explicit scalar limits without widening frozen V1/V2 DTO decoding.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(transparent)]
+pub(crate) struct PlanScalarWire(Value);
+
+pub(crate) trait WireScalar {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<CanonicalValue, Diagnostic>;
+}
+impl WireScalar for CanonicalValue {
+    fn rebuild(self, _limits: crate::limits::CodecLimits) -> Result<CanonicalValue, Diagnostic> {
+        Ok(self)
+    }
+}
+impl WireScalar for PlanScalarWire {
+    fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<CanonicalValue, Diagnostic> {
+        CanonicalValue::from_json_with_limits(self.0, limits)
+    }
+}
+
 pub(crate) fn decode_query_plan(
     bytes: &[u8],
     limits: QueryLimits,
@@ -237,9 +256,9 @@ impl QueryOutputWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LocalFunctionWire {
+pub(crate) struct LocalFunctionWire<S = CanonicalValue> {
     bindings: Vec<QueryBindingWire>,
-    body: Vec<QueryPatternWire>,
+    body: Vec<QueryPatternWire<S>>,
     name: String,
     parameters: Vec<String>,
     returns: LocalReturnWire,
@@ -253,8 +272,15 @@ struct LocalReturnWire {
     value_type: ValueTypeTag,
 }
 
-impl LocalFunctionWire {
+impl<S: WireScalar> LocalFunctionWire<S> {
     pub(crate) fn rebuild(self) -> Result<LocalFunction, Diagnostic> {
+        self.rebuild_with_limits(crate::limits::CodecLimits::CANONICAL)
+    }
+
+    pub(crate) fn rebuild_with_limits(
+        self,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<LocalFunction, Diagnostic> {
         Ok(LocalFunction::new(
             FunctionId::new(self.name)?,
             self.bindings
@@ -267,7 +293,7 @@ impl LocalFunctionWire {
                 .collect::<Result<Vec<_>, _>>()?,
             self.body
                 .into_iter()
-                .map(QueryPatternWire::rebuild)
+                .map(|value| value.rebuild_with_limits(limits))
                 .collect::<Result<Vec<_>, _>>()?,
             LocalReturn::new(
                 self.returns.reducer.rebuild(),
@@ -515,7 +541,7 @@ impl OrderTermWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum QueryPatternWire {
+enum QueryPatternWire<S = CanonicalValue> {
     Isa {
         binding: u16,
         include_subtypes: bool,
@@ -533,14 +559,14 @@ enum QueryPatternWire {
     },
     Value {
         comparator: ValueComparatorWire,
-        left: QueryOperandWire,
-        right: QueryOperandWire,
+        left: QueryOperandWire<S>,
+        right: QueryOperandWire<S>,
     },
     Not {
-        patterns: Vec<QueryPatternWire>,
+        patterns: Vec<QueryPatternWire<S>>,
     },
     Try {
-        patterns: Vec<QueryPatternWire>,
+        patterns: Vec<QueryPatternWire<S>>,
     },
     Reachable {
         max_depth: u8,
@@ -551,14 +577,21 @@ enum QueryPatternWire {
         target: u16,
     },
     FunctionCall {
-        arguments: Vec<QueryOperandWire>,
+        arguments: Vec<QueryOperandWire<S>>,
         assigned: u16,
         function: String,
     },
 }
 
-impl QueryPatternWire {
+impl<S: WireScalar> QueryPatternWire<S> {
     fn rebuild(self) -> Result<QueryPattern, Diagnostic> {
+        self.rebuild_with_limits(crate::limits::CodecLimits::CANONICAL)
+    }
+
+    fn rebuild_with_limits(
+        self,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<QueryPattern, Diagnostic> {
         Ok(match self {
             Self::Isa {
                 binding,
@@ -596,19 +629,19 @@ impl QueryPatternWire {
                 right,
             } => QueryPattern::Value {
                 comparator: comparator.rebuild(),
-                left: left.rebuild()?,
-                right: right.rebuild()?,
+                left: left.rebuild_with_limits(limits)?,
+                right: right.rebuild_with_limits(limits)?,
             },
             Self::Not { patterns } => QueryPattern::Not {
                 patterns: patterns
                     .into_iter()
-                    .map(QueryPatternWire::rebuild)
+                    .map(|value| value.rebuild_with_limits(limits))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Self::Try { patterns } => QueryPattern::Try {
                 patterns: patterns
                     .into_iter()
-                    .map(QueryPatternWire::rebuild)
+                    .map(|value| value.rebuild_with_limits(limits))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Self::Reachable {
@@ -634,7 +667,7 @@ impl QueryPatternWire {
             } => QueryPattern::FunctionCall {
                 arguments: arguments
                     .into_iter()
-                    .map(QueryOperandWire::rebuild)
+                    .map(|value| value.rebuild_with_limits(limits))
                     .collect::<Result<Vec<_>, _>>()?,
                 assigned: BindingId::new(assigned)?,
                 function: FunctionId::new(function)?,
@@ -645,7 +678,7 @@ impl QueryPatternWire {
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum QueryPatternWireV2 {
+enum QueryPatternWireV2<S = CanonicalValue> {
     Isa {
         binding: u16,
         include_subtypes: bool,
@@ -663,17 +696,17 @@ enum QueryPatternWireV2 {
     },
     Value {
         comparator: ValueComparatorWire,
-        left: QueryOperandWire,
-        right: QueryOperandWire,
+        left: QueryOperandWire<S>,
+        right: QueryOperandWire<S>,
     },
     Or {
-        branches: Vec<Vec<QueryPatternWireV2>>,
+        branches: Vec<Vec<QueryPatternWireV2<S>>>,
     },
     Not {
-        patterns: Vec<QueryPatternWireV2>,
+        patterns: Vec<QueryPatternWireV2<S>>,
     },
     Try {
-        patterns: Vec<QueryPatternWireV2>,
+        patterns: Vec<QueryPatternWireV2<S>>,
     },
     Reachable {
         min_depth: u8,
@@ -685,14 +718,21 @@ enum QueryPatternWireV2 {
         target: u16,
     },
     FunctionCall {
-        arguments: Vec<QueryOperandWire>,
+        arguments: Vec<QueryOperandWire<S>>,
         assigned: u16,
         function: String,
     },
 }
 
-impl QueryPatternWireV2 {
+impl<S: WireScalar> QueryPatternWireV2<S> {
     fn rebuild(self) -> Result<QueryPattern, Diagnostic> {
+        self.rebuild_with_limits(crate::limits::CodecLimits::CANONICAL)
+    }
+
+    fn rebuild_with_limits(
+        self,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<QueryPattern, Diagnostic> {
         Ok(match self {
             Self::Isa {
                 binding,
@@ -730,8 +770,8 @@ impl QueryPatternWireV2 {
                 right,
             } => QueryPattern::Value {
                 comparator: comparator.rebuild(),
-                left: left.rebuild()?,
-                right: right.rebuild()?,
+                left: left.rebuild_with_limits(limits)?,
+                right: right.rebuild_with_limits(limits)?,
             },
             Self::Or { branches } => QueryPattern::Or {
                 branches: branches
@@ -739,7 +779,7 @@ impl QueryPatternWireV2 {
                     .map(|branch| {
                         branch
                             .into_iter()
-                            .map(QueryPatternWireV2::rebuild)
+                            .map(|value| value.rebuild_with_limits(limits))
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .collect::<Result<Vec<_>, _>>()?,
@@ -747,13 +787,13 @@ impl QueryPatternWireV2 {
             Self::Not { patterns } => QueryPattern::Not {
                 patterns: patterns
                     .into_iter()
-                    .map(QueryPatternWireV2::rebuild)
+                    .map(|value| value.rebuild_with_limits(limits))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Self::Try { patterns } => QueryPattern::Try {
                 patterns: patterns
                     .into_iter()
-                    .map(QueryPatternWireV2::rebuild)
+                    .map(|value| value.rebuild_with_limits(limits))
                     .collect::<Result<Vec<_>, _>>()?,
             },
             Self::Reachable {
@@ -780,7 +820,7 @@ impl QueryPatternWireV2 {
             } => QueryPattern::FunctionCall {
                 arguments: arguments
                     .into_iter()
-                    .map(QueryOperandWire::rebuild)
+                    .map(|value| value.rebuild_with_limits(limits))
                     .collect::<Result<Vec<_>, _>>()?,
                 assigned: BindingId::new(assigned)?,
                 function: FunctionId::new(function)?,
@@ -791,19 +831,24 @@ impl QueryPatternWireV2 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum QueryOperandWire {
+pub(crate) enum QueryOperandWire<S = CanonicalValue> {
     Binding { binding: u16 },
-    Literal { value: CanonicalValue },
+    Literal { value: S },
     Input { column: u16 },
 }
 
-impl QueryOperandWire {
-    pub(crate) fn rebuild(self) -> Result<QueryOperand, Diagnostic> {
+impl<S: WireScalar> QueryOperandWire<S> {
+    pub(crate) fn rebuild_with_limits(
+        self,
+        limits: crate::limits::CodecLimits,
+    ) -> Result<QueryOperand, Diagnostic> {
         Ok(match self {
             Self::Binding { binding } => QueryOperand::Binding {
                 binding: BindingId::new(binding)?,
             },
-            Self::Literal { value } => QueryOperand::Literal { value },
+            Self::Literal { value } => QueryOperand::Literal {
+                value: value.rebuild(limits)?,
+            },
             Self::Input { column } => QueryOperand::Input {
                 column: InputColumnId::new(column),
             },
@@ -839,14 +884,17 @@ pub(crate) fn rebuild_output(value: Value) -> Result<QueryOutput, Diagnostic> {
         .rebuild()
 }
 
-pub(crate) fn rebuild_pattern_v2(value: Value) -> Result<QueryPattern, Diagnostic> {
-    serde_json::from_value::<QueryPatternWireV2>(value)
+pub(crate) fn rebuild_pattern_v3(
+    value: Value,
+    limits: crate::limits::CodecLimits,
+) -> Result<QueryPattern, Diagnostic> {
+    serde_json::from_value::<QueryPatternWireV2<PlanScalarWire>>(value)
         .map_err(|_| {
             failure(
                 DiagnosticCategory::InvalidContract,
                 "invalid_canonical_value",
-                "invalid read pattern",
+                "invalid V3 read pattern",
             )
         })?
-        .rebuild()
+        .rebuild_with_limits(limits)
 }

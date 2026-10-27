@@ -110,3 +110,75 @@ pub(crate) fn meter_result(
     tracing::debug!(target: "type_bridge.plan", items = meter.items(), bytes = meter.bytes(), "type_bridge.plan.answer");
     Ok(())
 }
+
+/// Semantic dimensions of thing-fetch documents, shared by direct and staged plans.
+pub(crate) struct PlanMeter {
+    totals: [u64; 4],
+    limits: [u64; 4],
+}
+
+impl PlanMeter {
+    pub(crate) fn new(limits: &crate::session::backend::AnswerLimits) -> Self {
+        Self {
+            totals: [0; 4],
+            limits: [
+                limits.max_graph_nodes,
+                limits.max_attribute_values,
+                limits.max_collection_members,
+                limits.max_role_players,
+            ],
+        }
+    }
+
+    pub(crate) fn accept(
+        &mut self,
+        answer: &type_bridge_contract::query_remote_v3::StagedAnswerV3,
+    ) -> Result<(), OrmError> {
+        let codes = [
+            "hydrated_thing_limit",
+            "hydrated_attribute_value_limit",
+            "collected_concept_limit",
+            "hydrated_role_player_limit",
+        ];
+        for (index, count) in answer.resource_counts().into_iter().enumerate() {
+            self.totals[index] = self.totals[index].saturating_add(count);
+            if self.totals[index] > self.limits[index] {
+                return Err(limit(
+                    codes[index],
+                    "plan answer exceeded its semantic resource ceiling",
+                    self.totals[index],
+                    self.limits[index],
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+    use crate::session::backend::AnswerLimits;
+    use serde_json::json;
+    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+
+    #[test]
+    fn semantic_dimensions_are_aggregate_and_zero_means_no_values() {
+        let answer: StagedAnswerV3 = serde_json::from_value(json!({"kind":"documents", "documents":[{
+            "_iid":{"kind":"scalar", "value":{"kind":"string", "value":"0x01"}},
+            "attributes":{"kind":"document", "fields":{"name":{"kind":"list", "values":[{"kind":"string", "value":"Ada"}, {"kind":"string", "value":"Grace"}]}}},
+            "_role_0_iid":{"kind":"scalar", "value":{"kind":"string", "value":"0x02"}},
+            "_role_0_attributes":{"kind":"document", "fields":{"name":{"kind":"scalar", "value":{"kind":"string", "value":"Lin"}}}}
+        }]})).unwrap();
+        for index in 0..4 {
+            let mut meter = PlanMeter::new(&AnswerLimits::default());
+            meter.limits[index] = 0;
+            assert!(meter.accept(&answer).is_err());
+        }
+        let mut meter = PlanMeter::new(&AnswerLimits::default());
+        meter.limits = [2, 3, 4, 1];
+        meter.accept(&answer).unwrap();
+        assert_eq!(meter.totals, [2, 3, 4, 1]);
+        assert!(meter.accept(&answer).is_err());
+    }
+}

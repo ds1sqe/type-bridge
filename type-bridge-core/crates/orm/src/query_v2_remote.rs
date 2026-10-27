@@ -997,6 +997,7 @@ fn tighten_limits_v2(
             cancellation: ceilings.answer.cancellation,
         },
         max_collection_members,
+        ..Default::default()
     };
     let reply = RemoteReplyDecodeLimitsV2 {
         max_bytes,
@@ -1128,6 +1129,7 @@ mod tests {
                 cancellation: AnswerCancellation::default(),
             },
             max_collection_members: u64::MAX,
+            ..Default::default()
         }
     }
 
@@ -1147,6 +1149,7 @@ mod tests {
                 cancellation: AnswerCancellation::default(),
             },
             max_collection_members: 31,
+            ..Default::default()
         };
         let caller = RemoteLimitsV2 {
             deadline_ms: Some(1_000),

@@ -397,6 +397,7 @@ impl TransactionOps for RealTransaction {
         rows: Option<GivenRowsSpec>,
         limits: AnswerLimits,
         canonical: bool,
+        statement_display: Option<&'a str>,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         Box::pin(async move {
             let limits = runtime::QueryV2RuntimeAnswerLimits {
@@ -411,7 +412,13 @@ impl TransactionOps for RealTransaction {
                 },
             };
             self.inner
-                .query_materialized_bounded(typeql, rows.map(runtime_given_rows), limits, canonical)
+                .query_materialized_bounded(
+                    typeql,
+                    rows.map(runtime_given_rows),
+                    limits,
+                    canonical,
+                    statement_display,
+                )
                 .await
                 .map(query_result)
                 .map_err(OrmError::from)
@@ -478,6 +485,7 @@ impl TransactionOps for RealTransaction {
         let AnswerLimits {
             answer: limits,
             max_collection_members,
+            ..
         } = limits;
         let rows = runtime_given_rows(rows);
         Box::pin(async move {
@@ -582,6 +590,7 @@ impl TransactionOps for RealTransaction {
         let AnswerLimits {
             answer: limits,
             max_collection_members,
+            ..
         } = limits;
         Box::pin(async move {
             let runtime_limits = runtime::QueryV2RuntimeAnswerLimits {

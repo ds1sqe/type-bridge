@@ -58,6 +58,7 @@ pub type CommitRecord = (
 pub struct LivePolicy {
     pub vouch: bool,
     pub refuse: Option<&'static str>,
+    pub query_limits: Option<type_bridge_contract::limits::QueryLimits>,
     pub withhold_next_reply: Arc<AtomicBool>,
     pub commits: Arc<Mutex<Vec<CommitRecord>>>,
 }
@@ -329,6 +330,8 @@ pub async fn proxy_with(
             resolved,
         )
         .expect("executor advertisement")
+        .with_query_limits(policy.query_limits.unwrap_or_default())
+        .expect("query limits")
         .with_unauthenticated_staged_writes(allow_unauthenticated),
     );
     let commits = Arc::clone(&policy.commits);

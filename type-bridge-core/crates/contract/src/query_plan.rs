@@ -2669,7 +2669,18 @@ fn collect_pattern_capabilities(
         }
         QueryPattern::Has { .. } => insert_capability(capabilities, CAP_HAS)?,
         QueryPattern::Links { .. } => insert_capability(capabilities, CAP_LINKS)?,
-        QueryPattern::Value { .. } => insert_capability(capabilities, CAP_VALUE)?,
+        QueryPattern::Value { comparator, .. } => {
+            insert_capability(capabilities, CAP_VALUE)?;
+            if matches!(
+                comparator,
+                ValueComparator::Contains
+                    | ValueComparator::StartsWith
+                    | ValueComparator::EndsWith
+                    | ValueComparator::Like
+            ) {
+                insert_capability(capabilities, "query.pattern.string-operators")?;
+            }
+        }
         QueryPattern::Or { branches } => {
             insert_capability(capabilities, CAP_DISJUNCTION)?;
             for branch in branches {

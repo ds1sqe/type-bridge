@@ -20,7 +20,7 @@ use type_bridge_contract::query_plan::v3::{
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
-use type_bridge_orm::query_v2_builder::{query_builder_comparator, query_builder_value_type};
+use type_bridge_orm::query_v2_builder::query_builder_value_type;
 
 use crate::query_v2_runtime::{NodeQueryV2Authority, napi_error};
 
@@ -221,7 +221,7 @@ impl NodePlanBuilder {
     pub fn compare(&mut self, left: NodePlanOperand, comparator: String, right: NodePlanOperand) {
         let left = self.operand(&left);
         let right = self.operand(&right);
-        if let Some(comparator) = self.check(query_builder_comparator(&comparator)) {
+        if let Some(comparator) = self.check(comparator.parse().map_err(Diagnostic::from)) {
             self.core.compare(left, comparator, right);
         }
     }

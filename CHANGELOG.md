@@ -4,6 +4,15 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Typed string values default to a 1 MiB ceiling in 3.0. The existing
+  `canonical_string_bytes` query-limit option can raise it up to the complete
+  artifact budget (16 MiB by default); servers retain their own configured
+  maximum and refusals name the limit. In 2.x, typed predicate strings could
+  reach the caller's artifact ceiling. V3 requests carrying strings above
+  1 MiB require `query.input.wide-strings`.
+
 ## [3.0.0] - Unreleased
 
 ### Added

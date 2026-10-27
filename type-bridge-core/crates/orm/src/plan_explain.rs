@@ -9,6 +9,7 @@ use type_bridge_contract::query_plan::v3::{Operation, QueryPlanV3};
 ///
 /// Caller values carried by `given` rows are never included. Embedded plan
 /// constants are part of the program and appear exactly as execution sends them.
+/// Inputs inlined for TypeDB regex operators use placeholders naming the column.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanExplanation {
     /// Canonical shape fingerprint, excluding transported caller values.
@@ -25,7 +26,7 @@ pub struct PlanExplanation {
     pub inputs: Vec<ExplainedInput>,
     /// Transported input size, including internal snapshot inputs.
     pub given: ExplainedGiven,
-    /// Complete TypeQL pipelines, in execution order.
+    /// TypeQL pipelines in execution order, with inlined input literals redacted.
     pub statements: Vec<String>,
     /// Read statements charged by execution.
     pub read_statements: usize,
@@ -76,10 +77,10 @@ pub fn explain(plan: &QueryPlanV3) -> Result<PlanExplanation, Diagnostic> {
     let query = crate::query_plan_exec::staged_query(plan, true)?;
     let mut statements = Vec::new();
     if let Some((snapshot, _)) = query.snapshot {
-        statements.push(snapshot);
+        statements.push(query.redacted_snapshot.unwrap_or(snapshot));
     }
+    statements.push(query.redacted_typeql.unwrap_or(query.typeql));
     let (read_statements, write_statements) = plan.statement_counts();
-    statements.push(query.typeql);
     let given = match query.rows {
         Some(rows) => ExplainedGiven {
             row_count: rows.rows.len(),
@@ -147,5 +148,42 @@ mod tests {
             explained.digest(),
             second.fingerprint().unwrap().as_fingerprint().digest()
         );
+    }
+
+    #[test]
+    fn regex_inputs_are_redacted_but_plan_constants_remain_visible() {
+        use type_bridge_contract::migration_assertion::ValueComparator;
+        for comparator in [
+            ValueComparator::StartsWith,
+            ValueComparator::EndsWith,
+            ValueComparator::Like,
+        ] {
+            let plan = crate::query_plan_exec::race::string_read(
+                comparator,
+                &["REGEX_SECRET_A", "REGEX_SECRET_B"],
+            );
+            let mut wire = serde_json::to_value(&plan).unwrap();
+            let mut constant = wire["pipeline"][0]["patterns"][2].clone();
+            constant["right"] = serde_json::json!({
+                "kind": "literal", "value": {"kind": "string", "value": "PLAN_CONSTANT_VISIBLE"}
+            });
+            wire["pipeline"][0]["patterns"]
+                .as_array_mut()
+                .unwrap()
+                .push(constant);
+            let plan = type_bridge_contract::query_plan::v3::decode_query_plan_v3(
+                &type_bridge_contract::codec::to_canonical_json(&wire).unwrap(),
+                &crate::query_plan_exec::race::schema(),
+            )
+            .unwrap();
+            let explanation = explain(&plan).unwrap();
+            let text = String::from_utf8(explanation.canonical_bytes().unwrap()).unwrap();
+            assert!(!text.contains("REGEX_SECRET"));
+            assert!(text.contains("input:needle"));
+            assert!(text.contains("PLAN_CONSTANT_VISIBLE"));
+            let executed = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+            assert!(executed.typeql.contains("REGEX_SECRET_A"));
+            assert!(executed.typeql.contains("REGEX_SECRET_B"));
+        }
     }
 }

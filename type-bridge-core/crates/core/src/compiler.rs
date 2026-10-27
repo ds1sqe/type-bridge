@@ -110,6 +110,28 @@ pub struct PreparedTypedStatement {
     pub parameters: Vec<TypedQueryParameter>,
 }
 
+/// Shared comparison renderer for typed queries and plan lowering.
+pub fn render_typed_comparison(
+    left: tql::Expr,
+    operator: TypedComparisonOperator,
+    value: &TypedLiteral,
+) -> Result<tql::Pattern, TypedCompileError> {
+    let value = match (operator, value) {
+        (TypedComparisonOperator::StartsWith, TypedLiteral::String(v)) => {
+            TypedLiteral::String(format!("^{}.*", regex::escape(v)))
+        }
+        (TypedComparisonOperator::EndsWith, TypedLiteral::String(v)) => {
+            TypedLiteral::String(format!(".*{}$", regex::escape(v)))
+        }
+        _ => value.clone(),
+    };
+    Ok(tql::compare(
+        left,
+        comparison_token(operator),
+        tql::typed_literal(&value)?,
+    )?)
+}
+
 enum TypedParameterMode {
     Inline,
     Prepared(Vec<TypedQueryParameter>),
@@ -122,33 +144,22 @@ impl TypedParameterMode {
         operator: TypedComparisonOperator,
         value: &TypedLiteral,
     ) -> Result<tql::Pattern, TypedCompileError> {
-        let operand = match self {
-            Self::Prepared(parameters) if prepared_typed_value(operator, value).is_some() => {
-                let name = format!("g{}", parameters.len());
-                parameters.push(TypedQueryParameter {
-                    name: name.clone(),
-                    value: TypedQueryParameterValue::Literal(value.clone()),
-                });
-                tql::var(&name)?
-            }
-            _ => {
-                let value = match (operator, value) {
-                    (TypedComparisonOperator::StartsWith, TypedLiteral::String(v)) => {
-                        TypedLiteral::String(format!("^{}.*", regex::escape(v)))
-                    }
-                    (TypedComparisonOperator::EndsWith, TypedLiteral::String(v)) => {
-                        TypedLiteral::String(format!(".*{}$", regex::escape(v)))
-                    }
-                    _ => value.clone(),
-                };
-                tql::typed_literal(&value)?
-            }
-        };
-        Ok(tql::compare(
-            tql::var(&field_variable(field))?,
-            comparison_token(operator),
-            operand,
-        )?)
+        let left = tql::var(&field_variable(field))?;
+        if let Self::Prepared(parameters) = self
+            && prepared_typed_value(operator, value).is_some()
+        {
+            let name = format!("g{}", parameters.len());
+            parameters.push(TypedQueryParameter {
+                name: name.clone(),
+                value: TypedQueryParameterValue::Literal(value.clone()),
+            });
+            return Ok(tql::compare(
+                left,
+                comparison_token(operator),
+                tql::var(&name)?,
+            )?);
+        }
+        render_typed_comparison(left, operator, value)
     }
     fn canonical(&mut self, value: &CanonicalValue) -> Result<tql::Expr, TypedCompileError> {
         let Self::Prepared(parameters) = self else {

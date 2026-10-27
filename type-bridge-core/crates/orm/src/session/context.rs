@@ -363,6 +363,7 @@ impl TransactionContext {
                 query.rows,
                 super::backend::AnswerLimits::default(),
                 query.canonical,
+                query.redacted_typeql.as_deref(),
             )
             .await?;
         crate::answer_meter::meter_result(&answer, &BoundedAnswerLimits::default())?;
@@ -419,6 +420,7 @@ impl TransactionContext {
                     Some(rows.clone()),
                     limits.clone(),
                     canonical,
+                    None,
                 )
                 .await?;
             let QueryResult::Documents(documents) = answer else {
@@ -455,7 +457,13 @@ impl TransactionContext {
             }
             let answer = lease
                 .transaction()?
-                .query_materialized_bounded(&statements.1, Some(rows), limits.clone(), canonical)
+                .query_materialized_bounded(
+                    &statements.1,
+                    Some(rows),
+                    limits.clone(),
+                    canonical,
+                    None,
+                )
                 .await?;
             match answer {
                 QueryResult::Rows(rows) | QueryResult::Documents(rows) => {
@@ -1551,6 +1559,7 @@ mod tests {
                         ..BoundedAnswerLimits::default()
                     },
                     max_collection_members: 1,
+                    ..Default::default()
                 },
                 &mut consumer,
             )
