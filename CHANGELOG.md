@@ -2,10 +2,14 @@
 
 All notable changes to TypeBridge will be documented in this file.
 
-## [2.3.3] - 2026-10-26
+## [2.3.3] - 2026-10-27
 
 ### Fixed
 
+- The C runtime's `type_bridge_database_server_version` reports the
+  version of the connected TypeDB server. Since 2.3.1 it reported the
+  newest version admitted by the profile, so a connection to 3.13.6 said
+  3.14.0.
 - TypeDB versions at or above 3.11.0 are now admitted without an upper
   version ceiling. Measured, supported lines remain 3.11–3.14. A connection
   to a newer line reuses the newest measured semantic profile and protocol
