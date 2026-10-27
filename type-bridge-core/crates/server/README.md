@@ -64,6 +64,9 @@ without axum. The host admits the caller through its pipeline and passes
 the signed request bytes; the executor returns the signed reply with the
 commit outcome.
 
+This sketch is ignored because it needs a configured pipeline, query state,
+and signed request from the host.
+
 ```rust,ignore
 use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcomeKind};
 
