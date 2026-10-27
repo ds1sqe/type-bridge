@@ -12,7 +12,7 @@ use type_bridge_contract::sdk_diagnostic::{
     SdkCommitFailureOutcome, SdkDiagnosticCode, SdkDiagnosticMessage, SdkExecutionDiagnostic,
     SdkProviderOperation,
 };
-use type_bridge_core_lib::version::GeneratedPackageRelease;
+use type_bridge_core_lib::version::{GeneratedPackageRelease, Version};
 use type_bridge_orm::{
     AnswerCancellation, ConnectOptions, Database, OrmError, PreparedSecureConnectOptions,
     QueryExecutionDeadline, QueryExecutionResourceLimits, SecureConnectError, SecureConnectOptions,
@@ -1330,6 +1330,15 @@ fn package_release_for_database(package: &SchemaPackageState) -> Option<Generate
         .and_then(GeneratedPackageRelease::for_profile)
 }
 
+fn admitted_server_version(
+    observed: Option<Version>,
+    admits: impl FnOnce(&Version) -> bool,
+) -> Option<Vec<u8>> {
+    observed
+        .filter(admits)
+        .map(|version| version.to_string().into_bytes())
+}
+
 fn open_runtime(
     worker_threads: usize,
     connector: Arc<dyn DatabaseConnector>,
@@ -1673,10 +1682,9 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
                     return return_execution_error(diagnostic, out_diagnostics);
                 }
             };
-        if !database
-            .server_version()
-            .is_some_and(|version| release.admits(&version))
-        {
+        let Some(server_version) =
+            admitted_server_version(database.server_version(), |version| release.admits(version))
+        else {
             let _ = database.close();
             return return_execution_error(
                 unsupported(
@@ -1685,7 +1693,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
                 ),
                 out_diagnostics,
             );
-        }
+        };
         if database.check_given_stage_support().is_err() {
             let _ = database.close();
             return return_execution_error(
@@ -1704,7 +1712,7 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
             runtime: Arc::clone(&runtime.state),
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
-            server_version: release.server().to_string().into_bytes(),
+            server_version,
             transaction_children: AtomicUsize::new(0),
             debug_dispatch: std::sync::Mutex::new(None),
             debug_listener: Arc::new(std::sync::Mutex::new(None)),
@@ -1785,10 +1793,9 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
                 );
             }
         };
-        if !database
-            .server_version()
-            .is_some_and(|version| release.admits(&version))
-        {
+        let Some(server_version) =
+            admitted_server_version(database.server_version(), |version| release.admits(version))
+        else {
             let _ = database.close();
             return return_execution_error(
                 unsupported(
@@ -1797,7 +1804,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
                 ),
                 out_diagnostics,
             );
-        }
+        };
         if let Err(diagnostic) = increment_child(&runtime.state.database_children) {
             let _ = database.close();
             return return_execution_error(diagnostic, out_diagnostics);
@@ -1806,7 +1813,7 @@ pub unsafe extern "C" fn type_bridge_database_open_v1(
             runtime: Arc::clone(&runtime.state),
             _package: Arc::clone(package.state()),
             database: Arc::new(database),
-            server_version: release.server().to_string().into_bytes(),
+            server_version,
             transaction_children: AtomicUsize::new(0),
             debug_dispatch: std::sync::Mutex::new(None),
             debug_listener: Arc::new(std::sync::Mutex::new(None)),
@@ -4800,6 +4807,65 @@ entities:
             unsafe { type_bridge_schema_package_close(&mut package) },
             TypeBridgeStatus::Ok
         );
+    }
+
+    #[test]
+    fn admitted_version_reporting_does_not_assume_the_current_newest_release() {
+        let future = Version::new(3, 15, 0);
+        assert_eq!(
+            admitted_server_version(Some(future), |version| *version == future),
+            Some(b"3.15.0".to_vec())
+        );
+        assert_eq!(admitted_server_version(Some(future), |_| false), None);
+        assert_eq!(admitted_server_version(None, |_| true), None);
+    }
+
+    #[test]
+    fn database_opens_report_the_actual_admitted_server_version() {
+        for observed in [Version::new(3, 13, 6), Version::new(3, 14, 0)] {
+            for config_version in [1, 2] {
+                let state = Arc::new(FakeState::default());
+                state.supports_given_rows.store(true, Ordering::Release);
+                let mut runtime = runtime(state, observed);
+                let mut package = Box::into_raw(Box::new(package("typedb-3.13.6/v1", "observed")));
+                let fixture =
+                    DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+                let (mut database, mut diagnostics, status) = if config_version == 1 {
+                    unsafe { open_database(runtime, package, ptr::null()) }
+                } else {
+                    unsafe { open_database_v2(runtime, package, &fixture.config, ptr::null()) }
+                };
+                assert_eq!(status, TypeBridgeStatus::Ok);
+                assert!(diagnostics.is_null());
+                let mut version = TypeBridgeByteView {
+                    data: ptr::null(),
+                    length: 0,
+                };
+                assert_eq!(
+                    unsafe { type_bridge_database_server_version(database, &mut version) },
+                    TypeBridgeStatus::Ok
+                );
+                let actual =
+                    unsafe { std::slice::from_raw_parts(version.data, version.length) }.to_vec();
+                assert_eq!(
+                    unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    unsafe { type_bridge_schema_package_close(&mut package) },
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    actual,
+                    observed.to_string().into_bytes(),
+                    "configuration version {config_version}"
+                );
+            }
+        }
     }
 
     #[test]
