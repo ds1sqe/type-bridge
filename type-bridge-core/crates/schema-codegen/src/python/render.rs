@@ -70,7 +70,6 @@ const MODEL_RESERVED_NAMES: &[&str] = &[
     "value",
     "iid",
     "deleted",
-    "_require_live",
     "__model_form__",
     "__projection__",
     "__runtime_projection__",

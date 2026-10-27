@@ -212,10 +212,6 @@ class ModelBase:
     def deleted(self) -> bool:
         return self.__runtime_projection__.instance_deleted(self)
 
-    def _require_live(self) -> None:
-        if self.deleted:
-            raise ValueError("thing_deleted: a deleted snapshot cannot be mutated")
-
     @classmethod
     def manager(
         cls,
@@ -285,6 +281,12 @@ class ModelBase:
         if not iid:
             raise TypeError("projected IID must be a non-empty string")
         self._iid = iid
+
+
+def require_live(instance: ModelBase) -> None:
+    """Refuse mutations of a deleted generated-model snapshot."""
+    if instance.deleted:
+        raise ValueError("thing_deleted: a deleted snapshot cannot be mutated")
 
 
 class CrudEvent(Enum):
@@ -602,7 +604,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return cast(ModelT | None, self._native.get_by_iid(iid))
 
     def _resolve_instance_iid(self, instance: ModelT) -> bool:
-        instance._require_live()
+        require_live(instance)
         if instance.iid is not None:
             return True
         iid = self._native.resolve_iid(instance)
@@ -612,7 +614,7 @@ class ProjectedModelManager[ModelT: ModelBase]:
         return True
 
     def _run_pre(self, event: CrudEvent, instance: ModelT) -> None:
-        instance._require_live()
+        require_live(instance)
         for hook in self._hooks:
             if not hook.should_run(event, self._model):
                 continue
@@ -977,7 +979,7 @@ class _ProjectedField:
         return values[self.name]
 
     def __set__(self, instance: ModelBase, value: object) -> None:
-        instance._require_live()
+        require_live(instance)
         if self.create is None:
             raise AttributeError(f"{self.name} is read-only")
         multiplicity = _mapping(self.create["multiplicity"])

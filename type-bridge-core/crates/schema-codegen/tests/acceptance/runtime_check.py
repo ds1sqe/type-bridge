@@ -391,12 +391,7 @@ assert reference.iid == "person-iid"
 assert reference.__model_form__ == "reference"
 assert person.iid is None
 assert person.identifier.value == "person-1"
-try:
-    weakref.ref(person)
-except TypeError:
-    pass
-else:
-    raise AssertionError("legacy unordered facade unexpectedly changed weakref layout")
+assert weakref.ref(person)() is person
 
 ordered_person = OrderedPerson(tag=[OrderedTag("first"), OrderedTag("second")])
 assert [tag.value for tag in ordered_person.tag] == ["first", "second"]
