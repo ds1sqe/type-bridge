@@ -7,14 +7,14 @@
     "query-remote": {
       "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/queries/catalog.json", "sha256": "8fb40e7dd76391f9c5170114f5d122c866b98b548bf0d227af36d9a6d10f34e0"},
+        {"path": "tests/contracts/sdk_conformance/queries/catalog.json", "sha256": "0250dc77fa1e1c87059b205c7f385ffe112909067ff809a59be48cd6cc6ad786"},
         {"path": "tests/contracts/sdk_conformance/queries/journey.json", "sha256": "e03d136c6b8f98aa7d24d483c95112615f97483107e2f7c48175a782d6b842f0"}
       ]
     },
     "data-model": {
       "source_commit": "5ec1ec836efbcca75a789b7777aeef8ea4753b40",
       "authorities": [
-        {"path": "tests/contracts/sdk_conformance/models/catalog.json", "sha256": "57bb664d86a6e1f3cd9ca937f2371b7c627470daef0d6ee7a8781757445cae59"},
+        {"path": "tests/contracts/sdk_conformance/models/catalog.json", "sha256": "6e3d0292f680718ddfcd8353325d4c919a64b6acd5d22d73502819c348c5adc4"},
         {"path": "tests/contracts/sdk_conformance/models/journey.json", "sha256": "f05bce76c200f7425a39ed844e8ac520424185650bb95285d7e86d00b95a4e5f"}
       ]
     },
@@ -36,7 +36,7 @@
       "source_commit": "177ce24ac182b94269561c8622e5533d29891a44",
       "authorities": [
         {"path": "tests/contracts/c-artifact-journey-v1.json", "sha256": "76e7057180129fd5e0e7d47a314cb6059c4fc69f99d59942b690e99331b5270f"},
-        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "815b317f85a67b1046e3971ec06496071ea5a586ac5418f91eff80fe06a7de51"}
+        {"path": "tests/contracts/c-distribution-v1.json", "sha256": "1e582cc3c747709ce795a5bbcb18b0e09abdc01d46f0ce4f221b49999ebc6555"}
       ]
     }
   },

@@ -150,7 +150,7 @@ fn writes_suite_purchase_bytes_are_the_hand_built_purchase() {
     )
     .expect("expected results parse");
     let authority = support::authority_with(&source, scope, purchase_plan::PROFILE);
-    let bytes = purchase_plan::hand_built_purchase(
+    let bytes = purchase_plan::authored_purchase(
         authority.declared_schema(),
         authority.managed_state().managed_semantic_schema().clone(),
         "O1",

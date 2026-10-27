@@ -10,9 +10,10 @@
  * report. It compiles as part of the generated package (`./index.js`); see
  * tests/contracts/sdk_conformance/writes/purchase.
  */
-import { Plan, QueryV2Error, RustDatabase } from "@type-bridge/node";
+import { Matched, Plan, QueryV2Error, RustDatabase } from "@type-bridge/node";
 import type {
   PendingPlanAnswer,
+  PlanAnswer,
   ProviderFailure,   QueryV2Authority,
   StagedTransaction,
 } from "@type-bridge/node";
@@ -25,7 +26,9 @@ declare const process: {
   readonly stdout: { write(text: string): boolean };
 };
 
-type Built = Plan;
+import { purchaseExplicit, touchExplicit, doctorExplicit } from "./program_explicit.js";
+
+type Built = Plan<PlanAnswer | Matched>;
 
 const BATCH_ORDERS = Array.from(
   { length: 50 },
@@ -63,41 +66,24 @@ function seed(authority: QueryV2Authority): Built {
 
 // --8<-- [start:purchase]
 /** The one-query purchase: take one item and its price, record the order. */
-function purchase(authority: QueryV2Authority): Built {
-  const plan = Plan.builder();
-  const item = plan.exact(Item);
-  const buyer = plan.exact(Account);
-  const orderInput = plan.input("order_id", "string");
-  const itemInput = plan.input("item_id", "string");
-  const accountInput = plan.input("account_id", "string");
-  const itemKey = plan.field(item, Item.fields.itemId);
-  const buyerKey = plan.field(buyer, Account.fields.accountId);
-  const stock = plan.field(item, Item.fields.stock);
-  const price = plan.field(item, Item.fields.price);
-  const balance = plan.field(buyer, Account.fields.balance);
-  plan
-    .where(itemKey.eq(itemInput))
-    .where(buyerKey.eq(accountInput))
-    .where(stock.gt(0n))
-    .where(balance.ge(price));
-  plan.update(item, Item.fields.stock, plan.let("next_stock", stock.sub(1n)));
-  plan.update(buyer, Account.fields.balance, plan.let("next_balance", balance.sub(price)));
-  plan
-    .insert(Purchase)
-    .field(Purchase.fields.orderId, orderInput)
-    .player(Purchase.roles.buyer, buyer)
-    .player(Purchase.roles.item, item);
-  plan.row([orderInput.value("O1"), itemInput.value("I1"), accountInput.value("A1")]);
-  return plan.build(authority);
+function purchase(_authority: QueryV2Authority): Built {
+  return Plan.build(() => {
+    const item = Item.match({ itemId: "I1" }).where(Item.stock.gt(0n));
+    const buyer = Account.match({ accountId: "A1" });
+    buyer.where(buyer.balance.ge(item.price));
+    item.set({ stock: item.stock.sub(1n) });
+    buyer.set({ balance: buyer.balance.sub(item.price) });
+    Purchase.insert({ orderId: "O1", buyer, item });
+  });
 }
 // --8<-- [end:purchase]
 
 /** Rewrite every doctor's on-call value with itself, taking its lock. */
-function touch(authority: QueryV2Authority): Built {
-  const plan = Plan.builder();
-  const doctor = plan.exact(Doctor);
-  plan.update(doctor, Doctor.fields.onCall, plan.field(doctor, Doctor.fields.onCall));
-  return plan.build(authority);
+function touch(_authority: QueryV2Authority): Built {
+  return Plan.build(() => {
+    const doctor = Doctor.match({});
+    doctor.set({ onCall: doctor.onCall });
+  });
 }
 
 /** Fifty orders of the item by the account, one given row each. */
@@ -239,17 +225,13 @@ function kept(authority: QueryV2Authority): Built {
 }
 
 /** The doctor whose name the constraints suite inserts twice. */
-function seedDoctor(authority: QueryV2Authority): Built {
-  const plan = Plan.builder();
-  plan.insert(Doctor).field(Doctor.fields.name_, "D1").field(Doctor.fields.onCall, true);
-  return plan.build(authority);
+function seedDoctor(_authority: QueryV2Authority): Built {
+  return Plan.build(() => { Doctor.insert({ name_: "D1", onCall: true }); });
 }
 
 /** A second doctor named D1: the key rejects the commit. */
-function duplicateDoctor(authority: QueryV2Authority): Built {
-  const plan = Plan.builder();
-  plan.insert(Doctor).field(Doctor.fields.name_, "D1").field(Doctor.fields.onCall, false);
-  return plan.build(authority);
+function duplicateDoctor(_authority: QueryV2Authority): Built {
+  return Plan.build(() => { Doctor.insert({ name_: "D1", onCall: false }); });
 }
 
 const PURCHASE_BUILDERS: Record<string, (authority: QueryV2Authority) => Built> = {
@@ -319,8 +301,9 @@ type Answer =
   | readonly ["failure", Pick<ProviderFailure, "phase" | "reason" | "code" | "retry_safe">];
 
 /** One answer as [kind, value]; rows report their count, exists 0 or 1. */
-function answer(pending: PendingPlanAnswer): Answer {
+function answer(pending: PendingPlanAnswer<PlanAnswer | Matched>): Answer {
   const value = pending.get();
+  if (value instanceof Matched) return ["matched", Number(value.count)];
   switch (value.kind) {
     case "rows":
       return ["rows", value.rows.length];
@@ -366,7 +349,7 @@ async function run(
     }
     const fetched = pending.find(([name]) => name === "read_back")?.[1].get();
     if (fetched !== undefined) {
-      if (fetched.kind !== "documents" || fetched.documents.length !== 1) throw new Error("expected one purchase document");
+      if (fetched instanceof Matched || fetched.kind !== "documents" || fetched.documents.length !== 1) throw new Error("expected one purchase document");
       const doc = fetched.documents[0] as Record<string, unknown>;
       const scalar = (attributes: unknown, key: string): unknown => {
         const value = (attributes as Record<string, unknown>)[key];
@@ -403,6 +386,11 @@ function hex(bytes: Uint8Array): string {
 async function main(): Promise<void> {
   const authority = schemaAuthority();
   const plans = new Map(Object.entries(SUITE.builders).map(([name, build]) => [name, build(authority)]));
+  for (const [name, oracle] of Object.entries({ purchase: purchaseExplicit(authority), touch: touchExplicit(authority), seed_doctor: doctorExplicit(authority, true), duplicate_doctor: doctorExplicit(authority, false) })) {
+    const plan = plans.get(name);
+    if (plan !== undefined && plan.fingerprint() !== oracle.fingerprint()) throw new Error(`${name}: explicit bytes differ`);
+  }
+
   const results: Record<string, unknown> = {};
   const snapshots: Record<string, Record<string, unknown>> = {};
   const database = process.env["TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE"];

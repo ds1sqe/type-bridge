@@ -410,7 +410,354 @@ encoding, signing and verification through `/v3/staged`, but excludes external
 TCP/TLS transport. These are local measurements, not a latency guarantee.
 Snapshot overhead is measured and documented; it is not subject to a +10% gate.
 
-### Staged transactions and plans in Python
+### Generated plan authoring
+
+Generated models author plans inside `with Plan()` (Python), `Plan.build`
+(TypeScript and Rust), or a generated package recording (C). Handles belong
+to that recording. Comparisons and assignments forward to the shared Rust
+builder. Caller literals become typed `given` columns; see the
+[implicit input naming rule](../reference/query-plan-v3.md#implicit-input-names).
+Building and inspecting a plan performs no database I/O. Staging defers its
+execution until commit. A result can be read only after commit succeeds.
+
+#### Purchase: code
+
+The following examples select inserted `Purchase` models. The
+[conformance purchase program](https://github.com/ds1sqe/type-bridge/tree/master/examples/purchase)
+keeps the outer recording's `Matched` marker instead, so its existing journey
+continues to measure affected rows.
+
+=== "Python"
+
+    ```python
+    from type_bridge.plan import Plan
+    from purchase_models import Account, Item, Purchase
+
+    with Plan():
+        item = Item.match(item_id="I1").where(Item.stock > 0)  # ItemHandle
+        buyer = Account.match(account_id="A1")  # AccountHandle
+        buyer.where(buyer.balance >= item.price)
+        item.set(stock=item.stock - 1)
+        buyer.set(balance=buyer.balance - item.price)
+        order = Purchase.insert(order_id="O1", buyer=buyer, item=item)  # Plan[list[Purchase]]
+    with db.staged_transaction() as tx:
+        pending = tx.stage(order)  # Pending[list[Purchase]]
+    orders = pending.result()  # list[Purchase]
+    assert orders[0].order_id.value == "O1"
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    const order = Plan.build(() => { // Plan<Purchase[]>
+      const item = Item.match({ itemId: "I1" }).where(Item.stock.gt(0n)); // ItemHandle
+      const buyer = Account.match({ accountId: "A1" }); // AccountHandle
+      buyer.where(buyer.balance.ge(item.price));
+      item.set({ stock: item.stock.sub(1n) });
+      buyer.set({ balance: buyer.balance.sub(item.price) });
+      return Purchase.insert({ orderId: "O1", buyer, item });
+    });
+    const pending = tx.stage(order); // Pending<Purchase[]>
+    await tx.commit();
+    const orders = pending.result(); // Purchase[]; orders[0].orderId.value === "O1"
+    ```
+
+=== "Rust"
+
+    ```rust
+    let order: Plan<Vec<Purchase>> = Plan::build(|p| {
+        let item = Item::matching_by(p).item_id("I1").handle()
+            .filter(ItemType::stock.gt(0_i64)); // ItemHandle
+        let buyer = Account::matching_by(p).account_id("A1").handle(); // AccountHandle
+        let balance = buyer.balance(); // Value<i64>
+        let buyer = buyer.filter(balance.ge(item.price())); // AccountHandle
+        item.set(p).stock(item.stock() - 1_i64);
+        buyer.set(p).balance(buyer.balance() - item.price());
+        Purchase::insert(p, PurchaseInsert {
+            order_id: Argument::from("O1").into(), buyer: Some(&buyer), item: Some(&item),
+        })
+    })?;
+    let pending = tx.stage(&order)?; // Pending<Vec<Purchase>>
+    tx.commit().await?;
+    let orders = pending.result()?; // Vec<Purchase>; orders[0].order_id.value == "O1"
+    ```
+
+=== "C"
+
+    ```c
+    tb_writes_item_handle_t item;
+    tb_writes_account_handle_t buyer;
+    tb_writes_item_match_t item_match = {0};
+    tb_writes_account_match_t account_match = {0};
+    tb_writes_item_set_t stock = {0};
+    tb_writes_account_set_t balance = {0};
+    tb_writes_purchase_insert_t values = {0};
+    tb_writes_purchase_plan_t order;
+    item_match.itemzhid = tb_string(view("I1"));
+    CHECK(tb_writes_item_match_by(p, &item_match, &item));
+    CHECK(tb_writes_item_where(p, item, tb_long_gt(tb_writes_item_plan_stock(p, item), tb_long(0))));
+    account_match.accountzhid = tb_string(view("A1"));
+    CHECK(tb_writes_account_match_by(p, &account_match, &buyer));
+    CHECK(tb_writes_account_where(p, buyer, tb_long_ge(tb_writes_account_plan_balance(p, buyer), tb_writes_item_plan_price(p, item))));
+    stock.stock = tb_long_sub(tb_writes_item_plan_stock(p, item), tb_long(1));
+    CHECK(tb_writes_item_set(p, item, &stock));
+    balance.balance = tb_long_sub(tb_writes_account_plan_balance(p, buyer), tb_writes_item_plan_price(p, item));
+    CHECK(tb_writes_account_set(p, buyer, &balance));
+    values.orderzhid = "O1"; values.has_orderzhid = true;
+    values.buyer = buyer; values.item = item;
+    CHECK(tb_writes_purchase_insert(p, &values, &order));
+    ```
+
+    `p` is opened by `tb_writes_plan_open`; `view` and `CHECK` are the
+    byte-view/status helpers in the executable C example. Stage `order` with
+    `tb_writes_purchase_stage`, commit, then read a
+    `tb_writes_purchase_plan_view_t` through its result owner. Its `orderzhid`
+    member is the borrowed string for `order-id`.
+
+#### Purchase: plan
+
+The abbreviated plan has one match, two updates, and one insert, followed by
+an explicit model fetch. It binds the item identifier, minimum stock, account
+identifier, decrement, and order identifier as five typed input columns.
+The result selection records the inserted purchase binding and its role
+projection. All four bindings use the same Core fetch stack and validate the
+entire answer before the transaction commits.
+
+```json
+{"operation":{"kind":"write","returns":"rows"},"pipeline":[{"kind":"match"},{"kind":"update"},{"kind":"insert"},{"kind":"fetch","thing":9}]}
+```
+
+#### Purchase: TypeQL
+
+`order.explain()` exposes the executed statements and their input declarations.
+The match checks stock and balance; the updates subtract one item and its price;
+the insert links the buyer and item. Input rows carry `I1`, `A1`, `0`, `1`, and
+`O1`; these values do not appear in the TypeQL. See
+[Debugging plans](debugging.md) for printing the exact text in each language.
+
+
+
+```typeql
+given $item_item_id_2: string, $item_stock_2: integer, $account_account_id_2: string, $item_stock_3: integer, $purchase_order_id: string;
+match $item isa! item;
+$item has item-id $item_item_id;
+$item_item_id isa! item-id;
+$item_item_id == $item_item_id_2;
+$item has stock $item_stock;
+$item_stock isa! stock;
+$item_stock > $item_stock_2;
+$account isa! account;
+$account has account-id $account_account_id;
+$account_account_id isa! account-id;
+$account_account_id == $account_account_id_2;
+$account has balance $account_balance;
+$account_balance isa! balance;
+$item has price $item_price;
+$item_price isa! price;
+$account_balance >= $item_price;
+let $item_stock_4 = ($item_stock - $item_stock_3);
+let $account_balance_2 = ($account_balance - $item_price);
+update $item has stock == $item_stock_4;
+$account has balance == $account_balance_2;
+insert $purchase isa purchase, links (buyer: $account, item: $item), has order-id == $purchase_order_id;
+match $purchase isa! $PlanFetchType;
+try { $purchase links (buyer: $PlanFetchRole0);
+
+ $PlanFetchRole0 isa! $PlanFetchRole0Type;
+
+};
+try { $purchase links (item: $PlanFetchRole1);
+
+ $PlanFetchRole1 isa! $PlanFetchRole1Type;
+
+};
+fetch { "_iid": iid($purchase), "_type": label($PlanFetchType), "attributes": {  $purchase.*}, "_role_0_iid": iid($PlanFetchRole0), "_role_0_type": label($PlanFetchRole0Type), "_role_0_attributes": {  $PlanFetchRole0.*}, "_role_1_iid": iid($PlanFetchRole1), "_role_1_type": label($PlanFetchRole1Type), "_role_1_attributes": {  $PlanFetchRole1.*}};
+```
+
+#### Purchase: result
+
+A successful model selection returns generated `Purchase` models in Python,
+TypeScript, and Rust, with their existing attribute wrappers. C returns an
+owner with borrowed typed views. A failed stock/balance match returns an empty
+model sequence. A staged result retains the Core proof and its origin; it does
+not perform a second query while it is read.
+
+#### Delete snapshot: code
+
+=== "Python"
+
+    ```python
+    with Plan():
+        removed = Item.match(item_id="I1").delete_returning()  # Plan[list[Item]]
+    with db.staged_transaction() as tx:
+        pending = tx.stage(removed)  # Pending[list[Item]]
+    snapshots = pending.result()  # list[Item], marked deleted
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    const removed = Plan.build(() => Item.match({ itemId: "I1" }).deleteReturning()); // Plan<Item[]>
+    const pending = tx.stage(removed); // Pending<Item[]>
+    await tx.commit();
+    const snapshots = pending.result(); // Item[], marked deleted
+    ```
+
+=== "Rust"
+
+    ```rust
+    let removed: Plan<Vec<Item>> = Plan::build(|p| {
+        Item::matching_by(p).item_id("I1").handle().delete_returning(p)
+    })?;
+    let pending = tx.stage(&removed)?; // Pending<Vec<Item>>
+    tx.commit().await?;
+    let snapshots = pending.result()?; // Vec<Item>, marked deleted
+    ```
+
+=== "C"
+
+    ```c
+    shop_item_plan_t removed; /* typed model selection */
+    CHECK(shop_item_delete_returning(p, item, &removed));
+    /* Stage removed, commit, then read shop_item_plan_view_t with deleted=true. */
+    ```
+
+#### Delete snapshot: plan
+
+```json
+{"operation":{"kind":"write","returns":"rows"},"pipeline":[{"kind":"match"},{"kind":"fetch","thing":0},{"kind":"delete","items":[{"binding":0,"kind":"thing"}]}]}
+```
+
+This abbreviated view omits authority and binding tables. Core captures the
+pre-delete model before executing the deletion.
+
+#### Delete snapshot: TypeQL
+
+
+```typeql
+given $item_item_id_2: string;
+match $item isa! item;
+$item has item-id $item_item_id;
+$item_item_id isa! item-id;
+$item_item_id == $item_item_id_2;
+match $item isa! $PlanFetchType;
+fetch { "_iid": iid($item), "_type": label($PlanFetchType), "attributes": {  $item.*}};
+
+given $item_item_id_2: string;
+match $item isa! item;
+$item has item-id $item_item_id;
+$item_item_id isa! item-id;
+$item_item_id == $item_item_id_2;
+delete $item;
+```
+
+#### Delete snapshot: result
+
+The result is a sequence of generated `Item` snapshots, including the identifier,
+stock, and price as they stood before deletion. C exposes the same snapshot as a
+borrowed `shop_item_plan_view_t`. The deletion marker blocks later mutation
+through these snapshots. The owner remains readable after the recording and
+transaction are released.
+
+#### Bulk insert: code
+
+Use the generated schema's `Values` type. Required fields are constructor
+arguments; optional fields may be omitted.
+
+=== "Python"
+
+    ```python
+    with Plan():
+        inserted = Item.insert_many([Item.Values(item_id="I2", price=3)])  # Plan[list[Item]]
+    with db.staged_transaction() as tx:
+        pending = tx.stage(inserted)  # Pending[list[Item]]
+    items = pending.result()  # list[Item]
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    const inserted = Plan.build(() => Item.insertMany([{ itemId: "I2", price: 3n }])); // Plan<Item[]>
+    const pending = tx.stage(inserted); // Pending<Item[]>
+    await tx.commit();
+    const items = pending.result(); // Item[]
+    ```
+
+=== "Rust"
+
+    ```rust
+    let inserted: Plan<Vec<Item>> = Plan::build(|p| {
+        Item::insert_many(p, [ItemValues { item_id: Some("I2".into()), price: Some(3), stock: None }])
+    })?;
+    let pending = tx.stage(&inserted)?; // Pending<Vec<Item>>
+    tx.commit().await?;
+    let items = pending.result()?; // Vec<Item>
+    ```
+
+=== "C"
+
+    ```c
+    tb_writes_item_values_t rows[] = {{.itemzhid = "I2", .has_itemzhid = true,
+                                    .price = 3, .has_price = true}};
+    tb_writes_item_plan_t inserted;
+    CHECK(tb_writes_item_insert_many(p, rows, 1u, &inserted));
+    /* After commit, tb_writes_item_result_at copies a view borrowing its result owner. */
+    ```
+
+#### Bulk insert: plan
+
+```json
+{"given_rows":[[{"kind":"string","value":"I2"},{"kind":"long","value":3}]],"operation":{"kind":"write","returns":"rows"},"pipeline":[{"kind":"insert"},{"kind":"fetch","thing":0}]}
+```
+
+This abbreviated view omits authority, ownership, and binding tables. One insert
+program consumes a typed given table. Core groups optional field presence,
+splits within captured limits, and correlates documents with authored rows
+before commit.
+
+#### Bulk insert: TypeQL
+
+
+```typeql
+given $item_item_id: string, $item_price: integer;
+insert $item isa item, has item-id == $item_item_id, has price == $item_price;
+match $item isa! $PlanFetchType;
+fetch { "_iid": iid($item), "_type": label($PlanFetchType), "attributes": {  $item.*}};
+```
+
+#### Bulk insert: result
+
+The result is an ordered sequence of generated `Item` models, or borrowed C
+views. An empty input is an empty model result and performs no provider I/O.
+
+#### Reuse with `Plan.template()`
+
+Declare explicit columns when the same recording is reused. Binding creates a
+fresh immutable invocation; it does not change the original template.
+
+```python
+with Plan.template() as template:
+    key = template.input("key", "string")  # PlanInput[str]
+    quantity = template.input("quantity", "long")  # PlanInput[int]
+    adjusted = Item.match(item_id=key).set(stock=quantity)  # Plan[list[Item]]
+invocation = adjusted.bind([[key.value("I2"), quantity.value(4)]])  # Plan[list[Item]]
+```
+
+TypeScript exposes `Plan.template()` with `template.input`, `template.build`,
+and `.bind`. Rust retains explicit input/row authoring through `Plan::builder()`.
+C recordings capture
+immutable options when opened and retain their compiled selections for repeated
+staging. A frozen C recording rejects later mutations and keeps its published
+results readable; see [C plan lifetimes](c.md).
+
+#### Escape hatch: explicit Core-builder calls
+
+`Plan.builder()` remains available when a program needs explicit bindings,
+input columns, row tables, or lower-level tokens. Its calls forward to the same
+Rust builder. An explicit program with the same input names, order, and binding
+schedule has identical canonical bytes to the generated authoring form.
+
+#### Explicit Python builder
 
 A plan is one typed `query-plan/v3` pipeline: a match with comparisons and
 `let_` values, then updates, inserts, puts and deletes. `Plan.builder()`

@@ -998,6 +998,8 @@ def writes_programs(
         env=environment,
     )
     shutil.copy2(programs / "ts/program.ts", typescript / "src/program.ts")
+    if (programs / "ts/program_explicit.ts").is_file():
+        shutil.copy2(programs / "ts/program_explicit.ts", typescript / "src/program_explicit.ts")
     run(
         ["node", str(NODE / "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"],
         cwd=typescript,
@@ -1009,6 +1011,8 @@ def writes_programs(
     consumer = directory / "rust"
     (consumer / "src").mkdir(parents=True)
     shutil.copy2(programs / "rust/main.rs", consumer / "src/main.rs")
+    if (programs / "rust/main_explicit.rs").is_file():
+        shutil.copy2(programs / "rust/main_explicit.rs", consumer / "src/main_explicit.rs")
     shutil.copy2(CORE / "Cargo.lock", consumer / "Cargo.lock")
     (consumer / "Cargo.toml").write_text(writes_rust_manifest(generated / "rust"))
     manifest = ["--quiet", "--offline", "--manifest-path", str(consumer / "Cargo.toml")]
@@ -1042,6 +1046,7 @@ def writes_programs(
             str(generated / "c/include"),
             "-I",
             str(CORE / "crates/c/include"),
+            *(["-DTYPE_BRIDGE_WRITES_CONSTRAINTS=1"] if suite == "constraints" else []),
             str(programs / "c/program.c"),
             str(generated / "c/src/models.c"),
             "-L",

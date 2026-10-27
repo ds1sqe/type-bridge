@@ -44,6 +44,19 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Generated plan idioms in Python, TypeScript, Rust, and C bind caller values
+  as typed given inputs and retain the shared builder's canonical bytes.
+  Model and mixed model/scalar selections publish only after the full Core
+  fetch proof succeeds, before commit; SDKs share its row and model ordinals.
+- C ABI 1.10 adds typed scalar carriers, held model/scalar/tuple selections,
+  frozen recording caches, and borrowed model views checked against generated
+  layout digests. Result owners may outlive recordings and transactions.
+  Existing 1.6 through 1.9 descriptors and exact dependency pins remain accepted.
+
+- Generated C authoring handles stay 16 bytes regardless of model width and reuse
+  per-recording model metadata. Boolean unset selections and nominal unordered
+  role edits treat zeroed structs as no change; role arrays are borrowed only
+  during the call.
 - Explicit `fetch` terminals in the Python, TypeScript, Rust and C plan
   builders; plain writes keep their matched-count default.
 - C ABI 1.8 adds borrowed row and document cursors with typed scalar getters,
@@ -90,6 +103,56 @@ All notable changes to TypeBridge will be documented in this file.
   counters in `RuntimeError::AnswerLimit`.
 - Remove `query_remote_v3_documents_unsupported`: fetch plans now return
   document evidence, with specific document-validation diagnostics.
+
+### Changed
+
+- Generated C plan getters use `<model>_plan_<field>`, borrowed result views
+  use `<model>_plan_view_t`, and nested player views use
+  `<model>_plan_player_view_t`. Existing owned `<model>_t` types and hydrated
+  getters retain their names. A held set is spelled `<model>_set` followed
+  by the explicit `<model>_row` projection.
+- Generated TypeScript model members reserve plan-authoring names and append
+  `_` to their projected spelling: `byIid`, `definition`, `delete`,
+  `deleteReturning`, `deleted`, `field`, `insert`, `insertMany`, `link`,
+  `linkPlayers`, `match`, `modelType`, `models`, `open`, `put`, `putMany`,
+  `recording`, `set`, `setFields`, `subtypes`, `thing`, `unlink`, `unset`,
+  and `where`. For example, physical `by-iid` becomes `byIid_`, `set` becomes
+  `set_`, and `model-type` becomes `modelType_`. Physical schema labels and
+  query values keep their spelling.
+- Generated Python model members additionally refuse `match`, `subtypes`,
+  `by_iid`, `insert`, `put`, `insert_many`, `put_many`, `Values`, `where`,
+  `set`, `unset`, `link`, `unlink`, `delete`, `delete_returning`, and
+  `__plan_roles__` with `python_emitter_name_collision`; they receive no alias.
+- Generated Rust models reserve `matching`, `matching_by`, `subtypes`,
+  `by_iid`, `insert`, `put`, `insert_many`, and `put_many`; generated plan handles reserve `filter`,
+  `models`, `delete`, `delete_returning`, `set`, `unset`, `link`, `unlink`,
+  `clone`, and `player_reference`. Named-match builders reserve `handle`,
+  and setter/role builders reserve `models`. Derived `Handle`, `Match`,
+  `Set`, `Link`, `Insert`, and `Values` type names share the existing root namespace.
+  Family enums reserve `exact_type`, which returns their physical concrete
+  TypeDB label. Collisions refuse with `rust_emitter_name_collision`, without aliasing.
+  Raw Rust builder values, expressions, and conditions are now named
+  `PlanValue`, `PlanExpr`, and `PlanCondition`; typed authoring uses
+  `Value<T>`, `Expr<T>`, and `Condition`.
+- Generated C recordings open with `<package>_plan_open(options, out_builder)`
+  (`shop_plan_open`), capturing the package and selected query limits once.
+  Generated initializers retain their projection-brand check; an unbound raw
+  builder reports `plan_context_missing`, with the opener in its typed path.
+- Generated C plan-value getters use `<model>_plan_<field>`; for example,
+  `shop_item_plan_stock` leaves the existing hydrated `shop_item_stock`
+  accessor available. Match, set, and insert helper names retain their model
+  prefixes. Real collisions refuse with `c_emitter_generated_symbol_collision`
+  through the existing C inventory. Physical `-`, `_`, and `z` retain their
+  `zh`, `zu`, and `zz` escapes, so `plan-stock`, `plan_stock`, and `has-stock`
+  remain distinct from generated `plan_stock` and `has_stock` helpers.
+  New authoring struct members append `zk` for C17/C++17 keywords (`classzk`,
+  `intzk`, `operatorzk`); physical `classz` remains the distinct `classzz`.
+- Standalone scalar entity insert/put plans correlate fetched rows with their
+  canonical inputs before commit. Inconsistent replies roll back direct and
+  proxy writes; the same check applies to explicit core-builder plans.
+  Legacy entity inserts with zero or multiple returned rows now report
+  `query_remote_v3_document_value` before commit, replacing
+  `missing_post_write_row` and `provider_identity_cardinality_invalid`.
 
 ## [2.3.2] - 2026-10-23
 

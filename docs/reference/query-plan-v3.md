@@ -485,6 +485,28 @@ unused suffix (a second `item` is `item_2`). Explicit names (`input`, `let_`)
 are used as given and must be fresh; bindings and inputs share one
 namespace.
 
+<a id="implicit-input-names"></a>
+
+The [generated authoring guide](../guide/typed-queries.md#generated-plan-authoring)
+uses this naming rule for caller values.
+
+`bind_value(Site::new(binding, field), value)` derives an input name from
+`{binding variable}_{attribute stem}` (`key` for a positional key match),
+using the same collision suffixes. It declares a required column typed from
+the canonical value and appends that value to the single bound row. These
+implicit inputs produce the same bytes as explicit columns and rows with
+the same names, types and order. Caller values stay in given rows, outside
+TypeQL text.
+
+`bind_rows(columns, rows)` binds a bulk table: each column is a `(Site,
+ValueTypeTag)` pair, and each row supplies one canonical value per column.
+Ragged rows fail with `plan_builder_row_arity`; value types are checked by
+plan validation. An empty table is refused as `query_invocation_missing_inputs`,
+rather than becoming an unbound template. A builder accepts one bulk table. Explicit `input`/`row`,
+scalar `bind_value`, and bulk `bind_rows` are separate input forms: mixing
+them, or calling `bind_rows` twice, fails with `plan_builder_mixed_inputs`.
+An input site must refer to an existing binding (`plan_builder_unknown_site`).
+
 `build` chooses the operation. A plan with write stages answers
 `{"kind":"write","returns":"matched"}`, or `"rows"` when `returning` named
 columns or `fetch` requests documents; a read answers `rows`, or `count`/`exists` with empty output

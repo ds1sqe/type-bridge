@@ -71,30 +71,15 @@ def seed(authority: Any) -> Plan:
 
 # --8<-- [start:purchase]
 def purchase(authority: Any) -> Plan:
-    """The one-query purchase: take one item and its price, record the order."""
-    plan = Plan.builder()
-    item = plan.exact(Item)
-    buyer = plan.exact(Account)
-    order_input = plan.input("order_id", "string")
-    item_input = plan.input("item_id", "string")
-    account_input = plan.input("account_id", "string")
-    item_key = plan.field(item, Item.item_id)
-    buyer_key = plan.field(buyer, Account.account_id)
-    stock = plan.field(item, Item.stock)
-    price = plan.field(item, Item.price)
-    balance = plan.field(buyer, Account.balance)
-    plan.where_(item_key.eq(item_input)).where_(buyer_key.eq(account_input))
-    plan.where_(stock.gt(0)).where_(balance.ge(price))
-    plan.update(item, Item.stock, plan.let_("next_stock", stock - 1))
-    plan.update(buyer, Account.balance, plan.let_("next_balance", balance - price))
-    (
-        plan.insert(Purchase)
-        .field(Purchase.order_id, order_input)
-        .player(Purchase.buyer, buyer)
-        .player(Purchase.item, item)
-    )
-    plan.row([order_input.value("O1"), item_input.value("I1"), account_input.value("A1")])
-    return plan.build(authority)
+    """Take one item and its price, then record the order."""
+    with Plan() as plan:
+        item = Item.match(item_id="I1").where(Item.stock > 0)
+        buyer = Account.match(account_id="A1")
+        buyer.where(buyer.balance >= item.price)
+        item.set(stock=item.stock - 1)
+        buyer.set(balance=buyer.balance - item.price)
+        Purchase.insert(order_id="O1", buyer=buyer, item=item)
+    return plan
 
 
 # --8<-- [end:purchase]
@@ -102,10 +87,10 @@ def purchase(authority: Any) -> Plan:
 
 def touch(authority: Any) -> Plan:
     """Rewrite every doctor's on-call value with itself, taking its lock."""
-    plan = Plan.builder()
-    doctor = plan.exact(Doctor)
-    plan.update(doctor, Doctor.on_call, plan.field(doctor, Doctor.on_call))
-    return plan.build(authority)
+    with Plan() as plan:
+        doctor = Doctor.match()
+        doctor.set(on_call=doctor.on_call)
+    return plan
 
 
 def batch(authority: Any) -> Plan:
@@ -283,17 +268,15 @@ PURCHASE_BUILDERS = {
 
 
 def seed_doctor(authority: Any) -> Plan:
-    """The doctor whose name the constraints suite inserts twice."""
-    plan = Plan.builder()
-    plan.insert(Doctor).field(Doctor.name, "D1").field(Doctor.on_call, True)
-    return plan.build(authority)
+    with Plan() as plan:
+        Doctor.insert(name="D1", on_call=True)
+    return plan
 
 
 def duplicate_doctor(authority: Any) -> Plan:
-    """A second doctor named D1: the key rejects the commit."""
-    plan = Plan.builder()
-    plan.insert(Doctor).field(Doctor.name, "D1").field(Doctor.on_call, False)
-    return plan.build(authority)
+    with Plan() as plan:
+        Doctor.insert(name="D1", on_call=False)
+    return plan
 
 
 # The suite a run reports: its steps, rolled-back plans, reads and builders.
@@ -388,8 +371,20 @@ def run(
 
 
 def main() -> int:
+    import program_explicit
+
     authority = models.schema_authority()
     plans = {name: build(authority) for name, build in BUILDERS.items()}
+    explicit = {
+        "purchase": program_explicit.purchase(models, authority),
+        "touch": program_explicit.touch(models, authority),
+        "seed_doctor": program_explicit.doctor(models, authority, True),
+        "duplicate_doctor": program_explicit.doctor(models, authority, False),
+    }
+    for name, oracle in explicit.items():
+        if name in plans:
+            assert plans[name].canonical_bytes() == oracle.canonical_bytes(), name
+
     report: dict[str, Any] = {
         "binding": "python",
         "plans": {name: plan.canonical_bytes().hex() for name, plan in plans.items()},
