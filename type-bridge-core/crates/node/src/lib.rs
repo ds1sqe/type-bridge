@@ -63,7 +63,10 @@ pub use query_v2_model_remote_runtime::{
     query_v2_prepare_remote_model_reduce_by_fields, query_v2_prepare_remote_model_rows,
     query_v2_remote_model_context_with_resources,
 };
-pub use runtime_projection::{NodeProjectedModelManager, NodeRuntimeProjection};
+pub use runtime_projection::{
+    NodeProjectedModelManager, NodeRuntimeProjection, install_plan_runtime_projection,
+    projected_batch_deleted,
+};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -522,7 +525,10 @@ impl NodeRustDatabase {
         Ok(staged_transaction_runtime::NodeStagedTransaction::new(
             self.db.transaction(options),
             Arc::clone(&self.runtime),
-        ))
+        )
+        .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+            &self.db,
+        )))
     }
 }
 

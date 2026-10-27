@@ -1,5 +1,15 @@
 /// Public names exported by the fixed TypeScript runtime resource.
 pub(super) const PUBLIC_RUNTIME_NAMES: &[&str] = &[
+    "Plan",
+    "PlanHandle",
+    "PlanValue",
+    "PlanExpr",
+    "PlanInput",
+    "planDefinition",
+    "planMatch",
+    "planModelMatch",
+    "planModelInsert",
+    "planInsertMany",
     "Cardinality",
     "CanonicalCodecOptions",
     "CompleteFacet",

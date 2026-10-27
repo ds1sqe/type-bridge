@@ -1,6 +1,6 @@
 import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
-import type { NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
+import type { NativePlan, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
@@ -38,6 +38,8 @@ export interface RuntimeProjectionInstall {
      * unsupported and outside the runtime projection contract.
      */
     readonly projectedBatchMaterializer?: NativeProjectedBatchMaterializer;
+    /** @internal Restrict an ordinary package's batch mapper to plan results. */
+    readonly planResultsOnly?: boolean;
 }
 export interface GeneratedSchemaAuthorityInstall {
     readonly schemaAuthorityJson: string;
@@ -129,12 +131,24 @@ export interface NativeProjectedValueEnvelope {
     rootProof(): NativeProjectedFacadeProof;
     roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
 }
+/** @internal Cells and row order issued by the core authored-result proof. */
+export interface NativeAuthoredPlanCell {
+    readonly model?: NativeProjectedValueEnvelope | null;
+    readonly scalar?: string | null;
+}
+/** @internal Exactly one committed authored projection shape. */
+export interface NativeAuthoredPlanResult {
+    readonly models?: readonly NativeProjectedValueEnvelope[] | null;
+    readonly rows?: readonly (readonly NativeAuthoredPlanCell[])[] | null;
+}
 type NativeProjectedBatchMaterializer = (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object;
 declare const nativeProjectedBatchAuthority: unique symbol;
 /** @internal One opaque pending/active authority shared by a projected batch. */
 interface NativeProjectedBatchAuthority {
     readonly [nativeProjectedBatchAuthority]: never;
 }
+/** @internal Read the core snapshot flag while the generated mapper publishes a row. */
+export declare function projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean;
 /** @internal Exact root selector backed by one batch publication authority. */
 interface NativeProjectedBatchRootProof {
     readonly kind: "root";
@@ -195,7 +209,7 @@ export interface NativeProjectedManagerFilter {
 }
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
-interface NativeProjectionHandle {
+export interface NativeProjectionHandle {
     connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
@@ -227,6 +241,7 @@ interface NativeProjectionHandle {
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+    materializePlanDocuments(plan: NativePlan, answerJson: string, declaredId: string): unknown[];
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
 }
 /** Tighten-only controls for canonical record/archive work. */
@@ -243,6 +258,8 @@ export interface CanonicalCodecOptions {
 export declare class InstalledRuntimeProjection {
     #private;
     constructor(native: NativeProjectionHandle);
+    /** @internal Retain this installed package while compiling an authored result. */
+    nativeHandle(): NativeProjectionHandle;
     /** @internal Open through this installed generated package's authority. */
     connectDirect(input: {
         endpoint: string;
@@ -314,6 +331,8 @@ export declare class InstalledRuntimeProjection {
     assertConnection(connection: RuntimeProjectionConnection): void;
     /** @internal Materialize one native-validated thing as projected private JSON. */
     materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+    /** @internal Project validated plan documents through the installed model registry. */
+    materializePlanDocuments<Model>(plan: NativePlan, answerJson: string, declaredId: string): Model[];
     /** @internal Materialize one successor query thing with its exact opaque proof. */
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
     /**

@@ -8,6 +8,7 @@ import {
 } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
+  NativePlan,
   NativeProxyConnection,
   NativeQueryCancellation,
   NativeQueryExecutionResources,
@@ -82,6 +83,8 @@ export interface RuntimeProjectionInstall {
    * unsupported and outside the runtime projection contract.
    */
   readonly projectedBatchMaterializer?: NativeProjectedBatchMaterializer;
+  /** @internal Restrict an ordinary package's batch mapper to plan results. */
+  readonly planResultsOnly?: boolean;
 }
 
 export interface GeneratedSchemaAuthorityInstall {
@@ -307,6 +310,17 @@ export interface NativeProjectedValueEnvelope {
   roleProof(roleName: string, playerIndex: number): NativeProjectedFacadeProof;
 }
 
+/** @internal Cells and row order issued by the core authored-result proof. */
+export interface NativeAuthoredPlanCell {
+  readonly model?: NativeProjectedValueEnvelope | null;
+  readonly scalar?: string | null;
+}
+/** @internal Exactly one committed authored projection shape. */
+export interface NativeAuthoredPlanResult {
+  readonly models?: readonly NativeProjectedValueEnvelope[] | null;
+  readonly rows?: readonly (readonly NativeAuthoredPlanCell[])[] | null;
+}
+
 type NativeProjectedBatchMaterializer = (
   typeKey: string,
   ordinal: number,
@@ -319,6 +333,11 @@ declare const nativeProjectedBatchAuthority: unique symbol;
 /** @internal One opaque pending/active authority shared by a projected batch. */
 interface NativeProjectedBatchAuthority {
   readonly [nativeProjectedBatchAuthority]: never;
+}
+
+/** @internal Read the core snapshot flag while the generated mapper publishes a row. */
+export function projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean {
+  return queryV2NativeCall(() => loadNative().projectedBatchDeleted(authority, ordinal, roleName, playerIndex));
 }
 
 /** @internal Exact root selector backed by one batch publication authority. */
@@ -421,7 +440,7 @@ export function projectedManagerNativeCall<Result>(operation: () => Result): Res
   return queryV2NativeCall(operation);
 }
 
-interface NativeProjectionHandle {
+export interface NativeProjectionHandle {
   connectDirect(
     endpoint: string,
     database: string,
@@ -506,6 +525,7 @@ interface NativeProjectionHandle {
   rejectGeneratedTokenPackageMismatch(pathJson: string): void;
   revalidateMatchDiagnostic(diagnostic: string): string;
   materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string;
+  materializePlanDocuments(plan: NativePlan, answerJson: string, declaredId: string): unknown[];
   materializeMatchThingProjected(
     thing: RuntimeProjectionMatchThing,
   ): NativeProjectedValueEnvelope;
@@ -530,6 +550,9 @@ export class InstalledRuntimeProjection {
     this.#native = native;
     Object.freeze(this);
   }
+
+  /** @internal Retain this installed package while compiling an authored result. */
+  nativeHandle(): NativeProjectionHandle { return this.#native; }
 
   /** @internal Open through this installed generated package's authority. */
   connectDirect(input: {
@@ -778,6 +801,11 @@ export class InstalledRuntimeProjection {
   /** @internal Materialize one native-validated thing as projected private JSON. */
   materializeMatchThingJson(thing: RuntimeProjectionMatchThing): string {
     return this.#native.materializeMatchThingJson(thing);
+  }
+
+  /** @internal Project validated plan documents through the installed model registry. */
+  materializePlanDocuments<Model>(plan: NativePlan, answerJson: string, declaredId: string): Model[] {
+    return queryV2NativeCall(() => this.#native.materializePlanDocuments(plan, answerJson, declaredId)) as Model[];
   }
 
   /** @internal Materialize one successor query thing with its exact opaque proof. */
@@ -1347,6 +1375,13 @@ export class ProxyConnection implements RuntimeProjectionRemote {
 /** Verify and install one generated package's exact projection evidence. */
 export function installRuntimeProjection(input: RuntimeProjectionInstall): InstalledRuntimeProjection {
   const native = loadNative();
+  if (input.planResultsOnly === true) {
+    if (input.schemaAuthorityJson === undefined || input.projectedBatchMaterializer === undefined) throw new TypeError("plan results require schema authority and a generated batch mapper");
+    return new InstalledRuntimeProjection(queryV2NativeCall(() => native.installPlanRuntimeProjection(
+      input.projectionJson, input.semanticFingerprintJson, input.projectionFingerprintJson,
+      JSON.stringify(input.bindings), input.schemaAuthorityJson!, input.projectedBatchMaterializer!,
+    )));
+  }
   return new InstalledRuntimeProjection(new native.NodeRuntimeProjection(
     input.projectionJson,
     input.semanticFingerprintJson,

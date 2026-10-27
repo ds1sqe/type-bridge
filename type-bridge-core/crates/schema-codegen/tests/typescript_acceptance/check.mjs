@@ -10,6 +10,8 @@ const STAGE = resolve(CORE, "target/schema-codegen-typescript-acceptance");
 const GENERATED = resolve(STAGE, "generated_v2");
 const BLOCKERS = resolve(STAGE, "generated_blockers");
 const ORDERED = resolve(STAGE, "generated_ordered");
+const PLAN_IDIOMS = resolve(STAGE, "generated_plan_idioms");
+const PLAN_NAMES = resolve(STAGE, "generated_plan_names");
 const FOREIGN = resolve(STAGE, "generated_foreign");
 const PROJECTED = resolve(STAGE, "generated_projected");
 const PROJECTED_FOREIGN = resolve(STAGE, "generated_projected_foreign");
@@ -109,6 +111,11 @@ command("cargo", [
   resolve(HERE, "schema-ordered.yaml"),
   ORDERED,
 ]);
+command("cargo", ["run", "--quiet", "--manifest-path", resolve(CORE, "Cargo.toml"), "--package", "type-bridge-schema-codegen", "--example", "emit_typescript_acceptance", "--", resolve(HERE, "../acceptance/schema-plan-idioms.yaml"), PLAN_IDIOMS]);
+command("cargo", ["run", "--quiet", "--manifest-path", resolve(CORE, "Cargo.toml"), "--package", "type-bridge-schema-codegen", "--example", "emit_typescript_acceptance", "--", resolve(HERE, "schema-plan-names.yaml"), PLAN_NAMES], ROOT, {
+  ...process.env,
+  TYPE_BRIDGE_ACCEPTANCE_TYPE_NAMES: JSON.stringify([[{ kind: "attribute", label: "set" }, "Setting"]]),
+});
 const schemaPath = resolve(HERE, "../acceptance/schema.yaml");
 const schemaSource = readFileSync(schemaPath, "utf8");
 const foreignSource = schemaSource.replace(
@@ -190,6 +197,8 @@ symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir
 command("tsc", ["--project", resolve(BLOCKERS, "tsconfig.json")]);
 command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(ORDERED, "tsconfig.json")]);
+command("tsc", ["--project", resolve(PLAN_IDIOMS, "tsconfig.json")]);
+command("tsc", ["--project", resolve(PLAN_NAMES, "tsconfig.json")]);
 command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
 command("tsc", ["--project", resolve(PROJECTED, "tsconfig.json")]);
 command("tsc", ["--project", resolve(PROJECTED_FOREIGN, "tsconfig.json")]);
@@ -231,6 +240,9 @@ for (const fixture of [
   "blockers_check.mjs",
   "runtime_check.mjs",
   "authority_rejection_check.mjs",
+  "plan_idioms_positive.ts",
+  "plan_idioms_negative.ts",
+  "plan_idioms_check.mjs",
   "projected_parity_check.mjs",
 ]) {
   copyFileSync(resolve(HERE, fixture), resolve(STAGE, fixture));
@@ -258,6 +270,10 @@ writeFileSync(
       "ordered_batch_positive.ts",
       "ordered_batch_negative.ts",
       "documented_examples.ts",
+      "plan_idioms_positive.ts",
+      "plan_idioms_negative.ts",
+      "generated_plan_idioms/src/**/*.ts",
+      "generated_plan_names/src/**/*.ts",
       "generated_v2/src/**/*.ts",
       "generated_ordered/src/**/*.ts",
       "generated_foreign/src/**/*.ts",
@@ -268,6 +284,7 @@ command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);
 command("node", [resolve(STAGE, "authority_rejection_check.mjs")]);
 command("node", [resolve(STAGE, "blockers_check.mjs")]);
 command("node", [resolve(STAGE, "runtime_check.mjs")]);
+command("node", [resolve(STAGE, "plan_idioms_check.mjs")]);
 const externalProjectedReport = process.env.TYPE_BRIDGE_PROJECTED_PARITY_REPORT;
 const projectedReport = externalProjectedReport ?? resolve(STAGE, "projected-node-report.json");
 if (externalProjectedReport !== undefined && (!isAbsolute(projectedReport) || existsSync(projectedReport))) {

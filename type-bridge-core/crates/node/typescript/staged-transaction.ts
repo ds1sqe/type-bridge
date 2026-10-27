@@ -2,8 +2,9 @@ import type {
   NativePendingPlanAnswer,
   NativeStagedTransaction,
 } from "./native.js";
+import type { NativeAuthoredPlanResult } from "./runtime-projection.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
-import { nativePlan, type Plan } from "./plan.js";
+import { decodePlan, nativePlan, type Plan } from "./plan.js";
 import { queryV2NativeCall, queryV2NativePromise } from "./query-v2-internals.js";
 
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
@@ -21,12 +22,14 @@ export type PlanAnswer =
 const MAX_STAGED_INPUT_BYTES = 16 * 1024 * 1024;
 
 /** One staged plan's answer, visible only after its commit succeeds. */
-export class PendingPlanAnswer {
+export class PendingPlanAnswer<R = PlanAnswer> {
   readonly #native: NativePendingPlanAnswer;
+  readonly #decode: (answerJson: string, projection?: NativeAuthoredPlanResult) => R;
 
   /** @internal */
-  constructor(native: NativePendingPlanAnswer) {
+  constructor(native: NativePendingPlanAnswer, decode: (answerJson: string, projection?: NativeAuthoredPlanResult) => R = (answerJson) => JSON.parse(answerJson) as R) {
     this.#native = native;
+    this.#decode = decode;
     Object.freeze(this);
   }
 
@@ -34,8 +37,14 @@ export class PendingPlanAnswer {
    * The resolved answer. Throws the lifecycle failure before commit, or the
    * typed failure every answer of a failed commit shares.
    */
-  get(): PlanAnswer {
-    return JSON.parse(queryV2NativeCall(() => this.#native.getJson())) as PlanAnswer;
+  get(): R {
+    const projection = queryV2NativeCall(() => this.#native.getProjection());
+    return this.#decode(projection === null ? queryV2NativeCall(() => this.#native.getJson()) : "", projection ?? undefined);
+  }
+
+  /** The typed result after a successful commit. */
+  result(): R {
+    return this.get();
   }
 }
 
@@ -73,9 +82,9 @@ export class StagedTransaction {
    * A `read` transaction refuses write plans and a `schema` transaction
    * refuses every plan.
    */
-  stage(plan: Plan): PendingPlanAnswer {
+  stage<R>(plan: Plan<R>): PendingPlanAnswer<R> {
     const native = nativePlan(plan);
-    return new PendingPlanAnswer(queryV2NativeCall(() => this.#native.stage(native)));
+    return new PendingPlanAnswer(queryV2NativeCall(() => this.#native.stage(native)), (answer, projection) => decodePlan(plan, answer, projection));
   }
 
   /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */

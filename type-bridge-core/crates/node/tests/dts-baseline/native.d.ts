@@ -1,6 +1,6 @@
 import type { NativeModule, NativeRustDatabase, NativeRustTransactionContext } from "./index.js";
 import type { NativeQueryV2Authority } from "./query-v2-internals.js";
-import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, RuntimeProjectionInstall } from "./runtime-projection.js";
+import type { NativeProjectedFacadeProof, NativeProjectedManager, NativeProjectedValueEnvelope, NativeProjectionHandle, NativeAuthoredPlanResult, RuntimeProjectionInstall } from "./runtime-projection.js";
 type NativeProjectedBatchAuthority = Parameters<NonNullable<RuntimeProjectionInstall["projectedBatchMaterializer"]>>[3];
 type NativeMatchComparison = "equal" | "not_equal" | "less_than" | "less_than_or_equal" | "greater_than" | "greater_than_or_equal" | "contains" | "starts_with" | "ends_with" | "regex";
 type NativeMatchDirection = "ascending" | "descending";
@@ -178,6 +178,7 @@ interface NativePendingRemoteModelQuery {
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
 export interface NativePendingPlanAnswer {
+    getProjection(): NativeAuthoredPlanResult | null;
     getJson(): string;
 }
 export interface NativeStagedTransaction {
@@ -196,15 +197,32 @@ export interface NativePlanOperand {
 /** One validated `query-plan/v3` program. */
 export interface NativePlan {
     explainJson(): string;
+    bindRows(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][]): NativePlan;
+    scalarRowsJson(answerJson: string): string;
     canonicalBytes(): Uint8Array;
     fingerprint(): string;
     writes(): boolean;
 }
 /** The shared core plan builder; handles are dense indexes. */
 export interface NativePlanBuilder {
+    copy(): NativePlanBuilder;
     exact(typeJson: string): number;
     subtypes(typeJson: string): number;
     field(owner: number, ownsJson: string): number;
+    fieldValue(owner: number, ownsJson: string): number;
+    byIid(owner: number, iid: string): void;
+    bindValue(owner: number, field: string, valueType: string, value: unknown): number;
+    bindRows(columns: {
+        owner: number;
+        field: string;
+        valueType: string;
+    }[], rows: number[][]): number[];
+    letValue(owner: number, field: string, expr: number): number;
+    modelRows(thing: number, columns: {
+        field: string;
+        valueType: string;
+    }[], rows: unknown[][]): void;
+    link(relation: number, roleJson: string, player: number): void;
     links(relation: number, roleJson: string, player: number): void;
     compare(left: NativePlanOperand, comparator: string, right: NativePlanOperand): void;
     input(name: string, valueType: string, optional: boolean): number;
@@ -225,13 +243,15 @@ export interface NativePlanBuilder {
     row(columns: number[], literals: (number | null)[]): void;
     returning(columns: number[]): void;
     fetch(thing: number, roles: string[], required: boolean[]): void;
+    fetchHeld(thing: number, roles: string[], required: boolean[]): void;
     count(): void;
     exists(): void;
-    build(authority: NativeQueryV2Authority): NativePlan;
+    build(authority: NativeQueryV2Authority, matched?: boolean, models?: boolean): NativePlan;
+    buildSelected(authority: NativeQueryV2Authority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
 }
 interface NativePlanBuilderModule {
     setDebugListener(callback: ((json: string) => void) | null): void;
-    NodePlanBuilder: new () => NativePlanBuilder;
+    NodePlanBuilder: new (queryLimits?: NativeQueryLimits) => NativePlanBuilder;
 }
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
@@ -326,9 +346,12 @@ interface NativeRuntimeProjectionHandle {
     rejectGeneratedTokenPackageMismatch(pathJson: string): void;
     revalidateMatchDiagnostic(diagnostic: string): string;
     materializeMatchThingJson(thing: NativeValidatedThingHandle): string;
+    materializePlanDocuments(plan: NativePlan, answerJson: string, declaredId: string): unknown[];
     materializeMatchThingProjected(thing: NativeValidatedThingHandle): NativeProjectedValueEnvelope;
 }
 interface NativeRuntimeProjectionModule {
+    projectedBatchDeleted(authority: NativeProjectedBatchAuthority, ordinal: number, roleName?: string, playerIndex?: number): boolean;
+    installPlanRuntimeProjection(projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson: string, projectedBatchMaterializer: NonNullable<ConstructorParameters<NativeRuntimeProjectionModule["NodeRuntimeProjection"]>[5]>): NativeRuntimeProjectionHandle;
     NodeRuntimeProjection: new (projectionJson: string, semanticFingerprintJson: string, projectionFingerprintJson: string, registrationsJson: string, schemaAuthorityJson?: string, projectedBatchMaterializer?: (typeKey: string, ordinal: number, json: string, authority: NativeProjectedBatchAuthority) => object) => NativeRuntimeProjectionHandle;
 }
 type LoadedNativeModule = NativeModule & NativeLimitsModule & NativeEnumSpellingModule & NativeRemoteModelQueryModule & NativeProxyConnectionModule & NativePlanBuilderModule & NativeRuntimeProjectionModule;

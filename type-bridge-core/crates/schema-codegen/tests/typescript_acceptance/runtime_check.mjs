@@ -128,6 +128,9 @@ const person = Person.create({
   ...personValues,
   aliases: [Aliases.create("first"), Aliases.create("second")],
 });
+assert.equal(person.deleted, false);
+assert.equal(Person.reference("person-iid", { identifier }).deleted, false);
+assert.throws(() => { person.deleted = true; }, TypeError);
 assert.throws(
   () =>
     Person.create({
@@ -424,6 +427,16 @@ const installed = installRuntimeProjection({
 assert(installed.matchSession().exact("person"));
 assert(installed.matchSession().subtypes("party"));
 assert.throws(() => installed.matchSession().exact("unprojected-model"));
+assert.throws(
+  () => installRuntimeProjection({
+    projectionJson: RUNTIME_PROJECTION_JSON,
+    semanticFingerprintJson: SEMANTIC_SCHEMA_FINGERPRINT_JSON,
+    projectionFingerprintJson: PROJECTION_FINGERPRINT_JSON,
+    bindings,
+    projectedBatchMaterializer: () => [],
+  }),
+  /legacy projection cannot install a successor batch materializer/,
+);
 assert.throws(
   () =>
     installRuntimeProjection({

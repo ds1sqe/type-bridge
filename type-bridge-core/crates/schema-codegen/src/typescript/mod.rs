@@ -118,22 +118,17 @@ export type OrderedModelToken<
 type OrderedProjectedEnvelope = ReturnType<
   NativeProjectedManager["insertProjected"]
 >;
-type OrderedFacadeProof = NonNullable<
-  Parameters<NativeProjectedManager["insertProjected"]>[1][number]
->;
-const orderedFacadeProofs = new WeakMap<object, OrderedFacadeProof>();
 retainDecodedSnapshot = <Complete>(
   projection: InstalledRuntimeProjection,
   value: Complete,
 ): Complete => {
-  orderedFacadeProofs.set(value as object, projection.detachedSnapshotProof());
+  projectedFacadeProofs.set(value as object, projection.detachedSnapshotProof());
   return value;
 };
 const orderedModelDefinitions = new Map<
   string,
   ModelDefinition<string, object, object>
 >();
-const orderedAttributeTypeKeys = new Map<string, string>();
 
 type OrderedPackagePathSegment =
   | { readonly kind: "type"; readonly typeKey: string }
@@ -335,13 +330,13 @@ function lowerOrderedHydratedValue(value: unknown): ProjectedWire {
 function orderedRoleProofs(
   typeKey: string,
   value: unknown,
-): (OrderedFacadeProof | null)[] {
+): (ProjectedFacadeProof | null)[] {
   assertRecord(value, "ordered projected create");
   const entry = runtimeModels.get(typeKey);
   if (entry === undefined) {
     throw new TypeError("ordered projected manager has no model definition");
   }
-  const proofs: (OrderedFacadeProof | null)[] = [];
+  const proofs: (ProjectedFacadeProof | null)[] = [];
   for (const member of entry.definition.createMembers) {
     if (member.accepted === undefined) continue;
     const nested = value[member.name];
@@ -349,7 +344,7 @@ function orderedRoleProofs(
     const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
     for (const candidate of values) {
       assertRecord(candidate, `ordered role ${member.name}`);
-      proofs.push(orderedFacadeProofs.get(candidate) ?? null);
+      proofs.push(projectedFacadeProofs.get(candidate) ?? null);
     }
   }
   return proofs;
@@ -360,22 +355,23 @@ function hydrateOrderedProjectedEnvelope<Complete>(
   expectedTypeKey?: string,
 ): Complete {
   const wire = parseProjectedWire(JSON.parse(envelope.json) as unknown);
-  return hydrateOrderedProjectedWire(
+  const value = hydrateOrderedProjectedWire<Complete>(
     wire,
     expectedTypeKey,
     () => envelope.rootProof(),
     (roleName, playerIndex) => envelope.roleProof(roleName, playerIndex),
   );
+  return retainDeletedSnapshot(value, envelope);
 }
 
 function hydrateOrderedProjectedWire<Complete>(
   wire: ProjectedWire,
   expectedTypeKey: string | undefined,
-  rootProof: () => OrderedFacadeProof,
-  roleProof: (roleName: string, playerIndex: number) => OrderedFacadeProof,
+  rootProof: () => ProjectedFacadeProof,
+  roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
 ): Complete {
   const hydrated = hydrateProjectedValue(wire, expectedTypeKey);
-  return retainOrderedProjectedProofs(
+  return retainProjectedProofs(
     wire,
     hydrated,
     rootProof,
@@ -383,206 +379,7 @@ function hydrateOrderedProjectedWire<Complete>(
   ) as Complete;
 }
 
-function validateOrderedProjectedBatchField(
-  definition: ModelDefinition<string, object, object>,
-  name: string,
-  value: unknown,
-): void {
-  if (value === null) {
-    return;
-  }
-  const token = (definition.fields as Readonly<Record<string, unknown>>)[name];
-  if (token === null || typeof token !== "object") {
-    throw new TypeError(`native projected wire has no field definition for ${name}`);
-  }
-  const field = fieldTokenStates.get(token);
-  if (field === undefined) {
-    throw new TypeError(`native projected wire has an invalid field token for ${name}`);
-  }
-  const attributeTypeKey = orderedAttributeTypeKeys.get(field.attribute);
-  if (attributeTypeKey === undefined) {
-    throw new TypeError(`native projected wire has no attribute model for ${name}`);
-  }
-  const values: readonly unknown[] = Array.isArray(value) ? value : [value];
-  for (const candidate of values) {
-    assertRecord(candidate, name);
-    if (
-      candidate["__typebridgeModel"] !== attributeTypeKey ||
-      candidate["__typebridgeForm"] !== "complete" ||
-      Object.getOwnPropertyDescriptor(candidate, COMPLETE_BRAND)?.value !==
-        attributeTypeKey
-    ) {
-      throw new TypeError(`${name} is not the field's exact attribute value`);
-    }
-  }
-}
 
-function hydrateOrderedProjectedBatchValue(
-  wire: ProjectedWire,
-  expectedTypeKey?: string,
-): object {
-  if (expectedTypeKey !== undefined && wire.typeKey !== expectedTypeKey) {
-    throw new TypeError(
-      "native projected wire returned a different concrete type",
-    );
-  }
-  const definition = orderedModelDefinitions.get(wire.typeKey);
-  if (definition === undefined) {
-    throw new TypeError(
-      "native projected wire references an unregistered model",
-    );
-  }
-  if (definition.valueType !== null) {
-    if (
-      wire.form !== "complete" ||
-      wire.iid !== null ||
-      wire.value === null ||
-      wire.value.valueType !== definition.valueType ||
-      Object.keys(wire.values).length !== 0
-    ) {
-      throw new TypeError("native attribute wire has an invalid shape");
-    }
-    const scalar = scalarFromWire(wire.value);
-    validateScalar("native projected attribute", scalar, definition.valueType);
-    const result: Record<string | symbol, unknown> = {
-      __typebridgeModel: wire.typeKey,
-      __typebridgeForm: "complete",
-      iid: null,
-      value: scalar,
-    };
-    Object.defineProperty(result, COMPLETE_BRAND, {
-      value: wire.typeKey,
-    });
-    return Object.freeze(result);
-  }
-  if (wire.value !== null) {
-    throw new TypeError("native thing wire has an invalid scalar value");
-  }
-  const names =
-    wire.form === "complete"
-      ? definition.completeMembers.map((member) => member.name)
-      : definition.referenceKeys;
-  const receivedNames = Object.keys(wire.values);
-  if (
-    receivedNames.length !== names.length ||
-    names.some((name) => !Object.hasOwn(wire.values, name))
-  ) {
-    throw new TypeError("native projected wire has an inexact member set");
-  }
-  const values: Record<string, unknown> = {};
-  for (const name of names) {
-    values[name] = hydrateOrderedProjectedBatchMember(wire.values[name]);
-  }
-  if (wire.form === "reference") {
-    if (wire.iid === null) {
-      throw new TypeError("native reference wire has no IID");
-    }
-    for (const name of definition.referenceKeys) {
-      const value = values[name];
-      if (value === null || Array.isArray(value)) {
-        throw new TypeError(`native reference key ${name} is not scalar`);
-      }
-      validateOrderedProjectedBatchField(definition, name, value);
-    }
-    const result: Record<string | symbol, unknown> = {
-      __typebridgeModel: wire.typeKey,
-      __typebridgeForm: "reference",
-      iid: wire.iid,
-      ...values,
-    };
-    Object.defineProperty(result, REFERENCE_BRAND, {
-      value: wire.typeKey,
-    });
-    return Object.freeze(result);
-  }
-  if (wire.iid === null) {
-    throw new TypeError("native complete thing wire has no IID");
-  }
-  const result: Record<string | symbol, unknown> = {
-    __typebridgeModel: wire.typeKey,
-    __typebridgeForm: "complete",
-    iid: wire.iid,
-  };
-  for (const member of definition.completeMembers) {
-    const value = values[member.name];
-    validateMultiplicity(member.name, value, member.multiplicity);
-    if (member.accepted !== undefined) {
-      validateAccepted(member.name, value, member.accepted);
-    }
-    if (Object.hasOwn(definition.fields, member.name)) {
-      validateOrderedProjectedBatchField(definition, member.name, value);
-    }
-    result[member.name] =
-      value === null
-        ? member.multiplicity.container === "sequence"
-          ? Object.freeze([])
-          : null
-        : Array.isArray(value)
-          ? Object.freeze([...value])
-          : value;
-  }
-  Object.defineProperty(result, COMPLETE_BRAND, {
-    value: wire.typeKey,
-  });
-  return Object.freeze(result);
-}
-
-function hydrateOrderedProjectedBatchMember(value: unknown): unknown {
-  if (value === null) {
-    return null;
-  }
-  if (Array.isArray(value)) {
-    return Object.freeze(
-      value.map((item) =>
-        hydrateOrderedProjectedBatchValue(parseProjectedWire(item)),
-      ),
-    );
-  }
-  return hydrateOrderedProjectedBatchValue(parseProjectedWire(value));
-}
-
-function hydrateOrderedProjectedBatchWire<Complete>(
-  wire: ProjectedWire,
-  expectedTypeKey: string,
-  rootProof: () => OrderedFacadeProof,
-  roleProof: (roleName: string, playerIndex: number) => OrderedFacadeProof,
-): Complete {
-  return retainOrderedProjectedProofs(
-    wire,
-    hydrateOrderedProjectedBatchValue(wire, expectedTypeKey),
-    rootProof,
-    roleProof,
-  ) as Complete;
-}
-
-function retainOrderedProjectedProofs(
-  wire: ProjectedWire,
-  hydrated: unknown,
-  rootProof: () => OrderedFacadeProof,
-  roleProof: (roleName: string, playerIndex: number) => OrderedFacadeProof,
-): object {
-  assertRecord(hydrated, "ordered projected hydration");
-  const entry = runtimeModels.get(wire.typeKey);
-  if (entry === undefined || wire.form !== "complete") {
-    throw new TypeError("ordered projected result has no complete root model");
-  }
-  const retained: [object, OrderedFacadeProof][] = [];
-  for (const member of entry.definition.completeMembers) {
-    if (member.accepted === undefined) continue;
-    const nested = hydrated[member.name];
-    if (nested === undefined || nested === null) continue;
-    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
-    values.forEach((candidate, index) => {
-      assertRecord(candidate, `ordered hydrated role ${member.name}`);
-      retained.push([candidate, roleProof(member.name, index)]);
-    });
-  }
-  retained.push([hydrated, rootProof()]);
-  for (const [facade, proof] of retained) {
-    orderedFacadeProofs.set(facade, proof);
-  }
-  return hydrated;
-}
 
 function orderedProjectedManager<Complete, Owner extends string>(
   typeKey: Owner,
@@ -978,8 +775,10 @@ export function defineOrderedModel<
   ReferenceFactory,
   Fields extends object,
   Roles extends object,
+  Authoring extends object = {},
 >(
   definition: ModelDefinition<Id, Fields, Roles>,
+  authoring?: (token: OrderedModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles>) => Authoring,
 ): OrderedModelToken<
   Id,
   Complete,
@@ -987,7 +786,7 @@ export function defineOrderedModel<
   ReferenceFactory,
   Fields,
   Roles
-> {
+> & Authoring {
   const original = defineModel<
     Id,
     Complete,
@@ -1069,39 +868,13 @@ export function defineOrderedModel<
   }
   runtimeModels.set(definition.typeKey, { ...entry, token });
   orderedModelDefinitions.set(definition.typeKey, definition);
-  if (definition.valueType !== null) {
-    assertRecord(definition.id, "ordered attribute definition identity");
-    const label = definition.id["label"];
-    if (definition.id["kind"] !== "attribute" || typeof label !== "string") {
-      throw new TypeError("ordered attribute definition has an invalid identity");
-    }
-    orderedAttributeTypeKeys.set(JSON.stringify(label), definition.typeKey);
-  }
+
+  if (authoring !== undefined) Object.assign(token, authoring(token));
   Object.freeze(token);
-  return token;
+  return token as typeof token & Authoring;
 }
 
-const materializeOrderedProjectedBatch: NonNullable<
-  Parameters<typeof installRuntimeProjection>[0]["projectedBatchMaterializer"]
-> = (typeKey, ordinal, json, authority): object => {
-  const wire = parseProjectedWire(JSON.parse(json) as unknown);
-  return hydrateOrderedProjectedBatchWire<object>(
-    wire,
-    typeKey,
-    () => Object.freeze({
-      kind: "root" as const,
-      authority,
-      row: ordinal,
-    }),
-    (roleName, playerIndex) => Object.freeze({
-      kind: "role" as const,
-      authority,
-      row: ordinal,
-      roleName,
-      playerIndex,
-    }),
-  );
-};
+
 
 /** @internal Install authority-backed evidence for an ordered generated package. */
 export function __installOrderedRuntimeProjectionPackage(
@@ -1136,7 +909,7 @@ export function __installOrderedRuntimeProjectionPackage(
       create: typeof token.create === "function",
       reference: typeof token.reference === "function",
     })),
-    projectedBatchMaterializer: materializeOrderedProjectedBatch,
+    projectedBatchMaterializer: materializeProjectedBatch,
   });
   const authority = installGeneratedSchemaAuthority({
     schemaAuthorityJson,
@@ -1319,15 +1092,32 @@ mod tests {
     #[test]
     fn legacy_runtime_source_remains_byte_exact() {
         assert_eq!(runtime_source(false).unwrap(), RUNTIME_SOURCE);
-        assert_eq!(RUNTIME_SOURCE.len(), 124_502);
+        let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
+        if let Some(output) = std::env::var_os("TYPE_BRIDGE_TYPESCRIPT_RUNTIME_CHECKPOINT_OUTPUT") {
+            use std::io::Write as _;
+            let mut destination = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(output)
+                .unwrap();
+            let checkpoint = serde_json::json!({
+                "length": RUNTIME_SOURCE.len(),
+                "sha256": format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
+                "resource_fingerprint": resource.content_fingerprint().digest().to_hex(),
+            });
+            destination
+                .write_all(&type_bridge_contract::codec::to_canonical_json(&checkpoint).unwrap())
+                .unwrap();
+            return;
+        }
+        assert_eq!(RUNTIME_SOURCE.len(), 139_666);
         assert_eq!(
             format!("{:x}", Sha256::digest(RUNTIME_SOURCE)),
-            "beee915e4929c4968520083a2b3b92c35a0b0e33682de8f9768e249a0978b4e3"
+            "f60611f02c80d45ed3af7a34083b722e3b925147e05e684ec5bada3d43b222b5"
         );
-        let resource = CodeResourceDigest::from_bytes(RUNTIME_SOURCE_ID, RUNTIME_SOURCE).unwrap();
         assert_eq!(
             resource.content_fingerprint().digest().to_hex(),
-            "835abd341f288e1c8ba534d9f97ebb389d047075fd2eded4f296bac401c52c42"
+            "10545291b460ead894453bf7436ea8c63e797997d847d56d1662b6b0bfca2cea"
         );
     }
 
@@ -1365,7 +1155,7 @@ mod tests {
         assert!(source.contains("native.putManyProjected<Complete>"));
         assert!(source.contains("native.updateManyProjected<Complete>"));
         assert!(source.contains("native.deleteManyProjected("));
-        assert!(source.contains("projectedBatchMaterializer: materializeOrderedProjectedBatch"));
+        assert!(source.contains("projectedBatchMaterializer: materializeProjectedBatch"));
         assert!(source.contains("function canonicalOrderedTemporalIso(iso: string): string"));
         assert!(
             source.contains("function lowerOrderedProjectedValue(value: unknown): ProjectedWire")
@@ -1378,11 +1168,9 @@ mod tests {
         assert!(source.contains("kind: \"root\" as const"));
         assert!(source.contains("kind: \"role\" as const"));
         assert!(source.contains("Parameters<NativeProjectedManager[\"insertProjected\"]>"));
-        assert!(source.contains("const orderedAttributeTypeKeys = new Map<string, string>()"));
+        assert!(source.contains("const attributeTypeKeys = new Map<string, string>()"));
         assert!(
-            source.contains(
-                "orderedAttributeTypeKeys.set(JSON.stringify(label), definition.typeKey)"
-            )
+            source.contains("attributeTypeKeys.set(JSON.stringify(label), definition.typeKey)")
         );
         assert!(source.contains("Object.getOwnPropertyDescriptors(original)"));
         assert!(source.contains("requireProjection().validateCreateJson("));
@@ -1431,6 +1219,11 @@ mod tests {
             ),
             exact_source_slice(
                 &source,
+                "function snapshotDeleted(",
+                "\n\nfunction retainDeletedSnapshot<",
+            ),
+            exact_source_slice(
+                &source,
                 "function parseProjectedWire(",
                 "\n\nfunction hydrateProjectedValue(",
             ),
@@ -1446,33 +1239,33 @@ mod tests {
             ),
             exact_source_slice(
                 &source,
-                "function validateOrderedProjectedBatchField(",
-                "\n\nfunction hydrateOrderedProjectedBatchValue(",
+                "function validateProjectedBatchField(",
+                "\n\nfunction hydrateProjectedBatchValue(",
             ),
             exact_source_slice(
                 &source,
-                "function hydrateOrderedProjectedBatchValue(",
-                "\n\nfunction hydrateOrderedProjectedBatchMember(",
+                "function hydrateProjectedBatchValue(",
+                "\n\nfunction hydrateProjectedBatchMember(",
             ),
             exact_source_slice(
                 &source,
-                "function hydrateOrderedProjectedBatchMember(",
-                "\n\nfunction hydrateOrderedProjectedBatchWire<",
+                "function hydrateProjectedBatchMember(",
+                "\n\nfunction hydrateProjectedBatchWire<",
             ),
             exact_source_slice(
                 &source,
-                "function hydrateOrderedProjectedBatchWire<",
-                "\n\nfunction retainOrderedProjectedProofs(",
+                "function hydrateProjectedBatchWire<",
+                "\n\nfunction retainProjectedProofs(",
             ),
             exact_source_slice(
                 &source,
-                "function retainOrderedProjectedProofs(",
-                "\n\nfunction orderedProjectedManager<",
+                "function retainProjectedProofs(",
+                "\n\nconst materializeProjectedBatch:",
             ),
             exact_source_slice(
                 &source,
-                "const materializeOrderedProjectedBatch:",
-                "\n\n/** @internal Install authority-backed evidence",
+                "const materializeProjectedBatch:",
+                "\n\n/** @internal Install exact native evidence",
             ),
         ];
         let graph = slices.join("\n");
@@ -1485,15 +1278,16 @@ mod tests {
                 "TypeError".to_owned(),
                 "assertRecord".to_owned(),
                 "defineProperty".to_owned(),
+                "defineDeletedState".to_owned(),
                 "for".to_owned(),
                 "forEach".to_owned(),
                 "freeze".to_owned(),
                 "get".to_owned(),
                 "getOwnPropertyDescriptor".to_owned(),
                 "getTime".to_owned(),
-                "hydrateOrderedProjectedBatchMember".to_owned(),
-                "hydrateOrderedProjectedBatchValue".to_owned(),
-                "hydrateOrderedProjectedBatchWire".to_owned(),
+                "hydrateProjectedBatchMember".to_owned(),
+                "hydrateProjectedBatchValue".to_owned(),
+                "hydrateProjectedBatchWire".to_owned(),
                 "hasOwn".to_owned(),
                 "if".to_owned(),
                 "includes".to_owned(),
@@ -1504,18 +1298,20 @@ mod tests {
                 "map".to_owned(),
                 "parse".to_owned(),
                 "parseProjectedWire".to_owned(),
+                "projectedBatchDeleted".to_owned(),
                 "push".to_owned(),
-                "retainOrderedProjectedProofs".to_owned(),
+                "retainProjectedProofs".to_owned(),
                 "return".to_owned(),
                 "roleProof".to_owned(),
                 "rootProof".to_owned(),
                 "scalarFromWire".to_owned(),
                 "set".to_owned(),
                 "some".to_owned(),
+                "snapshotDeleted".to_owned(),
                 "switch".to_owned(),
                 "validateAccepted".to_owned(),
                 "validateMultiplicity".to_owned(),
-                "validateOrderedProjectedBatchField".to_owned(),
+                "validateProjectedBatchField".to_owned(),
                 "validateScalar".to_owned(),
             ])
         );
@@ -1554,11 +1350,11 @@ mod tests {
             "receivedNames.length !== names.length",
             "names.some((name) => !Object.hasOwn(wire.values, name))",
             "native complete thing wire has no IID",
-            "orderedAttributeTypeKeys.get(field.attribute)",
+            "attributeTypeKeys.get(field.attribute)",
             "candidate[\"__typebridgeModel\"] !== attributeTypeKey",
             "validateMultiplicity(member.name, value, member.multiplicity)",
             "validateAccepted(member.name, value, member.accepted)",
-            "validateOrderedProjectedBatchField(definition, member.name, value)",
+            "validateProjectedBatchField(definition, member.name, value)",
         ] {
             assert!(
                 graph.contains(required_guard),
@@ -1574,17 +1370,14 @@ mod tests {
             "(roleName, playerIndex) => Object.freeze({\n      kind: \"role\" as const,\n      authority,\n      row: ordinal,\n      roleName,\n      playerIndex,\n    })"
         ));
         let retained = slices[slices.len() - 2];
-        let first_set = retained.find("orderedFacadeProofs.set(").unwrap();
+        let first_set = retained.find("projectedFacadeProofs.set(").unwrap();
         assert!(retained.rfind("retained.push(").unwrap() < first_set);
         assert!(retained.rfind("rootProof()").unwrap() < first_set);
         assert!(retained.rfind("roleProof(").unwrap() < first_set);
-        assert_eq!(retained.matches("orderedFacadeProofs.set(").count(), 1);
+        assert_eq!(retained.matches("projectedFacadeProofs.set(").count(), 1);
 
-        assert_eq!(
-            source.matches("materializeOrderedProjectedBatch").count(),
-            2
-        );
-        assert_eq!(source.matches("projectedBatchMaterializer").count(), 2);
+        assert_eq!(source.matches("materializeProjectedBatch").count(), 3);
+        assert_eq!(source.matches("projectedBatchMaterializer").count(), 3);
         for call in [
             "native.insertManyProjected<Complete>(instances.length, (index) => {",
             "native.putManyProjected<Complete>(instances.length, (index) => {",

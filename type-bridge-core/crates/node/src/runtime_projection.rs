@@ -1115,6 +1115,57 @@ fn projected_batch_authority_from_external(
     }))
 }
 
+/// Read snapshot state from the same opaque authority used for batch publication.
+#[napi(js_name = "projectedBatchDeleted")]
+pub fn projected_batch_deleted(
+    env: Env,
+    authority: Unknown,
+    ordinal: u32,
+    role_name: Option<String>,
+    player_index: Option<u32>,
+) -> napi::Result<bool> {
+    let authority = projected_batch_authority_from_external(env.raw(), authority.raw())?;
+    if authority.state.load(Ordering::Acquire) == BATCH_AUTHORITY_ABORTED {
+        return Err(invalid_error("projected batch publication was aborted"));
+    }
+    let thing = authority
+        .rows
+        .get()
+        .and_then(|rows| rows.get(ordinal as usize))
+        .ok_or_else(|| invalid_error("projected batch row is not materialized"))?;
+    match (role_name, player_index) {
+        (None, None) => Ok(thing.is_deleted()),
+        (Some(name), Some(index)) => {
+            let role = authority
+                .projection
+                .projection()
+                .models()
+                .get(thing.type_id())
+                .and_then(|model| {
+                    model
+                        .query_tokens()
+                        .roles()
+                        .iter()
+                        .find(|(_, role)| role.target_name().as_str() == name)
+                })
+                .map(|(id, _)| id)
+                .ok_or_else(|| invalid_error("projected batch role is not materialized"))?;
+            let player = thing
+                .roles()
+                .get(role)
+                .and_then(|players| players.get(index as usize))
+                .ok_or_else(|| invalid_error("projected batch player is not materialized"))?;
+            Ok(player
+                .reference()
+                .origin_carrier()
+                .is_some_and(|origin| origin.is_deleted()))
+        }
+        _ => Err(invalid_error(
+            "projected batch player selector is incomplete",
+        )),
+    }
+}
+
 #[derive(Default)]
 struct FallibleJsonWriter {
     bytes: Vec<u8>,
@@ -1633,6 +1684,312 @@ pub struct NodeRuntimeProjection {
     package: Arc<InstalledPackage>,
 }
 
+/// One borrowed-proof cell marshalled to the generated host runtime.
+#[napi(object, object_from_js = false)]
+pub struct NodeAuthoredPlanCell {
+    pub model: Option<NodeProjectedValueEnvelope>,
+    pub scalar: Option<String>,
+}
+/// One committed authored projection; exactly one result shape is present.
+#[napi(object, object_from_js = false)]
+pub struct NodeAuthoredPlanResult {
+    pub models: Option<Vec<NodeProjectedValueEnvelope>>,
+    pub rows: Option<Vec<Vec<NodeAuthoredPlanCell>>>,
+}
+
+pub(crate) struct AuthoredPlanProjection {
+    pub(crate) stack: type_bridge_orm::match_request::PlanFetchStack,
+    pub(crate) registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+    package: Arc<InstalledPackage>,
+    binding: type_bridge_contract::migration_assertion::BindingId,
+    declared: TypeId,
+    pub(crate) bulk: bool,
+    pub(crate) tuple: Option<Vec<(type_bridge_contract::migration_assertion::BindingId, TypeId)>>,
+}
+impl AuthoredPlanProjection {
+    pub(crate) fn with_plans(
+        &self,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+    ) -> napi::Result<Self> {
+        Self::prepare(
+            Arc::clone(&self.package),
+            Arc::clone(&self.registry),
+            plans,
+            self.binding,
+            self.declared.clone(),
+            self.tuple.clone(),
+        )
+    }
+    fn prepare(
+        package: Arc<InstalledPackage>,
+        registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        binding: type_bridge_contract::migration_assertion::BindingId,
+        declared: TypeId,
+        tuple: Option<Vec<(type_bridge_contract::migration_assertion::BindingId, TypeId)>>,
+    ) -> napi::Result<Self> {
+        let descriptor = match declared.kind() {
+            TypeKind::Entity => format!("entity:{}", declared.label().as_str()),
+            TypeKind::Relation => format!("relation:{}", declared.label().as_str()),
+            _ => {
+                return Err(invalid_error(
+                    "model projection requires a thing descriptor",
+                ));
+            }
+        };
+        let bulk = plans.bulk_rows().is_some();
+        let stack = if let Some(slots) = &tuple {
+            let [plan] = plans.plans() else {
+                return Err(invalid_error("model tuples require one authored selection"));
+            };
+            let slots = slots
+                .iter()
+                .map(|(binding, id)| {
+                    let kind = match id.kind() {
+                        TypeKind::Entity => "entity",
+                        TypeKind::Relation => "relation",
+                        _ => return Err(invalid_error("model tuple requires thing descriptors")),
+                    };
+                    Ok((
+                        *binding,
+                        type_bridge_orm::match_request::DescriptorId::new(format!(
+                            "{kind}:{}",
+                            id.label().as_str()
+                        )),
+                    ))
+                })
+                .collect::<napi::Result<Vec<_>>>()?;
+            type_bridge_orm::match_request::build_plan_fetch_stack(&registry, plan, &slots)
+        } else {
+            type_bridge_orm::match_request::build_bulk_plan_fetch_stack(
+                &registry,
+                plans,
+                (
+                    binding,
+                    type_bridge_orm::match_request::DescriptorId::new(descriptor),
+                ),
+            )
+        }
+        .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+        Ok(Self {
+            stack,
+            registry,
+            package,
+            binding,
+            declared,
+            bulk,
+            tuple,
+        })
+    }
+    pub(crate) fn materialize_rows(
+        &self,
+        proof: &type_bridge_orm::match_request::OwnedPlanFetchResult,
+        origin: type_bridge_orm::ProjectedQueryOrigin,
+        cache: &OnceLock<Result<type_bridge_orm::ProjectedQueryValue, SdkExecutionDiagnostic>>,
+    ) -> napi::Result<Vec<Vec<NodeAuthoredPlanCell>>> {
+        let projected = cache
+            .get_or_init(|| {
+                origin
+                    .materialize_borrowed_with_budget(
+                        &self.package.projection,
+                        &self.registry,
+                        proof.request(),
+                        proof.result(),
+                        Default::default(),
+                        &type_bridge_orm::AnswerCancellation::default(),
+                        None,
+                    )
+                    .map(|(value, _)| value)
+            })
+            .as_ref()
+            .map_err(|error| napi_sdk_diagnostic(error.clone()))?;
+        let type_bridge_orm::ProjectedQueryValue::Rows { rows } = projected else {
+            return Err(runtime_error("model tuple did not publish model rows"));
+        };
+        (0..proof.row_count())
+            .map(|index| {
+                proof
+                    .columns()
+                    .iter()
+                    .map(|binding| match proof.cell(index, *binding) {
+                        Some(type_bridge_orm::match_request::PlanFetchCell::Scalar(value)) => {
+                            Ok(NodeAuthoredPlanCell {
+                                model: None,
+                                scalar: Some(serde_json::to_string(value).map_err(json_error)?),
+                            })
+                        }
+                        Some(type_bridge_orm::match_request::PlanFetchCell::Model {
+                            row,
+                            slot,
+                        }) => {
+                            let slot = rows
+                                .get(row)
+                                .and_then(|row| row.slots().get(slot))
+                                .ok_or_else(|| {
+                                    runtime_error("model tuple ordinal is outside its proof")
+                                })?;
+                            let type_bridge_orm::ProjectedQuerySlotValue::One(thing) = slot.value()
+                            else {
+                                return Err(runtime_error("model tuple requires a singular model"));
+                            };
+                            Ok(NodeAuthoredPlanCell {
+                                model: Some(projected_envelope_arc(
+                                    Arc::clone(&self.package),
+                                    Arc::clone(thing),
+                                )?),
+                                scalar: None,
+                            })
+                        }
+                        None => Err(runtime_error("model tuple cell is outside its proof")),
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+    pub(crate) fn materialize(
+        &self,
+        proof: &type_bridge_orm::match_request::OwnedPlanFetchResult,
+        origin: type_bridge_orm::ProjectedQueryOrigin,
+        cache: &OnceLock<Result<type_bridge_orm::ProjectedQueryValue, SdkExecutionDiagnostic>>,
+    ) -> napi::Result<Vec<NodeProjectedValueEnvelope>> {
+        let projected = cache
+            .get_or_init(|| {
+                origin
+                    .materialize_borrowed_with_budget(
+                        &self.package.projection,
+                        &self.registry,
+                        proof.request(),
+                        proof.result(),
+                        Default::default(),
+                        &type_bridge_orm::AnswerCancellation::default(),
+                        None,
+                    )
+                    .map(|(value, _)| value)
+            })
+            .as_ref()
+            .map_err(|error| napi_sdk_diagnostic(error.clone()))?;
+        let type_bridge_orm::ProjectedQueryValue::Rows { rows } = projected else {
+            return Err(runtime_error("model projection did not publish model rows"));
+        };
+        proof
+            .model_rows()
+            .iter()
+            .map(|ordinal| {
+                let slot = rows
+                    .get(*ordinal)
+                    .and_then(|row| row.slots().first())
+                    .ok_or_else(|| {
+                        runtime_error("model projection ordinal is outside its proof")
+                    })?;
+                let type_bridge_orm::ProjectedQuerySlotValue::One(thing) = slot.value() else {
+                    return Err(runtime_error(
+                        "model projection did not publish a singular model",
+                    ));
+                };
+                projected_envelope_arc(Arc::clone(&self.package), Arc::clone(thing))
+            })
+            .collect()
+    }
+}
+impl NodeRuntimeProjection {
+    pub(crate) fn prepare_authored_plan(
+        &self,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        binding: type_bridge_contract::migration_assertion::BindingId,
+        declared: &str,
+    ) -> napi::Result<AuthoredPlanProjection> {
+        let declared = type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
+            .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+        let registry = Arc::new(
+            self.package
+                .projection
+                .match_registry()
+                .map_err(orm_error)?,
+        );
+        AuthoredPlanProjection::prepare(
+            Arc::clone(&self.package),
+            registry,
+            plans,
+            binding,
+            declared,
+            None,
+        )
+    }
+    pub(crate) fn prepare_authored_tuple(
+        &self,
+        plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+        bindings: Vec<u32>,
+        declared: Vec<String>,
+    ) -> napi::Result<AuthoredPlanProjection> {
+        if bindings.len() != declared.len() {
+            return Err(invalid_error(
+                "model tuple bindings and descriptors differ in length",
+            ));
+        }
+        let slots = bindings
+            .into_iter()
+            .zip(declared)
+            .map(|(binding, declared)| {
+                let binding = u16::try_from(binding)
+                    .ok()
+                    .and_then(|binding| {
+                        type_bridge_contract::migration_assertion::BindingId::new(binding).ok()
+                    })
+                    .ok_or_else(|| invalid_error("model tuple binding is invalid"))?;
+                let declared =
+                    type_bridge_contract::codec::from_canonical_json(declared.as_bytes())
+                        .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
+                Ok((binding, declared))
+            })
+            .collect::<napi::Result<Vec<_>>>()?;
+        let (binding, declared) = slots
+            .first()
+            .cloned()
+            .ok_or_else(|| invalid_error("model tuple requires model bindings"))?;
+        let registry = Arc::new(
+            self.package
+                .projection
+                .match_registry()
+                .map_err(orm_error)?,
+        );
+        AuthoredPlanProjection::prepare(
+            Arc::clone(&self.package),
+            registry,
+            plans,
+            binding,
+            declared,
+            Some(slots),
+        )
+    }
+}
+
+enum BatchMaterializerPolicy {
+    RequiredSuccessor,
+    OptionalSuccessor,
+    PlanResultsOnly,
+}
+
+/// Install the same mapper for ordinary plan results, without enabling legacy CRUD batches.
+#[napi(js_name = "installPlanRuntimeProjection")]
+pub fn install_plan_runtime_projection(
+    projection_json: String,
+    semantic_fingerprint_json: String,
+    projection_fingerprint_json: String,
+    registrations_json: String,
+    schema_authority_json: String,
+    projected_batch_materializer: Function<'_, (), ()>,
+) -> napi::Result<NodeRuntimeProjection> {
+    NodeRuntimeProjection::install_with_policy(
+        projection_json,
+        semantic_fingerprint_json,
+        projection_fingerprint_json,
+        registrations_json,
+        Some(schema_authority_json),
+        Some(projected_batch_materializer),
+        BatchMaterializerPolicy::PlanResultsOnly,
+    )
+}
+
 #[napi]
 impl NodeRuntimeProjection {
     /// Verify projection evidence and exact generated-token coverage.
@@ -1665,6 +2022,30 @@ impl NodeRuntimeProjection {
         projected_batch_materializer: Option<Function<'_, (), ()>>,
         require_projected_batch_materializer: bool,
     ) -> napi::Result<Self> {
+        Self::install_with_policy(
+            projection_json,
+            semantic_fingerprint_json,
+            projection_fingerprint_json,
+            registrations_json,
+            schema_authority_json,
+            projected_batch_materializer,
+            if require_projected_batch_materializer {
+                BatchMaterializerPolicy::RequiredSuccessor
+            } else {
+                BatchMaterializerPolicy::OptionalSuccessor
+            },
+        )
+    }
+
+    fn install_with_policy(
+        projection_json: String,
+        semantic_fingerprint_json: String,
+        projection_fingerprint_json: String,
+        registrations_json: String,
+        schema_authority_json: Option<String>,
+        projected_batch_materializer: Option<Function<'_, (), ()>>,
+        policy: BatchMaterializerPolicy,
+    ) -> napi::Result<Self> {
         let (runtime, managed_scope_id, schema_authority_evidence) = match schema_authority_json {
             Some(schema_authority_json) => {
                 let (runtime, scope, declared) = install_authority_backed_projection(
@@ -1696,17 +2077,24 @@ impl NodeRuntimeProjection {
         };
         let ordered_successor = projection_uses_ordered_collections(&runtime);
         match (ordered_successor, projected_batch_materializer.as_ref()) {
-            (true, None) if require_projected_batch_materializer => {
+            (true, None) if matches!(policy, BatchMaterializerPolicy::RequiredSuccessor) => {
                 return Err(invalid_error(
                     "ordered successor projection requires exactly one generated batch materializer",
                 ));
             }
-            (false, Some(_)) => {
+            (false, Some(_)) if !matches!(policy, BatchMaterializerPolicy::PlanResultsOnly) => {
                 return Err(invalid_error(
                     "legacy projection cannot install a successor batch materializer",
                 ));
             }
             _ => {}
+        }
+        if matches!(policy, BatchMaterializerPolicy::PlanResultsOnly)
+            && (ordered_successor || projected_batch_materializer.is_none())
+        {
+            return Err(invalid_error(
+                "ordinary plan results require exactly one scoped batch materializer",
+            ));
         }
         let projected_batch_materializer = projected_batch_materializer
             .map(|materializer| materializer.create_ref().map(Arc::new))
@@ -5628,6 +6016,33 @@ fn write_projected_scalar(output: &mut FallibleJsonWriter, value: &CanonicalValu
     output.write_char('}')
 }
 
+pub(crate) fn canonical_plan_scalar_rows_json(
+    rows: &[Vec<CanonicalValue>],
+) -> napi::Result<String> {
+    let mut output = FallibleJsonWriter::default();
+    let write = |output: &mut FallibleJsonWriter| -> fmt::Result {
+        output.write_char('[')?;
+        for (ordinal, row) in rows.iter().enumerate() {
+            if ordinal != 0 {
+                output.write_char(',')?;
+            }
+            output.write_char('[')?;
+            for (column, value) in row.iter().enumerate() {
+                if column != 0 {
+                    output.write_char(',')?;
+                }
+                write_projected_scalar(output, value)?;
+            }
+            output.write_char(']')?;
+        }
+        output.write_char(']')
+    };
+    write(&mut output)
+        .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))?;
+    String::from_utf8(output.bytes)
+        .map_err(|_| napi_sdk_diagnostic(ProjectedBatch::binding_allocation_failure()))
+}
+
 fn write_projected_attribute_wire(
     output: &mut FallibleJsonWriter,
     package: &InstalledPackage,
@@ -7425,6 +7840,194 @@ entities:
                 SdkDiagnosticPathSegment::Argument(iid),
             ] if rows.as_str() == "rows" && iid.as_str() == "iid"
         ));
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn authored_plan_mixed_rows_preserve_core_ordinals_canonical_scalars_and_origins() {
+        use type_bridge_contract::query_plan::v3::{BuiltPlans, PlanBuilder};
+        use type_bridge_orm::session::backend::QueryResult;
+        let projection = ordered_runtime();
+        let compiled = authority(ORDERED_SCHEMA, "node-create-admission.yaml");
+        let mut builder = PlanBuilder::new();
+        let group_id = TypeId::new(TypeKind::Entity, "group").unwrap();
+        let group = builder.exact(group_id.clone());
+        let tag = builder.field(
+            group,
+            type_bridge_contract::id::AttributeId::new("tag").unwrap(),
+        );
+        builder.returning(vec![group, tag]);
+        let plan = builder
+            .build(
+                compiled.declared_schema(),
+                compiled.managed_state().managed_semantic_schema().clone(),
+            )
+            .unwrap();
+        let row = serde_json::Value::Object(
+            [
+                (
+                    plan.bindings()[usize::from(group.get())]
+                        .variable()
+                        .as_str()
+                        .to_owned(),
+                    serde_json::to_value(type_bridge_contract::query_remote::RemoteValue::Thing {
+                        iid: "0xa1".into(),
+                        type_id: group_id,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    plan.bindings()[usize::from(tag.get())]
+                        .variable()
+                        .as_str()
+                        .to_owned(),
+                    serde_json::to_value(type_bridge_contract::query_remote::RemoteValue::Value {
+                        value: CanonicalValue::String(CanonicalString::new("one").unwrap()),
+                    })
+                    .unwrap(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let model = projection
+            .prepare_authored_tuple(
+                BuiltPlans::single(plan),
+                vec![u32::from(group.get())],
+                vec![type_key(TypeKind::Entity, "group")],
+            )
+            .unwrap();
+        let responses = model.stack.plans().iter().map(|plan| ProjectionRecordingResponse::Query(if plan.fetch_document_shape().is_some() {
+            QueryResult::Documents(vec![serde_json::json!({"_iid":"0xa1", "_type":"group", "attributes":{"tag":["one"]}})])
+        } else { QueryResult::Rows(vec![row.clone(), row.clone()]) })).collect();
+        let registry = Arc::clone(&model.registry);
+        let source = Arc::new(crate::plan_builder_runtime::NodePlanProgram::Models(
+            Box::new(model),
+        ));
+        let (database, _) = projection_recording_database_for_test(responses);
+        let runtime = ProviderRuntimeOwner::new().unwrap();
+        let mut transaction = database.transaction(Default::default());
+        let pending = transaction
+            .stage_plan_fetch(Arc::clone(&source), registry, Default::default())
+            .unwrap();
+        runtime.block_on(transaction.commit()).unwrap();
+        let proof = pending.get().unwrap();
+        assert_eq!(proof.model_rows(), &[0, 0]);
+        let crate::plan_builder_runtime::NodePlanProgram::Models(model) = source.as_ref() else {
+            unreachable!()
+        };
+        let rows = model
+            .materialize_rows(
+                &proof,
+                type_bridge_orm::ProjectedQueryOrigin::for_database(&database),
+                &OnceLock::new(),
+            )
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            let model = row[0].model.as_ref().unwrap();
+            assert_eq!(model.thing.iid(), "0xa1");
+            assert!(model.thing.origin_carrier().is_some());
+            let scalar: CanonicalValue =
+                serde_json::from_str(row[1].scalar.as_ref().unwrap()).unwrap();
+            assert!(matches!(scalar, CanonicalValue::String(value) if value.as_str() == "one"));
+        }
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn authored_plan_model_envelopes_consume_core_proofs_and_keep_direct_deleted_origins() {
+        use type_bridge_contract::query_plan::v3::{BuiltPlans, PlanBuilder};
+        use type_bridge_orm::session::backend::QueryResult;
+        for deleted in [false, true] {
+            let projection = ordered_runtime();
+            let compiled = authority(ORDERED_SCHEMA, "node-create-admission.yaml");
+            let mut builder = PlanBuilder::new();
+            let group = builder.exact(TypeId::new(TypeKind::Entity, "group").unwrap());
+            builder.fetch_held(group, vec![]);
+            if deleted {
+                builder.delete(group);
+            }
+            let plan = builder
+                .build(
+                    compiled.declared_schema(),
+                    compiled.managed_state().managed_semantic_schema().clone(),
+                )
+                .unwrap();
+            let model = projection
+                .prepare_authored_plan(
+                    BuiltPlans::single(plan),
+                    group,
+                    &type_key(TypeKind::Entity, "group"),
+                )
+                .unwrap();
+            let registry = Arc::clone(&model.registry);
+            let source = Arc::new(crate::plan_builder_runtime::NodePlanProgram::Models(
+                Box::new(model),
+            ));
+            let mut responses = vec![ProjectionRecordingResponse::Query(QueryResult::Documents(
+                vec![serde_json::json!({"_iid":"0xa1", "_type":"group", "attributes":{"tag":[]}})],
+            ))];
+            if deleted {
+                responses.push(ProjectionRecordingResponse::Query(QueryResult::Rows(vec![
+                    serde_json::json!({}),
+                ])));
+            }
+            let (database, _) = projection_recording_database_for_test(responses);
+            let runtime = ProviderRuntimeOwner::new().unwrap();
+            let mut transaction = database.transaction(Default::default());
+            let pending = transaction
+                .stage_plan_fetch(Arc::clone(&source), registry, Default::default())
+                .unwrap();
+            runtime.block_on(transaction.commit()).unwrap();
+            let proof = pending.get().unwrap();
+            let crate::plan_builder_runtime::NodePlanProgram::Models(model) = source.as_ref()
+            else {
+                unreachable!()
+            };
+            let cache = OnceLock::new();
+            let values = model
+                .materialize(
+                    &proof,
+                    type_bridge_orm::ProjectedQueryOrigin::for_database(&database),
+                    &cache,
+                )
+                .unwrap();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0].thing.iid(), "0xa1");
+            assert_eq!(values[0].deleted(), deleted);
+            assert!(values[0].thing.origin_carrier().is_some());
+            if deleted {
+                assert_eq!(
+                    values[0]
+                        .thing
+                        .try_to_reference(&projection.package.projection)
+                        .err()
+                        .unwrap()
+                        .code()
+                        .as_str(),
+                    "thing_deleted"
+                );
+            } else {
+                assert!(
+                    values[0]
+                        .thing
+                        .try_to_reference(&projection.package.projection)
+                        .unwrap()
+                        .origin_carrier()
+                        .is_some()
+                );
+            }
+            let original = std::ptr::from_ref(cache.get().unwrap());
+            model
+                .materialize(
+                    &proof,
+                    type_bridge_orm::ProjectedQueryOrigin::for_database(&database),
+                    &cache,
+                )
+                .unwrap();
+            assert_eq!(original, std::ptr::from_ref(cache.get().unwrap()));
+        }
     }
 
     #[cfg(feature = "contract-test-adapter")]

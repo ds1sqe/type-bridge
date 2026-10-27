@@ -27,6 +27,7 @@ import {
   QueryCancellation,
   QueryExecutionResourceLimits,
   QueryLimits,
+  projectedBatchDeleted,
 } from "@type-bridge/node/runtime-projection";
 export {
   ProxyConnection,
@@ -38,6 +39,8 @@ export {
 } from "@type-bridge/node/runtime-projection";
 import type { QueryV2Authority } from "@type-bridge/node/query-v2";
 import type { RustDatabase } from "@type-bridge/node";
+import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
+export { Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
 
 const COMPLETE_BRAND: unique symbol = Symbol("typebridge.complete");
 const REFERENCE_BRAND: unique symbol = Symbol("typebridge.reference");
@@ -77,6 +80,7 @@ export interface CompleteFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "complete";
   readonly iid: string | null;
+  readonly deleted: boolean;
   readonly [COMPLETE_BRAND]: Id;
 }
 
@@ -113,6 +117,7 @@ export interface ReferenceFacet<Id extends string> {
   readonly __typebridgeModel: Id;
   readonly __typebridgeForm: "reference";
   readonly iid: string | null;
+  readonly deleted: boolean;
   readonly [REFERENCE_BRAND]: Id;
 }
 
@@ -132,7 +137,8 @@ export interface FieldToken<
   Owner extends string,
   Attribute extends string,
   Value,
-> {
+  Scalar = unknown,
+> extends AuthoringFieldToken<Scalar> {
   readonly kind: "field";
   readonly owner: Owner;
   readonly attribute: Attribute;
@@ -497,6 +503,8 @@ interface RuntimeModelToken {
 }
 
 interface RuntimeModelDefinition {
+  readonly fields: object;
+  readonly roles: object;
   readonly valueType: ScalarValueType | null;
   readonly createMembers: readonly CreateMemberDefinition[];
   readonly completeMembers: readonly CreateMemberDefinition[];
@@ -523,6 +531,12 @@ interface ProjectedWire {
 }
 
 const runtimeModels = new Map<string, RuntimeModelEntry>();
+const attributeTypeKeys = new Map<string, string>();
+type ProjectedFacadeProof = NonNullable<
+  Parameters<NativeProjectedManager["insertProjected"]>[1][number]
+>;
+const projectedFacadeProofs = new WeakMap<object, ProjectedFacadeProof>();
+
 const fieldTokenStates = new WeakMap<
   object,
   FieldTokenDefinition<string, string>
@@ -629,13 +643,15 @@ export function defineFieldToken<
   Owner extends string,
   Attribute extends string,
   Value,
+  Scalar = unknown,
 >(
   definition: FieldTokenDefinition<Owner, Attribute>,
-): FieldToken<Owner, Attribute, Value> {
-  const token = { kind: "field", ...definition } as FieldToken<
+): FieldToken<Owner, Attribute, Value, Scalar> {
+  const token = planFieldToken<Scalar, typeof definition & { kind: "field" }>({ kind: "field", ...definition }) as FieldToken<
     Owner,
     Attribute,
-    Value
+    Value,
+    Scalar
   >;
   fieldTokenStates.set(token, definition);
   return Object.freeze(token);
@@ -666,9 +682,11 @@ export function defineModel<
   ReferenceFactory,
   Fields extends object,
   Roles extends object,
+  Authoring extends object = {},
 >(
   definition: ModelDefinition<Id, Fields, Roles>,
-): ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles> {
+  authoring?: (token: ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles>) => Authoring,
+): ModelToken<Id, Complete, CreateFactory, ReferenceFactory, Fields, Roles> & Authoring {
   const materializeComplete = (
     input: unknown,
     iid: string | null,
@@ -722,6 +740,7 @@ export function defineModel<
     Object.defineProperty(result, COMPLETE_BRAND, {
       value: definition.typeKey,
     });
+    defineDeletedState(result);
     return Object.freeze(result) as Complete;
   };
   const create = definition.createEnabled
@@ -765,6 +784,7 @@ export function defineModel<
         Object.defineProperty(result, REFERENCE_BRAND, {
           value: definition.typeKey,
         });
+        defineDeletedState(result);
         return Object.freeze(result);
       }
     : undefined;
@@ -1039,8 +1059,17 @@ export function defineModel<
     );
   }
   runtimeModels.set(definition.typeKey, { token: modelToken, definition });
+  if (definition.valueType !== null) {
+    assertRecord(definition.id, "ordered attribute definition identity");
+    const label = definition.id["label"];
+    if (definition.id["kind"] !== "attribute" || typeof label !== "string") {
+      throw new TypeError("ordered attribute definition has an invalid identity");
+    }
+    attributeTypeKeys.set(JSON.stringify(label), definition.typeKey);
+  }
+  if (authoring !== undefined) Object.assign(modelToken, authoring(modelToken));
   Object.freeze(modelToken);
-  return modelToken;
+  return modelToken as typeof modelToken & Authoring;
 }
 
 // The core decides the cardinality rule; a refusal is its structured error.
@@ -1090,6 +1119,232 @@ function validateOwnedMember(
   }
 }
 
+function validateProjectedBatchField(
+  definition: RuntimeModelDefinition,
+  name: string,
+  value: unknown,
+): void {
+  if (value === null) {
+    return;
+  }
+  const token = (definition.fields as Readonly<Record<string, unknown>>)[name];
+  if (token === null || typeof token !== "object") {
+    throw new TypeError(`native projected wire has no field definition for ${name}`);
+  }
+  const field = fieldTokenStates.get(token);
+  if (field === undefined) {
+    throw new TypeError(`native projected wire has an invalid field token for ${name}`);
+  }
+  const attributeTypeKey = attributeTypeKeys.get(field.attribute);
+  if (attributeTypeKey === undefined) {
+    throw new TypeError(`native projected wire has no attribute model for ${name}`);
+  }
+  const values: readonly unknown[] = Array.isArray(value) ? value : [value];
+  for (const candidate of values) {
+    assertRecord(candidate, name);
+    if (
+      candidate["__typebridgeModel"] !== attributeTypeKey ||
+      candidate["__typebridgeForm"] !== "complete" ||
+      Object.getOwnPropertyDescriptor(candidate, COMPLETE_BRAND)?.value !==
+        attributeTypeKey
+    ) {
+      throw new TypeError(`${name} is not the field's exact attribute value`);
+    }
+  }
+}
+
+function hydrateProjectedBatchValue(
+  wire: ProjectedWire,
+  expectedTypeKey?: string,
+): object {
+  if (expectedTypeKey !== undefined && wire.typeKey !== expectedTypeKey) {
+    throw new TypeError(
+      "native projected wire returned a different concrete type",
+    );
+  }
+  const definition = runtimeModels.get(wire.typeKey)?.definition;
+  if (definition === undefined) {
+    throw new TypeError(
+      "native projected wire references an unregistered model",
+    );
+  }
+  if (definition.valueType !== null) {
+    if (
+      wire.form !== "complete" ||
+      wire.iid !== null ||
+      wire.value === null ||
+      wire.value.valueType !== definition.valueType ||
+      Object.keys(wire.values).length !== 0
+    ) {
+      throw new TypeError("native attribute wire has an invalid shape");
+    }
+    const scalar = scalarFromWire(wire.value);
+    validateScalar("native projected attribute", scalar, definition.valueType);
+    const result: Record<string | symbol, unknown> = {
+      __typebridgeModel: wire.typeKey,
+      __typebridgeForm: "complete",
+      iid: null,
+      value: scalar,
+    };
+    Object.defineProperty(result, COMPLETE_BRAND, {
+      value: wire.typeKey,
+    });
+    defineDeletedState(result);
+    return Object.freeze(result);
+  }
+  if (wire.value !== null) {
+    throw new TypeError("native thing wire has an invalid scalar value");
+  }
+  const names =
+    wire.form === "complete"
+      ? definition.completeMembers.map((member) => member.name)
+      : definition.referenceKeys;
+  const receivedNames = Object.keys(wire.values);
+  if (
+    receivedNames.length !== names.length ||
+    names.some((name) => !Object.hasOwn(wire.values, name))
+  ) {
+    throw new TypeError("native projected wire has an inexact member set");
+  }
+  const values: Record<string, unknown> = {};
+  for (const name of names) {
+    values[name] = hydrateProjectedBatchMember(wire.values[name]);
+  }
+  if (wire.form === "reference") {
+    if (wire.iid === null) {
+      throw new TypeError("native reference wire has no IID");
+    }
+    for (const name of definition.referenceKeys) {
+      const value = values[name];
+      if (value === null || Array.isArray(value)) {
+        throw new TypeError(`native reference key ${name} is not scalar`);
+      }
+      validateProjectedBatchField(definition, name, value);
+    }
+    const result: Record<string | symbol, unknown> = {
+      __typebridgeModel: wire.typeKey,
+      __typebridgeForm: "reference",
+      iid: wire.iid,
+      ...values,
+    };
+    Object.defineProperty(result, REFERENCE_BRAND, {
+      value: wire.typeKey,
+    });
+    defineDeletedState(result);
+    return Object.freeze(result);
+  }
+  if (wire.iid === null) {
+    throw new TypeError("native complete thing wire has no IID");
+  }
+  const result: Record<string | symbol, unknown> = {
+    __typebridgeModel: wire.typeKey,
+    __typebridgeForm: "complete",
+    iid: wire.iid,
+  };
+  for (const member of definition.completeMembers) {
+    const value = values[member.name];
+    validateMultiplicity(member.name, value, member.multiplicity);
+    if (member.accepted !== undefined) {
+      validateAccepted(member.name, value, member.accepted);
+    }
+    if (Object.hasOwn(definition.fields, member.name)) {
+      validateProjectedBatchField(definition, member.name, value);
+    }
+    result[member.name] =
+      value === null
+        ? member.multiplicity.container === "sequence"
+          ? Object.freeze([])
+          : null
+        : Array.isArray(value)
+          ? Object.freeze([...value])
+          : value;
+  }
+  Object.defineProperty(result, COMPLETE_BRAND, {
+    value: wire.typeKey,
+  });
+  defineDeletedState(result);
+  return Object.freeze(result);
+}
+
+function hydrateProjectedBatchMember(value: unknown): unknown {
+  if (value === null) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return Object.freeze(
+      value.map((item) =>
+        hydrateProjectedBatchValue(parseProjectedWire(item)),
+      ),
+    );
+  }
+  return hydrateProjectedBatchValue(parseProjectedWire(value));
+}
+
+function hydrateProjectedBatchWire<Complete>(
+  wire: ProjectedWire,
+  expectedTypeKey: string,
+  rootProof: () => ProjectedFacadeProof,
+  roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
+): Complete {
+  return retainProjectedProofs(
+    wire,
+    hydrateProjectedBatchValue(wire, expectedTypeKey),
+    rootProof,
+    roleProof,
+  ) as Complete;
+}
+
+function retainProjectedProofs(
+  wire: ProjectedWire,
+  hydrated: unknown,
+  rootProof: () => ProjectedFacadeProof,
+  roleProof: (roleName: string, playerIndex: number) => ProjectedFacadeProof,
+): object {
+  assertRecord(hydrated, "ordered projected hydration");
+  const entry = runtimeModels.get(wire.typeKey);
+  if (entry === undefined || wire.form !== "complete") {
+    throw new TypeError("ordered projected result has no complete root model");
+  }
+  const retained: [object, ProjectedFacadeProof][] = [];
+  for (const member of entry.definition.completeMembers) {
+    if (member.accepted === undefined) continue;
+    const nested = hydrated[member.name];
+    if (nested === undefined || nested === null) continue;
+    const values: readonly unknown[] = Array.isArray(nested) ? nested : [nested];
+    values.forEach((candidate, index) => {
+      assertRecord(candidate, `ordered hydrated role ${member.name}`);
+      retained.push([candidate, roleProof(member.name, index)]);
+    });
+  }
+  retained.push([hydrated, rootProof()]);
+  for (const [facade, proof] of retained) {
+    projectedFacadeProofs.set(facade, proof);
+  }
+  return hydrated;
+}
+
+const materializeProjectedBatch: NonNullable<
+  Parameters<typeof installRuntimeProjection>[0]["projectedBatchMaterializer"]
+> = (typeKey, ordinal, json, authority): object => {
+  const wire = parseProjectedWire(JSON.parse(json) as unknown);
+  return hydrateProjectedBatchWire<object>(
+    wire,
+    typeKey,
+    () => Object.freeze({
+      kind: "root" as const,
+      authority,
+      row: ordinal,
+    }),
+    (roleName, playerIndex) => Object.freeze({
+      kind: "role" as const,
+      authority,
+      row: ordinal,
+      roleName,
+      playerIndex,
+    }),
+  );
+};
+
 /** @internal Install exact native evidence after every generated model token is linked. */
 export function __installRuntimeProjectionPackage(
   projectionJson: string,
@@ -1118,6 +1373,8 @@ export function __installRuntimeProjectionPackage(
   });
   const projection = installRuntimeProjection({
     schemaAuthorityJson,
+    projectedBatchMaterializer: materializeProjectedBatch,
+    planResultsOnly: true,
     projectionJson,
     semanticFingerprintJson,
     projectionFingerprintJson,
@@ -1147,6 +1404,18 @@ function projectedManager<Complete>(
 }
 
 const deletedSnapshotProofs = new WeakMap<object, NativeProjectedValueEnvelope>();
+function snapshotDeleted(value: object): boolean {
+  const envelope = deletedSnapshotProofs.get(value);
+  if (envelope !== undefined) return envelope.deleted;
+  const proof = projectedFacadeProofs.get(value);
+  if (proof === undefined || !("kind" in proof)) return false;
+  return proof.kind === "root" ? projectedBatchDeleted(proof.authority, proof.row)
+    : projectedBatchDeleted(proof.authority, proof.row, proof.roleName, proof.playerIndex);
+}
+
+function defineDeletedState(value: Record<string | symbol, unknown>): void {
+  Object.defineProperty(value, "deleted", { enumerable: true, get: () => snapshotDeleted(value) });
+}
 
 function retainDeletedSnapshot<Complete>(value: Complete, envelope: NativeProjectedValueEnvelope): Complete {
   assertRecord(value, "deleted snapshot");
@@ -1155,7 +1424,7 @@ function retainDeletedSnapshot<Complete>(value: Complete, envelope: NativeProjec
 }
 
 function requireLiveSnapshot(value: unknown): void {
-  if (value !== null && typeof value === "object" && deletedSnapshotProofs.get(value)?.deleted) {
+  if (value !== null && typeof value === "object" && snapshotDeleted(value)) {
     throw new TypeError("thing_deleted: a deleted snapshot cannot be mutated");
   }
 }
@@ -2043,6 +2312,99 @@ function requireProjection(): InstalledRuntimeProjection {
     throw new TypeError("generated runtime projection is not installed");
   }
   return installedProjection;
+}
+
+const planDefinitions = new WeakMap<object, PlanModelAuthoring<unknown>>();
+
+function encodePlanScalar(kind: ScalarValueType, value: unknown): unknown {
+  const wire = scalarToWire(kind, value);
+  return kind === "long" || kind === "double" ? value : wire.value;
+}
+
+/** @internal Reuse the installed model's identities and scalar codec. */
+function hydrateAuthoredPlanModel<Model>(envelope: NativeProjectedValueEnvelope): Model {
+  const wire = parseProjectedWire(JSON.parse(envelope.json) as unknown);
+  const value = hydrateProjectedBatchWire<Model>(wire, wire.typeKey, () => envelope.rootProof(), (role, index) => envelope.roleProof(role, index));
+  return retainDeletedSnapshot(value, envelope);
+}
+
+export function planDefinition<Model>(token: object): PlanModelAuthoring<Model> {
+  const cached = planDefinitions.get(token);
+  if (cached !== undefined) return cached as PlanModelAuthoring<Model>;
+  const entry = [...runtimeModels.values()].find((entry) => entry.token === token);
+  if (entry === undefined) throw new TypeError("plan model is not registered by this package");
+  const fields: Record<string, PlanModelAuthoring<Model>["fields"][string]> = {};
+  for (const [name, issued] of Object.entries(entry.definition.fields) as [string, object][]) {
+    const field = fieldTokenStates.get(issued);
+    if (field === undefined) throw new TypeError("plan field is not issued by this package");
+    const label: unknown = JSON.parse(field.attribute);
+    if (typeof label !== "string") throw new TypeError("plan field has no attribute identity");
+    const kind = runtimeModels.get(JSON.stringify({ kind: "attribute", label }))?.definition.valueType;
+    if (kind === undefined || kind === null) throw new TypeError("plan field has no scalar domain");
+    fields[name] = { token: issued as FieldToken<string, string, unknown>, kind, site: label, encode: (value) => encodePlanScalar(kind, value) };
+  }
+  const roles = (Object.entries(entry.definition.roles) as [string, object][]).map(([name, issued]) => {
+    const role = roleTokenStates.get(issued);
+    if (role === undefined) throw new TypeError("plan role is not issued by this package");
+    return { name, token: issued as RoleToken<string, string, unknown>, role: role.role, required: false };
+  });
+  const definition: PlanModelAuthoring<Model> = {
+    model: entry.token,
+    projection: requireProjection,
+    isFieldToken: (token) => fieldTokenStates.has(token),
+    fields,
+    roles,
+    authority: () => {
+      if (installedQueryAuthority === null) throw new TypeError("generated schema authority is not installed");
+      return installedQueryAuthority;
+    },
+    decode: (_plan, _json, projection) => {
+      if (projection?.models === undefined || projection.models === null) throw new TypeError("model results require the core's committed projection proof");
+      return projection.models.map((envelope) => hydrateAuthoredPlanModel<Model>(envelope));
+    },
+    decodeRows: (projection) => {
+      if (projection.rows === undefined || projection.rows === null) throw new TypeError("model tuples require the core's committed projection proof");
+      return projection.rows.map((row) => row.map((cell) => {
+        if (cell.model !== undefined && cell.model !== null) return hydrateAuthoredPlanModel(cell.model);
+        if (cell.scalar !== undefined && cell.scalar !== null) return scalarFromWire(JSON.parse(cell.scalar) as ScalarWire);
+        throw new TypeError("the core projection returned no tuple cell");
+      }));
+    },
+    decodeScalars: (plan, json) => (JSON.parse(plan.scalarRowsJson(json)) as ScalarWire[][]).map((row) => row.map(scalarFromWire)),
+    encodeScalar: encodePlanScalar,
+  };
+  planDefinitions.set(token, definition);
+  return definition;
+}
+
+/** @internal Resolve the two generated match overloads without schema inference. */
+export function planModelMatch<Model, H extends PlanHandle<Model>>(
+  definition: PlanModelAuthoring<Model>,
+  HandleClass: new (recording: ConstructorParameters<typeof PlanHandle<Model>>[0], thing: ConstructorParameters<typeof PlanHandle<Model>>[1], definition: PlanModelAuthoring<Model>) => H,
+  key: string | null,
+  input: unknown,
+  subtypes: boolean,
+): H {
+  if (input === undefined) return planMatch(definition, HandleClass, {}, { subtypes });
+  if (input !== null && typeof input === "object" && !(input instanceof Date) && !(input instanceof PlanInput) && !(input instanceof PlanValue)) {
+    assertRecord(input, "plan match fields");
+    return planMatch(definition, HandleClass, input, { subtypes });
+  }
+  if (key === null) throw new TypeError("this model requires named match fields");
+  return planMatch(definition, HandleClass, {}, { subtypes, key: [key, input] });
+}
+
+/** @internal Separate scalar ownership inputs from nominal role handles. */
+export function planModelInsert<Model>(definition: PlanModelAuthoring<Model>, input: object, put: boolean): Plan<Model[]> {
+  assertRecord(input, "plan insert fields and players");
+  const fields: Record<string, unknown> = {};
+  const players: Record<string, PlanHandle<unknown> | readonly PlanHandle<unknown>[] | undefined> = {};
+  for (const [name, value] of Object.entries(input)) {
+    if (Object.hasOwn(definition.fields, name)) fields[name] = value;
+    else if (definition.roles.some((role) => role.name === name)) players[name] = value as PlanHandle<unknown> | readonly PlanHandle<unknown>[] | undefined;
+    else throw new TypeError(`unknown plan member ${name}`);
+  }
+  return planInsert(definition, fields, players, put);
 }
 
 /** Compose exact-package canonical records into one deterministic archive. */

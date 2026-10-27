@@ -20,6 +20,9 @@ use crate::{
     documentation_annotation, invalid, model_documentation, projection_uses_ordered_collections,
 };
 
+#[path = "plan.rs"]
+mod plan;
+
 macro_rules! canonical_text {
     ($value:expr) => {
         String::from_utf8(to_canonical_json($value)?)
@@ -130,7 +133,7 @@ fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     };
     let _ = write!(
         output,
-        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import {{\n  defineFieldToken,\n  {define_model},\n  defineRoleToken,\n  type CompleteFacet,\n  type FieldToken,\n  {model_token},\n  type ReferenceFacet,\n  type RoleToken,\n  Plan, PlanHandle, PlanValue, PlanExpr, PlanInput,\n  planDefinition, planMatch, planModelMatch, planModelInsert, planInsertMany,\n}} from \"./runtime.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
 
     for id in projection.emission().model_shells() {
@@ -139,6 +142,7 @@ fn render_models(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
             .get(id)
             .ok_or_else(|| facet_error("emission plan references an absent model"))?;
         render_model_shell(&mut output, projection, model)?;
+        plan::shell(&mut output, projection, model)?;
     }
 
     for component in projection.emission().model_link_components() {
@@ -295,13 +299,14 @@ fn render_model_shell(
     let _ = writeln!(output, "export interface {name}FieldTokens {{");
     for (owns, token) in model.query_tokens().fields() {
         let value = projected_type(projection, field_value(model, owns)?, "", "Structs.")?;
+        let scalar = plan::scalar(projection, owns)?;
         let attribute = identity_literal!(owns.attribute());
         if let Some(documentation) = documentation_annotation(token.annotations()) {
             render_indented_jsdoc(output, "  ", documentation);
         }
         let _ = writeln!(
             output,
-            "  readonly {}: FieldToken<{id}, {attribute}, {value}>;",
+            "  readonly {}: FieldToken<{id}, {attribute}, {value}, {scalar}>;",
             token.target_name().as_str()
         );
     }
@@ -343,9 +348,14 @@ fn render_model_shell(
         ),
         None => "undefined".to_owned(),
     };
+    let plan_methods = if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+        format!(" & {name}PlanMethods")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         output,
-        "export let {name}: ModelToken<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens>;\n"
+        "export let {name}: ModelToken<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens>{plan_methods};\n"
     );
     Ok(())
 }
@@ -373,9 +383,14 @@ fn render_model_link(
         ),
         None => "undefined".to_owned(),
     };
+    let plan_methods = if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+        format!(", {name}PlanMethods")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         output,
-        "{name} = defineModel<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens>({{"
+        "{name} = defineModel<{id}, {name}, {create_factory}, {reference_factory}, {name}FieldTokens, {name}RoleTokens{plan_methods}>({{"
     );
     let _ = writeln!(output, "  typeKey: {id},");
     let _ = writeln!(output, "  id: {},", canonical_text!(model.id()));
@@ -388,11 +403,12 @@ fn render_model_link(
     output.push_str("  fields: {\n");
     for (owns, token) in model.query_tokens().fields() {
         let value = projected_type(projection, field_value(model, owns)?, "", "Structs.")?;
+        let scalar = plan::scalar(projection, owns)?;
         let attribute = identity_literal!(owns.attribute());
         let metadata = canonical_text!(token);
         let _ = writeln!(
             output,
-            "    {}: defineFieldToken<{id}, {attribute}, {value}>({{",
+            "    {}: defineFieldToken<{id}, {attribute}, {value}, {scalar}>({{",
             token.target_name().as_str()
         );
         let _ = writeln!(output, "      owner: {id},");
@@ -542,7 +558,8 @@ fn render_model_link(
         .collect::<Result<Vec<_>, _>>()?
         .join(", ");
     let _ = writeln!(output, "  referenceKeys: [{keys}],");
-    let _ = writeln!(output, "  metadata: {},\n}});", canonical_text!(model));
+    let _ = writeln!(output, "  metadata: {},", canonical_text!(model));
+    plan::link_tail(output, projection, model)?;
     Ok(())
 }
 
@@ -1097,6 +1114,10 @@ fn validate_projection(projection: &RuntimeProjection) -> Result<(), Diagnostic>
             .ok_or_else(|| facet_error("emission plan references an absent model"))?;
         let name = model.target_name().as_str();
         register_name(&mut public, name, "model")?;
+        if matches!(model.id().kind(), TypeKind::Entity | TypeKind::Relation) {
+            register_name(&mut public, &format!("{name}Handle"), "plan handle")?;
+            register_name(&mut public, &format!("{name}PlanMethods"), "plan methods")?;
+        }
         register_name(&mut public, &format!("{name}Create"), "create facet")?;
         register_name(
             &mut public,
@@ -1162,6 +1183,29 @@ fn validate_model_names(model: &ModelProjection) -> Result<(), Diagnostic> {
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
+    members.extend([
+        "match",
+        "subtypes",
+        "byIid",
+        "insert",
+        "put",
+        "insertMany",
+        "putMany",
+        "field",
+        "recording",
+        "thing",
+        "definition",
+        "where",
+        "set",
+        "setFields",
+        "unset",
+        "link",
+        "unlink",
+        "linkPlayers",
+        "delete",
+        "deleteReturning",
+        "models",
+    ]);
     for token in model.query_tokens().fields().values() {
         validate_identifier(token.target_name().as_str())?;
         if !members.insert(token.target_name().as_str()) {

@@ -1,4 +1,5 @@
 import type { NativePendingPlanAnswer, NativeStagedTransaction } from "./native.js";
+import type { NativeAuthoredPlanResult } from "./runtime-projection.js";
 import { type Plan } from "./plan.js";
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
@@ -20,15 +21,17 @@ export type PlanAnswer = {
     readonly value: number;
 };
 /** One staged plan's answer, visible only after its commit succeeds. */
-export declare class PendingPlanAnswer {
+export declare class PendingPlanAnswer<R = PlanAnswer> {
     #private;
     /** @internal */
-    constructor(native: NativePendingPlanAnswer);
+    constructor(native: NativePendingPlanAnswer, decode?: (answerJson: string, projection?: NativeAuthoredPlanResult) => R);
     /**
      * The resolved answer. Throws the lifecycle failure before commit, or the
      * typed failure every answer of a failed commit shares.
      */
-    get(): PlanAnswer;
+    get(): R;
+    /** The typed result after a successful commit. */
+    result(): R;
 }
 type AsyncDisposeSymbol = SymbolConstructor extends {
     readonly asyncDispose: infer Key extends symbol;
@@ -57,7 +60,7 @@ export declare class StagedTransaction {
      * A `read` transaction refuses write plans and a `schema` transaction
      * refuses every plan.
      */
-    stage(plan: Plan): PendingPlanAnswer;
+    stage<R>(plan: Plan<R>): PendingPlanAnswer<R>;
     /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
     stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): PendingPlanAnswer;
     /** Fire the staged stack; answers become visible only on success. */

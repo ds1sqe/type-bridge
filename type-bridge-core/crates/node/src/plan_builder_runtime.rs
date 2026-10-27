@@ -10,12 +10,14 @@
 
 use napi::bindgen_prelude::{Buffer, Env, Unknown};
 use napi_derive::napi;
+use std::sync::Arc;
 use type_bridge_contract::codec::from_canonical_json;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::id::{AttributeId, RoleId, TypeId};
 use type_bridge_contract::migration_assertion::BindingId;
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
+    ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
+    Site, ThingDocument,
 };
 use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
 use type_bridge_contract::schema::OwnsFactId;
@@ -53,6 +55,21 @@ pub struct NodePlanOperand {
     pub index: u32,
 }
 
+/// One ownership and scalar domain shared by every generated bulk row.
+#[napi(object)]
+pub struct NodePlanModelColumn {
+    pub field: String,
+    pub value_type: String,
+}
+
+/// One implicit bulk input site and scalar domain.
+#[napi(object)]
+pub struct NodePlanColumn {
+    pub owner: u32,
+    pub field: String,
+    pub value_type: String,
+}
+
 /// One program under construction; see the module documentation.
 #[napi]
 pub struct NodePlanBuilder {
@@ -64,6 +81,41 @@ pub struct NodePlanBuilder {
 }
 
 impl NodePlanBuilder {
+    fn finish(
+        &self,
+        authority: &NodeQueryV2Authority,
+        selection: BuildSelection<'_>,
+        models: bool,
+    ) -> napi::Result<NodePlan> {
+        let _entry = crate::perf_stages::entry().entered();
+        if let Some((status, reason)) = &self.error {
+            return Err(napi::Error::new(*status, reason.clone()));
+        }
+        let authority = authority.authority();
+        let semantics = authority
+            .context()
+            .managed_state()
+            .managed_semantic_schema()
+            .clone();
+        self.core
+            .build_selected_plans(
+                authority.declared(),
+                semantics,
+                selection,
+                type_bridge_contract::split::SplitLimits::CANONICAL,
+            )
+            .and_then(|plans| {
+                if models {
+                    plans.validate_model_projection()?;
+                }
+                Ok(plans)
+            })
+            .map(|plans| NodePlan {
+                plans: Arc::new(NodePlanProgram::Raw(Box::new(plans))),
+            })
+            .map_err(|diagnostic| napi_error(&diagnostic))
+    }
+
     fn fail(&mut self, error: napi::Error) {
         self.error.get_or_insert((error.status, error.reason));
     }
@@ -167,11 +219,24 @@ fn spelling<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
 
 #[napi]
 impl NodePlanBuilder {
+    /// Copy a recording before selecting an independent result.
+    #[napi]
+    pub fn copy(&self) -> Self {
+        Self {
+            core: self.core.clone(),
+            error: self.error.clone(),
+            literals: self.literals.clone(),
+            exprs: self.exprs.clone(),
+        }
+    }
+
     /// An empty program.
     #[napi(constructor)]
-    pub fn new() -> Self {
+    pub fn new(query_limits: Option<&crate::match_runtime::NodeQueryLimits>) -> Self {
         Self {
-            core: PlanBuilder::new(),
+            core: PlanBuilder::with_limits(
+                query_limits.map_or_else(Default::default, |limits| limits.inner()),
+            ),
             error: None,
             literals: Vec::new(),
             exprs: Vec::new(),
@@ -204,6 +269,158 @@ impl NodePlanBuilder {
             Some(field) => index(self.core.field(owner, field.attribute().clone())),
             None => 0,
         }
+    }
+
+    /// Reuse one generated field binding per owner and attribute.
+    #[napi(js_name = "fieldValue")]
+    pub fn field_value(&mut self, owner: u32, owns_json: String) -> u32 {
+        let owner = self.binding(owner);
+        match self.owns_id(&owns_json) {
+            Some(field) => index(self.core.field_value(owner, field.attribute().clone())),
+            None => 0,
+        }
+    }
+
+    /// Constrain a thing by its provider identifier.
+    #[napi(js_name = "byIid")]
+    pub fn by_iid(&mut self, owner: u32, iid: String) {
+        let owner = self.binding(owner);
+        self.core.by_iid(owner, &iid);
+    }
+
+    /// Add a role player while preserving existing players.
+    #[napi]
+    pub fn link(&mut self, relation: u32, role_json: String, player: u32) {
+        let relation = self.binding(relation);
+        let player = self.binding(player);
+        if let Some(role) = self.role_id(&role_json) {
+            self.core.link(relation, role, player);
+        }
+    }
+
+    /// Bind a caller value using the shared derived input name.
+    #[napi(js_name = "bindValue")]
+    pub fn bind_value(
+        &mut self,
+        env: Env,
+        owner: u32,
+        field: String,
+        value_type: String,
+        value: Unknown,
+    ) -> u32 {
+        let owner = self.binding(owner);
+        let parsed = query_builder_value_type(&value_type)
+            .map_err(|error| napi_error(&error))
+            .and_then(|kind| crate::query_v2_builder_runtime::node_scalar(&env, kind, value));
+        match parsed {
+            Ok(value) => match self.core.bind_value(Site::new(owner, &field), value) {
+                QueryOperand::Input { column } => u32::from(column.get()),
+                _ => unreachable!("bind_value returns an input operand"),
+            },
+            Err(error) => {
+                self.fail(error);
+                0
+            }
+        }
+    }
+
+    /// Name an assignment expression through the shared site namespace.
+    #[napi(js_name = "letValue")]
+    pub fn let_value(&mut self, owner: u32, field: String, expr: u32) -> u32 {
+        let owner = self.binding(owner);
+        let expr = self.expr(expr);
+        index(self.core.let_value(Site::new(owner, &field), expr))
+    }
+
+    /// Supply entity Values rows; grouping, limits and splitting stay in core.
+    #[napi(js_name = "modelRows")]
+    pub fn model_rows(
+        &mut self,
+        env: Env,
+        thing: u32,
+        columns: Vec<NodePlanModelColumn>,
+        rows: Vec<Vec<Unknown>>,
+    ) {
+        let thing = self.binding(thing);
+        let mut fields = Vec::with_capacity(columns.len());
+        let mut kinds = Vec::with_capacity(columns.len());
+        for column in columns {
+            let Some(field) = self.owns_id(&column.field) else {
+                return;
+            };
+            let Some(kind) = self.check(query_builder_value_type(&column.value_type)) else {
+                return;
+            };
+            fields.push(field);
+            kinds.push(kind);
+        }
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            if row.len() != kinds.len() {
+                self.check::<()>(Err(invalid(
+                    "plan_builder_row_arity",
+                    "every bulk input row must have one cell per column",
+                )));
+                return;
+            }
+            let mut cells = Vec::with_capacity(row.len());
+            for (value, kind) in row.into_iter().zip(&kinds) {
+                let value = match value.get_type() {
+                    Ok(napi::ValueType::Undefined) => None,
+                    Ok(_) => match crate::query_v2_builder_runtime::node_scalar(&env, *kind, value)
+                    {
+                        Ok(value) => Some(value),
+                        Err(error) => {
+                            self.fail(error);
+                            return;
+                        }
+                    },
+                    Err(error) => {
+                        self.fail(error);
+                        return;
+                    }
+                };
+                cells.push(value);
+            }
+            values.push(cells);
+        }
+        self.core.bind_model_columns(thing, fields, values);
+    }
+
+    /// Bind one implicit input table through the shared builder.
+    #[napi(js_name = "bindRows")]
+    pub fn bind_rows(&mut self, columns: Vec<NodePlanColumn>, rows: Vec<Vec<u32>>) -> Vec<u32> {
+        let mut typed = Vec::with_capacity(columns.len());
+        for column in columns {
+            let owner = self.binding(column.owner);
+            let Some(kind) = self.check(query_builder_value_type(&column.value_type)) else {
+                return vec![];
+            };
+            typed.push((Site::new(owner, column.field), kind));
+        }
+        let mut values = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut cells = Vec::with_capacity(row.len());
+            for literal in row {
+                let value = usize::try_from(literal)
+                    .ok()
+                    .and_then(|index| self.literals.get(index))
+                    .cloned();
+                let Some(value) = self.check(value.ok_or_else(handle_error)) else {
+                    return vec![];
+                };
+                cells.push(value);
+            }
+            values.push(cells);
+        }
+        self.core
+            .bind_rows(typed, values)
+            .into_iter()
+            .map(|operand| match operand {
+                QueryOperand::Input { column } => u32::from(column.get()),
+                _ => unreachable!("bind_rows returns input operands"),
+            })
+            .collect()
     }
 
     /// Require `relation` to link `player` in the role `role_json`.
@@ -382,13 +599,24 @@ impl NodePlanBuilder {
     /// once; a column left out is absent.
     #[napi]
     pub fn row(&mut self, columns: Vec<u32>, literals: Vec<Option<u32>>) {
-        let mut row: Vec<Option<CanonicalValue>> = Vec::new();
+        if columns.len() != literals.len() {
+            self.check::<()>(Err(invalid(
+                "query_invocation_row_arity",
+                "each input cell needs its column",
+            )));
+            return;
+        }
+        let mut row = vec![None; self.core.input_columns().len()];
         let mut seen = std::collections::BTreeSet::new();
         for (column, literal) in columns.into_iter().zip(literals) {
             let Ok(column) = usize::try_from(column) else {
                 self.check::<()>(Err(handle_error()));
                 return;
             };
+            if column >= row.len() {
+                self.check::<()>(Err(handle_error()));
+                return;
+            }
             if !seen.insert(column) {
                 self.check::<()>(Err(invalid(
                     "plan_input_duplicate",
@@ -409,9 +637,6 @@ impl NodePlanBuilder {
                     Some(value)
                 }
             };
-            if row.len() <= column {
-                row.resize(column + 1, None);
-            }
             row[column] = value;
         }
         self.core.row(row);
@@ -451,6 +676,30 @@ impl NodePlanBuilder {
         }
     }
 
+    /// Select a held model result after the complete recording is known.
+    #[napi(js_name = "fetchHeld")]
+    pub fn fetch_held(&mut self, thing: u32, roles: Vec<String>, required: Vec<bool>) {
+        if roles.len() != required.len() {
+            self.check::<()>(Err(invalid(
+                "plan_fetch_roles_invalid",
+                "each role needs its required flag",
+            )));
+            return;
+        }
+        let thing = self.binding(thing);
+        let roles = roles
+            .into_iter()
+            .zip(required)
+            .map(|(role, required)| {
+                self.role_id(&role)
+                    .map(|role| DocumentRole::new(role, required))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(roles) = roles {
+            self.core.fetch_held(thing, roles);
+        }
+    }
+
     /// Answer the number of rows a read plan matches.
     #[napi]
     pub fn count(&mut self) {
@@ -466,48 +715,276 @@ impl NodePlanBuilder {
     /// Validate the program under `authority`'s declared schema and managed
     /// semantics; the first invalid call, if any, is the error.
     #[napi]
-    pub fn build(&self, authority: &NodeQueryV2Authority) -> napi::Result<NodePlan> {
-        let _entry = crate::perf_stages::entry().entered();
+    pub fn build(
+        &self,
+        authority: &NodeQueryV2Authority,
+        matched: Option<bool>,
+        models: Option<bool>,
+    ) -> napi::Result<NodePlan> {
+        self.finish(
+            authority,
+            if matched.unwrap_or(false) {
+                BuildSelection::Matched
+            } else {
+                BuildSelection::Recorded
+            },
+            models.unwrap_or(false),
+        )
+    }
+    /// Build one selected result without copying the recorder.
+    #[napi]
+    #[allow(clippy::too_many_arguments)] // napi forwards attributes to wrappers with different arities.
+    pub fn build_selected(
+        &self,
+        authority: &NodeQueryV2Authority,
+        kind: String,
+        thing: Option<u32>,
+        roles: Vec<String>,
+        required: Vec<bool>,
+        columns: Vec<u32>,
+        projection: Option<&crate::runtime_projection::NodeRuntimeProjection>,
+        declared: Option<String>,
+        model_bindings: Option<Vec<u32>>,
+        model_types: Option<Vec<String>>,
+    ) -> napi::Result<NodePlan> {
         if let Some((status, reason)) = &self.error {
             return Err(napi::Error::new(*status, reason.clone()));
         }
-        let authority = authority.authority();
-        let semantics = authority
-            .context()
-            .managed_state()
-            .managed_semantic_schema()
-            .clone();
-        self.core
-            .build(authority.declared(), semantics)
-            .map(|plan| NodePlan { plan })
-            .map_err(|diagnostic| napi_error(&diagnostic))
+        let binding = |value| {
+            u16::try_from(value)
+                .ok()
+                .and_then(|value| BindingId::new(value).ok())
+                .ok_or_else(|| napi_error(&handle_error()))
+        };
+        let columns = columns
+            .into_iter()
+            .map(binding)
+            .collect::<napi::Result<Vec<_>>>()?;
+        let document = if kind == "models" {
+            let thing = binding(thing.ok_or_else(|| napi_error(&handle_error()))?)?;
+            if roles.len() != required.len() {
+                return Err(napi_error(&handle_error()));
+            }
+            let roles = roles
+                .into_iter()
+                .zip(required)
+                .map(|(role, required)| {
+                    from_canonical_json(role.as_bytes())
+                        .map(|role| DocumentRole::new(role, required))
+                        .map_err(|_| napi_error(&identity_error("invalid_role_identity")))
+                })
+                .collect::<napi::Result<Vec<_>>>()?;
+            Some(ThingDocument::new(thing, roles))
+        } else {
+            None
+        };
+        let selection = match kind.as_str() {
+            "matched" => BuildSelection::Matched,
+            "count" => BuildSelection::Count,
+            "exists" => BuildSelection::Exists,
+            "rows" => BuildSelection::Rows(&columns),
+            "models" => BuildSelection::Model(
+                document
+                    .as_ref()
+                    .expect("model selection creates a document"),
+            ),
+            _ => {
+                return Err(napi_error(&invalid(
+                    "plan_result_selection_unknown",
+                    "the result selection is unknown",
+                )));
+            }
+        };
+        let mut finished = self.finish(authority, selection, kind == "models")?;
+        if (kind == "models"
+            || model_bindings
+                .as_ref()
+                .is_some_and(|slots| !slots.is_empty()))
+            && let Some(projection) = projection
+        {
+            let NodePlanProgram::Raw(plans) = Arc::try_unwrap(finished.plans)
+                .unwrap_or_else(|_| unreachable!("fresh plan has one owner"))
+            else {
+                unreachable!("fresh builder returns raw plans")
+            };
+            let model = if kind == "models" {
+                let declared = declared
+                    .ok_or_else(|| napi_error(&identity_error("invalid_model_identity")))?;
+                projection.prepare_authored_plan(
+                    *plans,
+                    document.as_ref().expect("model document").thing,
+                    &declared,
+                )?
+            } else {
+                projection.prepare_authored_tuple(
+                    *plans,
+                    model_bindings.unwrap_or_default(),
+                    model_types.unwrap_or_default(),
+                )?
+            };
+            finished.plans = Arc::new(NodePlanProgram::Models(Box::new(model)));
+        }
+        Ok(finished)
     }
 }
 
 impl Default for NodePlanBuilder {
     fn default() -> Self {
-        Self::new()
+        Self::new(None)
+    }
+}
+
+pub(crate) enum NodePlanProgram {
+    Raw(Box<BuiltPlans>),
+    Models(Box<crate::runtime_projection::AuthoredPlanProjection>),
+}
+impl NodePlanProgram {
+    pub(crate) fn plans(&self) -> &[QueryPlanV3] {
+        match self {
+            Self::Raw(plans) => plans.plans(),
+            Self::Models(model) => model.stack.plans(),
+        }
+    }
+    fn writes(&self) -> bool {
+        match self {
+            Self::Raw(plans) => plans.writes(),
+            Self::Models(model) => model.stack.writes(),
+        }
+    }
+    pub(crate) fn returns_documents(&self) -> bool {
+        match self {
+            Self::Raw(plans) => plans.returns_documents(),
+            Self::Models(_) => true,
+        }
+    }
+    fn is_bulk(&self) -> bool {
+        match self {
+            Self::Raw(plans) => plans.bulk_rows().is_some(),
+            Self::Models(model) => model.bulk,
+        }
+    }
+}
+impl AsRef<[QueryPlanV3]> for NodePlanProgram {
+    fn as_ref(&self) -> &[QueryPlanV3] {
+        self.plans()
+    }
+}
+impl AsRef<type_bridge_orm::match_request::PlanFetchStack> for NodePlanProgram {
+    fn as_ref(&self) -> &type_bridge_orm::match_request::PlanFetchStack {
+        let Self::Models(model) = self else {
+            unreachable!("only model programs stage fetch groups")
+        };
+        &model.stack
     }
 }
 
 /// One validated `query-plan/v3` program.
 #[napi]
 pub struct NodePlan {
-    plan: QueryPlanV3,
+    pub(crate) plans: Arc<NodePlanProgram>,
 }
 
 impl NodePlan {
-    pub(crate) fn inner(&self) -> &QueryPlanV3 {
-        &self.plan
+    fn inner(&self) -> napi::Result<&QueryPlanV3> {
+        match self.plans.plans() {
+            [plan] => Ok(plan),
+            _ => Err(napi_error(&invalid(
+                "plan_batch_split",
+                "a split or empty bulk has no single wire plan",
+            ))),
+        }
     }
 }
 
 #[napi]
 impl NodePlan {
+    /// Bind a reusable explicit template to a fresh validated invocation.
+    #[napi(js_name = "bindRows")]
+    pub fn bind_rows(
+        &self,
+        env: Env,
+        authority: &NodeQueryV2Authority,
+        columns: Vec<Vec<u32>>,
+        rows: Vec<Vec<Unknown<'_>>>,
+    ) -> napi::Result<Self> {
+        if self.plans.is_bulk() {
+            return Err(napi_error(&invalid(
+                "plan_builder_mixed_inputs",
+                "bulk plans are rebuilt from Values rows",
+            )));
+        }
+        let plan = self.inner()?;
+        let authority = authority.authority();
+        if plan.managed_semantics()
+            != authority
+                .context()
+                .managed_state()
+                .managed_semantic_schema()
+        {
+            return Err(napi_error(&invalid(
+                "plan_schema_mismatch",
+                "binding requires the plan's schema authority",
+            )));
+        }
+        if columns.len() != rows.len() {
+            return Err(napi_error(&handle_error()));
+        }
+        let mut bound = Vec::with_capacity(rows.len());
+        for (columns, row) in columns.into_iter().zip(rows) {
+            if columns.len() != row.len() {
+                return Err(napi_error(&handle_error()));
+            }
+            let mut values = vec![None; plan.inputs().len()];
+            let mut seen = std::collections::BTreeSet::new();
+            for (column, value) in columns.into_iter().zip(row) {
+                let column = usize::try_from(column).map_err(|_| napi_error(&handle_error()))?;
+                let input = plan
+                    .inputs()
+                    .get(column)
+                    .ok_or_else(|| napi_error(&handle_error()))?;
+                if !seen.insert(column) {
+                    return Err(napi_error(&invalid(
+                        "plan_input_duplicate",
+                        "an input row gives one column twice",
+                    )));
+                }
+                if value.get_type()? != napi::ValueType::Null {
+                    values[column] = Some(crate::query_v2_builder_runtime::node_scalar(
+                        &env,
+                        input.value_type(),
+                        value,
+                    )?);
+                }
+            }
+            bound.push(type_bridge_contract::query_plan::InputRow::new(values));
+        }
+        let plan = plan
+            .with_given_rows(bound, authority.declared())
+            .map_err(|error| napi_error(&error))?;
+        Ok(Self {
+            plans: Arc::new(match self.plans.as_ref() {
+                NodePlanProgram::Raw(_) => NodePlanProgram::Raw(Box::new(BuiltPlans::single(plan))),
+                NodePlanProgram::Models(model) => {
+                    NodePlanProgram::Models(Box::new(model.with_plans(BuiltPlans::single(plan))?))
+                }
+            }),
+        })
+    }
+
+    /// Decode typed scalar columns before JavaScript can round integer evidence.
+    #[napi(js_name = "scalarRowsJson")]
+    pub fn scalar_rows_json(&self, answer_json: String) -> napi::Result<String> {
+        let answer = crate::staged_transaction_runtime::parse_plan_answer_json(&answer_json)?;
+        let rows = answer
+            .scalar_rows(self.inner()?)
+            .map_err(|error| napi_error(&error))?;
+        crate::runtime_projection::canonical_plan_scalar_rows_json(&rows)
+    }
+
     /// The canonical bytes, identical in every SDK.
     #[napi(js_name = "canonicalBytes")]
     pub fn canonical_bytes(&self) -> napi::Result<Buffer> {
-        self.plan
+        self.inner()?
             .canonical_bytes()
             .map(Buffer::from)
             .map_err(|diagnostic| napi_error(&diagnostic))
@@ -516,7 +993,7 @@ impl NodePlan {
     /// Canonical explanation JSON; transported input values are omitted.
     #[napi(js_name = "explainJson")]
     pub fn explain_json(&self) -> napi::Result<String> {
-        type_bridge_orm::plan_explain::explain(&self.plan)
+        type_bridge_orm::plan_explain::explain(self.inner()?)
             .and_then(|explanation| explanation.canonical_bytes())
             .map(|bytes| String::from_utf8(bytes).expect("canonical JSON is UTF-8"))
             .map_err(|diagnostic| napi_error(&diagnostic))
@@ -525,7 +1002,7 @@ impl NodePlan {
     /// The plan fingerprint digest in hex.
     #[napi]
     pub fn fingerprint(&self) -> napi::Result<String> {
-        self.plan
+        self.inner()?
             .fingerprint()
             .map(|fingerprint| fingerprint.as_fingerprint().digest().to_hex())
             .map_err(|diagnostic| napi_error(&diagnostic))
@@ -534,7 +1011,7 @@ impl NodePlan {
     /// Whether the plan writes, which makes an inferred kind `write`.
     #[napi]
     pub fn writes(&self) -> bool {
-        self.plan.writes()
+        self.plans.writes()
     }
 }
 

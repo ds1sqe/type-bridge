@@ -1097,6 +1097,7 @@ function validateConnectionTransport(
 
 export {
   PendingPlanAnswer,
+  PendingPlanAnswer as Pending,
   StagedTransaction,
   type PlanAnswer,
   type StagedTransactionKind,
@@ -1105,10 +1106,18 @@ export {
   Plan,
   PlanBuilder,
   PlanCondition,
+  PlanCondition as Condition,
   PlanExpr,
   PlanInput,
   PlanInputValue,
   PlanNewThing,
+  PlanRecording,
+  PlanTemplate,
+  Handle,
+  planFieldToken,
+  planMatch,
+  planInsert,
+  planInsertMany,
   PlanThing,
   PlanValue,
   type PlanExplanation,
@@ -1118,6 +1127,10 @@ export {
   type PlanOperand,
   type PlanRoleToken,
   type PlanValueType,
+  Matched,
+  type FieldToken,
+  type PlanModelAuthoring,
+  type PlanOptions,
 } from "./plan.js";
 
 /** Metadata from Rust plan execution; transported input values are omitted. */
@@ -1131,3 +1144,4 @@ export interface DebugEvent {
 export function setDebugListener(listener: ((event: DebugEvent) => void) | null): void {
   loadNative().setDebugListener(listener === null ? null : (json) => listener(JSON.parse(json) as DebugEvent));
 }
+export { Expr, Value } from "./plan-values.js";

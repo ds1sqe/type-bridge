@@ -36,6 +36,12 @@ import type {
   NativePlanOperand,
 } from "./native.js";
 import { queryV2AuthorityHandle, queryV2NativeCall } from "./query-v2-internals.js";
+import type { PlanAnswer } from "./staged-transaction.js";
+import { Expr, Value } from "./plan-values.js";
+import type { QueryLimits, InstalledRuntimeProjection, NativeAuthoredPlanResult } from "./runtime-projection.js";
+
+/** Query policy chosen once when a recording is created. */
+export interface PlanOptions { readonly queryLimits?: QueryLimits; }
 
 /** A generated model token, such as `Item`: its canonical type identity. */
 export interface PlanModelToken<Id extends string = string> {
@@ -77,7 +83,12 @@ export type PlanValueType =
 export type PlanLiteral = string | bigint | boolean | AttributeValue;
 
 /** A scalar operand: a {@link PlanValue}, a {@link PlanInput}, or a literal. */
-export type PlanOperand = PlanValue | PlanInput | PlanLiteral;
+export type PlanOperand = PlanValue | PlanInput<unknown> | PlanLiteral;
+type PlanHostTypes = {
+  string: string; long: bigint; double: number; boolean: boolean;
+  date: Date; datetime: Date; datetime_tz: Date; decimal: string; duration: string;
+};
+type LegacyInputValue = string | bigint | number | boolean | AttributeValue;
 
 type Comparator =
   | "equal"
@@ -85,7 +96,11 @@ type Comparator =
   | "less"
   | "less_or_equal"
   | "greater"
-  | "greater_or_equal";
+  | "greater_or_equal"
+  | "contains"
+  | "starts_with"
+  | "ends_with"
+  | "like";
 type ArithOp = "add" | "sub" | "mul" | "div" | "mod" | "pow";
 type Builtin = "abs" | "ceil" | "floor" | "round" | "min" | "max" | "length";
 
@@ -102,13 +117,14 @@ type ExprNode =
 // Handle -> its builder and dense index. Kept outside the classes so the
 // declarations expose no internals.
 const handles = new WeakMap<object, { readonly builder: PlanBuilder; readonly index: number }>();
-const inputTypes = new WeakMap<PlanInput, PlanValueType>();
+const inputTypes = new WeakMap<object, PlanValueType>();
 const exprNodes = new WeakMap<PlanExpr, ExprNode>();
 const conditions = new WeakMap<
   PlanCondition,
   readonly [PlanOperand, Comparator, PlanOperand]
 >();
-const inputValues = new WeakMap<PlanInputValue, readonly [PlanInput, PlanLiteral | null]>();
+const inputValues = new WeakMap<object, readonly [PlanInput<unknown>, unknown | null]>();
+const nativeBuilders = new WeakMap<PlanBuilder, NativePlanBuilder>();
 
 declare const planThingModel: unique symbol;
 declare const planHandleKind: unique symbol;
@@ -276,10 +292,10 @@ export class PlanValue {
 }
 
 /** One column's value in an input row; see {@link PlanBuilder.row}. */
-export class PlanInputValue {
+export class PlanInputValue<T = unknown> {
   declare readonly [planHandleKind]: "input-value";
   /** @internal */
-  constructor(input: PlanInput, value: PlanLiteral | null) {
+  constructor(input: PlanInput<T>, value: T | null) {
     inputValues.set(this, [input, value]);
     Object.freeze(this);
   }
@@ -289,16 +305,17 @@ export class PlanInputValue {
  * A typed input column; rows supply its values through
  * {@link PlanInput.value}. Many rows run the one plan over all of them.
  */
-export class PlanInput {
+export class PlanInput<T = LegacyInputValue> {
+  declare private readonly scalar: T;
   /** @internal */
   constructor() {}
 
   /** This column's value in one input row, of the column's value type. */
-  value(value: string | bigint | number | boolean | AttributeValue): PlanInputValue {
-    return new PlanInputValue(this, value as PlanLiteral);
+  value(value: T): PlanInputValue<T> {
+    return new PlanInputValue(this, value);
   }
   /** An absent value for an optional column. */
-  absent(): PlanInputValue {
+  absent(): PlanInputValue<T> {
     return new PlanInputValue(this, null);
   }
 
@@ -411,8 +428,9 @@ function literalParts(value: PlanLiteral, valueType?: PlanValueType): [string, u
 export class PlanBuilder {
   readonly #native: NativePlanBuilder;
 
-  constructor() {
-    this.#native = queryV2NativeCall(() => new (loadNative().NodePlanBuilder)());
+  constructor(options: PlanOptions = {}) {
+    this.#native = queryV2NativeCall(() => new (loadNative().NodePlanBuilder)(options.queryLimits?.nativeHandle()));
+    nativeBuilders.set(this, this.#native);
     newThingOps.set(this, {
       thingField: (thing, token, value) => {
         const index = this.#index(thing);
@@ -479,6 +497,33 @@ export class PlanBuilder {
     return register(new PlanValue(), this, this.#native.field(owner, fieldIdentity(token)));
   }
 
+  /** @internal Generated field access uses the shared binding cache. */
+  fieldValue(thing: PlanThing, token: PlanFieldToken): PlanValue {
+    return register(new PlanValue(), this, this.#native.fieldValue(this.#index(thing), fieldIdentity(token)));
+  }
+
+  /** @internal Generated IID lookup. */
+  byIid(thing: PlanThing, iid: string): void { this.#native.byIid(this.#index(thing), iid); }
+
+  /** @internal Add a player without replacing existing role players. */
+  link(relation: PlanThing, role: PlanRoleToken, player: PlanThing): void {
+    this.#native.link(this.#index(relation), role.role, this.#index(player));
+  }
+
+  /** @internal Lift a generated helper's caller value into given. */
+  bindValue(thing: PlanThing, field: string, kind: PlanValueType, value: unknown): PlanInput {
+    const input = new PlanInput();
+    inputTypes.set(input, kind);
+    return register(input, this, this.#native.bindValue(this.#index(thing), field, kind, value));
+  }
+
+  /** @internal Name a generated assignment through the shared core. */
+  letValue(thing: PlanThing, field: string, value: PlanExpr): PlanValue {
+    const tree = exprNodes.get(value);
+    if (tree === undefined) throw new TypeError("expression was not recorded by this SDK");
+    return register(new PlanValue(), this, this.#native.letValue(this.#index(thing), field, this.#expr(tree)));
+  }
+
   /** Declare an input column named `name`; each {@link row} supplies a value. */
   input(name: string, valueType: PlanValueType): PlanInput {
     return this.#input(name, valueType, false);
@@ -489,8 +534,13 @@ export class PlanBuilder {
     return this.#input(name, valueType, true);
   }
 
-  #input(name: string, valueType: PlanValueType, optional: boolean): PlanInput {
-    const input = new PlanInput();
+  /** @internal Strong input typing for explicit generated templates. */
+  typedInput<K extends PlanValueType>(name: string, kind: K, optional: boolean): PlanInput<PlanHostTypes[K]> {
+    return this.#input<PlanHostTypes[K]>(name, kind, optional);
+  }
+
+  #input<T = LegacyInputValue>(name: string, valueType: PlanValueType, optional: boolean): PlanInput<T> {
+    const input = new PlanInput<T>();
     inputTypes.set(input, valueType);
     return register(input, this, this.#native.input(name, valueType, optional));
   }
@@ -576,7 +626,7 @@ export class PlanBuilder {
       }
       const [input, literal] = parts;
       columns.push(this.#index(input));
-      literals.push(literal === null ? null : this.#literal(literal, inputTypes.get(input)));
+      literals.push(literal === null ? null : this.#literal(literal as PlanLiteral, inputTypes.get(input)));
     }
     this.#native.row(columns, literals);
     return this;
@@ -626,19 +676,31 @@ export class PlanBuilder {
     if (native === undefined) {
       throw new TypeError("PlanBuilder.build requires a type-bridge QueryV2Authority");
     }
-    return new Plan(queryV2NativeCall(() => this.#native.build(native)));
+    const plan = new Plan(queryV2NativeCall(() => this.#native.build(native)));
+    planBindings.set(plan, { builder: this, authority, encode: undefined });
+    return plan;
   }
 }
 
-const plans = new WeakMap<Plan, NativePlan>();
+const plans = new WeakMap<object, NativePlan>();
+const decoders = new WeakMap<object, (answerJson: string, projection?: NativeAuthoredPlanResult) => unknown>();
+const decoderFactories = new WeakMap<object, (plan: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult) => unknown>();
+type ScalarEncoder = (kind: PlanValueType, value: unknown) => unknown;
+const planBindings = new WeakMap<object, { builder: PlanBuilder; authority: QueryV2Authority; encode: ScalarEncoder | undefined }>();
 
 /** @internal The native program behind `plan`, for staging. */
-export function nativePlan(plan: Plan): NativePlan {
+export function nativePlan(plan: Plan<unknown>): NativePlan {
   const native = plans.get(plan);
   if (native === undefined) {
     throw new TypeError("stage requires a Plan built by PlanBuilder.build");
   }
   return native;
+}
+
+/** @internal Apply the typed projection chosen by a generated helper. */
+export function decodePlan<R>(plan: Plan<R>, answerJson: string, projection?: NativeAuthoredPlanResult): R {
+  const decoder = decoders.get(plan);
+  return (decoder === undefined ? JSON.parse(answerJson) : decoder(answerJson, projection)) as R;
 }
 
 /**
@@ -660,10 +722,12 @@ export interface PlanExplanation {
   readonly write_statements: number;
 }
 
-export class Plan {
+export class Plan<R = PlanAnswer> {
+  declare private readonly resultType: R;
   /** @internal */
-  constructor(native: NativePlan) {
-    plans.set(this, native);
+  constructor(native?: NativePlan, decoder?: (answerJson: string) => R) {
+    if (native !== undefined) plans.set(this, native);
+    if (decoder !== undefined) decoders.set(this, decoder);
     Object.freeze(this);
   }
 
@@ -671,6 +735,16 @@ export class Plan {
   static builder(): PlanBuilder {
     return new PlanBuilder();
   }
+
+  /** Record generated helpers synchronously; awaited continuations need a new context. */
+  static build<R>(body: (plan: PlanRecording) => Plan<R>, options?: PlanOptions): Plan<R>;
+  static build(body: (plan: PlanRecording) => void, options?: PlanOptions): Plan<Matched>;
+  static build<R>(body: (plan: PlanRecording) => Plan<R> | void, options: PlanOptions = {}): Plan<R> | Plan<Matched> {
+    return record(new PlanRecording(options), body);
+  }
+
+  /** Declare reusable explicit input columns before recording a template. */
+  static template(options: PlanOptions = {}): PlanTemplate { return new PlanTemplate(options); }
 
   /** The plan's canonical `query-plan/v3` bytes, identical in every SDK. */
   canonicalBytes(): Uint8Array {
@@ -693,4 +767,452 @@ export class Plan {
   writes(): boolean {
     return nativePlan(this).writes();
   }
+
+  /** Bind explicit template columns to a fresh immutable invocation. */
+  bind(rows: Iterable<Iterable<PlanInputValue>>): Plan<R> {
+    const binding = planBindings.get(this);
+    if (binding === undefined) throw new TypeError("build the template before binding rows");
+    const columns: number[][] = [];
+    const values: unknown[][] = [];
+    for (const row of rows) {
+      const indexes: number[] = [];
+      const cells: unknown[] = [];
+      for (const cell of row) {
+        const entry = inputValues.get(cell);
+        if (entry === undefined) throw new TypeError("a template row requires input cells");
+        const [input, value] = entry;
+        const handle = handles.get(input);
+        if (handle === undefined || handle.builder !== binding.builder) throw new TypeError("input does not belong to this template");
+        const kind = inputTypes.get(input)!;
+        indexes.push(handle.index);
+        cells.push(value === null ? null : binding.encode === undefined ? literalParts(value as PlanLiteral, kind)[1] : binding.encode(kind, value));
+      }
+      columns.push(indexes);
+      values.push(cells);
+    }
+    const authority = queryV2AuthorityHandle(binding.authority);
+    if (authority === undefined) throw new TypeError("the template has no generated schema authority");
+    const native = queryV2NativeCall(() => nativePlan(this).bindRows(authority, columns, values));
+    const result = new Plan<R>(native);
+    const factory = decoderFactories.get(this);
+    if (factory !== undefined) {
+      decoderFactories.set(result, factory);
+      decoders.set(result, (json, projection) => factory(native, json, projection));
+    }
+    planBindings.set(result, binding);
+    return result;
+  }
+}
+
+/** The count produced by an unprojected write. */
+export class Matched {
+  constructor(readonly count: bigint) { Object.freeze(this); }
+}
+
+function contextError(code: string, message: string): Error {
+  return Object.assign(new Error(`${code}: ${message}`), { code, category: "invalid_contract", path: [] });
+}
+
+type ResultSelection = {
+  readonly recording: PlanRecording;
+  readonly kind: "matched" | "count" | "exists" | "models" | "rows";
+  readonly thing?: number;
+  readonly declared?: string;
+  readonly roles?: readonly { role: string; required: boolean }[];
+  readonly decode?: (plan: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult) => unknown;
+  readonly columns?: readonly (PlanValue | PlanThing)[];
+  readonly modelSlots?: readonly { readonly binding: number; readonly declared: string }[];
+};
+const selections = new WeakMap<object, ResultSelection>();
+let currentRecording: PlanRecording | undefined;
+
+function record<R>(recording: PlanRecording, body: (plan: PlanRecording) => Plan<R> | void): Plan<R> | Plan<Matched> {
+  const previous = currentRecording;
+  currentRecording = recording;
+  try {
+    const selected = body(recording);
+    if (selected !== undefined && !(selected instanceof Plan)) throw contextError("plan_context_async", "Plan.build requires a synchronous callback; helpers after await need a new context");
+    return recording.finish(selected);
+  } finally {
+    currentRecording = previous;
+  }
+}
+
+/** A reusable plan with explicit input columns and rows. */
+export class PlanTemplate {
+  readonly #recording: PlanRecording;
+  #built = false;
+  constructor(options: PlanOptions = {}) { this.#recording = new PlanRecording(options); }
+  private requireOpen(): void {
+    if (this.#built) throw contextError("plan_already_built", "a template recording can be built once; bind it for each invocation");
+  }
+  input<K extends PlanValueType>(name: string, kind: K): PlanInput<PlanHostTypes[K]> { this.requireOpen(); return this.#recording.builder.typedInput(name, kind, false); }
+  optionalInput<K extends PlanValueType>(name: string, kind: K): PlanInput<PlanHostTypes[K]> { this.requireOpen(); return this.#recording.builder.typedInput(name, kind, true); }
+  row(cells: readonly PlanInputValue[]): this { this.requireOpen(); this.#recording.row(cells); return this; }
+  build<R>(body: (plan: PlanRecording) => Plan<R>): Plan<R> {
+    this.requireOpen();
+    this.#built = true;
+    return record(this.#recording, body) as Plan<R>;
+  }
+}
+
+/** The synchronous recording supplied to Plan.build. */
+export class PlanRecording {
+  /** @internal */
+  readonly builder: PlanBuilder;
+  #authority: QueryV2Authority | undefined;
+  #projection: InstalledRuntimeProjection | undefined;
+  #decodeRows: ((projection: NativeAuthoredPlanResult) => unknown[][]) | undefined;
+  #decodeScalars: ((plan: NativePlan, answerJson: string) => unknown[][]) | undefined;
+  #encodeScalar: ScalarEncoder | undefined;
+  readonly #rows: (readonly PlanInputValue[])[] = [];
+  constructor(options: PlanOptions = {}) { this.builder = new PlanBuilder(options); }
+
+  /** @internal */
+  static current(): PlanRecording {
+    if (currentRecording === undefined) {
+      throw contextError("plan_context_missing", "generated helpers require a synchronous Plan.build callback; helpers after await need a new context");
+    }
+    return currentRecording;
+  }
+
+  /** @internal One generated package supplies the authority for a recording. */
+  use(authority: QueryV2Authority, decodeScalars?: (plan: NativePlan, answerJson: string) => unknown[][], encodeScalar?: ScalarEncoder, projection?: InstalledRuntimeProjection, decodeRows?: (projection: NativeAuthoredPlanResult) => unknown[][]): void {
+    if (this.#authority !== undefined && this.#authority !== authority) {
+      throw contextError("plan_schema_mismatch", "one plan uses one generated schema package");
+    }
+    this.#authority = authority;
+    if (projection !== undefined) this.#projection = projection;
+    if (decodeRows !== undefined) this.#decodeRows = decodeRows;
+    if (decodeScalars !== undefined) this.#decodeScalars = decodeScalars;
+    if (encodeScalar !== undefined) this.#encodeScalar = encodeScalar;
+  }
+
+  /** @internal */
+  result<R>(selection: Omit<ResultSelection, "recording">): Plan<R> {
+    if (PlanRecording.current() !== this) throw contextError("plan_context_missing", "the recording is no longer open");
+    const result = new Plan<R>();
+    selections.set(result, { recording: this, ...selection });
+    return result;
+  }
+
+  /** Answer the matched row count. */
+  count(): Plan<bigint> { return this.result({ kind: "count" }); }
+
+  /** Answer whether any row matches. */
+  exists(): Plan<boolean> { return this.result({ kind: "exists" }); }
+
+  /** Require conditions involving bound values from this recording. */
+  require(...conditions: PlanCondition[]): void {
+    if (PlanRecording.current() !== this) throw contextError("plan_context_missing", "the recording is no longer open");
+    for (const condition of conditions) {
+      if (fieldConditions.has(condition)) throw new TypeError("class field tokens need a handle's where()");
+      this.builder.where(condition);
+    }
+  }
+
+  /** Select model and scalar tuples in argument order. */
+  returning<const Values extends readonly (Value<unknown> | Handle<unknown>)[]>(...values: Values): Plan<{ -readonly [K in keyof Values]: Values[K] extends Value<infer T> ? T : Values[K] extends Handle<infer M> ? M : never }[]> {
+    const modelSlots: { binding: number; declared: string }[] = [];
+    const columns = values.map((value) => {
+      if (value instanceof Handle) {
+        if (value.recording !== this) throw contextError("plan_context_missing", "the model belongs to another recording");
+        modelSlots.push({ binding: handles.get(value.thing)!.index, declared: value.definition.model.typeKey });
+        return value.thing;
+      }
+      return value.raw;
+    });
+    return this.result({ kind: "rows", columns, modelSlots, decode: (plan, json, projection) => {
+      if (modelSlots.length !== 0) {
+        if (projection === undefined || this.#decodeRows === undefined) throw new TypeError("model tuples require the core's committed projection proof");
+        return this.#decodeRows(projection);
+      }
+      if (this.#decodeScalars === undefined) throw new TypeError("the generated package has no scalar result codec");
+      return this.#decodeScalars(plan, json);
+    } });
+  }
+
+  /** @internal Defer rows until the generated package supplies its host scalar codec. */
+  row(cells: readonly PlanInputValue[]): void { this.#rows.push(cells); }
+
+  /** @internal */
+  finish<R>(selected: Plan<R> | void): Plan<R> | Plan<Matched> {
+    if (this.#authority === undefined) throw contextError("plan_context_missing", "a plan needs a generated model's schema authority");
+    for (const row of this.#rows) this.builder.row(row.map((cell) => {
+      const entry = inputValues.get(cell);
+      if (entry === undefined) throw new TypeError("a template row requires input cells");
+      const [input, value] = entry;
+      return value === null || this.#encodeScalar === undefined ? cell : new PlanInputValue(input, this.#encodeScalar(inputTypes.get(input)!, value) as PlanLiteral);
+    }));
+    const result = selected ?? new Plan<Matched>();
+    const selection: ResultSelection | undefined = selected === undefined ? { recording: this, kind: "matched" } : selections.get(selected);
+    if (selection === undefined || selection.recording !== this) throw contextError("plan_context_missing", "the result belongs to another recording");
+    const native = nativeBuilders.get(this.builder)!;
+    const roles = selection.roles ?? [];
+    const columns = (selection.columns ?? []).map((column) => {
+      const handle = handles.get(column);
+      if (handle === undefined || handle.builder !== this.builder) throw new TypeError("foreign plan value");
+      return handle.index;
+    });
+    const authority = queryV2AuthorityHandle(this.#authority);
+    if (authority === undefined) throw new TypeError("build requires a generated schema authority");
+    const built = queryV2NativeCall(() => native.buildSelected(authority, selection.kind, selection.thing ?? null, roles.map((role) => role.role), roles.map((role) => role.required), columns, this.#projection?.nativeHandle() ?? null, selection.declared ?? null, selection.modelSlots?.map((slot) => slot.binding) ?? null, selection.modelSlots?.map((slot) => slot.declared) ?? null));
+    plans.set(result, built);
+    const decode = (native: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult): unknown => {
+      if (selection.decode !== undefined) return selection.decode(native, answerJson, projection);
+      const answer = JSON.parse(answerJson) as PlanAnswer;
+      if (selection.kind === "count" && answer.kind === "count") return BigInt(answer.value);
+      if (selection.kind === "exists" && answer.kind === "exists") return answer.value;
+      if (selection.kind === "matched" && (answer.kind === "count" || answer.kind === "matched")) return new Matched(BigInt(answer.value));
+      throw new TypeError("the plan answer does not match its selected result");
+    };
+    decoders.set(result, (json, projection) => decode(built, json, projection));
+    decoderFactories.set(result, decode);
+    planBindings.set(result, { builder: this.builder, authority: this.#authority, encode: this.#encodeScalar });
+    return result;
+  }
+}
+
+/** @internal Generated model metadata and its existing scalar codec. */
+export interface PlanModelAuthoring<M> {
+  readonly model: PlanModelToken;
+  readonly projection: () => InstalledRuntimeProjection;
+  readonly decodeRows: (projection: NativeAuthoredPlanResult) => unknown[][];
+  readonly authority: () => QueryV2Authority;
+  readonly isFieldToken: (token: object) => boolean;
+  readonly fields: Readonly<Record<string, {
+    readonly token: PlanFieldToken;
+    readonly kind: PlanValueType;
+    readonly site: string;
+    readonly encode: (value: unknown) => unknown;
+  }>>;
+  readonly roles: readonly { readonly name: string; readonly token: PlanRoleToken; readonly role: string; readonly required: boolean }[];
+  readonly decode: (plan: NativePlan, answerJson: string, projection?: NativeAuthoredPlanResult) => M[];
+  readonly decodeScalars: (plan: NativePlan, answerJson: string) => unknown[][];
+  readonly encodeScalar: ScalarEncoder;
+}
+
+/** A model bound inside a synchronous plan recording. */
+export class Handle<M> {
+  declare private readonly modelType: M;
+  readonly #values = new Map<string, Value<unknown>>();
+  /** @internal */
+  constructor(
+    readonly recording: PlanRecording,
+    readonly thing: PlanThing,
+    readonly definition: PlanModelAuthoring<M>,
+  ) {}
+
+  private open(): void {
+    if (PlanRecording.current() !== this.recording) throw contextError("plan_context_missing", "the handle belongs to another recording");
+  }
+
+  /** @internal Generated properties supply their schema field name and scalar type. */
+  field<T>(name: string): Value<T> {
+    this.open();
+    const field = this.definition.fields[name];
+    if (field === undefined) throw new TypeError(`unknown plan field ${name}`);
+    let value = this.#values.get(name);
+    if (value === undefined) {
+      value = new Value(this.recording.builder.fieldValue(this.thing, field.token), {
+        bind: (host, floating) => {
+          this.open();
+          return this.recording.builder.bindValue(this.thing, field.site, floating ? "double" : field.kind, floating ? host : field.encode(host));
+        },
+      });
+      this.#values.set(name, value);
+    }
+    return value as Value<T>;
+  }
+
+  where(...conditions: PlanCondition[]): this {
+    this.open();
+    for (const condition of conditions) {
+      const deferred = fieldConditions.get(condition);
+      if (deferred === undefined) this.recording.builder.where(condition);
+      else {
+        if (!this.definition.isFieldToken(deferred.token)) throw new TypeError("field token is not issued by this package");
+        const entry = Object.entries(this.definition.fields).find(([, field]) => fieldIdentity(field.token) === fieldIdentity(deferred.token));
+        if (entry === undefined) throw new TypeError("the field token does not belong to this model");
+        const left = this.field<unknown>(entry[0]);
+        const right = deferred.value instanceof Value ? deferred.value.raw
+          : deferred.value instanceof PlanInput ? deferred.value
+          : this.recording.builder.bindValue(this.thing, entry[1].site, entry[1].kind, entry[1].encode(deferred.value));
+        this.recording.builder.where(new PlanCondition(left.raw, deferred.op, right));
+      }
+    }
+    return this;
+  }
+
+  /** @internal Per-model set signatures restrict the available fields. */
+  setFields(fields: Readonly<Record<string, unknown>>): Plan<M[]> {
+    this.open();
+    for (const [name, host] of Object.entries(fields)) {
+      if (host === undefined) continue;
+      const field = this.definition.fields[name];
+      if (field === undefined) throw new TypeError(`unknown plan field ${name}`);
+      const value = host instanceof Expr
+        ? this.recording.builder.letValue(this.thing, field.site, host.raw)
+        : host instanceof Value ? host.raw
+        : host instanceof PlanInput ? host
+        : this.recording.builder.bindValue(this.thing, field.site, field.kind, field.encode(host));
+      this.recording.builder.update(this.thing, field.token, value);
+    }
+    return this.models();
+  }
+
+  unset(field: PlanFieldToken): Plan<M[]> {
+    this.open();
+    if (!this.definition.isFieldToken(field) || !Object.values(this.definition.fields).some((own) => fieldIdentity(own.token) === fieldIdentity(field))) throw new TypeError("the field token does not belong to this model");
+    this.recording.builder.deleteField(this.thing, field);
+    return this.models();
+  }
+
+  /** @internal Generated role signatures supply nominal player handles. */
+  linkPlayers(players: Readonly<Record<string, Handle<unknown> | readonly Handle<unknown>[] | undefined>>, remove = false): Plan<M[]> {
+    this.open();
+    for (const [name, supplied] of Object.entries(players)) {
+      if (supplied === undefined) continue;
+      const role = this.definition.roles.find((role) => role.name === name);
+      if (role === undefined) throw new TypeError(`unknown plan role ${name}`);
+      const values = supplied instanceof Handle ? [supplied] : supplied;
+      for (const player of values) {
+        if (!(player instanceof Handle) || player.recording !== this.recording) throw new TypeError("foreign plan player");
+        if (remove) this.recording.builder.deletePlayer(this.thing, role.token, player.thing);
+        else this.recording.builder.link(this.thing, role.token, player.thing);
+      }
+    }
+    return this.models();
+  }
+
+  delete(): Plan<Matched> {
+    this.open();
+    this.recording.builder.delete(this.thing);
+    return this.recording.result({ kind: "matched" });
+  }
+
+  deleteReturning(): Plan<M[]> {
+    this.open();
+    this.recording.builder.delete(this.thing);
+    return this.models();
+  }
+
+  /** @internal */
+  models(): Plan<M[]> {
+    const thing = handles.get(this.thing);
+    if (thing === undefined || thing.builder !== this.recording.builder) throw new TypeError("foreign plan handle");
+    return this.recording.result({ kind: "models", thing: thing.index, declared: this.definition.model.typeKey, roles: this.definition.roles, decode: this.definition.decode });
+  }
+}
+
+/** @internal Shared recorder behind generated match/subtypes/byIid helpers. */
+export function planMatch<M, H extends Handle<M>>(
+  definition: PlanModelAuthoring<M>,
+  HandleClass: new (recording: PlanRecording, thing: PlanThing, definition: PlanModelAuthoring<M>) => H,
+  fields: Readonly<Record<string, unknown>> = {},
+  options: { subtypes?: boolean; iid?: string; key?: readonly [string, unknown] } = {},
+): H {
+  const recording = PlanRecording.current();
+  recording.use(definition.authority(), definition.decodeScalars, definition.encodeScalar, definition.projection(), definition.decodeRows);
+  const thing = options.subtypes ? recording.builder.subtypes(definition.model) : recording.builder.exact(definition.model);
+  const handle = new HandleClass(recording, thing, definition);
+  if (options.iid !== undefined) recording.builder.byIid(thing, options.iid);
+  if (options.key !== undefined) {
+    const [name, host] = options.key;
+    const field = definition.fields[name];
+    if (field === undefined) throw new TypeError(`unknown plan key ${name}`);
+    const bound = handle.field<unknown>(name);
+    const value = host instanceof PlanInput ? host : recording.builder.bindValue(thing, "key", field.kind, field.encode(host));
+    recording.builder.where(bound.raw.eq(value));
+  }
+  for (const [name, value] of Object.entries(fields)) {
+    if (value !== undefined) recording.builder.where(handle.field<unknown>(name).eq(value));
+  }
+  return handle;
+}
+
+/** @internal Shared scalar insert/put recorder for generated factories. */
+export function planInsert<M>(definition: PlanModelAuthoring<M>, fields: Readonly<Record<string, unknown>>, players: Readonly<Record<string, Handle<unknown> | readonly Handle<unknown>[] | undefined>> = {}, put = false): Plan<M[]> {
+  const recording = PlanRecording.current();
+  recording.use(definition.authority(), definition.decodeScalars, definition.encodeScalar, definition.projection(), definition.decodeRows);
+  const created = put ? recording.builder.put(definition.model) : recording.builder.insert(definition.model);
+  const thing = created.thing();
+  for (const [name, host] of Object.entries(fields)) {
+    if (host === undefined) continue;
+    const field = definition.fields[name];
+    if (field === undefined) throw new TypeError(`unknown plan field ${name}`);
+    const value = host instanceof Expr ? recording.builder.letValue(thing, field.site, host.raw)
+      : host instanceof Value ? host.raw : host instanceof PlanInput ? host
+      : recording.builder.bindValue(thing, field.site, field.kind, field.encode(host));
+    created.field(field.token, value);
+  }
+  for (const [name, supplied] of Object.entries(players)) {
+    if (supplied === undefined) continue;
+    const role = definition.roles.find((role) => role.name === name);
+    if (role === undefined) throw new TypeError(`unknown plan role ${name}`);
+    for (const player of supplied instanceof Handle ? [supplied] : supplied) {
+      if (!(player instanceof Handle) || player.recording !== recording) throw new TypeError("foreign plan player");
+      created.player(role.token, player.thing);
+    }
+  }
+  return new Handle(recording, thing, definition).models();
+}
+
+/** @internal Core groups, splits and correlates generated entity Values rows. */
+export function planInsertMany<M>(definition: PlanModelAuthoring<M>, rows: Iterable<object>, put = false): Plan<M[]> {
+  const recording = PlanRecording.current();
+  recording.use(definition.authority(), definition.decodeScalars, definition.encodeScalar, definition.projection(), definition.decodeRows);
+  const created = put ? recording.builder.put(definition.model) : recording.builder.insert(definition.model);
+  const thing = created.thing();
+  const native = nativeBuilders.get(recording.builder)!;
+  const fields = Object.entries(definition.fields);
+  const columns = fields.map(([, field]) => ({ field: fieldIdentity(field.token), valueType: field.kind }));
+  const lowered = Array.from(rows, (row) => {
+    for (const name of Object.keys(row)) {
+      if (definition.fields[name] === undefined) throw new TypeError(`unknown plan field ${name}`);
+    }
+    return fields.map(([name, field]) => {
+      const value = (row as Readonly<Record<string, unknown>>)[name];
+      return value === undefined ? undefined : field.encode(value);
+    });
+  });
+  native.modelRows(handles.get(thing)!.index, columns, lowered);
+  return new Handle(recording, thing, definition).models();
+}
+
+/** A generated class field, resolved against the handle passed to where(). */
+export interface FieldToken<T> extends PlanFieldToken {
+  eq(other: T | Value<T> | PlanInput<T>): PlanCondition;
+  ne(other: T | Value<T> | PlanInput<T>): PlanCondition;
+  lt(other: T | Value<T> | PlanInput<T>): PlanCondition;
+  le(other: T | Value<T> | PlanInput<T>): PlanCondition;
+  gt(other: T | Value<T> | PlanInput<T>): PlanCondition;
+  ge(other: T | Value<T> | PlanInput<T>): PlanCondition;
+  contains(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
+  startsWith(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
+  endsWith(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
+  like(this: FieldToken<string>, other: string | Value<string> | PlanInput<string>): PlanCondition;
+}
+
+const fieldConditions = new WeakMap<PlanCondition, { token: PlanFieldToken; op: Comparator; value: unknown }>();
+
+/** @internal Decorate the generated runtime's existing nominal field token. */
+export function planFieldToken<T, Token extends PlanFieldToken>(token: Token): Token & FieldToken<T> {
+  const condition = (op: Comparator, value: unknown): PlanCondition => {
+    const result = new PlanCondition(new PlanValue(), op, false);
+    fieldConditions.set(result, { token, op, value });
+    return result;
+  };
+  return Object.assign(token, {
+    eq: (value: unknown) => condition("equal", value),
+    ne: (value: unknown) => condition("not_equal", value),
+    lt: (value: unknown) => condition("less", value),
+    le: (value: unknown) => condition("less_or_equal", value),
+    gt: (value: unknown) => condition("greater", value),
+    ge: (value: unknown) => condition("greater_or_equal", value),
+    contains: (value: unknown) => condition("contains", value),
+    startsWith: (value: unknown) => condition("starts_with", value),
+    endsWith: (value: unknown) => condition("ends_with", value),
+    like: (value: unknown) => condition("like", value),
+  });
 }
