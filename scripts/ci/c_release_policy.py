@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-POLICY = ROOT / ".github/release/c-2.3.2.json"
+POLICY = ROOT / ".github/release/c-2.3.3.json"
 CI = ROOT / ".github/workflows/ci.yml"
-VERSION = "2.3.2"
+VERSION = "2.3.3"
 # Runtime ABI; installed pkg-config metadata stays on the frozen 1.6.0 line.
 ABI = "1.7.0"
 TARGET = "x86_64-unknown-linux-gnu"

@@ -1,6 +1,6 @@
 [package]
 name = "type-bridge-toml-transpiler"
-version = "2.3.2"
+version = "2.3.3"
 edition = "2024"
 description = "TOML schema DSL transpiler producing TypeQL define blocks for type-bridge"
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 authors.workspace = true
 publish = ["crates-io"]
 readme = "README.md"
-documentation = "https://docs.rs/type-bridge-toml-transpiler/2.3.2"
+documentation = "https://docs.rs/type-bridge-toml-transpiler/2.3.3"
 rust-version = "1.88"
 
 [lib]
@@ -17,7 +17,7 @@ name = "type_bridge_toml_transpiler"
 path = "src/lib.rs"
 
 [dependencies]
-type-bridge-core-lib = { path = "../core", version = "2.3.2" }
+type-bridge-core-lib = { path = "../core", version = "2.3.3" }
 indexmap = { version = "2", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2"

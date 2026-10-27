@@ -9,7 +9,7 @@ boundary.
 
 ```toml
 [dependencies]
-type-bridge-toml-transpiler = "2.3.2"
+type-bridge-toml-transpiler = "2.3.3"
 ```
 
 ```rust
@@ -35,10 +35,10 @@ official TypeQL AST construction and rendering. Function bodies are validated
 by the official parser and retained verbatim, including comments and whitespace,
 so schema exports preserve declared fingerprints. It has no optional features.
 
-The crate is released in lockstep with TypeBridge 2.3.2 and requires Rust
+The crate is released in lockstep with TypeBridge 2.3.3 and requires Rust
 1.88+. Database-facing TypeBridge components support TypeDB
 3.11.x–3.14.x, with 3.13.6 as the V2 semantic baseline.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
-[API documentation](https://docs.rs/type-bridge-toml-transpiler/2.3.2) ·
+[API documentation](https://docs.rs/type-bridge-toml-transpiler/2.3.3) ·
 [MIT license](https://github.com/ds1sqe/type-bridge/blob/master/LICENSE)

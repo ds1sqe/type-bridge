@@ -122,7 +122,7 @@ fn generated_rust_public_facade_observes_the_administration_catalog() {
     fs::write(
         &manifest,
         source.replace(
-            "type-bridge = { version = \"=2.3.2\", default-features = false }",
+            "type-bridge = { version = \"=2.3.3\", default-features = false }",
             &format!(
                 "type-bridge = {{ path = {:?}, default-features = false }}",
                 runtime

@@ -84,7 +84,7 @@
       "name": "type-bridge",
       "archive_stem": "type-bridge-cli-artifact-{target}",
       "version_authority": "type-bridge-core/crates/cli/Cargo.toml",
-      "version_authority_sha256": "3c92a37d8deb6a2ad51a0f614cba09935b13d7a5322b8133651a04d2be98d6e7",
+      "version_authority_sha256": "563fb420dfdb01e87dc6820d60545d6d856c76198ca483a0cfa4cc4d5073bfc1",
       "compiler_free_installation": true
     },
     "runtime": {
@@ -233,14 +233,14 @@
     "protected_signature": {
       "cosign_version": "3.0.6",
       "issuer": "https://token.actions.githubusercontent.com",
-      "identity_regexp": "^https://github\\.com/ds1sqe/type-bridge/\\.github/workflows/c-release\\.yml@refs/tags/v2\\.3\\.2$",
+      "identity_regexp": "^https://github\\.com/ds1sqe/type-bridge/\\.github/workflows/c-release\\.yml@refs/tags/v2\\.3\\.3$",
       "artifact_signatures": "forbidden-before-authorization"
     }
   },
   "source_authorities": [
     {
       "path": "type-bridge-core/crates/c/Cargo.toml",
-      "sha256": "dd7d4de92ac835b23eac820cb388c7b45769809982c58a0a021a0a556615c8d8"
+      "sha256": "235317821f9c0cf85a07eae149aa1e2e755143ca154b200b42c51d3ccb5e3150"
     },
     {
       "path": "type-bridge-core/crates/c/CMakeLists.txt",
