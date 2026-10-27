@@ -1925,6 +1925,39 @@ def _run_sdk_queries_journey(
     return _sdk_results(catalog, journey, observed)
 
 
+def _capture_v2_exchange(request: bytes, reply: bytes, advertisement: bytes) -> None:
+    destination = os.environ.get("TYPE_BRIDGE_V2_CAPTURE_DIRECTORY")
+    if destination is None:
+        return
+    wire = json.loads(request)
+    assert wire["format"] == "typebridge.query-remote-request/v2"
+    plan = wire["plan"]
+    terminal = plan.get("compatibility", {}).get("model_query", {})
+    if terminal.get("kind") == "page":
+        name = "page-with-total" if terminal["include_total"] else "page-without-total"
+    elif any(
+        pattern.get("kind") == "isa"
+        and pattern["type_id"]["label"] == "party"
+        and pattern["include_subtypes"]
+        for stage in plan["pipeline"]
+        if stage["kind"] == "match"
+        for pattern in stage["patterns"]
+    ):
+        name = "abstract-party"
+    else:
+        return
+    directory = Path(destination) / name
+    directory.mkdir(parents=True, exist_ok=True)
+    if (directory / "request.json").exists():
+        return
+    for filename, data in [
+        ("advertisement.json", advertisement),
+        ("request.json", request),
+        ("reply.json", reply),
+    ]:
+        (directory / filename).write_bytes(data)
+
+
 def _free_port() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -4334,7 +4367,9 @@ def test_generated_projection_round_trips_live_models(
                 with urllib_request.urlopen(http_request, timeout=30) as response:
                     return response.read()
 
-            return await asyncio.to_thread(post)
+            reply = await asyncio.to_thread(post)
+            _capture_v2_exchange(request, reply, advertisement)
+            return reply
 
         remote_session = generated.QuerySession(
             generated.ExchangeConnection(advertisement, exchange),
@@ -4344,6 +4379,27 @@ def test_generated_projection_round_trips_live_models(
         remote_people = remote_session.query(remote_person).where(
             remote_person.field(generated.Person.identifier).eq(generated.Identifier("person-1"))
         )
+        if os.environ.get("TYPE_BRIDGE_V2_CAPTURE_DIRECTORY") is not None:
+            capture_party = remote_session.subtypes(generated.Party)
+            capture_parties = asyncio.run(
+                remote_session.query(capture_party).rows(
+                    limit=10, order_by=(capture_party.field(generated.Party.identifier).asc(),)
+                )
+            )
+            assert [type(value) for value in capture_parties] == [
+                generated.Employee,
+                generated.Manager,
+            ]
+            capture_page = asyncio.run(
+                remote_people.page_by(
+                    remote_person,
+                    limit=1,
+                    order_by=(remote_person.field(generated.Person.identifier).asc(),),
+                    include_total=False,
+                )
+            )
+            assert capture_page.total is None
+            assert len(capture_page.items) == 1
         remote_person_one = asyncio.run(remote_people.one())
         assert type(remote_person_one) is generated.Person
         assert remote_person_one.iid == person.iid
@@ -4637,6 +4693,9 @@ def test_generated_projection_round_trips_live_models(
                 sdk_queries_journey,
                 sdk_queries_proof_observations,
             )
+        if (capture_directory := os.environ.get("TYPE_BRIDGE_V2_CAPTURE_DIRECTORY")) is not None:
+            for name in ["page-with-total", "page-without-total", "abstract-party"]:
+                assert (Path(capture_directory) / name / "reply.json").is_file()
     finally:
         server.terminate()
         try:
