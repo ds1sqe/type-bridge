@@ -31,11 +31,13 @@ Release notes record the accepted multi-platform digest. Prefer it for
 deployments:
 
 ```bash
-export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:1a9c9c26193ccac273d58e6b3c78b6741b744b60ead3e90ee221401536e02519'
+export TYPE_BRIDGE_SERVER_IMAGE='ghcr.io/ds1sqe/type-bridge-server@sha256:6f722e80528315b6729bb1dd05498674bb7e7901ad29c509ebf94575bb083466'
 docker pull "$TYPE_BRIDGE_SERVER_IMAGE"
 ```
 
-The stable `2.3.2` tag points to the same digest (2.3.1 is
+The stable `2.3.3` tag points to the same digest (2.3.2 is
+`sha256:1a9c9c26193ccac273d58e6b3c78b6741b744b60ead3e90ee221401536e02519`,
+2.3.1 is
 `sha256:f33430b590b3e8c09f739e4b0ed36ce7ef254ded7c769f3be8472452d999bc7c`,
 2.3.0 is
 `sha256:fe72c2911a9cfa7116eaf671e195028a1440f579614b2b7f8921ab0f683f3209`).
