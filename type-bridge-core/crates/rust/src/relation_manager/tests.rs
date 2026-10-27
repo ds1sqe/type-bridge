@@ -1131,8 +1131,8 @@ async fn public_relation_subtypes_all_rehydrates_concrete_children_in_discovery_
     else {
         panic!("unexpected events: {:?}", guard.events)
     };
-    assert!(discovery.contains("sub engagement"));
-    assert!(discovery.contains("_iid") && discovery.contains("_type"));
+    assert!(discovery.contains("$root0 isa engagement"));
+    assert!(discovery.contains("select $root0;") && discovery.contains("distinct;"));
     for (query, iid) in [(child2, "0x2"), (child1, "0x1")] {
         assert!(query.contains("assignment") && query.contains(iid) && query.contains("fetch"));
     }
@@ -1157,7 +1157,7 @@ async fn public_relation_subtypes_get_by_iid_zero_and_one() {
         else {
             panic!("unexpected events: {:?}", guard.events)
         };
-        assert!(query.contains("sub engagement") && query.contains("iid 0x1"));
+        assert!(query.contains("$root0 isa engagement") && query.contains("iid 0x1"));
     }
     let (db, _state) = test_db(vec![
         Response::Result(QueryResult::Documents(vec![identity_doc(

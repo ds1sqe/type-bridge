@@ -632,11 +632,11 @@ struct MatchProgram {
     state: AnswerState<ValidatedMatchResult>,
     input: Option<(
         crate::error::Result<DescriptorRegistry>,
-        ValidatedMatchRequest,
+        Arc<ValidatedMatchRequest>,
     )>,
     remote: Option<(
         DescriptorRegistry,
-        ValidatedMatchRequest,
+        Arc<ValidatedMatchRequest>,
         crate::match_request::plan_adapter::AdaptedMatchRequest,
         crate::QueryExecutionResourceLimits,
     )>,
@@ -1508,6 +1508,17 @@ impl Transaction {
         &mut self,
         registry: &DescriptorRegistry,
         validated: ValidatedMatchRequest,
+        limits: MatchExecutionLimits,
+    ) -> Result<Pending<ValidatedMatchResult>, PendingError> {
+        self.stage_shared_match_with_limits(registry, Arc::new(validated), limits)
+    }
+
+    /// Queue a typed read while sharing its immutable request proof with the
+    /// result decoder. The request is not rebuilt or revalidated in a binding.
+    pub fn stage_shared_match_with_limits(
+        &mut self,
+        registry: &DescriptorRegistry,
+        validated: Arc<ValidatedMatchRequest>,
         limits: MatchExecutionLimits,
     ) -> Result<Pending<ValidatedMatchResult>, PendingError> {
         self.admit(false)?;

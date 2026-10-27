@@ -217,7 +217,12 @@ impl InstalledRuntimeProjection {
         Ok(registry)
     }
 
-    pub(crate) fn manager_registry(&self) -> Result<Arc<DescriptorRegistry>> {
+    /// Return the cached plan authority for generated manager execution.
+    ///
+    /// Schema-less released projections reconstruct manager authority here;
+    /// typed query admission continues to require the installed schema.
+    #[doc(hidden)]
+    pub fn manager_registry(&self) -> Result<Arc<DescriptorRegistry>> {
         self.manager_registry
             .get_or_init(|| {
                 (|| -> Result<Arc<DescriptorRegistry>> {

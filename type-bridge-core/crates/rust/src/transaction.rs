@@ -129,7 +129,7 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
         cancellation: AnswerCancellation,
     ) -> crate::query::QuerySession<'_, S> {
         crate::query::QuerySession::borrowed(
-            &self.installed,
+            Arc::clone(&self.installed),
             Arc::clone(&self.registry),
             &self.tx,
             self.db.operation_limits(resources),
@@ -266,10 +266,16 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
-        let manager = DynamicEntityManager::with_canonical_transaction(
+        let manager = DynamicEntityManager::with_registry_transaction(
             self.transaction.tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
             Arc::new(descriptor),
         );
+        let manager = if self.transaction.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         Ok((id, installed, manager))
     }
 
@@ -567,10 +573,16 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
-        let manager = DynamicRelationManager::with_canonical_transaction(
+        let manager = DynamicRelationManager::with_registry_transaction(
             self.transaction.tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
             Arc::new(descriptor),
         );
+        let manager = if self.transaction.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         Ok((id, installed, manager))
     }
 

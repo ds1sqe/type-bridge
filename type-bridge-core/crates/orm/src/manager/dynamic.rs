@@ -65,7 +65,9 @@ impl<'db> DynamicEntityManager<'db> {
         }
     }
 
-    pub(crate) fn literal_values(mut self) -> Self {
+    /// Use the literal transport when the owning database cannot send given rows.
+    #[doc(hidden)]
+    pub fn literal_values(mut self) -> Self {
         self.plans
             .as_mut()
             .expect("registry-backed manager")
@@ -1535,7 +1537,9 @@ impl<'db> DynamicRelationManager<'db> {
         }
     }
 
-    pub(crate) fn literal_values(mut self) -> Self {
+    /// Use the literal transport when the owning database cannot send given rows.
+    #[doc(hidden)]
+    pub fn literal_values(mut self) -> Self {
         self.plans
             .as_mut()
             .expect("registry-backed manager")

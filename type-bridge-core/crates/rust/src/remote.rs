@@ -357,7 +357,10 @@ impl<S: Schema> ProxyDatabase<S> {
                 .connection
                 .staged_transaction(options, &cancellation)
                 .await
-                .map(Transaction::new)
+                .map(|inner| {
+                    Transaction::new(inner)
+                        .with_query_schema(self.installed.clone(), self.registry.clone())
+                })
                 .map_err(connect_error);
         };
         // A fetched staged advertisement is checked against the connection's
@@ -385,7 +388,10 @@ impl<S: Schema> ProxyDatabase<S> {
         runtime
             .connection
             .staged_transaction_with_exchange(&advertisement, send, options)
-            .map(Transaction::new)
+            .map(|inner| {
+                Transaction::new(inner)
+                    .with_query_schema(self.installed.clone(), self.registry.clone())
+            })
             .map_err(connect_error)
     }
 
@@ -406,7 +412,11 @@ impl<S: Schema> ProxyDatabase<S> {
         resources: QueryExecutionResourceLimits,
         cancellation: AnswerCancellation,
     ) -> Result<QuerySession<'_, S>> {
-        let installed = self.installed.as_deref().ok_or_else(remote_not_bound)?;
+        let installed = self
+            .installed
+            .as_ref()
+            .cloned()
+            .ok_or_else(remote_not_bound)?;
         let registry = self.registry.as_ref().ok_or_else(remote_not_bound)?;
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
         Ok(QuerySession::remote(

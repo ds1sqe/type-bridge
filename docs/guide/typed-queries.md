@@ -1029,3 +1029,12 @@ lists every limit with its default.
 
 The normative cross-language behavior is maintained in the
 [unified typed-query contract](../development/typed-query-contract.md).
+
+
+Rust staged transactions expose `tx.query()?`. Its session uses the same
+`one()`, `rows()`, `first()`, `page_by()`, count, existence and aggregate
+terminals as `db.query()?`; each returns `query::Pending<T>` instead of `T`.
+Drop the session before `tx.commit().await?`, then call `pending.result()?`
+to obtain the direct terminal's exact output type. Reads see earlier staged
+writes and publish only after a successful commit, directly and over the
+proxy. The pending owns the decoding evidence and survives its session.

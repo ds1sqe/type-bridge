@@ -1841,7 +1841,7 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 let constructor = format!("{}_input", scalar_domain_function_name(domain));
                 let _ = writeln!(
                     output,
-                    "pub type {alias} = FunctionInput<AppSchema, {scalar}>;\n\npub fn {constructor}<Value>(session: &QuerySession<'_, AppSchema>, value: &Value) -> type_bridge::Result<{alias}>\nwhere\n    Value: Model<Schema = AppSchema> + QueryValued<Domain = {scalar}>,\n{{\n    session.__function_input(value)\n}}"
+                    "pub type {alias} = FunctionInput<AppSchema, {scalar}>;\n\npub fn {constructor}<Value, Target: type_bridge::query::QueryTarget>(session: &QuerySession<'_, AppSchema, Target>, value: &Value) -> type_bridge::Result<{alias}>\nwhere\n    Value: Model<Schema = AppSchema> + QueryValued<Domain = {scalar}>,\n{{\n    session.__function_input(value)\n}}"
                 );
             }
         }
@@ -1852,7 +1852,7 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
             );
         }
 
-        let mut generics = Vec::new();
+        let mut generics = vec!["Target: type_bridge::query::QueryTarget".to_owned()];
         let mut parameters = Vec::new();
         let mut where_bounds = Vec::new();
         let mut arguments_expr = Vec::new();
@@ -1899,7 +1899,7 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
         };
         let _ = writeln!(
             output,
-            "pub fn {}{generic_clause}(session: &QuerySession<'_, AppSchema>, {}) -> type_bridge::Result<{call_alias}>{where_clause}\n{{\n    session.__call_function({}, [{}])\n}}\n",
+            "pub fn {}{generic_clause}(session: &QuerySession<'_, AppSchema, Target>, {}) -> type_bridge::Result<{call_alias}>{where_clause}\n{{\n    session.__call_function({}, [{}])\n}}\n",
             function.target_name().as_str(),
             parameters.join(", "),
             token_name,

@@ -9,6 +9,7 @@
 //! - `SMOKE_TYPEDB_USERNAME` / `SMOKE_TYPEDB_PASSWORD`
 //! - `SMOKE_DATABASE` — existing database name
 //! - `SMOKE_AUTHORITY_B64` — base64 canonical schema-authority bytes
+//! - `SMOKE_ALLOW_STAGED_WRITES` — exact `true` enables fixture writes
 //! - `SMOKE_PORT` — listen port on 127.0.0.1
 //! - `SMOKE_TYPEDB_HTTP_PORT` — TypeDB HTTP discovery port (default 8000)
 //! - `SMOKE_TYPEDB_TLS` — optional exact `true` / `false` transport switch
@@ -201,7 +202,10 @@ async fn main() {
             managed,
             resolved,
         )
-        .expect("executor advertisement is canonical"),
+        .expect("executor advertisement is canonical")
+        .with_unauthenticated_staged_writes(
+            std::env::var("SMOKE_ALLOW_STAGED_WRITES").as_deref() == Ok("true"),
+        ),
     );
     let policy_client = TypeDBClient::connect_prepared_secure(&prepared_connection)
         .await

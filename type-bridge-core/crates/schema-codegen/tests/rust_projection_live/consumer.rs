@@ -5099,6 +5099,30 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
     assert_eq!(direct_observed["employment"], employment.iid());
     assert_eq!(direct_observed["count"], 2);
     assert_eq!(one_program(&proxy).await, direct_observed);
+    // A typed terminal sees the earlier write on the same commit snapshot.
+    for (connection, score) in [(&direct, 91_i64), (&proxy, 92_i64)] {
+        let mut tx = match connection {
+            Connection::Direct(database) => database.transaction(Default::default()),
+            Connection::Proxy(database) => database.transaction(Default::default()).await.expect("staged proxy transaction"),
+        };
+        let mut builder = type_bridge::plan::PlanBuilder::<AppSchema>::new();
+        let person = builder.exact::<Person>();
+        let identifier = builder.field(person, PersonType::identifier);
+        builder.where_(identifier.eq("p-600".to_owned()));
+        builder.update(person, PersonType::score, score);
+        let write = builder.build(&SCHEMA).expect("staged update plan");
+        tx.stage(&write).expect("queue write");
+        let pending: type_bridge::query::Pending<Person> = {
+            let mut session = tx.query().expect("staged query session");
+            let person = session.exact::<Person>().expect("staged person");
+            session.query(person).expect("staged query")
+                .where_(person.field(PersonType::identifier).eq(Identifier::new("p-600").unwrap())).expect("staged predicate")
+                .one().await.expect("queue typed read")
+        };
+        assert!(pending.result().is_err());
+        tx.commit().await.expect("staged write and read commit");
+        assert_eq!(*pending.result().expect("staged person").score().value(), score);
+    }
     drop(proxy);
     drop(direct);
 

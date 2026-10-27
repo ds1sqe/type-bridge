@@ -179,6 +179,9 @@ struct Backend {
 }
 
 impl DriverBackend for Backend {
+    fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+        type_bridge_orm::CapabilitySet::all()
+    }
     fn open_transaction(
         &self,
         _db: &str,
@@ -420,7 +423,7 @@ async fn public_exact_managers_report_schema_not_bound_before_io() {
             source,
         } = error
         else {
-            panic!("wrong error")
+            panic!("wrong error: {error:?}")
         };
         assert_eq!(phase, crate::error::ModelValidationPhase::Input);
         assert_eq!(code, "schema_not_bound");
@@ -557,7 +560,7 @@ async fn public_all_materializer_failure_returns_no_vector() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "rejected_materialization");
@@ -684,7 +687,7 @@ async fn public_insert_materializer_rejection_rolls_back() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "rejected_materialization");
@@ -926,7 +929,7 @@ async fn public_leaf_subtypes_reject_wrong_identity_before_materializer() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "wrong_concrete_model_type");
@@ -946,12 +949,7 @@ async fn public_leaf_subtypes_reject_wrong_identity_before_materializer() {
     else {
         panic!("unexpected events")
     };
-    for needle in [
-        "$e isa! $t",
-        "$t sub record",
-        "\"_iid\": iid($e)",
-        "\"_type\": label($t)",
-    ] {
+    for needle in ["$root0 isa record", "select $root0;", "distinct;"] {
         assert!(root.contains(needle));
     }
     assert!(!root.contains("attributes") && !root.contains("isa! record"));
@@ -992,12 +990,7 @@ async fn public_subtypes_all_rehydrates_concrete_children_in_discovery_order() {
     else {
         panic!("unexpected events: {:?}", guard.events)
     };
-    for needle in [
-        "$e isa! $t",
-        "$t sub base",
-        "\"_iid\": iid($e)",
-        "\"_type\": label($t)",
-    ] {
+    for needle in ["$root0 isa base", "select $root0;", "distinct;"] {
         assert!(discovery.contains(needle));
     }
     assert!(!discovery.contains("attributes") && !discovery.contains("isa! base"));
@@ -1023,10 +1016,10 @@ async fn public_subtypes_get_by_iid_zero_closes_one_read_context() {
         panic!("unexpected events")
     };
     assert!(
-        query.contains("$e isa! $t")
-            && query.contains("$t sub base")
-            && query.contains("\"_iid\": iid($e)")
-            && query.contains("\"_type\": label($t)")
+        query.contains("$root0 isa base")
+            && query.contains("select $root0;")
+            && query.contains("distinct;")
+            && query.contains("$root0")
             && query.contains("iid 0x1")
     );
     assert!(!query.contains("attributes"));
@@ -1064,10 +1057,10 @@ async fn public_subtypes_get_by_iid_one_rehydrates_concrete_child() {
         panic!("unexpected events")
     };
     assert!(
-        root.contains("$e isa! $t")
-            && root.contains("$t sub base")
-            && root.contains("\"_iid\": iid($e)")
-            && root.contains("\"_type\": label($t)")
+        root.contains("$root0 isa base")
+            && root.contains("select $root0;")
+            && root.contains("distinct;")
+            && root.contains("$root0")
             && root.contains("iid 0x1")
     );
     assert!(!root.contains("attributes") && !root.contains("isa! base"));
@@ -1094,14 +1087,14 @@ async fn public_subtypes_get_by_iid_duplicate_discovery_closes_without_child_fet
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "invalid_provider_evidence");
     assert!(path.is_empty());
     assert_eq!(
         message,
-        "Hydration error for type 'base': Expected 0 or 1 identity for IID lookup, got 2"
+        "Hydration error for type 'base': Deletion snapshot has invalid exact identity evidence"
     );
     let source = std::error::Error::source(&error).unwrap();
     assert!(source.is::<type_bridge_orm::OrmError>());
@@ -1111,7 +1104,7 @@ async fn public_subtypes_get_by_iid_duplicate_discovery_closes_without_child_fet
     else {
         panic!("unexpected events")
     };
-    assert!(query.contains("$e isa! $t") && query.contains("iid 0x1"));
+    assert!(query.contains("$root0 isa base") && query.contains("iid 0x1"));
 }
 
 #[tokio::test]
@@ -1128,7 +1121,7 @@ async fn public_subtypes_count_uses_one_inclusive_reduction() {
     else {
         panic!("unexpected events")
     };
-    assert!(query.contains("$e isa base") && query.contains("$count = count($e)"));
+    assert!(query.contains("$root0 isa base") && query.contains("reduce $count1 = count;"));
     assert!(
         !query.contains("isa! base")
             && !query.contains("fetch")
@@ -1156,12 +1149,7 @@ async fn public_subtypes_invalid_iid_is_zero_io() {
 }
 
 fn assert_subtype_discovery_query(query: &str) {
-    for needle in [
-        "$e isa! $t",
-        "$t sub base",
-        "\"_iid\": iid($e)",
-        "\"_type\": label($t)",
-    ] {
+    for needle in ["$root0 isa base", "select $root0;", "distinct;"] {
         assert!(query.contains(needle));
     }
     assert!(!query.contains("attributes") && !query.contains("$e isa! base"));
@@ -1181,7 +1169,7 @@ async fn public_subtypes_all_unknown_discovered_type_fails_closed() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "model_not_projected");
@@ -1213,7 +1201,7 @@ async fn public_subtypes_all_abstract_discovered_type_fails_closed() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "model_not_constructible");
@@ -1247,7 +1235,7 @@ async fn public_subtypes_all_out_of_closure_type_fails_generated_dispatch() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "wrong_concrete_model_type");
@@ -1287,7 +1275,7 @@ async fn public_subtypes_all_missing_concrete_row_fails_closed() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "missing_concrete_row");
@@ -1309,35 +1297,20 @@ async fn public_subtypes_all_missing_concrete_row_fails_closed() {
 }
 
 #[tokio::test]
-async fn public_subtypes_all_duplicate_concrete_rows_fails_closed() {
+async fn public_subtypes_all_conflicting_concrete_rows_fails_closed() {
     let row = serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["v"]}});
+    let mut conflicting = row.clone();
+    conflicting["attributes"]["text"] = serde_json::json!(["different"]);
     let (db, state) = test_db(vec![
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"_iid":"0x1","_type":"record"}),
         ])),
-        Response::Result(QueryResult::Documents(vec![row.clone(), row])),
+        Response::Result(QueryResult::Documents(vec![row, conflicting])),
     ]);
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "invalid_provider_evidence");
-    assert!(path.is_empty());
-    assert_eq!(
-        message,
-        "Hydration error for type 'record': Expected 0 or 1 exact result for IID lookup, got 2"
-    );
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<type_bridge_orm::OrmError>());
-    assert_eq!(source.to_string(), message.as_str());
+    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+    assert_eq!(error.code(), Some("query_plan_hydration_conflict"));
+    assert_eq!(error.path(), Some(["result".to_owned()].as_slice()));
     let guard = state.lock().unwrap();
     let [
         Event::Open(TxType::Read),
@@ -1363,24 +1336,12 @@ async fn public_subtypes_all_wrong_returned_concrete_type_fails_closed() {
         ])),
     ]);
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "wrong_concrete_type");
-    assert_eq!(path, &["type"]);
-    assert_eq!(
-        message,
-        "provider entity row has the wrong exact concrete type"
-    );
-    assert!(std::error::Error::source(&error).is_none());
+    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+    assert_eq!(error.sdk_category(), Some("integrity"));
+    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
+    assert_eq!(error.path(), Some([].as_slice()));
+    let source = std::error::Error::source(&error).unwrap();
+    assert!(source.is::<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>());
     let guard = state.lock().unwrap();
     let [
         Event::Open(TxType::Read),
@@ -1406,26 +1367,12 @@ async fn public_subtypes_all_missing_required_child_field_fails_closed() {
         ])),
     ]);
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "invalid_provider_evidence");
-    assert!(path.is_empty());
-    assert_eq!(
-        message,
-        "Hydration error for type 'record': missing attribute 'text'"
-    );
+    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+    assert_eq!(error.sdk_category(), Some("integrity"));
+    assert_eq!(error.code(), Some("query_remote_v3_document_value"));
+    assert_eq!(error.path(), Some([].as_slice()));
     let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<type_bridge_orm::OrmError>());
-    assert_eq!(source.to_string(), message.as_str());
+    assert!(source.is::<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>());
     let guard = state.lock().unwrap();
     let [
         Event::Open(TxType::Read),
@@ -1457,7 +1404,7 @@ async fn public_subtypes_all_generated_materializer_rejection_fails_closed() {
         ..
     } = &error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
     assert_eq!(code, "rejected_materialization");
@@ -1485,7 +1432,7 @@ async fn public_subtypes_all_discovery_provider_failure_closes_and_preserves_pri
     let (db, state) = test_db(vec![Response::Error("discovery failed".into())]);
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
     let crate::Error::QueryExecution { message, .. } = &error else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(message, "Query execution error: discovery failed");
     let source = std::error::Error::source(&error).unwrap();
@@ -1511,7 +1458,7 @@ async fn public_subtypes_all_later_child_fetch_failure_returns_no_partial_vector
     ]);
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
     let crate::Error::QueryExecution { message, .. } = &error else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(message, "Query execution error: second child fetch failed");
     let source = std::error::Error::source(&error).unwrap();
@@ -1545,7 +1492,7 @@ fn assert_authority_error(error: crate::Error, code: &str) {
         ..
     } = error
     else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(phase, crate::error::ModelValidationPhase::Input);
     assert_eq!(actual, code);
@@ -1844,11 +1791,9 @@ async fn public_insert_many_and_put_many_preserve_order() {
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"iid":"0x1"}),
         ])),
-        Response::Result(QueryResult::Ok),
         Response::Result(QueryResult::Documents(vec![
             serde_json::json!({"iid":"0x2"}),
         ])),
-        Response::Result(QueryResult::Ok),
         fetch("0x1", "n1", "a"),
         fetch("0x2", "n2", "b"),
     ]);
@@ -1870,10 +1815,8 @@ async fn public_insert_many_and_put_many_preserve_order() {
     assert_queries(
         &s.events,
         &[
-            &["isa! record", "name", "n1"],
-            &["isa! record", "iid 0x1", "a"],
-            &["isa! record", "name", "n2"],
-            &["isa! record", "iid 0x2", "b"],
+            &["put", "record", "name", "n1", "a"],
+            &["put", "record", "name", "n2", "b"],
             &["isa! record", "iid 0x1", "fetch"],
             &["isa! record", "iid 0x2", "fetch"],
         ],
@@ -1899,7 +1842,7 @@ async fn public_subtypes_all_successful_read_reports_close_failure() {
     );
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
     let crate::Error::Transaction { message, .. } = &error else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(message, "Transaction error: close failed");
     let source = std::error::Error::source(&error).unwrap();
@@ -1928,7 +1871,7 @@ async fn public_subtypes_all_provider_error_survives_close_failure() {
     );
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
     let crate::Error::QueryExecution { message, .. } = &error else {
-        panic!("wrong error")
+        panic!("wrong error: {error:?}")
     };
     assert_eq!(message, "Query execution error: discovery failed");
     let source = std::error::Error::source(&error).unwrap();
@@ -2001,4 +1944,40 @@ impl Tx {
             }
         })
     }
+}
+
+#[tokio::test]
+async fn public_subtypes_all_coalesces_identical_native_documents() {
+    let row = serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["v"]}});
+    let (db, _) = test_db(vec![
+        Response::Result(QueryResult::Documents(vec![
+            serde_json::json!({"_iid":"0x1","_type":"record"}),
+        ])),
+        Response::Result(QueryResult::Documents(vec![row.clone(), row])),
+    ]);
+    let rows = db.entities::<Base>().subtypes().all().await.unwrap();
+    let [BaseFamily::Record(record)] = rows.as_slice() else {
+        panic!("expected one coalesced model")
+    };
+    assert_eq!(
+        (
+            record.iid.as_str(),
+            record.name.as_str(),
+            record.value.as_str()
+        ),
+        ("0x1", "n1", "v")
+    );
+}
+
+#[tokio::test]
+async fn schema_less_generated_managers_keep_the_query_authority_fence() {
+    let (db, state) = test_db(vec![fetch("0x1", "n1", "v")]);
+    let rows = db.entities::<Record>().all().await.unwrap();
+    assert_eq!(rows.len(), 1);
+    let before = state.lock().unwrap().events.len();
+    let mut session = db.query().unwrap();
+    let record = session.exact::<Record>().unwrap();
+    let error = session.query(record).unwrap().count().await.unwrap_err();
+    assert_eq!(error.code(), Some("schema_authority_required"));
+    assert_eq!(state.lock().unwrap().events.len(), before);
 }

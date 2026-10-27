@@ -595,8 +595,16 @@ where
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicRelationManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicRelationManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let mut outputs = Vec::with_capacity(prepared.len());
         for (iid, _, lowered) in &prepared {
             if let Err(error) = manager
@@ -710,10 +718,16 @@ where
                 .transaction_context(TxType::Write)
                 .await
                 .map_err(Error::from_orm)?;
-            let manager = DynamicRelationManager::with_canonical_transaction(
+            let manager = DynamicRelationManager::with_registry_transaction(
                 tx.clone(),
+                installed.manager_registry().map_err(Error::from_orm)?,
                 Arc::new(descriptor),
             );
+            let manager = if self.db.inner_orm().supports_given_stage() {
+                manager
+            } else {
+                manager.literal_values()
+            };
             for iid in iids {
                 if let Err(error) = manager.delete_by_iid_exact(iid).await {
                     let _ = tx.rollback().await;
@@ -926,8 +940,16 @@ where
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicRelationManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicRelationManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let iids = match if put {
             manager.put_many_exact(&lowered).await
         } else {
@@ -1022,8 +1044,9 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
-        let rows = DynamicRelationManager::new_canonical(
+        let rows = DynamicRelationManager::from_registry(
             self.db.inner_orm(),
+            installed.manager_registry().map_err(Error::from_orm)?,
             Arc::new(descriptor.clone()),
         )
         .all_exact()
@@ -1095,16 +1118,23 @@ where
     }
 
     async fn rehydrate_discovered(
+        &self,
         tx: &type_bridge_orm::session::context::TransactionContext,
         identity: &type_bridge_orm::DynamicRelationIdentity,
         installed: &type_bridge_orm::InstalledRuntimeProjection,
     ) -> Result<M::Subtypes> {
         let (child_id, child_descriptor) =
             resolve_discovered_relation(&identity.type_name, installed)?;
-        let child = DynamicRelationManager::with_canonical_transaction(
+        let child = DynamicRelationManager::with_registry_transaction(
             tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
             Arc::new(child_descriptor),
         );
+        let child = if self.db.inner_orm().supports_given_stage() {
+            child
+        } else {
+            child.literal_values()
+        };
         let rows = child
             .get_by_iid_exact(&identity.iid)
             .await
@@ -1135,8 +1165,16 @@ where
             .transaction_context(TxType::Read)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicRelationManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicRelationManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let identity = match manager.discover_by_iid(iid).await {
             Ok(value) => value,
             Err(error) => {
@@ -1146,7 +1184,7 @@ where
         };
         let out = match identity {
             None => None,
-            Some(identity) => match Self::rehydrate_discovered(&tx, &identity, installed).await {
+            Some(identity) => match self.rehydrate_discovered(&tx, &identity, installed).await {
                 Ok(value) => Some(value),
                 Err(error) => {
                     let _ = tx.close().await;
@@ -1175,8 +1213,16 @@ where
             .transaction_context(TxType::Read)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicRelationManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicRelationManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let identities = match manager.discover_all().await {
             Ok(value) => value,
             Err(error) => {
@@ -1186,7 +1232,7 @@ where
         };
         let mut out = Vec::with_capacity(identities.len());
         for identity in identities {
-            match Self::rehydrate_discovered(&tx, &identity, installed).await {
+            match self.rehydrate_discovered(&tx, &identity, installed).await {
                 Ok(value) => out.push(value),
                 Err(error) => {
                     let _ = tx.close().await;
@@ -1207,9 +1253,13 @@ where
             ModelValidationPhase::Input,
             false,
         )?;
-        DynamicRelationManager::new_canonical(self.db.inner_orm(), Arc::new(descriptor))
-            .count()
-            .await
-            .map_err(Error::from_orm)
+        DynamicRelationManager::from_registry(
+            self.db.inner_orm(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        )
+        .count()
+        .await
+        .map_err(Error::from_orm)
     }
 }

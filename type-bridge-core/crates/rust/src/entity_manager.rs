@@ -106,8 +106,16 @@ where
             .transaction_context(TxType::Read)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let identity = match manager.discover_by_iid(_iid).await {
             Ok(v) => v,
             Err(e) => {
@@ -126,10 +134,16 @@ where
                             return Err(e);
                         }
                     };
-                let child = DynamicEntityManager::with_canonical_transaction(
+                let child = DynamicEntityManager::with_registry_transaction(
                     tx.clone(),
+                    installed.manager_registry().map_err(Error::from_orm)?,
                     Arc::new(child_descriptor),
                 );
+                let child = if self.db.inner_orm().supports_given_stage() {
+                    child
+                } else {
+                    child.literal_values()
+                };
                 let row = match child.get_by_iid_exact(&identity.iid).await {
                     Ok(Some(v)) => v,
                     Ok(None) => {
@@ -185,8 +199,16 @@ where
             .transaction_context(TxType::Read)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let identities = match manager.discover_all().await {
             Ok(v) => v,
             Err(e) => {
@@ -205,10 +227,16 @@ where
                         return Err(e);
                     }
                 };
-            let child = DynamicEntityManager::with_canonical_transaction(
+            let child = DynamicEntityManager::with_registry_transaction(
                 tx.clone(),
+                installed.manager_registry().map_err(Error::from_orm)?,
                 Arc::new(child_descriptor),
             );
+            let child = if self.db.inner_orm().supports_given_stage() {
+                child
+            } else {
+                child.literal_values()
+            };
             let row = match child.get_by_iid_exact(&identity.iid).await {
                 Ok(Some(v)) => v,
                 Ok(None) => {
@@ -255,10 +283,14 @@ where
             ModelValidationPhase::Input,
             false,
         )?;
-        DynamicEntityManager::new_canonical(self.db.inner_orm(), Arc::new(descriptor))
-            .count()
-            .await
-            .map_err(Error::from_orm)
+        DynamicEntityManager::from_registry(
+            self.db.inner_orm(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        )
+        .count()
+        .await
+        .map_err(Error::from_orm)
     }
 }
 
@@ -785,8 +817,16 @@ where
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let mut outputs = Vec::with_capacity(prepared.len());
         for (iid, _, attributes) in &prepared {
             if let Err(error) = manager.update_exact(iid, attributes).await {
@@ -897,8 +937,16 @@ where
                 .transaction_context(TxType::Write)
                 .await
                 .map_err(Error::from_orm)?;
-            let manager =
-                DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+            let manager = DynamicEntityManager::with_registry_transaction(
+                tx.clone(),
+                installed.manager_registry().map_err(Error::from_orm)?,
+                Arc::new(descriptor),
+            );
+            let manager = if self.db.inner_orm().supports_given_stage() {
+                manager
+            } else {
+                manager.literal_values()
+            };
             for iid in iids {
                 if let Err(error) = manager.delete_by_iid_exact(iid).await {
                     let _ = tx.rollback().await;
@@ -1103,8 +1151,16 @@ where
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let manager =
-            DynamicEntityManager::with_canonical_transaction(tx.clone(), Arc::new(descriptor));
+        let manager = DynamicEntityManager::with_registry_transaction(
+            tx.clone(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor),
+        );
+        let manager = if self.db.inner_orm().supports_given_stage() {
+            manager
+        } else {
+            manager.literal_values()
+        };
         let iids = match if put {
             manager.put_many_exact(&lowered).await
         } else {
@@ -1210,11 +1266,14 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
-        let rows =
-            DynamicEntityManager::new_canonical(self.db.inner_orm(), Arc::new(descriptor.clone()))
-                .all_exact()
-                .await
-                .map_err(Error::from_orm)?;
+        let rows = DynamicEntityManager::from_registry(
+            self.db.inner_orm(),
+            installed.manager_registry().map_err(Error::from_orm)?,
+            Arc::new(descriptor.clone()),
+        )
+        .all_exact()
+        .await
+        .map_err(Error::from_orm)?;
         rows.into_iter()
             .map(|r| {
                 let h = hydrate_entity(r, &id, installed)?;

@@ -26,7 +26,7 @@ pub mod plan;
 mod projected_batch;
 mod projected_codec;
 mod projected_filter;
-mod query;
+pub mod query;
 #[allow(dead_code)]
 mod relation_codec;
 mod relation_manager;

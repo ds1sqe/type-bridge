@@ -635,7 +635,9 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
             .contains("generated provider schema setup: passed")
     );
 
-    let server_port = free_port();
+    let server_port = env::var("SMOKE_PORT")
+        .map(|port| port.parse::<u16>().expect("SMOKE_PORT is a u16"))
+        .unwrap_or_else(|_| free_port());
     let server_log_path = stage.path().join("v2-smoke-server.log");
     let server_log = File::create(&server_log_path).expect("V2 server log is created");
     let server_error_log = server_log
@@ -669,7 +671,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                  http_port = {http_port}\ntls = false\n\
                  [logging]\nlevel = \"info\"\nformat = \"text\"\n\
                  [v2]\nenabled = true\nschema_authority_file = {}\n\
-                 authority_mode = \"query_only\"\n",
+                 authority_mode = \"query_only\"\nallow_unauthenticated_staged_writes = true\n",
                 toml_string(&address),
                 toml_string(&database),
                 toml_string(&username),
@@ -749,7 +751,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                     .expect("live database name is configured"),
             )
             .env("SMOKE_AUTHORITY_B64", base64(&authority_bytes))
-            .env("SMOKE_PORT", server_port.to_string());
+            .env("SMOKE_PORT", server_port.to_string())
+            .env("SMOKE_ALLOW_STAGED_WRITES", "true");
         if env::var("TYPE_BRIDGE_RUST_PROJECTION_TLS").as_deref() == Ok("1") {
             command.env("SMOKE_TYPEDB_TLS", "true").env(
                 "SMOKE_TYPEDB_TLS_ROOT_CA",

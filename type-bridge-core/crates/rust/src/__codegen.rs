@@ -538,7 +538,7 @@ pub trait QueryValued: IntoEncodedScalar {
 /// A generated attribute wrapper that can materialize a validated grouped
 /// query key from its canonical scalar evidence.
 #[doc(hidden)]
-pub trait GroupedQueryValue: QueryValued + Sized {
+pub trait GroupedQueryValue: QueryValued + Sized + 'static {
     fn from_group_scalar(value: EncodedScalar) -> Result<Self, ValidationError>;
 }
 
@@ -583,7 +583,7 @@ pub enum ThingKind {
 }
 
 /// A sealed generated schema model associated with its schema marker `S`.
-pub trait Model: sealed::Sealed {
+pub trait Model: sealed::Sealed + 'static {
     /// The generated schema that owns this model.
     type Schema: Schema;
     /// Canonical JSON identity for the projected schema type.

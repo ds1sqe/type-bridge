@@ -123,8 +123,8 @@ fn bounded_reachability_compiles(
     Ok(())
 }
 
-fn projected_function_call_compiles(
-    session: &type_bridge::QuerySession<'_, AppSchema>,
+fn projected_function_call_compiles<Target: type_bridge::query::QueryTarget>(
+    session: &type_bridge::QuerySession<'_, AppSchema, Target>,
     person: type_bridge::Binding<AppSchema, Person>,
     minimum_value: &Score,
 ) -> type_bridge::Result<()> {
@@ -649,5 +649,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .any(|component| component.len() > 1)
     );
+    Ok(())
+}
+
+
+async fn staged_query_terminals_keep_their_output_types(
+    tx: &mut type_bridge::staged::Transaction<AppSchema>,
+) -> type_bridge::Result<()> {
+    let pending: type_bridge::query::Pending<Person> = {
+        let mut session = tx.query()?;
+        let person = session.exact::<Person>()?;
+        projected_function_call_compiles(&session, person, &Score::new(1).unwrap())?;
+        session.query(person)?.one().await?
+    };
+    tx.commit().await?;
+    let _: Person = pending.result()?;
     Ok(())
 }

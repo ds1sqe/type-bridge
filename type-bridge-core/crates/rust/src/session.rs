@@ -326,9 +326,11 @@ impl<S: Schema> Database<S> {
         &self,
         options: crate::staged::TransactionOptions,
     ) -> crate::staged::Transaction<S> {
-        crate::staged::Transaction::new(self.inner.transaction(options)).with_origin(
-            type_bridge_orm::ProjectedQueryOrigin::for_database(&self.inner),
-        )
+        crate::staged::Transaction::new(self.inner.transaction(options))
+            .with_query_schema(self.installed_schema.clone(), self.match_registry.clone())
+            .with_origin(type_bridge_orm::ProjectedQueryOrigin::for_database(
+                &self.inner,
+            ))
     }
     /// Open one client-owned write transaction over this schema-bound
     /// database. Operations on its borrowed managers never auto-commit;

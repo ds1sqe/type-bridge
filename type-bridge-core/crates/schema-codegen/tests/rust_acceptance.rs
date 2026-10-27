@@ -341,7 +341,7 @@ fn generated_manager_filter_compile_boundaries_fail_independently() {
     let generated = stage.path().join("generated");
     write_package(&emit(), &generated);
 
-    let cases: [(&str, &str, &[&str]); 4] = [
+    let cases: [(&str, &str, &[&str]); 5] = [
         (
             "manager-filter-rejects-wrong-owner",
             r#"use generated::{AppSchema, Person, RobotId, RobotType};
@@ -392,6 +392,18 @@ async fn check(read: type_bridge::ReadTransaction<'_, AppSchema>) {
 }
 fn main() {}"#,
             &["cannot move out of `read` because it is borrowed"],
+        ),
+        (
+            "staged-query-requires-result-after-commit",
+            r#"use generated::{AppSchema, Person};
+async fn check(tx: &mut type_bridge::staged::Transaction<AppSchema>) -> type_bridge::Result<()> {
+    let mut session = tx.query()?;
+    let person = session.exact::<Person>()?;
+    let _: Person = session.query(person)?.one().await?;
+    Ok(())
+}
+fn main() {}"#,
+            &["operator has incompatible types", "Person", "Pending"],
         ),
     ];
 

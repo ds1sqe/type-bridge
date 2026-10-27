@@ -83,7 +83,23 @@ pub fn result(source: &str, result: QueryResult) -> QueryResult {
             .split([';', ',', ' '])
             .next()
             .unwrap();
-        return QueryResult::Rows(documents.into_iter().map(|document| json!({"root0":{"kind":"thing", "iid":document["iid"], "type_id":{"kind":if relation(label) {"relation"} else {"entity"},"label":label}}})).collect());
+        return QueryResult::Rows(documents.into_iter().map(|document| {
+            let concrete = document.get("_type").and_then(Value::as_str).unwrap_or(label);
+            let iid = document.get("_iid").or_else(|| document.get("iid")).cloned().unwrap_or(Value::Null);
+            json!({"root0":{"kind":"thing", "iid":iid, "type_id":{"kind":if relation(concrete) {"relation"} else {"entity"},"label":concrete}}})
+        }).collect());
+    }
+    if !source.contains("fetch") && source.contains("select $thing0;") {
+        let label = source
+            .split("$thing0 isa")
+            .nth(1)
+            .unwrap()
+            .trim_start_matches('!')
+            .trim()
+            .split([';', ',', ' '])
+            .next()
+            .unwrap();
+        return QueryResult::Rows(documents.into_iter().map(|document| json!({"thing0":{"kind":"thing", "iid":document["iid"], "type_id":{"kind":"entity", "label":label}}})).collect());
     }
     let native =
         source.contains("$ordinal0") || source.contains("$ordinal1") || source.contains("$root0");

@@ -33,6 +33,8 @@ use crate::schema::Schema;
 pub struct Transaction<S: Schema> {
     inner: type_bridge_orm::session::staged::Transaction,
     origin: type_bridge_orm::ProjectedQueryOrigin,
+    installed: Option<std::sync::Arc<type_bridge_orm::InstalledRuntimeProjection>>,
+    registry: Option<std::sync::Arc<type_bridge_orm::_registry::DescriptorRegistry>>,
     marker: PhantomData<fn() -> S>,
 }
 
@@ -46,6 +48,8 @@ impl<S: Schema> Transaction<S> {
     pub(crate) fn new(inner: type_bridge_orm::session::staged::Transaction) -> Self {
         Self {
             inner,
+            installed: None,
+            registry: None,
             origin: type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
             marker: PhantomData,
         }
@@ -54,6 +58,58 @@ impl<S: Schema> Transaction<S> {
     pub(crate) fn with_origin(mut self, origin: type_bridge_orm::ProjectedQueryOrigin) -> Self {
         self.origin = origin;
         self
+    }
+
+    pub(crate) fn with_query_schema(
+        mut self,
+        installed: Option<std::sync::Arc<type_bridge_orm::InstalledRuntimeProjection>>,
+        registry: Option<std::sync::Arc<type_bridge_orm::_registry::DescriptorRegistry>>,
+    ) -> Self {
+        self.installed = installed;
+        self.registry = registry;
+        self
+    }
+
+    /// Author typed reads queued on this transaction, seeing earlier writes.
+    ///
+    /// Each terminal returns a [`crate::query::Pending`] with the direct
+    /// terminal's output type. Drop the session before committing.
+    ///
+    /// # Errors
+    /// Returns `schema_not_bound` when generated schema authority is absent.
+    pub fn query(
+        &mut self,
+    ) -> crate::Result<crate::query::QuerySession<'_, S, crate::query::Staged>> {
+        self.query_with_resources(Default::default(), Default::default())
+    }
+
+    /// Author staged typed reads with a caller resource policy and cancellation.
+    /// Transaction limits remain an additional ceiling at commit.
+    ///
+    /// # Errors
+    /// Returns `schema_not_bound` when generated schema authority is absent.
+    pub fn query_with_resources(
+        &mut self,
+        resources: type_bridge_orm::QueryExecutionResourceLimits,
+        cancellation: type_bridge_orm::AnswerCancellation,
+    ) -> crate::Result<crate::query::QuerySession<'_, S, crate::query::Staged>> {
+        let missing = || {
+            crate::Error::model_validation(
+                crate::ModelValidationPhase::Input,
+                "schema_not_bound",
+                vec![],
+                "transaction is not schema-bound",
+                None,
+            )
+        };
+        Ok(crate::query::QuerySession::staged(
+            self.installed.clone().ok_or_else(missing)?,
+            self.registry.clone().ok_or_else(missing)?,
+            &mut self.inner,
+            self.origin.clone(),
+            resources,
+            cancellation,
+        ))
     }
 
     /// Queue `plan` without opening a provider transaction.

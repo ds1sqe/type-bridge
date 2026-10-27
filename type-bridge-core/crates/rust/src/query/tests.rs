@@ -2302,3 +2302,101 @@ async fn query_aggregates_build_reduce_requests_and_decode_typed_tuples() {
         _ => panic!("expected a grouped reduction result"),
     }
 }
+
+#[tokio::test]
+async fn staged_typed_terminals_own_their_context_and_resolve_after_commit() {
+    use crate::query::{PageOptions, Pending, RowsOptions};
+    const NAME: __codegen::FieldToken<OriginRecord, String> =
+        __codegen::FieldToken::new(NAME_OWNS, "{}");
+    let (database, state) = successor_test_db("staged-query", SuccessorAnswer::Record);
+    let mut tx = database.transaction(Default::default());
+    let (one, rows, first, page, count, exists, aggregate) = {
+        let mut session = tx.query().unwrap();
+        let root = session.exact::<OriginRecord>().unwrap();
+        let query = session.query(root).unwrap();
+        let one: Pending<OriginRecord> = query.one().await.unwrap();
+        let rows: Pending<Vec<OriginRecord>> = query
+            .rows(RowsOptions::new(2).order_by(root.field(NAME).asc()))
+            .await
+            .unwrap();
+        let first: Pending<Option<OriginRecord>> =
+            query.first(root.field(NAME).asc()).await.unwrap();
+        let page: Pending<crate::Page<OriginRecord>> = query
+            .page_by(
+                root,
+                PageOptions::new(2)
+                    .include_total(true)
+                    .order_by(root.field(NAME).asc()),
+            )
+            .await
+            .unwrap();
+        let count: Pending<u64> = query.count().await.unwrap();
+        let exists: Pending<bool> = query.exists().await.unwrap();
+        let aggregate: Pending<(u64,)> =
+            query.aggregate((crate::aggregate::count(),)).await.unwrap();
+        (one, rows, first, page, count, exists, aggregate)
+    };
+    assert_eq!(state.opened.load(Ordering::SeqCst), 0);
+    assert!(one.result().is_err());
+    tx.commit().await.unwrap();
+    assert_eq!(one.result().unwrap().iid, "0x01");
+    assert!(one.result().unwrap().origin.projected().is_some());
+    assert_eq!(rows.result().unwrap().len(), 1);
+    assert_eq!(first.result().unwrap().unwrap().iid, "0x01");
+    assert_eq!(page.result().unwrap().total(), Some(1));
+    assert_eq!(count.result().unwrap(), 1);
+    assert!(exists.result().unwrap());
+    assert_eq!(aggregate.result().unwrap(), (1,));
+    assert_eq!(state.opened.load(Ordering::SeqCst), 1);
+    assert_eq!(state.closed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn staged_typed_query_rollback_keeps_the_pending_unpublished() {
+    let (database, state) = successor_test_db("staged-rollback", SuccessorAnswer::Record);
+    let mut tx = database.transaction(Default::default());
+    let pending = {
+        let mut session = tx.query().unwrap();
+        let record = session.exact::<OriginRecord>().unwrap();
+        session.query(record).unwrap().one().await.unwrap()
+    };
+    tx.rollback().unwrap();
+    assert!(
+        pending
+            .result()
+            .unwrap_err()
+            .to_string()
+            .contains("rolled back")
+    );
+    assert_eq!(state.opened.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn staged_typed_queries_preserve_caller_cancellation_before_io() {
+    let (database, state) = successor_test_db("staged-cancel", SuccessorAnswer::Record);
+    let mut tx = database.transaction(Default::default());
+    let cancellation = type_bridge_orm::AnswerCancellation::default();
+    cancellation.cancel();
+    {
+        let mut session = tx
+            .query_with_resources(Default::default(), cancellation)
+            .unwrap();
+        let root = session.exact::<OriginRecord>().unwrap();
+        let error = session.query(root).unwrap().one().await.unwrap_err();
+        assert_eq!(error.code(), Some("provider_cancelled"));
+    }
+    tx.commit().await.unwrap();
+    assert_eq!(state.opened.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn direct_query_futures_remain_send() {
+    fn assert_send<T: Send>(_: T) {}
+    let (database, _) = successor_test_db("query-send", SuccessorAnswer::Record);
+    let mut session = database.query().unwrap();
+    let root = session.exact::<OriginRecord>().unwrap();
+    let query = session.query(root).unwrap();
+    assert_send(query.one());
+    assert_send(query.count());
+    assert_send(query.aggregate((crate::aggregate::count(),)));
+}
