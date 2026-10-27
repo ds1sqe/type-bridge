@@ -30,7 +30,7 @@
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 9u
+#define TYPE_BRIDGE_C_ABI_MINOR 10u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -1420,6 +1420,48 @@ type_bridge_row_value_duration(const type_bridge_row_t *row, type_bridge_byte_vi
  * not thread-safe.
  */
 typedef struct type_bridge_plan_builder type_bridge_plan_builder_t;
+/* The spec's type_bridge_plan_open() is <package>_plan_open(options, out_builder),
+ * for example shop_plan_open. It captures the verified package and limits once.
+ * Generated initializers always check their projection brand; raw builder_new
+ * stays unbound and is the explicit raw-build escape hatch. */
+#define TYPE_BRIDGE_PLAN_OPTIONS_V1 1u
+typedef struct type_bridge_plan_options_v1 {
+  uint32_t struct_size;
+  uint32_t version;
+  const type_bridge_query_limit_override_v1_t *query_limits;
+  size_t query_limit_count;
+  uint64_t reserved[4];
+} type_bridge_plan_options_v1_t;
+#define TYPE_BRIDGE_PLAN_OPTIONS_V1_INIT { \
+  (uint32_t)sizeof(type_bridge_plan_options_v1_t), TYPE_BRIDGE_PLAN_OPTIONS_V1, \
+  NULL, 0u, {0u, 0u, 0u, 0u} }
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_new_with_package(const type_bridge_schema_package_t *package,
+                                          const type_bridge_plan_options_v1_t *options,
+                                          type_bridge_plan_builder_t **out_builder);
+/* Generated packages supply the shared view-layout digest. A mismatch returns
+ * c_plan_view_layout_mismatch before a view can be allocated. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_new_with_layout(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_plan_options_v1_t *options, type_bridge_byte_view_t digest,
+    type_bridge_plan_builder_t **out_builder,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_type_token(type_bridge_plan_builder_t *builder,
+                                    const type_bridge_projected_token_v1_t *model,
+                                    type_bridge_byte_view_t package_opener,
+                                    uint32_t *out_type);
+
+/* O(1) lookup in the recording's admitted model metadata; no allocation or recording.
+ * Invalid members return UINT32_MAX and retain a typed builder diagnostic. */
+TYPE_BRIDGE_API uint32_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_model_field(type_bridge_plan_builder_t *builder,
+                                     uint32_t model_ordinal, uint32_t field_index);
+TYPE_BRIDGE_API uint32_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_model_role(type_bridge_plan_builder_t *builder,
+                                    uint32_t model_ordinal, uint32_t role_index);
+
 
 #define TYPE_BRIDGE_PLAN_THING_ENTITY 1u
 #define TYPE_BRIDGE_PLAN_THING_RELATION 2u
@@ -1562,6 +1604,10 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_update(type_bridge_plan_builder_t *builder,
                                 uint32_t owner, uint32_t field,
                                 uint32_t operand_kind, uint32_t operand);
+/* Add a player without replacing existing players. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_link(type_bridge_plan_builder_t *builder,
+                              uint32_t relation, uint32_t role, uint32_t player);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_update_player(type_bridge_plan_builder_t *builder,
                                        uint32_t relation, uint32_t role,
@@ -1591,6 +1637,78 @@ type_bridge_plan_builder_delete_player(type_bridge_plan_builder_t *builder,
                                        uint32_t relation, uint32_t role,
                                        uint32_t player);
 
+/* Constructors record nothing until consumed; operands are recorded
+ * depth-first, left to right. Each by-value field/expression carrier borrows its builder
+ * until builder_free, under the same lifetime rule as generated model plans. */
+/* Generated plan-value getters are <model>_plan_<field>, for example
+ * shop_item_plan_stock(p, h). The spec's shop_item_stock(p, h) maps to this
+ * name because shop_item_stock already reads a hydrated model attribute.
+ * Match/set/insert keep their model names where free. Name collisions refuse
+ * generation through the existing C symbol inventory. */
+/* Generated nominal handles borrow their recording through builder_free.
+ * Check origin before using a dense binding id; recording is never dereferenced.
+ * A failed check keeps the builder's first typed diagnostic. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_check_handle(type_bridge_plan_builder_t *builder,
+                                       const type_bridge_plan_builder_t *recording,
+                                       uint32_t binding);
+
+/* Generated bulk calls pass ownership metadata once and consume scalar cells
+ * directly. value_type uses type_bridge_projected_value_kind_t. Cells are
+ * row-major; present is 0 or 1. Present cells initialize the union member selected
+ * by their column (integer for long, double_value for double, boolean for bool,
+ * text for other domains). All arrays/views remain readable for this call.
+ * Absent cells do not read their union. No literal registry entry is created.
+ * Present text requires non-NULL data, even for an empty string. NULL/zero
+ * present text records an invalid-value fault, retained for build diagnostics.
+ * Generated optional const char* members use bool has_<field>: NULL with has_
+ * true is invalid, while has_ false omits the ownership without reading it. */
+typedef struct type_bridge_plan_bulk_column {
+  uint32_t field;
+  int32_t value_type;
+} type_bridge_plan_bulk_column_t;
+typedef union type_bridge_plan_bulk_literal {
+  int64_t integer;
+  double double_value;
+  uint8_t boolean;
+  type_bridge_byte_view_t text;
+} type_bridge_plan_bulk_literal_t;
+typedef struct type_bridge_plan_bulk_cell {
+  uint8_t present;
+  type_bridge_plan_bulk_literal_t value;
+} type_bridge_plan_bulk_cell_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_model_rows(type_bridge_plan_builder_t *builder,
+                                    uint32_t thing,
+                                    const type_bridge_plan_bulk_column_t *columns,
+                                    size_t column_count,
+                                    const type_bridge_plan_bulk_cell_t *cells,
+                                    size_t row_count);
+
+/* Generated-only raw host-row layout: int64_t, double, bool, const char*.
+ * SIZE_MAX presence_offset marks a required value; otherwise it is offsetof(bool has_field).
+ * Offsets, host alignment, row_size and complete row extents are checked before
+ * any payload read or recording. Rows and pointed-to strings are borrowed only
+ * for this call and copied into the recording. A false flag never reads payload;
+ * true with a NULL string is a sticky value fault. No temporary cell frame. */
+typedef struct type_bridge_plan_bulk_host_column {
+  uint32_t field;
+  int32_t value_type;
+  size_t value_offset;
+  size_t presence_offset;
+} type_bridge_plan_bulk_host_column_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_model_host_rows(type_bridge_plan_builder_t *builder,
+                                         uint32_t thing,
+                                         const type_bridge_plan_bulk_host_column_t *columns,
+                                         size_t column_count, const void *rows,
+                                         size_t row_count, size_t row_size);
+
+/* Restrict a matched thing by canonical IID; core owns IID validation. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_by_iid(type_bridge_plan_builder_t *builder,
+                                uint32_t owner, type_bridge_byte_view_t iid);
+
 /* Rows, output and build. A row holds one value id (or
  * TYPE_BRIDGE_PLAN_VALUE_ABSENT) per input column, in column order. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
@@ -1614,13 +1732,406 @@ TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_count(type_bridge_plan_builder_t *builder);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_exists(type_bridge_plan_builder_t *builder);
+/* A frozen recording rejects mutations; lazy read-only field getters remain valid.
+ * Diagnostics snapshots the latest rejection without clearing it (initially empty). */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_require_open(type_bridge_plan_builder_t *builder);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_diagnostics(const type_bridge_plan_builder_t *builder,
+                                     type_bridge_execution_diagnostics_t **out_diagnostics);
 /* Validates against the package's compiled declared schema and managed
- * semantics, as the Rust SDK builds against its generated package. */
+ * semantics, as the Rust SDK builds against its generated package.
+ * A bound recording requires its captured package brand; a separate package
+ * handle with identical fingerprints is accepted. Raw unbound builders retain
+ * explicit-package validation. A package mismatch does not poison the builder. */
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_plan_builder_build(const type_bridge_plan_builder_t *builder,
                                const type_bridge_schema_package_t *package,
                                type_bridge_plan_t **out_plan,
                                type_bridge_execution_diagnostics_t **out_diagnostics);
+
+/* A marker borrows its recording until that recording is freed. The first
+ * typed stage freezes the recording. Pending handles retain the compiled source
+ * and may outlive it. Stage only markers created by this recording.
+ * Selection kinds: 0 matched, 1 count, 2 exists, 3 model. Model arguments are
+ * ignored for kinds 0..2. Generated model factories supply kind 3 arguments. */
+typedef struct type_bridge_matched_plan {
+  type_bridge_plan_builder_t *recording;
+  uint32_t selection;
+  uint32_t _reserved;
+} type_bridge_matched_plan_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_builder_hold(type_bridge_plan_builder_t *builder,
+                              uint32_t kind, uint32_t binding,
+                              uint32_t model_ordinal, uint32_t *out_selection);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_transaction_stage_selection(
+    type_bridge_staged_transaction_t *transaction,
+    type_bridge_plan_builder_t *builder, uint32_t selection,
+    type_bridge_pending_t **out_pending,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+
+typedef struct type_bridge_matched_pending type_bridge_matched_pending_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_matched(type_bridge_plan_builder_t *builder, type_bridge_matched_plan_t *out_plan);
+static inline type_bridge_status_t type_bridge_matched_stage(type_bridge_staged_transaction_t *tx, type_bridge_matched_plan_t plan, type_bridge_matched_pending_t **out_pending, type_bridge_execution_diagnostics_t **diagnostics) { return type_bridge_staged_transaction_stage_selection(tx, plan.recording, plan.selection, (type_bridge_pending_t **)out_pending, diagnostics); }
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_matched_pending_result(const type_bridge_matched_pending_t *pending, uint64_t *out_value);
+static inline void type_bridge_matched_pending_free(type_bridge_matched_pending_t **pending) { type_bridge_pending_free((type_bridge_pending_t **)pending); }
+typedef struct type_bridge_count_plan { type_bridge_plan_builder_t *recording; uint32_t selection; uint32_t _reserved; } type_bridge_count_plan_t;
+typedef struct type_bridge_count_pending type_bridge_count_pending_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_count(type_bridge_plan_builder_t *builder, type_bridge_count_plan_t *out_plan);
+static inline type_bridge_status_t type_bridge_count_stage(type_bridge_staged_transaction_t *tx, type_bridge_count_plan_t plan, type_bridge_count_pending_t **out_pending, type_bridge_execution_diagnostics_t **diagnostics) { return type_bridge_staged_transaction_stage_selection(tx, plan.recording, plan.selection, (type_bridge_pending_t **)out_pending, diagnostics); }
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_count_pending_result(const type_bridge_count_pending_t *pending, uint64_t *out_value);
+static inline void type_bridge_count_pending_free(type_bridge_count_pending_t **pending) { type_bridge_pending_free((type_bridge_pending_t **)pending); }
+typedef struct type_bridge_exists_plan { type_bridge_plan_builder_t *recording; uint32_t selection; uint32_t _reserved; } type_bridge_exists_plan_t;
+typedef struct type_bridge_exists_pending type_bridge_exists_pending_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_exists(type_bridge_plan_builder_t *builder, type_bridge_exists_plan_t *out_plan);
+static inline type_bridge_status_t type_bridge_exists_stage(type_bridge_staged_transaction_t *tx, type_bridge_exists_plan_t plan, type_bridge_exists_pending_t **out_pending, type_bridge_execution_diagnostics_t **diagnostics) { return type_bridge_staged_transaction_stage_selection(tx, plan.recording, plan.selection, (type_bridge_pending_t **)out_pending, diagnostics); }
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_exists_pending_result(const type_bridge_exists_pending_t *pending, bool *out_value);
+static inline void type_bridge_exists_pending_free(type_bridge_exists_pending_t **pending) { type_bridge_pending_free((type_bridge_pending_t **)pending); }
+
+#ifdef __cplusplus
+static_assert(sizeof(type_bridge_matched_plan_t) == 16u, "held scalar plan size");
+static_assert(alignof(type_bridge_matched_plan_t) == 8u, "held scalar plan alignment");
+static_assert(sizeof(type_bridge_count_plan_t) == 16u, "held scalar plan size");
+static_assert(alignof(type_bridge_count_plan_t) == 8u, "held scalar plan alignment");
+static_assert(sizeof(type_bridge_exists_plan_t) == 16u, "held scalar plan size");
+static_assert(alignof(type_bridge_exists_plan_t) == 8u, "held scalar plan alignment");
+#else
+_Static_assert(sizeof(type_bridge_matched_plan_t) == 16u, "held scalar plan size");
+_Static_assert(_Alignof(type_bridge_matched_plan_t) == 8u, "held scalar plan alignment");
+_Static_assert(sizeof(type_bridge_count_plan_t) == 16u, "held scalar plan size");
+_Static_assert(_Alignof(type_bridge_count_plan_t) == 8u, "held scalar plan alignment");
+_Static_assert(sizeof(type_bridge_exists_plan_t) == 16u, "held scalar plan size");
+_Static_assert(_Alignof(type_bridge_exists_plan_t) == 8u, "held scalar plan alignment");
+#endif
+
+/* Owned authored-model result; all model/string views borrow its lifetime.
+ * Freeing an owner invalidates every view obtained from that owner, including
+ * nested role-player views. Text is canonical NUL-terminated UTF-8; an embedded
+ * NUL is reported as c_plan_view_embedded_nul when constructing the result. */
+typedef struct type_bridge_plan_result type_bridge_plan_result_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_plan_result(const type_bridge_pending_t *pending,
+                                type_bridge_plan_result_t **out_result,
+                                type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_plan_result_free(type_bridge_plan_result_t **result);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_result_count(const type_bridge_plan_result_t *result, size_t *out_count);
+/* Copy one generated root view; nested pointers borrow result. The exact
+ * model token, layout digest admitted at plan_open, and sizeof(view) must match. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_result_view(const type_bridge_plan_result_t *result, size_t row,
+                             const type_bridge_projected_token_v1_t *model,
+                             void *out_view, size_t view_size);
+/* Typed plan authoring. Values borrow their builder until it is freed.
+ * Literal byte views remain readable until consumed by a condition or statement.
+ * A zero value omits a field in a generated setter. Do not inspect or change
+ * the private carrier fields. Arithmetic/conditions take their builder from a
+ * builder-bearing operand; two literal operands return an allocation-free
+ * poison sentinel. Applying poison records a sticky constructor diagnostic.
+ * Write literal-only constants with tb_long(), tb_double(), etc. directly.
+ */
+typedef struct type_bridge_plan_value_base {
+  type_bridge_plan_builder_t *_builder;
+  uint32_t _kind;
+  uint32_t _id;
+  uint32_t _owner;
+  uint32_t _field;
+} type_bridge_plan_value_base_t;
+typedef struct tb_cond {
+  type_bridge_plan_builder_t *_builder;
+  uint32_t _kind;
+  uint32_t _id;
+} tb_cond_t;
+typedef struct tb_long { type_bridge_plan_value_base_t _value; int64_t _literal; } tb_long_t;
+TYPE_BRIDGE_API tb_long_t TYPE_BRIDGE_CALL type_bridge_plan_long_literal(int64_t value);
+static inline tb_long_t tb_long(int64_t value) { return type_bridge_plan_long_literal(value); }
+TYPE_BRIDGE_API tb_long_t TYPE_BRIDGE_CALL type_bridge_plan_long_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_long_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_long_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_long_eq(tb_long_t left, tb_long_t right);
+static inline tb_cond_t tb_long_eq(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_long_ne(tb_long_t left, tb_long_t right);
+static inline tb_cond_t tb_long_ne(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_long_lt(tb_long_t left, tb_long_t right);
+static inline tb_cond_t tb_long_lt(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_long_le(tb_long_t left, tb_long_t right);
+static inline tb_cond_t tb_long_le(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_long_gt(tb_long_t left, tb_long_t right);
+static inline tb_cond_t tb_long_gt(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_long_ge(tb_long_t left, tb_long_t right);
+static inline tb_cond_t tb_long_ge(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_ge(left, right); }
+typedef struct tb_double { type_bridge_plan_value_base_t _value; double _literal; } tb_double_t;
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_double_literal(double value);
+static inline tb_double_t tb_double(double value) { return type_bridge_plan_double_literal(value); }
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_double_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_double_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_double_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_double_eq(tb_double_t left, tb_double_t right);
+static inline tb_cond_t tb_double_eq(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_double_ne(tb_double_t left, tb_double_t right);
+static inline tb_cond_t tb_double_ne(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_double_lt(tb_double_t left, tb_double_t right);
+static inline tb_cond_t tb_double_lt(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_double_le(tb_double_t left, tb_double_t right);
+static inline tb_cond_t tb_double_le(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_double_gt(tb_double_t left, tb_double_t right);
+static inline tb_cond_t tb_double_gt(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_double_ge(tb_double_t left, tb_double_t right);
+static inline tb_cond_t tb_double_ge(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_ge(left, right); }
+typedef struct tb_bool { type_bridge_plan_value_base_t _value; uint8_t _literal; } tb_bool_t;
+TYPE_BRIDGE_API tb_bool_t TYPE_BRIDGE_CALL type_bridge_plan_bool_literal(uint8_t value);
+static inline tb_bool_t tb_bool(uint8_t value) { return type_bridge_plan_bool_literal(value); }
+TYPE_BRIDGE_API tb_bool_t TYPE_BRIDGE_CALL type_bridge_plan_bool_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_bool_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_bool_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_bool_eq(tb_bool_t left, tb_bool_t right);
+static inline tb_cond_t tb_bool_eq(tb_bool_t left, tb_bool_t right) { return type_bridge_plan_bool_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_bool_ne(tb_bool_t left, tb_bool_t right);
+static inline tb_cond_t tb_bool_ne(tb_bool_t left, tb_bool_t right) { return type_bridge_plan_bool_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_bool_lt(tb_bool_t left, tb_bool_t right);
+static inline tb_cond_t tb_bool_lt(tb_bool_t left, tb_bool_t right) { return type_bridge_plan_bool_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_bool_le(tb_bool_t left, tb_bool_t right);
+static inline tb_cond_t tb_bool_le(tb_bool_t left, tb_bool_t right) { return type_bridge_plan_bool_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_bool_gt(tb_bool_t left, tb_bool_t right);
+static inline tb_cond_t tb_bool_gt(tb_bool_t left, tb_bool_t right) { return type_bridge_plan_bool_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_bool_ge(tb_bool_t left, tb_bool_t right);
+static inline tb_cond_t tb_bool_ge(tb_bool_t left, tb_bool_t right) { return type_bridge_plan_bool_ge(left, right); }
+typedef struct tb_string { type_bridge_plan_value_base_t _value; type_bridge_byte_view_t _literal; } tb_string_t;
+TYPE_BRIDGE_API tb_string_t TYPE_BRIDGE_CALL type_bridge_plan_string_literal(type_bridge_byte_view_t value);
+static inline tb_string_t tb_string(type_bridge_byte_view_t value) { return type_bridge_plan_string_literal(value); }
+TYPE_BRIDGE_API tb_string_t TYPE_BRIDGE_CALL type_bridge_plan_string_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_string_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_string_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_eq(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_eq(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_ne(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_ne(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_lt(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_lt(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_le(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_le(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_gt(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_gt(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_ge(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_ge(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_ge(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_contains(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_contains(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_contains(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_starts_with(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_starts_with(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_starts_with(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_ends_with(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_ends_with(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_ends_with(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_string_like(tb_string_t left, tb_string_t right);
+static inline tb_cond_t tb_string_like(tb_string_t left, tb_string_t right) { return type_bridge_plan_string_like(left, right); }
+typedef struct tb_date { type_bridge_plan_value_base_t _value; type_bridge_byte_view_t _literal; } tb_date_t;
+TYPE_BRIDGE_API tb_date_t TYPE_BRIDGE_CALL type_bridge_plan_date_literal(type_bridge_byte_view_t value);
+static inline tb_date_t tb_date(type_bridge_byte_view_t value) { return type_bridge_plan_date_literal(value); }
+TYPE_BRIDGE_API tb_date_t TYPE_BRIDGE_CALL type_bridge_plan_date_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_date_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_date_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_date_eq(tb_date_t left, tb_date_t right);
+static inline tb_cond_t tb_date_eq(tb_date_t left, tb_date_t right) { return type_bridge_plan_date_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_date_ne(tb_date_t left, tb_date_t right);
+static inline tb_cond_t tb_date_ne(tb_date_t left, tb_date_t right) { return type_bridge_plan_date_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_date_lt(tb_date_t left, tb_date_t right);
+static inline tb_cond_t tb_date_lt(tb_date_t left, tb_date_t right) { return type_bridge_plan_date_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_date_le(tb_date_t left, tb_date_t right);
+static inline tb_cond_t tb_date_le(tb_date_t left, tb_date_t right) { return type_bridge_plan_date_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_date_gt(tb_date_t left, tb_date_t right);
+static inline tb_cond_t tb_date_gt(tb_date_t left, tb_date_t right) { return type_bridge_plan_date_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_date_ge(tb_date_t left, tb_date_t right);
+static inline tb_cond_t tb_date_ge(tb_date_t left, tb_date_t right) { return type_bridge_plan_date_ge(left, right); }
+typedef struct tb_datetime { type_bridge_plan_value_base_t _value; type_bridge_byte_view_t _literal; } tb_datetime_t;
+TYPE_BRIDGE_API tb_datetime_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_literal(type_bridge_byte_view_t value);
+static inline tb_datetime_t tb_datetime(type_bridge_byte_view_t value) { return type_bridge_plan_datetime_literal(value); }
+TYPE_BRIDGE_API tb_datetime_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_datetime_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_eq(tb_datetime_t left, tb_datetime_t right);
+static inline tb_cond_t tb_datetime_eq(tb_datetime_t left, tb_datetime_t right) { return type_bridge_plan_datetime_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_ne(tb_datetime_t left, tb_datetime_t right);
+static inline tb_cond_t tb_datetime_ne(tb_datetime_t left, tb_datetime_t right) { return type_bridge_plan_datetime_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_lt(tb_datetime_t left, tb_datetime_t right);
+static inline tb_cond_t tb_datetime_lt(tb_datetime_t left, tb_datetime_t right) { return type_bridge_plan_datetime_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_le(tb_datetime_t left, tb_datetime_t right);
+static inline tb_cond_t tb_datetime_le(tb_datetime_t left, tb_datetime_t right) { return type_bridge_plan_datetime_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_gt(tb_datetime_t left, tb_datetime_t right);
+static inline tb_cond_t tb_datetime_gt(tb_datetime_t left, tb_datetime_t right) { return type_bridge_plan_datetime_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_ge(tb_datetime_t left, tb_datetime_t right);
+static inline tb_cond_t tb_datetime_ge(tb_datetime_t left, tb_datetime_t right) { return type_bridge_plan_datetime_ge(left, right); }
+typedef struct tb_datetime_tz { type_bridge_plan_value_base_t _value; type_bridge_byte_view_t _literal; } tb_datetime_tz_t;
+TYPE_BRIDGE_API tb_datetime_tz_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_literal(type_bridge_byte_view_t value);
+static inline tb_datetime_tz_t tb_datetime_tz(type_bridge_byte_view_t value) { return type_bridge_plan_datetime_tz_literal(value); }
+TYPE_BRIDGE_API tb_datetime_tz_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_datetime_tz_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_eq(tb_datetime_tz_t left, tb_datetime_tz_t right);
+static inline tb_cond_t tb_datetime_tz_eq(tb_datetime_tz_t left, tb_datetime_tz_t right) { return type_bridge_plan_datetime_tz_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_ne(tb_datetime_tz_t left, tb_datetime_tz_t right);
+static inline tb_cond_t tb_datetime_tz_ne(tb_datetime_tz_t left, tb_datetime_tz_t right) { return type_bridge_plan_datetime_tz_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_lt(tb_datetime_tz_t left, tb_datetime_tz_t right);
+static inline tb_cond_t tb_datetime_tz_lt(tb_datetime_tz_t left, tb_datetime_tz_t right) { return type_bridge_plan_datetime_tz_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_le(tb_datetime_tz_t left, tb_datetime_tz_t right);
+static inline tb_cond_t tb_datetime_tz_le(tb_datetime_tz_t left, tb_datetime_tz_t right) { return type_bridge_plan_datetime_tz_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_gt(tb_datetime_tz_t left, tb_datetime_tz_t right);
+static inline tb_cond_t tb_datetime_tz_gt(tb_datetime_tz_t left, tb_datetime_tz_t right) { return type_bridge_plan_datetime_tz_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_ge(tb_datetime_tz_t left, tb_datetime_tz_t right);
+static inline tb_cond_t tb_datetime_tz_ge(tb_datetime_tz_t left, tb_datetime_tz_t right) { return type_bridge_plan_datetime_tz_ge(left, right); }
+typedef struct tb_decimal { type_bridge_plan_value_base_t _value; type_bridge_byte_view_t _literal; } tb_decimal_t;
+TYPE_BRIDGE_API tb_decimal_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_literal(type_bridge_byte_view_t value);
+static inline tb_decimal_t tb_decimal(type_bridge_byte_view_t value) { return type_bridge_plan_decimal_literal(value); }
+TYPE_BRIDGE_API tb_decimal_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_decimal_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_eq(tb_decimal_t left, tb_decimal_t right);
+static inline tb_cond_t tb_decimal_eq(tb_decimal_t left, tb_decimal_t right) { return type_bridge_plan_decimal_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_ne(tb_decimal_t left, tb_decimal_t right);
+static inline tb_cond_t tb_decimal_ne(tb_decimal_t left, tb_decimal_t right) { return type_bridge_plan_decimal_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_lt(tb_decimal_t left, tb_decimal_t right);
+static inline tb_cond_t tb_decimal_lt(tb_decimal_t left, tb_decimal_t right) { return type_bridge_plan_decimal_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_le(tb_decimal_t left, tb_decimal_t right);
+static inline tb_cond_t tb_decimal_le(tb_decimal_t left, tb_decimal_t right) { return type_bridge_plan_decimal_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_gt(tb_decimal_t left, tb_decimal_t right);
+static inline tb_cond_t tb_decimal_gt(tb_decimal_t left, tb_decimal_t right) { return type_bridge_plan_decimal_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_ge(tb_decimal_t left, tb_decimal_t right);
+static inline tb_cond_t tb_decimal_ge(tb_decimal_t left, tb_decimal_t right) { return type_bridge_plan_decimal_ge(left, right); }
+typedef struct tb_duration { type_bridge_plan_value_base_t _value; type_bridge_byte_view_t _literal; } tb_duration_t;
+TYPE_BRIDGE_API tb_duration_t TYPE_BRIDGE_CALL type_bridge_plan_duration_literal(type_bridge_byte_view_t value);
+static inline tb_duration_t tb_duration(type_bridge_byte_view_t value) { return type_bridge_plan_duration_literal(value); }
+TYPE_BRIDGE_API tb_duration_t TYPE_BRIDGE_CALL type_bridge_plan_duration_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_duration_set(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_duration_t value);
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_duration_eq(tb_duration_t left, tb_duration_t right);
+static inline tb_cond_t tb_duration_eq(tb_duration_t left, tb_duration_t right) { return type_bridge_plan_duration_eq(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_duration_ne(tb_duration_t left, tb_duration_t right);
+static inline tb_cond_t tb_duration_ne(tb_duration_t left, tb_duration_t right) { return type_bridge_plan_duration_ne(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_duration_lt(tb_duration_t left, tb_duration_t right);
+static inline tb_cond_t tb_duration_lt(tb_duration_t left, tb_duration_t right) { return type_bridge_plan_duration_lt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_duration_le(tb_duration_t left, tb_duration_t right);
+static inline tb_cond_t tb_duration_le(tb_duration_t left, tb_duration_t right) { return type_bridge_plan_duration_le(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_duration_gt(tb_duration_t left, tb_duration_t right);
+static inline tb_cond_t tb_duration_gt(tb_duration_t left, tb_duration_t right) { return type_bridge_plan_duration_gt(left, right); }
+TYPE_BRIDGE_API tb_cond_t TYPE_BRIDGE_CALL type_bridge_plan_duration_ge(tb_duration_t left, tb_duration_t right);
+static inline tb_cond_t tb_duration_ge(tb_duration_t left, tb_duration_t right) { return type_bridge_plan_duration_ge(left, right); }
+TYPE_BRIDGE_API tb_long_t TYPE_BRIDGE_CALL type_bridge_plan_long_add(tb_long_t left, tb_long_t right);
+static inline tb_long_t tb_long_add(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_add(left, right); }
+TYPE_BRIDGE_API tb_long_t TYPE_BRIDGE_CALL type_bridge_plan_long_sub(tb_long_t left, tb_long_t right);
+static inline tb_long_t tb_long_sub(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_sub(left, right); }
+TYPE_BRIDGE_API tb_long_t TYPE_BRIDGE_CALL type_bridge_plan_long_mul(tb_long_t left, tb_long_t right);
+static inline tb_long_t tb_long_mul(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_mul(left, right); }
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_long_div(tb_long_t left, tb_long_t right);
+static inline tb_double_t tb_long_div(tb_long_t left, tb_long_t right) { return type_bridge_plan_long_div(left, right); }
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_double_add(tb_double_t left, tb_double_t right);
+static inline tb_double_t tb_double_add(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_add(left, right); }
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_double_sub(tb_double_t left, tb_double_t right);
+static inline tb_double_t tb_double_sub(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_sub(left, right); }
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_double_mul(tb_double_t left, tb_double_t right);
+static inline tb_double_t tb_double_mul(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_mul(left, right); }
+TYPE_BRIDGE_API tb_double_t TYPE_BRIDGE_CALL type_bridge_plan_double_div(tb_double_t left, tb_double_t right);
+static inline tb_double_t tb_double_div(tb_double_t left, tb_double_t right) { return type_bridge_plan_double_div(left, right); }
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_long_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_long_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_long_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_long_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_double_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_double_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_double_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_double_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_bool_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_bool_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_bool_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_bool_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_string_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_string_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_string_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_string_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_date_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_date_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_date_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_date_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_datetime_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_datetime_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_datetime_tz_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_datetime_tz_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_datetime_tz_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_decimal_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_decimal_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_decimal_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_duration_create_field(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_duration_t value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_duration_key(type_bridge_plan_builder_t *builder, uint32_t owner, uint32_t field, tb_duration_t value);
+/* Generic tuple columns borrow their recording. Constructors record nothing;
+ * returning consumes the array left to right. Scalar columns require bound
+ * field/expression values. Do not modify the private representation. */
+typedef struct type_bridge_plan_column {
+  type_bridge_plan_value_base_t _value;
+  uint32_t _domain;
+  uint32_t _model_ordinal;
+} type_bridge_plan_column_t;
+typedef struct type_bridge_rows_plan { type_bridge_plan_builder_t *recording; uint32_t selection; uint32_t _reserved; } type_bridge_rows_plan_t;
+typedef struct type_bridge_rows_pending type_bridge_rows_pending_t;
+typedef struct type_bridge_rows_result type_bridge_rows_result_t;
+#ifdef __cplusplus
+static_assert(sizeof(type_bridge_plan_column_t) == 32u, "column size");
+static_assert(alignof(type_bridge_plan_column_t) == 8u, "column alignment");
+static_assert(sizeof(type_bridge_rows_plan_t) == 16u, "rows marker size");
+static_assert(alignof(type_bridge_rows_plan_t) == 8u, "rows marker alignment");
+#else
+_Static_assert(sizeof(type_bridge_plan_column_t) == 32u, "column size");
+_Static_assert(_Alignof(type_bridge_plan_column_t) == 8u, "column alignment");
+_Static_assert(sizeof(type_bridge_rows_plan_t) == 16u, "rows marker size");
+_Static_assert(_Alignof(type_bridge_rows_plan_t) == 8u, "rows marker alignment");
+#endif
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_model_column(type_bridge_plan_builder_t *recording, uint32_t binding, uint32_t model_ordinal);
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_long_column(tb_long_t value);
+static inline type_bridge_plan_column_t tb_long_column(tb_long_t value) { return type_bridge_plan_long_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_double_column(tb_double_t value);
+static inline type_bridge_plan_column_t tb_double_column(tb_double_t value) { return type_bridge_plan_double_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_bool_column(tb_bool_t value);
+static inline type_bridge_plan_column_t tb_bool_column(tb_bool_t value) { return type_bridge_plan_bool_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_string_column(tb_string_t value);
+static inline type_bridge_plan_column_t tb_string_column(tb_string_t value) { return type_bridge_plan_string_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_date_column(tb_date_t value);
+static inline type_bridge_plan_column_t tb_date_column(tb_date_t value) { return type_bridge_plan_date_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_datetime_column(tb_datetime_t value);
+static inline type_bridge_plan_column_t tb_datetime_column(tb_datetime_t value) { return type_bridge_plan_datetime_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_datetime_tz_column(tb_datetime_tz_t value);
+static inline type_bridge_plan_column_t tb_datetime_tz_column(tb_datetime_tz_t value) { return type_bridge_plan_datetime_tz_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_decimal_column(tb_decimal_t value);
+static inline type_bridge_plan_column_t tb_decimal_column(tb_decimal_t value) { return type_bridge_plan_decimal_column(value); }
+TYPE_BRIDGE_API type_bridge_plan_column_t TYPE_BRIDGE_CALL
+type_bridge_plan_duration_column(tb_duration_t value);
+static inline type_bridge_plan_column_t tb_duration_column(tb_duration_t value) { return type_bridge_plan_duration_column(value); }
+/* Invalid extents or oversized column arrays fail preflight without touching out_plan. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_plan_returning(type_bridge_plan_builder_t *recording, const type_bridge_plan_column_t *columns, size_t count, type_bridge_rows_plan_t *out_plan);
+static inline type_bridge_status_t type_bridge_rows_stage(type_bridge_staged_transaction_t *tx, type_bridge_rows_plan_t plan, type_bridge_rows_pending_t **out_pending, type_bridge_execution_diagnostics_t **diagnostics) { return type_bridge_staged_transaction_stage_selection(tx, plan.recording, plan.selection, (type_bridge_pending_t **)out_pending, diagnostics); }
+static inline void type_bridge_rows_pending_free(type_bridge_rows_pending_t **pending) { type_bridge_pending_free((type_bridge_pending_t **)pending); }
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_pending_result(const type_bridge_rows_pending_t *pending, type_bridge_rows_result_t **out_result, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API void TYPE_BRIDGE_CALL
+type_bridge_rows_result_free(type_bridge_rows_result_t **result);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_count(const type_bridge_rows_result_t *result, size_t *out_count, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_column_count(const type_bridge_rows_result_t *result, size_t *out_count, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_long(const type_bridge_rows_result_t *result, size_t row, size_t column, int64_t *out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_double(const type_bridge_rows_result_t *result, size_t row, size_t column, double *out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_bool(const type_bridge_rows_result_t *result, size_t row, size_t column, bool *out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_string(const type_bridge_rows_result_t *result, size_t row, size_t column, const char **out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_date(const type_bridge_rows_result_t *result, size_t row, size_t column, const char **out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_datetime(const type_bridge_rows_result_t *result, size_t row, size_t column, const char **out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_datetime_tz(const type_bridge_rows_result_t *result, size_t row, size_t column, const char **out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_decimal(const type_bridge_rows_result_t *result, size_t row, size_t column, const char **out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_duration(const type_bridge_rows_result_t *result, size_t row, size_t column, const char **out_value, type_bridge_execution_diagnostics_t **out_diagnostics);
+/* The model pointer and every nested span borrow the rows result owner. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_rows_result_model_view(const type_bridge_rows_result_t *result, size_t row, size_t column, const type_bridge_projected_token_v1_t *model, const void **out_view, type_bridge_execution_diagnostics_t **out_diagnostics);
+
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL type_bridge_plan_require(type_bridge_plan_builder_t *builder, tb_cond_t condition);
 
 /*
  * Immutable typed queries accept generated tokens only and keep all plans
@@ -3320,6 +3831,13 @@ type_bridge_migration_verification_finding_close(type_bridge_migration_verificat
   ((type_bridge_generated_opaque_input_kind_t)41u)
 #define TYPE_BRIDGE_GENERATED_INPUT_PROJECTED_CODEC_OPTIONS                 \
   ((type_bridge_generated_opaque_input_kind_t)42u)
+
+/* Plan helpers fence the complete recording before writing nominal outputs. */
+#define TYPE_BRIDGE_GENERATED_INPUT_PLAN_BUILDER \
+  ((type_bridge_generated_opaque_input_kind_t)43u)
+
+#define TYPE_BRIDGE_GENERATED_INPUT_PLAN_OPTIONS \
+  ((type_bridge_generated_opaque_input_kind_t)44u)
 
 typedef struct type_bridge_canonical_bytes type_bridge_canonical_bytes_t;
 /* ABI 1.9: exact executed program as owned canonical JSON. Caller values

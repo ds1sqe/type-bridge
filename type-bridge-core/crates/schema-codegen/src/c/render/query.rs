@@ -96,7 +96,7 @@ fn scalar_suffix(domain: ValueTypeTag) -> &'static str {
     }
 }
 
-fn field_domain(
+pub(super) fn field_domain(
     projection: &RuntimeProjection,
     field: &type_bridge_contract::projection::FieldTokenProjection,
 ) -> Result<ValueTypeTag, Diagnostic> {

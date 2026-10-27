@@ -272,6 +272,161 @@ diagnostics; only a broken pointer contract returns
 `TYPE_BRIDGE_STATUS_INVALID_ARGUMENT` from the call itself. `build` validates
 against the schema package's compiled authority and leaves the builder usable.
 
+### Generated plan fields
+
+The specification's `type_bridge_plan_open()` is the generated package-scoped
+`shop_plan_open(options, out_builder, out_diagnostics)` in C. Passing NULL options selects the
+canonical query limits. Opening captures the verified package and selected
+limits once; later staging uses that retained context.
+
+```c
+type_bridge_plan_builder_t *p = NULL;
+type_bridge_execution_diagnostics_t *diagnostics = NULL;
+type_bridge_status_t status = shop_plan_open(NULL, &p, &diagnostics);
+```
+
+Generated initializers always check their projection brand against the captured
+package. A helper from another package refuses with
+`generated_token_package_mismatch`. A generated helper on an unbound raw builder
+reports `plan_context_missing`; its typed argument path names the required
+package opener. Raw `type_bridge_plan_builder_new` and explicit-package `build`
+remain available for the core-builder escape hatch.
+
+Generated plan-value getters use `<model>_plan_<field>`. For example,
+`shop_item_plan_stock(builder, item)` returns `tb_long_t`. The authoring
+specification's `shop_item_stock(p, h)` maps to this name because
+`shop_item_stock` already reads an attribute from a hydrated `shop_item`.
+Match, set, and insert helpers keep their model names, such as
+`shop_item_match`, `shop_item_set`, and `shop_item_insert`.
+
+The 3.0 C naming mappings preserve the existing owned models and getters:
+
+| Specification name | Generated C name |
+| --- | --- |
+| `<model>_<field>(p, h)` plan getter | `<model>_plan_<field>(p, h)` |
+| `<model>_t` borrowed result view | `<model>_plan_view_t` |
+| Nested role-player view | `<model>_plan_player_view_t` |
+| Held set returning hydrated models | `<model>_set`, then `<model>_row` |
+
+`<model>_row(p, handle, &plan)` projects the handle as a model in the plan's
+answer. Use it after a match, set, or link statement. It refuses a handle from
+another recording. Insert and put return their model marker through the output
+parameter; plain delete returns a matched marker and `delete_returning` returns
+a model marker.
+
+```c
+shop_item_plan_t updated;
+shop_item_set_t changes = { .stock = tb_long(0) };
+CHECK(shop_item_set(p, item, &changes));
+CHECK(shop_item_row(p, item, &updated));
+```
+
+Markers borrow their recording until `type_bridge_plan_builder_free`. The first
+typed stage freezes it. All mutations then refuse with `plan_already_built`;
+read-only lazy field getters still work. Each held marker compiles only on its
+first stage, and later stages retain the same compiled source. Unstaged markers
+are never compiled. Pending and result owners may outlive the recording.
+`type_bridge_plan_builder_diagnostics` snapshots the latest rejected frozen
+mutation without clearing it; before any rejection it returns an empty snapshot.
+Rejected mutations do not poison already compiled plans.
+
+The specification's `returning(model, scalar)` is a held rows plan in C.
+Column constructors record nothing; `type_bridge_plan_returning` consumes the
+array in order, so argument evaluation order cannot reorder the projection.
+
+```c
+type_bridge_plan_column_t columns[] = {
+  shop_item_column(item), tb_long_column(shop_item_plan_stock(p, item))
+};
+type_bridge_rows_plan_t plan;
+CHECK(type_bridge_plan_returning(p, columns, 2u, &plan));
+type_bridge_rows_pending_t *pending = NULL;
+CHECK(type_bridge_rows_stage(tx, plan, &pending, &diagnostics));
+CHECK(type_bridge_staged_transaction_commit(tx, &diagnostics));
+type_bridge_rows_result_t *rows = NULL;
+CHECK(type_bridge_rows_pending_result(pending, &rows, &diagnostics));
+const shop_item_plan_view_t *model = NULL;
+int64_t stock = 0;
+CHECK(shop_item_rows_model_at(rows, 0u, 0u, &model, &diagnostics));
+CHECK(type_bridge_rows_result_long(rows, 0u, 1u, &stock, &diagnostics));
+/* model and all its pointers borrow rows. */
+type_bridge_rows_result_free(&rows);
+type_bridge_rows_pending_free(&pending);
+```
+
+Each cell getter checks its column's kind and scalar domain. A model through a
+scalar getter, a long through a string getter, or an out-of-range row or column
+returns a typed diagnostic. Empty results retain their declared column count.
+Model cells use the same precommit proof and core ordinals as per-model results.
+
+A result view borrows its result owner. Freeing that owner invalidates every
+view obtained from it, including nested players and strings. Nested players are
+one level deep, following the core's complete or reference role-player form;
+their `deleted` flag is false. Textual fields use canonical NUL-terminated UTF-8.
+An embedded NUL refuses result construction with `c_plan_view_embedded_nul`.
+
+
+Generated model handles occupy 16 bytes with 8-byte alignment on the supported
+x86_64 ABI, regardless of schema width: a recording pointer, binding ID, and
+model ordinal. The recording caches field and role IDs on first use of each
+model. Repeated initializers check the package brand and reuse that metadata;
+field getters allocate nothing and record nothing until consumed.
+
+Constructors record nothing until consumed; operands are recorded depth-first,
+left to right. A field carrier borrows its builder until
+`type_bridge_plan_builder_free`, like a generated model plan. Reusing a carrier
+uses the same core field binding.
+
+Generated names share the existing C identifier namespace; real collisions
+refuse with `c_emitter_generated_symbol_collision`. Physical `-`, `_`, and `z`
+are escaped as `zh`, `zu`, and `zz`, keeping physical members distinct from
+helper names. Thus `plan-stock` becomes `planzhstock`, `plan_stock` becomes
+`planzustock`, and `has-stock` becomes `haszhstock`. New struct members that
+are C17 or C++17 keywords append `zk`: `class` becomes `classzk`, while physical
+`classz` remains `classzz`.
+
+Required insert and bulk values are raw host members. An optional scalar also
+has a `bool has_<field>` member. For a schema with optional `stock`, these rows
+write zero stock and omit stock, respectively:
+
+```c
+shop_item_values_t rows[] = {
+  {.itemzhid = "I1", .price = 3, .stock = 0, .has_stock = true},
+  {.itemzhid = "I2", .price = 3}
+};
+```
+
+Generated bulk helpers read these host structs directly through one offset table
+per model. They allocate no temporary cell frame: a 10,000-row, three-column
+call avoids 720,000 temporary bytes. Row extents, field offsets, host alignment,
+and presence offsets are checked before payload reads. Rows and their strings
+are borrowed only during the call and may be freed immediately afterwards.
+The explicit native cell-frame API remains available for raw callers.
+
+An optional string uses the same presence flag. `has_<field> = true` with a
+NULL string is an invalid-value build refusal; it does not omit the field.
+Generated presence companions share the struct's member namespace; real
+collisions refuse generation. Physical `has-stock` remains `haszhstock`,
+separate from the generated `has_stock` flag. Set structs
+continue to use typed `tb_*` handles: a zero handle leaves its field untouched.
+
+Ownership removal uses a boolean selection struct. Zero leaves every field
+untouched; designated initializers select the ownerships to remove:
+
+```c
+shop_item_unset_t removed = { .stock = true };
+CHECK(shop_item_unset(builder, item, &removed));
+```
+
+Unordered role edits use `<model>_link_t` and `<model>_unlink_t`. A role with one
+accepted model takes that model's handle. A role with multiple accepted models
+uses a generated tagged union; its explicit `none = 0` tag means no player.
+Unknown tags produce a typed builder diagnostic. Many-role members take a
+pointer and count. Their arrays are borrowed only during the call, so callers
+may free them immediately afterwards; the recording retains the player IDs.
+A zeroed link or unlink struct records nothing. Linking adds players while
+preserving existing players; unlinking removes the specified role edges.
+
 ### Stage and commit
 
 ```c
@@ -374,25 +529,30 @@ commit whose failure is a retry-safe `STC2` conflict with
 
 <a id="require-abi-17"></a>
 
-### Require ABI 1.9
+### Require ABI 1.10
 
-The 1.9 runtime serves 1.6, 1.7 and 1.8 consumers unchanged: CMake accepts
+The 1.10 runtime retains header and descriptor compatibility with minors
+1.6 through 1.9. CMake accepts
 `find_package(TypeBridge 1.6.0 EXACT)` and pkg-config keeps
-`type-bridge = 1.6.0` resolving. Applications that use the new answer cursors
+`type-bridge = 1.6.0` resolving. Applications that use the typed plan authoring helpers
 require it explicitly:
 
 ```cmake
-find_package(TypeBridge 1.9 CONFIG REQUIRED)
+find_package(TypeBridge 1.10 CONFIG REQUIRED)
 ```
 
 ```text
-Requires: type-bridge-abi >= 1.9.0
+Requires: type-bridge-abi >= 1.10.0
 ```
 
 The runtime's pkg-config file keeps `Version: 1.6.0` and provides
 `type-bridge-abi` at the native ABI version (pkgconf, the Ubuntu 24.04
 `pkg-config`, resolves provided modules). At run time,
-`type_bridge_c_abi_minor()` reports the loaded runtime's minor.
+`type_bridge_c_abi_minor()` reports the loaded runtime's minor. Generated packages
+must carry the current generator's code resources; an older projection must be
+regenerated even when its descriptor minor is accepted. The old-header tests
+exercise linking and descriptor compatibility with current resources.
+
 
 
 ### Explain and database debug callbacks (ABI 1.9)

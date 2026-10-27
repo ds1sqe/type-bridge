@@ -11,6 +11,8 @@ use type_bridge_contract::sdk_diagnostic::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AllocationSite {
     ProjectedValueHandle,
+    PlanViewStorage,
+    PlanRowsResultHandle,
     ProjectedReferenceHandle,
     ProjectedCreateHandle,
     ProjectedThingHandle,

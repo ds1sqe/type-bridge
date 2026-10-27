@@ -243,6 +243,9 @@ pub(crate) struct StagedDatabaseGuard {
 }
 
 impl StagedDatabaseGuard {
+    pub(crate) fn projected_origin(&self) -> type_bridge_orm::ProjectedQueryOrigin {
+        type_bridge_orm::ProjectedQueryOrigin::for_database(&self.database.database)
+    }
     pub(crate) fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
         self.database
             .debug_dispatch

@@ -24,15 +24,24 @@ pub const PREFIX: &str = "shop";
 
 pub struct PurchasePackage {
     pub package: GeneratedPackage,
+    pub projection: type_bridge_contract::projection::RuntimeProjection,
     pub authority: VerifiedSchemaAuthority,
 }
 
 /// Emit the purchase schema as a C package under `profile`, or the
 /// acceptance profile when set, else the purchase fixture profile.
 pub fn purchase_package() -> PurchasePackage {
+    purchase_package_with_prefix(PREFIX)
+}
+
+pub fn purchase_package_with_prefix(prefix: &str) -> PurchasePackage {
+    package_from_source(SOURCE, prefix)
+}
+
+pub fn package_from_source(source: &str, prefix: &str) -> PurchasePackage {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("purchase.yaml").expect("document ID is valid"),
-        SOURCE,
+        source,
     )])
     .expect("purchase schema parses");
     let declared = normalize_documents(&documents).expect("purchase schema normalizes");
@@ -57,7 +66,7 @@ pub fn purchase_package() -> PurchasePackage {
     let projection = project(
         &resolved,
         BindingTarget::C,
-        &ProjectionConfig::c(CSymbolPrefix::new(PREFIX).expect("prefix is valid")),
+        &ProjectionConfig::c(CSymbolPrefix::new(prefix).expect("prefix is valid")),
         &emitter.generator_handlers(),
         &emitter.code_resources().expect("C emitter resources hash"),
     )
@@ -65,7 +74,11 @@ pub fn purchase_package() -> PurchasePackage {
     let package = emitter
         .emit(&projection, &authority)
         .expect("purchase package emits");
-    PurchasePackage { package, authority }
+    PurchasePackage {
+        package,
+        projection,
+        authority,
+    }
 }
 
 impl PurchasePackage {

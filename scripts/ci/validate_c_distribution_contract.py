@@ -19,7 +19,7 @@ DEFAULT_CONTRACT = ROOT / "tests/contracts/c-distribution-v1.json"
 ARTIFACTS_CATALOG = ROOT / "tests/contracts/sdk_conformance/artifacts/catalog.json"
 MANIFEST = ROOT / "tests/contracts/sdk_conformance/manifest.json"
 FULL_C_AUDIT = ROOT / "tests/contracts/c-full-sdk-audit.json"
-# The frozen released 1.6 header; 1.9 exports beyond it are the additive set.
+# The frozen released 1.6 header; 1.10 exports beyond it are the additive set.
 ABI_1_6_HEADER = "type-bridge-core/crates/c/tests/fixtures/abi-1.6/typebridge/type_bridge.h"
 HEADER_EXPORT = re.compile(r"\b(type_bridge_[a-z0-9_]+)\s*\(")
 TRANSITION_CASES = [
@@ -71,9 +71,9 @@ def _added_exports(root: Path, contract_path: object) -> list[str]:
     except (OSError, UnicodeError) as error:
         raise ContractError(f"cannot read the released 1.6 header: {error}") from error
     released = set(HEADER_EXPORT.findall(previous))
-    _require(released <= exports, "ABI 1.9 removed a released 1.6 export")
+    _require(released <= exports, "ABI 1.10 removed a released 1.6 export")
     added = sorted(exports - released)
-    _require(bool(added), "ABI 1.9 adds no exports")
+    _require(bool(added), "ABI 1.10 adds no exports")
     return added
 
 
@@ -94,9 +94,9 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
 
     abi = contract.get("abi")
     _require(
-        isinstance(abi, dict) and abi.get("decision") == "additive-1.9", "ABI decision drifted"
+        isinstance(abi, dict) and abi.get("decision") == "additive-1.10", "ABI decision drifted"
     )
-    _require(abi.get("version") == "1.9.0", "distribution must retain ABI 1.9")
+    _require(abi.get("version") == "1.10.0", "distribution must retain ABI 1.10")
     _require(
         abi.get("package_metadata_version") == "1.6.0",
         "installed package metadata must retain version 1.6",
@@ -106,7 +106,9 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
         isinstance(description, str) and bool(description.strip()) and "\n" not in description,
         "package metadata version needs a one-line description",
     )
-    _require(abi.get("accepted_descriptor_minors") == [6, 7, 8, 9], "descriptor ABI range drifted")
+    _require(
+        abi.get("accepted_descriptor_minors") == [6, 7, 8, 9, 10], "descriptor ABI range drifted"
+    )
     _require(
         abi.get("added_exports") == _added_exports(root, abi.get("contract_path")),
         "additive ABI exports drifted",
@@ -117,7 +119,7 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     compatibility = contract.get("compatibility")
     _require(isinstance(compatibility, dict), "compatibility contract is missing")
     _require(
-        compatibility.get("runtime_abi") == {"exact": "1.9.0"},
+        compatibility.get("runtime_abi") == {"exact": "1.10.0"},
         "runtime ABI range drifted",
     )
     _require(
@@ -222,11 +224,11 @@ def validate(contract_path: Path = DEFAULT_CONTRACT, root: Path = ROOT) -> dict[
     )
     _require("project(TypeBridge VERSION 1.6.0" in cmake, "runtime CMake ABI version drifted")
     _require(
-        "find_package(TypeBridge 1.9.0 EXACT CONFIG REQUIRED)" in generated_cmake,
+        "find_package(TypeBridge 1.10.0 EXACT CONFIG REQUIRED)" in generated_cmake,
         "generated CMake range drifted",
     )
     _require(
-        "type-bridge-abi >= 1.9.0" in generated_pc,
+        "type-bridge-abi >= 1.10.0" in generated_pc,
         "generated pkg-config range drifted",
     )
 

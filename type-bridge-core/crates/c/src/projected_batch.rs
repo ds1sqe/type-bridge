@@ -3188,7 +3188,7 @@ plays:
         );
         assert_eq!(
             generated_batch_preflight(
-                43,
+                u32::MAX,
                 builder.cast(),
                 1,
                 (&mut caller_output as *mut u8).cast(),

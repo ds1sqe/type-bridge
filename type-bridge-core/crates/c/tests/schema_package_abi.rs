@@ -2626,7 +2626,7 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     assert!(
         fs::read_to_string(&installed_config)
             .expect("CMake metadata is UTF-8")
-            .contains("set(TypeBridge_C_ABI_VERSION \"1.9.0\")")
+            .contains("set(TypeBridge_C_ABI_VERSION \"1.10.0\")")
     );
     assert!(
         fs::read_to_string(&installed_pkg_config)
@@ -2668,7 +2668,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         "the installed package incorrectly satisfied an incompatible ABI request"
     );
 
-    // ABI 1.9 serves 1.6/1.7/1.8 exact pins; new consumers can require 1.9.
+    // ABI 1.10 serves 1.6 through 1.9 exact pins; new consumers can require 1.10.
     for (request, accepted) in [
         ("1.6.0 EXACT", true),
         ("1.6", true),
@@ -2683,8 +2683,12 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         ("1.8", true),
         ("1.9.0 EXACT", true),
         ("1.6...1.8", false),
-        ("1.6...1.9", true),
-        ("1.10", false),
+        ("1.6...1.9", false),
+        ("1.6...1.10", true),
+        ("1.10.0 EXACT", true),
+        ("1.10.1 EXACT", false),
+        ("1.11", false),
+        ("1.10", true),
         ("1.9", true),
         ("2.0", false),
         ("1.9...2.0", true),
@@ -2738,7 +2742,8 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
             "current consumers resolve"
         );
         assert!(pkg_config("type-bridge-abi >= 1.9.0"));
-        assert!(!pkg_config("type-bridge-abi >= 1.10.0"));
+        assert!(pkg_config("type-bridge-abi >= 1.10.0"));
+        assert!(!pkg_config("type-bridge-abi >= 1.11.0"));
     }
 
     let output = Command::new("cmake")
@@ -3510,9 +3515,9 @@ fn supported_additive_descriptors_open_in_flat_and_chunked_forms() {
 
 #[cfg(unix)]
 #[test]
-fn abi_1_6_header_consumer_links_and_opens_its_package_on_1_8() {
+fn abi_1_6_header_consumer_links_and_opens_current_resource_package() {
     let Some(native_library) =
-        native_library_or_skip("abi_1_6_header_consumer_links_and_opens_its_package_on_1_8")
+        native_library_or_skip("abi_1_6_header_consumer_links_and_opens_current_resource_package")
     else {
         return;
     };
@@ -3534,7 +3539,7 @@ int main(void) {
   type_bridge_diagnostics_t *diagnostics = NULL;
   type_bridge_write_transaction_t *transaction = NULL;
   type_bridge_execution_diagnostics_t *execution = NULL;
-  if (type_bridge_c_abi_minor() != 9u) return 1;
+  if (type_bridge_c_abi_minor() != 10u) return 1;
   if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 2;
   if (package == NULL || diagnostics != NULL) return 3;
   if (type_bridge_write_transaction_rollback(&transaction, &execution) != TYPE_BRIDGE_STATUS_OK) return 4;
@@ -3589,10 +3594,10 @@ int main(void) {
     assert!(invocations > 0);
 }
 
-/// The package descriptor and open function a 2.2.6 (ABI 1.6) generator
-/// emits, cut from today's generated source with the descriptor minor set to
-/// 6. Today's models.h and the rest of models.c use ABI 1.7 declarations the
-/// frozen 1.6 header lacks, so the old consumer cannot include them.
+/// An ABI 1.6 descriptor using current authority and code resources, for the
+/// frozen-header linking test. This does not preserve a historic projection.
+/// Today's models.h and remaining model helpers require newer declarations,
+/// so the old-header consumer includes only the descriptor and package opener.
 #[cfg(unix)]
 fn abi_1_6_package_source(generated: &str) -> String {
     const DESCRIPTOR: &str = "static const type_bridge_schema_package_chunked_descriptor_v1_t\n";
@@ -3614,7 +3619,10 @@ fn abi_1_6_package_source(generated: &str) -> String {
         .min()
         .expect("descriptor names its chunks");
     let body = &generated[start..end];
-    let previous = body.replace("  1u,\n  8u,\n  0u,", "  1u,\n  6u,\n  0u,");
+    let previous = body.replace(
+        &format!("  1u,\n  {}u,\n  0u,", TYPE_BRIDGE_C_ABI_MINOR),
+        "  1u,\n  6u,\n  0u,",
+    );
     assert_ne!(
         body, previous,
         "fixture must carry a literal ABI descriptor"

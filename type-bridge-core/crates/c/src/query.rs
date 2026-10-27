@@ -1057,7 +1057,7 @@ pub unsafe extern "C" fn type_bridge_query_session_open_with_limits_v1(
 /// # Safety
 /// `overrides` must be NULL with a zero count, or point to `count` readable
 /// entries whose `name` ranges are readable for `name_length` bytes.
-unsafe fn query_limits_from_overrides(
+pub(crate) unsafe fn query_limits_from_overrides(
     overrides: *const TypeBridgeQueryLimitOverrideV1,
     count: usize,
 ) -> Option<QueryLimits> {

@@ -6,6 +6,9 @@ use std::mem::size_of;
 use type_bridge_contract::limits::MAX_CANONICAL_COLLECTION_LEN;
 use type_bridge_orm::ProjectedResourceMeasure;
 
+use crate::plan_builder::TypeBridgePlanBuilder;
+use crate::plan_builder::context::TypeBridgePlanOptionsV1;
+
 use crate::abi::{
     SchemaPackageState, TypeBridgeDiagnostics, TypeBridgeSchemaPackage, TypeBridgeStatus, guarded,
 };
@@ -122,6 +125,10 @@ pub const GENERATED_INPUT_PROJECTED_STRUCT: u32 = 40;
 pub const GENERATED_INPUT_PROJECTED_STRUCT_MEMBER: u32 = 41;
 /// Versioned canonical codec options input kind.
 pub const GENERATED_INPUT_PROJECTED_CODEC_OPTIONS: u32 = 42;
+/// Mutable generated plan recording input kind.
+pub const GENERATED_INPUT_PLAN_BUILDER: u32 = 43;
+/// Versioned generated plan options and their nested overrides.
+pub const GENERATED_INPUT_PLAN_OPTIONS: u32 = 44;
 
 /// Frozen generated create-argument graph layout version.
 pub const GENERATED_CREATE_GRAPH_VERSION: u32 = 1;
@@ -441,6 +448,8 @@ fn object_size(kind: u32) -> Option<usize> {
         GENERATED_INPUT_PROJECTED_CODEC_OPTIONS => {
             Some(size_of::<TypeBridgeProjectedCodecOptionsV1>())
         }
+        GENERATED_INPUT_PLAN_BUILDER => Some(size_of::<TypeBridgePlanBuilder>()),
+        GENERATED_INPUT_PLAN_OPTIONS => Some(size_of::<TypeBridgePlanOptionsV1>()),
         _ => None,
     }
 }
@@ -573,6 +582,15 @@ unsafe fn check_deep_object_ranges(
             // SAFETY: the complete struct-member handle was checked before dispatch.
             unsafe { &*pointer.cast::<TypeBridgeProjectedStructMember>() }
                 .check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PLAN_BUILDER => {
+            // SAFETY: the complete live builder was fenced before its captured buffers.
+            unsafe { &*pointer.cast::<TypeBridgePlanBuilder>() }.check_borrowed_ranges(outputs)
+        }
+        GENERATED_INPUT_PLAN_OPTIONS => {
+            // SAFETY: the complete options object was fenced before this nested walk.
+            let options = unsafe { pointer.cast::<TypeBridgePlanOptionsV1>().read_unaligned() };
+            unsafe { options.check_borrowed_ranges(outputs) }
         }
         GENERATED_INPUT_PROJECTED_CODEC_OPTIONS => {
             // SAFETY: the complete options object was checked before dispatch.
@@ -1361,8 +1379,68 @@ mod tests {
             object_size(GENERATED_INPUT_PROJECTED_CODEC_OPTIONS),
             Some(size_of::<TypeBridgeProjectedCodecOptionsV1>()),
         );
-        assert_eq!(object_size(43), None);
+        assert_eq!(GENERATED_INPUT_PLAN_BUILDER, 43);
+        assert_eq!(
+            object_size(GENERATED_INPUT_PLAN_BUILDER),
+            Some(size_of::<TypeBridgePlanBuilder>())
+        );
+        assert_eq!(GENERATED_INPUT_PLAN_OPTIONS, 44);
+        assert_eq!(
+            object_size(GENERATED_INPUT_PLAN_OPTIONS),
+            Some(size_of::<TypeBridgePlanOptionsV1>())
+        );
+        assert_eq!(object_size(45), None);
         assert_eq!(object_size(u32::MAX), None);
+    }
+
+    #[test]
+    fn plan_builder_output_aliases_are_fenced_across_the_whole_recording() {
+        let mut builder = ptr::null_mut();
+        // SAFETY: the builder slot is writable and becomes our exclusive handle.
+        unsafe {
+            assert_eq!(
+                crate::plan_builder::type_bridge_plan_builder_new(&mut builder),
+                TypeBridgeStatus::Ok
+            );
+        }
+        let inputs = [input(GENERATED_INPUT_PLAN_BUILDER, builder.cast(), 1)];
+        for offset in [0, size_of::<TypeBridgePlanBuilder>() - 1] {
+            // SAFETY: only the address of an interior byte is formed; preflight never writes it.
+            let pointer = unsafe { builder.cast::<u8>().add(offset).cast() };
+            let outputs = [output(pointer, 1)];
+            // SAFETY: the live descriptors refer to our live recording and an aliasing output range.
+            assert_eq!(
+                unsafe {
+                    type_bridge_generated_opaque_alias_preflight_v1(
+                        inputs.as_ptr(),
+                        inputs.len(),
+                        outputs.as_ptr(),
+                        outputs.len(),
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument
+            );
+        }
+        let mut bytes = [0xa5u8; 32];
+        let outputs = [output(bytes.as_mut_ptr().cast(), bytes.len())];
+        // SAFETY: the live descriptors refer to separate recording/output allocations.
+        assert_eq!(
+            unsafe {
+                type_bridge_generated_opaque_alias_preflight_v1(
+                    inputs.as_ptr(),
+                    inputs.len(),
+                    outputs.as_ptr(),
+                    outputs.len(),
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(bytes, [0xa5; 32]);
+        // SAFETY: we own this builder, and preflight has not mutated it.
+        unsafe {
+            crate::plan_builder::type_bridge_plan_builder_free(&mut builder);
+        }
+        assert!(builder.is_null());
     }
 
     #[test]

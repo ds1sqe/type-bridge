@@ -180,6 +180,75 @@ fn assert_exact_and_legacy_evidence(
 }
 
 #[test]
+fn ordered_roles_omit_plan_factories_and_link_helpers_but_keep_scalar_setters() {
+    let (schema, authority) = resolved(include_str!("acceptance/schema-plan-ordered-roles.yaml"));
+    let python = PythonEmitter::new();
+    let python_projection = projection(
+        &schema,
+        BindingTarget::Python,
+        &ProjectionConfig::python(),
+        &python.generator_handlers_for(&schema),
+        &python.code_resources_for(&schema).unwrap(),
+    );
+    let package = python.emit(&python_projection, &authority).unwrap();
+    for path in ["_models.py", "_models.pyi"] {
+        let source = std::str::from_utf8(package.get(path).unwrap()).unwrap();
+        let model = source
+            .split("class Team(")
+            .nth(1)
+            .unwrap()
+            .split("\nclass ")
+            .next()
+            .unwrap();
+        assert!(model.contains("def match("));
+        assert!(model.contains("def by_iid("));
+        assert!(!model.contains("def insert("));
+        assert!(!model.contains("def put("));
+        let handle = source
+            .split("class TeamHandle(")
+            .nth(1)
+            .unwrap()
+            .split("\nclass ")
+            .next()
+            .unwrap();
+        assert!(handle.contains("def set(self, *, count:"));
+        assert!(!handle.contains("def link("));
+        assert!(!handle.contains("def unlink("));
+    }
+    let typescript = TypeScriptEmitter::new();
+    let typescript_projection = projection(
+        &schema,
+        BindingTarget::TypeScript,
+        &ProjectionConfig::typescript(),
+        &typescript.generator_handlers_for(&schema),
+        &typescript.code_resources_for(&schema).unwrap(),
+    );
+    let package = typescript.emit(&typescript_projection, &authority).unwrap();
+    let source = std::str::from_utf8(package.get("src/models.ts").unwrap()).unwrap();
+    let model = source
+        .split("interface TeamPlanMethods {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
+    assert!(model.contains("match("));
+    assert!(model.contains("byIid("));
+    assert!(!model.contains("insert("));
+    assert!(!model.contains("put("));
+    let handle = source
+        .split("class TeamHandle ")
+        .nth(1)
+        .unwrap()
+        .split("\n}\n")
+        .next()
+        .unwrap();
+    assert!(handle.contains("set(values: { readonly count?:"));
+    assert!(!handle.contains("link("));
+    assert!(!handle.contains("unlink("));
+}
+
+#[test]
 fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings() {
     let (schema, authority) = resolved(ORDERED_SOURCE);
 
@@ -265,9 +334,7 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(typescript_runtime.contains("native.putManyProjected<Complete>"));
     assert!(typescript_runtime.contains("native.updateManyProjected<Complete>"));
     assert!(typescript_runtime.contains("native.deleteManyProjected("));
-    assert!(
-        typescript_runtime.contains("projectedBatchMaterializer: materializeOrderedProjectedBatch")
-    );
+    assert!(typescript_runtime.contains("projectedBatchMaterializer: materializeProjectedBatch"));
     assert!(typescript_runtime.contains("descriptors[HYDRATE_COMPLETE_BRAND]"));
     assert!(typescript_runtime.contains("requireProjection().validateThingJson("));
     let typescript_index =
@@ -343,12 +410,12 @@ fn ordered_projection_selects_successor_evidence_and_descriptors_in_all_bindings
     assert!(contains_hex_bytes(c_source, b"distinct"));
     assert!(
         c_source
-            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  9u,")
+            .contains("sizeof(type_bridge_schema_package_chunked_descriptor_v1_t),\n  1u,\n  10u,")
     );
     assert!(c_source.contains("type_bridge_schema_package_open_chunked_v2("));
-    assert!(c_cmake.contains("find_package(TypeBridge 1.9.0 EXACT CONFIG REQUIRED)"));
-    assert!(c_package_config.contains("find_dependency(TypeBridge 1.9.0 EXACT CONFIG)"));
-    assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 1.9.0"));
+    assert!(c_cmake.contains("find_package(TypeBridge 1.10.0 EXACT CONFIG REQUIRED)"));
+    assert!(c_package_config.contains("find_dependency(TypeBridge 1.10.0 EXACT CONFIG)"));
+    assert!(c_pkg_config.contains("Requires: type-bridge-abi >= 1.10.0"));
 }
 
 #[test]
@@ -720,7 +787,8 @@ fn unordered_schema_aware_evidence_and_fixed_resources_remain_exactly_legacy() {
     assert!(!typescript_runtime.contains("putManyProjected"));
     assert!(!typescript_runtime.contains("updateManyProjected"));
     assert!(!typescript_runtime.contains("deleteManyProjected"));
-    assert!(!typescript_runtime.contains("projectedBatchMaterializer"));
+    assert!(typescript_runtime.contains("projectedBatchMaterializer: materializeProjectedBatch"));
+    assert!(typescript_runtime.contains("planResultsOnly: true"));
     let typescript_index =
         std::str::from_utf8(typescript_package.get("src/index.ts").unwrap()).unwrap();
     assert!(typescript_index.contains("__installRuntimeProjectionPackage("));
@@ -878,11 +946,11 @@ plays:
     for root in [&generated, &foreign] {
         let runtime_path = root.join("src/runtime.ts");
         let mut runtime_source = fs::read_to_string(&runtime_path).unwrap();
-        let materializer_declaration = "const materializeOrderedProjectedBatch: NonNullable<";
+        let materializer_declaration = "const materializeProjectedBatch: NonNullable<";
         assert_eq!(runtime_source.matches(materializer_declaration).count(), 1);
         runtime_source = runtime_source.replacen(
             materializer_declaration,
-            "const __testOrderedBatchMaterializeBase: NonNullable<",
+            "const __testProjectedBatchMaterializeBase: NonNullable<",
             1,
         );
         let install_anchor =
@@ -897,13 +965,13 @@ let __testOrderedBatchInterceptor:
   | ((ordinal: number, value: object) => void)
   | null = null;
 const __testOrderedBatchCaptured: object[] = [];
-const materializeOrderedProjectedBatch: typeof __testOrderedBatchMaterializeBase = (
+const materializeProjectedBatch: typeof __testProjectedBatchMaterializeBase = (
   typeKey,
   ordinal,
   json,
   authority,
 ): any => {
-  const value = __testOrderedBatchMaterializeBase(
+  const value = __testProjectedBatchMaterializeBase(
     typeKey,
     ordinal,
     json,
@@ -957,7 +1025,7 @@ export function __testOrderedHydrateEnvelope(
   return hydrateOrderedProjectedEnvelope(envelope);
 }
 export function __testOrderedFacadeProof(value: object): unknown {
-  return orderedFacadeProofs.get(value) ?? null;
+  return projectedFacadeProofs.get(value) ?? null;
 }
 export function __testOrderedRoleProofs(
   typeKey: string,
@@ -986,11 +1054,11 @@ export function __testOrderedBatchMaterialize(
   json: string,
   authority: object,
 ): object {
-  return __testOrderedBatchMaterializeBase(
+  return __testProjectedBatchMaterializeBase(
     typeKey,
     ordinal,
     json,
-    authority as Parameters<typeof materializeOrderedProjectedBatch>[3],
+    authority as Parameters<typeof materializeProjectedBatch>[3],
   );
 }
 "#,

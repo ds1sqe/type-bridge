@@ -39,15 +39,25 @@ use crate::runtime::{
 
 /// Opaque validated `query-plan/v3` plan.
 pub struct TypeBridgePlan {
-    plan: QueryPlanV3,
-    // Encoded once at decode so the accessor cannot fail and its source
-    // range can be fenced against caller buffers.
-    canonical: Vec<u8>,
+    pub(crate) source: Arc<CompiledRawPlan>,
 }
-
+pub(crate) struct CompiledRawPlan {
+    pub(crate) plan: QueryPlanV3,
+    pub(crate) canonical: Vec<u8>,
+}
+impl AsRef<[QueryPlanV3]> for CompiledRawPlan {
+    fn as_ref(&self) -> &[QueryPlanV3] {
+        std::slice::from_ref(&self.plan)
+    }
+}
 impl TypeBridgePlan {
     pub(crate) fn new(plan: QueryPlanV3, canonical: Vec<u8>) -> Self {
-        Self { plan, canonical }
+        Self {
+            source: Arc::new(CompiledRawPlan { plan, canonical }),
+        }
+    }
+    pub(crate) fn from_shared(source: Arc<CompiledRawPlan>) -> Self {
+        Self { source }
     }
 }
 
@@ -132,14 +142,11 @@ pub(crate) fn contract_error(
     invalid(diagnostic.code().as_str(), message)
 }
 
-fn pending_diagnostic(error: &PendingError) -> SdkExecutionDiagnostic {
+pub(crate) fn pending_diagnostic(error: &PendingError) -> SdkExecutionDiagnostic {
     match error {
-        PendingError::Failed {
-            failure: Some(failure),
-            context,
-            ..
-        } => SdkExecutionDiagnostic::from_failure(failure, context.as_ref().clone()),
-        PendingError::Refused { diagnostic, .. } => diagnostic.as_ref().clone(),
+        PendingError::Failed { diagnostic, .. } | PendingError::Refused { diagnostic, .. } => {
+            diagnostic.as_ref().clone()
+        }
         PendingError::InvalidPlan(diagnostic) => {
             contract_error(diagnostic, "the plan cannot be staged")
         }
@@ -194,7 +201,7 @@ unsafe fn check_plan(
     check_object(preflight, plan)?;
     if !plan.is_null() {
         // SAFETY: the complete live handle was fenced above.
-        let canonical = &unsafe { &*plan }.canonical;
+        let canonical = &unsafe { &*plan }.source.canonical;
         preflight.check_bytes(canonical.as_ptr().cast(), canonical.len())?;
     }
     Ok(())
@@ -202,7 +209,7 @@ unsafe fn check_plan(
 
 /// # Safety
 /// A non-null `transaction` is a live handle.
-unsafe fn check_transaction(
+pub(crate) unsafe fn check_transaction(
     preflight: &DirectOutputPreflight,
     transaction: *const TypeBridgeStagedTransaction,
 ) -> Result<(), TypeBridgeStatus> {
@@ -364,7 +371,7 @@ pub unsafe extern "C" fn type_bridge_plan_explain(
     guarded(|| {
         // SAFETY: a non-null plan is live by the caller contract.
         let plan = unsafe { &*plan };
-        let bytes = match type_bridge_orm::plan_explain::explain(&plan.plan)
+        let bytes = match type_bridge_orm::plan_explain::explain(&plan.source.plan)
             .and_then(|explanation| explanation.canonical_bytes())
         {
             Ok(bytes) => bytes,
@@ -426,7 +433,7 @@ pub unsafe extern "C" fn type_bridge_plan_v3_canonical_bytes(
         return TypeBridgeStatus::InvalidArgument;
     }
     // SAFETY: a non-null plan is a live handle by contract.
-    let encoded = &unsafe { &*plan }.canonical;
+    let encoded = &unsafe { &*plan }.source.canonical;
     // SAFETY: as above.
     unsafe { out_len.write_unaligned(encoded.len()) };
     if buffer.is_null() || capacity < encoded.len() {
@@ -602,13 +609,17 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
         let dispatch = transaction.owner.debug_dispatch();
         let pending = match dispatch {
             Some(dispatch) => tracing::dispatcher::with_default(&dispatch, || {
-                transaction.transaction.stage_plan(&plan.plan)
+                transaction
+                    .transaction
+                    .stage_shared_plan(Arc::clone(&plan.source), 0)
             }),
-            None => transaction.transaction.stage_plan(&plan.plan),
+            None => transaction
+                .transaction
+                .stage_shared_plan(Arc::clone(&plan.source), 0),
         };
         match pending {
             Ok(pending) => {
-                let state = Arc::new(PendingState::new(pending, &plan.plan));
+                let state = Arc::new(PendingState::new(pending, &plan.source.plan));
                 transaction.pending_views.push(Arc::downgrade(&state));
                 let handle = Box::new(TypeBridgePending {
                     tag: crate::staged_answers::PENDING_TAG,
@@ -620,6 +631,99 @@ pub unsafe extern "C" fn type_bridge_staged_transaction_stage(
             }
             Err(error) => return_execution_error(pending_diagnostic(&error), out_diagnostics),
         }
+    })
+}
+
+/// Stage a borrowed generated terminal. The first typed stage freezes its recording.
+/// Repeated staging retains the same lazily compiled source; the pending may
+/// outlive the recording. A marker itself is invalid after its recording is freed.
+///
+/// # Safety
+/// Inputs are live and exclusively borrowed. Outputs are writable, possibly
+/// unaligned owner slots, disjoint from all inputs and their retained bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_staged_transaction_stage_selection(
+    transaction: *mut TypeBridgeStagedTransaction,
+    builder: *mut crate::plan_builder::TypeBridgePlanBuilder,
+    selection: u32,
+    out_pending: *mut *mut TypeBridgePending,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    use crate::plan_builder::selections::{AuthoredAnswers, AuthoredPending, SelectionProgram};
+    let inputs = |outputs: &DirectOutputPreflight| {
+        // SAFETY: caller retains both live input handles.
+        unsafe {
+            check_transaction(outputs, transaction)?;
+        }
+        check_object(outputs, builder)?;
+        if !builder.is_null() {
+            // SAFETY: the complete builder was fenced above.
+            unsafe { &*builder }.check_borrowed_ranges(outputs)?;
+        }
+        Ok(())
+    };
+    // SAFETY: both owner outputs are fenced before either is initialized.
+    if let Err(status) = unsafe { prepare_handle_outputs(out_pending, out_diagnostics, inputs) } {
+        return status;
+    }
+    if transaction.is_null() || builder.is_null() {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: exclusive, live inputs by contract.
+        let (transaction, builder) = unsafe { (&mut *transaction, &mut *builder) };
+        if transaction.poisoned {
+            return return_execution_error(poisoned_transaction_diagnostic(), out_diagnostics);
+        }
+        let source = match builder.finish_selection(selection) {
+            Ok(source) => source,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        let mut stage = || match &source.program {
+            SelectionProgram::Raw(plans) => transaction
+                .transaction
+                .stage_plans(Arc::clone(&source), plans.returns_documents())
+                .map(AuthoredAnswers::Raw),
+            SelectionProgram::Models(_) => transaction
+                .transaction
+                .stage_plan_fetch(
+                    Arc::clone(&source),
+                    Arc::clone(
+                        source
+                            .registry
+                            .as_ref()
+                            .expect("model program retains its registry"),
+                    ),
+                    Default::default(),
+                )
+                .map(AuthoredAnswers::Models),
+        };
+        let dispatch = transaction.owner.debug_dispatch();
+        let answers = match dispatch {
+            Some(dispatch) => tracing::dispatcher::with_default(&dispatch, stage),
+            None => stage(),
+        };
+        let answers = match answers {
+            Ok(answers) => answers,
+            Err(error) => {
+                return return_execution_error(pending_diagnostic(&error), out_diagnostics);
+            }
+        };
+        let origin = match &transaction.owner {
+            StagedOwner::Database(guard) => guard.projected_origin(),
+            StagedOwner::Proxy(_) => type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
+        };
+        let state = Arc::new(PendingState::authored(AuthoredPending::new(
+            source, answers, origin,
+        )));
+        transaction.pending_views.push(Arc::downgrade(&state));
+        let handle = Box::new(TypeBridgePending {
+            tag: crate::staged_answers::PENDING_TAG,
+            state,
+        });
+        // SAFETY: the output was fenced and initialized above.
+        unsafe { out_pending.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
     })
 }
 
@@ -912,7 +1016,7 @@ mod tests {
     fn rows(count: usize) -> Response {
         Response::Result(QueryResult::Rows(
             (0..count)
-                .map(|row| serde_json::json!({ "row": row }))
+                .map(|row| serde_json::json!({ "row": row, "account": {"kind":"thing", "iid":format!("0x{:02x}", row + 1), "type_id":{"kind":"entity", "label":"account"}} }))
                 .collect(),
         ))
     }
@@ -1271,7 +1375,7 @@ mod tests {
             TypeBridgeStatus::InvalidArgument
         );
         assert_eq!(storage, [0; 64]);
-        let own = unsafe { &*plan }.canonical.as_ptr().cast_mut();
+        let own = unsafe { &*plan }.source.canonical.as_ptr().cast_mut();
         let mut length = usize::MAX;
         assert_eq!(
             unsafe { type_bridge_plan_v3_canonical_bytes(plan, own, PURCHASE.len(), &mut length) },
@@ -1595,7 +1699,7 @@ mod tests {
     #[test]
     fn commit_failures_keep_the_handle_and_the_released_detail_set() {
         // An unknown outcome leaves the handle for new work.
-        let fixture_unknown = fixture(vec![rows(1)], COMMIT_UNKNOWN);
+        let fixture_unknown = fixture(vec![rows(2)], COMMIT_UNKNOWN);
         let plan = decode(BATCH);
         let mut transaction = open(&fixture_unknown, TYPE_BRIDGE_TRANSACTION_WRITE);
         let original = transaction;
@@ -1668,7 +1772,7 @@ mod tests {
         }
 
         // A provider panic poisons the handle: only rollback and close remain.
-        let Fixture { database, .. } = fixture(vec![rows(1)], COMMIT_PANIC);
+        let Fixture { database, .. } = fixture(vec![rows(2)], COMMIT_PANIC);
         let mut database = Box::into_raw(database);
         let mut transaction = ptr::dangling_mut();
         let mut diagnostics = ptr::dangling_mut();
@@ -1732,7 +1836,7 @@ mod tests {
 
     #[test]
     fn one_handle_commits_again_after_rollback_and_after_commit() {
-        let fixture = fixture(vec![rows(1), rows(2)], COMMIT_SUCCESS);
+        let fixture = fixture(vec![rows(2), rows(2)], COMMIT_SUCCESS);
         let mut plan = decode(BATCH);
         let mut transaction = open(&fixture, TYPE_BRIDGE_TRANSACTION_WRITE);
         let original = transaction;
@@ -1749,7 +1853,7 @@ mod tests {
         assert_eq!(status, TypeBridgeStatus::Ok);
         assert!(diagnostics.is_null());
         let matched = TypeBridgePlanAnswerKind::Matched as u32;
-        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 1));
+        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 2));
         assert_eq!(
             fixture.state.query_count(),
             1,
@@ -1762,7 +1866,7 @@ mod tests {
         assert_eq!(status, TypeBridgeStatus::Ok);
         assert!(diagnostics.is_null());
         assert_eq!(read(again), (TypeBridgeStatus::Ok, matched, 2));
-        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 1));
+        assert_eq!(read(kept), (TypeBridgeStatus::Ok, matched, 2));
         assert_eq!(transaction, original);
         assert_eq!(
             fixture.state.opened_transactions(),
@@ -2089,5 +2193,34 @@ mod explain_tests {
             TypeBridgeStatus::InvalidArgument
         );
         assert!(output.is_null());
+    }
+}
+
+#[cfg(test)]
+mod pending_diagnostic_redaction_tests {
+    use super::*;
+    #[test]
+    fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
+        let error = PendingError::Failed {
+            diagnostic: Box::new(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::commit_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown,
+                ),
+            ),
+            op_index: None,
+            message: "signed-server-secret".into(),
+            failure: Some(Box::new(
+                type_bridge_contract::failure::Failure::Indeterminate { code: None },
+            )),
+            context: Default::default(),
+        };
+        assert!(!error.to_string().contains("signed-server-secret"));
+        let surfaced = pending_diagnostic(&error);
+        assert!(
+            !serde_json::to_string(&surfaced.host_json())
+                .unwrap()
+                .contains("signed-server-secret")
+        );
+        assert_eq!(surfaced.code().as_str(), "commit_outcome_unknown");
     }
 }

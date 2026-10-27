@@ -428,7 +428,7 @@ functions:
         package_from_source(prefix, &source)
     }
 
-    fn package_from_source(prefix: &str, source: &str) -> TypeBridgeSchemaPackage {
+    pub(crate) fn package_from_source(prefix: &str, source: &str) -> TypeBridgeSchemaPackage {
         let documents =
             SchemaDocumentSet::parse([(DocumentId::new("entity-crud.yaml").unwrap(), source)])
                 .unwrap();
@@ -908,7 +908,8 @@ functions:
     #[test]
     fn database_owned_write_rolls_back_errors_and_classifies_commit_certainty() {
         for (responses, expected_code) in [
-            (vec![documents(vec![])], "mutation_rehydration_missing"),
+            // Shared precommit proof rejects an empty document answer before materialisation.
+            (vec![documents(vec![])], "query_remote_v3_document_value"),
             (vec![Response::Error], "provider_operation_failed"),
         ] {
             let fixture = fixture(responses, COMMIT_SUCCESS);

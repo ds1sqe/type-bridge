@@ -68,16 +68,31 @@ fn named_kind(name: &str) -> Result<TypeBridgeValueKind, TypeBridgeStatus> {
 }
 
 pub(crate) struct PendingState {
-    pub(crate) pending: Pending<PlanAnswer>,
+    pub(crate) pending: PendingSource,
     shape: Option<Arc<FetchDocumentShape>>,
     roles: usize,
     views: OnceLock<AnswerViews>,
 }
 
+pub(crate) enum PendingSource {
+    Raw(Pending<PlanAnswer>),
+    Authored(Box<crate::plan_builder::selections::AuthoredPending>),
+}
+impl PendingSource {
+    pub(crate) fn get(
+        &self,
+    ) -> Result<Arc<PlanAnswer>, type_bridge_orm::session::staged::PendingError> {
+        match self {
+            Self::Raw(pending) => pending.get(),
+            Self::Authored(pending) => pending.answer(),
+        }
+    }
+}
+
 impl PendingState {
     pub(crate) fn new(pending: Pending<PlanAnswer>, plan: &QueryPlanV3) -> Self {
         Self {
-            pending,
+            pending: PendingSource::Raw(pending),
             shape: plan.fetch_document_shape().cloned().map(Arc::new),
             roles: plan
                 .pipeline()
@@ -87,6 +102,25 @@ impl PendingState {
                     _ => None,
                 })
                 .unwrap_or(0),
+            views: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn authored(pending: crate::plan_builder::selections::AuthoredPending) -> Self {
+        let plan = pending.selection_plan();
+        let shape = plan.fetch_document_shape().cloned().map(Arc::new);
+        let roles = plan
+            .pipeline()
+            .iter()
+            .find_map(|stage| match stage {
+                Stage::Fetch(doc) => Some(doc.roles.len()),
+                _ => None,
+            })
+            .unwrap_or(0);
+        Self {
+            pending: PendingSource::Authored(Box::new(pending)),
+            shape,
+            roles,
             views: OnceLock::new(),
         }
     }
@@ -457,6 +491,15 @@ impl Cursor for TypeBridgeRow {
 impl Cursor for TypeBridgePending {
     const TAG: u64 = PENDING_TAG;
     fn fence(&self, preflight: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
+        if let PendingSource::Authored(pending) = &self.state.pending {
+            preflight.check_package_borrowed_ranges(&pending.source.package)?;
+            if let Some(Ok(result)) = pending.model_result.get() {
+                result.fence(preflight)?;
+            }
+            if let Some(Ok(result)) = pending.rows_result.get() {
+                result.fence(preflight)?;
+            }
+        }
         if let Some(views) = self.state.views.get() {
             match views {
                 AnswerViews::Documents(docs) => {
