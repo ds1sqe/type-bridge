@@ -722,6 +722,47 @@ impl TransactionContext {
         Ok(())
     }
 
+    /// Execute read-only plans on this borrowed read transaction, under one
+    /// answer policy, cancellation owner and absolute deadline. Answers use the
+    /// staged representation; the caller retains transaction ownership.
+    pub async fn execute_plans(
+        &self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
+        if self.tx_type != TxType::Read {
+            return Err(crate::match_request::MatchError::new(
+                crate::match_request::MatchErrorCategory::InvalidPlan,
+                "borrowed_target_not_read_only",
+                "plan execution requires a borrowed read transaction",
+            )
+            .into());
+        }
+        limits
+            .validate()
+            .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
+        let policy = self
+            .answer_limits
+            .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
+        let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
+        let limits = crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+        let mut guard =
+            super::staged::bounded(&limits.answer, async { Ok(self.inner.lock().await) }).await?;
+        let tx = active_transaction(&mut guard)?;
+        let supports_given = tx.supports_given_rows();
+        crate::query_plan_exec::execute_plans(
+            tx,
+            supports_given,
+            plans,
+            policy,
+            cancellation,
+            deadline,
+        )
+        .await
+    }
+
     /// Execute one validated selected-row request without consuming this read context.
     pub async fn execute_match(
         &self,

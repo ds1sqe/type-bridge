@@ -814,6 +814,57 @@ pub fn string_read_with_limits(
     QueryPlanV3::new_with_limits(plan, &schema(), limits).unwrap()
 }
 
+/// Count stocked items through a provider reduction rather than loading roots.
+pub fn stock_reduce_count() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["item", "stock", "total"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, entity("item")), has(0, 1, "stock")],
+                },
+                Stage::Reduce {
+                    assignments: vec![type_bridge_contract::query_plan::ReduceAssignment::new(
+                        id(2),
+                        type_bridge_contract::query_plan::Reducer::Count,
+                        None,
+                    )],
+                    groups: vec![],
+                },
+            ],
+            Operation::Rows,
+            vec![2],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
+/// Read a purchase with both declared role players.
+pub fn purchase_read() -> QueryPlanV3 {
+    QueryPlanV3::new(
+        spec(
+            &["purchase"],
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, purchase_type())],
+                },
+                Stage::Fetch(ThingDocument::new(
+                    id(0),
+                    vec![
+                        DocumentRole::new(role("buyer"), false),
+                        DocumentRole::new(role("item"), false),
+                    ],
+                )),
+            ],
+            Operation::Rows,
+            vec![],
+        ),
+        &schema(),
+    )
+    .unwrap()
+}
+
 /// Reintroduce a discarded doctor under the selected name window.
 pub fn rematch_doctor_window() -> QueryPlanV3 {
     use type_bridge_contract::query_plan::{OrderDirection, OrderTerm};

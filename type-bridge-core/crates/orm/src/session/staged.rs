@@ -541,7 +541,7 @@ pub(crate) fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
 }
 
 /// Race a multi-statement read against the commit's cancellation and deadline.
-async fn bounded<T>(
+pub(crate) async fn bounded<T>(
     limits: &BoundedAnswerLimits,
     future: impl std::future::Future<Output = Result<T, OrmError>>,
 ) -> Result<T, OrmError> {

@@ -623,6 +623,11 @@ pub enum StagedAnswerV3 {
     },
 }
 impl StagedAnswerV3 {
+    /// Verify one answer against its trusted plan, also for direct execution.
+    pub fn validate_for(&self, plan: &QueryPlanV3) -> Result<(), Diagnostic> {
+        validate_answer(self, plan).map(|_| ())
+    }
+
     /// Semantic resource counts: graph nodes, attribute values, collection
     /// members and role players, shared by local execution and reply verification.
     pub fn resource_counts(&self) -> [u64; 4] {

@@ -197,9 +197,9 @@ impl Default for MatchExecutionLimits {
 
 /// The deadline and cancellation one invocation's transaction lifecycle
 /// runs under.
-struct ExecutionBudget {
-    deadline: Option<Instant>,
-    cancellation: AnswerCancellation,
+pub(crate) struct ExecutionBudget {
+    pub(crate) deadline: Option<Instant>,
+    pub(crate) cancellation: AnswerCancellation,
 }
 
 impl ExecutionBudget {
@@ -228,7 +228,7 @@ impl ExecutionBudget {
         Ok(())
     }
 
-    async fn await_provider<T>(
+    pub(crate) async fn await_provider<T>(
         &self,
         future: impl Future<Output = Result<T, OrmError>>,
     ) -> Result<T, OrmError> {
@@ -238,7 +238,7 @@ impl ExecutionBudget {
         result
     }
 
-    async fn await_cleanup<T>(
+    pub(crate) async fn await_cleanup<T>(
         &self,
         future: impl Future<Output = Result<T, OrmError>>,
     ) -> Result<T, OrmError> {
@@ -283,7 +283,7 @@ impl ExecutionBudget {
     }
 }
 
-async fn dispatch_failed_execution_close(
+pub(crate) async fn dispatch_failed_execution_close(
     mut transaction: Transaction,
 ) -> Option<Result<(), OrmError>> {
     let mut close = Box::pin(async move {
@@ -316,7 +316,7 @@ async fn dispatch_failed_execution_close(
     immediate
 }
 
-async fn catch_execution_unwind<F>(future: F) -> std::thread::Result<F::Output>
+pub(crate) async fn catch_execution_unwind<F>(future: F) -> std::thread::Result<F::Output>
 where
     F: Future,
 {
@@ -331,7 +331,7 @@ where
     .await
 }
 
-async fn close_after_execution_panic(transaction: Transaction) {
+pub(crate) async fn close_after_execution_panic(transaction: Transaction) {
     match catch_execution_unwind(dispatch_failed_execution_close(transaction)).await {
         Ok(Some(Err(error))) => {
             tracing::warn!(%error, "owned match transaction cleanup failed after panic")

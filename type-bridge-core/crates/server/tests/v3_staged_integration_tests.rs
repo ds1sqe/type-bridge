@@ -1506,6 +1506,94 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn one_shot_read_stack_matches_borrowed_and_staged_answers() {
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    use type_bridge_orm::{QueryExecutionDeadline, QueryExecutionResourceLimits};
+    let name = format!(
+        "tb270_04a_stack_{}_{}",
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let db = staged_live::connect(&name).await;
+    db.create_database().await.unwrap();
+    db.execute_raw(
+        &race::SCHEMA_TYPEQL
+            .replace(" @key", "")
+            .replace(" @card(0..1)", ""),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    seed(&db, "I1", "A1").await;
+    db.execute_raw(
+        r#"insert $d isa doctor, has name "alice", has on-call true;"#,
+        TxType::Write,
+    )
+    .await
+    .unwrap();
+    let proxy = proxy(&name, LivePolicy::default(), true).await;
+    let plans = [
+        race::string_read(
+            type_bridge_contract::migration_assertion::ValueComparator::Contains,
+            &["alice"],
+        ),
+        race::stock_reduce_count(),
+    ];
+    let policy = QueryExecutionResourceLimits::default();
+    let cancellation = AnswerCancellation::default();
+    let direct = db
+        .execute_plans(
+            &plans,
+            &policy,
+            &cancellation,
+            QueryExecutionDeadline::for_limits(policy),
+        )
+        .await
+        .unwrap();
+    let context = db.transaction_context(TxType::Read).await.unwrap();
+    let borrowed = context
+        .execute_plans(
+            &plans,
+            &policy,
+            &cancellation,
+            QueryExecutionDeadline::for_limits(policy),
+        )
+        .await
+        .unwrap();
+    context.close().await.unwrap();
+    assert_eq!(direct, borrowed);
+    assert!(
+        matches!(&direct[0], type_bridge_orm::session::staged::PlanAnswer::Documents(documents) if documents.len() == 1)
+    );
+    let staged = request(
+        &proxy,
+        plans
+            .iter()
+            .map(|plan| {
+                StagedPlanV3::new(
+                    plan,
+                    plan.given_rows().unwrap_or(&[]).to_vec(),
+                    &proxy.declared,
+                )
+                .unwrap()
+            })
+            .collect(),
+    );
+    let reply = verify(&proxy, &staged, &post(&proxy, &staged).await);
+    let remote = reply
+        .answers()
+        .iter()
+        .zip(&plans)
+        .map(|(answer, plan)| {
+            type_bridge_orm::session::staged::PlanAnswer::from_staged_v3(answer, plan).unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(direct, remote);
+    drop_database(db).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn explicitly_raised_string_limits_round_trip_large_values_direct_and_staged() {
     use type_bridge_contract::limits::QueryLimits;
     use type_bridge_contract::migration_assertion::ValueComparator;

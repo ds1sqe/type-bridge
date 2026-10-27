@@ -27,7 +27,6 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-#[cfg(feature = "typedb")]
 use super::backend::AnswerCancellation;
 #[cfg(test)]
 use super::backend::BoxFuture;
@@ -38,7 +37,6 @@ use crate::_registry::DescriptorRegistry;
 use crate::error::Result;
 use crate::match_request::selected_result_executor::SelectedResultExecutor;
 use crate::match_request::{MatchExecutionLimits, ValidatedMatchRequest, ValidatedMatchResult};
-#[cfg(feature = "typedb")]
 use crate::query_execution_limits::QueryExecutionDeadline;
 use crate::query_execution_limits::QueryExecutionResourceLimits;
 
@@ -546,6 +544,61 @@ impl Database {
             self.execution_identity(),
             answer_limits,
         ))
+    }
+
+    /// Execute read-only plans in one read transaction, then close without
+    /// committing. One answer policy and absolute deadline cover the stack;
+    /// normalized answers have the same representation as staged replies.
+    pub async fn execute_plans(
+        &self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<Vec<super::staged::PlanAnswer>> {
+        use crate::match_request::selected_result_executor::{
+            ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
+            dispatch_failed_execution_close,
+        };
+        limits
+            .validate()
+            .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
+        let policy = self
+            .answer_limits
+            .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
+        let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
+        let limits = crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+        super::backend::BoundedAnswerReader::new(limits.answer.clone()).check_before_read()?;
+        let lifecycle = ExecutionBudget {
+            deadline: limits.answer.deadline,
+            cancellation: cancellation.clone(),
+        };
+        let mut transaction = lifecycle.await_provider(self.read_transaction()).await?;
+        let result = catch_execution_unwind(crate::query_plan_exec::execute_plans(
+            transaction.provider_mut()?,
+            self.supports_given_stage(),
+            plans,
+            policy,
+            cancellation,
+            deadline,
+        ))
+        .await;
+        match result {
+            Err(payload) => {
+                close_after_execution_panic(transaction).await;
+                std::panic::resume_unwind(payload)
+            }
+            Ok(Err(error)) => {
+                if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
+                    tracing::warn!(%close_error, "plan execution transaction cleanup failed");
+                }
+                Err(error)
+            }
+            Ok(Ok(answers)) => {
+                lifecycle.await_cleanup(transaction.close()).await?;
+                Ok(answers)
+            }
+        }
     }
 
     /// Execute one validated selected-row request in an owned read transaction.

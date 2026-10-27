@@ -109,17 +109,14 @@ impl PlanAnswer {
         let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
         let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", %fingerprint, transport = "proxy").entered();
         tracing::debug!(target: "type_bridge.plan", items = match answer { StagedAnswerV3::Rows { rows } => rows.len(), StagedAnswerV3::Documents { documents } => documents.len(), _ => 1 }, wire_bytes = serde_json::to_vec(answer).map_or(0, |bytes| bytes.len()), "type_bridge.plan.answer");
+        answer.validate_for(plan)?;
         Ok(match answer {
             StagedAnswerV3::Count { value } => Self::Count(*value),
             StagedAnswerV3::Exists { value } => Self::Exists(*value),
             StagedAnswerV3::Matched { value } => Self::Matched(*value),
             StagedAnswerV3::Documents { documents } => {
-                let shape = plan
-                    .fetch_document_shape()
+                plan.fetch_document_shape()
                     .ok_or_else(staged_answer_shape)?;
-                for document in documents {
-                    shape.validate(document)?;
-                }
                 Self::Documents(
                     documents
                         .iter()
@@ -156,6 +153,113 @@ impl PlanAnswer {
             }
         })
     }
+}
+
+/// Run a read-only plan stack on one provider snapshot. The owned and
+/// borrowed entry points differ only in transaction lifecycle ownership.
+pub(crate) async fn execute_plans(
+    provider: &mut dyn crate::session::backend::TransactionOps,
+    supports_given: bool,
+    plans: &[QueryPlanV3],
+    policy: crate::QueryExecutionResourceLimits,
+    cancellation: &crate::session::backend::AnswerCancellation,
+    deadline: crate::QueryExecutionDeadline,
+) -> crate::error::Result<Vec<PlanAnswer>> {
+    use crate::session::backend::{BoundedAnswerReader, QueryResult};
+    let limits = plan_answer_limits(policy, cancellation, deadline)?;
+    let check = || BoundedAnswerReader::new(limits.answer.clone()).check_before_read();
+    check()?;
+    if plans.iter().any(QueryPlanV3::writes) {
+        return Err(plan_execution_error(
+            "query_plan_read_only",
+            "one-shot plan execution requires read-only plans",
+        ));
+    }
+    if plans.len() > policy.statements as usize {
+        return Err(crate::match_request::MatchError::new(
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "statement_count_limit",
+            "plan stack exceeds the provider-statement ceiling",
+        )
+        .into());
+    }
+    let mut queries = Vec::with_capacity(plans.len());
+    for plan in plans {
+        check()?;
+        queries.push(staged_query(plan, supports_given).map_err(plan_diagnostic_error)?);
+    }
+    let mut meter = crate::answer_meter::AnswerMeter::new(&limits.answer);
+    let mut semantic = crate::answer_meter::PlanMeter::new(&limits);
+    let mut answers = Vec::with_capacity(plans.len());
+    for (plan, query) in plans.iter().zip(queries) {
+        check()?;
+        let result = crate::session::staged::bounded(
+            &limits.answer,
+            query.execute(provider, limits.clone()),
+        )
+        .await?;
+        check()?;
+        if let QueryResult::Rows(items) | QueryResult::Documents(items) = &result {
+            for item in items {
+                meter.accept_value(item)?;
+            }
+        }
+        let answer = resolve_plan(plan, result).map_err(plan_diagnostic_error)?;
+        let wire = answer.to_staged_v3(plan).map_err(plan_diagnostic_error)?;
+        semantic.accept(&wire)?;
+        answers.push(PlanAnswer::from_staged_v3(&wire, plan).map_err(plan_diagnostic_error)?);
+    }
+    check()?;
+    Ok(answers)
+}
+
+pub(crate) fn plan_answer_limits(
+    policy: crate::QueryExecutionResourceLimits,
+    cancellation: &crate::session::backend::AnswerCancellation,
+    deadline: crate::QueryExecutionDeadline,
+) -> crate::error::Result<crate::session::backend::AnswerLimits> {
+    policy.validate().map_err(|_| invalid_answer_limits())?;
+    Ok(crate::session::backend::AnswerLimits {
+        answer: crate::session::backend::BoundedAnswerLimits {
+            max_items: policy.items,
+            max_bytes: policy.bytes,
+            deadline: Some(
+                deadline
+                    .earliest(crate::QueryExecutionDeadline::for_limits(policy))
+                    .instant(),
+            ),
+            cancellation: cancellation.clone(),
+        },
+        max_graph_nodes: policy.graph_nodes,
+        max_attribute_values: policy.attribute_values,
+        max_collection_members: policy.collection_members,
+        max_role_players: policy.role_players,
+    })
+}
+
+pub(crate) fn invalid_answer_limits() -> crate::error::OrmError {
+    plan_execution_error(
+        "invalid_answer_limits",
+        "answer policy exceeds supported execution ceilings",
+    )
+}
+
+fn plan_execution_error(code: &'static str, message: &'static str) -> crate::error::OrmError {
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::InvalidPlan,
+        code,
+        message,
+    )
+    .into()
+}
+
+fn plan_diagnostic_error(diagnostic: Diagnostic) -> crate::error::OrmError {
+    crate::match_request::MatchError::new(
+        crate::match_request::MatchErrorCategory::ResultDecode,
+        diagnostic.code().as_str(),
+        diagnostic.message(),
+    )
+    .into()
 }
 
 /// A staged V3 row value that does not serialize as JSON.
