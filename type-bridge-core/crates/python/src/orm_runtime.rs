@@ -1037,6 +1037,7 @@ impl PyRustDatabase {
         )
         .map_err(py_orm_error)?;
         Ok(PyRustTransactionContext {
+            supports_given_stage: self.db.supports_given_stage(),
             context,
             runtime: Arc::clone(&self.runtime),
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
@@ -1071,12 +1072,16 @@ impl PyRustDatabase {
 /// Python-facing Rust transaction context.
 #[pyclass]
 pub struct PyRustTransactionContext {
+    supports_given_stage: bool,
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
     successor_batch_invoked: Arc<AtomicBool>,
 }
 
 impl PyRustTransactionContext {
+    pub(crate) fn supports_given_stage(&self) -> bool {
+        self.supports_given_stage
+    }
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
@@ -1091,6 +1096,7 @@ impl PyRustTransactionContext {
         runtime: Arc<ProviderRuntimeOwner>,
     ) -> Self {
         Self {
+            supports_given_stage: false,
             context,
             runtime,
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),

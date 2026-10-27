@@ -27,6 +27,7 @@ from generated_v2 import (
     Interaction,
     Membership,
     Nickname,
+    Page,
     Party,
     Person,
     PersonRef,
@@ -59,6 +60,8 @@ from generated_v2 import (
     integer_input,
     qualifying_score,
 )
+from type_bridge_core import Pending
+from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge.query import Query as RawQuery
 from type_bridge.query import QueryBuilder
@@ -479,3 +482,36 @@ assert_type(
     find_events,
     FunctionRef[[Event], Iterator[Event]],
 )
+
+
+async def staged_query_outputs(tx: StagedTransaction) -> None:
+    session = Person.query(tx)
+    person = session.exact(Person)
+    query = session.query(person)
+    one = await query.one()
+    assert_type(one, Pending[Person])
+    assert_type(one.result(), Person)
+    first = await query.first()
+    assert_type(first, Pending[Person | None])
+    assert_type(first.result(), Person | None)
+    rows = await query.rows(limit=10)
+    assert_type(rows, Pending[list[Person]])
+    assert_type(rows.result(), list[Person])
+    page = await query.page_by(person, limit=10)
+    assert_type(page, Pending[Page[Person]])
+    assert_type(page.result(), Page[Person])
+    count = await query.count_by(person)
+    assert_type(count, Pending[int])
+    assert_type(count.result(), int)
+    exists = await query.exists_by(person)
+    assert_type(exists, Pending[bool])
+    assert_type(exists.result(), bool)
+    reduced = await query.aggregate(person, aggregate.count())
+    assert_type(reduced, Pending[tuple[int]])
+    assert_type(reduced.result(), tuple[int])
+    groups = await query.group_by(person, person.field(Person.score)).aggregate(aggregate.count())
+    assert_type(groups, Pending[tuple[tuple[Score, tuple[int]], ...]])
+    assert_type(groups.result(), tuple[tuple[Score, tuple[int]], ...])
+    explicit_session = QuerySession(tx)
+    explicit_person = explicit_session.exact(Person)
+    assert_type(await explicit_session.query(explicit_person).one(), Pending[Person])

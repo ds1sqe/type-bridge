@@ -9,12 +9,13 @@ from type_bridge_core import (
     QueryLimits,
     QueryV2Authority,
 )
+from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge._runtime_projection import GeneratedEntityProjection, GeneratedRelationProjection
 from type_bridge.plan import FieldToken as _AuthoringFieldToken
 from type_bridge.session import Database, TransactionContext
 
-from ._query import QueryConnection, QuerySession
+from ._query import DirectQueryConnection, QuerySession
 
 type _OwnerLookup = Literal[
     "eq",
@@ -84,15 +85,26 @@ class ModelBase:
         cls: type[ModelT],
         connection: Database | TransactionContext,
     ) -> ProjectedModelManager[ModelT]: ...
+    @overload
     @classmethod
     def query[ModelT: ModelBase](
         cls: type[ModelT],
-        connection: QueryConnection,
+        connection: StagedTransaction,
         *,
         resources: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
         query_limits: QueryLimits | None = ...,
-    ) -> QuerySession: ...
+    ) -> QuerySession[Literal[True]]: ...
+    @overload
+    @classmethod
+    def query[ModelT: ModelBase](
+        cls: type[ModelT],
+        connection: DirectQueryConnection,
+        *,
+        resources: QueryExecutionResourceLimits | None = ...,
+        cancellation: QueryCancellation | None = ...,
+        query_limits: QueryLimits | None = ...,
+    ) -> QuerySession[Literal[False]]: ...
     def runtime_values(self) -> dict[str, object]: ...
     def encode_create(self, **options: Unpack[_CanonicalCodecOptions]) -> bytes: ...
     @classmethod

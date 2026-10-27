@@ -1067,6 +1067,64 @@ class MatchQueryHandle:
         reducers: Sequence[str],
         inputs: Sequence[MatchFieldHandle | None],
     ) -> ValidatedMatchResultHandle: ...
+    def stage_fetch_rows[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        order: list[MatchOrderHandle],
+        offset: int,
+        limit: int,
+        cardinality: str,
+    ) -> Pending[OutputT]: ...
+    def stage_page_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        order: list[MatchOrderHandle],
+        offset: int,
+        limit: int,
+        include_total: bool,
+    ) -> Pending[OutputT]: ...
+    def stage_count_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+    ) -> Pending[OutputT]: ...
+    def stage_exists_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+    ) -> Pending[OutputT]: ...
+    def stage_reduce_by[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        group: MatchBindingHandle | None,
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> Pending[OutputT]: ...
+    def stage_reduce_by_field[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        group: MatchFieldHandle,
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> Pending[OutputT]: ...
+    def stage_reduce_by_fields[OutputT](
+        self,
+        transaction: Transaction,
+        decoder: Callable[[ValidatedMatchResultHandle], OutputT],
+        root: MatchBindingHandle,
+        groups: Sequence[MatchFieldHandle],
+        reducers: Sequence[str],
+        inputs: Sequence[MatchFieldHandle | None],
+    ) -> Pending[OutputT]: ...
 
 class MatchSessionHandle:
     def __init__(self, registry: _QueryDescriptorRegistry) -> None: ...

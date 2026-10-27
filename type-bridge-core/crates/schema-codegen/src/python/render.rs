@@ -1170,14 +1170,14 @@ fn render_function(
                 if stub {
                     let _ = writeln!(
                         output,
-                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}: ...",
+                        "type {alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession[bool], value: {}) -> {alias}: ...",
                         scalar_type(domain),
                         python_attribute_base(domain)
                     );
                 } else {
                     let _ = writeln!(
                         output,
-                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession, value: {}) -> {alias}:\n    return session._function_input(value, {})",
+                        "{alias} = _FunctionInput[{}]\ndef {constructor}(session: _QuerySession[bool], value: {}) -> {alias}:\n    return session._function_input(value, {})",
                         scalar_type(domain),
                         python_attribute_base(domain),
                         scalar_type(domain)
@@ -1222,7 +1222,7 @@ fn render_function(
             .map(|parameter| parameter.target_name().as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let signature = std::iter::once("session: _QuerySession".to_owned())
+        let signature = std::iter::once("session: _QuerySession[bool]".to_owned())
             .chain(function_parameters)
             .collect::<Vec<_>>()
             .join(", ");

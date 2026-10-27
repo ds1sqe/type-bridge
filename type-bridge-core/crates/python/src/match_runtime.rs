@@ -33,7 +33,8 @@ use crate::orm_runtime::{
     provider_block_on,
 };
 use crate::proxy_connection_runtime::PyProxyConnection;
-use crate::validated_result_runtime::PyValidatedMatchResultHandle;
+use crate::staged_transaction_runtime::{PyPending, PyStagedTransaction};
+use crate::validated_result_runtime::{MatchInvocation, PyValidatedMatchResultHandle};
 
 pyo3::create_exception!(
     type_bridge_core,
@@ -138,9 +139,9 @@ struct PyMatchFunctionCallHandle {
 }
 
 pub(crate) struct PyQueryInvocationBudget {
-    resources: QueryExecutionResourceLimits,
+    pub(crate) resources: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
-    cancellation: AnswerCancellation,
+    pub(crate) cancellation: AnswerCancellation,
 }
 
 impl PyQueryInvocationBudget {
@@ -163,6 +164,56 @@ enum TerminalTarget<'a> {
     Database(&'a PyRustDatabase),
     Transaction(&'a PyRustTransactionContext),
     Proxy(&'a PyProxyConnection),
+}
+
+trait MatchExecutionTarget {
+    type Output;
+    fn execute(
+        self,
+        py: Python<'_>,
+        installed: Option<&Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        budget: PyQueryInvocationBudget,
+    ) -> PyResult<Self::Output>;
+}
+impl MatchExecutionTarget for TerminalTarget<'_> {
+    type Output = PyValidatedMatchResultHandle;
+    fn execute(
+        self,
+        py: Python<'_>,
+        installed: Option<&Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        budget: PyQueryInvocationBudget,
+    ) -> PyResult<Self::Output> {
+        execute_on_target(py, self, installed, validated, registry, budget)
+    }
+}
+struct StagedQueryTarget<'a> {
+    transaction: &'a PyStagedTransaction,
+    decoder: Py<PyAny>,
+}
+impl MatchExecutionTarget for StagedQueryTarget<'_> {
+    type Output = PyPending;
+    fn execute(
+        self,
+        py: Python<'_>,
+        installed: Option<&Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        budget: PyQueryInvocationBudget,
+    ) -> PyResult<Self::Output> {
+        self.transaction.stage_typed_query(
+            py,
+            installed.cloned(),
+            validated,
+            registry,
+            budget.resources,
+            budget.cancellation,
+            self.decoder,
+        )
+    }
 }
 
 /// Canonical cross-binding generated-query execution budgets.
@@ -1472,6 +1523,136 @@ impl PyMatchQueryHandle {
         let target = TerminalTarget::Proxy(connection);
         self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_fetch_rows(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        cardinality: &str,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.fetch_rows_on(py, target, &order, offset, limit, cardinality)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_page_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        order: Vec<Py<PyMatchOrderHandle>>,
+        offset: &Bound<'_, PyAny>,
+        limit: &Bound<'_, PyAny>,
+        include_total: bool,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.page_by_on(
+            py,
+            target,
+            &root.inner,
+            &order,
+            offset,
+            limit,
+            include_total,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_count_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.run_terminal(py, target, |query| query.validate_count_by(&root.inner))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_exists_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.run_terminal(py, target, |query| query.validate_exists_by(&root.inner))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_reduce_by(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: Option<PyRef<'_, PyMatchBindingHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        let group = group.as_ref().map(|group| &group.inner);
+        self.reduce_by_on(py, target, &root.inner, group, &reducers, &inputs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_reduce_by_field(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        group: PyRef<'_, PyMatchFieldHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.reduce_by_field_on(py, target, &root.inner, &group.inner, &reducers, &inputs)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stage_reduce_by_fields(
+        &self,
+        py: Python<'_>,
+        transaction: &PyStagedTransaction,
+        decoder: Py<PyAny>,
+        root: PyRef<'_, PyMatchBindingHandle>,
+        groups: Vec<Py<PyMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Py<PyMatchFieldHandle>>>,
+    ) -> PyResult<PyPending> {
+        let target = StagedQueryTarget {
+            transaction,
+            decoder,
+        };
+        self.reduce_by_fields_on(py, target, &root.inner, &groups, &reducers, &inputs)
+    }
 }
 
 /// One body per terminal kind; the Python methods above only name the target.
@@ -1479,28 +1660,27 @@ impl PyMatchQueryHandle {
     /// Open one invocation budget, validate the request, and run it on
     /// `target`. The budget is taken first so a closed query or an expired
     /// session refuses before any validation work.
-    fn run_terminal(
+    fn run_terminal<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         validate: impl FnOnce(&QueryHandle) -> Result<ValidatedMatchRequest, OrmError>,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             validate(query).map_err(py_match_orm_error)
         })
     }
 
-    fn run_terminal_checked(
+    fn run_terminal_checked<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         validate: impl FnOnce(&QueryHandle) -> PyResult<ValidatedMatchRequest>,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         let budget = self.begin_invocation()?;
         let validated = validate(&self.inner)?;
-        execute_on_target(
+        target.execute(
             py,
-            target,
             self.installed.as_ref(),
             validated,
             self.inner.registry_arc(),
@@ -1508,15 +1688,15 @@ impl PyMatchQueryHandle {
         )
     }
 
-    fn fetch_rows_on(
+    fn fetch_rows_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         order: &[Py<PyMatchOrderHandle>],
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
         cardinality: &str,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         let window = python_window(offset, limit)?;
         self.run_terminal_checked(py, target, |query| {
             let orders = order_handles(py, order);
@@ -1527,16 +1707,16 @@ impl PyMatchQueryHandle {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn page_by_on(
+    fn page_by_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         order: &[Py<PyMatchOrderHandle>],
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
         include_total: bool,
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         let window = python_window(offset, limit)?;
         self.run_terminal(py, target, |query| {
             let orders = order_handles(py, order);
@@ -1544,15 +1724,15 @@ impl PyMatchQueryHandle {
         })
     }
 
-    fn reduce_by_on(
+    fn reduce_by_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         group: Option<&BindingHandle>,
         reducers: &[String],
         inputs: &[Option<Py<PyMatchFieldHandle>>],
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             let terms = reduce_terms(py, reducers, inputs)?;
             let terms = borrow_reduce_terms(&terms);
@@ -1562,15 +1742,15 @@ impl PyMatchQueryHandle {
         })
     }
 
-    fn reduce_by_field_on(
+    fn reduce_by_field_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         group: &FieldHandle,
         reducers: &[String],
         inputs: &[Option<Py<PyMatchFieldHandle>>],
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             let terms = reduce_terms(py, reducers, inputs)?;
             let terms = borrow_reduce_terms(&terms);
@@ -1580,15 +1760,15 @@ impl PyMatchQueryHandle {
         })
     }
 
-    fn reduce_by_fields_on(
+    fn reduce_by_fields_on<Target: MatchExecutionTarget>(
         &self,
         py: Python<'_>,
-        target: TerminalTarget<'_>,
+        target: Target,
         root: &BindingHandle,
         groups: &[Py<PyMatchFieldHandle>],
         reducers: &[String],
         inputs: &[Option<Py<PyMatchFieldHandle>>],
-    ) -> PyResult<PyValidatedMatchResultHandle> {
+    ) -> PyResult<Target::Output> {
         self.run_terminal_checked(py, target, |query| {
             let groups = groups
                 .iter()
@@ -1742,6 +1922,25 @@ pub(crate) fn validated_result_handle(
     registry: Arc<DescriptorRegistry>,
     budget: PyQueryInvocationBudget,
 ) -> PyResult<PyValidatedMatchResultHandle> {
+    validated_invocation_handle(
+        installed,
+        origin,
+        MatchInvocation::Owned {
+            request: validated,
+            result,
+        },
+        registry,
+        budget,
+    )
+}
+
+pub(crate) fn validated_invocation_handle(
+    installed: Option<&Arc<InstalledRuntimeProjection>>,
+    origin: Option<ProjectedQueryOrigin>,
+    invocation: MatchInvocation,
+    registry: Arc<DescriptorRegistry>,
+    budget: PyQueryInvocationBudget,
+) -> PyResult<PyValidatedMatchResultHandle> {
     let projected = installed
         .zip(origin)
         .map(|(installed, origin)| {
@@ -1749,33 +1948,23 @@ pub(crate) fn validated_result_handle(
                 .materialize_borrowed_with_budget(
                     installed,
                     &registry,
-                    &validated,
-                    &result,
+                    invocation.request(),
+                    invocation.result(),
                     budget.resources.projected(),
                     &budget.cancellation,
                     Some(budget.deadline),
                 )
-                .map(|(value, _measure)| value)
+                .map(|(value, _)| value)
                 .map_err(py_sdk_diagnostic)
         })
         .transpose()?;
-    match projected {
-        Some(projected) => Ok(PyValidatedMatchResultHandle::new_with_projected_budget(
-            validated,
-            result,
-            registry,
-            projected,
-            budget.deadline,
-            budget.cancellation,
-        )),
-        None => Ok(PyValidatedMatchResultHandle::new_with_budget(
-            validated,
-            result,
-            registry,
-            budget.deadline,
-            budget.cancellation,
-        )),
-    }
+    Ok(PyValidatedMatchResultHandle::from_invocation(
+        invocation,
+        registry,
+        projected,
+        budget.deadline,
+        budget.cancellation,
+    ))
 }
 
 pub(crate) fn order_handles(py: Python<'_>, values: &[Py<PyMatchOrderHandle>]) -> Vec<OrderHandle> {

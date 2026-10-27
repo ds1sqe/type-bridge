@@ -1687,6 +1687,7 @@ impl PyRuntimeProjection {
         let compatibility_filter = initial_compatibility_filter(self.package.as_ref(), &type_id)?;
         let (database, runtime) = database.handles();
         Ok(PyProjectedModelManager {
+            transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
             database: Some(database),
@@ -1708,6 +1709,7 @@ impl PyRuntimeProjection {
         let type_id = self.package.model_id_for_class(py, &model)?;
         ensure_manageable(self.package.as_ref(), &type_id)?;
         let successor_batch_marker = transaction.successor_batch_marker();
+        let supports_given_stage = transaction.supports_given_stage();
         let (transaction, runtime) = transaction.handles();
         let compatibility_filter = if transaction.tx_type() == type_bridge_orm::TxType::Read {
             initial_compatibility_filter(self.package.as_ref(), &type_id)?
@@ -1715,6 +1717,7 @@ impl PyRuntimeProjection {
             None
         };
         Ok(PyProjectedModelManager {
+            transaction_supports_given_stage: supports_given_stage,
             package: Arc::clone(&self.package),
             type_id,
             database: None,
@@ -2539,6 +2542,7 @@ impl PyRuntimeProjection {
 /// Exact CRUD manager for one generated projected entity or relation class.
 #[pyclass]
 pub struct PyProjectedModelManager {
+    transaction_supports_given_stage: bool,
     package: Arc<InstalledPackage>,
     type_id: TypeId,
     database: Option<Arc<Database>>,
@@ -3283,6 +3287,7 @@ impl PyProjectedModelManager {
             None => None,
         };
         Ok(Self {
+            transaction_supports_given_stage: self.transaction_supports_given_stage,
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
             database: self.database.clone(),
@@ -4254,17 +4259,30 @@ impl PyProjectedModelManager {
         descriptor: Arc<EntityDescriptor>,
     ) -> PyResult<DynamicEntityManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicEntityManager::with_canonical_transaction(
+            let manager = DynamicEntityManager::with_registry_transaction(
                 transaction.clone(),
+                self.package
+                    .projection
+                    .manager_registry()
+                    .map_err(py_orm_error)?,
                 descriptor,
-            ));
+            );
+            return Ok(if self.transaction_supports_given_stage {
+                manager
+            } else {
+                manager.literal_values()
+            });
         }
         let database = self
             .database
             .as_ref()
             .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicEntityManager::new_canonical(
+        Ok(DynamicEntityManager::from_registry(
             database.as_ref(),
+            self.package
+                .projection
+                .manager_registry()
+                .map_err(py_orm_error)?,
             descriptor,
         ))
     }
@@ -4274,17 +4292,30 @@ impl PyProjectedModelManager {
         descriptor: Arc<RelationDescriptor>,
     ) -> PyResult<DynamicRelationManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicRelationManager::with_canonical_transaction(
+            let manager = DynamicRelationManager::with_registry_transaction(
                 transaction.clone(),
+                self.package
+                    .projection
+                    .manager_registry()
+                    .map_err(py_orm_error)?,
                 descriptor,
-            ));
+            );
+            return Ok(if self.transaction_supports_given_stage {
+                manager
+            } else {
+                manager.literal_values()
+            });
         }
         let database = self
             .database
             .as_ref()
             .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicRelationManager::new_canonical(
+        Ok(DynamicRelationManager::from_registry(
             database.as_ref(),
+            self.package
+                .projection
+                .manager_registry()
+                .map_err(py_orm_error)?,
             descriptor,
         ))
     }
@@ -8723,16 +8754,14 @@ fn attribute_value_from_py(
         ValueType::Date => {
             exact_temporal_string(py, value, "date", false).map(AttributeValue::Date)
         }
-        ValueType::DateTime => {
-            exact_temporal_string(py, value, "datetime", false).map(AttributeValue::DateTime)
-        }
-        ValueType::DateTimeTz => {
-            exact_temporal_string(py, value, "datetime", true).map(AttributeValue::DateTimeTZ)
-        }
+        ValueType::DateTime => exact_temporal_string(py, value, "datetime", false)
+            .map(|value| AttributeValue::DateTime(canonical_python_datetime(&value, false))),
+        ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
+            .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
         ValueType::Decimal => {
             exact_module_value_string(py, value, "decimal", "Decimal").map(AttributeValue::Decimal)
         }
-        ValueType::Duration => duration_from_py(py, value).map(AttributeValue::Duration),
+        ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
     }
 }
 
@@ -9108,15 +9137,10 @@ fn canonical_attribute_value_from_py_at(
         return Ok(AttributeValue::String(retained));
     }
     let value = match value_type {
-        ValueType::DateTime => exact_temporal_string(py, value, "datetime", false)
-            .map(|value| AttributeValue::DateTime(canonical_python_datetime(&value, false))),
         ValueType::DateTimeTz if named_zone_marker.is_some() => {
             canonical_python_datetime_tz(py, value, named_zone_marker)
                 .map(AttributeValue::DateTimeTZ)
         }
-        ValueType::DateTimeTz => exact_temporal_string(py, value, "datetime", true)
-            .map(|value| AttributeValue::DateTimeTZ(canonical_python_datetime(&value, true))),
-        ValueType::Duration => canonical_duration_from_py(py, value).map(AttributeValue::Duration),
         ValueType::String => unreachable!("the bounded string branch returned above"),
         _ => attribute_value_from_py(py, value, value_type),
     };
@@ -9223,19 +9247,6 @@ fn exact_module_value_string(
         )));
     }
     value.str()?.extract()
-}
-
-fn duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
-    let (days, seconds, micros) = duration_components_from_py(py, value)?;
-    let hours = seconds / 3600;
-    let minutes = seconds % 3600 / 60;
-    let seconds = seconds % 60;
-    let fraction = if micros == 0 {
-        String::new()
-    } else {
-        format!(".{micros:06}").trim_end_matches('0').to_owned()
-    };
-    Ok(format!("P{days}DT{hours}H{minutes}M{seconds}{fraction}S"))
 }
 
 fn canonical_duration_from_py(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -10234,6 +10245,10 @@ plays:
     }
 
     impl DriverBackend for OriginRecordingBackend {
+        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+            type_bridge_orm::CapabilitySet::all()
+        }
+
         fn open_transaction(
             &self,
             _database: &str,
@@ -10367,6 +10382,10 @@ plays:
     }
 
     impl DriverBackend for LegacyBatchRecordingBackend {
+        fn match_capabilities(&self) -> type_bridge_orm::CapabilitySet {
+            type_bridge_orm::CapabilitySet::all()
+        }
+
         fn open_transaction(
             &self,
             _database: &str,
@@ -10650,6 +10669,43 @@ plays:
             canonical_python_datetime("2026-07-29T01:02:03.120000+05:30", true),
             "2026-07-29T01:02:03.12+05:30"
         );
+    }
+
+    #[test]
+    fn manager_temporal_scalars_use_the_canonical_plan_domain() {
+        Python::initialize();
+        Python::attach(|py| {
+            let datetime = py.import("datetime").unwrap();
+            for (text, domain, expected) in [
+                (
+                    "2026-07-29T01:02:03.120000",
+                    ValueType::DateTime,
+                    AttributeValue::DateTime("2026-07-29T01:02:03.12".into()),
+                ),
+                (
+                    "2026-07-29T01:02:03+00:00",
+                    ValueType::DateTimeTz,
+                    AttributeValue::DateTimeTZ("2026-07-29T01:02:03Z".into()),
+                ),
+            ] {
+                let value = datetime
+                    .getattr("datetime")
+                    .unwrap()
+                    .call_method1("fromisoformat", (text,))
+                    .unwrap();
+                let actual = attribute_value_from_py(py, &value, domain).unwrap();
+                assert_eq!(actual, expected);
+                canonical_struct_scalar(actual).unwrap();
+            }
+            let value = datetime
+                .getattr("timedelta")
+                .unwrap()
+                .call1((0, 3))
+                .unwrap();
+            let actual = attribute_value_from_py(py, &value, ValueType::Duration).unwrap();
+            assert_eq!(actual, AttributeValue::Duration("PT3S".into()));
+            canonical_struct_scalar(actual).unwrap();
+        });
     }
 
     #[test]
@@ -11142,7 +11198,7 @@ class StructBase:
         })
     }
 
-    fn legacy_membership_document(
+    fn native_membership_document(
         iid: &str,
         player_iid: &str,
         player_identifier: &str,
@@ -11151,12 +11207,9 @@ class StructBase:
             "_iid": iid,
             "_type": "membership",
             "attributes": {},
-            "role_players": [{
-                "role_name": "member",
-                "player_iid": player_iid,
-                "player_type_name": "person",
-                "attributes": {"identifier": [{"value": player_identifier}]},
-            }],
+            "_role_0_iid": player_iid,
+            "_role_0_type": "person",
+            "_role_0_attributes": {"identifier": player_identifier},
         })
     }
 
@@ -11856,6 +11909,7 @@ class StructBase:
             .as_ref()
             .map(|_| Arc::new(AtomicBool::new(false)));
         PyProjectedModelManager {
+            transaction_supports_given_stage: false,
             package,
             type_id,
             database,
@@ -12813,6 +12867,7 @@ class StructBase:
                 .call_method1("attach_runtime_iid", ("0xa",))
                 .unwrap();
             let manager = PyProjectedModelManager {
+                transaction_supports_given_stage: false,
                 package,
                 type_id: person_id,
                 database: None,
@@ -13361,6 +13416,110 @@ class StructBase:
                     "source-tag"
                 );
             }
+        });
+    }
+
+    #[test]
+    fn staged_query_decoder_deadline_failure_does_not_poison_later_result_calls() {
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_ordered(py);
+            let (registry, request) = person_query(&package);
+            let (backend, state) = OriginRecordingBackend::new(vec![QueryResult::Documents(vec![
+                serde_json::json!({"_iid":"0xabc", "_type":"person", "attributes":{"tag":["source-tag"]}}),
+            ])]);
+            let database = Database::with_backend(Box::new(backend), "pending-deadline-retry");
+            let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+            let transaction = crate::staged_transaction_runtime::PyStagedTransaction::new(
+                database.transaction(Default::default()),
+                Arc::clone(&runtime),
+                None,
+                false,
+            )
+            .with_origin(ProjectedQueryOrigin::for_database(&database));
+            let decoder = PyModule::from_code(
+                py,
+                c"
+import time
+first = True
+proofs = []
+def decode(proof):
+    global first
+    proofs.append(proof)
+    if first:
+        first = False
+        time.sleep(1.1)
+    return proof.row_count()
+",
+                c"pending_retry.py",
+                c"pending_retry",
+            )
+            .unwrap();
+            let cancellation = AnswerCancellation::default();
+            let pending = transaction
+                .stage_typed_query(
+                    py,
+                    Some(Arc::clone(&package.projection)),
+                    request,
+                    registry,
+                    QueryExecutionResourceLimits {
+                        timeout_milliseconds: 1000,
+                        ..Default::default()
+                    },
+                    cancellation.clone(),
+                    decoder.getattr("decode").unwrap().unbind(),
+                )
+                .unwrap();
+            let transaction = Py::new(py, transaction).unwrap();
+            transaction.bind(py).call_method0("commit").unwrap();
+            let pending = Py::new(py, pending).unwrap();
+            let failure = pending.bind(py).call_method0("result").unwrap_err();
+            assert_eq!(
+                failure
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "transaction_deadline_exceeded"
+            );
+            assert_eq!(
+                pending
+                    .bind(py)
+                    .call_method0("result")
+                    .unwrap()
+                    .extract::<usize>()
+                    .unwrap(),
+                1
+            );
+            // Retained views keep their own expired call budget; retry never refreshes them.
+            let first = decoder.getattr("proofs").unwrap().get_item(0).unwrap();
+            let failure = first.call_method0("row_count").unwrap_err();
+            assert_eq!(
+                failure
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "transaction_deadline_exceeded"
+            );
+            cancellation.cancel();
+            let failure = pending.bind(py).call_method0("result").unwrap_err();
+            assert_eq!(
+                failure
+                    .value(py)
+                    .getattr("code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "provider_cancelled"
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.queries.len(), 1);
+            assert_eq!(state.opens, [TxType::Read]);
+            assert_eq!(state.closes, 1);
+            assert_eq!(state.commits, 0);
         });
     }
 
@@ -15628,6 +15787,7 @@ def failing_initialize(target, original):
                 );
                 let marker = context.successor_batch_marker();
                 let manager = PyProjectedModelManager {
+                    transaction_supports_given_stage: false,
                     package: Arc::clone(&package),
                     type_id: package
                         .type_by_label("person", TypeKind::Entity)
@@ -15692,7 +15852,7 @@ def failing_initialize(target, original):
     }
 
     #[test]
-    fn predecessor_public_borrowed_nonempty_batches_keep_legacy_routes_and_commit_seam() {
+    fn schema_less_public_borrowed_crud_uses_plans_but_typed_queries_require_authority() {
         Python::initialize();
         Python::attach(|py| {
             for kind in [TypeKind::Entity, TypeKind::Relation] {
@@ -15710,18 +15870,17 @@ def failing_initialize(target, original):
                             })])]
                         }
                         (TypeKind::Entity, ProjectedBatchOperation::Put) => vec![
-                            QueryResult::Documents(vec![]),
                             QueryResult::Documents(vec![serde_json::json!({"iid": "0x20"})]),
                         ],
                         (TypeKind::Entity, ProjectedBatchOperation::Update) => vec![
-                            QueryResult::Ok,
+                            QueryResult::Rows(vec![serde_json::json!({})]),
                             QueryResult::Documents(vec![legacy_person_document(
                                 "0x20",
                                 "legacy-person",
                             )]),
                         ],
                         (TypeKind::Entity, ProjectedBatchOperation::Delete) => {
-                            vec![QueryResult::Ok]
+                            vec![QueryResult::Rows(vec![serde_json::json!({})])]
                         }
                         (TypeKind::Relation, ProjectedBatchOperation::Insert) => {
                             vec![QueryResult::Documents(vec![serde_json::json!({
@@ -15729,21 +15888,18 @@ def failing_initialize(target, original):
                             })])]
                         }
                         (TypeKind::Relation, ProjectedBatchOperation::Put) => vec![
-                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x10"})]),
                             QueryResult::Documents(vec![serde_json::json!({"iid": "0x30"})]),
                         ],
                         (TypeKind::Relation, ProjectedBatchOperation::Update) => vec![
-                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x10"})]),
-                            QueryResult::Ok,
-                            QueryResult::Ok,
-                            QueryResult::Documents(vec![legacy_membership_document(
+                            QueryResult::Rows(vec![serde_json::json!({})]),
+                            QueryResult::Documents(vec![native_membership_document(
                                 "0x30",
                                 "0x10",
                                 "legacy-player",
                             )]),
                         ],
                         (TypeKind::Relation, ProjectedBatchOperation::Delete) => {
-                            vec![QueryResult::Ok]
+                            vec![QueryResult::Rows(vec![serde_json::json!({})])]
                         }
                         _ => unreachable!(),
                     };
@@ -15766,6 +15922,7 @@ def failing_initialize(target, original):
                         "membership"
                     };
                     let manager = PyProjectedModelManager {
+                        transaction_supports_given_stage: false,
                         package: Arc::clone(&package),
                         type_id: package.type_by_label(label, kind).unwrap().clone(),
                         database: None,
@@ -15812,7 +15969,12 @@ def failing_initialize(target, original):
                             ProjectedBatchOperation::Update => manager.update_many(py, rows),
                             ProjectedBatchOperation::Delete => unreachable!(),
                         }
-                        .unwrap();
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "{kind:?}/{operation:?}: {error:?}; {:?}",
+                                state.lock().unwrap().queries
+                            )
+                        });
                         let output = output.bind(py).cast::<PyList>().unwrap();
                         assert_eq!(output.len(), 1);
                         assert_eq!(output.get_item(0).unwrap().as_ptr(), pointer);
@@ -15846,8 +16008,12 @@ def failing_initialize(target, original):
                                 assert!(state.queries.iter().any(|query| query.contains("insert")));
                             }
                             ProjectedBatchOperation::Put => {
-                                assert!(state.queries.len() >= 2);
-                                assert!(state.queries.last().unwrap().contains("insert"));
+                                assert_eq!(state.queries.len(), 1);
+                                assert!(state.queries[0].contains(if kind == TypeKind::Entity {
+                                    "put"
+                                } else {
+                                    "insert"
+                                }));
                             }
                             ProjectedBatchOperation::Update => {
                                 assert!(state.queries.iter().any(|query| query.contains("delete")));
@@ -15860,6 +16026,46 @@ def failing_initialize(target, original):
                         assert_eq!(state.legacy_commits, 0);
                         assert_eq!(state.sdk_commits, 0);
                         assert_eq!(state.rollbacks, 0);
+                    }
+
+                    if kind == TypeKind::Entity && operation == ProjectedBatchOperation::Insert {
+                        let session = Py::new(
+                            py,
+                            PyRuntimeProjection {
+                                package: Arc::clone(&package),
+                            }
+                            .default_match_session()
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        let session = session.bind(py);
+                        let root = session.call_method1("exact", ("person",)).unwrap();
+                        let shape = session
+                            .call_method1("positional", (vec![root.call_method0("one").unwrap()],))
+                            .unwrap();
+                        let query = session.call_method1("query", (shape,)).unwrap();
+                        let database = Py::new(
+                            py,
+                            PyRustDatabase::from_handles(
+                                Arc::clone(&database),
+                                Arc::clone(&runtime),
+                                None,
+                            ),
+                        )
+                        .unwrap();
+                        let error = query
+                            .call_method1("execute_count_by_owned", (database.bind(py), root))
+                            .unwrap_err();
+                        assert_eq!(
+                            error
+                                .value(py)
+                                .getattr("code")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "schema_authority_required"
+                        );
+                        assert_eq!(state.lock().unwrap().queries.len(), expected_queries);
                     }
 
                     Py::new(py, context)
@@ -15897,6 +16103,7 @@ def failing_initialize(target, original):
                 );
                 let marker = context.successor_batch_marker();
                 let manager = PyProjectedModelManager {
+                    transaction_supports_given_stage: false,
                     package: Arc::clone(&package),
                     type_id: package
                         .type_by_label("person", TypeKind::Entity)
@@ -15986,6 +16193,7 @@ def failing_initialize(target, original):
                 );
                 let marker = context.successor_batch_marker();
                 let manager = PyProjectedModelManager {
+                    transaction_supports_given_stage: false,
                     package: Arc::clone(&package),
                     type_id: package
                         .type_by_label("person", TypeKind::Entity)
@@ -17961,6 +18169,7 @@ class CyclicFinalizer:
                     .clone()
             };
             let manager = |type_id: TypeId| PyProjectedModelManager {
+                transaction_supports_given_stage: false,
                 package: Arc::clone(&package),
                 type_id,
                 database: None,

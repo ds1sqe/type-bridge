@@ -1959,6 +1959,8 @@ def _capture_v2_exchange(request: bytes, reply: bytes, advertisement: bytes) -> 
 
 
 def _free_port() -> int:
+    if configured := os.environ.get("SMOKE_PORT"):
+        return int(configured)
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
@@ -2758,6 +2760,7 @@ def test_sdk_serialization_live(
             "SMOKE_DATABASE": clean_db.database_name,
             "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
             "SMOKE_PORT": str(remote_port),
+            "SMOKE_ALLOW_STAGED_WRITES": "true",
         },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -4344,6 +4347,7 @@ def test_generated_projection_round_trips_live_models(
             "SMOKE_DATABASE": clean_db.database_name,
             "SMOKE_AUTHORITY_B64": base64.b64encode(authority).decode(),
             "SMOKE_PORT": str(remote_port),
+            "SMOKE_ALLOW_STAGED_WRITES": "true",
         },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -4664,6 +4668,68 @@ def test_generated_projection_round_trips_live_models(
         assert program_results[1] == program_results[0]
         assert program_results[2] == program_results[0]
         assert len(remote_requests) - requests_before_program == 10
+
+        # Staged typed terminals share the write snapshot and survive their session.
+        from type_bridge_core import Pending
+
+        from type_bridge.plan import Plan
+
+        proxy = generated.connect_proxy(f"http://127.0.0.1:{remote_port}")
+        for key, transaction in (
+            (27004051, clean_db.staged_transaction(commit_on_exit=False)),
+            (27004052, proxy.transaction(commit_on_exit=False)),
+        ):
+            with Plan():
+                created = generated.Robot.insert(robot_id=key, val_constrained=7)
+            transaction.stage(created)
+            session = generated.Robot.query(transaction)
+            root = session.exact(generated.Robot)
+            query = session.query(root).where(
+                root.field(generated.Robot.robot_id).eq(generated.RobotId(key))
+            )
+            pending = asyncio.run(query.one())
+            rows = asyncio.run(
+                query.rows(limit=2, order_by=[root.field(generated.Robot.robot_id).asc()])
+            )
+            first = asyncio.run(query.first(order_by=[root.field(generated.Robot.robot_id).asc()]))
+            page = asyncio.run(
+                query.page_by(
+                    root,
+                    limit=2,
+                    order_by=[root.field(generated.Robot.robot_id).asc()],
+                    include_total=True,
+                )
+            )
+            count = asyncio.run(query.count_by(root))
+            exists = asyncio.run(query.exists_by(root))
+            reduced = asyncio.run(query.aggregate(root, generated.aggregate.count()))
+            grouped = asyncio.run(
+                query.group_by(root, root.field(generated.Robot.robot_id)).aggregate(
+                    generated.aggregate.count()
+                )
+            )
+            assert isinstance(pending, Pending)
+            with pytest.raises(RuntimeError):
+                pending.result()
+            session.close()
+            del query, session
+            transaction.commit()
+            result = pending.result()
+            assert type(result) is generated.Robot
+            assert result.robot_id.value == key
+            assert rows.result()[0].iid == result.iid
+            assert first.result().iid == result.iid
+            assert page.result().total == 1
+            assert count.result() == 1
+            assert exists.result() is True
+            assert reduced.result() == (1,)
+            groups = grouped.result()
+            assert len(groups) == 1
+            assert type(groups[0][0]) is generated.RobotId
+            assert groups[0][0].value == key
+            assert groups[0][1] == (1,)
+            transaction.close()
+            generated.Robot.manager(clean_db).delete(result)
 
         # A proxy connection's answer ceiling binds a session that asks for
         # the defaults, and refuses as a session asking for the same budget.

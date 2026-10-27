@@ -24,10 +24,18 @@ use type_bridge_orm::session::staged::{
     merge_plan_answers,
 };
 
-use crate::match_runtime::py_sdk_diagnostic;
+use crate::match_runtime::{
+    PyQueryInvocationBudget, py_sdk_diagnostic, validated_invocation_handle,
+};
 use crate::orm_runtime::{commit_outcome_class, provider_block_on, py_provider_diagnostic};
 use crate::plan_builder_runtime::{PyPlan, PyPlanProgram};
 use crate::query_v2_runtime::{PythonBytes, value_error};
+use crate::validated_result_runtime::{MatchInvocation, PyValidatedMatchResultHandle};
+use type_bridge_orm::_registry::DescriptorRegistry;
+use type_bridge_orm::{
+    AnswerCancellation, InstalledRuntimeProjection, QueryExecutionDeadline,
+    QueryExecutionResourceLimits, ValidatedMatchRequest, ValidatedMatchResult,
+};
 
 pub(crate) fn parse_kind(kind: &str) -> PyResult<TransactionKind> {
     match kind {
@@ -112,6 +120,50 @@ impl PyStagedTransaction {
         operation(transaction)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stage_typed_query(
+        &self,
+        py: Python<'_>,
+        installed: Option<Arc<InstalledRuntimeProjection>>,
+        validated: ValidatedMatchRequest,
+        registry: Arc<DescriptorRegistry>,
+        resources: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+        decoder: Py<PyAny>,
+    ) -> PyResult<PyPending> {
+        if !decoder.bind(py).is_callable() {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "typed query decoder must be callable",
+            ));
+        }
+        let request = Arc::new(validated);
+        let pending = self.with(|transaction| {
+            transaction
+                .stage_shared_match_with_limits(
+                    &registry,
+                    Arc::clone(&request),
+                    type_bridge_orm::MatchExecutionLimits::from_policy(
+                        resources,
+                        cancellation.clone(),
+                    ),
+                )
+                .map_err(|error| pending_error(&error))
+        })?;
+        Ok(PyPending {
+            source: PendingSource::Query {
+                pending,
+                request,
+                installed,
+                registry,
+                resources,
+                cancellation,
+                resolved: std::sync::OnceLock::new(),
+            },
+            origin: self.origin.clone(),
+            decoder: Some(decoder),
+        })
+    }
+
     fn drive(&self, py: Python<'_>) -> PyResult<()> {
         let entry = crate::perf_stages::entry();
         let _entered = entry.enter();
@@ -191,12 +243,14 @@ impl PyStagedTransaction {
             }
         };
         Ok(PyPending {
-            pending,
-            models,
-            plans,
+            source: PendingSource::Plans {
+                pending,
+                models,
+                plans,
+                projected: std::sync::OnceLock::new(),
+            },
             decoder,
             origin: self.origin.clone(),
-            projected: std::sync::OnceLock::new(),
         })
     }
 
@@ -249,13 +303,28 @@ impl PyStagedTransaction {
 /// An answer that resolves only after its transaction commits.
 #[pyclass(name = "Pending", frozen)]
 pub(crate) struct PyPending {
-    pending: Vec<Pending<PlanAnswer>>,
-    plans: Arc<PyPlanProgram>,
-    models: Option<Pending<type_bridge_orm::match_request::OwnedPlanFetchResult>>,
+    source: PendingSource,
     origin: type_bridge_orm::ProjectedQueryOrigin,
-    projected:
-        std::sync::OnceLock<Result<type_bridge_orm::ProjectedQueryValue, SdkExecutionDiagnostic>>,
     decoder: Option<Py<PyAny>>,
+}
+enum PendingSource {
+    Plans {
+        pending: Vec<Pending<PlanAnswer>>,
+        plans: Arc<PyPlanProgram>,
+        models: Option<Pending<type_bridge_orm::match_request::OwnedPlanFetchResult>>,
+        projected: std::sync::OnceLock<
+            Result<type_bridge_orm::ProjectedQueryValue, SdkExecutionDiagnostic>,
+        >,
+    },
+    Query {
+        pending: Pending<ValidatedMatchResult>,
+        request: Arc<ValidatedMatchRequest>,
+        installed: Option<Arc<InstalledRuntimeProjection>>,
+        registry: Arc<DescriptorRegistry>,
+        resources: QueryExecutionResourceLimits,
+        cancellation: AnswerCancellation,
+        resolved: std::sync::OnceLock<PyValidatedMatchResultHandle>,
+    },
 }
 
 #[pymethods]
@@ -268,39 +337,81 @@ impl PyPending {
         cls.clone().unbind()
     }
 
-    /// The resolved answer: `Rows`, `Documents`, `Count`, `Exists` or `Matched`. Raises
+    /// Return the plan answer or decoded typed-query value after commit. Raises
     /// the commit's typed failure, or a lifecycle error before commit.
     fn result(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let _entry = crate::perf_stages::entry().entered();
-        if let Some(pending) = &self.models {
-            let proof = pending.get().map_err(|error| pending_error(&error))?;
-            let PyPlanProgram::Models(model) = self.plans.as_ref() else {
-                unreachable!("model pending retains its program")
-            };
-            return model.materialize(py, &proof, self.origin.clone(), &self.projected);
-        }
-        let answers = self
-            .pending
-            .iter()
-            .map(|pending| pending.get())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| pending_error(&error))?;
-        let correlations = self
-            .pending
-            .iter()
-            .map(|pending| pending.correlation())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| pending_error(&error))?;
-        let answer = merge_plan_answers(
-            match self.plans.as_ref() {
-                PyPlanProgram::Raw(plans) => plans,
-                _ => unreachable!("raw answer retains raw plans"),
-            },
-            &answers,
-            &correlations,
-        )
-        .map_err(|error| value_error(&error))?;
-        let answer = answer_object(py, answer.as_ref())?;
+        let answer = match &self.source {
+            PendingSource::Plans {
+                pending,
+                plans,
+                models,
+                projected,
+            } => {
+                if let Some(pending) = models {
+                    let proof = pending.get().map_err(|error| pending_error(&error))?;
+                    let PyPlanProgram::Models(model) = plans.as_ref() else {
+                        unreachable!("model pending retains its program")
+                    };
+                    return model.materialize(py, &proof, self.origin.clone(), projected);
+                }
+                let answers = pending
+                    .iter()
+                    .map(|pending| pending.get())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| pending_error(&error))?;
+                let correlations = pending
+                    .iter()
+                    .map(|pending| pending.correlation())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| pending_error(&error))?;
+                let answer = merge_plan_answers(
+                    match plans.as_ref() {
+                        PyPlanProgram::Raw(plans) => plans,
+                        _ => unreachable!("raw answer retains raw plans"),
+                    },
+                    &answers,
+                    &correlations,
+                )
+                .map_err(|error| value_error(&error))?;
+                answer_object(py, answer.as_ref())?
+            }
+            PendingSource::Query {
+                pending,
+                request,
+                installed,
+                registry,
+                resources,
+                cancellation,
+                resolved,
+            } => {
+                let deadline = QueryExecutionDeadline::for_limits(*resources);
+                let result = if let Some(result) = resolved.get() {
+                    result.with_shared_budget(deadline, cancellation.clone())
+                } else {
+                    let result = pending.get().map_err(|error| pending_error(&error))?;
+                    let budget = PyQueryInvocationBudget::from_parts(
+                        *resources,
+                        deadline,
+                        cancellation.clone(),
+                    );
+                    let handle = validated_invocation_handle(
+                        installed.as_ref(),
+                        Some(self.origin.clone()),
+                        MatchInvocation::Shared {
+                            request: Arc::clone(request),
+                            result,
+                        },
+                        Arc::clone(registry),
+                        budget,
+                    )?;
+                    let _ = resolved.set(handle.clone());
+                    handle
+                };
+                Py::new(py, result)?.into_any()
+            }
+        };
+
         match &self.decoder {
             Some(decoder) => decoder.call1(py, (answer,)),
             None => Ok(answer),

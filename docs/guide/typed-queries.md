@@ -954,9 +954,9 @@ Each commit is one request under a fresh nonce, and the proxy keeps no
 replies. A dropped or unverifiable reply, and a cancelled commit, leave the
 outcome unknown (`commit_outcome_unknown`): the writes may have applied, and
 the caller reads the database to find out, as after a lost direct commit.
-Every other signed refusal keeps the server's code and applied nothing. Raw
-TypeQL and typed match reads are not staged over the proxy; they are refused
-at stage time.
+Every other signed refusal keeps the server's code and applied nothing.
+Typed reads compile to plans in the staged stack. Raw TypeQL is refused at
+stage time over the proxy.
 
 The SDK verifies staged replies only under the signer it already trusts: the
 `/v3/capabilities` advertisement must name the same executor and reply key as
@@ -1038,3 +1038,20 @@ Drop the session before `tx.commit().await?`, then call `pending.result()?`
 to obtain the direct terminal's exact output type. Reads see earlier staged
 writes and publish only after a successful commit, directly and over the
 proxy. The pending owns the decoding evidence and survives its session.
+
+Python's `Model.query(tx)` and `QuerySession(tx)` accept a staged transaction
+from `Database.staged_transaction()` or `ProxyConnection.transaction()`.
+Awaiting a terminal returns `Pending[T]`, where `T` is its usual result type.
+Stage all reads, commit the transaction, then call `pending.result()`. The
+pending keeps its decoding evidence even after the session is closed.
+
+```python
+tx = db.staged_transaction(commit_on_exit=False)
+session = Person.query(tx)
+person = session.exact(Person)
+pending = await session.query(person).count_by(person)  # Pending[int]
+session.close()
+tx.commit()
+count = pending.result()
+tx.close()
+```

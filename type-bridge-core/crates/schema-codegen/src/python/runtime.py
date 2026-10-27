@@ -249,7 +249,7 @@ class ModelBase:
         resources: QueryExecutionResourceLimits | None = None,
         cancellation: QueryCancellation | None = None,
         query_limits: QueryLimits | None = None,
-    ) -> QuerySession:
+    ) -> QuerySession[bool]:
         from ._query import QuerySession
 
         return QuerySession(

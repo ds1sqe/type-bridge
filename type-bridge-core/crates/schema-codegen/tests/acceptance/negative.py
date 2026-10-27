@@ -32,6 +32,7 @@ from generated_v2 import (
     aggregate,
     qualifying_score,
 )
+from type_bridge_core import Transaction as StagedTransaction
 
 from type_bridge.session import Database
 
@@ -175,3 +176,14 @@ query_session.query(person_var).aggregate(  # E: too_many_aggregate_terms:report
     aggregate.count(),
     aggregate.count(),
 )
+
+
+async def staged_pending_requires_resolution(tx: StagedTransaction) -> None:
+    session = Person.query(tx)
+    root = session.exact(Person)
+    pending = await session.query(root).one()
+    direct: Person = pending  # E: staged_pending_is_not_model:reportAssignmentType
+    _ = direct
+    session.query(root).where(
+        root.field(Person.score).eq(pending)  # E: staged_pending_is_not_scalar:reportArgumentType
+    )
