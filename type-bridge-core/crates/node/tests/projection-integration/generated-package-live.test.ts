@@ -1579,6 +1579,7 @@ function assertIid(value: unknown): asserts value is string {
 }
 
 async function freePort(): Promise<number> {
+  if (process.env.SMOKE_PORT !== undefined) return Number(process.env.SMOKE_PORT);
   return new Promise((resolvePort, reject) => {
     const server = net.createServer();
     server.once("error", reject);
@@ -2636,6 +2637,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
           SMOKE_DATABASE: INTG_DATABASE,
           SMOKE_AUTHORITY_B64: authority.toString("base64"),
           SMOKE_PORT: String(port),
+          SMOKE_ALLOW_STAGED_WRITES: "true",
         },
         stdio: ["ignore", "ignore", "pipe"],
       },
@@ -2690,6 +2692,45 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         assert.deepEqual(await queryProgram(proxySession, (run) => run()), direct);
       } finally {
         proxySession.close();
+      }
+
+      const { Plan, Pending } = await import(pathToFileURL(resolve(NODE_RUNTIME_PACKAGE, "dist/public.js")).href);
+      for (const [key, transaction] of [
+        [27004601n, database.stagedTransaction()],
+        [27004602n, await proxy.transaction()],
+      ] as const) {
+        transaction.stage(Plan.build(() => Robot.insert({ robotId: key, valConstrained: 7n })));
+        const session = new QuerySession(transaction);
+        const root = session.exact(Robot);
+        const query = session.query(root).where(root.field(Robot.robotId).eq(RobotId.create(key)));
+        const orderBy = [root.field(Robot.robotId).asc()];
+        const one = await query.one();
+        const rows = await query.rows({ limit: 2n, orderBy });
+        const first = await query.first({ orderBy });
+        const page = await query.pageBy(root, { limit: 2n, orderBy, includeTotal: true });
+        const count = await query.countBy(root);
+        const exists = await query.existsBy(root);
+        const reduced = await query.aggregate(root, [aggregate.count()] as const);
+        const grouped = await query.groupBy(root, root.field(Robot.robotId)).aggregate([aggregate.count()] as const);
+        assert.ok(one instanceof Pending);
+        assert.throws(() => one.result(), /Transaction has not committed/);
+        session.close();
+        await transaction.commit();
+        const robot = one.result();
+        assert.equal(robot.robotId.value, key);
+        assertIid(robot.iid);
+        assert.equal(rows.result()[0].iid, robot.iid);
+        assert.equal(first.result().iid, robot.iid);
+        assert.equal(page.result().total, 1n);
+        assert.equal(count.result(), 1n);
+        assert.equal(exists.result(), true);
+        assert.deepEqual(reduced.result(), [1n]);
+        const groups = grouped.result();
+        assert.equal(groups.length, 1);
+        assert.deepEqual(RobotId.encodeAttribute(groups[0][0]), RobotId.encodeAttribute(RobotId.create(key)));
+        assert.deepEqual(groups[0][1], [1n]);
+        transaction.close();
+        Robot.manager(database).delete(robot);
       }
 
       // A limit refusal is the same on every connection: category, code,
@@ -3477,6 +3518,7 @@ test(
             SMOKE_DATABASE: INTG_DATABASE,
             SMOKE_AUTHORITY_B64: authority.toString("base64"),
             SMOKE_PORT: String(port),
+          SMOKE_ALLOW_STAGED_WRITES: "true",
           },
           stdio: "ignore",
         },

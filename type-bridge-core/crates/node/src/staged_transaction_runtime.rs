@@ -104,16 +104,29 @@ pub(crate) fn parse_plan_answer_json(json: &str) -> napi::Result<PlanAnswer> {
 /// One staged plan's answer, visible only after its commit succeeds.
 #[napi]
 pub struct NodePendingPlanAnswer {
-    inner: Vec<Pending<PlanAnswer>>,
-    plans: Arc<NodePlanProgram>,
-    models: Option<Pending<type_bridge_orm::match_request::OwnedPlanFetchResult>>,
+    source: PendingSource,
     origin: type_bridge_orm::ProjectedQueryOrigin,
-    projected: std::sync::OnceLock<
-        Result<
-            type_bridge_orm::ProjectedQueryValue,
-            type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+}
+
+enum PendingSource {
+    Plans {
+        inner: Vec<Pending<PlanAnswer>>,
+        plans: Arc<NodePlanProgram>,
+        models: Option<Pending<type_bridge_orm::match_request::OwnedPlanFetchResult>>,
+        projected: std::sync::OnceLock<
+            Result<
+                type_bridge_orm::ProjectedQueryValue,
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic,
+            >,
         >,
-    >,
+    },
+    Query {
+        pending: Pending<type_bridge_orm::ValidatedMatchResult>,
+        request: Arc<type_bridge_orm::ValidatedMatchRequest>,
+        registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        context: crate::match_runtime::NodeMatchResultContext,
+        projected: crate::match_runtime::NodeQueryProjectionCache,
+    },
 }
 
 #[napi]
@@ -123,21 +136,30 @@ impl NodePendingPlanAnswer {
     pub fn get_projection(
         &self,
     ) -> napi::Result<Option<crate::runtime_projection::NodeAuthoredPlanResult>> {
-        let Some(pending) = &self.models else {
+        let PendingSource::Plans {
+            models,
+            plans,
+            projected,
+            ..
+        } = &self.source
+        else {
+            return Ok(None);
+        };
+        let Some(pending) = models else {
             return Ok(None);
         };
         let proof = pending.get().map_err(|error| pending_error(&error))?;
-        let NodePlanProgram::Models(model) = self.plans.as_ref() else {
+        let NodePlanProgram::Models(model) = plans.as_ref() else {
             unreachable!("model pending retains its program")
         };
         if model.tuple.is_some() {
             Ok(Some(crate::runtime_projection::NodeAuthoredPlanResult {
                 models: None,
-                rows: Some(model.materialize_rows(&proof, self.origin.clone(), &self.projected)?),
+                rows: Some(model.materialize_rows(&proof, self.origin.clone(), projected)?),
             }))
         } else {
             Ok(Some(crate::runtime_projection::NodeAuthoredPlanResult {
-                models: Some(model.materialize(&proof, self.origin.clone(), &self.projected)?),
+                models: Some(model.materialize(&proof, self.origin.clone(), projected)?),
                 rows: None,
             }))
         }
@@ -148,19 +170,28 @@ impl NodePendingPlanAnswer {
     #[napi(js_name = "getJson")]
     pub fn get_json(&self) -> napi::Result<String> {
         let _entry = crate::perf_stages::entry().entered();
-        let answers = self
-            .inner
+        let PendingSource::Plans {
+            inner,
+            models,
+            plans,
+            ..
+        } = &self.source
+        else {
+            return Err(napi::Error::from_reason(
+                "pending_answer_kind: a typed query requires getQueryResult",
+            ));
+        };
+        let answers = inner
             .iter()
             .map(|pending| pending.get())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| pending_error(&error))?;
-        let correlations = self
-            .inner
+        let correlations = inner
             .iter()
             .map(|pending| pending.correlation())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| pending_error(&error))?;
-        if let Some(models) = &self.models {
+        if let Some(models) = models {
             return answer_json(
                 models
                     .get()
@@ -168,12 +199,39 @@ impl NodePendingPlanAnswer {
                     .selection(),
             );
         }
-        let NodePlanProgram::Raw(plans) = self.plans.as_ref() else {
+        let NodePlanProgram::Raw(plans) = plans.as_ref() else {
             unreachable!("raw pending retains raw plans")
         };
         let answer = merge_plan_answers(plans, &answers, &correlations)
             .map_err(|error| crate::query_v2_runtime::napi_error(&error))?;
         answer_json(&answer)
+    }
+
+    /// Return the exact-invocation typed query proof after commit.
+    #[napi(js_name = "getQueryResult")]
+    pub fn get_query_result(
+        &self,
+    ) -> napi::Result<crate::match_runtime::NodeValidatedMatchResultHandle> {
+        let PendingSource::Query {
+            pending,
+            request,
+            registry,
+            context,
+            projected,
+        } = &self.source
+        else {
+            return Err(napi::Error::from_reason(
+                "pending_answer_kind: this pending contains a plan answer",
+            ));
+        };
+        let result = pending.get().map_err(|error| pending_error(&error))?;
+        context.attach_shared(
+            self.origin.clone(),
+            Arc::clone(request),
+            result,
+            Arc::clone(registry),
+            projected,
+        )
     }
 }
 
@@ -199,6 +257,33 @@ impl NodeStagedTransaction {
     pub(crate) fn with_origin(mut self, origin: type_bridge_orm::ProjectedQueryOrigin) -> Self {
         self.origin = origin;
         self
+    }
+
+    pub(crate) fn stage_query(
+        &self,
+        validated: type_bridge_orm::ValidatedMatchRequest,
+        registry: Arc<type_bridge_orm::_registry::DescriptorRegistry>,
+        context: crate::match_runtime::NodeMatchResultContext,
+    ) -> napi::Result<NodePendingPlanAnswer> {
+        let request = Arc::new(validated);
+        let pending = self
+            .lock()?
+            .stage_shared_match_with_limits(
+                &registry,
+                Arc::clone(&request),
+                context.execution_limits(),
+            )
+            .map_err(|error| pending_error(&error))?;
+        Ok(NodePendingPlanAnswer {
+            source: PendingSource::Query {
+                pending,
+                request,
+                registry,
+                context,
+                projected: std::sync::OnceLock::new(),
+            },
+            origin: self.origin.clone(),
+        })
     }
 
     fn lock(&self) -> napi::Result<tokio::sync::MutexGuard<'_, Transaction>> {
@@ -249,11 +334,13 @@ impl NodeStagedTransaction {
             .stage_plans(Arc::clone(&plans), plans.returns_documents())
             .map_err(|error| pending_error(&error))?;
         Ok(NodePendingPlanAnswer {
-            inner,
-            plans,
-            models: None,
+            source: PendingSource::Plans {
+                inner,
+                plans,
+                models: None,
+                projected: std::sync::OnceLock::new(),
+            },
             origin: self.origin.clone(),
-            projected: std::sync::OnceLock::new(),
         })
     }
 
@@ -283,11 +370,13 @@ impl NodeStagedTransaction {
             }
         };
         Ok(NodePendingPlanAnswer {
-            inner,
-            models,
-            plans: Arc::clone(&plan.plans),
+            source: PendingSource::Plans {
+                inner,
+                models,
+                plans: Arc::clone(&plan.plans),
+                projected: std::sync::OnceLock::new(),
+            },
             origin: self.origin.clone(),
-            projected: std::sync::OnceLock::new(),
         })
     }
 

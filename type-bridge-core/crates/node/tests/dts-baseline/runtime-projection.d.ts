@@ -1,6 +1,6 @@
 import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
-import type { NativePlan, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
+import type { NativePlan, NativePendingPlanAnswer, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 type NativeModule = ReturnType<typeof loadNative>;
 type NativeRuntimeProjection = InstanceType<NativeModule["NodeRuntimeProjection"]>;
@@ -110,14 +110,15 @@ export declare class QueryCancellation {
 /** One caller-owned request/response exchange. No retry is performed. */
 export type RuntimeProjectionRemoteExchange = (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
 /** Opaque verified remote terminal executor for one generated package. */
-export interface RuntimeProjectionRemote {
-    rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;
-    page(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<RuntimeProjectionMatchResult>;
-    count(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;
-    exists(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<RuntimeProjectionMatchResult>;
-    reduce(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchBinding | null, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
-    reduceByField(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
-    reduceByFields(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<RuntimeProjectionMatchResult>;
+export type RuntimeProjectionQueryResult = RuntimeProjectionMatchResult | NativePendingPlanAnswer;
+export interface RuntimeProjectionRemote<Result = RuntimeProjectionMatchResult> {
+    rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<Result>;
+    page(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, includeTotal: boolean): Promise<Result>;
+    count(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<Result>;
+    exists(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding): Promise<Result>;
+    reduce(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchBinding | null, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<Result>;
+    reduceByField(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, group: RuntimeProjectionMatchField, reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<Result>;
+    reduceByFields(query: RuntimeProjectionMatchQuery, root: RuntimeProjectionMatchBinding, groups: RuntimeProjectionMatchField[], reducers: RuntimeProjectionReduction[], inputs: (RuntimeProjectionMatchField | null)[]): Promise<Result>;
 }
 declare const nativeProjectedFacadeProof: unique symbol;
 /** @internal Opaque non-serializable proof retained only by generated successor facades. */
@@ -341,6 +342,8 @@ export declare class InstalledRuntimeProjection {
      * and resolve without blocking the event loop.
      */
     direct(connection: RuntimeProjectionConnection): RuntimeProjectionRemote;
+    /** @internal Bind generated typed reads to one deferred transaction. */
+    staged(connection: StagedTransaction): RuntimeProjectionRemote<NativePendingPlanAnswer>;
     /**
      * @internal Bind remote authority, executor epoch, the session's resources
      * and cancellation, and one host exchange. `answerLimits` is the

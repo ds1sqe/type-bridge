@@ -73,6 +73,7 @@ function requiredEnvironment(name: string): string {
 }
 
 function freePort(): Promise<number> {
+  if (process.env.SMOKE_PORT !== undefined) return Promise.resolve(Number(process.env.SMOKE_PORT));
   return new Promise((resolve, reject) => {
     const probe = net.createServer();
     probe.listen(0, "127.0.0.1", () => {
@@ -249,7 +250,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
     requiredEnvironment("NODE_EXTRA_CA_CERTS");
   }
   const remoteScheme = tlsEnabled ? "https" : "http";
-  const database = `tb_v2_node_smoke_${process.pid}_${Date.now()}`;
+  const database = `${process.env.TYPE_BRIDGE_NODE_INTG_DATABASE ?? "tb_v2_node_smoke"}_${process.pid}_${Date.now()}`;
   pkg.ensureDatabase(
     address,
     database,

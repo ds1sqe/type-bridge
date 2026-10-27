@@ -2259,6 +2259,7 @@ impl NodeRuntimeProjection {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
         let (database, runtime) = database.handles();
         Ok(NodeProjectedModelManager {
+            transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
             database: Some(database),
@@ -2278,8 +2279,10 @@ impl NodeRuntimeProjection {
     ) -> napi::Result<NodeProjectedModelManager> {
         let type_id = manageable_type(self.package.as_ref(), &type_key)?;
         let successor_batch_marker = transaction.successor_batch_marker();
+        let transaction_supports_given_stage = transaction.supports_given_stage();
         let (transaction, runtime) = transaction.handles();
         Ok(NodeProjectedModelManager {
+            transaction_supports_given_stage,
             package: Arc::clone(&self.package),
             type_id,
             database: None,
@@ -3183,6 +3186,7 @@ impl NodeRuntimeProjection {
 /// Exact CRUD manager backed only by verified projection descriptors.
 #[napi]
 pub struct NodeProjectedModelManager {
+    transaction_supports_given_stage: bool,
     package: Arc<InstalledPackage>,
     type_id: TypeId,
     database: Option<Arc<Database>>,
@@ -3823,6 +3827,7 @@ impl NodeProjectedModelManager {
             type_id: self.type_id.clone(),
             database: self.database.clone(),
             transaction: self.transaction.clone(),
+            transaction_supports_given_stage: self.transaction_supports_given_stage,
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
@@ -3852,6 +3857,7 @@ impl NodeProjectedModelManager {
             type_id: self.type_id.clone(),
             database: self.database.clone(),
             transaction: self.transaction.clone(),
+            transaction_supports_given_stage: self.transaction_supports_given_stage,
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
@@ -4223,17 +4229,30 @@ impl NodeProjectedModelManager {
         descriptor: Arc<EntityDescriptor>,
     ) -> napi::Result<DynamicEntityManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicEntityManager::with_canonical_transaction(
+            let manager = DynamicEntityManager::with_registry_transaction(
                 transaction.clone(),
+                self.package
+                    .projection
+                    .manager_registry()
+                    .map_err(orm_error)?,
                 descriptor,
-            ));
+            );
+            return Ok(if self.transaction_supports_given_stage {
+                manager
+            } else {
+                manager.literal_values()
+            });
         }
         let database = self
             .database
             .as_ref()
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicEntityManager::new_canonical(
+        Ok(DynamicEntityManager::from_registry(
             database.as_ref(),
+            self.package
+                .projection
+                .manager_registry()
+                .map_err(orm_error)?,
             descriptor,
         ))
     }
@@ -4243,17 +4262,30 @@ impl NodeProjectedModelManager {
         descriptor: Arc<RelationDescriptor>,
     ) -> napi::Result<DynamicRelationManager<'_>> {
         if let Some(transaction) = &self.transaction {
-            return Ok(DynamicRelationManager::with_canonical_transaction(
+            let manager = DynamicRelationManager::with_registry_transaction(
                 transaction.clone(),
+                self.package
+                    .projection
+                    .manager_registry()
+                    .map_err(orm_error)?,
                 descriptor,
-            ));
+            );
+            return Ok(if self.transaction_supports_given_stage {
+                manager
+            } else {
+                manager.literal_values()
+            });
         }
         let database = self
             .database
             .as_ref()
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicRelationManager::new_canonical(
+        Ok(DynamicRelationManager::from_registry(
             database.as_ref(),
+            self.package
+                .projection
+                .manager_registry()
+                .map_err(orm_error)?,
             descriptor,
         ))
     }
@@ -7525,6 +7557,7 @@ entities:
         type_id: TypeId,
     ) -> NodeProjectedModelManager {
         NodeProjectedModelManager {
+            transaction_supports_given_stage: false,
             package: Arc::clone(&runtime.package),
             type_id,
             database: None,
@@ -8056,6 +8089,7 @@ entities:
             });
             let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
             let manager = NodeProjectedModelManager {
+                transaction_supports_given_stage: false,
                 package: Arc::clone(&projection.package),
                 type_id: TypeId::new(TypeKind::Entity, "group").unwrap(),
                 database: (!borrowed).then(|| Arc::clone(&database)),
@@ -8199,6 +8233,7 @@ entities:
                     }
                     let marker = borrowed.then(|| Arc::new(AtomicBool::new(false)));
                     let manager = NodeProjectedModelManager {
+                        transaction_supports_given_stage: false,
                         package: Arc::clone(&runtime_projection.package),
                         type_id: type_id.clone(),
                         database: (!borrowed).then(|| Arc::clone(&database)),
@@ -8251,6 +8286,7 @@ entities:
                             TransactionContextState::RollbackOnly
                         );
                         let transaction = crate::NodeRustTransactionContext {
+                            supports_given_stage: false,
                             context: transaction,
                             runtime: Arc::clone(&provider_runtime),
                             successor_batch_invoked: marker,
@@ -9687,6 +9723,90 @@ plays:
             diagnostic["path"][2],
             serde_json::json!({"kind": "index", "value": 1})
         );
+    }
+
+    #[cfg(feature = "contract-test-adapter")]
+    #[test]
+    fn schema_less_native_manager_crud_uses_plans_but_typed_queries_require_authority() {
+        use type_bridge_orm::session::backend::QueryResult;
+        let authority = authority(UNORDERED_SCHEMA, "node-schema-less-crud.yaml");
+        let projection = typescript_projection(&authority);
+        let (json, semantic, fingerprint) = evidence(&projection);
+        let installed = NodeRuntimeProjection::new(
+            json,
+            semantic,
+            fingerprint,
+            registrations(&projection),
+            None,
+            None,
+        )
+        .unwrap();
+        let row = |score| {
+            QueryResult::Documents(vec![
+                json!({"_iid":"0x20", "_type":"person", "attributes":{"score":score}}),
+            ])
+        };
+        let (database, state) = projection_recording_database_for_test(vec![
+            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![
+                json!({"root0":{"kind":"thing", "iid":"0x20", "type_id":{"kind":"entity", "label":"person"}}}),
+            ])),
+            ProjectionRecordingResponse::Query(row(3)),
+            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![json!({})])),
+            ProjectionRecordingResponse::Query(row(4)),
+            ProjectionRecordingResponse::Query(QueryResult::Rows(vec![json!({})])),
+        ]);
+        let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+        let native_database =
+            NodeRustDatabase::from_handles(Arc::clone(&database), Arc::clone(&runtime), None);
+        let transaction = native_database.transaction(Some("write".into())).unwrap();
+        let manager = installed
+            .manager_for_transaction(type_key(TypeKind::Entity, "person"), &transaction)
+            .unwrap();
+        let input = |score: &str| {
+            wire_json(&ProjectedWire {
+                type_key: type_key(TypeKind::Entity, "person"),
+                form: WireForm::Complete,
+                iid: None,
+                value: None,
+                values: BTreeMap::from([(
+                    "score".into(),
+                    serde_json::to_value(attribute_wire(
+                        "score",
+                        ValueTypeTag::Long,
+                        Value::String(score.into()),
+                    ))
+                    .unwrap(),
+                )]),
+            })
+            .unwrap()
+        };
+        let inserted = parse_wire(&manager.insert_json(input("3")).unwrap()).unwrap();
+        assert_eq!(inserted.iid.as_deref(), Some("0x20"));
+        let stored: Option<ProjectedWire> =
+            serde_json::from_str(&manager.get_by_iid_json("0x20".into()).unwrap()).unwrap();
+        assert_eq!(stored.unwrap().values["score"]["value"]["value"], "3");
+        let updated = parse_wire(&manager.update_json("0x20".into(), input("4")).unwrap()).unwrap();
+        assert_eq!(updated.values["score"]["value"]["value"], "4");
+        manager.delete_by_iid("0x20".into()).unwrap();
+        let registry = Arc::new(installed.package.projection.match_registry().unwrap());
+        let session = type_bridge_orm::SessionHandle::new(Arc::clone(&registry));
+        let root = session.exact("person").unwrap();
+        let query = session
+            .query(session.positional(vec![root.one()]).unwrap())
+            .unwrap();
+        let request = query.validate_count_by(&root).unwrap();
+        let error = runtime
+            .block_on(database.execute_match(&registry, &request))
+            .unwrap_err();
+        let type_bridge_orm::OrmError::Match(error) = error else {
+            panic!("typed authority refusal")
+        };
+        assert_eq!(error.code().as_str(), "schema_authority_required");
+        transaction.rollback().unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 5);
+        assert_eq!(state.opens, ["write"]);
+        assert_eq!(state.rollbacks, 1);
     }
 
     #[test]

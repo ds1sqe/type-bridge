@@ -42,7 +42,7 @@ import { PendingPlanAnswer } from "../../typescript/staged-transaction.js";
 
 test("pending fetch documents retain nested attributes", () => {
   const documents = [{ _iid: "0x01", _type: "person", attributes: { name: ["Ada"] } }];
-  const pending = new PendingPlanAnswer({ getProjection: () => null, getJson: () => JSON.stringify({ kind: "documents", documents }) });
+  const pending = new PendingPlanAnswer({ getQueryResult: () => { throw new Error("plan pending must not read a typed-query proof"); }, getProjection: () => null, getJson: () => JSON.stringify({ kind: "documents", documents }) });
   const answer = pending.get();
   assert.equal(answer.kind, "documents");
   if (answer.kind === "documents") assert.deepEqual(answer.documents, documents);

@@ -505,6 +505,7 @@ impl NodeRustDatabase {
             .block_on(self.db.transaction_context(tx_type))
             .map_err(napi_orm_error)?;
         Ok(NodeRustTransactionContext {
+            supports_given_stage: self.db.supports_given_stage(),
             context,
             runtime: Arc::clone(&self.runtime),
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
@@ -535,12 +536,16 @@ impl NodeRustDatabase {
 /// JavaScript-facing Rust transaction context.
 #[napi]
 pub struct NodeRustTransactionContext {
+    supports_given_stage: bool,
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
     successor_batch_invoked: Arc<AtomicBool>,
 }
 
 impl NodeRustTransactionContext {
+    pub(crate) fn supports_given_stage(&self) -> bool {
+        self.supports_given_stage
+    }
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }

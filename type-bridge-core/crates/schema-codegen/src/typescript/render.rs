@@ -633,7 +633,7 @@ fn render_structs(projection: &RuntimeProjection) -> Result<String, Diagnostic> 
 fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic> {
     let mut output = String::from(header());
     output.push_str(
-        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, QuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
+        "import { defineFunctionToken, type BoundVar, type FunctionCall, type FunctionInput, type FunctionToken, type QueryMatchMode, type QueryConnection, QuerySession } from \"./runtime.js\";\nimport type * as Models from \"./models.js\";\nimport type * as Structs from \"./structs.js\";\n\n",
     );
     let mut emitted_inputs = BTreeSet::new();
     let mut emitted_calls = BTreeSet::new();
@@ -728,13 +728,13 @@ fn render_functions(projection: &RuntimeProjection) -> Result<String, Diagnostic
                 let scalar = scalar_type(domain);
                 let _ = writeln!(
                     output,
-                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
+                    "export type {alias} = FunctionInput<{scalar}>;\nexport function {constructor}<Value extends {{ readonly value: {scalar} }}>(session: QuerySession<QueryConnection>, value: Value): {alias} {{\n  return session.__functionInput(value);\n}}"
                 );
             }
         }
 
         let mut generics = Vec::new();
-        let mut parameters = vec!["session: QuerySession".to_owned()];
+        let mut parameters = vec!["session: QuerySession<QueryConnection>".to_owned()];
         let mut arguments_expr = Vec::new();
         for (index, parameter) in function.parameters().iter().enumerate() {
             let parameter_name = parameter.target_name().as_str();

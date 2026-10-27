@@ -1121,6 +1121,20 @@ impl NodeMatchQueryHandle {
         target.budget(self.resources, deadline)
     }
 
+    fn stage_transaction(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        validated: ValidatedMatchRequest,
+        deadline: QueryExecutionDeadline,
+        cancellation: AnswerCancellation,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        transaction.stage_query(
+            validated,
+            self.inner.registry_arc(),
+            self.result_context(self.resources, deadline, cancellation),
+        )
+    }
+
     fn execute_owned(
         &self,
         env: &Env,
@@ -1734,7 +1748,171 @@ impl NodeMatchQueryHandle {
             .map_err(crate::napi_orm_error)?;
         self.execute_borrowed(&env, transaction, validated, deadline, cancellation)
     }
+
+    #[napi(js_name = "stageFetchRows")]
+    pub fn stage_fetch_rows(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        orders: Vec<Reference<NodeMatchOrderHandle>>,
+        offset: BigInt,
+        limit: BigInt,
+        cardinality: String,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_fetch_rows(
+                &order_handles(&orders),
+                Window {
+                    offset: bigint_u64(&offset, "offset")?,
+                    limit: bigint_u64(&limit, "limit")?,
+                },
+                parse_enum::<RowCardinality>(&cardinality)?,
+            )
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stagePageBy")]
+    pub fn stage_page_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        orders: Vec<Reference<NodeMatchOrderHandle>>,
+        offset: BigInt,
+        limit: BigInt,
+        include_total: bool,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_page_by(
+                &root.inner,
+                &order_handles(&orders),
+                Window {
+                    offset: bigint_u64(&offset, "offset")?,
+                    limit: bigint_u64(&limit, "limit")?,
+                },
+                include_total,
+            )
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageCountBy")]
+    pub fn stage_count_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_count_by(&root.inner)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageExistsBy")]
+    pub fn stage_exists_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let validated = self
+            .inner
+            .validate_exists_by(&root.inner)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageReduceBy")]
+    pub fn stage_reduce_by(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        group: Option<&NodeMatchBindingHandle>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by(&root.inner, group.map(|group| &group.inner), &terms)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageReduceByField")]
+    pub fn stage_reduce_by_field(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        group: &NodeMatchFieldHandle,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_field(&root.inner, &group.inner, &terms)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
+
+    #[napi(js_name = "stageReduceByFields")]
+    pub fn stage_reduce_by_fields(
+        &self,
+        transaction: &crate::staged_transaction_runtime::NodeStagedTransaction,
+        root: &NodeMatchBindingHandle,
+        groups: Vec<Reference<NodeMatchFieldHandle>>,
+        reducers: Vec<String>,
+        inputs: Vec<Option<Reference<NodeMatchFieldHandle>>>,
+    ) -> Result<crate::staged_transaction_runtime::NodePendingPlanAnswer> {
+        let (deadline, cancellation) = self.begin_invocation()?;
+        let groups = groups.iter().map(|group| &group.inner).collect::<Vec<_>>();
+        let terms = reduce_terms(&reducers, &inputs)?;
+        let terms = borrow_reduce_terms(&terms);
+        let validated = self
+            .inner
+            .validate_reduce_by_fields(&root.inner, &groups, &terms)
+            .map_err(crate::napi_orm_error)?;
+        self.stage_transaction(transaction, validated, deadline, cancellation)
+    }
 }
+
+#[allow(clippy::large_enum_variant)] // Keep immediate proofs in their existing allocation.
+enum MatchInvocation {
+    Owned {
+        request: ValidatedMatchRequest,
+        result: ValidatedMatchResult,
+    },
+    Shared {
+        request: Arc<ValidatedMatchRequest>,
+        result: Arc<ValidatedMatchResult>,
+    },
+}
+impl MatchInvocation {
+    fn request(&self) -> &ValidatedMatchRequest {
+        match self {
+            Self::Owned { request, .. } => request,
+            Self::Shared { request, .. } => request,
+        }
+    }
+    fn result(&self) -> &ValidatedMatchResult {
+        match self {
+            Self::Owned { result, .. } => result,
+            Self::Shared { result, .. } => result,
+        }
+    }
+}
+
+pub(crate) type NodeQueryProjectionCache = std::sync::OnceLock<Option<Arc<ProjectedQueryValue>>>;
 
 /// Opaque proof that Rust validated one FetchRows provider result.
 ///
@@ -1742,8 +1920,7 @@ impl NodeMatchQueryHandle {
 /// exact immutable query lineage that executed the request.
 #[napi]
 pub struct NodeValidatedMatchResultHandle {
-    inner: ValidatedMatchResult,
-    request: ValidatedMatchRequest,
+    invocation: MatchInvocation,
     registry: Arc<DescriptorRegistry>,
     projected: Option<Arc<ProjectedQueryValue>>,
     output: Arc<NodeOutputShape>,
@@ -1786,6 +1963,58 @@ pub(crate) struct NodeMatchResultContext {
 }
 
 impl NodeMatchResultContext {
+    pub(crate) fn execution_limits(&self) -> type_bridge_orm::MatchExecutionLimits {
+        type_bridge_orm::MatchExecutionLimits::from_policy(
+            self.resources,
+            self.cancellation.clone(),
+        )
+    }
+
+    pub(crate) fn attach_shared(
+        &self,
+        origin: ProjectedQueryOrigin,
+        request: Arc<ValidatedMatchRequest>,
+        result: Arc<ValidatedMatchResult>,
+        registry: Arc<DescriptorRegistry>,
+        cache: &NodeQueryProjectionCache,
+    ) -> Result<NodeValidatedMatchResultHandle> {
+        let deadline = QueryExecutionDeadline::for_limits(self.resources);
+        if cache.get().is_none() {
+            let projected = self
+                .installed
+                .as_ref()
+                .map(|installed| {
+                    origin
+                        .materialize_borrowed_with_budget(
+                            installed,
+                            &registry,
+                            &request,
+                            &result,
+                            self.resources.projected(),
+                            &self.cancellation,
+                            Some(deadline),
+                        )
+                        .map(|(value, _)| Arc::new(value))
+                })
+                .transpose()
+                .map_err(napi_sdk_diagnostic)?;
+            let _ = cache.set(projected);
+        }
+        let projected = cache
+            .get()
+            .expect("successful query materialization")
+            .clone();
+        Ok(NodeValidatedMatchResultHandle {
+            invocation: MatchInvocation::Shared { request, result },
+            registry,
+            projected,
+            output: Arc::clone(&self.output),
+            lineage: Arc::clone(&self.lineage),
+            deadline,
+            cancellation: self.cancellation.clone(),
+        })
+    }
+
     pub(crate) fn attach(
         self,
         request: ValidatedMatchRequest,
@@ -1852,8 +2081,7 @@ fn validated_result_handle(
         })
         .transpose()?;
     Ok(NodeValidatedMatchResultHandle {
-        inner: result,
-        request,
+        invocation: MatchInvocation::Owned { request, result },
         registry,
         projected,
         output,
@@ -1875,8 +2103,9 @@ impl NodeValidatedMatchResultHandle {
                 "validated result belongs to a different immutable query lineage",
             ));
         }
-        self.inner
-            .for_request(&self.request)
+        self.invocation
+            .result()
+            .for_request(self.invocation.request())
             .map_err(napi_match_error)
     }
 
@@ -3185,6 +3414,74 @@ plays:
     }
 
     #[tokio::test]
+    async fn staged_query_projection_retries_after_a_deadline_failure() {
+        let (query, registry) = projected_query();
+        let (database, events) = projected_query_database(projected_query_responses("0xa1"));
+        let request = Arc::new(projected_rows_request(&query));
+        let mut transaction = database.transaction(Default::default());
+        let pending = transaction
+            .stage_shared_match_with_limits(&registry, Arc::clone(&request), Default::default())
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let proof = pending.get().unwrap();
+        let mut context = query.result_context(
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: 0,
+                ..Default::default()
+            },
+            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            AnswerCancellation::default(),
+        );
+        let cache = NodeQueryProjectionCache::new();
+        let failure = context
+            .attach_shared(
+                ProjectedQueryOrigin::for_database(&database),
+                Arc::clone(&request),
+                Arc::clone(&proof),
+                Arc::clone(&registry),
+                &cache,
+            )
+            .err()
+            .unwrap();
+        assert!(failure.reason.contains("transaction_deadline_exceeded"));
+        assert!(cache.get().is_none());
+        context.resources = QueryExecutionResourceLimits::default();
+        let result = context
+            .attach_shared(
+                ProjectedQueryOrigin::for_database(&database),
+                Arc::clone(&request),
+                Arc::clone(&proof),
+                Arc::clone(&registry),
+                &cache,
+            )
+            .unwrap();
+        assert!(cache.get().is_some());
+        assert_eq!(
+            result
+                .slot_thing(&query, 0, 0)
+                .unwrap()
+                .projected
+                .unwrap()
+                .iid(),
+            "0xa1"
+        );
+        let again = context
+            .attach_shared(
+                ProjectedQueryOrigin::for_database(&database),
+                request,
+                proof,
+                registry,
+                &cache,
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(
+            result.projected.as_ref().unwrap(),
+            again.projected.as_ref().unwrap()
+        ));
+        assert_eq!(events.queries.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn ordered_query_companion_is_cached_aligned_and_origin_scoped() {
         let (query, registry) = projected_query();
         let installed = query.installed.as_ref().unwrap();
@@ -3954,8 +4251,10 @@ plays:
         executor.push(type_bridge_orm::RecordingMatchResponse::EmptyRows);
         let inner = executor.execute(&validated).unwrap();
         let result = NodeValidatedMatchResultHandle {
-            inner,
-            request: validated,
+            invocation: MatchInvocation::Owned {
+                request: validated,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4010,8 +4309,10 @@ plays:
         page_executor.push(type_bridge_orm::RecordingMatchResponse::EmptyPage { total: Some(0) });
         let page_inner = page_executor.execute(&page_request).unwrap();
         let page = NodeValidatedMatchResultHandle {
-            inner: page_inner,
-            request: page_request,
+            invocation: MatchInvocation::Owned {
+                request: page_request,
+                result: page_inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4044,8 +4345,10 @@ plays:
         count_executor.push(type_bridge_orm::RecordingMatchResponse::Count(u64::MAX));
         let count_inner = count_executor.execute(&count_request).unwrap();
         let count = NodeValidatedMatchResultHandle {
-            inner: count_inner,
-            request: count_request,
+            invocation: MatchInvocation::Owned {
+                request: count_request,
+                result: count_inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4064,8 +4367,10 @@ plays:
         exists_executor.push(type_bridge_orm::RecordingMatchResponse::Exists(true));
         let exists_inner = exists_executor.execute(&exists_request).unwrap();
         let exists = NodeValidatedMatchResultHandle {
-            inner: exists_inner,
-            request: exists_request,
+            invocation: MatchInvocation::Owned {
+                request: exists_request,
+                result: exists_inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4082,8 +4387,10 @@ plays:
         token_executor.push(type_bridge_orm::RecordingMatchResponse::Count(1));
         let inner = token_executor.execute(&original_request).unwrap();
         let mismatched = NodeValidatedMatchResultHandle {
-            inner,
-            request: foreign_request,
+            invocation: MatchInvocation::Owned {
+                request: foreign_request,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4181,8 +4488,10 @@ plays:
         ]));
         let inner = executor.execute(&validated).unwrap();
         let result = NodeValidatedMatchResultHandle {
-            inner,
-            request: validated,
+            invocation: MatchInvocation::Owned {
+                request: validated,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),
@@ -4270,8 +4579,10 @@ plays:
         executor.push(type_bridge_orm::RecordingMatchResponse::EmptyGroupedReduction);
         let inner = executor.execute(&validated).unwrap();
         let result = NodeValidatedMatchResultHandle {
-            inner,
-            request: validated,
+            invocation: MatchInvocation::Owned {
+                request: validated,
+                result: inner,
+            },
             registry: query.inner.registry_arc(),
             projected: None,
             output: Arc::clone(&query.output),

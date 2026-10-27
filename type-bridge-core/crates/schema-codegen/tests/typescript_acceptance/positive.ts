@@ -50,7 +50,7 @@ import {
   connectProxy,
   schemaAuthority,
 } from "./generated_v2/src/index.js";
-import { Plan, type PendingPlanAnswer, type RustDatabase } from "@type-bridge/node";
+import { Plan, type Pending, type PendingPlanAnswer, type RustDatabase, type StagedTransaction } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
@@ -358,3 +358,20 @@ async function stagedScore(db: RustDatabase): Promise<PendingPlanAnswer> {
   }
 }
 void stagedScore;
+
+// The same authoring lineage selects pending outputs on a staged target.
+declare const stagedTransaction: StagedTransaction;
+const stagedSession = new QuerySession(stagedTransaction);
+const stagedRoot = stagedSession.exact(Person);
+const stagedQuery = stagedSession.query(stagedRoot).clone().where(stagedRoot.field(Person.score).gte(Score.create(0n)));
+const stagedOne: Promise<Pending<Person>> = stagedQuery.one();
+const stagedFirst: Promise<Pending<Person | null>> = stagedQuery.first();
+const stagedRows: Promise<Pending<readonly Person[]>> = stagedQuery.rows({ limit: 2n });
+const stagedPage: Promise<Pending<Page<Person>>> = stagedQuery.pageBy(stagedRoot, { limit: 2n });
+const stagedCount: Promise<Pending<bigint>> = stagedQuery.countBy(stagedRoot);
+const stagedExists: Promise<Pending<boolean>> = stagedQuery.existsBy(stagedRoot);
+const stagedAggregate: Promise<Pending<readonly [bigint]>> = stagedQuery.aggregate(stagedRoot, [aggregate.count()] as const);
+const stagedGrouped: Promise<Pending<readonly (readonly [Score, readonly [bigint]])[]>> = stagedQuery.groupBy(stagedRoot, stagedRoot.field(Person.score)).aggregate([aggregate.count()] as const);
+const stagedMinimum: IntegerInput = integerInput(stagedSession, Score.create(2n));
+const stagedFunction: IntegerCall = qualifyingScore(stagedSession, stagedRoot, stagedMinimum);
+void [stagedOne, stagedFirst, stagedRows, stagedPage, stagedCount, stagedExists, stagedAggregate, stagedGrouped, stagedFunction];

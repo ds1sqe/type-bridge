@@ -1,5 +1,5 @@
 import type { NativePendingPlanAnswer, NativeStagedTransaction } from "./native.js";
-import type { NativeAuthoredPlanResult } from "./runtime-projection.js";
+import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
 import { type Plan } from "./plan.js";
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
@@ -20,11 +20,11 @@ export type PlanAnswer = {
     readonly kind: "matched";
     readonly value: number;
 };
-/** One staged plan's answer, visible only after its commit succeeds. */
+/** One staged plan or typed query answer, visible only after commit succeeds. */
 export declare class PendingPlanAnswer<R = PlanAnswer> {
     #private;
     /** @internal */
-    constructor(native: NativePendingPlanAnswer, decode?: (answerJson: string, projection?: NativeAuthoredPlanResult) => R);
+    constructor(native: NativePendingPlanAnswer, decode?: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R, typedQuery?: boolean);
     /**
      * The resolved answer. Throws the lifecycle failure before commit, or the
      * typed failure every answer of a failed commit shares.
@@ -55,6 +55,8 @@ export declare class StagedTransaction {
     #private;
     /** @internal */
     constructor(native: NativeStagedTransaction);
+    /** @internal Exact native transaction used by generated typed terminals. */
+    nativeHandle(): NativeStagedTransaction;
     /**
      * Stage one plan from `PlanBuilder.build`; its answer resolves at commit.
      * A `read` transaction refuses write plans and a `schema` transaction

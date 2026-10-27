@@ -111,6 +111,13 @@ interface NativeMatchQueryHandle {
     reduceByFieldsDiagnostic(root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): string;
     executeReduceByFieldsOwned(database: NativeRustDatabase, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
     executeReduceByFieldsBorrowed(transaction: NativeRustTransactionContext, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): Promise<NativeValidatedMatchResultHandle>;
+    stageFetchRows(transaction: NativeStagedTransaction, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): NativePendingPlanAnswer;
+    stagePageBy(transaction: NativeStagedTransaction, root: NativeMatchBindingHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, includeTotal: boolean): NativePendingPlanAnswer;
+    stageCountBy(transaction: NativeStagedTransaction, root: NativeMatchBindingHandle): NativePendingPlanAnswer;
+    stageExistsBy(transaction: NativeStagedTransaction, root: NativeMatchBindingHandle): NativePendingPlanAnswer;
+    stageReduceBy(transaction: NativeStagedTransaction, root: NativeMatchBindingHandle, group: NativeMatchBindingHandle | null, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingPlanAnswer;
+    stageReduceByField(transaction: NativeStagedTransaction, root: NativeMatchBindingHandle, group: NativeMatchFieldHandle, reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingPlanAnswer;
+    stageReduceByFields(transaction: NativeStagedTransaction, root: NativeMatchBindingHandle, groups: NativeMatchFieldHandle[], reducers: NativeMatchReduction[], inputs: (NativeMatchFieldHandle | null)[]): NativePendingPlanAnswer;
 }
 interface NativeValidatedMatchResultHandle {
     readonly [nativeMatchHandleKind]: "validated-result";
@@ -178,6 +185,7 @@ interface NativePendingRemoteModelQuery {
     decodeReply(response: Uint8Array): Promise<NativeValidatedMatchResultHandle>;
 }
 export interface NativePendingPlanAnswer {
+    getQueryResult(): NativeValidatedMatchResultHandle;
     getProjection(): NativeAuthoredPlanResult | null;
     getJson(): string;
 }

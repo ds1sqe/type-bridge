@@ -23,7 +23,7 @@ import {
   qualifyingScore,
 } from "./generated_v2/src/index.js";
 import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
-import { Plan, type RustDatabase } from "@type-bridge/node";
+import { type StagedTransaction, Plan, type RustDatabase } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const person = (value: Identifier): Person => Person.create({
@@ -128,3 +128,12 @@ const negativePerson = negativePlan.exact(Person);
 negativePlan.field(negativePerson, Robot.robotId);
 // @ts-expect-error plan literals are typed: a number is not a long
 negativePlan.field(negativePerson, Person.score).gt(1);
+
+declare const stagedTransaction: StagedTransaction;
+const stagedSession = new QuerySession(stagedTransaction);
+const stagedRoot = stagedSession.exact(Person);
+const stagedPerson = await stagedSession.query(stagedRoot).one();
+// @ts-expect-error a pending model is not a committed model
+const pendingAsModel: Person = stagedPerson;
+// @ts-expect-error a pending answer is not a scalar field input
+stagedRoot.field(Person.score).eq(stagedPerson);

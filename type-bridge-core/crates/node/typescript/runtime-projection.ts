@@ -9,6 +9,8 @@ import {
 import { loadNative } from "./native.js";
 import type {
   NativePlan,
+  NativePendingPlanAnswer,
+  NativeStagedTransaction,
   NativeProxyConnection,
   NativeQueryCancellation,
   NativeQueryExecutionResources,
@@ -248,14 +250,16 @@ export type RuntimeProjectionRemoteExchange = (
 ) => Promise<Uint8Array>;
 
 /** Opaque verified remote terminal executor for one generated package. */
-export interface RuntimeProjectionRemote {
+export type RuntimeProjectionQueryResult = RuntimeProjectionMatchResult | NativePendingPlanAnswer;
+
+export interface RuntimeProjectionRemote<Result = RuntimeProjectionMatchResult> {
   rows(
     query: RuntimeProjectionMatchQuery,
     orders: RuntimeProjectionMatchOrder[],
     offset: bigint,
     limit: bigint,
     cardinality: "exactly_one" | "bounded_many",
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   page(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
@@ -263,36 +267,36 @@ export interface RuntimeProjectionRemote {
     offset: bigint,
     limit: bigint,
     includeTotal: boolean,
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   count(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   exists(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   reduce(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
     group: RuntimeProjectionMatchBinding | null,
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   reduceByField(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
     group: RuntimeProjectionMatchField,
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
   reduceByFields(
     query: RuntimeProjectionMatchQuery,
     root: RuntimeProjectionMatchBinding,
     groups: RuntimeProjectionMatchField[],
     reducers: RuntimeProjectionReduction[],
     inputs: (RuntimeProjectionMatchField | null)[],
-  ): Promise<RuntimeProjectionMatchResult>;
+  ): Promise<Result>;
 }
 
 declare const nativeProjectedFacadeProof: unique symbol;
@@ -835,6 +839,11 @@ export class InstalledRuntimeProjection {
     return new InstalledRuntimeProjectionDirect(this.#native, { kind: "borrowed", transaction });
   }
 
+  /** @internal Bind generated typed reads to one deferred transaction. */
+  staged(connection: StagedTransaction): RuntimeProjectionRemote<NativePendingPlanAnswer> {
+    return new InstalledRuntimeProjectionStaged(connection.nativeHandle());
+  }
+
   /**
    * @internal Bind remote authority, executor epoch, the session's resources
    * and cancellation, and one host exchange. `answerLimits` is the
@@ -881,6 +890,70 @@ type DirectTarget =
   | { readonly kind: "borrowed"; readonly transaction: NativeRustTransactionContext };
 
 /** Verified direct execution bound to one registered Rust database or transaction. */
+class InstalledRuntimeProjectionStaged implements RuntimeProjectionRemote<NativePendingPlanAnswer> {
+  readonly #transaction: NativeStagedTransaction;
+  constructor(transaction: NativeStagedTransaction) { this.#transaction = transaction; Object.freeze(this); }
+
+  async rows(
+    query: RuntimeProjectionMatchQuery,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    cardinality: "exactly_one" | "bounded_many",
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stageFetchRows(this.#transaction, orders, offset, limit, cardinality));
+  }
+  async page(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    orders: RuntimeProjectionMatchOrder[],
+    offset: bigint,
+    limit: bigint,
+    includeTotal: boolean,
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stagePageBy(this.#transaction, root, orders, offset, limit, includeTotal));
+  }
+  async count(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stageCountBy(this.#transaction, root));
+  }
+  async exists(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stageExistsBy(this.#transaction, root));
+  }
+  async reduce(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchBinding | null,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stageReduceBy(this.#transaction, root, group, reducers, inputs));
+  }
+  async reduceByField(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    group: RuntimeProjectionMatchField,
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stageReduceByField(this.#transaction, root, group, reducers, inputs));
+  }
+  async reduceByFields(
+    query: RuntimeProjectionMatchQuery,
+    root: RuntimeProjectionMatchBinding,
+    groups: RuntimeProjectionMatchField[],
+    reducers: RuntimeProjectionReduction[],
+    inputs: (RuntimeProjectionMatchField | null)[],
+  ): Promise<NativePendingPlanAnswer> {
+    return queryV2NativeCall(() => query.stageReduceByFields(this.#transaction, root, groups, reducers, inputs));
+  }
+}
+
 class InstalledRuntimeProjectionDirect implements RuntimeProjectionRemote {
   readonly #native: NativeRuntimeProjection;
   readonly #target: DirectTarget;

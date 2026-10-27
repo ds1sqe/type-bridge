@@ -2,7 +2,7 @@ import type {
   NativePendingPlanAnswer,
   NativeStagedTransaction,
 } from "./native.js";
-import type { NativeAuthoredPlanResult } from "./runtime-projection.js";
+import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
 import { decodePlan, nativePlan, type Plan } from "./plan.js";
 import { queryV2NativeCall, queryV2NativePromise } from "./query-v2-internals.js";
@@ -21,15 +21,17 @@ export type PlanAnswer =
 // Plans and declared schemas are canonical contract bytes, far below this.
 const MAX_STAGED_INPUT_BYTES = 16 * 1024 * 1024;
 
-/** One staged plan's answer, visible only after its commit succeeds. */
+/** One staged plan or typed query answer, visible only after commit succeeds. */
 export class PendingPlanAnswer<R = PlanAnswer> {
   readonly #native: NativePendingPlanAnswer;
-  readonly #decode: (answerJson: string, projection?: NativeAuthoredPlanResult) => R;
+  readonly #typedQuery: boolean;
+  readonly #decode: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R;
 
   /** @internal */
-  constructor(native: NativePendingPlanAnswer, decode: (answerJson: string, projection?: NativeAuthoredPlanResult) => R = (answerJson) => JSON.parse(answerJson) as R) {
+  constructor(native: NativePendingPlanAnswer, decode: (answerJson: string, projection?: NativeAuthoredPlanResult, query?: RuntimeProjectionMatchResult) => R = (answerJson) => JSON.parse(answerJson) as R, typedQuery = false) {
     this.#native = native;
     this.#decode = decode;
+    this.#typedQuery = typedQuery;
     Object.freeze(this);
   }
 
@@ -38,6 +40,9 @@ export class PendingPlanAnswer<R = PlanAnswer> {
    * typed failure every answer of a failed commit shares.
    */
   get(): R {
+    if (this.#typedQuery) {
+      return this.#decode("", undefined, queryV2NativeCall(() => this.#native.getQueryResult()));
+    }
     const projection = queryV2NativeCall(() => this.#native.getProjection());
     return this.#decode(projection === null ? queryV2NativeCall(() => this.#native.getJson()) : "", projection ?? undefined);
   }
@@ -76,6 +81,9 @@ export class StagedTransaction {
     this.#native = native;
     Object.freeze(this);
   }
+
+  /** @internal Exact native transaction used by generated typed terminals. */
+  nativeHandle(): NativeStagedTransaction { return this.#native; }
 
   /**
    * Stage one plan from `PlanBuilder.build`; its answer resolves at commit.

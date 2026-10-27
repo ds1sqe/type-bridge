@@ -1055,3 +1055,19 @@ tx.commit()
 count = pending.result()
 tx.close()
 ```
+
+TypeScript's `new QuerySession(tx)` infers `Promise<Pending<T>>` terminal
+results for a staged transaction. Use `db.stagedTransaction()` directly or
+`await proxy.transaction()` over the proxy. The session may close before
+commit; committed answers retain their exact generated model and scalar types.
+
+```typescript
+const tx = db.stagedTransaction();
+const session = new QuerySession(tx);
+const person = session.exact(Person);
+const pending = await session.query(person).countBy(person); // Pending<bigint>
+session.close();
+await tx.commit();
+const count = pending.result();
+tx.close();
+```

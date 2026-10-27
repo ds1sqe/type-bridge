@@ -16,6 +16,7 @@ import {
   type RuntimeProjectionMatchPredicate,
   type RuntimeProjectionMatchQuery,
   type RuntimeProjectionMatchResult,
+  type RuntimeProjectionQueryResult,
   type RuntimeProjectionReduction,
   type RuntimeProjectionMatchSelection,
   type RuntimeProjectionMatchSession,
@@ -39,6 +40,7 @@ export {
 } from "@type-bridge/node/runtime-projection";
 import type { QueryV2Authority } from "@type-bridge/node/query-v2";
 import type { RustDatabase } from "@type-bridge/node";
+import { Pending, StagedTransaction } from "@type-bridge/node";
 import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
 export { Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
 
@@ -2924,7 +2926,7 @@ interface QueryState {
   readonly handle: RuntimeProjectionMatchQuery;
   readonly projection: InstalledRuntimeProjection;
   /** The session's executor, chosen once from its connection kind. */
-  readonly executor: RuntimeProjectionRemote;
+  readonly executor: RuntimeProjectionRemote<RuntimeProjectionQueryResult>;
 }
 const queryStates = new WeakMap<object, QueryState>();
 
@@ -2932,7 +2934,7 @@ const queryStates = new WeakMap<object, QueryState>();
  * Immutable generated query. Composition is synchronous; every terminal
  * returns a promise on every connection kind.
  */
-export class Query<out Output> {
+export class Query<out Output, Connection extends QueryConnection = DirectQueryConnection> {
   private constructor(state: QueryState) {
     queryStates.set(this, state);
     Object.freeze(this);
@@ -2949,14 +2951,14 @@ export class Query<out Output> {
   }
 
   /** Create an independently closable value-equivalent query. */
-  clone(): Query<Output> {
+  clone(): Query<Output, Connection> {
     const state = queryState(this);
-    return createQuery({ ...state, handle: state.handle.fork() });
+    return createQuery<Output, Connection>({ ...state, handle: state.handle.fork() });
   }
 
   match<const Models extends readonly [object, ...object[]]>(
     ...bindings: { readonly [Index in keyof Models]: BoundVar<Models[Index]> }
-  ): Query<Output> {
+  ): Query<Output, Connection> {
     const state = queryState(this);
     let handle = state.handle;
     for (const binding of bindings) {
@@ -2968,10 +2970,10 @@ export class Query<out Output> {
       );
       handle = handle.addHidden(item.binding);
     }
-    return createQuery({ ...state, handle });
+    return createQuery<Output, Connection>({ ...state, handle });
   }
 
-  where(...predicates: readonly [Predicate, ...Predicate[]]): Query<Output> {
+  where(...predicates: readonly [Predicate, ...Predicate[]]): Query<Output, Connection> {
     const state = queryState(this);
     let handle = state.handle;
     for (const predicate of predicates) {
@@ -2983,13 +2985,13 @@ export class Query<out Output> {
       );
       handle = handle.wherePredicate(item.handle);
     }
-    return createQuery({ ...state, handle });
+    return createQuery<Output, Connection>({ ...state, handle });
   }
 
   allowCrossJoin<Left extends object, Right extends object>(
     left: BoundVar<Left>,
     right: BoundVar<Right>,
-  ): Query<Output> {
+  ): Query<Output, Connection> {
     const state = queryState(this);
     const leftState = boundVarState(left);
     const rightState = boundVarState(right);
@@ -3003,7 +3005,7 @@ export class Query<out Output> {
       rightState.projection,
       "generated binding",
     );
-    return createQuery({
+    return createQuery<Output, Connection>({
       ...state,
       handle: state.handle.allowCrossJoin(
         leftState.binding,
@@ -3012,7 +3014,7 @@ export class Query<out Output> {
     });
   }
 
-  async one(): Promise<Output> {
+  async one(): Promise<QueryResult<Connection, Output>> {
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
@@ -3021,10 +3023,10 @@ export class Query<out Output> {
       1n,
       "exactly_one",
     );
-    return materializeRows(state, result)[0] as Output;
+    return decodeQueryResult<Connection, Output>(state, result, decodeOne);
   }
 
-  async first(options: FirstOptions = {}): Promise<Output | null> {
+  async first(options: FirstOptions = {}): Promise<QueryResult<Connection, Output | null>> {
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
@@ -3033,10 +3035,10 @@ export class Query<out Output> {
       1n,
       "bounded_many",
     );
-    return (materializeRows(state, result)[0] as Output | undefined) ?? null;
+    return decodeQueryResult<Connection, Output | null>(state, result, decodeFirst);
   }
 
-  async rows(options: RowsOptions): Promise<readonly Output[]> {
+  async rows(options: RowsOptions): Promise<QueryResult<Connection, readonly Output[]>> {
     const state = queryState(this);
     const result = await state.executor.rows(
       state.handle,
@@ -3045,13 +3047,13 @@ export class Query<out Output> {
       options.limit,
       "bounded_many",
     );
-    return Object.freeze(materializeRows(state, result)) as readonly Output[];
+    return decodeQueryResult<Connection, readonly Output[]>(state, result, decodeRows);
   }
 
   async pageBy<Root extends object>(
     root: BoundVar<Root>,
     options: PageOptions,
-  ): Promise<Page<Output>> {
+  ): Promise<QueryResult<Connection, Page<Output>>> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -3067,17 +3069,10 @@ export class Query<out Output> {
       options.limit,
       options.includeTotal ?? false,
     );
-    return Object.freeze({
-      items: Object.freeze(
-        materializePageRows(state, result),
-      ) as readonly Output[],
-      offset: result.pageOffset(state.handle),
-      limit: result.pageLimit(state.handle),
-      total: result.pageTotal(state.handle),
-    });
+return decodeQueryResult<Connection, Page<Output>>(state, result, decodePage);
   }
 
-  async countBy<Root extends object>(root: BoundVar<Root>): Promise<bigint> {
+  async countBy<Root extends object>(root: BoundVar<Root>): Promise<QueryResult<Connection, bigint>> {
     const state = queryState(this);
     const item = boundVarState(root);
     requireSameProjection(
@@ -3086,10 +3081,10 @@ export class Query<out Output> {
       "generated count root",
     );
     const result = await state.executor.count(state.handle, item.binding);
-    return result.countValue(state.handle);
+    return decodeQueryResult<Connection, bigint>(state, result, decodeCount);
   }
 
-  async existsBy<Root extends object>(root: BoundVar<Root>): Promise<boolean> {
+  async existsBy<Root extends object>(root: BoundVar<Root>): Promise<QueryResult<Connection, boolean>> {
     const state = queryState(this);
     const item = boundVarState(root);
     requireSameProjection(
@@ -3098,7 +3093,7 @@ export class Query<out Output> {
       "generated exists root",
     );
     const result = await state.executor.exists(state.handle, item.binding);
-    return result.existsValue(state.handle);
+    return decodeQueryResult<Connection, boolean>(state, result, decodeExists);
   }
 
   async aggregate<
@@ -3107,7 +3102,7 @@ export class Query<out Output> {
   >(
     root: BoundVar<Root>,
     terms: Terms & AtMostSixteen<Terms>,
-  ): Promise<AggregateOutputs<Terms>> {
+  ): Promise<QueryResult<Connection, AggregateOutputs<Terms>>> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -3123,21 +3118,17 @@ export class Query<out Output> {
       prepared.reducers,
       prepared.inputs,
     );
-    return materializeUngroupedReduction(
-      state,
-      result,
-      prepared.outputs,
-    ) as AggregateOutputs<Terms>;
+    return decodeQueryResult<Connection, AggregateOutputs<Terms>>(state, result, (state, result) => materializeUngroupedReduction(state, result, prepared.outputs) as AggregateOutputs<Terms>);
   }
 
   groupBy<Root extends object, Group extends object>(
     root: BoundVar<Root>,
     group: BoundVar<Group>,
-  ): GroupedQuery<Group>;
+  ): GroupedQuery<Group, Connection>;
   groupBy<Root extends object, Group extends object>(
     root: BoundVar<Root>,
     group: BoundField<Group>,
-  ): GroupedQuery<Group>;
+  ): GroupedQuery<Group, Connection>;
   groupBy<
     Root extends object,
     const Groups extends readonly [object, object, ...object[]],
@@ -3146,11 +3137,11 @@ export class Query<out Output> {
     ...groups: AtMostSixteen<{
       readonly [Index in keyof Groups]: BoundField<Groups[Index]>;
     }>
-  ): GroupedQuery<Groups>;
+  ): GroupedQuery<Groups, Connection>;
   groupBy<Root extends object>(
     root: BoundVar<Root>,
     ...groups: readonly object[]
-  ): GroupedQuery<object> {
+  ): GroupedQuery<object, Connection> {
     const state = queryState(this);
     const rootState = boundVarState(root);
     requireSameProjection(
@@ -3165,8 +3156,8 @@ export class Query<out Output> {
         group.kind === "field" ? [group.handle] : [...group.handles];
       coreCall(() => state.handle.checkGroupFields(fields));
     }
-    return createGroupedQuery<object>(
-      createQuery({ ...state, handle: state.handle.fork() }),
+    return createGroupedQuery<object, Connection>(
+      createQuery<Output, Connection>({ ...state, handle: state.handle.fork() }),
       rootState.binding,
       group,
     );
@@ -3236,14 +3227,14 @@ function runtimeReductionGroup(
 }
 
 interface GroupedQueryState {
-  readonly query: Query<unknown>;
+  readonly query: Query<unknown, QueryConnection>;
   readonly root: RuntimeProjectionMatchBinding;
   readonly group: RuntimeReductionGroup;
 }
 const groupedQueryStates = new WeakMap<object, GroupedQueryState>();
 
 /** Immutable generated grouped-reduction query. */
-export class GroupedQuery<out Group extends object> {
+export class GroupedQuery<out Group extends object, Connection extends QueryConnection = DirectQueryConnection> {
   private constructor(state: GroupedQueryState) {
     groupedQueryStates.set(this, Object.freeze(state));
     Object.freeze(this);
@@ -3258,20 +3249,20 @@ export class GroupedQuery<out Group extends object> {
 
   match<const Models extends readonly [object, ...object[]]>(
     ...bindings: { readonly [Index in keyof Models]: BoundVar<Models[Index]> }
-  ): GroupedQuery<Group> {
+  ): GroupedQuery<Group, Connection> {
     const state = groupedQueryState(this);
     let query = state.query;
     for (const binding of bindings) {
       query = query.match(binding);
     }
-    return createGroupedQuery(query, state.root, state.group);
+    return createGroupedQuery<Group, Connection>(query, state.root, state.group);
   }
 
   where(
     ...predicates: readonly [Predicate, ...Predicate[]]
-  ): GroupedQuery<Group> {
+  ): GroupedQuery<Group, Connection> {
     const state = groupedQueryState(this);
-    return createGroupedQuery(
+    return createGroupedQuery<Group, Connection>(
       state.query.where(...predicates),
       state.root,
       state.group,
@@ -3281,9 +3272,9 @@ export class GroupedQuery<out Group extends object> {
   allowCrossJoin<Left extends object, Right extends object>(
     left: BoundVar<Left>,
     right: BoundVar<Right>,
-  ): GroupedQuery<Group> {
+  ): GroupedQuery<Group, Connection> {
     const state = groupedQueryState(this);
-    return createGroupedQuery(
+    return createGroupedQuery<Group, Connection>(
       state.query.allowCrossJoin(left, right),
       state.root,
       state.group,
@@ -3294,7 +3285,7 @@ export class GroupedQuery<out Group extends object> {
     const Terms extends readonly [Aggregate<unknown>, ...Aggregate<unknown>[]],
   >(
     terms: Terms & AtMostSixteen<Terms>,
-  ): Promise<readonly (readonly [Group, AggregateOutputs<Terms>])[]> {
+  ): Promise<QueryResult<Connection, readonly (readonly [Group, AggregateOutputs<Terms>])[]>> {
     const grouped = groupedQueryState(this);
     const state = queryState(grouped.query);
     const prepared = prepareAggregateTerms(terms, state.projection);
@@ -3322,12 +3313,7 @@ export class GroupedQuery<out Group extends object> {
               prepared.reducers,
               prepared.inputs,
             );
-    return materializeGroupedReduction(
-      state,
-      result,
-      grouped.group,
-      prepared.outputs,
-    ) as readonly (readonly [Group, AggregateOutputs<Terms>])[];
+    return decodeQueryResult<Connection, readonly (readonly [Group, AggregateOutputs<Terms>])[]>(state, result, (state, result) => materializeGroupedReduction(state, result, grouped.group, prepared.outputs) as readonly (readonly [Group, AggregateOutputs<Terms>])[]);
   }
 }
 
@@ -3387,10 +3373,13 @@ export class ExchangeConnection {
 }
 
 /** Every connection a {@link QuerySession} runs on. */
-export type QueryConnection =
+export type DirectQueryConnection =
   | RuntimeProjectionConnection
   | ProxyConnection
   | ExchangeConnection;
+
+export type QueryConnection = DirectQueryConnection | StagedTransaction;
+type QueryResult<Connection, Output> = Connection extends StagedTransaction ? Pending<Output> : Output;
 
 /**
  * Open a connection to a TypeBridge server's HTTP routes for this package.
@@ -3413,7 +3402,10 @@ function queryExecutor(
   connection: QueryConnection,
   resources: QueryExecutionResourceLimits,
   cancellation: QueryCancellation,
-): RuntimeProjectionRemote {
+): RuntimeProjectionRemote<RuntimeProjectionQueryResult> {
+  if (connection instanceof StagedTransaction) {
+    return projection.staged(connection);
+  }
   if (connection instanceof ExchangeConnection) {
     return projection.remote(
       requireQueryAuthority(),
@@ -3443,13 +3435,13 @@ function queryExecutor(
  * session, its queries, and their results are the same on every kind;
  * terminals return promises on all of them.
  */
-export class QuerySession {
-  readonly #executor: RuntimeProjectionRemote;
+export class QuerySession<Connection extends QueryConnection = DirectQueryConnection> {
+  readonly #executor: RuntimeProjectionRemote<RuntimeProjectionQueryResult>;
   readonly #projection: InstalledRuntimeProjection;
   readonly #session: RuntimeProjectionMatchSession;
 
   constructor(
-    connection: QueryConnection,
+    connection: Connection,
     options: Readonly<{
       resources?: QueryExecutionResourceLimits;
       cancellation?: QueryCancellation;
@@ -3687,12 +3679,12 @@ export class QuerySession {
     ],
   >(
     ...selections: Selections & AtMostSixteen<Selections>
-  ): Query<PositionalOutput<Selections>> {
+  ): Query<PositionalOutput<Selections>, Connection> {
     const states = querySelections(selections, this.#projection);
     const shape = coreCall(() =>
       this.#session.positional(states.map((state) => state.handle)),
     );
-    return createQuery({
+    return createQuery<PositionalOutput<Selections>, Connection>({
       handle: this.#session.query(shape),
       projection: this.#projection,
       executor: this.#executor,
@@ -3701,7 +3693,7 @@ export class QuerySession {
 
   queryNamed<const Shape extends Readonly<Record<string, Selection<unknown>>>>(
     selections: NamedSelectionInput<Shape>,
-  ): Query<NamedOutput<Shape>> {
+  ): Query<NamedOutput<Shape>, Connection> {
     const entries = Object.entries(selections) as [
       string,
       Selection<unknown>,
@@ -3716,7 +3708,7 @@ export class QuerySession {
         states.map((state) => state.handle),
       ),
     );
-    return createQuery({
+    return createQuery<NamedOutput<Shape>, Connection>({
       handle: this.#session.query(shape),
       projection: this.#projection,
       executor: this.#executor,
@@ -3799,10 +3791,39 @@ function coreCall<Result>(operation: () => Result): Result {
   return projectedManagerNativeCall(operation);
 }
 
-function createQuery<Output>(state: QueryState): Query<Output> {
+function decodeQueryResult<Connection, Output>(
+  state: QueryState,
+  result: RuntimeProjectionQueryResult,
+  decode: (state: QueryState, result: RuntimeProjectionMatchResult) => Output,
+): QueryResult<Connection, Output> {
+  const value = "getQueryResult" in result
+    ? new Pending<Output>(result, (_json, _projection, typed) => {
+        if (typed === undefined) throw new Error("typed query pending has no validated proof");
+        return decode(state, typed);
+      }, true)
+    : decode(state, result);
+  return value as QueryResult<Connection, Output>;
+}
+
+function decodeOne<Output>(state: QueryState, result: RuntimeProjectionMatchResult): Output {
+  return materializeRows(state, result)[0] as Output;
+}
+function decodeFirst<Output>(state: QueryState, result: RuntimeProjectionMatchResult): Output | null {
+  return (materializeRows(state, result)[0] as Output | undefined) ?? null;
+}
+function decodeRows<Output>(state: QueryState, result: RuntimeProjectionMatchResult): readonly Output[] {
+  return Object.freeze(materializeRows(state, result)) as readonly Output[];
+}
+function decodePage<Output>(state: QueryState, result: RuntimeProjectionMatchResult): Page<Output> {
+  return Object.freeze({ items: Object.freeze(materializePageRows(state, result)) as readonly Output[], offset: result.pageOffset(state.handle), limit: result.pageLimit(state.handle), total: result.pageTotal(state.handle) });
+}
+function decodeCount(state: QueryState, result: RuntimeProjectionMatchResult): bigint { return result.countValue(state.handle); }
+function decodeExists(state: QueryState, result: RuntimeProjectionMatchResult): boolean { return result.existsValue(state.handle); }
+
+function createQuery<Output, Connection extends QueryConnection = DirectQueryConnection>(state: QueryState): Query<Output, Connection> {
   const Constructor = Query as unknown as new (
     state: QueryState,
-  ) => Query<Output>;
+  ) => Query<Output, Connection>;
   return new Constructor(state);
 }
 
@@ -3817,14 +3838,14 @@ function queryStateUnchecked(query: object): QueryState {
   return state;
 }
 
-function createGroupedQuery<Group extends object>(
-  query: Query<unknown>,
+function createGroupedQuery<Group extends object, Connection extends QueryConnection = DirectQueryConnection>(
+  query: Query<unknown, QueryConnection>,
   root: RuntimeProjectionMatchBinding,
   group: RuntimeReductionGroup,
-): GroupedQuery<Group> {
+): GroupedQuery<Group, Connection> {
   const Constructor = GroupedQuery as unknown as new (
     state: GroupedQueryState,
-  ) => GroupedQuery<Group>;
+  ) => GroupedQuery<Group, Connection>;
   return new Constructor({ query, root, group });
 }
 
