@@ -459,17 +459,7 @@ fn staged_envelope_goldens_are_exact_and_sdk_readable() {
         entry(examples::fetch_written(true)),
     ];
     let document_request = StagedRequestV3::new(document_spec, &support::schema(), &ad).unwrap();
-    let (_, mut entities) = fetch_documents(false);
-    let mut second = entities[0].clone();
-    second.insert(
-        "_iid".into(),
-        RemoteFieldValue::Scalar {
-            value: type_bridge_contract::value::CanonicalValue::String(
-                type_bridge_contract::value::CanonicalString::new("0x03").unwrap(),
-            ),
-        },
-    );
-    entities.push(second);
+    let (_, entities) = fetch_documents(false);
     let (_, relations) = fetch_documents(true);
     let documents = StagedReplyV3::new(
         &document_request,
@@ -658,8 +648,8 @@ fn fetch_documents(relation: bool) -> (StagedRequestV3, Vec<BTreeMap<String, Rem
             "_iid": {"kind":"scalar","value":{"kind":"string","value":"0x01"}},
             "_type": {"kind":"scalar","value":{"kind":"string","value":"account"}},
             "attributes": {"kind":"document","fields":{
-                "id":{"kind":"scalar","value":{"kind":"string","value":"alice"}},
-                "score":{"kind":"scalar","value":{"kind":"long","value":"7"}}
+                "id":{"kind":"scalar","value":{"kind":"string","value":"account-b"}},
+                "score":{"kind":"scalar","value":{"kind":"long","value":"1"}}
             }}
         })
     };

@@ -55,6 +55,39 @@ pub fn schema() -> DeclaredSchema {
     declare(schema_facts())
 }
 
+#[allow(dead_code)]
+pub fn schema_with_ordered_role() -> DeclaredSchema {
+    declare(
+        schema_facts()
+            .into_iter()
+            .map(|fact| match fact {
+                SchemaFact::Relates(role) => {
+                    SchemaFact::Relates(role.with_collection_mode(CollectionMode::OrderedList))
+                }
+                fact => fact,
+            })
+            .collect(),
+    )
+}
+
+#[allow(dead_code)]
+pub fn schema_with_subtype_role() -> DeclaredSchema {
+    let mut facts = schema_facts();
+    let child = TypeId::new(TypeKind::Relation, "child-membership").unwrap();
+    let extra = RoleId::new("child-membership", "extra").unwrap();
+    facts.push(SchemaFact::Type(TypeFact::new(child.clone()).unwrap()));
+    facts.push(SchemaFact::Sub(SubFact::new(
+        SubFactId::new(child.clone(), relation()).unwrap(),
+    )));
+    facts.push(SchemaFact::Relates(
+        RelatesFact::new(RelatesFactId::new(child, extra.clone()).unwrap(), None).unwrap(),
+    ));
+    facts.push(SchemaFact::Plays(PlaysFact::new(
+        PlaysFactId::new(entity("account"), extra).unwrap(),
+    )));
+    declare(facts)
+}
+
 /// The shared schema plus a duration attribute `shift` on `account`, for
 /// tests of the TypeDB 3.14 rules; kept out of the shared fixture schema.
 pub fn schema_with_duration() -> DeclaredSchema {

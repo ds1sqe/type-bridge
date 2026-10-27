@@ -362,14 +362,18 @@ impl DriverBackend for OneRow {
 
 impl TransactionOps for OneRow {
     fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-        Box::pin(async { Ok(QueryResult::Rows(vec![serde_json::json!({})])) })
+        Box::pin(async {
+            Ok(QueryResult::Rows(vec![serde_json::json!({
+                "doctor": {"kind":"thing", "iid":"0x01", "type_id":{"kind":"entity", "label":"doctor"}}
+            })]))
+        })
     }
     fn query_with_rows(
         &mut self,
-        _: &str,
+        typeql: &str,
         _: GivenRowsSpec,
     ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-        Box::pin(async { Ok(QueryResult::Rows(vec![serde_json::json!({})])) })
+        self.query(typeql)
     }
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         Box::pin(async { Ok(()) })

@@ -11,8 +11,8 @@ use type_bridge_contract::migration_assertion::{
     AssertionBinding, BindingId, QueryVariable, ValueComparator,
 };
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, PlanSpec,
-    QueryPlanV3, Set, Stage, ThingDocument, WriteReturns,
+    ArithOp, AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern,
+    PlanBuilder, PlanSpec, QueryPlanV3, Set, Site, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -350,6 +350,58 @@ pub fn purchase(order: &str, item: &str, account: &str) -> QueryPlanV3 {
         Some(text(account)),
     ])]);
     QueryPlanV3::new(plan, &schema()).unwrap()
+}
+
+/// The same purchase with caller values bound by the shared core builder.
+pub fn implicit_purchase(order_id: &str, item_id: &str, account_id: &str) -> QueryPlanV3 {
+    let mut p = PlanBuilder::new();
+    let item = p.exact(entity("item"));
+    let account = p.exact(entity("account"));
+    let item_key = p.field(item, AttributeId::new("item-id").unwrap());
+    let account_key = p.field(account, AttributeId::new("account-id").unwrap());
+    let stock = p.field(item, AttributeId::new("stock").unwrap());
+    let price = p.field(item, AttributeId::new("price").unwrap());
+    let balance = p.field(account, AttributeId::new("balance").unwrap());
+    let item_value = p.bind_value(Site::new(item, "item-id"), text(item_id));
+    let account_value = p.bind_value(Site::new(account, "account-id"), text(account_id));
+    let value = |binding| QueryOperand::Binding { binding };
+    p.compare(value(item_key), ValueComparator::Equal, item_value)
+        .compare(value(account_key), ValueComparator::Equal, account_value)
+        .compare(
+            value(stock),
+            ValueComparator::Greater,
+            QueryOperand::Literal {
+                value: CanonicalValue::Long(0),
+            },
+        )
+        .compare(
+            value(balance),
+            ValueComparator::GreaterOrEqual,
+            value(price),
+        );
+    let next_stock = p.let_(
+        "next_stock",
+        sub(
+            value(stock),
+            QueryOperand::Literal {
+                value: CanonicalValue::Long(1),
+            },
+        ),
+    );
+    let next_balance = p.let_("next_balance", sub(value(balance), value(price)));
+    p.update(item, owns(entity("item"), "stock"), value(next_stock))
+        .update(
+            account,
+            owns(entity("account"), "balance"),
+            value(next_balance),
+        );
+    let purchase = p.insert(purchase_type());
+    let order = p.bind_value(Site::new(purchase, "order-id"), text(order_id));
+    p.thing_field(purchase, owns(purchase_type(), "order-id"), order)
+        .thing_player(purchase, role("buyer"), account)
+        .thing_player(purchase, role("item"), item);
+    p.build(&schema(), purchase_template().managed_semantics().clone())
+        .unwrap()
 }
 
 fn touch_spec(output: Vec<u16>, operation: Operation) -> PlanSpec {

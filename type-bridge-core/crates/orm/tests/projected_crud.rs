@@ -2618,17 +2618,17 @@ fn native_manager_future_sizes_stay_bounded() {
         (
             "entity-get",
             size(|| crud.get_entity_by_iid(&db, &person, "0x10")),
-            8192,
+            6480,
         ),
         (
             "entity-count",
             size(|| crud.count_entities(&db, &person)),
-            8192,
+            5744,
         ),
         (
             "entity-insert",
             size(|| crud.insert_entity(&db, &create)),
-            10240,
+            9368,
         ),
         (
             "entity-returning",
@@ -2654,6 +2654,27 @@ fn native_manager_future_sizes_stay_bounded() {
         eprintln!("MANAGER_FUTURE {name} bytes={bytes} ceiling={ceiling}");
         assert!(bytes <= ceiling, "{name}: {bytes} > {ceiling}");
     }
+}
+
+#[tokio::test]
+async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
+    let installed = installed_with_authority();
+    let (backend, state) = RecordingBackend::new(
+        vec![documents(vec![person_document("0x10")])],
+        CommitBehavior::Success,
+    );
+    let db = Database::with_backend(Box::new(backend), "read-allocation");
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let person = type_id(TypeKind::Entity, "person");
+    let bytes = std::mem::size_of::<type_bridge_contract::query_plan::v3::BuiltPlans>();
+    let (result, count) =
+        allocations::count(bytes, crud.get_entity_by_iid(&db, &person, "0x10")).await;
+    assert_eq!(result.unwrap().unwrap().iid(), "0x10");
+    assert_eq!(
+        count, 0,
+        "default manager read allocated a {bytes}-byte bulk payload"
+    );
+    assert_eq!(state.lock().unwrap().opens, vec![TxType::Read]);
 }
 
 #[tokio::test]

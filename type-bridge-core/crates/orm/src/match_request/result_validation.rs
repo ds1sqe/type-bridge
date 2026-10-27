@@ -523,6 +523,26 @@ pub fn validated_match_result_from_plan(
     declared: &DescriptorId,
     limits: crate::QueryExecutionResourceLimits,
 ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), MatchError> {
+    super::plan_hydration::validate_plan_documents(plan, documents, limits).map_err(|error| {
+        match error {
+            crate::query_v2::QueryV2ExecutionError::Validation(error) => {
+                super::selected_result_executor::released_plan_execution_error(&error)
+            }
+            crate::query_v2::QueryV2ExecutionError::Provider(_) => {
+                result_error("query_plan_hydration_document", "model hydration failed")
+            }
+        }
+    })?;
+    validated_match_result_from_verified_plan(registry, plan, documents, declared, limits)
+}
+
+pub(crate) fn validated_match_result_from_verified_plan(
+    registry: &DescriptorRegistry,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    documents: &[serde_json::Value],
+    declared: &DescriptorId,
+    limits: crate::QueryExecutionResourceLimits,
+) -> Result<(ValidatedMatchRequest, ValidatedMatchResult), MatchError> {
     use super::descriptor_plan::{MatchRequestAdapterAuthority, descriptor_id_type};
     use type_bridge_contract::query_plan::v3::Stage;
     let authority = MatchRequestAdapterAuthority::from_registry(registry)
@@ -638,7 +658,7 @@ pub fn validated_match_result_from_plan(
         ),
         plan.limits(),
     )?;
-    let (graph, references) = super::plan_hydration::graph_from_plan_documents(
+    let (graph, references) = super::plan_hydration::graph_from_verified_plan_documents(
         registry, &request, plan, documents, limits,
     )
     .map_err(|error| match error {

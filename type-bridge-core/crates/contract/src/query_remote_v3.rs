@@ -1301,6 +1301,7 @@ impl StagedReplyV3 {
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedStagedReplyV3 {
     wire: ReplyWire,
+    correlations: Vec<Option<std::sync::Arc<crate::query_plan::v3::BulkCorrelation>>>,
 }
 impl VerifiedStagedReplyV3 {
     /// Authenticate before interpreting any outcome or SDK diagnostic content.
@@ -1346,7 +1347,7 @@ impl VerifiedStagedReplyV3 {
             outcome: raw.outcome,
             request: raw.request,
         };
-        validate_reply(&wire, request)?;
+        let correlations = validate_reply(&wire, request)?;
         if to_canonical_json_with_limits(&wire, STAGED_REMOTE_CODEC_LIMITS_V3)?.as_slice()
             != payload
         {
@@ -1363,7 +1364,7 @@ impl VerifiedStagedReplyV3 {
                 "staged successful reply exceeds its byte budget",
             ));
         }
-        Ok(Self { wire })
+        Ok(Self { wire, correlations })
     }
     /// Whether every plan succeeded and its answers are final.
     pub fn committed(&self) -> bool {
@@ -1372,6 +1373,13 @@ impl VerifiedStagedReplyV3 {
     /// Ordered final answers, empty on failure.
     pub fn answers(&self) -> &[StagedAnswerV3] {
         &self.wire.answers
+    }
+    /// In-memory correlation proofs retained from answer verification.
+    /// These ordinals are never serialized or supplied by the remote peer.
+    pub fn correlations(
+        &self,
+    ) -> &[Option<std::sync::Arc<crate::query_plan::v3::BulkCorrelation>>] {
+        &self.correlations
     }
     /// Established SDK diagnostic projection when the transaction failed.
     pub fn diagnostic(&self) -> Option<&SdkDiagnosticProjectionV3> {
@@ -1385,12 +1393,15 @@ impl VerifiedStagedReplyV3 {
         to_canonical_json_with_limits(&self.wire, STAGED_REMOTE_CODEC_LIMITS_V3)
     }
 }
-fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Diagnostic> {
+fn validate_reply(
+    wire: &ReplyWire,
+    request: &StagedRequestV3,
+) -> Result<Vec<Option<std::sync::Arc<crate::query_plan::v3::BulkCorrelation>>>, Diagnostic> {
     validate_reply_binding(&wire.format, &wire.nonce, &wire.request, request)?;
     if let OutcomeWire::Failed { diagnostic } = &wire.outcome {
         diagnostic.validate()?;
         return if wire.answers.is_empty() {
-            Ok(())
+            Ok(vec![])
         } else {
             Err(invalid(
                 "query_remote_v3_partial_answers",
@@ -1405,6 +1416,7 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
         ));
     }
     let mut items = 0_u64;
+    let mut correlations = Vec::with_capacity(wire.answers.len());
     let mut dimensions = [0_u64; 4];
     let limits = request.limits();
     let ceilings = [
@@ -1414,7 +1426,9 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
         limits.max_role_players,
     ];
     for (answer, entry) in wire.answers.iter().zip(request.plans()) {
-        items = items.saturating_add(validate_answer(answer, entry.plan())?);
+        let (count, correlation) = validate_answer(answer, entry.plan())?;
+        items = items.saturating_add(count);
+        correlations.push(correlation.map(std::sync::Arc::new));
         for (index, count) in answer.resource_counts().into_iter().enumerate() {
             dimensions[index] = dimensions[index].saturating_add(count);
             if ceilings[index].is_some_and(|maximum| dimensions[index] > maximum) {
@@ -1436,7 +1450,7 @@ fn validate_reply(wire: &ReplyWire, request: &StagedRequestV3) -> Result<(), Dia
             ));
         }
     }
-    Ok(())
+    Ok(correlations)
 }
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1642,7 +1656,10 @@ fn validate_answer_strings(
     Ok(())
 }
 
-fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, Diagnostic> {
+fn validate_answer(
+    answer: &StagedAnswerV3,
+    plan: &QueryPlanV3,
+) -> Result<(u64, Option<crate::query_plan::v3::BulkCorrelation>), Diagnostic> {
     validate_answer_strings(answer, plan.limits().codec)
         .map_err(|error| plan.limits().annotate(error))?;
 
@@ -1659,7 +1676,11 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
         for document in documents {
             shape.validate(document)?;
         }
-        return Ok(answer.item_count());
+        let correlation = plan
+            .standalone_entity_rows()
+            .map(|expected| expected.correlate_proof(documents))
+            .transpose()?;
+        return Ok((answer.item_count(), correlation));
     }
     match (answer, plan.operation(), plan.output()) {
         (StagedAnswerV3::Count { .. }, Operation::Count, _)
@@ -1670,7 +1691,7 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
                 returns: WriteReturns::Matched,
             },
             _,
-        ) => Ok(1),
+        ) => Ok((1, None)),
         (
             StagedAnswerV3::Rows { rows },
             Operation::Rows
@@ -1683,7 +1704,15 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
                 if row.len() != columns.len() {
                     return Err(bad());
                 }
-                for value in row {
+                for (value, column) in row.iter().zip(columns) {
+                    if let Some(expected) = plan.scalar_value_type(*column) {
+                        match value {
+                            RemoteValue::Value { value } | RemoteValue::Attribute { value, .. }
+                                if value.value_type() == expected => {}
+                            RemoteValue::Absent => {}
+                            _ => return Err(bad()),
+                        }
+                    }
                     match value {
                         RemoteValue::Thing { iid, type_id }
                             if !crate::id::is_canonical_thing_iid(iid)
@@ -1703,7 +1732,7 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
                     }
                 }
             }
-            Ok(rows.len() as u64)
+            Ok((rows.len() as u64, None))
         }
         (
             StagedAnswerV3::Documents { documents },
@@ -1741,7 +1770,7 @@ fn validate_answer(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<u64, D
                     }
                 }
             }
-            Ok(documents.len() as u64)
+            Ok((documents.len() as u64, None))
         }
         _ => Err(bad()),
     }

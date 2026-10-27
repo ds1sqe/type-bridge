@@ -25,6 +25,7 @@ use type_bridge_contract::query_plan::{
 /// publishing any model or scalar result.
 pub struct PlanFetchStack {
     pub(crate) plans: Vec<QueryPlanV3>,
+    bulk: Option<Box<type_bridge_contract::query_plan::v3::BuiltPlans>>,
     pub(crate) selection: Option<usize>,
     pub(crate) mapping: Option<usize>,
     pub(crate) partitions: Vec<(usize, BindingId, Vec<TypeId>)>,
@@ -39,11 +40,23 @@ pub struct PlanFetchStack {
 impl PlanFetchStack {
     /// Executed selection metadata for native scalar decoding.
     pub fn selection_plan(&self) -> &QueryPlanV3 {
-        &self.plans[self.selection.unwrap_or(0)]
+        self.bulk.as_ref().map_or_else(
+            || &self.plans[self.selection.unwrap_or(0)],
+            |plans| plans.projection_plan(),
+        )
     }
     /// Ordered read-only plans sharing one selection prefix.
     pub fn plans(&self) -> &[QueryPlanV3] {
-        &self.plans
+        self.bulk
+            .as_ref()
+            .map_or(self.plans.as_slice(), |plans| plans.plans())
+    }
+    /// Whether the authored group writes, including an empty model bulk.
+    pub fn writes(&self) -> bool {
+        self.bulk.as_ref().map_or_else(
+            || self.plans.iter().any(QueryPlanV3::writes),
+            |plans| plans.writes(),
+        )
     }
 }
 
@@ -103,6 +116,23 @@ fn build_fetch_stack(
         )
     })?;
     stack.schema_proof = Some((roots, fingerprint));
+    Ok(stack)
+}
+
+/// Prepare complete authored bulk model results for precommit group publication.
+/// The core retains the chunk correlation evidence and restores original input
+/// order before issuing one model proof. Stage this with Transaction::stage_plan_fetch.
+pub fn build_bulk_plan_fetch_stack(
+    registry: &DescriptorRegistry,
+    plans: type_bridge_contract::query_plan::v3::BuiltPlans,
+    model_slot: (BindingId, DescriptorId),
+) -> Result<PlanFetchStack, Diagnostic> {
+    plans.validate_model_projection()?;
+    let mut stack = build_plan_fetch_stack(registry, plans.projection_plan(), &[model_slot])?;
+    if plans.bulk_rows().is_some() {
+        stack.plans.clear();
+        stack.bulk = Some(Box::new(plans));
+    }
     Ok(stack)
 }
 
@@ -272,6 +302,7 @@ pub(crate) fn build_under_authority(
             hydration,
             model_slots: slots,
             schema_proof: None,
+            bulk: None,
         });
     }
     let mut source = retain_inputs(plan, authority)?;
@@ -392,6 +423,7 @@ pub(crate) fn build_under_authority(
         hydration,
         model_slots: slots,
         schema_proof: None,
+        bulk: None,
     })
 }
 
@@ -522,6 +554,119 @@ pub struct PlanFetchResult<'a> {
     #[cfg(test)]
     validation_count: usize,
 }
+/// One cell selected by an authored model/scalar tuple, borrowed from its proof.
+pub enum PlanFetchCell<'a> {
+    /// Already validated model proof row and slot.
+    Model {
+        /// Row of the shared complete-model proof.
+        row: usize,
+        /// Slot of that proof row.
+        slot: usize,
+    },
+    /// Canonical scalar retained in the validated selection evidence.
+    Scalar(&'a type_bridge_contract::value::CanonicalValue),
+}
+
+/// Owned proof published once for one committed authored model projection.
+pub struct OwnedPlanFetchResult {
+    evidence: Option<std::sync::Arc<type_bridge_contract::query_remote_v3::StagedAnswerV3>>,
+    columns: Vec<BindingId>,
+    selection: std::sync::Arc<crate::query_plan_exec::PlanAnswer>,
+    request: super::ValidatedMatchRequest,
+    result: super::ValidatedMatchResult,
+    model_bindings: Vec<BindingId>,
+    model_rows: Vec<usize>,
+}
+impl OwnedPlanFetchResult {
+    /// Original selection, preserving scalar values and duplicate rows.
+    pub fn selection(&self) -> &crate::query_plan_exec::PlanAnswer {
+        &self.selection
+    }
+    /// Share the original selection without copying rows or scalar values.
+    pub fn shared_selection(&self) -> std::sync::Arc<crate::query_plan_exec::PlanAnswer> {
+        std::sync::Arc::clone(&self.selection)
+    }
+    /// Selected bindings in authored tuple order.
+    pub fn columns(&self) -> &[BindingId] {
+        &self.columns
+    }
+    /// Number of authored row occurrences, including duplicates.
+    pub fn row_count(&self) -> usize {
+        self.model_rows.len()
+    }
+    /// Borrow a scalar or obtain a model ordinal without rejoining provider rows.
+    pub fn cell(&self, row: usize, binding: BindingId) -> Option<PlanFetchCell<'_>> {
+        if let Some((row, slot)) = self.model_ordinal(row, binding) {
+            return Some(PlanFetchCell::Model { row, slot });
+        }
+        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+            self.evidence.as_deref()?
+        else {
+            return None;
+        };
+        let column = self
+            .columns
+            .iter()
+            .position(|candidate| *candidate == binding)?;
+        match rows.get(row)?.get(column)? {
+            type_bridge_contract::query_remote::RemoteValue::Value { value }
+            | type_bridge_contract::query_remote::RemoteValue::Attribute { value, .. } => {
+                Some(PlanFetchCell::Scalar(value))
+            }
+            _ => None,
+        }
+    }
+    /// Shared request proof for projected model mapping.
+    pub fn request(&self) -> &super::ValidatedMatchRequest {
+        &self.request
+    }
+    /// Complete model result proof.
+    pub fn result(&self) -> &super::ValidatedMatchResult {
+        &self.result
+    }
+    /// Authored model bindings in proof-slot order.
+    pub fn model_bindings(&self) -> &[BindingId] {
+        &self.model_bindings
+    }
+    /// Selection row to proof row, including duplicate occurrences.
+    pub fn model_rows(&self) -> &[usize] {
+        &self.model_rows
+    }
+    /// Proof row and slot for one selected model occurrence.
+    pub fn model_ordinal(&self, row: usize, binding: BindingId) -> Option<(usize, usize)> {
+        Some((
+            *self.model_rows.get(row)?,
+            self.model_bindings.binary_search(&binding).ok()?,
+        ))
+    }
+}
+impl PlanFetchResult<'_> {
+    pub(crate) fn into_owned(
+        self,
+        selection: std::sync::Arc<crate::query_plan_exec::PlanAnswer>,
+    ) -> OwnedPlanFetchResult {
+        debug_assert!(std::ptr::eq(self.selection, selection.as_ref()));
+        OwnedPlanFetchResult {
+            evidence: None,
+            columns: self.model_bindings.clone(),
+            selection,
+            request: self.request,
+            result: self.result,
+            model_bindings: self.model_bindings,
+            model_rows: self.model_rows,
+        }
+    }
+}
+impl AsRef<[QueryPlanV3]> for PlanFetchStack {
+    fn as_ref(&self) -> &[QueryPlanV3] {
+        self.plans()
+    }
+}
+impl AsRef<PlanFetchStack> for PlanFetchStack {
+    fn as_ref(&self) -> &PlanFetchStack {
+        self
+    }
+}
 impl PlanFetchResult<'_> {
     /// Original scalar selection, preserving order and duplicate occurrences.
     pub fn selection(&self) -> &crate::query_plan_exec::PlanAnswer {
@@ -562,7 +707,7 @@ impl PlanFetchStack {
         &self,
         limits: crate::QueryExecutionResourceLimits,
     ) -> crate::QueryExecutionResourceLimits {
-        limits.for_adapter_statements(self.plans.len())
+        limits.for_adapter_statements(self.plans().len())
     }
 
     /// Validate the entire stack and publish model proofs atomically.
@@ -572,24 +717,54 @@ impl PlanFetchStack {
         answers: &'a [crate::query_plan_exec::PlanAnswer],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<PlanFetchResult<'a>, super::MatchError> {
-        if let Some((roots, expected)) = &self.schema_proof {
-            let actual = registry.request_relevant_fingerprint(roots).map_err(|_| {
-                super::MatchError::new(
-                    super::MatchErrorCategory::StaleSchema,
-                    "stale_schema",
-                    "model descriptors changed after plan construction",
-                )
-            })?;
-            if &actual != expected {
-                return Err(super::MatchError::new(
-                    super::MatchErrorCategory::StaleSchema,
-                    "stale_schema",
-                    "model descriptors changed after plan construction",
-                )
-                .with_detail("expected", expected.as_str())
-                .with_detail("actual", actual.as_str()));
-            }
+        if self.bulk.is_some() {
+            return Err(super::MatchError::new(
+                super::MatchErrorCategory::ResultDecode,
+                "plan_batch_requires_staging",
+                "bulk model proofs require the staged group path",
+            ));
         }
+        let normalized = self
+            .plans()
+            .iter()
+            .zip(answers)
+            .map(|(plan, answer)| {
+                let wire = answer.to_staged_v3(plan)?;
+                if let type_bridge_contract::query_remote_v3::StagedAnswerV3::Documents {
+                    documents,
+                } = &wire
+                {
+                    if let Some(expected) = plan.standalone_entity_rows() {
+                        expected.correlate_proof(documents)?;
+                    }
+                } else {
+                    wire.validate_for(plan)?;
+                }
+                Ok(wire)
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()
+            .map_err(|error| {
+                super::selected_result_executor::released_plan_execution_error(&error)
+            })?;
+        self.resolve_verified(
+            registry,
+            &answers.iter().collect::<Vec<_>>(),
+            &normalized.iter().collect::<Vec<_>>(),
+            limits,
+        )
+    }
+
+    pub(crate) fn resolve_verified<'a>(
+        &self,
+        registry: &DescriptorRegistry,
+        answers: &[&'a crate::query_plan_exec::PlanAnswer],
+        normalized: &[&type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        limits: crate::QueryExecutionResourceLimits,
+    ) -> Result<PlanFetchResult<'a>, super::MatchError> {
+        let fail = |error| super::selected_result_executor::released_plan_execution_error(&error);
+        self.meter_verified(answers, normalized, limits)
+            .map_err(fail)?;
+        self.check_schema(registry)?;
         if self.mapping.is_none()
             && self.selection.is_none()
             && self.selection_plan().fetch_document_shape().is_some()
@@ -608,35 +783,148 @@ impl PlanFetchStack {
                     "single model fetch did not return documents",
                 ));
             };
-            let (request, result) = super::result_validation::validated_match_result_from_plan(
+            return self.resolve_single(registry, answers[0], documents, limits);
+        }
+        self.resolve_inner(registry, answers, normalized, limits)
+            .map_err(|error| super::selected_result_executor::released_plan_execution_error(&error))
+    }
+
+    fn check_schema(&self, registry: &DescriptorRegistry) -> Result<(), super::MatchError> {
+        if let Some((roots, expected)) = &self.schema_proof {
+            let actual = registry.request_relevant_fingerprint(roots).map_err(|_| {
+                super::MatchError::new(
+                    super::MatchErrorCategory::StaleSchema,
+                    "stale_schema",
+                    "model descriptors changed after plan construction",
+                )
+            })?;
+            if &actual != expected {
+                return Err(super::MatchError::new(
+                    super::MatchErrorCategory::StaleSchema,
+                    "stale_schema",
+                    "model descriptors changed after plan construction",
+                )
+                .with_detail("expected", expected.as_str())
+                .with_detail("actual", actual.as_str()));
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_single<'a>(
+        &self,
+        registry: &DescriptorRegistry,
+        answer: &'a crate::query_plan_exec::PlanAnswer,
+        documents: &[serde_json::Value],
+        limits: crate::QueryExecutionResourceLimits,
+    ) -> Result<PlanFetchResult<'a>, super::MatchError> {
+        let (request, result) =
+            super::result_validation::validated_match_result_from_verified_plan(
                 registry,
                 self.selection_plan(),
                 documents,
                 &self.model_slots[0].1,
                 limits,
             )?;
-            let super::MatchResult::Rows { rows } = result.for_request(&request)? else {
-                unreachable!("single fetch model result")
-            };
-            let model_rows = (0..rows.len()).collect();
-            return Ok(PlanFetchResult {
-                selection: &answers[0],
-                request,
-                result,
-                model_bindings: vec![self.model_slots[0].0],
-                model_rows,
-                #[cfg(test)]
-                validation_count: 1,
-            });
-        }
-        self.resolve_inner(registry, answers, limits)
-            .map_err(|error| super::selected_result_executor::released_plan_execution_error(&error))
+        let super::MatchResult::Rows { rows } = result.for_request(&request)? else {
+            unreachable!("single fetch model result")
+        };
+        let model_rows = (0..rows.len()).collect();
+        Ok(PlanFetchResult {
+            selection: answer,
+            request,
+            result,
+            model_bindings: vec![self.model_slots[0].0],
+            model_rows,
+            #[cfg(test)]
+            validation_count: 1,
+        })
     }
 
-    pub(crate) fn resolve_inner<'a>(
+    pub(crate) fn resolve_group(
         &self,
         registry: &DescriptorRegistry,
-        answers: &'a [crate::query_plan_exec::PlanAnswer],
+        answers: &[std::sync::Arc<crate::query_plan_exec::PlanAnswer>],
+        evidence: &[std::sync::Arc<type_bridge_contract::query_remote_v3::StagedAnswerV3>],
+        correlations: &[Option<&type_bridge_contract::query_plan::v3::BulkCorrelation>],
+        limits: crate::QueryExecutionResourceLimits,
+    ) -> Result<OwnedPlanFetchResult, super::MatchError> {
+        let references = answers
+            .iter()
+            .map(|answer| answer.as_ref())
+            .collect::<Vec<_>>();
+        let normalized = evidence
+            .iter()
+            .map(|wire| wire.as_ref())
+            .collect::<Vec<_>>();
+        if let Some(plans) = &self.bulk {
+            let fail =
+                |error| super::selected_result_executor::released_plan_execution_error(&error);
+            self.meter_verified(&references, &normalized, limits)
+                .map_err(fail)?;
+            self.check_schema(registry)?;
+            let merged = crate::query_plan_exec::merge_plan_answers(plans, answers, correlations)
+                .map_err(fail)?;
+            let crate::query_plan_exec::PlanAnswer::Documents(documents) = merged.as_ref() else {
+                unreachable!("model bulk retains a document projection")
+            };
+            let proof = self.resolve_single(registry, merged.as_ref(), documents, limits)?;
+            return Ok(proof.into_owned(std::sync::Arc::clone(&merged)));
+        }
+        let proof = self.resolve_verified(registry, &references, &normalized, limits)?;
+        let mut owned =
+            proof.into_owned(std::sync::Arc::clone(&answers[self.selection.unwrap_or(0)]));
+        if let Some(index) = self.selection {
+            owned.evidence = Some(std::sync::Arc::clone(&evidence[index]));
+            if let QueryOutput::Rows { columns } = self.selection_plan().output() {
+                owned.columns = columns.clone();
+            }
+        }
+        Ok(owned)
+    }
+
+    fn meter_verified(
+        &self,
+        answers: &[&crate::query_plan_exec::PlanAnswer],
+        normalized: &[&type_bridge_contract::query_remote_v3::StagedAnswerV3],
+        limits: crate::QueryExecutionResourceLimits,
+    ) -> Result<(), Diagnostic> {
+        use crate::query_plan_exec::PlanAnswer;
+        if answers.len() != self.plans().len() || normalized.len() != answers.len() {
+            return Err(integrity(
+                "query_plan_result_stack",
+                "model fetch answer count differs from its plans",
+            ));
+        }
+        let cancel = crate::session::backend::AnswerCancellation::default();
+        let answer_limits = crate::query_plan_exec::plan_answer_limits(
+            limits,
+            &cancel,
+            crate::QueryExecutionDeadline::for_limits(limits),
+        )
+        .map_err(|error| budget_failure(error, limits))?;
+        let mut bytes = crate::answer_meter::AnswerMeter::new(&answer_limits.answer);
+        let mut meter = crate::answer_meter::PlanMeter::new(&answer_limits);
+        for (answer, wire) in answers.iter().zip(normalized) {
+            if let PlanAnswer::Rows(values) | PlanAnswer::Documents(values) = answer {
+                for value in values {
+                    bytes
+                        .accept_value(value)
+                        .map_err(|error| budget_failure(error, limits))?;
+                }
+            }
+            meter
+                .accept(wire)
+                .map_err(|error| budget_failure(error, limits))?;
+        }
+        Ok(())
+    }
+
+    fn resolve_inner<'a>(
+        &self,
+        registry: &DescriptorRegistry,
+        answers: &[&'a crate::query_plan_exec::PlanAnswer],
+        normalized: &[&type_bridge_contract::query_remote_v3::StagedAnswerV3],
         limits: crate::QueryExecutionResourceLimits,
     ) -> Result<PlanFetchResult<'a>, Diagnostic> {
         use super::plan_hydration::{GraphBuilder, HydrationAuthority, insert_plan_documents};
@@ -656,39 +944,8 @@ impl PlanFetchStack {
             crate::query_v2::QueryV2ExecutionError::Validation(error) => error,
             crate::query_v2::QueryV2ExecutionError::Provider(_) => fail(),
         };
-        if answers.len() != self.plans.len() {
-            return Err(fail());
-        }
-        let cancel = crate::session::backend::AnswerCancellation::default();
-        let answer_limits = crate::query_plan_exec::plan_answer_limits(
-            limits,
-            &cancel,
-            crate::QueryExecutionDeadline::for_limits(limits),
-        )
-        .map_err(|error| budget_failure(error, limits))?;
-        let mut bytes = crate::answer_meter::AnswerMeter::new(&answer_limits.answer);
-        let mut meter = crate::answer_meter::PlanMeter::new(&answer_limits);
-        let mut normalized = Vec::with_capacity(answers.len());
-        for (plan, answer) in self.plans.iter().zip(answers) {
-            if let PlanAnswer::Rows(values) | PlanAnswer::Documents(values) = answer {
-                for value in values {
-                    bytes
-                        .accept_value(value)
-                        .map_err(|error| budget_failure(error, limits))?;
-                }
-            }
-            let staged = answer.to_staged_v3(plan)?;
-            if !matches!(answer, PlanAnswer::Documents(_)) || plan.fetch_document_shape().is_none()
-            {
-                staged.validate_for(plan)?;
-            }
-            meter
-                .accept(&staged)
-                .map_err(|error| budget_failure(error, limits))?;
-            normalized.push(staged);
-        }
         let index = self.selection.ok_or_else(fail)?;
-        let selection = &answers[index];
+        let selection = answers[index];
         let StagedAnswerV3::Rows { rows: selected } = &normalized[index] else {
             return Err(fail());
         };
@@ -696,7 +953,7 @@ impl PlanFetchStack {
             return Err(fail());
         };
         let mapping_index = self.mapping.ok_or_else(fail)?;
-        let mapping_plan = &self.plans[mapping_index];
+        let mapping_plan = &self.plans()[mapping_index];
         let StagedAnswerV3::Rows { rows: mapping } = &normalized[mapping_index] else {
             return Err(fail());
         };
@@ -776,7 +1033,7 @@ impl PlanFetchStack {
                 &mut graph,
                 &authority,
                 binding.get(),
-                &self.plans[*index],
+                &self.plans()[*index],
                 documents,
             )
             .map_err(shared)?
@@ -1031,6 +1288,7 @@ fn build_single_fetch(
         hydration,
         model_slots: model_slots.to_vec(),
         schema_proof: None,
+        bulk: None,
     })
 }
 

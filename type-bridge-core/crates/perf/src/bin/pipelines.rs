@@ -331,7 +331,7 @@ struct Target {
     package: SchemaPackage<Shop>,
 }
 
-type Built = Plan<Shop>;
+type Built = Plan<PlanAnswer, Shop>;
 
 fn write_kind() -> TransactionOptions {
     TransactionOptions::default().with_kind(TransactionKind::Write)

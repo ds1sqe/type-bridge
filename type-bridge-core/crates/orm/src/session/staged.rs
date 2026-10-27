@@ -16,7 +16,7 @@ use crate::match_request::{
     MatchError, MatchErrorCategory, MatchErrorPathSegment, MatchExecutionLimits,
     ValidatedMatchRequest, ValidatedMatchResult,
 };
-pub use crate::query_plan_exec::PlanAnswer;
+pub use crate::query_plan_exec::{PlanAnswer, merge_plan_answers};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use type_bridge_contract::failure::Failure;
 use type_bridge_contract::query_plan::v3::QueryPlanV3;
@@ -301,8 +301,10 @@ pub enum PendingError {
     #[error("Not allowed in this transaction kind: {}", .0.message())]
     NotAllowedInKind(Box<Diagnostic>),
     /// Every pending answer observes the same failed execution.
-    #[error("Transaction execution failed{index}: {message}", index = format_op_index(*op_index))]
+    #[error("Transaction execution failed{index}: {diagnostic}", index = format_op_index(*op_index), diagnostic = .diagnostic.message())]
     Failed {
+        /// Canonical execution diagnostic retained for every pending handle.
+        diagnostic: Box<SdkExecutionDiagnostic>,
         /// Failing statement index, or none for opening/commit.
         op_index: Option<usize>,
         /// Value-free error description.
@@ -427,6 +429,7 @@ impl CommitError {
             };
         }
         PendingError::Failed {
+            diagnostic: Box::new(self.diagnostic()),
             op_index: self.op_index,
             message: self.to_string(),
             failure: self.failure.clone(),
@@ -453,6 +456,14 @@ impl CommitError {
     }
 }
 impl PendingError {
+    /// Canonical diagnostic for a resolved execution failure.
+    #[must_use]
+    pub fn diagnostic(&self) -> Option<&SdkExecutionDiagnostic> {
+        match self {
+            Self::Failed { diagnostic, .. } | Self::Refused { diagnostic, .. } => Some(diagnostic),
+            _ => None,
+        }
+    }
     /// Structural failure observed by all pending answers in the failed stack.
     #[must_use]
     pub fn failure(&self) -> Option<&Failure> {
@@ -464,7 +475,25 @@ impl PendingError {
     }
 }
 
-type AnswerState<T> = Arc<Mutex<Result<Arc<T>, PendingError>>>;
+struct PendingState<T> {
+    answer: Mutex<Result<Arc<T>, PendingError>>,
+    correlation:
+        std::sync::OnceLock<Option<Arc<type_bridge_contract::query_plan::v3::BulkCorrelation>>>,
+}
+impl<T> PendingState<T> {
+    fn new() -> Self {
+        Self {
+            answer: Mutex::new(Err(PendingError::NotCommitted)),
+            correlation: std::sync::OnceLock::new(),
+        }
+    }
+    fn lock(
+        &self,
+    ) -> std::sync::LockResult<std::sync::MutexGuard<'_, Result<Arc<T>, PendingError>>> {
+        self.answer.lock()
+    }
+}
+type AnswerState<T> = Arc<PendingState<T>>;
 /// An answer made visible only after its whole execution succeeds.
 pub struct Pending<T> {
     state: AnswerState<T>,
@@ -491,6 +520,17 @@ impl<T> Clone for Pending<T> {
     }
 }
 impl<T> Pending<T> {
+    /// Retained correlation proof from this answer's existing validation pass.
+    pub fn correlation(
+        &self,
+    ) -> Result<Option<&type_bridge_contract::query_plan::v3::BulkCorrelation>, PendingError> {
+        self.get()?;
+        Ok(self
+            .state
+            .correlation
+            .get()
+            .and_then(|proof| proof.as_deref()))
+    }
     /// Read the answer, or its current lifecycle/execution failure.
     pub fn get(&self) -> Result<Arc<T>, PendingError> {
         self.state.lock().unwrap().clone()
@@ -752,7 +792,11 @@ enum Slot {
 /// An answer resolved during commit, published only after commit succeeds.
 enum Resolved {
     Query(QueryResult),
-    Plan(PlanAnswer),
+    Plan {
+        answer: Arc<PlanAnswer>,
+        wire: Arc<type_bridge_contract::query_remote_v3::StagedAnswerV3>,
+        correlation: Option<Arc<type_bridge_contract::query_plan::v3::BulkCorrelation>>,
+    },
     /// The program holds its own answer.
     Program,
 }
@@ -781,9 +825,13 @@ impl Slot {
                     span.record("fingerprint", plan.shape_fingerprint()?.digest().to_hex());
                 }
                 let _span = span.entered();
-                let result = crate::query_plan_exec::resolve_plan(plan, answer);
+                let result = crate::query_plan_exec::resolve_plan_with_wire(plan, answer);
                 tracing::debug!(target: "type_bridge.plan", outcome = if result.is_ok() { "ok" } else { "error" }, "plan answer resolved");
-                result.map(Resolved::Plan)
+                result.map(|resolved| Resolved::Plan {
+                    answer: Arc::new(resolved.answer),
+                    wire: Arc::new(resolved.wire),
+                    correlation: resolved.correlation,
+                })
             }
             Self::Program(_) => unreachable!("programs resolve their own answers"),
         }
@@ -793,8 +841,16 @@ impl Slot {
             (Self::Query(state), Resolved::Query(answer)) => {
                 *state.lock().unwrap() = Ok(Arc::new(answer));
             }
-            (Self::Plan { state, .. }, Resolved::Plan(answer)) => {
-                *state.lock().unwrap() = Ok(Arc::new(answer));
+            (
+                Self::Plan { state, .. },
+                Resolved::Plan {
+                    answer,
+                    correlation,
+                    ..
+                },
+            ) => {
+                let _ = state.correlation.set(correlation);
+                *state.lock().unwrap() = Ok(answer);
             }
             (Self::Program(program), Resolved::Program) => program.publish(),
             _ => unreachable!("answers resolve through their own slot"),
@@ -820,11 +876,95 @@ impl Item {
             .unwrap_or_default()
     }
 }
-struct Execution(Vec<Item>);
+trait FetchGroupSource: SharedPlanSource {
+    fn fetch(&self) -> &crate::match_request::PlanFetchStack;
+}
+impl<T> FetchGroupSource for T
+where
+    T: AsRef<[QueryPlanV3]> + AsRef<crate::match_request::PlanFetchStack> + Send + Sync,
+{
+    fn fetch(&self) -> &crate::match_request::PlanFetchStack {
+        self.as_ref()
+    }
+}
+struct FetchGroup {
+    source: Arc<dyn FetchGroupSource>,
+    identity: usize,
+    registry: Arc<DescriptorRegistry>,
+    range: std::ops::Range<usize>,
+    limits: crate::QueryExecutionResourceLimits,
+    state: AnswerState<crate::match_request::OwnedPlanFetchResult>,
+    answer: Option<Arc<crate::match_request::OwnedPlanFetchResult>>,
+}
+impl FetchGroup {
+    fn stack(&self) -> Result<&crate::match_request::PlanFetchStack, Diagnostic> {
+        let stack = self.source.fetch();
+        if std::ptr::from_ref(stack) as usize != self.identity
+            || !std::ptr::eq(stack.plans(), self.source.plans())
+        {
+            return Err(proxy_refusal(
+                "shared model fetch source changed after staging",
+            ));
+        }
+        Ok(stack)
+    }
+}
+struct Execution(Vec<Item>, Vec<FetchGroup>);
 impl Execution {
     fn fail(&self, error: PendingError) {
         for item in &self.0 {
             item.slot.fail(error.clone());
+        }
+        for group in &self.1 {
+            *group.state.lock().unwrap() = Err(error.clone());
+        }
+    }
+    fn resolve_groups(&mut self, answers: &[Resolved]) -> Result<(), (usize, OrmError)> {
+        for group in &mut self.1 {
+            let evidence = answers[group.range.clone()]
+                .iter()
+                .map(|answer| {
+                    let Resolved::Plan {
+                        answer,
+                        wire,
+                        correlation,
+                    } = answer
+                    else {
+                        unreachable!("fetch groups stage only canonical plans")
+                    };
+                    (answer, wire, correlation)
+                })
+                .collect::<Vec<_>>();
+            let stack = group
+                .stack()
+                .map_err(|error| (group.range.start, plan_answer_error(error)))?;
+            let proof = stack
+                .resolve_group(
+                    &group.registry,
+                    &evidence
+                        .iter()
+                        .map(|(answer, _, _)| Arc::clone(answer))
+                        .collect::<Vec<_>>(),
+                    &evidence
+                        .iter()
+                        .map(|(_, wire, _)| Arc::clone(wire))
+                        .collect::<Vec<_>>(),
+                    &evidence
+                        .iter()
+                        .map(|(_, _, proof)| proof.as_deref())
+                        .collect::<Vec<_>>(),
+                    group.limits,
+                )
+                .map_err(|error| (group.range.start, OrmError::from(error)))?;
+            group.answer = Some(Arc::new(proof));
+        }
+        Ok(())
+    }
+    fn publish_groups(&mut self) {
+        for group in &mut self.1 {
+            if let Some(answer) = group.answer.take() {
+                *group.state.lock().unwrap() = Ok(answer);
+            }
         }
     }
 }
@@ -833,6 +973,9 @@ impl Drop for Execution {
         // Also resolves handles when a commit future is cancelled.
         for item in &self.0 {
             item.slot.close_if_pending();
+        }
+        for group in &self.1 {
+            close_if_pending(&group.state);
         }
     }
 }
@@ -1048,6 +1191,7 @@ pub struct Transaction {
     database: String,
     options: TransactionOptions,
     stack: Execution,
+    empty: Vec<(AnswerState<PlanAnswer>, Arc<PlanAnswer>)>,
     closed: bool,
 }
 enum Backend {
@@ -1112,7 +1256,8 @@ impl Transaction {
             backend,
             database,
             options,
-            stack: Execution(Vec::new()),
+            stack: Execution(Vec::new(), Vec::new()),
+            empty: Vec::new(),
             closed: false,
         }
     }
@@ -1130,7 +1275,7 @@ impl Transaction {
     pub fn stage(&mut self, query: StagedQuery) -> Result<Pending<QueryResult>, PendingError> {
         self.admit(query.writes)?;
         self.local()?;
-        let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
+        let state = Arc::new(PendingState::new());
         self.stack.0.push(Item {
             query: Some(query),
             remote: None,
@@ -1181,6 +1326,71 @@ impl Transaction {
         })
     }
 
+    /// Stage a complete model projection on the existing canonical plan path.
+    ///
+    /// Direct and borrowed targets resolve the proof before provider commit;
+    /// proof failure rolls back prior writes. A proxy resolves after its verified
+    /// atomic reply; proof failure leaves every pending outcome unknown.
+    /// The source retains its original Arc allocation and must expose the stack's
+    /// exact plan slice through both AsRef implementations.
+    pub fn stage_plan_fetch<T>(
+        &mut self,
+        source: Arc<T>,
+        registry: Arc<DescriptorRegistry>,
+        limits: crate::QueryExecutionResourceLimits,
+    ) -> Result<Pending<crate::match_request::OwnedPlanFetchResult>, PendingError>
+    where
+        T: AsRef<[QueryPlanV3]>
+            + AsRef<crate::match_request::PlanFetchStack>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let stack = <T as AsRef<crate::match_request::PlanFetchStack>>::as_ref(source.as_ref());
+        let plans = <T as AsRef<[QueryPlanV3]>>::as_ref(source.as_ref());
+        if !std::ptr::eq(plans, stack.plans()) {
+            return Err(PendingError::InvalidPlan(Box::new(proxy_refusal(
+                "fetch group must retain its canonical plan slice",
+            ))));
+        }
+        self.admit(stack.writes())?;
+        self.admit_typed()?;
+        let limits = stack.execution_limits(limits);
+        let need = plans
+            .iter()
+            .map(|plan| {
+                let (read, write) = plan.statement_counts();
+                read + write
+            })
+            .sum::<usize>();
+        if need > limits.statement_limit() as usize {
+            return Err(PendingError::InvalidPlan(Box::new(Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("statement_count_limit").expect("static diagnostic code"),
+                "model fetch group exceeds its statement ceiling",
+            ))));
+        }
+        let identity = std::ptr::from_ref(stack) as usize;
+        let start = self.stack.0.len();
+        for index in 0..plans.len() {
+            if let Err(error) = self.stage_shared_plan(Arc::clone(&source), index) {
+                self.stack.0.truncate(start);
+                return Err(error);
+            }
+        }
+        let state = Arc::new(PendingState::new());
+        self.stack.1.push(FetchGroup {
+            source,
+            identity,
+            registry,
+            range: start..self.stack.0.len(),
+            limits,
+            state: Arc::clone(&state),
+            answer: None,
+        });
+        Ok(Pending { state })
+    }
+
     fn stage_plan_source(
         &mut self,
         source: PlanSource,
@@ -1225,7 +1435,7 @@ impl Transaction {
                 )
             }
         };
-        let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
+        let state = Arc::new(PendingState::new());
         self.stack.0.push(Item {
             query,
             remote,
@@ -1236,6 +1446,46 @@ impl Transaction {
         });
         tracing::Span::current().record("outcome", "ok");
         Ok(Pending { state })
+    }
+
+    /// Stage one authored call's plans atomically. An empty bulk uses a local
+    /// result barrier, with no provider query or proxy request. The source Arc
+    /// is retained directly; empty_documents selects the empty bulk answer kind.
+    pub fn stage_plans<T>(
+        &mut self,
+        source: Arc<T>,
+        empty_documents: bool,
+    ) -> Result<Vec<Pending<PlanAnswer>>, PendingError>
+    where
+        T: AsRef<[QueryPlanV3]> + Send + Sync + 'static,
+    {
+        let count = source.as_ref().as_ref().len();
+        if count == 0 {
+            self.admit(true)?;
+            self.admit_typed()?;
+            let state = Arc::new(PendingState::new());
+            self.empty.push((
+                Arc::clone(&state),
+                Arc::new(if empty_documents {
+                    PlanAnswer::Documents(vec![])
+                } else {
+                    PlanAnswer::Matched(0)
+                }),
+            ));
+            return Ok(vec![Pending { state }]);
+        }
+        let start = self.stack.0.len();
+        let mut pending = Vec::with_capacity(count);
+        for index in 0..count {
+            match self.stage_shared_plan(Arc::clone(&source), index) {
+                Ok(answer) => pending.push(answer),
+                Err(error) => {
+                    self.stack.0.truncate(start);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(pending)
     }
     /// Queue one validated selected-row read, run at commit on the commit's
     /// provider transaction.
@@ -1272,7 +1522,7 @@ impl Transaction {
                 true,
             ),
         };
-        let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
+        let state = Arc::new(PendingState::new());
         self.stack.0.push(Item {
             query: None,
             remote: None,
@@ -1297,7 +1547,7 @@ impl Transaction {
     ) -> Result<Pending<T>, PendingError> {
         self.admit(false)?;
         self.admit_typed()?;
-        let state = Arc::new(Mutex::new(Err(PendingError::NotCommitted)));
+        let state = Arc::new(PendingState::new());
         self.stack.0.push(Item {
             query: None,
             remote: None,
@@ -1341,12 +1591,34 @@ impl Transaction {
     }
 
     async fn commit_inner(&mut self) -> Result<(), CommitError> {
+        let empty = std::mem::take(&mut self.empty);
+        let result = self.commit_work().await;
+        for (state, answer) in empty {
+            *state.lock().unwrap() = match &result {
+                Ok(()) => Ok(answer),
+                Err(error) => Err(error.pending()),
+            };
+        }
+        result
+    }
+
+    async fn commit_work(&mut self) -> Result<(), CommitError> {
         if self.closed {
             return Err(CommitError::lifecycle(PendingError::Closed));
         }
-        let mut execution = std::mem::replace(&mut self.stack, Execution(Vec::new()));
+        let mut execution = std::mem::replace(&mut self.stack, Execution(Vec::new(), Vec::new()));
         if execution.0.is_empty() {
-            return Ok(());
+            match execution.resolve_groups(&[]) {
+                Ok(()) => {
+                    execution.publish_groups();
+                    return Ok(());
+                }
+                Err((index, error)) => {
+                    let error = CommitError::new(error.into(), Some(index), Default::default());
+                    execution.fail(error.pending());
+                    return Err(error);
+                }
+            }
         }
         for (index, item) in execution.0.iter().enumerate() {
             if let Slot::Plan { plan, .. } = &item.slot
@@ -1355,6 +1627,17 @@ impl Transaction {
                 let error = CommitError::new(
                     plan_answer_error(diagnostic).into(),
                     Some(index),
+                    Default::default(),
+                );
+                execution.fail(error.pending());
+                return Err(error);
+            }
+        }
+        for group in &execution.1 {
+            if let Err(diagnostic) = group.stack() {
+                let error = CommitError::new(
+                    plan_answer_error(diagnostic).into(),
+                    Some(group.range.start),
                     Default::default(),
                 );
                 execution.fail(error.pending());
@@ -1382,6 +1665,7 @@ impl Transaction {
                 .map(|timeout| {
                     Instant::now().checked_add(timeout).ok_or_else(|| {
                         CommitError::lifecycle(PendingError::Failed {
+                            diagnostic: Box::new(SdkExecutionDiagnostic::internal_failure()),
                             op_index: None,
                             message: "Transaction deadline exceeds the supported range".into(),
                             failure: None,
@@ -1421,14 +1705,8 @@ impl Transaction {
                                 crate::answer_meter::meter_result(&answer, &answer_limits)?;
                             }
                             let resolved = item.slot.resolve(answer).map_err(plan_answer_error)?;
-                            if let (
-                                Slot::Plan { plan, .. },
-                                Resolved::Plan(answer @ PlanAnswer::Documents(_)),
-                            ) = (&item.slot, &resolved)
-                            {
-                                plan_meter.accept(
-                                    &answer.to_staged_v3(plan.plan().map_err(plan_answer_error)?).map_err(plan_answer_error)?,
-                                )?;
+                            if let Resolved::Plan { wire, .. } = &resolved {
+                                plan_meter.accept(wire)?;
                             }
                             Ok(resolved)
                         })
@@ -1472,6 +1750,13 @@ impl Transaction {
                     }
                 }
             }
+            if let Err((index, error)) = execution.resolve_groups(&answers) {
+                if let Some(ops) = provider.as_mut() {
+                    if kind != TransactionKind::Read { let _ = ops.rollback().await; }
+                    let _ = ops.close().await;
+                }
+                return Err(CommitError::new(error.into(), Some(index), Default::default()));
+            }
             let provider = provider.as_mut().ok_or_else(|| {
                 CommitError::new(provider_consumed().into(), None, Default::default())
             })?;
@@ -1496,6 +1781,7 @@ impl Transaction {
                 for (item, answer) in execution.0.iter_mut().zip(answers) {
                     item.slot.publish(answer);
                 }
+                execution.publish_groups();
                 Ok(())
             }
             Err(error) => {
@@ -1771,9 +2057,14 @@ impl Transaction {
                                     entries.next();
                                     plan.plan()
                                         .and_then(|plan| {
-                                            PlanAnswer::from_staged_v3(&answers[0], plan)
+                                            PlanAnswer::from_verified_staged_v3(&answers[0], plan)
                                         })
-                                        .map(Resolved::Plan)
+                                        .map(|answer| Resolved::Plan {
+                                            answer: Arc::new(answer),
+                                            wire: Arc::new(answers[0].clone()),
+                                            correlation: verified.correlations()[cursor - count]
+                                                .clone(),
+                                        })
                                         .map_err(plan_answer_error)
                                 }
                                 Slot::Query(_) => unreachable!("proxy stages canonical plans"),
@@ -1790,7 +2081,10 @@ impl Transaction {
                         }
                         match error {
                             Some(error) => Err(error),
-                            None => Ok(resolved),
+                            None => execution
+                                .resolve_groups(&resolved)
+                                .map(|()| resolved)
+                                .map_err(|_| unknown("proxy model projection failed after commit")),
                         }
                     }
                 },
@@ -1801,6 +2095,7 @@ impl Transaction {
                 for (item, answer) in execution.0.iter_mut().zip(answers) {
                     item.slot.publish(answer);
                 }
+                execution.publish_groups();
                 Ok(())
             }
             Err(error) => {
@@ -1816,6 +2111,10 @@ impl Transaction {
         }
         self.stack.fail(PendingError::RolledBack);
         self.stack.0.clear();
+        self.stack.1.clear();
+        for (state, _) in self.empty.drain(..) {
+            *state.lock().unwrap() = Err(PendingError::RolledBack);
+        }
         Ok(())
     }
     /// Discard queued work and make this logical transaction terminal.
@@ -1825,6 +2124,10 @@ impl Transaction {
         }
         self.stack.fail(PendingError::Closed);
         self.stack.0.clear();
+        self.stack.1.clear();
+        for (state, _) in self.empty.drain(..) {
+            *state.lock().unwrap() = Err(PendingError::Closed);
+        }
         self.closed = true;
         Ok(())
     }
@@ -1898,6 +2201,7 @@ mod tests {
                 error.to_string(),
                 format!("{:?}", error),
                 error.pending().to_string(),
+                serde_json::to_string(&error.pending().diagnostic().unwrap().host_json()).unwrap(),
                 serde_json::to_string(&error.diagnostic().host_json()).unwrap(),
             ] {
                 assert!(!rendered.contains("signed-server-secret"), "{rendered}");
@@ -1936,6 +2240,7 @@ mod tests {
             type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
         for name in [
             type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_WRITE_V3,
             type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
         ] {
             capabilities.insert(type_bridge_contract::capability::CapabilityId::new(name).unwrap());
@@ -1963,6 +2268,8 @@ mod tests {
                     entered.notify_one();
                     std::future::pending::<()>().await;
                 }
+                // This closure simulates a server; count only client verification spans.
+                let _server_tracing = tracing::dispatcher::set_default(&tracing::Dispatch::none());
                 let request = StagedRequestV3::decode(&bytes, &schema, &ad).unwrap();
                 let (outcome, answers) = if request.plans().len() as u64
                     > request.limits().max_items
@@ -1975,7 +2282,10 @@ mod tests {
                         request
                             .plans()
                             .iter()
-                            .map(|_| StagedAnswerV3::Rows {
+                            .map(|entry| if entry.plan().fetch_document_shape().is_some() {
+                                PlanAnswer::Documents(vec![serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{}})])
+                                    .to_staged_v3(entry.plan()).unwrap()
+                            } else { StagedAnswerV3::Rows {
                                 rows: vec![vec![
                                     type_bridge_contract::query_remote::RemoteValue::Value {
                                         value: type_bridge_contract::value::CanonicalValue::Long(
@@ -1983,7 +2293,7 @@ mod tests {
                                         ),
                                     },
                                 ]],
-                            })
+                            } })
                             .collect(),
                     )
                 };
@@ -2195,8 +2505,10 @@ mod tests {
         fail_close: bool,
         given: bool,
         rows: usize,
+        row_values: Option<Vec<serde_json::Value>>,
         answer_ok: bool,
         snapshot_documents: Option<Vec<serde_json::Value>>,
+        snapshot_batches: std::collections::VecDeque<Vec<serde_json::Value>>,
         fail_delete: bool,
         given_payloads: Vec<GivenRowsSpec>,
         given_queries: Vec<String>,
@@ -2222,12 +2534,25 @@ mod tests {
         }
     }
     impl Fake {
+        fn documents(&self) -> Option<QueryResult> {
+            let mut state = self.0.lock().unwrap();
+            state
+                .snapshot_batches
+                .pop_front()
+                .or_else(|| state.snapshot_documents.clone())
+                .map(QueryResult::Documents)
+        }
         fn answer(&self) -> QueryResult {
             let state = self.0.lock().unwrap();
             if state.answer_ok {
                 QueryResult::Ok
             } else {
-                QueryResult::Rows(vec![serde_json::json!({}); state.rows])
+                QueryResult::Rows(
+                    state
+                        .row_values
+                        .clone()
+                        .unwrap_or_else(|| vec![serde_json::json!({}); state.rows]),
+                )
             }
         }
     }
@@ -2238,12 +2563,7 @@ mod tests {
                 query == "fail" || (self.0.lock().unwrap().fail_delete && query.contains("delete"));
             let typed = query == "typed-fail";
             let answer = if query.contains("fetch") {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .snapshot_documents
-                    .clone()
-                    .map(QueryResult::Documents)
+                self.documents()
             } else {
                 None
             }
@@ -2273,8 +2593,7 @@ mod tests {
                 .events
                 .push(format!("given:{}", rows.rows.len()));
             let captured = if typeql.contains("fetch") {
-                let state = self.0.lock().unwrap();
-                state.snapshot_documents.clone().map(QueryResult::Documents)
+                self.documents()
             } else {
                 None
             };
@@ -2309,6 +2628,483 @@ mod tests {
             state,
         )
     }
+    fn model_fetch_stack(
+        registry: &DescriptorRegistry,
+    ) -> Arc<crate::match_request::PlanFetchStack> {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        let authority =
+            crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
+                registry,
+            )
+            .unwrap();
+        let mut builder = PlanBuilder::new();
+        let thing = builder.exact(TypeId::new(TypeKind::Entity, "person").unwrap());
+        builder.fetch(thing, vec![]);
+        let plan = builder
+            .build(
+                authority.declared(),
+                authority
+                    .context()
+                    .managed_state()
+                    .managed_semantic_schema()
+                    .clone(),
+            )
+            .unwrap();
+        Arc::new(
+            crate::match_request::build_plan_fetch_stack(
+                registry,
+                &plan,
+                &[(
+                    thing,
+                    crate::match_request::DescriptorId::new("entity:person"),
+                )],
+            )
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn fetch_groups_resolve_before_commit_and_publish_one_owned_proof() {
+        for fail in [false, true] {
+            let registry = Arc::new(DescriptorRegistry::new());
+            registry
+                .register_entity(crate::_descriptor::EntityDescriptor {
+                    type_name: "person".into(),
+                    is_abstract: false,
+                    parent_type: None,
+                    owned_attributes: vec![],
+                    doc: None,
+                    meta: Default::default(),
+                })
+                .unwrap();
+            let source = model_fetch_stack(&registry);
+            let (mut tx, state) = fixture(TransactionOptions::default());
+            state.lock().unwrap().snapshot_documents = Some(vec![
+                serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{}}),
+            ]);
+            let write = tx.stage(StagedQuery::new("earlier-write", true)).unwrap();
+            let first = tx
+                .stage_plan_fetch(
+                    Arc::clone(&source),
+                    Arc::clone(&registry),
+                    Default::default(),
+                )
+                .unwrap();
+            let second = tx
+                .stage_plan_fetch(
+                    Arc::clone(&source),
+                    Arc::clone(&registry),
+                    crate::QueryExecutionResourceLimits {
+                        items: if fail { 0 } else { 10 },
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            for item in &tx.stack.0[1..] {
+                let Slot::Plan { plan, .. } = &item.slot else {
+                    panic!("plan slot")
+                };
+                assert!(std::ptr::eq(plan.plan().unwrap(), &source.plans()[0]));
+            }
+            crate::query_plan_exec::take_document_validation_count();
+            assert!(matches!(first.get(), Err(PendingError::NotCommitted)));
+            let outcome = tx.commit().await;
+            assert_eq!(crate::query_plan_exec::take_document_validation_count(), 2);
+            let events = state.lock().unwrap().events.clone();
+            if fail {
+                assert_eq!(
+                    outcome.unwrap_err().diagnostic().code().as_str(),
+                    "processed_item_limit"
+                );
+                assert_eq!(&events[3..], ["rollback", "close"]);
+                for pending in [&first, &second] {
+                    let error = pending.get().err().unwrap();
+                    assert_eq!(
+                        error.diagnostic().unwrap().code().as_str(),
+                        "processed_item_limit"
+                    );
+                }
+                assert!(write.get().is_err());
+            } else {
+                outcome.unwrap();
+                assert_eq!(&events[3..], ["commit", "close"]);
+                assert!(write.get().is_ok());
+                let proof = first.get().unwrap();
+                assert!(Arc::ptr_eq(&proof, &first.get().unwrap()));
+                assert_eq!(proof.model_rows(), &[0]);
+                assert_eq!(
+                    proof.model_ordinal(
+                        0,
+                        type_bridge_contract::migration_assertion::BindingId::new(0).unwrap()
+                    ),
+                    Some((0, 0))
+                );
+                assert!(second.get().is_ok());
+                tx.commit().await.unwrap();
+                assert!(Arc::ptr_eq(&proof, &first.get().unwrap()));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_correlation_runs_once_per_answer_for_direct_and_verified_proxy_replies() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing::instrument::WithSubscriber;
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        for proxy in [false, true] {
+            let (remote, registry, _) = proxy_match_fixture(Default::default(), false, None);
+            let authority =
+                crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
+                    &registry,
+                )
+                .unwrap();
+            let mut builder = PlanBuilder::new();
+            let person = builder.insert(TypeId::new(TypeKind::Entity, "person").unwrap());
+            builder
+                .bind_model_rows(person, vec![vec![], vec![]])
+                .fetch_held(person, vec![]);
+            let plans = Arc::new(
+                builder
+                    .build_plans(
+                        authority.declared(),
+                        authority
+                            .context()
+                            .managed_state()
+                            .managed_semantic_schema()
+                            .clone(),
+                        false,
+                        type_bridge_contract::split::SplitLimits::CANONICAL,
+                    )
+                    .unwrap(),
+            );
+            assert_eq!(plans.plans().len(), 2);
+            let mut tx = if proxy {
+                remote
+            } else {
+                let (tx, state) = fixture(Default::default());
+                state.lock().unwrap().snapshot_documents = Some(vec![
+                    serde_json::json!({"_iid":"0x01", "_type":"person", "attributes":{}}),
+                ]);
+                tx
+            };
+            let pending = tx.stage_plans(Arc::clone(&plans), true).unwrap();
+            let count = Arc::new(AtomicUsize::new(0));
+            let observed = Arc::clone(&count);
+            let dispatch = crate::debug::dispatch(Arc::new(move |event| {
+                if event.name == "type_bridge.plan.correlate" {
+                    observed.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+            tx.commit().with_subscriber(dispatch.clone()).await.unwrap();
+            assert_eq!(count.load(Ordering::Relaxed), 2, "proxy={proxy}");
+            let answers = pending
+                .iter()
+                .map(Pending::get)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let correlations = pending
+                .iter()
+                .map(Pending::correlation)
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(correlations.iter().all(Option::is_some));
+            let merged = tracing::dispatcher::with_default(&dispatch, || {
+                merge_plan_answers(&plans, &answers, &correlations)
+            })
+            .unwrap();
+            assert!(
+                matches!(merged.as_ref(), PlanAnswer::Documents(documents) if documents.len() == 2)
+            );
+            assert_eq!(
+                count.load(Ordering::Relaxed),
+                2,
+                "merging repeated correlation, proxy={proxy}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bulk_fetch_group_correlates_once_before_commit_and_empty_bulk_uses_no_provider() {
+        use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::schema::OwnsFactId;
+        use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+        for empty in [false, true] {
+            let (registry, _) =
+                crate::query_v2_adapter_tests::generic_model_selection(&[0, 1], false);
+            let authority =
+                crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(
+                    &registry,
+                )
+                .unwrap();
+            let mut builder = PlanBuilder::new();
+            let type_id = TypeId::new(TypeKind::Entity, "person").unwrap();
+            let thing = builder.insert(type_id.clone());
+            let field = OwnsFactId::new(type_id, AttributeId::new("person-name").unwrap()).unwrap();
+            let names = if empty {
+                vec![]
+            } else {
+                vec!["Alice", "Bob", "Carol"]
+            };
+            builder.bind_model_rows(
+                thing,
+                names
+                    .iter()
+                    .map(|name| {
+                        vec![(
+                            field.clone(),
+                            CanonicalValue::String(CanonicalString::new(*name).unwrap()),
+                        )]
+                    })
+                    .collect(),
+            );
+            builder.fetch_held(thing, vec![]);
+            let built = builder
+                .build_plans(
+                    authority.declared(),
+                    authority
+                        .context()
+                        .managed_state()
+                        .managed_semantic_schema()
+                        .clone(),
+                    false,
+                    type_bridge_contract::split::SplitLimits::new(2, usize::MAX),
+                )
+                .unwrap();
+            let source = Arc::new(
+                crate::match_request::build_bulk_plan_fetch_stack(
+                    &registry,
+                    built,
+                    (
+                        thing,
+                        crate::match_request::DescriptorId::new("entity:person"),
+                    ),
+                )
+                .unwrap(),
+            );
+            assert_eq!(source.plans().len(), if empty { 0 } else { 2 });
+            let (mut tx, state) = fixture(Default::default());
+            state.lock().unwrap().given = true;
+            let document = |iid, name| serde_json::json!({"_iid":iid,"_type":"person","attributes":{"person-name":name}});
+            state.lock().unwrap().snapshot_batches = [
+                vec![document("0x02", "Bob"), document("0x01", "Alice")],
+                vec![document("0x03", "Carol")],
+            ]
+            .into();
+            let pending = tx
+                .stage_plan_fetch(source, registry, Default::default())
+                .unwrap();
+            assert!(matches!(pending.get(), Err(PendingError::NotCommitted)));
+            crate::query_plan_exec::take_document_validation_count();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                crate::query_plan_exec::take_document_validation_count(),
+                names.len()
+            );
+            let result = pending.get().unwrap();
+            let PlanAnswer::Documents(documents) = result.selection() else {
+                panic!("model documents")
+            };
+            assert_eq!(documents.len(), names.len());
+            assert_eq!(result.model_rows().len(), names.len());
+            for (document, name) in documents.iter().zip(names) {
+                assert_eq!(document["attributes"]["person-name"], name);
+            }
+            if empty {
+                assert!(state.lock().unwrap().events.is_empty());
+            } else {
+                assert_eq!(&state.lock().unwrap().events[2..], ["commit", "close"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_fetch_group_seals_duplicates_and_rejects_unmatched_documents_before_commit() {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::migration_assertion::BindingId;
+        use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::value::CanonicalValue;
+        for fail in [false, true] {
+            let (registry, plan) =
+                crate::query_v2_adapter_tests::generic_model_selection(&[0, 1], false);
+            let source = Arc::new(
+                crate::match_request::build_plan_fetch_stack(
+                    &registry,
+                    &plan,
+                    &[(
+                        BindingId::new(0).unwrap(),
+                        crate::match_request::DescriptorId::new("entity:person"),
+                    )],
+                )
+                .unwrap(),
+            );
+            assert!(source.plans().len() > 1);
+            let (mut tx, state) = fixture(Default::default());
+            let row = serde_json::json!({
+                "b0": RemoteValue::Thing { iid: "0x01".into(), type_id: TypeId::new(TypeKind::Entity, "person").unwrap() },
+                "b1": RemoteValue::Value { value: CanonicalValue::Long(7) },
+            });
+            state.lock().unwrap().row_values = Some(vec![row.clone(), row]);
+            state.lock().unwrap().snapshot_documents = Some(vec![serde_json::json!({
+                "_iid": if fail { "0x02" } else { "0x01" }, "_type":"person", "attributes":{"person-name":"Alice"}
+            })]);
+            let write = tx.stage(StagedQuery::new("earlier-write", true)).unwrap();
+            let pending = tx
+                .stage_plan_fetch(source, registry, Default::default())
+                .unwrap();
+            crate::query_plan_exec::take_document_validation_count();
+            let outcome = tx.commit().await;
+            assert_eq!(crate::query_plan_exec::take_document_validation_count(), 1);
+            let events = state.lock().unwrap().events.clone();
+            if fail {
+                let error = outcome.unwrap_err();
+                assert_eq!(
+                    error.diagnostic().code().as_str(),
+                    "selected_root_set_mismatch"
+                );
+                assert_eq!(&events[events.len() - 2..], ["rollback", "close"]);
+                assert!(write.get().is_err());
+                assert_eq!(
+                    pending
+                        .get()
+                        .err()
+                        .unwrap()
+                        .diagnostic()
+                        .unwrap()
+                        .code()
+                        .as_str(),
+                    "selected_root_set_mismatch"
+                );
+            } else {
+                outcome.unwrap();
+                assert_eq!(&events[events.len() - 2..], ["commit", "close"]);
+                let result = pending.get().unwrap();
+                assert_eq!(result.model_rows(), &[0, 0]);
+                assert_eq!(result.columns().len(), 2);
+                assert!(matches!(
+                    result.cell(1, BindingId::new(0).unwrap()),
+                    Some(crate::match_request::PlanFetchCell::Model { row: 0, slot: 0 })
+                ));
+                assert!(matches!(
+                    result.cell(1, BindingId::new(1).unwrap()),
+                    Some(crate::match_request::PlanFetchCell::Scalar(
+                        CanonicalValue::Long(7)
+                    ))
+                ));
+                assert!(result.cell(2, BindingId::new(1).unwrap()).is_none());
+
+                assert_eq!(
+                    result.model_ordinal(1, BindingId::new(0).unwrap()),
+                    Some((0, 0))
+                );
+                assert!(matches!(result.selection(), PlanAnswer::Rows(rows) if rows.len() == 2));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_fetch_groups_publish_together_or_leave_all_pending_unknown() {
+        for fail in [false, true] {
+            let (mut tx, registry, committed) =
+                proxy_match_fixture(Default::default(), false, None);
+            let registry = Arc::new(registry);
+            let source = model_fetch_stack(&registry);
+            let ordinary = tx
+                .stage_match(&registry, proxy_count_request(&registry))
+                .unwrap();
+            let first = tx
+                .stage_plan_fetch(
+                    Arc::clone(&source),
+                    Arc::clone(&registry),
+                    Default::default(),
+                )
+                .unwrap();
+            let second = tx
+                .stage_plan_fetch(
+                    source,
+                    registry,
+                    crate::QueryExecutionResourceLimits {
+                        items: if fail { 0 } else { 10 },
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let outcome = tx.commit().await;
+            assert_eq!(*committed.lock().unwrap(), 1);
+            if fail {
+                assert_eq!(
+                    outcome.unwrap_err().diagnostic().code().as_str(),
+                    "commit_outcome_unknown"
+                );
+                assert_eq!(
+                    ordinary
+                        .get()
+                        .err()
+                        .unwrap()
+                        .diagnostic()
+                        .unwrap()
+                        .code()
+                        .as_str(),
+                    "commit_outcome_unknown"
+                );
+                for pending in [&first, &second] {
+                    assert_eq!(
+                        pending
+                            .get()
+                            .err()
+                            .unwrap()
+                            .diagnostic()
+                            .unwrap()
+                            .code()
+                            .as_str(),
+                        "commit_outcome_unknown"
+                    );
+                }
+            } else {
+                outcome.unwrap();
+                assert!(ordinary.get().is_ok());
+                let proof = first.get().unwrap();
+                assert!(Arc::ptr_eq(&proof, &first.get().unwrap()));
+                assert_eq!(proof.model_rows(), &[0]);
+                assert!(second.get().is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn fetch_group_rollback_close_and_drop_resolve_every_pending() {
+        for action in [0, 1, 2] {
+            let registry = Arc::new(DescriptorRegistry::new());
+            registry
+                .register_entity(crate::_descriptor::EntityDescriptor {
+                    type_name: "person".into(),
+                    is_abstract: false,
+                    parent_type: None,
+                    owned_attributes: vec![],
+                    doc: None,
+                    meta: Default::default(),
+                })
+                .unwrap();
+            let source = model_fetch_stack(&registry);
+            let (mut tx, state) = fixture(Default::default());
+            let pending = tx
+                .stage_plan_fetch(source, registry, Default::default())
+                .unwrap();
+            match action {
+                0 => tx.rollback().unwrap(),
+                1 => tx.close().unwrap(),
+                _ => drop(tx),
+            }
+            assert!(matches!(
+                pending.get(),
+                Err(PendingError::RolledBack | PendingError::Closed)
+            ));
+            assert!(state.lock().unwrap().events.is_empty());
+        }
+    }
+
     #[test]
     fn shared_plan_stage_retains_the_original_batch_allocation() {
         let (mut tx, state) = fixture(TransactionOptions::default());
@@ -2327,6 +3123,28 @@ mod tests {
             Err(PendingError::InvalidPlan(_))
         ));
         assert_eq!(Arc::strong_count(&source), 2);
+    }
+
+    #[test]
+    fn authored_batch_retains_the_original_source_for_every_chunk() {
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        let source = Arc::new(vec![
+            crate::query_plan_exec::race::stock_read(
+                type_bridge_contract::query_plan::v3::Operation::Rows,
+            ),
+            crate::query_plan_exec::race::stock_read(
+                type_bridge_contract::query_plan::v3::Operation::Count,
+            ),
+        ]);
+        assert_eq!(tx.stage_plans(Arc::clone(&source), false).unwrap().len(), 2);
+        assert_eq!(Arc::strong_count(&source), 3);
+        for (index, item) in tx.stack.0.iter().enumerate() {
+            let Slot::Plan { plan, .. } = &item.slot else {
+                panic!("plan slot");
+            };
+            assert!(std::ptr::eq(plan.plan().unwrap(), &source[index]));
+        }
+        assert!(state.lock().unwrap().events.is_empty());
     }
 
     #[test]
@@ -2488,6 +3306,60 @@ mod tests {
         }
     }
 
+    fn empty_bulk(documents: bool) -> type_bridge_contract::query_plan::v3::BuiltPlans {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        let mut builder = PlanBuilder::new();
+        let thing = builder.insert(TypeId::new(TypeKind::Entity, "doctor").unwrap());
+        builder.bind_model_rows(thing, vec![]);
+        if documents {
+            builder.fetch_held(thing, vec![]);
+        }
+        builder
+            .build_plans(
+                &crate::query_plan_exec::race::schema(),
+                crate::query_plan_exec::race::purchase_template()
+                    .managed_semantics()
+                    .clone(),
+                false,
+                type_bridge_contract::split::SplitLimits::CANONICAL,
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn empty_bulk_resolves_after_commit_without_provider_work() {
+        let (mut tx, state) = fixture(TransactionOptions::default());
+        let pending = tx
+            .stage_plans(Arc::new(empty_bulk(true)), true)
+            .unwrap()
+            .remove(0);
+        assert!(matches!(pending.get(), Err(PendingError::NotCommitted)));
+        assert_eq!(tx.stack.0.len(), 0);
+        tx.commit().await.unwrap();
+        assert_eq!(*pending.get().unwrap(), PlanAnswer::Documents(vec![]));
+        assert!(state.lock().unwrap().events.is_empty());
+        assert!(state.lock().unwrap().kinds.is_empty());
+        let rolled = tx
+            .stage_plans(Arc::new(empty_bulk(false)), false)
+            .unwrap()
+            .remove(0);
+        tx.rollback().unwrap();
+        assert!(matches!(rolled.get(), Err(PendingError::RolledBack)));
+        let failed = tx
+            .stage_plans(Arc::new(empty_bulk(true)), true)
+            .unwrap()
+            .remove(0);
+        tx.stage(StagedQuery::new("fail", true)).unwrap();
+        assert!(tx.commit().await.is_err());
+        assert!(matches!(failed.get(), Err(PendingError::Failed { .. })));
+        let closed = tx
+            .stage_plans(Arc::new(empty_bulk(true)), true)
+            .unwrap()
+            .remove(0);
+        tx.close().unwrap();
+        assert!(matches!(closed.get(), Err(PendingError::Closed)));
+    }
     #[tokio::test]
     async fn deletion_snapshot_reuses_identical_given_rows_without_interpolation() {
         let (mut tx, state) = fixture(TransactionOptions::default());
@@ -2552,6 +3424,12 @@ mod tests {
             state.given = true;
             state.rows = 1;
         }
+        state.lock().unwrap().row_values = Some(vec![serde_json::json!({
+            "doctor": type_bridge_contract::query_remote::RemoteValue::Thing {
+                iid: "0x01".into(),
+                type_id: type_bridge_contract::id::TypeId::new(type_bridge_contract::id::TypeKind::Entity, "doctor").unwrap(),
+            }
+        })]);
         let purchase = tx.stage_plan(&race::purchase("O1", "I1", "A1")).unwrap();
         let touched = tx.stage_plan(&race::touch_rows()).unwrap();
         let count = tx.stage_plan(&race::stock_read(Operation::Count)).unwrap();
@@ -2716,6 +3594,12 @@ mod tests {
         transaction.commit().await.unwrap();
         assert_eq!(
             PendingError::Failed {
+                diagnostic: Box::new(SdkExecutionDiagnostic::transaction_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkDiagnosticCode::new("test_failure")
+                        .unwrap(),
+                    type_bridge_contract::sdk_diagnostic::SdkDiagnosticMessage::new("failure")
+                        .unwrap(),
+                )),
                 op_index: Some(1),
                 message: "failure".into(),
                 failure: None,

@@ -47,7 +47,10 @@ pub use ids::{
 };
 pub use limits::*;
 pub use model::*;
-pub use plan_fetch_stack::{PlanFetchResult, PlanFetchStack, build_plan_fetch_stack};
+pub use plan_fetch_stack::{
+    OwnedPlanFetchResult, PlanFetchCell, PlanFetchResult, PlanFetchStack,
+    build_bulk_plan_fetch_stack, build_plan_fetch_stack,
+};
 pub use recording::{RecordingMatchExecutor, RecordingMatchResponse};
 pub use result::*;
 pub use result_validation::validated_match_result_from_plan;

@@ -1672,8 +1672,8 @@ pub(crate) fn evidence_failure(code: &'static str, message: &'static str) -> Dia
     failure(DiagnosticCategory::Integrity, code, message)
 }
 
-/// Validate documents and issue graph references for one declared model.
-pub(crate) fn graph_from_plan_documents(
+/// Issue graph references from documents already validated against the plan.
+pub(crate) fn graph_from_verified_plan_documents(
     registry: &crate::_registry::DescriptorRegistry,
     request: &super::ValidatedMatchRequest,
     plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
@@ -1681,7 +1681,6 @@ pub(crate) fn graph_from_plan_documents(
     limits: crate::QueryExecutionResourceLimits,
 ) -> ExecResult<(HydrationGraphV2, Vec<HydrationReferenceV2>)> {
     use super::descriptor_plan::{MatchRequestAdapterAuthority, build_hydration};
-    validate_plan_documents(plan, documents, limits)?;
     let metadata = MatchRequestAdapterAuthority::from_registry(registry)
         .map_err(QueryV2ExecutionError::Validation)?;
     let projection = build_hydration(

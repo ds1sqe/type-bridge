@@ -307,6 +307,26 @@ pub async fn proxy_with(
     scope: &str,
 ) -> Proxy {
     let database = connect(name).await;
+    proxy_with_database(
+        name,
+        policy,
+        allow_unauthenticated,
+        declared,
+        scope,
+        database,
+    )
+    .await
+}
+
+/// The same signed proxy fixture over a controlled provider backend.
+pub async fn proxy_with_database(
+    name: &str,
+    policy: LivePolicy,
+    allow_unauthenticated: bool,
+    declared: DeclaredSchema,
+    scope: &str,
+    database: Database,
+) -> Proxy {
     let profile = SemanticProfileId::new(
         semantic_profile_id(&database.server_version().expect("server version"))
             .expect("supported profile"),

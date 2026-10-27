@@ -51,7 +51,13 @@ use expression::{ExprWire, operand_type};
 
 #[path = "query_plan_v3_builder.rs"]
 mod builder;
-pub use builder::PlanBuilder;
+pub use builder::{BuildSelection, PlanBuilder, Site};
+#[path = "query_plan_v3_bulk.rs"]
+mod bulk;
+use bulk::BulkChunk;
+pub use bulk::{
+    BuiltPlans, BulkCorrelation, BulkRowSlice, BulkRows, group_bulk_columns, group_bulk_rows,
+};
 
 /// A closed match pattern, including a fresh scalar expression assignment.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -564,6 +570,14 @@ pub struct QueryPlanV3 {
     fetch_document_shape: Option<FetchDocumentShape>,
     #[serde(skip)]
     binding_types: BTreeMap<BindingId, BTreeSet<TypeId>>,
+    #[serde(skip)]
+    #[expect(
+        clippy::box_collection,
+        reason = "optional scalar metadata must not enlarge manager futures"
+    )]
+    scalar_types: Option<Box<BTreeMap<BindingId, ValueTypeTag>>>,
+    #[serde(skip)]
+    standalone_scalar_entity: bool,
 }
 
 impl QueryPlanV3 {
@@ -643,7 +657,7 @@ impl QueryPlanV3 {
         let mut nodes = 0;
         validate_local_functions(&spec.functions, limits.structural, &mut nodes)?;
         let mut binding_types = BTreeMap::new();
-        let fetch_document_shape =
+        let (fetch_document_shape, scalar_types) =
             validate_stages(&spec, schema, limits, &mut nodes, &mut binding_types)?;
         fn extra_zero_hop_nodes(
             pattern: &QueryPattern,
@@ -833,6 +847,15 @@ impl QueryPlanV3 {
                 "query.pipeline.write-projection",
             )?;
         }
+        let standalone_scalar_entity = bulk::standalone_scalar_entity(&spec, schema);
+        let scalar_types = match &spec.output {
+            QueryOutput::Rows { columns } => scalar_types
+                .into_iter()
+                .filter(|(binding, _)| columns.contains(binding))
+                .collect::<BTreeMap<_, _>>(),
+            _ => BTreeMap::new(),
+        };
+        let scalar_types = (!scalar_types.is_empty()).then(|| Box::new(scalar_types));
         let plan = Self {
             bindings: spec.bindings,
             compatibility: spec.compatibility,
@@ -848,6 +871,8 @@ impl QueryPlanV3 {
             required_capabilities,
             fetch_document_shape,
             binding_types,
+            scalar_types,
+            standalone_scalar_entity,
         };
         plan.canonical_bytes()?;
         Ok(plan)
@@ -908,6 +933,12 @@ impl QueryPlanV3 {
     #[must_use]
     pub fn bindings(&self) -> &[AssertionBinding] {
         &self.bindings
+    }
+
+    /// Schema-derived scalar domain for a selected row value binding.
+    #[must_use]
+    pub fn scalar_value_type(&self, binding: BindingId) -> Option<ValueTypeTag> {
+        self.scalar_types.as_deref()?.get(&binding).copied()
     }
     /// Typed invocation columns.
     #[must_use]
@@ -1102,7 +1133,13 @@ fn validate_stages(
     limits: QueryLimits,
     nodes: &mut usize,
     binding_types: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
-) -> Result<Option<FetchDocumentShape>, Diagnostic> {
+) -> Result<
+    (
+        Option<FetchDocumentShape>,
+        BTreeMap<BindingId, ValueTypeTag>,
+    ),
+    Diagnostic,
+> {
     let Some(first) = spec.pipeline.first() else {
         return Err(invalid(
             "query_plan_empty_pipeline",
@@ -1678,18 +1715,21 @@ fn validate_stages(
                 .semantic_profile()
                 .expect("managed schema fingerprints carry a profile"),
         )?;
-        return Ok(Some(FetchDocumentShape::new(
-            &index,
-            document,
-            &types,
-            &scalar_types,
-            &profile,
-        )));
+        return Ok((
+            Some(FetchDocumentShape::new(
+                &index,
+                document,
+                &types,
+                &scalar_types,
+                &profile,
+            )),
+            scalar_types,
+        ));
     } else if !matches!(&spec.output, QueryOutput::Rows { columns } if columns.is_empty() && matches!(spec.operation,Operation::Count|Operation::Exists|Operation::Write{returns:WriteReturns::Matched}))
     {
         validate_output(&spec.output, &mandatory, &optional, limits.structural)?;
     }
-    Ok(None)
+    Ok((None, scalar_types))
 }
 
 fn validate_v3_read_tail(

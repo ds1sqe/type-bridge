@@ -2329,7 +2329,7 @@ async fn native_typed_read_stacks_match_live_rows_pages_counts_and_subtype_roles
     }
 }
 
-fn generic_model_selection(
+pub(crate) fn generic_model_selection(
     columns: &[u16],
     given: bool,
 ) -> (

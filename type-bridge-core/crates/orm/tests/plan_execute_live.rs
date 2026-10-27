@@ -68,7 +68,7 @@ async fn live_database(stem: &str) -> Option<Database> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_query_purchase_and_write_plans_resolve_at_commit() {
-    let Some(db) = live_database("tb_plans").await else {
+    let Some(db) = live_database("tb270_09_plans").await else {
         return;
     };
     db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
@@ -84,9 +84,21 @@ async fn one_query_purchase_and_write_plans_resolve_at_commit() {
     .unwrap();
 
     let mut tx = db.transaction(TransactionOptions::default());
-    let bought = tx.stage_plan(&race::purchase("O1", "I1", "A1")).unwrap();
+    let bought = tx
+        .stage_plan(&race::implicit_purchase("O1", "I1", "A1"))
+        .unwrap();
     tx.commit().await.unwrap();
-    assert_eq!(*bought.get().unwrap(), PlanAnswer::Matched(1));
+    let PlanAnswer::Matched(count) = *bought.get().unwrap() else {
+        panic!("purchase must answer a matched count");
+    };
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../tests/contracts/sdk_conformance/writes/purchase/expected.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        serde_json::json!(["matched", count]),
+        expected["results"]["program"]["purchase"]
+    );
 
     // Stock is now 0: the same pipeline matches no row and writes nothing.
     let refused = tx.stage_plan(&race::purchase("O2", "I1", "A1")).unwrap();

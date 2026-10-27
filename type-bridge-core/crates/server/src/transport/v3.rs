@@ -724,11 +724,9 @@ async fn execute_staged(
 fn pending_diagnostic(error: PendingError) -> SdkExecutionDiagnostic {
     match error {
         PendingError::InvalidPlan(diagnostic) => lower_remote_query_diagnostic(*diagnostic),
-        PendingError::Failed {
-            failure: Some(failure),
-            context,
-            ..
-        } => SdkExecutionDiagnostic::from_failure(&failure, *context),
+        PendingError::Failed { diagnostic, .. } | PendingError::Refused { diagnostic, .. } => {
+            *diagnostic
+        }
         _ => SdkExecutionDiagnostic::internal_failure(),
     }
 }
@@ -905,5 +903,34 @@ async fn police(
         Some(Ok(())) => None,
         Some(Err(_)) => Some(policy_rejected()),
         None => Some(deadline_exceeded()),
+    }
+}
+
+#[cfg(test)]
+mod pending_diagnostic_redaction_tests {
+    use super::*;
+    #[test]
+    fn pending_failure_uses_the_canonical_diagnostic_without_server_text() {
+        let error = PendingError::Failed {
+            diagnostic: Box::new(
+                type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::commit_failure(
+                    type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown,
+                ),
+            ),
+            op_index: None,
+            message: "signed-server-secret".into(),
+            failure: Some(Box::new(
+                type_bridge_contract::failure::Failure::Indeterminate { code: None },
+            )),
+            context: Default::default(),
+        };
+        assert!(!error.to_string().contains("signed-server-secret"));
+        let surfaced = pending_diagnostic(error);
+        assert!(
+            !serde_json::to_string(&surfaced.host_json())
+                .unwrap()
+                .contains("signed-server-secret")
+        );
+        assert_eq!(surfaced.code().as_str(), "commit_outcome_unknown");
     }
 }

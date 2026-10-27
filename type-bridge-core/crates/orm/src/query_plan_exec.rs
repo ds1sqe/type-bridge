@@ -12,12 +12,13 @@
 use type_bridge_core_lib::__internal as tql;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId};
 use type_bridge_contract::query_plan::v3::{
-    ArithOp, AttachItem, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern, QueryPlanV3,
-    Set, Stage, ThingDocument, WriteReturns,
+    ArithOp, AttachItem, BuiltPlans, Builtin, DeleteItem, Expr, InsertThing, Operation, Pattern,
+    QueryPlanV3, Set, Stage, ThingDocument, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     DocumentSource, InputColumn, OrderDirection, QueryOperand, QueryOutput, QueryPattern,
@@ -60,6 +61,45 @@ pub enum PlanAnswer {
 }
 
 impl PlanAnswer {
+    /// Decode scalar output columns in declared order for typed SDK tuples.
+    /// Direct provider concepts and verified proxy values share this path.
+    pub fn scalar_rows(
+        &self,
+        plan: &QueryPlanV3,
+    ) -> Result<Vec<Vec<type_bridge_contract::value::CanonicalValue>>, Diagnostic> {
+        let (Self::Rows(rows), QueryOutput::Rows { columns }) = (self, plan.output()) else {
+            return Err(staged_answer_shape());
+        };
+        let names = columns
+            .iter()
+            .map(|column| local_variable(plan.bindings(), *column))
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.iter()
+            .map(|row| {
+                names
+                    .iter()
+                    .zip(columns)
+                    .map(|(name, binding)| {
+                        let value = row_value(row, name, plan.limits().codec)?;
+                        match value {
+                            RemoteValue::Value { value } | RemoteValue::Attribute { value, .. }
+                                if plan.scalar_value_type(*binding) == Some(value.value_type()) =>
+                            {
+                                Ok(value)
+                            }
+                            RemoteValue::Value { .. } | RemoteValue::Attribute { .. } => {
+                                Err(staged_answer_shape())
+                            }
+                            RemoteValue::Thing { .. } | RemoteValue::Absent => {
+                                Err(staged_answer_shape())
+                            }
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Project this answer onto the staged V3 wire evidence of `plan`.
     ///
     /// Rows carry one provider concept per output binding, keyed by the
@@ -106,10 +146,17 @@ impl PlanAnswer {
     /// objects keyed by the projected variable, holding the typed remote
     /// value; fetched documents retain their validated scalar domains.
     pub fn from_staged_v3(answer: &StagedAnswerV3, plan: &QueryPlanV3) -> Result<Self, Diagnostic> {
+        answer.validate_for(plan)?;
+        Self::from_verified_staged_v3(answer, plan)
+    }
+
+    pub(crate) fn from_verified_staged_v3(
+        answer: &StagedAnswerV3,
+        plan: &QueryPlanV3,
+    ) -> Result<Self, Diagnostic> {
         let fingerprint = plan.shape_fingerprint()?.digest().to_hex();
         let _span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.answer", %fingerprint, transport = "proxy").entered();
         tracing::debug!(target: "type_bridge.plan", items = match answer { StagedAnswerV3::Rows { rows } => rows.len(), StagedAnswerV3::Documents { documents } => documents.len(), _ => 1 }, wire_bytes = serde_json::to_vec(answer).map_or(0, |bytes| bytes.len()), "type_bridge.plan.answer");
-        answer.validate_for(plan)?;
         Ok(match answer {
             StagedAnswerV3::Count { value } => Self::Count(*value),
             StagedAnswerV3::Exists { value } => Self::Exists(*value),
@@ -263,10 +310,11 @@ pub(crate) async fn execute_plans_counted(
                 meter.accept_value(item)?;
             }
         }
-        let answer = resolve_plan(plan, result).map_err(plan_diagnostic_error)?;
-        let wire = answer.to_staged_v3(plan).map_err(plan_diagnostic_error)?;
+        let ResolvedPlanAnswer { wire, .. } =
+            resolve_plan_with_wire(plan, result).map_err(plan_diagnostic_error)?;
         semantic.accept(&wire)?;
-        answers.push(PlanAnswer::from_staged_v3(&wire, plan).map_err(plan_diagnostic_error)?);
+        answers
+            .push(PlanAnswer::from_verified_staged_v3(&wire, plan).map_err(plan_diagnostic_error)?);
     }
     check()?;
     Ok((
@@ -338,6 +386,99 @@ fn staged_value_unserializable() -> Diagnostic {
 }
 
 /// An answer kind must match the validated plan.
+/// Resolve one authored call's committed answers, correlating bulk documents
+/// with canonical input values and restoring original input order. Every SDK
+/// uses this function; no binding assumes provider ordering.
+///
+/// # Errors
+/// Refuses incomplete, extra, mismatched or malformed bulk answers.
+pub fn merge_plan_answers(
+    plans: &BuiltPlans,
+    answers: &[Arc<PlanAnswer>],
+    correlations: &[Option<&type_bridge_contract::query_plan::v3::BulkCorrelation>],
+) -> Result<Arc<PlanAnswer>, Diagnostic> {
+    let bad = || {
+        failure(
+            DiagnosticCategory::Integrity,
+            "query_remote_v3_document_value",
+            "bulk answers do not match their input rows",
+        )
+    };
+    let Some(chunks) = plans.bulk_chunks() else {
+        return if answers.len() == 1 {
+            Ok(Arc::clone(&answers[0]))
+        } else {
+            Err(bad())
+        };
+    };
+    if chunks.len() == 0 {
+        return match answers {
+            [] => Ok(Arc::new(if plans.returns_documents() {
+                PlanAnswer::Documents(vec![])
+            } else {
+                PlanAnswer::Matched(0)
+            })),
+            [answer]
+                if matches!(answer.as_ref(), PlanAnswer::Documents(documents) if documents.is_empty())
+                    && plans.returns_documents() =>
+            {
+                Ok(Arc::clone(answer))
+            }
+            [answer]
+                if matches!(answer.as_ref(), PlanAnswer::Matched(0))
+                    && !plans.returns_documents() =>
+            {
+                Ok(Arc::clone(answer))
+            }
+            _ => Err(bad()),
+        };
+    }
+    if answers.len() != plans.plans().len() || chunks.len() != answers.len() {
+        return Err(bad());
+    }
+    if !plans.returns_documents() {
+        let mut total = 0u64;
+        for (chunk, answer) in chunks.clone().zip(answers) {
+            let PlanAnswer::Matched(count) = answer.as_ref() else {
+                return Err(bad());
+            };
+            if *count != u64::try_from(chunk.positions.len()).map_err(|_| bad())? {
+                return Err(bad());
+            }
+            total = total.checked_add(*count).ok_or_else(bad)?;
+        }
+        return Ok(Arc::new(PlanAnswer::Matched(total)));
+    }
+    let count = chunks.clone().map(|chunk| chunk.positions.len()).sum();
+    let mut ordered = vec![None; count];
+    for (index, ((_plan, chunk), answer)) in
+        plans.plans().iter().zip(chunks).zip(answers).enumerate()
+    {
+        let PlanAnswer::Documents(documents) = answer.as_ref() else {
+            return Err(bad());
+        };
+        let correlation = correlations
+            .get(index)
+            .and_then(|proof| *proof)
+            .ok_or_else(bad)?;
+        if correlation.indices().len() != chunk.positions.len() {
+            return Err(bad());
+        }
+        for (position, source) in chunk.positions.iter().zip(correlation.indices()) {
+            let target = ordered.get_mut(*position).ok_or_else(bad)?;
+            if target.is_some() {
+                return Err(bad());
+            }
+            *target = Some(documents.get(*source).ok_or_else(bad)?.clone());
+        }
+    }
+    let documents = ordered
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(bad)?;
+    Ok(Arc::new(PlanAnswer::Documents(documents)))
+}
+
 fn staged_answer_shape() -> Diagnostic {
     failure(
         DiagnosticCategory::Integrity,
@@ -408,6 +549,19 @@ pub(crate) fn remote_value(
             type_id,
         },
     })
+}
+
+fn row_value(
+    row: &serde_json::Value,
+    name: &str,
+    limits: type_bridge_contract::limits::CodecLimits,
+) -> Result<RemoteValue, Diagnostic> {
+    let raw = row.get(name).ok_or_else(staged_answer_shape)?;
+    if raw.get("kind").is_some() {
+        serde_json::from_value(raw.clone()).map_err(|_| staged_answer_shape())
+    } else {
+        remote_value(row, name, limits)
+    }
 }
 
 /// Lower one trusted plan into the official AST plus its `given` rows.
@@ -816,20 +970,71 @@ pub(crate) fn resolve_plan(
     plan: &QueryPlanV3,
     result: QueryResult,
 ) -> Result<PlanAnswer, Diagnostic> {
+    resolve_plan_with_wire(plan, result).map(|resolved| resolved.answer)
+}
+
+pub(crate) struct ResolvedPlanAnswer {
+    pub answer: PlanAnswer,
+    pub wire: StagedAnswerV3,
+    pub correlation: Option<Arc<type_bridge_contract::query_plan::v3::BulkCorrelation>>,
+}
+
+pub(crate) fn resolve_plan_with_wire(
+    plan: &QueryPlanV3,
+    result: QueryResult,
+) -> Result<ResolvedPlanAnswer, Diagnostic> {
     if plan.fetch_document_shape().is_some() {
         let QueryResult::Documents(documents) = result else {
             return Err(staged_answer_shape());
         };
         let documents = documents
             .iter()
-            .map(|document| document_json(&remote_document(document, plan)?))
-            .collect::<Result<_, _>>()?;
-        return Ok(PlanAnswer::Documents(documents));
+            .map(|document| remote_document(document, plan))
+            .collect::<Result<Vec<_>, _>>()?;
+        let correlation = plan
+            .standalone_entity_rows()
+            .map(|expected| expected.correlate_proof(&documents).map(Arc::new))
+            .transpose()?;
+        let answer = PlanAnswer::Documents(
+            documents
+                .iter()
+                .map(document_json)
+                .collect::<Result<_, _>>()?,
+        );
+        return Ok(ResolvedPlanAnswer {
+            answer,
+            wire: StagedAnswerV3::Documents { documents },
+            correlation,
+        });
     }
     if matches!(result, QueryResult::Documents(_)) {
         return Err(staged_answer_shape());
     }
-    resolve(plan.operation(), result)
+    let answer = resolve(plan.operation(), result)?;
+    match &answer {
+        PlanAnswer::Matched(count) | PlanAnswer::Count(count) => {
+            plan.validate_standalone_entity_row_count(*count)?
+        }
+        PlanAnswer::Rows(rows) => plan
+            .validate_standalone_entity_row_count(u64::try_from(rows.len()).unwrap_or(u64::MAX))?,
+        _ => {}
+    }
+    let wire = answer.to_staged_v3(plan)?;
+    wire.validate_for(plan)?;
+    Ok(ResolvedPlanAnswer {
+        answer,
+        wire,
+        correlation: None,
+    })
+}
+
+#[cfg(test)]
+thread_local! {
+    static DOCUMENT_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+pub(crate) fn take_document_validation_count() -> usize {
+    DOCUMENT_VALIDATIONS.with(|count| count.replace(0))
 }
 
 pub(crate) fn remote_document(
@@ -841,6 +1046,8 @@ pub(crate) fn remote_document(
         .ok_or_else(staged_answer_shape)?;
     let fields = decode_document(document, plan, shape, None)?;
     shape.validate(&fields)?;
+    #[cfg(test)]
+    DOCUMENT_VALIDATIONS.with(|count| count.set(count.get() + 1));
     Ok(fields)
 }
 
@@ -1691,7 +1898,160 @@ pub(crate) mod race;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scalar_tuples_share_direct_and_proxy_decoding_and_reject_non_scalars() {
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::value::CanonicalValue;
+        let mut builder = PlanBuilder::new();
+        let item = builder.exact(
+            type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Entity,
+                "item",
+            )
+            .unwrap(),
+        );
+        let stock = builder.field(
+            item,
+            type_bridge_contract::id::AttributeId::new("stock").unwrap(),
+        );
+        builder.returning(vec![stock]);
+        let plan = builder
+            .build(
+                &race::schema(),
+                race::purchase_template().managed_semantics().clone(),
+            )
+            .unwrap();
+        let name = local_variable(plan.bindings(), stock).unwrap();
+        let row = serde_json::Value::Object(
+            [(
+                name.to_owned(),
+                serde_json::json!({"category":"value","value_type":"integer","value":7}),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let direct = PlanAnswer::Rows(vec![row]);
+        let proxy =
+            PlanAnswer::from_staged_v3(&direct.to_staged_v3(&plan).unwrap(), &plan).unwrap();
+        let expected = vec![vec![CanonicalValue::Long(7)]];
+        assert_eq!(direct.scalar_rows(&plan).unwrap(), expected);
+        assert_eq!(proxy.scalar_rows(&plan).unwrap(), expected);
+        let wrong = serde_json::Value::Object([(name.to_owned(), serde_json::json!({"category":"value","value_type":"string","value":"wrong domain"}))].into_iter().collect());
+        assert!(resolve_plan(&plan, QueryResult::Rows(vec![wrong])).is_err());
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!({"kind":"thing","iid":"0x01","type_id":{"kind":"entity","label":"item"}}),
+        ] {
+            let row = serde_json::Value::Object([(name.to_owned(), value)].into_iter().collect());
+            assert!(PlanAnswer::Rows(vec![row]).scalar_rows(&plan).is_err());
+        }
+        assert!(
+            PlanAnswer::Rows(vec![serde_json::json!({})])
+                .scalar_rows(&plan)
+                .is_err()
+        );
+    }
+
     use super::*;
+
+    #[test]
+    fn bulk_answers_correlate_values_and_restore_interleaved_input_order() {
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::schema::OwnsFactId;
+        use type_bridge_contract::split::SplitLimits;
+        use type_bridge_contract::value::{CanonicalString, CanonicalValue};
+        let item = TypeId::new(TypeKind::Entity, "item").unwrap();
+        let field = |name| OwnsFactId::new(item.clone(), AttributeId::new(name).unwrap()).unwrap();
+        let row = |id: &str, stock| {
+            let mut values = vec![(
+                field("item-id"),
+                CanonicalValue::String(CanonicalString::new(id).unwrap()),
+            )];
+            if let Some(stock) = stock {
+                values.push((field("stock"), CanonicalValue::Long(stock)));
+            }
+            values
+        };
+        let mut builder = PlanBuilder::new();
+        let thing = builder.insert(item.clone());
+        builder
+            .bind_model_rows(
+                thing,
+                vec![
+                    row("I1", Some(1)),
+                    row("I2", None),
+                    row("I3", Some(3)),
+                    row("I4", Some(4)),
+                ],
+            )
+            .fetch_held(thing, vec![]);
+        let built = builder
+            .build_plans(
+                &race::schema(),
+                race::purchase_template().managed_semantics().clone(),
+                false,
+                SplitLimits::new(2, usize::MAX),
+            )
+            .unwrap();
+        let document = |id: &str, stock: Option<i64>| {
+            let mut attributes = serde_json::json!({"item-id":id});
+            if let Some(stock) = stock {
+                attributes["stock"] = serde_json::json!(stock);
+            }
+            serde_json::json!({"_iid":format!("0x{:02x}",id.as_bytes().last().unwrap()),"_type":"item","attributes":attributes})
+        };
+        let answers = vec![
+            Arc::new(PlanAnswer::Documents(vec![
+                document("I3", Some(3)),
+                document("I1", Some(1)),
+            ])),
+            Arc::new(PlanAnswer::Documents(vec![document("I4", Some(4))])),
+            Arc::new(PlanAnswer::Documents(vec![document("I2", None::<i64>)])),
+        ];
+        let validated = built
+            .plans()
+            .iter()
+            .zip(&answers)
+            .map(|(plan, answer)| {
+                let PlanAnswer::Documents(documents) = answer.as_ref() else {
+                    panic!("documents")
+                };
+                resolve_plan_with_wire(plan, QueryResult::Documents(documents.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let correlations = validated
+            .iter()
+            .map(|answer| answer.correlation.as_deref())
+            .collect::<Vec<_>>();
+        let merged = merge_plan_answers(&built, &answers, &correlations).unwrap();
+        let PlanAnswer::Documents(documents) = merged.as_ref() else {
+            panic!("expected documents");
+        };
+        assert_eq!(
+            documents
+                .iter()
+                .map(|document| document["attributes"]["item-id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["I1", "I2", "I3", "I4"]
+        );
+        let mut wrong = answers.clone();
+        wrong[0] = Arc::new(PlanAnswer::Documents(vec![
+            document("wrong", Some(3)),
+            document("I1", Some(1)),
+        ]));
+        let PlanAnswer::Documents(documents) = wrong[0].as_ref() else {
+            panic!("documents")
+        };
+        assert_eq!(
+            resolve_plan_with_wire(&built.plans()[0], QueryResult::Documents(documents.clone()))
+                .err()
+                .unwrap()
+                .code()
+                .as_str(),
+            "query_remote_v3_document_value"
+        );
+    }
 
     fn typeql(plan: &QueryPlanV3) -> (String, Option<GivenRowsSpec>) {
         let lowered = lower(plan).unwrap();
@@ -1893,6 +2253,28 @@ mod tests {
         // Caller values travel only as given rows.
         for value in ["O1", "I1", "A1"] {
             assert!(!actual.contains(&format!("\"{value}\"")));
+        }
+    }
+
+    #[test]
+    fn implicit_purchase_keeps_caller_values_out_of_typeql() {
+        let (actual, given) = typeql(&race::implicit_purchase(
+            "private-order",
+            "private-item",
+            "private-buyer",
+        ));
+        let given = given.unwrap();
+        assert_eq!(
+            given.variables,
+            [
+                "item_item_id_2",
+                "account_account_id_2",
+                "purchase_order_id"
+            ]
+        );
+        assert_eq!(given.rows.len(), 1);
+        for value in ["private-order", "private-item", "private-buyer"] {
+            assert!(!actual.contains(value));
         }
     }
 

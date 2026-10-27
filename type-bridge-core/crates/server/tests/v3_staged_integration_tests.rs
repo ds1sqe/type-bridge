@@ -91,6 +91,159 @@ fn failure_code(reply: &VerifiedStagedReplyV3) -> String {
     reply.diagnostic().expect("failed reply").code().to_owned()
 }
 
+#[tokio::test]
+async fn mismatching_bulk_documents_roll_back_direct_and_signed_proxy_writes() {
+    use std::sync::Mutex;
+    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::query_plan::v3::PlanBuilder;
+    use type_bridge_contract::schema::OwnsFactId;
+    use type_bridge_orm::OrmError;
+    use type_bridge_orm::session::backend::{
+        BoxFuture, DriverBackend, GivenRowsSpec, QueryResult, TransactionOps,
+    };
+    use type_bridge_orm::session::database::Database;
+
+    #[derive(Default)]
+    struct State {
+        committed: usize,
+        events: Vec<&'static str>,
+    }
+    struct Backend(Arc<Mutex<State>>);
+    struct Transaction {
+        state: Arc<Mutex<State>>,
+        pending: usize,
+    }
+    impl DriverBackend for Backend {
+        fn open_transaction(
+            &self,
+            _: &str,
+            _: TxType,
+        ) -> BoxFuture<'_, Result<Box<dyn TransactionOps>, OrmError>> {
+            let transaction = Transaction {
+                state: Arc::clone(&self.0),
+                pending: 0,
+            };
+            Box::pin(async { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+        fn supports_given_rows(&self) -> bool {
+            true
+        }
+        fn server_version(&self) -> Option<type_bridge_core_lib::version::Version> {
+            "3.13.6".parse().ok()
+        }
+        fn schema_text(&self, _: &str) -> BoxFuture<'_, Result<String, OrmError>> {
+            let schema = race::SCHEMA_TYPEQL
+                .replace(" @key", "")
+                .replace(" @card(0..1)", "");
+            Box::pin(async move { Ok(schema) })
+        }
+    }
+    impl TransactionOps for Transaction {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.pending += 1;
+            self.state.lock().unwrap().events.push("query");
+            Box::pin(async {
+                Ok(QueryResult::Documents(vec![
+                    serde_json::json!({"_iid":"0x01","_type":"item","attributes":{"item-id":"I1","stock":999}}),
+                ]))
+            })
+        }
+        fn query_with_rows(
+            &mut self,
+            query: &str,
+            _: GivenRowsSpec,
+        ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.query(query)
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            let mut state = self.state.lock().unwrap();
+            state.committed += self.pending;
+            self.pending = 0;
+            state.events.push("commit");
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.pending = 0;
+            self.state.lock().unwrap().events.push("rollback");
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.state.lock().unwrap().events.push("close");
+            Box::pin(async { Ok(()) })
+        }
+    }
+    let mut builder = PlanBuilder::new();
+    let item = TypeId::new(TypeKind::Entity, "item").unwrap();
+    let created = builder.insert(item.clone());
+    let field = |name| OwnsFactId::new(item.clone(), AttributeId::new(name).unwrap()).unwrap();
+    builder
+        .bind_model_rows(
+            created,
+            vec![vec![
+                (field("item-id"), text("I1").unwrap()),
+                (field("stock"), CanonicalValue::Long(1)),
+            ]],
+        )
+        .fetch_held(created, vec![]);
+    let built = builder
+        .build_plans(
+            &race::schema(),
+            race::purchase_template().managed_semantics().clone(),
+            false,
+            type_bridge_contract::split::SplitLimits::CANONICAL,
+        )
+        .unwrap();
+    let plan = &built.plans()[0];
+    for proxy_transport in [false, true] {
+        let state = Arc::new(Mutex::new(State::default()));
+        let database = Database::with_backend(
+            Box::new(Backend(Arc::clone(&state))),
+            "tb270_09_bulk_validation",
+        );
+        if proxy_transport {
+            let proxy = staged_live::proxy_with_database(
+                "tb270_09_bulk_validation",
+                LivePolicy {
+                    vouch: true,
+                    ..Default::default()
+                },
+                false,
+                race::schema(),
+                "tb270_09_bulk_validation",
+                database,
+            )
+            .await;
+            let entry =
+                StagedPlanV3::new(plan, plan.given_rows().unwrap().to_vec(), &proxy.declared)
+                    .unwrap();
+            let request = request(&proxy, vec![entry]);
+            let reply = verify(&proxy, &request, &post(&proxy, &request).await);
+            assert!(!reply.committed());
+            assert_eq!(failure_code(&reply), "query_remote_v3_document_value");
+        } else {
+            let mut transaction = database.transaction(TransactionOptions::default());
+            let pending = transaction.stage_plan(plan).unwrap();
+            assert_eq!(
+                transaction
+                    .commit()
+                    .await
+                    .unwrap_err()
+                    .diagnostic()
+                    .code()
+                    .as_str(),
+                "query_remote_v3_document_value"
+            );
+            assert!(pending.get().is_err());
+        }
+        let state = state.lock().unwrap();
+        assert_eq!(state.committed, 0);
+        assert_eq!(state.events, ["query", "rollback", "close"]);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
 async fn staged_purchase_matches_direct_transaction_answers_and_state() {

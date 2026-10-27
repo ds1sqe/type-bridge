@@ -14,6 +14,8 @@ pub struct FetchDocumentShape {
     types: Types,
     roles: Vec<(bool, Types, bool)>,
     scalars: BTreeMap<String, ValueTypeTag>,
+    ordered_roles: bool,
+    complete_model_roles: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,9 +63,32 @@ impl FetchDocumentShape {
                 )
             })
             .collect();
+        let mut ordered_roles = false;
+        let mut complete_model_roles = true;
+        'types: for candidate in &bindings[&document.thing] {
+            let ancestors = index.ancestors(candidate);
+            for fact in index.schema.facts() {
+                let SchemaFact::Relates(role) = fact else {
+                    continue;
+                };
+                if !ancestors.contains(role.id().relation()) {
+                    continue;
+                }
+                if !role.collection_mode().is_unordered() {
+                    ordered_roles = true;
+                    break 'types;
+                }
+                complete_model_roles &= document
+                    .roles
+                    .iter()
+                    .any(|listed| &listed.role == role.id().role());
+            }
+        }
         Self {
             types,
             roles,
+            ordered_roles,
+            complete_model_roles,
             scalars: document
                 .scalars
                 .iter()
@@ -75,6 +100,18 @@ impl FetchDocumentShape {
                 })
                 .collect(),
         }
+    }
+
+    /// Whether any possible root type has ordered related-role semantics.
+    #[must_use]
+    pub const fn has_ordered_roles(&self) -> bool {
+        self.ordered_roles
+    }
+
+    /// Whether one terminal fetch can represent every possible model's roles.
+    #[must_use]
+    pub const fn supports_write_model_projection(&self) -> bool {
+        self.complete_model_roles && !self.ordered_roles
     }
 
     /// Concrete type labels admitted by this terminal fetch shape.
@@ -193,6 +230,12 @@ impl FetchDocumentShape {
 }
 
 impl SchemaIndex<'_> {
+    pub(super) fn has_list_ownership(&self, type_id: &TypeId, profile: &SemanticProfile) -> bool {
+        self.document_types(&BTreeSet::from([type_id.clone()]), profile)
+            .values()
+            .any(|fields| fields.values().any(|field| field.list))
+    }
+
     fn document_types(&self, candidates: &BTreeSet<TypeId>, profile: &SemanticProfile) -> Types {
         candidates
             .iter()

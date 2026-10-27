@@ -10,7 +10,7 @@ use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
 use type_bridge_contract::migration_assertion::{AssertionBinding, QueryVariable, ValueComparator};
 use type_bridge_contract::query_plan::v3::{
     ArithOp, DeleteItem, Expr, InsertThing, Operation, Pattern, PlanBuilder, PlanSpec, QueryPlanV3,
-    Set, Stage, WriteReturns,
+    Set, Site, Stage, WriteReturns,
 };
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
@@ -240,6 +240,155 @@ fn builder_purchase_bytes_equal_the_hand_built_plan() {
 }
 
 #[test]
+fn implicit_purchase_equals_explicit_inputs_with_derived_names() {
+    fn purchase(implicit: bool) -> QueryPlanV3 {
+        let mut plan = PlanBuilder::new();
+        let item = plan.exact(entity("item"));
+        let buyer = plan.exact(entity("account"));
+        let item_key = plan.field(item, attribute("item-id"));
+        let buyer_key = plan.field(buyer, attribute("id"));
+        let stock = plan.field(item, attribute("stock"));
+        let price = plan.field(item, attribute("price"));
+        let balance = plan.field(buyer, attribute("balance"));
+        let item_id = if implicit {
+            plan.bind_value(Site::new(item, "item-id"), text("item-1").unwrap())
+        } else {
+            QueryOperand::Input {
+                column: plan.input("item_item_id_2", ValueTypeTag::String, false),
+            }
+        };
+        let buyer_id = if implicit {
+            plan.bind_value(Site::new(buyer, "id"), text("buyer-1").unwrap())
+        } else {
+            QueryOperand::Input {
+                column: plan.input("account_id_2", ValueTypeTag::String, false),
+            }
+        };
+        plan.compare(
+            QueryOperand::Binding { binding: item_key },
+            ValueComparator::Equal,
+            item_id,
+        )
+        .compare(
+            QueryOperand::Binding { binding: buyer_key },
+            ValueComparator::Equal,
+            buyer_id,
+        )
+        .compare(
+            QueryOperand::Binding { binding: stock },
+            ValueComparator::Greater,
+            literal(0),
+        )
+        .compare(
+            QueryOperand::Binding { binding: balance },
+            ValueComparator::GreaterOrEqual,
+            QueryOperand::Binding { binding: price },
+        );
+        let next_stock = plan.let_(
+            "next_stock",
+            sub(QueryOperand::Binding { binding: stock }, literal(1)),
+        );
+        let next_balance = plan.let_(
+            "next_balance",
+            sub(
+                QueryOperand::Binding { binding: balance },
+                QueryOperand::Binding { binding: price },
+            ),
+        );
+        plan.update(
+            item,
+            owns(entity("item"), "stock"),
+            QueryOperand::Binding {
+                binding: next_stock,
+            },
+        )
+        .update(
+            buyer,
+            owns(entity("account"), "balance"),
+            QueryOperand::Binding {
+                binding: next_balance,
+            },
+        );
+        let purchase = plan.insert(purchase_type());
+        let purchase_id = if implicit {
+            plan.bind_value(
+                Site::new(purchase, "purchase-id"),
+                text("purchase-1").unwrap(),
+            )
+        } else {
+            QueryOperand::Input {
+                column: plan.input("purchase_purchase_id", ValueTypeTag::String, false),
+            }
+        };
+        plan.thing_field(purchase, owns(purchase_type(), "purchase-id"), purchase_id)
+            .thing_player(purchase, RoleId::new("purchase", "buyer").unwrap(), buyer)
+            .thing_player(purchase, RoleId::new("purchase", "item").unwrap(), item);
+        if !implicit {
+            plan.row(vec![text("item-1"), text("buyer-1"), text("purchase-1")]);
+        }
+        plan.build(&schema(), semantics()).unwrap()
+    }
+    let implicit = purchase(true);
+    let explicit = purchase(false);
+    assert_eq!(
+        implicit.canonical_bytes().unwrap(),
+        explicit.canonical_bytes().unwrap()
+    );
+    assert_eq!(
+        implicit.fingerprint().unwrap(),
+        explicit.fingerprint().unwrap()
+    );
+}
+
+#[test]
+fn implicit_names_share_the_binding_namespace_and_use_collision_suffixes() {
+    let mut plan = PlanBuilder::new();
+    let account = plan.exact(entity("account"));
+    plan.field(account, attribute("score"));
+    let first = plan.bind_value(Site::new(account, "score"), CanonicalValue::Long(1));
+    let second = plan.bind_value(Site::new(account, "score"), CanonicalValue::Long(2));
+    plan.compare(first, ValueComparator::Less, second).count();
+    let built = plan.build(&schema(), semantics()).unwrap();
+    assert_eq!(built.inputs()[0].public_name().as_str(), "account_score_2");
+    assert_eq!(built.inputs()[1].public_name().as_str(), "account_score_3");
+    assert_eq!(
+        built.given_rows().unwrap()[0].values(),
+        &[Some(CanonicalValue::Long(1)), Some(CanonicalValue::Long(2))]
+    );
+}
+
+#[test]
+fn explicit_and_implicit_inputs_are_refused_in_both_orders() {
+    for explicit_first in [false, true] {
+        for explicit_row in [false, true] {
+            let mut plan = PlanBuilder::new();
+            let account = plan.exact(entity("account"));
+            let explicit = |plan: &mut PlanBuilder| {
+                if explicit_row {
+                    plan.row(vec![]);
+                } else {
+                    plan.input("id", ValueTypeTag::String, false);
+                }
+            };
+            if explicit_first {
+                explicit(&mut plan);
+            }
+            plan.bind_value(Site::new(account, "id"), text("account-1").unwrap());
+            if !explicit_first {
+                explicit(&mut plan);
+            }
+            assert_eq!(
+                plan.build(&schema(), semantics())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "plan_builder_mixed_inputs"
+            );
+        }
+    }
+}
+
+#[test]
 fn builder_reads_choose_rows_count_or_exists() {
     let read = |terminal: fn(&mut PlanBuilder)| {
         let mut plan = PlanBuilder::new();
@@ -367,6 +516,138 @@ fn builder_put_and_links_build() {
     let built = plan.build(&schema(), semantics()).unwrap();
     assert_eq!(built.bindings()[2].variable().as_str(), "account_2");
     assert!(matches!(built.pipeline()[1], Stage::Put { .. }));
+}
+
+#[test]
+fn generated_field_access_reuses_bindings_but_explicit_fields_stay_fresh() {
+    let mut plan = PlanBuilder::new();
+    let item = plan.exact(entity("item"));
+    let stock = plan.field_value(item, attribute("stock"));
+    assert_eq!(stock, plan.field_value(item, attribute("stock")));
+    assert_ne!(stock, plan.field(item, attribute("stock")));
+}
+
+#[test]
+fn recording_query_policy_reaches_plan_validation_without_entering_wire_bytes() {
+    use type_bridge_contract::limits::QueryLimits;
+    let make = |limits| {
+        let mut builder = PlanBuilder::with_limits(limits);
+        builder.exact(entity("account"));
+        builder.count();
+        builder
+    };
+    let original = make(QueryLimits::CANONICAL)
+        .build(&schema(), semantics())
+        .unwrap();
+    let mut limits = QueryLimits::CANONICAL;
+    limits.codec.max_bytes /= 2;
+    let selected = make(limits).build(&schema(), semantics()).unwrap();
+    assert_eq!(selected.limits(), limits);
+    assert_eq!(
+        selected.canonical_bytes().unwrap(),
+        original.canonical_bytes().unwrap()
+    );
+    limits.codec.max_bytes = original.canonical_bytes().unwrap().len() - 1;
+    limits.codec.max_string_bytes = limits.codec.max_bytes;
+    assert_eq!(
+        make(limits)
+            .build(&schema(), semantics())
+            .unwrap_err()
+            .category(),
+        type_bridge_contract::diagnostic::DiagnosticCategory::ResourceLimit
+    );
+}
+
+#[test]
+fn ordered_roles_allow_reads_and_count_writes_but_refuse_model_writes_at_build() {
+    use type_bridge_contract::query_plan::v3::DocumentRole;
+    let schema = schema_with_ordered_role();
+    let mut read = PlanBuilder::new();
+    let membership = read.exact(relation());
+    read.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
+    read.build_plans(
+        &schema,
+        semantics(),
+        false,
+        type_bridge_contract::split::SplitLimits::CANONICAL,
+    )
+    .unwrap()
+    .validate_model_projection()
+    .unwrap();
+    let mut write = PlanBuilder::new();
+    let membership = write.exact(relation());
+    write.delete(membership);
+    write
+        .build_plans(
+            &schema,
+            semantics(),
+            true,
+            type_bridge_contract::split::SplitLimits::CANONICAL,
+        )
+        .unwrap();
+    write.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
+    let built = write
+        .build_plans(
+            &schema,
+            semantics(),
+            false,
+            type_bridge_contract::split::SplitLimits::CANONICAL,
+        )
+        .unwrap();
+    let error = built.validate_model_projection().unwrap_err();
+    assert_eq!(error.code().as_str(), "plan_returning_models_after_write");
+    assert!(!error.message().contains("membership"));
+}
+
+#[test]
+fn model_writes_refuse_missing_subtype_roles_before_staging() {
+    use type_bridge_contract::query_plan::v3::DocumentRole;
+    let schema = schema_with_subtype_role();
+    let mut plan = PlanBuilder::new();
+    let membership = plan.subtypes(relation());
+    plan.delete(membership);
+    plan.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
+    let build = |plan: &PlanBuilder| {
+        plan.build_plans(
+            &schema,
+            semantics(),
+            false,
+            type_bridge_contract::split::SplitLimits::CANONICAL,
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        build(&plan)
+            .validate_model_projection()
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "plan_returning_models_after_write"
+    );
+    let mut complete = PlanBuilder::new();
+    let child = complete.exact(TypeId::new(TypeKind::Relation, "child-membership").unwrap());
+    complete.delete(child);
+    complete.fetch_held(
+        child,
+        vec![
+            DocumentRole::new(role(), false),
+            DocumentRole::new(RoleId::new("child-membership", "extra").unwrap(), false),
+        ],
+    );
+    build(&complete).validate_model_projection().unwrap();
+}
+
+#[test]
+fn generated_link_attaches_instead_of_replacing_existing_players() {
+    let mut plan = PlanBuilder::new();
+    let account = plan.exact(entity("account"));
+    let membership = plan.exact(relation());
+    plan.link(membership, role(), account);
+    let built = plan.build(&schema(), semantics()).unwrap();
+    assert!(matches!(
+        &built.pipeline()[1],
+        Stage::Attach { items } if matches!(&items[..], [type_bridge_contract::query_plan::v3::AttachItem::Links { relation, player, .. }] if *relation == membership && *player == account)
+    ));
 }
 
 #[test]
@@ -560,5 +841,340 @@ fn builder_fetch_remains_terminal_when_configured_before_a_write() {
                 returns: WriteReturns::Rows
             }
         );
+    }
+}
+
+#[test]
+fn bulk_inputs_equal_explicit_rows_and_preserve_row_order() {
+    fn bulk(implicit: bool, rows: Vec<Vec<CanonicalValue>>) -> QueryPlanV3 {
+        let mut plan = PlanBuilder::new();
+        let account = plan.insert(entity("account"));
+        let operands = if implicit {
+            plan.bind_rows(
+                vec![
+                    (Site::new(account, "id"), ValueTypeTag::String),
+                    (Site::new(account, "score"), ValueTypeTag::Long),
+                ],
+                rows,
+            )
+        } else {
+            let columns = vec![
+                QueryOperand::Input {
+                    column: plan.input("account_id", ValueTypeTag::String, false),
+                },
+                QueryOperand::Input {
+                    column: plan.input("account_score", ValueTypeTag::Long, false),
+                },
+            ];
+            for row in rows {
+                plan.row(row.into_iter().map(Some).collect());
+            }
+            columns
+        };
+        plan.thing_field(account, field("id"), operands[0].clone())
+            .thing_field(account, field("score"), operands[1].clone());
+        plan.build(&schema(), semantics()).unwrap()
+    }
+    let rows = vec![
+        vec![text("account-1").unwrap(), CanonicalValue::Long(1)],
+        vec![text("account-2").unwrap(), CanonicalValue::Long(2)],
+    ];
+    let implicit = bulk(true, rows.clone());
+    let explicit = bulk(false, rows);
+    assert_eq!(
+        implicit.canonical_bytes().unwrap(),
+        explicit.canonical_bytes().unwrap()
+    );
+}
+
+#[test]
+fn bulk_inputs_refuse_ragged_rows_mixed_forms_and_bad_value_types() {
+    for case in [
+        "ragged",
+        "second_bulk",
+        "scalar_after",
+        "scalar_before",
+        "explicit_before",
+        "explicit_after",
+        "wrong_type",
+        "unknown_site",
+        "empty",
+    ] {
+        let mut plan = PlanBuilder::new();
+        let account = plan.insert(entity("account"));
+        if case == "scalar_before" {
+            plan.bind_value(Site::new(account, "id"), text("account-1").unwrap());
+        }
+        if case == "explicit_before" {
+            plan.input("id", ValueTypeTag::String, false);
+        }
+        let columns = if case == "unknown_site" {
+            vec![(Site::new(id(99), "id"), ValueTypeTag::String)]
+        } else {
+            vec![(Site::new(account, "id"), ValueTypeTag::String)]
+        };
+        let rows = match case {
+            "ragged" => vec![vec![]],
+            "empty" => vec![],
+            "wrong_type" => vec![vec![CanonicalValue::Long(1)]],
+            _ => vec![vec![text("account-1").unwrap()]],
+        };
+        let operands = plan.bind_rows(columns.clone(), rows.clone());
+        if case == "second_bulk" {
+            plan.bind_rows(columns, rows);
+        }
+        if case == "scalar_after" {
+            plan.bind_value(Site::new(account, "id"), text("account-1").unwrap());
+        }
+        if case == "explicit_after" {
+            plan.row(vec![text("account-1")]);
+        }
+        if let Some(operand) = operands.first() {
+            plan.thing_field(account, field("id"), operand.clone());
+        }
+        let error = plan.build(&schema(), semantics()).unwrap_err();
+        if case == "empty" {
+            assert_eq!(error.code().as_str(), "query_invocation_missing_inputs");
+        } else if case == "wrong_type" {
+            assert_eq!(error.code().as_str(), "query_invocation_value_type");
+        } else {
+            assert_eq!(
+                error.code().as_str(),
+                match case {
+                    "ragged" => "plan_builder_row_arity",
+                    "unknown_site" => "plan_builder_unknown_site",
+                    _ => "plan_builder_mixed_inputs",
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn held_snapshot_terminal_matches_fetch_before_delete() {
+    let make = |late| {
+        let mut plan = PlanBuilder::new();
+        let account = plan.exact(entity("account"));
+        if late {
+            plan.delete(account).fetch_held(account, vec![]);
+        } else {
+            plan.fetch(account, vec![]).delete(account);
+        }
+        plan.build(&schema(), semantics()).unwrap()
+    };
+    assert_eq!(
+        make(true).canonical_bytes().unwrap(),
+        make(false).canonical_bytes().unwrap()
+    );
+}
+
+#[test]
+fn generated_assignment_names_and_iid_use_core_validation() {
+    let mut plan = PlanBuilder::new();
+    let account = plan.exact(entity("account"));
+    let score = plan.field(account, attribute("score"));
+    let value = plan.let_value(
+        Site::new(account, "score"),
+        sub(QueryOperand::Binding { binding: score }, literal(1)),
+    );
+    plan.update(
+        account,
+        field("score"),
+        QueryOperand::Binding { binding: value },
+    );
+    assert_eq!(
+        plan.build(&schema(), semantics()).unwrap().bindings()[2]
+            .variable()
+            .as_str(),
+        "account_score_2"
+    );
+    plan.by_iid(account, "bad iid");
+    assert_eq!(
+        plan.build(&schema(), semantics())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_invalid_iid"
+    );
+}
+
+#[test]
+fn model_bulk_groups_shapes_splits_limits_and_preserves_explicit_bytes() {
+    use type_bridge_contract::split::SplitLimits;
+    let row = |name: &str, score: Option<i64>| {
+        let mut row = vec![(field("id"), text(name).unwrap())];
+        if let Some(score) = score {
+            row.push((field("score"), CanonicalValue::Long(score)));
+        }
+        row
+    };
+    let mut p = PlanBuilder::new();
+    let account = p.insert(entity("account"));
+    p.bind_model_rows(
+        account,
+        vec![
+            row("a", Some(1)),
+            row("b", None),
+            row("c", Some(2)),
+            row("d", Some(3)),
+        ],
+    )
+    .fetch_held(account, vec![]);
+    let built = p
+        .build_plans(
+            &schema(),
+            semantics(),
+            false,
+            SplitLimits::new(2, usize::MAX),
+        )
+        .unwrap();
+    assert_eq!(built.plans().len(), 3);
+    assert_eq!(
+        built
+            .bulk_chunks()
+            .unwrap()
+            .map(|group| group.positions.to_vec())
+            .collect::<Vec<_>>(),
+        vec![vec![0, 2], vec![3], vec![1]]
+    );
+    let mut explicit = PlanBuilder::new();
+    let account = explicit.insert(entity("account"));
+    let id_value = explicit.input("account_id", ValueTypeTag::String, false);
+    let score_value = explicit.input("account_score", ValueTypeTag::Long, false);
+    explicit
+        .thing_field(
+            account,
+            field("id"),
+            QueryOperand::Input { column: id_value },
+        )
+        .thing_field(
+            account,
+            field("score"),
+            QueryOperand::Input {
+                column: score_value,
+            },
+        )
+        .fetch(account, vec![]);
+    explicit
+        .row(vec![text("a"), Some(CanonicalValue::Long(1))])
+        .row(vec![text("c"), Some(CanonicalValue::Long(2))]);
+    assert_eq!(
+        built.plans()[0].canonical_bytes().unwrap(),
+        explicit
+            .build(&schema(), semantics())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap()
+    );
+}
+
+#[test]
+fn empty_bulk_has_no_plans_and_zero_field_rows_are_single_plans() {
+    use type_bridge_contract::split::SplitLimits;
+    for count in [0, 3] {
+        let mut p = PlanBuilder::new();
+        let thing = p.insert(entity("other"));
+        p.bind_model_rows(thing, vec![vec![]; count])
+            .fetch_held(thing, vec![]);
+        let built = p
+            .build_plans(&schema(), semantics(), false, SplitLimits::CANONICAL)
+            .unwrap();
+        assert_eq!(built.plans().len(), count);
+        assert_eq!(built.bulk_chunks().unwrap().len(), count);
+        for (position, plan) in built.plans().iter().enumerate() {
+            assert_eq!(plan.given_rows(), None);
+            assert_eq!(
+                built
+                    .bulk_chunks()
+                    .unwrap()
+                    .nth(position)
+                    .unwrap()
+                    .positions,
+                vec![position]
+            );
+        }
+    }
+}
+
+#[test]
+fn model_bulk_refuses_mixed_programs_and_wrong_domains() {
+    use type_bridge_contract::split::SplitLimits;
+    for mixed in [false, true] {
+        let mut p = PlanBuilder::new();
+        let account = p.insert(entity("account"));
+        p.bind_model_rows(account, vec![vec![(field("id"), CanonicalValue::Long(1))]]);
+        if mixed {
+            p.insert(entity("other"));
+        }
+        let error = p
+            .build_plans(&schema(), semantics(), false, SplitLimits::CANONICAL)
+            .unwrap_err();
+        assert_eq!(
+            error.code().as_str(),
+            if mixed {
+                "plan_builder_mixed_inputs"
+            } else {
+                "query_plan_write_value_type"
+            }
+        );
+    }
+}
+
+#[test]
+fn model_bulk_split_honours_the_recordings_selected_query_limits() {
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_contract::split::SplitLimits;
+    let build = |limits| {
+        let mut builder = PlanBuilder::with_limits(limits);
+        let account = builder.insert(entity("account"));
+        builder
+            .bind_model_rows(
+                account,
+                vec![
+                    vec![(field("id"), text("a").unwrap())],
+                    vec![(field("id"), text("b").unwrap())],
+                ],
+            )
+            .fetch_held(account, vec![]);
+        builder
+    };
+    let reference = build(QueryLimits::CANONICAL)
+        .build_plans(
+            &schema(),
+            semantics(),
+            false,
+            SplitLimits::new(1, usize::MAX),
+        )
+        .unwrap();
+    for selected in ["rows", "canonical_bytes", "input_bytes"] {
+        let mut limits = QueryLimits::CANONICAL;
+        match selected {
+            "rows" => limits.structural.input_rows = 1,
+            "canonical_bytes" => {
+                limits.codec.max_bytes = reference.plans()[0].canonical_bytes().unwrap().len();
+                limits.codec.max_string_bytes = limits.codec.max_bytes;
+            }
+            _ => {
+                limits.structural.input_bytes =
+                    serde_json::to_vec(reference.plans()[0].given_rows().unwrap())
+                        .unwrap()
+                        .len()
+            }
+        }
+        let result =
+            build(limits).build_plans(&schema(), semantics(), false, SplitLimits::CANONICAL);
+        assert!(
+            result.is_ok(),
+            "selected {selected} must split, not refuse: {:?}",
+            result.as_ref().err()
+        );
+        let result = result.unwrap();
+        assert_eq!(result.plans().len(), 2, "selected {selected}");
+        for (actual, expected) in result.plans().iter().zip(reference.plans()) {
+            assert_eq!(
+                actual.canonical_bytes().unwrap(),
+                expected.canonical_bytes().unwrap()
+            );
+        }
     }
 }
