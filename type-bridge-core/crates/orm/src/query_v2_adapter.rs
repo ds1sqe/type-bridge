@@ -47,6 +47,7 @@ pub(crate) struct AdaptedMatchRequest {
 impl AdaptedMatchRequest {
     /// Return the exact canonical invocation rows owned by this adaptation.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn inputs(&self) -> &[InputRow] {
         &self.inputs
     }

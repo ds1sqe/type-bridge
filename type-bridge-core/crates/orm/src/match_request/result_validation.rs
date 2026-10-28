@@ -329,7 +329,7 @@ fn reduction_group_value_key(value: &AttributeValue) -> Result<String, MatchErro
 /// complete model projection; this function checks the released operation
 /// contract (root, window, total, cardinality, reduction echo and values) and
 /// performs the lossless released representation mapping.
-#[cfg(any(test, feature = "integration-tests"))]
+#[cfg(test)]
 pub(crate) fn validated_match_result_from_v2(
     registry: &DescriptorRegistry,
     validated: &ValidatedMatchRequest,
