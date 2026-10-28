@@ -50,8 +50,8 @@ not an authored schema input.
 
 ## Existing systems
 
-- Convert historical TOML through the retained read-only `toml_to_typeql`
-  interface, then author the resulting canonical Split-YAML workspace.
+- Convert historical TOML with TypeBridge 2.3.x before upgrading to 3.0,
+  then author the reviewed schema as a canonical Split-YAML workspace.
 - Adopt frozen V1 migration history with TypeBridge 2.3.x before upgrading
   to 3.0; then continue with canonical workspace migrations.
 - Use the safe pre-cutover package pin while an application still depends on a

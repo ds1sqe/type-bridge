@@ -206,8 +206,8 @@ and staged plans through their public binding APIs.
 
 Historical migration fixtures are read-only evidence. Existing adopted
 canonical histories retain ledger and anchor verification; new archive
-adoption requires TypeBridge 2.3.x. TOML fixtures remain read-only conversion
-evidence. Neither is active authoring authority.
+adoption and TOML conversion require TypeBridge 2.3.x before upgrading.
+Historical fixtures are never active authoring authority.
 
 ## Release and artifact gates
 

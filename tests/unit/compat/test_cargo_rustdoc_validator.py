@@ -70,7 +70,7 @@ def test_target_plan_is_exactly_the_first_party_public_inventory() -> None:
     assert [target.package_name for target in targets] == [
         package.name for package in inventory.first_party_packages
     ]
-    assert len(targets) == 17
+    assert len(targets) == 16
     assert {target.package_name for target in targets}.isdisjoint(
         package.name for package in (*inventory.immutable_packages, *inventory.private_packages)
     )
@@ -188,7 +188,7 @@ def test_rustdoc_probes_deny_warnings_and_collect_all_package_failures(
         runner=fake_runner,
     )
 
-    assert len(commands) == 17
+    assert len(commands) == 16
     assert {failure.package_name for failure in failures} == {
         "type-bridge-contract",
         "type-bridge-migration",
@@ -232,7 +232,7 @@ def test_msrv_doctest_probes_cover_every_inventory_library() -> None:
         runner=fake_runner,
     )
 
-    assert len(commands) == 17
+    assert len(commands) == 16
     assert [(failure.package_name, failure.phase) for failure in failures] == [
         ("type-bridge-server", "doctest")
     ]
@@ -328,7 +328,7 @@ def test_repository_metadata_resolves_the_declared_target_shape() -> None:
         workspace_root=CORE,
     )
 
-    assert len(targets) == 17
+    assert len(targets) == 16
     assert all(target.selector == ("--lib",) for target in targets)
     first_party_names = {target.package_name for target in targets}
     for package in metadata["packages"]:

@@ -38,7 +38,6 @@ release_crates=(
   type-bridge-schema
   type-bridge-query
   type-bridge-schema-migration
-  type-bridge-toml-transpiler
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
@@ -59,7 +58,6 @@ publish_crates=(
   type-bridge-schema
   type-bridge-query
   type-bridge-schema-migration
-  type-bridge-toml-transpiler
   type-bridge-schema-compat
   type-bridge-schema-codegen
   type-bridge-orm-derive
@@ -92,7 +90,6 @@ patches=(
   --config 'patch.crates-io.type-bridge-schema.path="crates/schema"'
   --config 'patch.crates-io.type-bridge-query.path="crates/query"'
   --config 'patch.crates-io.type-bridge-schema-migration.path="crates/schema-migration"'
-  --config 'patch.crates-io.type-bridge-toml-transpiler.path="crates/toml-transpiler"'
   --config 'patch.crates-io.type-bridge-schema-compat.path="crates/schema-compat"'
   --config 'patch.crates-io.type-bridge-schema-codegen.path="crates/schema-codegen"'
   --config 'patch.crates-io.type-bridge-orm-derive.path="crates/orm-derive"'

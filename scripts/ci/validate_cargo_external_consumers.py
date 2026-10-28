@@ -373,7 +373,7 @@ def write_surface_consumer(
     *,
     inventory: CargoReleaseInventory,
 ) -> Path:
-    """Write a consumer with exact registry dependencies on all 17 first-party crates."""
+    """Write a consumer with exact registry dependencies on all 16 first-party crates."""
     dependencies = [
         f"{json.dumps(package.name)} = {json.dumps('=' + package.version)}"
         for package in inventory.first_party_packages
@@ -623,9 +623,9 @@ def validate_server_features(
 def write_surface_source(root: Path, library_names: Mapping[str, str]) -> None:
     """Touch every first-party public crate root from external Rust source."""
     names = sorted(library_names.values())
-    if len(names) != 17 or len(set(names)) != 17:
+    if len(names) != 16 or len(set(names)) != 16:
         raise ExternalConsumerError(
-            f"surface consumer requires 17 unique crate roots: actual={names!r}"
+            f"surface consumer requires 16 unique crate roots: actual={names!r}"
         )
     lines = ["#![allow(unused_imports)]", ""]
     lines.extend(f"use ::{name} as _;" for name in names)

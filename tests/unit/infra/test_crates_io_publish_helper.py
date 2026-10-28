@@ -639,7 +639,6 @@ printf '%s\\n' "$1" >> "$INVOCATION_LOG"
         "type-bridge-schema",
         "type-bridge-query",
         "type-bridge-schema-migration",
-        "type-bridge-toml-transpiler",
         "type-bridge-schema-compat",
         "type-bridge-schema-codegen",
         "type-bridge-orm-derive",

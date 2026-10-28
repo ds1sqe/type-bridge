@@ -110,6 +110,14 @@ All notable changes to TypeBridge will be documented in this file.
   for the retired handwritten migration format. Use the canonical workspace
   `migration make`, `migration verify`, and `migration plan` commands.
 
+- The published `type-bridge-toml-transpiler` crate and its `TypeKind`,
+  `TranspileError`, and `toml_to_typeql` API are removed. Python
+  `type_bridge_core.toml_to_typeql` and Rust
+  `schema-compat::{toml_to_declared, toml_to_facts}` and the Python binding
+  crate's `transpiler::toml_to_typeql` module/API are also removed.
+  Author Split-YAML and use `type-bridge schema check` / `schema generate`.
+  Convert historical TOML with TypeBridge 2.3.x before upgrading to 3.0.
+
 - Python compatibility packages `type_bridge.models`, `crud`, `fields`,
   `attribute`, and `expressions` are removed. Use Split-YAML generated
   packages, their model managers, fields, attributes, and typed queries.

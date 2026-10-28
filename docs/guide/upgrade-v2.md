@@ -68,10 +68,9 @@ See [Schema generation](generator.md), [CRUD](crud.md), and
 
 ### TOML
 
-Use `type_bridge_core.toml_to_typeql` to render an existing TOML schema for
-review, then translate the reviewed meaning into Split YAML. The converter and
-its frozen parser are read-only. Direct `.toml` generation routing and
-`generate_models(..., format="toml")` are absent in 2.1.
+The 2.x releases provided read-only TOML conversion. Complete that conversion
+with TypeBridge 2.3.x before upgrading to 3.0, then express the reviewed schema
+in Split-YAML. TypeBridge 3.0 has no TOML schema input.
 
 ### Handwritten declarations
 

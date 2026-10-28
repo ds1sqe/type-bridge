@@ -269,8 +269,8 @@ Use this lifecycle:
 
 Treat `schema check`, migration planning, and generation as read-only with
 respect to TypeDB. Only the explicit connected migration commands mutate the
-managed schema. Split-YAML is the sole active authoring authority; historical
-TOML is a read-only conversion input.
+managed schema. Split-YAML is the sole schema authoring authority. Historical
+TOML conversion requires TypeBridge 2.3.x before upgrading to 3.0.
 
 Configure every projection target in `typebridge.yaml`, then generate them from
 the same checked workspace. No standalone JSON is required for generated

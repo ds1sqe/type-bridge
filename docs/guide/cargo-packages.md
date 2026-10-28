@@ -1,8 +1,8 @@
 # Cargo package index
 
-TypeBridge 2.2 publishes 17 first-party Rust packages as one lockstep product.
+TypeBridge publishes 16 first-party Rust packages as one lockstep product.
 Two source-unmodified TypeDB compatibility packages remain public under their
-fixed versions. This page is the maintained index for those 19 public Cargo
+fixed versions. This page is the maintained index for those 18 public Cargo
 packages; the private Python, Node, and C native-binding crates
 are deliberately not part of the crates.io surface.
 
@@ -53,7 +53,6 @@ bindings. They are not separate products with independent version lines.
 | [`type-bridge-schema`](https://crates.io/crates/type-bridge-schema/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema/2.3.2) | Lossless Split-YAML schema documents, normalization, and safety classification | Schema tools that operate before provider execution |
 | [`type-bridge-query`](https://crates.io/crates/type-bridge-query/2.3.2) · [rustdoc](https://docs.rs/type-bridge-query/2.3.2) | Immutable provider-neutral query plans and validation | Generated query facades and alternate executors |
 | [`type-bridge-schema-migration`](https://crates.io/crates/type-bridge-schema-migration/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-migration/2.3.2) | Provider-neutral schema migration manifests, profiles, and lowering | Migration planners and provider adapters |
-| [`type-bridge-toml-transpiler`](https://crates.io/crates/type-bridge-toml-transpiler/2.3.2) · [rustdoc](https://docs.rs/type-bridge-toml-transpiler/2.3.2) | TOML recovery-schema to TypeQL transpilation | Recovery and compatibility tooling only |
 | [`type-bridge-schema-compat`](https://crates.io/crates/type-bridge-schema-compat/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-compat/2.3.2) | One-way compatibility parsers into the V2 schema fact graph | Importers for retained released schema formats |
 | [`type-bridge-schema-codegen`](https://crates.io/crates/type-bridge-schema-codegen/2.3.2) · [rustdoc](https://docs.rs/type-bridge-schema-codegen/2.3.2) | Python, TypeScript, and Rust source projection from compiled schema authority | Generators and build integrations |
 | [`type-bridge-orm-derive`](https://crates.io/crates/type-bridge-orm-derive/2.3.2) · [rustdoc](https://docs.rs/type-bridge-orm-derive/2.3.2) | Procedural derives for Rust ORM model metadata | Generated Rust model crates through re-exported derives |
@@ -111,7 +110,7 @@ It is distinct from the TypeBridge product version reported by
 
 ## Release contract
 
-- All 17 first-party packages use Rust 1.88 or newer and release in dependency
+- All 16 first-party packages use Rust 1.88 or newer and release in dependency
   order under one TypeBridge version.
 - Every first-party library builds independently with all features and strict
   rustdoc coverage; changing a package's publish metadata cannot remove it from

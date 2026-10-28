@@ -26,7 +26,7 @@ type-bridge-core/
     ├── typedb-runtime/, orm/, orm-derive/  # provider bands and ORM
     ├── workspace/, cli/, server/, rust/    # workspace, server, and Rust SDK
     ├── python/, node/, c/                  # private native bindings
-    └── core/, migration/, toml-transpiler/ # released engines and converters
+    └── core/, migration/ # released engines
 ```
 
 ## Crate groups
@@ -43,12 +43,12 @@ wrappers and closed typed role-player unions. ABI 1.6 additionally provides
 typed flat/chunked package admission, policy-aware database and transaction
 entries, generated atomic mutation batches, and the internal generated
 typed-query, reduction, function, and remote-transport foundation.
-The released core, migration reader, and TOML converter remain separate
-compatibility boundaries.
+The shared core and canonical migration engines remain separate integration
+boundaries.
 
 ## Rust publication boundary
 
-The 17 first-party Rust crates are published to crates.io in dependency order
+The 16 first-party Rust crates are published to crates.io in dependency order
 and share the repository release identity (currently `2.3.2`). Supporting
 engine crates remain available for integrators, while most Rust applications
 should depend on the `type-bridge` SDK. `type-bridge-server` is distributed as

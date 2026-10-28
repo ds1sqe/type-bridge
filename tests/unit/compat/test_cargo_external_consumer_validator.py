@@ -202,7 +202,7 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
     assert manifest["dependencies"] == {
         package.name: f"={package.version}" for package in inventory.first_party_packages
     }
-    assert len(manifest["dependencies"]) == 17
+    assert len(manifest["dependencies"]) == 16
     assert "patch" not in manifest
 
     no_default = validator.write_server_consumer(
@@ -233,7 +233,7 @@ def test_only_temporary_cargo_config_patches_exact_extracted_roots(tmp_path: Pat
     patches = tomllib.loads(config.read_text(encoding="utf-8"))["patch"]["crates-io"]
 
     assert set(patches) == set(extracted)
-    assert len(patches) == 19
+    assert len(patches) == 18
     for name, specification in patches.items():
         assert specification == {"path": str(extracted[name].root.resolve())}
 
@@ -256,8 +256,8 @@ def test_metadata_binds_all_public_packages_to_extracted_archives(tmp_path: Path
     validator.write_surface_source(manifest.parent, library_names)
 
     source = (manifest.parent / "src/main.rs").read_text(encoding="utf-8")
-    assert len(library_names) == 17
-    assert source.count("use ::") == 17
+    assert len(library_names) == 16
+    assert source.count("use ::") == 16
 
 
 def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path) -> None:

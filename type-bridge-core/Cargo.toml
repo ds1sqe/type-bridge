@@ -20,7 +20,6 @@ members = [
     "crates/orm-derive",
     "crates/node",
     "crates/rust",
-    "crates/toml-transpiler",
     "crates/perf",
     "crates/perf-stages",
     "vendor/typedb-protocol-b8",

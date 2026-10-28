@@ -17,11 +17,10 @@ is the canonical authoring authority.
 If the workspace deploys the generic TypeBridge server, configure and deploy
 its source-free authority artifact from that same generation snapshot.
 
-Split-YAML is the only active authoring path. Existing TOML and historical
-migration material is handled only by the documented read-only conversion and
-recovery workflows. Generated files are projections, not alternate schema
-authorities: regenerate them after an accepted schema change and never edit or
-subclass their runtime bases.
+Split-YAML is the schema authoring authority. Convert historical inputs and
+adopt frozen migration histories with TypeBridge 2.3.x before upgrading.
+Generated files are projections: regenerate them after an accepted schema
+change and never edit or subclass their runtime bases.
 
 Generated packages embed compiled authority for their normal remote sessions.
 When configured, the separately emitted `typebridge.schema-authority/v1` JSON

@@ -221,7 +221,7 @@ def test_complete_rust_release_archive_set_is_accepted(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "ok"
-    assert len(report["artifacts"]) == 19
+    assert len(report["artifacts"]) == 18
     assert {entry["license"] for entry in report["artifacts"]} == {
         "MIT",
         "Apache-2.0",

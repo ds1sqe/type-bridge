@@ -16,6 +16,16 @@ ALLOWED_DISPOSITIONS = {
     "removed_authoring_contract",
     "split_yaml_schema_successor",
 }
+CURRENT_EVIDENCE = {
+    "tests/unit/migration/test_state_reader.py": {
+        "path": "tests/unit/compat/test_generated_only_python_root.py",
+        "needles": ['"migration.state"', "test_legacy_modules_are_absent"],
+    },
+    "tests/unit/compat/test_read_only_toml_conversion.py": {
+        "path": "tests/unit/compat/test_generated_only_python_root.py",
+        "needles": ["test_toml_schema_input_is_absent", '"toml_to_typeql"'],
+    },
+}
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -52,12 +62,9 @@ def test_every_additional_removed_test_path_has_source_tied_disposition() -> Non
             assert not (ROOT / relative).exists(), f"retired test surface is active: {removed}"
 
         for evidence in family["evidence"]:
-            # 3.0 removes the archive reader retained by the frozen 2.1 audit.
-            if evidence["path"] == "tests/unit/migration/test_state_reader.py":
-                evidence = {
-                    "path": "tests/unit/compat/test_generated_only_python_root.py",
-                    "needles": ['"migration.state"', "test_legacy_modules_are_absent"],
-                }
+            # Preserve the historical audit while checking its current successors.
+            evidence = CURRENT_EVIDENCE.get(evidence["path"], evidence)
+            assert evidence is not None
             relative = Path(evidence["path"])
             assert ".." not in relative.parts
             path = ROOT / relative
@@ -104,6 +111,8 @@ def test_generated_successor_evidence_never_uses_private_handwritten_models() ->
         if family["disposition"] not in generated_dispositions:
             continue
         for evidence in family["evidence"]:
+            evidence = CURRENT_EVIDENCE.get(evidence["path"], evidence)
+            assert evidence is not None
             source = (ROOT / evidence["path"]).read_text(encoding="utf-8")
             assert "tests.utils.handwritten" not in source, family["id"]
             assert "tests/utils/handwritten" not in source, family["id"]

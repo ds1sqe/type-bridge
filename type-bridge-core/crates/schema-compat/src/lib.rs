@@ -1066,42 +1066,6 @@ pub fn typeql_to_facts(
     Ok(declared.facts().cloned().collect())
 }
 
-/// Transpile one legacy TOML schema and adapt its rendered TypeQL into the
-/// canonical declared schema graph.
-///
-/// `rendered_typeql_document` identifies the generated TypeQL, not the input
-/// TOML. Diagnostics from TypeQL parsing and adaptation therefore contain
-/// offsets into the rendered source and never claim to locate original TOML
-/// text. TOML decoding and validation diagnostics have no source span because
-/// the legacy transpiler does not expose structured TOML locations.
-pub fn toml_to_declared(
-    rendered_typeql_document: DocumentId,
-    toml_source: &str,
-) -> Result<DeclaredSchema, SchemaDiagnostics> {
-    let rendered_typeql =
-        type_bridge_toml_transpiler::toml_to_typeql(toml_source).map_err(|transpile_error| {
-            error(
-                DiagnosticCategory::InvalidContract,
-                "invalid_toml_schema",
-                format!("TOML schema transpilation failed: {transpile_error}"),
-                None,
-            )
-        })?;
-    typeql_to_declared(rendered_typeql_document, &rendered_typeql)
-}
-
-/// Transpile legacy TOML and return canonical direct facts in identity order.
-///
-/// See [`toml_to_declared`] for the provenance contract of
-/// `rendered_typeql_document`.
-pub fn toml_to_facts(
-    rendered_typeql_document: DocumentId,
-    toml_source: &str,
-) -> Result<Vec<SchemaFact>, SchemaDiagnostics> {
-    let declared = toml_to_declared(rendered_typeql_document, toml_source)?;
-    Ok(declared.facts().cloned().collect())
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum ReleasedObjectCapabilityIdentity {
     Owns(String),

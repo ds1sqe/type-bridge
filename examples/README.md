@@ -65,10 +65,3 @@ the proxy. It runs on packages generated from
 `tests/contracts/sdk_conformance/writes/purchase`; the SDK `writes`
 conformance suite builds and runs all four and compares their plan bytes and
 results (see that directory's README).
-
-## Historical TOML
-
-[`advanced/toml_migration`](advanced/toml_migration/) and
-[`basic/schema.toml`](basic/schema.toml) are frozen recovery inputs. They may be
-read by the retained TOML-to-TypeQL converter; they are not active schema or
-model-generation examples.

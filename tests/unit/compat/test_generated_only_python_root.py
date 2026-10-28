@@ -66,6 +66,12 @@ def test_native_transaction_boundary() -> None:
     assert callable(type_bridge.Database.execute_query)
 
 
+def test_toml_schema_input_is_absent() -> None:
+    import type_bridge_core
+
+    assert not hasattr(type_bridge_core, "toml_to_typeql")
+
+
 @pytest.mark.parametrize("name", ["MigrationLoader", "SchemaIntrospector", "generate_sidecars"])
 def test_migration_recovery_exports_are_absent(name: str) -> None:
     import type_bridge.migration as migration

@@ -610,15 +610,13 @@ async fn closed_backfill_conflict_retry_and_reverse_round_trip_on_3_12_3() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn commented_function_body_survives_export_without_toml_drift() {
+async fn commented_function_body_survives_export_without_fingerprint_drift() {
     use type_bridge_core_lib::__internal as tql;
-    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    use type_bridge_schema_compat::typeql_to_declared;
     let body = "match\n  # retained body comment\n  let $value = $seed;\nreturn first $value;";
     let signature = "fun keep-body($seed: integer) -> integer";
-    let toml = format!(
-        "[functions.keep-body]\nsignature = \"{signature}\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
-    );
-    let expected = toml_to_declared(DocumentId::new("schema.toml.tql").unwrap(), &toml).unwrap();
+    let source = format!("define {signature}:\n{body}\n");
+    let expected = typeql_to_declared(DocumentId::new("schema.tql").unwrap(), &source).unwrap();
     let emitted = tql::render(&tql::schema_define(vec![
         tql::schema_function(signature, body).unwrap(),
     ]))
@@ -671,15 +669,13 @@ async fn commented_function_body_survives_export_without_toml_drift() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn tuple_function_from_native_lowering_defines_returns_and_preserves_body() {
-    use type_bridge_schema_compat::{toml_to_declared, typeql_to_declared};
+    use type_bridge_schema_compat::typeql_to_declared;
     use type_bridge_schema_migration::{SchemaFactCatalog, lower_schema_delta};
     let body =
         "match\n  # retained tuple comment\n  let $value = $seed;\nreturn first $value, $value;";
     let source = declared_facts(vec![]);
-    let input = format!(
-        "[functions.pair]\nsignature = \"fun pair($seed: integer) -> integer, integer\"\nbody = \"\"\"\n{body}\n\"\"\"\n"
-    );
-    let target = toml_to_declared(DocumentId::new("tuple.toml").unwrap(), &input).unwrap();
+    let input = format!("define fun pair($seed: integer) -> integer, integer:\n{body}\n");
+    let target = typeql_to_declared(DocumentId::new("tuple.tql").unwrap(), &input).unwrap();
     let context = context();
     let delta = type_bridge_contract::schema_delta::SchemaDelta::new(
         type_bridge_contract::schema_delta::PatchFormatVersion::V1,

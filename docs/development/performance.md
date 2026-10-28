@@ -384,7 +384,7 @@ The run records the Rust toolchain and the wheel builder's Python interpreter.
 ```bash
 python -m perf.harness.build --target-dir tmp/perf-cold --out tmp/perf/build.json
 # A smaller local smoke; the target directory must still be fresh.
-python -m perf.harness.build --group public --package type-bridge-toml-transpiler \
+python -m perf.harness.build --group public --package type-bridge-contract \
   --target-dir tmp/perf-smoke --out tmp/perf/build-smoke.json
 ```
 

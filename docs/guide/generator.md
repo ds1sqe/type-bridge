@@ -175,5 +175,5 @@ consumer. TypeBridge's own acceptance suites generate fresh packages and reject
 dependencies on handwritten authoring modules.
 
 Programmatic TypeQL/TOML-to-model functions and target-language model factories
-are not generator alternatives. Historical TOML is supported only through the
-read-only conversion described in [TOML recovery](toml.md).
+are removed. Use Split-YAML generation. Convert historical TOML with TypeBridge
+2.3.x before upgrading to 3.0.

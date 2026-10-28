@@ -177,10 +177,9 @@ restored on the old server.
 
 ## Historical TOML
 
-TOML desired-schema authoring is not a migration path. Convert an immutable
-historical TOML document with `type_bridge_core.toml_to_typeql`, review its
-meaning, express the target in Split-YAML, and use the V2 flow above. See
-[TOML recovery](toml.md).
+TOML conversion is removed in 3.0. Convert historical TOML with TypeBridge
+2.3.x before upgrading, review its meaning, then express the target in
+Split-YAML and use the canonical workspace migration flow above.
 
 ## CI acceptance
 

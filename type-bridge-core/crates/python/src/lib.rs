@@ -42,7 +42,6 @@ mod sdk_profile_matrix;
 mod staged_transaction_runtime;
 #[cfg(test)]
 mod test_isolation;
-pub mod transpiler;
 mod validated_result_runtime;
 pub mod version;
 
@@ -864,7 +863,6 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(_clear_attribute_query, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
-    m.add_function(wrap_pyfunction!(transpiler::toml_to_typeql, m)?)?;
     m.add_function(wrap_pyfunction!(run_v2_cli, m)?)?;
 
     // Values

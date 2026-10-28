@@ -18,7 +18,6 @@ serde_json = "1.0"
 type-bridge-contract = { path = "../contract", version = "2.3.2" }
 type-bridge-core-lib = { path = "../core", version = "2.3.2" }
 type-bridge-schema = { path = "../schema", version = "2.3.2" }
-type-bridge-toml-transpiler = { path = "../toml-transpiler", version = "2.3.2" }
 typeql.workspace = true
 
 

@@ -133,7 +133,6 @@ nav:
       - Migrations: guide/migrations.md
       - Code Generator: guide/generator.md
       - Schema Commands: guide/schema.md
-      - TOML Recovery: guide/toml.md
     - Operate and Upgrade:
       - Overview: guide/operations.md
       - Server Container: guide/server-container.md

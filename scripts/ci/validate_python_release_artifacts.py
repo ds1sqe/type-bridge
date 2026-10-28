@@ -83,7 +83,6 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "crates/python",
     "crates/typedb-runtime",
     "crates/orm",
-    "crates/toml-transpiler",
     "vendor/typedb-protocol-b8",
     "vendor/typedb-driver-b8",
 )

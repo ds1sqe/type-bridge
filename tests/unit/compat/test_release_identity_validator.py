@@ -271,7 +271,6 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-schema-migration",
         "type-bridge-schema-migration-typedb",
         "type-bridge-server",
-        "type-bridge-toml-transpiler",
         "type-bridge-typedb-driver-b8",
         "type-bridge-typedb-protocol-b8",
         "type-bridge-workspace",
@@ -1764,7 +1763,6 @@ def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
     [
         "crates/orm/Cargo.toml",
         "crates/migration/Cargo.toml",
-        "crates/toml-transpiler/Cargo.toml",
     ],
 )
 def test_planned_public_crate_cannot_be_marked_unpublished(

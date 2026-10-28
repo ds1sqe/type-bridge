@@ -45,12 +45,12 @@ def test_repository_inventory_closes_every_cargo_product_class() -> None:
 
     assert inventory.release_version == "2.3.2"
     assert inventory.first_party_msrv == "1.88"
-    assert len(inventory.packages) == 24
-    assert len(inventory.public_packages) == 19
-    assert len(inventory.first_party_packages) == 17
+    assert len(inventory.packages) == 23
+    assert len(inventory.public_packages) == 18
+    assert len(inventory.first_party_packages) == 16
     assert len(inventory.immutable_packages) == 2
     assert len(inventory.private_packages) == 5
-    assert [package.publish_order for package in inventory.public_packages] == list(range(1, 20))
+    assert [package.publish_order for package in inventory.public_packages] == list(range(1, 19))
     assert {package.name for package in inventory.binding_packages} == {
         "type-bridge-c",
         "type-bridge-core",
@@ -98,7 +98,7 @@ def test_public_cargo_package_index_is_inventory_closed_and_linked() -> None:
         for match in row_pattern.finditer(source)
     }
 
-    assert len(rows) == len(inventory.public_packages) == 19
+    assert len(rows) == len(inventory.public_packages) == 18
     assert set(rows) == {package.name for package in inventory.public_packages}
     for package in inventory.public_packages:
         assert rows[package.name] == (
@@ -176,7 +176,7 @@ def test_inventory_classifies_the_real_workspace_without_omissions() -> None:
             "private tooling package set must be exact",
         ),
         (
-            "publish-order = 19",
+            "publish-order = 18",
             "publish-order = 20",
             "publish-order must be contiguous",
         ),
