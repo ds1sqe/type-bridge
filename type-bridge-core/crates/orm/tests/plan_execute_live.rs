@@ -273,6 +273,16 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
         )
         .await
         .unwrap();
+    let lookup = DynamicExpr::RolePlayer {
+        role_name: "member".into(),
+        expr: Box::new(DynamicExpr::Iid { iid: first.clone() }),
+    };
+    let resolved = relations
+        .get_exact_with_query(&[lookup], &[], Some(1), None)
+        .await
+        .expect("keyless relation resolves by role-player IID");
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].iid.as_deref(), Some(relation_iid.as_str()));
     let expression = DynamicExpr::Not {
         expr: Box::new(DynamicExpr::RolePlayer {
             role_name: "member".into(),
@@ -303,6 +313,65 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
     planned.delete_by_iid_exact(&first).await.unwrap();
     planned.delete_by_iid_exact(&second).await.unwrap();
     assert_eq!(planned.count().await.unwrap(), 0);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registry_manager_heterogeneous_subtypes_keep_selection_evidence() {
+    use std::sync::Arc;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::AttributeValue;
+    let Some(db) = live_database("heterogeneous").await else {
+        return;
+    };
+    db.execute_raw(
+        &PARTY_SCHEMA_TYPEQL.replace(
+            "entity company sub party;",
+            "entity company sub party, owns note @card(0..1);",
+        ),
+        TxType::Schema,
+    )
+    .await
+    .unwrap();
+    let installed = party_projection_for_schema(&PARTY_SCHEMA_YAML.replace(
+        "  company:\n    sub: party",
+        "  company:\n    sub: party\n    owns:\n      note: { card: { min: 0, max: 1 } }",
+    ));
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let mut expected = Vec::new();
+    for name in ["person", "company"] {
+        let manager = DynamicEntityManager::from_registry(
+            &db,
+            Arc::clone(&registry),
+            registry.entity(name).unwrap(),
+        );
+        expected.push(
+            manager
+                .insert(&vec![(
+                    "identifier".into(),
+                    AttributeValue::String(name.into()),
+                )])
+                .await
+                .unwrap(),
+        );
+    }
+    let manager = DynamicEntityManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.entity("party").unwrap(),
+    );
+    let found = manager
+        .get_with_query(&[], &[], Some(2), None)
+        .await
+        .expect("heterogeneous model partitions keep an independent root selection");
+    let mut actual = found
+        .iter()
+        .map(|row| row.iid.clone().unwrap())
+        .collect::<Vec<_>>();
+    actual.sort();
+    expected.sort();
+    assert_eq!(actual, expected);
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }

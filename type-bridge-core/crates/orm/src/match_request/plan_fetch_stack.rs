@@ -95,7 +95,15 @@ fn build_fetch_stack(
         ));
     }
     let authority = MatchRequestAdapterAuthority::from_registry(registry)?;
-    let mut stack = build_under_authority(registry, plan, model_slots, &authority, unique, &[])?;
+    let mut stack = build_under_authority(
+        registry,
+        plan,
+        model_slots,
+        &authority,
+        unique,
+        &[],
+        FetchProof::CompleteModel,
+    )?;
     let roots = model_slots
         .iter()
         .map(|(binding, descriptor)| {
@@ -136,6 +144,14 @@ pub fn build_bulk_plan_fetch_stack(
     Ok(stack)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FetchProof {
+    /// Proves complete models against the authored selection baseline.
+    CompleteModel,
+    /// Proves selected models and their correlated hidden witnesses.
+    CorrelatedMatch,
+}
+
 pub(crate) fn build_under_authority(
     registry: &DescriptorRegistry,
     plan: &QueryPlanV3,
@@ -143,6 +159,7 @@ pub(crate) fn build_under_authority(
     authority: &MatchRequestAdapterAuthority,
     unique_selection: bool,
     witness_columns: &[BindingId],
+    proof: FetchProof,
 ) -> Result<PlanFetchStack, Diagnostic> {
     let refusal = || {
         integrity(
@@ -278,7 +295,7 @@ pub(crate) fn build_under_authority(
         .map(|binding| binding.id())
         .collect::<Vec<_>>();
     let one_fetch = unique_selection
-        && identity_columns.len() == 1
+        && (proof == FetchProof::CompleteModel || identity_columns.len() == 1)
         && slots.len() == 1
         && columns == &[slots[0].0]
         && shared_roles
@@ -374,7 +391,7 @@ pub(crate) fn build_under_authority(
             && columns.len() == 1
             && slots.iter().any(|(binding, _)| binding == &columns[0]))
         .then_some(columns[0]);
-        let selection = if !unique_selection {
+        let selection = if !unique_selection || proof == FetchProof::CompleteModel {
             plans.push(source.clone());
             Some(0)
         } else {

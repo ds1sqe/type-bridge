@@ -712,6 +712,7 @@ pub(crate) fn adapt_match_request_under_authority(
                     .iter()
                     .map(|(_, binding)| *binding)
                     .collect::<Vec<_>>(),
+                super::plan_fetch_stack::FetchProof::CorrelatedMatch,
             )?;
             let offset = plans.len();
             plans.extend(stack.plans);

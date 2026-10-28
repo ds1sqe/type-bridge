@@ -1164,6 +1164,11 @@ async fn successor_named_collected_page_retains_root_and_member_origins() {
     );
     assert_eq!(state.opened.load(Ordering::SeqCst), 1);
     assert_eq!(state.closed.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        state.statements.lock().unwrap().len(),
+        3,
+        "mapping and two independent hydration partitions"
+    );
 }
 
 #[tokio::test]

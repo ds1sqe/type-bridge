@@ -1767,6 +1767,103 @@ mod tests {
     }
 
     #[test]
+    fn unique_manager_fetches_keep_witnesses_and_partition_baselines() {
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(
+                DocumentId::new("manager-fetch.yaml").unwrap(),
+                r#"format: typebridge.schema/v2
+attributes:
+  note: { value: string }
+entities:
+  person: {}
+  employee:
+    sub: person
+    owns:
+      note: { card: { min: 0, max: 1 } }
+relations:
+  membership:
+    relates:
+      member: { card: { min: 1, max: 1 } }
+plays:
+  person:
+    membership: [member]
+"#,
+            )])
+            .unwrap(),
+        )
+        .unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = crate::InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let plans = ManagerPlans::new(installed.manager_registry().unwrap());
+        let role_lookup = plans
+            .read(
+                "membership",
+                true,
+                &[DynamicExpr::RolePlayer {
+                    role_name: "member".into(),
+                    expr: Box::new(DynamicExpr::Iid { iid: "0x10".into() }),
+                }],
+                &[],
+                Some(1),
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )
+            .unwrap();
+        assert_eq!(
+            role_lookup.plans().len(),
+            1,
+            "non-selected role witnesses keep one complete fetch"
+        );
+        assert!(role_lookup.plans()[0].fetch_document_shape().is_some());
+        let heterogeneous = plans
+            .read(
+                "person",
+                false,
+                &[],
+                &[],
+                Some(1),
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )
+            .unwrap();
+        assert_eq!(
+            heterogeneous.plans().len(),
+            4,
+            "selection, mapping and two hydration partitions"
+        );
+        let ManagerRead::Fetch(stack) = heterogeneous else {
+            panic!("model fetch")
+        };
+        assert_eq!(
+            stack.selection,
+            Some(0),
+            "split hydration keeps its independent selection proof"
+        );
+    }
+
+    #[test]
     fn registry_without_authority_refuses_reads_and_mutations() {
         let manager = ManagerPlans::new(Arc::new(DescriptorRegistry::new()));
         let read = manager
