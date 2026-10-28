@@ -1516,8 +1516,9 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
     use tracing_subscriber::layer::SubscriberExt;
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_orm::session::backend::AnswerLimits;
+    // Keep callsites aware that concurrent tests execute outside our dispatch.
+    let _unlistened = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let name = staged_live::live_database::name("strings");
-    eprintln!("TB270_RUNNER pid={} database={name}", std::process::id());
     let db = staged_live::connect(&name).await;
     db.create_database().await.unwrap();
     db.execute_raw(
