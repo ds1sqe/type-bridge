@@ -11,17 +11,19 @@ use std::time::Duration;
 
 use crate::common::dynamic_crud::{attr, setup_dynamic_typeql, unique_schema_suffix};
 use crate::internal::*;
-use type_bridge_contract::capability::CapabilitySet;
-use type_bridge_contract::diagnostic::DiagnosticDetailValue;
-use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+use type_bridge_contract::capability::CapabilityId;
+use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
 use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
-use type_bridge_contract::query_remote_v2::query_remote_v2_required_capabilities;
-use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
-use type_bridge_orm::query_v2_prepared::QueryAuthority;
-use type_bridge_orm::query_v2_remote::{
-    RemoteReplySigningKey, execute_admitted_remote_request_v2, preflight_remote_request_v2,
+use type_bridge_contract::query_remote_v3::{
+    CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
+    StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
 };
+use type_bridge_contract::schema::{DocumentId, encode_declared_schema};
+use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkDiagnosticName};
+use type_bridge_orm::query_v2_prepared::QueryAuthority;
+use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
 use type_bridge_orm::session::backend::{AnswerLimits, BoundedAnswerLimits};
+use type_bridge_orm::session::staged::{TransactionKind, TransactionOptions};
 use type_bridge_orm::*;
 use type_bridge_schema_compat::released_typeql_to_declared_projection;
 
@@ -30,7 +32,11 @@ const ENTITIES: u64 = 66_000;
 const INSERT_BATCH: u64 = 1_000;
 const TEST_TIMEOUT_MILLISECONDS: u64 = 120_000;
 
-fn count_request(registry: &DescriptorRegistry, type_name: &str) -> ValidatedMatchRequest {
+fn request(
+    registry: &DescriptorRegistry,
+    type_name: &str,
+    operation: MatchOperation,
+) -> ValidatedMatchRequest {
     let root = BindingId::new(0);
     validate_match_request(
         registry,
@@ -45,10 +51,10 @@ fn count_request(registry: &DescriptorRegistry, type_name: &str) -> ValidatedMat
                 predicate: None,
                 allowed_cross_joins: BTreeSet::new(),
             },
-            MatchOperation::CountBy { root },
+            operation,
         ),
     )
-    .expect("count request passes validation")
+    .expect("answer-limit request passes validation")
 }
 
 /// The query authority a server holds for the defined schema.
@@ -72,12 +78,12 @@ fn signer() -> RemoteReplySigningKey {
 
 /// A default-configured server's advertisement: no answer-limit overrides.
 fn advertisement() -> RemoteCapabilities {
-    let mut capabilities = query_plan_v2_capability_vocabulary()
-        .iter()
-        .cloned()
-        .collect::<CapabilitySet>();
-    for capability in query_remote_v2_required_capabilities(true) {
-        capabilities.insert(capability);
+    let mut capabilities = query_plan_v3_capability_vocabulary();
+    for capability in [
+        CAP_QUERY_REMOTE_STAGED_V3,
+        CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+    ] {
+        capabilities.insert(CapabilityId::new(capability).unwrap());
     }
     RemoteCapabilities::new(
         capabilities,
@@ -102,6 +108,53 @@ fn server_ceilings() -> AnswerLimits {
     }
 }
 
+async fn execute_staged(
+    db: &Database,
+    pending: &PendingRemoteModelQueryV2,
+    authority: &QueryAuthority,
+    advertisement: &RemoteCapabilities,
+) -> (Vec<u8>, Vec<StagedAnswerV3>) {
+    let request =
+        StagedRequestV3::decode(pending.request_bytes(), authority.declared(), advertisement)
+            .expect("server admits staged request");
+    let mut tx = db.transaction(
+        TransactionOptions::default()
+            .with_kind(TransactionKind::Read)
+            .with_answer_limits(server_ceilings())
+            .with_answer_timeout(Duration::from_millis(TEST_TIMEOUT_MILLISECONDS)),
+    );
+    let plans = request
+        .plans()
+        .iter()
+        .map(|entry| entry.bound_plan(authority.declared()).unwrap())
+        .collect::<Vec<_>>();
+    let pending = plans
+        .iter()
+        .map(|plan| tx.stage_plan(plan).unwrap())
+        .collect::<Vec<_>>();
+    let (outcome, answers) = match tx.commit().await {
+        Ok(()) => (
+            StagedOutcomeV3::Committed,
+            pending
+                .iter()
+                .zip(&plans)
+                .map(|(answer, plan)| answer.get().unwrap().to_staged_v3(plan).unwrap())
+                .collect(),
+        ),
+        Err(error) => (
+            StagedOutcomeV3::Failed {
+                diagnostic: error.diagnostic(),
+            },
+            vec![],
+        ),
+    };
+    let response = StagedReplyV3::new(&request, outcome, answers.clone())
+        .unwrap()
+        .encode_signed(&request, advertisement, &signer())
+        .unwrap();
+    (response, answers)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_answer_limits_follow_the_transport_live() {
     let _guard = crate::common::integration_test_guard().await;
@@ -115,12 +168,13 @@ async fn default_answer_limits_follow_the_transport_live() {
             type_name: item_type.clone(),
             is_abstract: false,
             parent_type: None,
-            owned_attributes: vec![attr("value", &value_attr, ValueType::Long, false)],
+            owned_attributes: vec![attr("value", &value_attr, ValueType::Long, true)],
             doc: None,
             meta: Default::default(),
         })
         .expect("item descriptor registers");
-    let define = generate_define_block(&SchemaInfo::from_descriptors(&registry.snapshot()));
+    let define =
+        try_generate_define_block(&SchemaInfo::from_descriptors(&registry.snapshot())).unwrap();
     let db = setup_dynamic_typeql(&define).await;
 
     // Fixture setup has its own deadline, independent of either query read.
@@ -151,7 +205,13 @@ async fn default_answer_limits_follow_the_transport_live() {
     let (_, counted) = QueryTarget::Database(&db)
         .execute(
             &registry,
-            count_request(&registry, &item_type),
+            request(
+                &registry,
+                &item_type,
+                MatchOperation::CountBy {
+                    root: BindingId::new(0),
+                },
+            ),
             direct,
             &AnswerCancellation::default(),
             QueryExecutionDeadline::for_limits(direct),
@@ -164,9 +224,7 @@ async fn default_answer_limits_follow_the_transport_live() {
         counted.result()
     );
 
-    // Proxy at default answer-size limits: the client prepares under those defaults,
-    // a default server executes the request in process, and the reply is
-    // refused at the items wire limit.
+    // V3 reduces CountBy in the provider, so both transports read one row.
     let advertisement = advertisement();
     let authority = Arc::new(authority(&define));
     let proxy_defaults = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
@@ -189,46 +247,96 @@ async fn default_answer_limits_follow_the_transport_live() {
     let pending = connection
         .prepare(
             &registry,
-            count_request(&registry, &item_type),
+            request(
+                &registry,
+                &item_type,
+                MatchOperation::CountBy {
+                    root: BindingId::new(0),
+                },
+            ),
             proxy,
             &cancellation,
             deadline,
         )
         .unwrap_or_else(|error| panic!("proxy request prepares: {error}"));
-    let admitted = preflight_remote_request_v2(
-        pending.request_bytes(),
-        &authority.context(),
-        &advertisement,
-        server_ceilings(),
-    )
-    .unwrap_or_else(|rejection| panic!("server admits: {}", rejection.diagnostic_code()));
-    let mut server_transaction = db.read_transaction().await.expect("server transaction");
-    let response =
-        execute_admitted_remote_request_v2(admitted, &mut server_transaction, &signer()).await;
+    let (response, answers) = execute_staged(&db, &pending, &authority, &advertisement).await;
+    assert!(
+        matches!(answers.as_slice(), [StagedAnswerV3::Rows { rows }] if rows.len() == 1),
+        "V3 CountBy reads one provider aggregate row"
+    );
+    let (_, counted) = ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
+        .expect("the proxy counts every entity without scanning its answers");
+    assert!(matches!(counted.result(), MatchResult::Count { value, .. } if *value == ENTITIES));
+
+    let fetch = || {
+        request(
+            &registry,
+            &item_type,
+            MatchOperation::FetchRows {
+                output: FetchShape::Positional {
+                    slots: vec![FetchSlot::One {
+                        binding: BindingId::new(0),
+                    }],
+                },
+                order: Vec::new(),
+                window: Window {
+                    offset: 0,
+                    limit: ENTITIES,
+                },
+                cardinality: RowCardinality::BoundedMany,
+            },
+        )
+    };
+    let (_, fetched) = QueryTarget::Database(&db)
+        .execute(
+            &registry,
+            fetch(),
+            direct,
+            &cancellation,
+            QueryExecutionDeadline::for_limits(direct),
+        )
+        .await
+        .expect("direct fetch fits default answer-size limits");
+    assert!(
+        matches!(fetched.result(), MatchResult::Rows { rows, .. } if rows.len() as u64 == ENTITIES)
+    );
+    let deadline = QueryExecutionDeadline::for_limits(proxy);
+    let pending = connection
+        .prepare(&registry, fetch(), proxy, &cancellation, deadline)
+        .expect("proxy fetch prepares");
+    let (response, _) = execute_staged(&db, &pending, &authority, &advertisement).await;
     let error = ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
         .expect_err("the proxy refuses an answer past the wire item limit");
-    let QueryTargetError::Reply(RemoteModelQueryV2Error::Diagnostic(refusal)) = error else {
+    let QueryTargetError::Reply(RemoteModelQueryV2Error::Execution(refusal)) = error else {
         panic!("expected an authenticated refusal, got {error:?}");
     };
     assert!(
         matches!(
             refusal.code().as_str(),
-            "query_v2_model_solution_limit" | "solution_scan_limit"
+            "processed_item_limit" | "solution_scan_limit"
         ),
         "item-limit refusal code: {}",
         refusal.code().as_str()
     );
-    let detail = |name: &str| refusal.details().get(name).cloned();
     assert_eq!(
-        (detail("limit"), detail("maximum"), detail("source")),
-        (
-            Some(DiagnosticDetailValue::Text("items".into())),
-            Some(DiagnosticDetailValue::Long(
-                i64::try_from(DEFAULT_PROXY_QUERY_ITEMS).unwrap()
-            )),
-            Some(DiagnosticDetailValue::Text("default".into())),
-        )
+        refusal.category(),
+        type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::ResourceLimit
     );
+    let detail = |name: &str| {
+        refusal
+            .details()
+            .get(&SdkDiagnosticName::new(name).unwrap())
+            .cloned()
+    };
+    assert_eq!(
+        detail("maximum"),
+        Some(SdkDiagnosticDetailValue::Count(DEFAULT_PROXY_QUERY_ITEMS))
+    );
+    for (name, expected) in [("limit", "items"), ("source", "default")] {
+        assert!(
+            matches!(detail(name), Some(SdkDiagnosticDetailValue::QueryIdentity(value)) if value.as_str() == expected)
+        );
+    }
 
     db.execute_raw(
         &format!("match $e isa {item_type}; delete $e;"),
