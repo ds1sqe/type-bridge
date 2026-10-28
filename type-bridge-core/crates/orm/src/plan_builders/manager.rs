@@ -215,32 +215,45 @@ impl ManagerPlans {
         &self,
         relation: BindingId,
         type_id: &TypeId,
-        players: Vec<AssertionRolePlayer>,
-    ) -> QueryPattern {
-        let model = &self
+        player: AssertionRolePlayer,
+        include_subtypes: bool,
+    ) -> Result<QueryPattern> {
+        let schema = self
             .registry
             .installed_schema_authority()
             .expect("authority checked")
-            .resolved()
-            .types()[type_id];
-        if model.subtypes().is_empty() {
-            return QueryPattern::Links {
-                relation,
-                relation_id: type_id.clone(),
-                players,
-            };
-        }
-        QueryPattern::Or {
-            branches: std::iter::once(type_id)
-                .chain(model.subtypes())
-                .map(|candidate| {
-                    vec![QueryPattern::Links {
-                        relation,
-                        relation_id: candidate.clone(),
-                        players: players.clone(),
-                    }]
+            .resolved();
+        let model = &schema.types()[type_id];
+        let mut branches = Vec::new();
+        for candidate in
+            std::iter::once(type_id).chain(model.subtypes().iter().filter(|_| include_subtypes))
+        {
+            let roles = schema.types()[candidate]
+                .relates()
+                .iter()
+                .filter(|(role, effective)| {
+                    *role == player.role() || effective.replaced_roles().contains(player.role())
                 })
-                .collect(),
+                .map(|(role, _)| role);
+            let before = branches.len();
+            for role in roles {
+                branches.push(vec![QueryPattern::Links {
+                    relation,
+                    relation_id: candidate.clone(),
+                    players: vec![AssertionRolePlayer::new(role.clone(), player.player())],
+                }]);
+            }
+            if branches.len() == before {
+                return Err(OrmError::ExecutionDiagnostic(Box::new(
+                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure(
+                    ),
+                )));
+            }
+        }
+        if branches.len() == 1 {
+            Ok(branches.pop().unwrap().pop().unwrap())
+        } else {
+            Ok(QueryPattern::Or { branches })
         }
     }
 
@@ -250,6 +263,7 @@ impl ManagerPlans {
         thing: BindingId,
         type_id: &TypeId,
         expression: &DynamicExpr,
+        include_subtypes: bool,
     ) -> Result<Vec<QueryPattern>> {
         Ok(match expression {
             DynamicExpr::Compare {
@@ -310,18 +324,24 @@ impl ManagerPlans {
             DynamicExpr::And { exprs } => {
                 let mut patterns = Vec::new();
                 for child in exprs {
-                    patterns.extend(self.expression(draft, thing, type_id, child)?);
+                    patterns.extend(self.expression(
+                        draft,
+                        thing,
+                        type_id,
+                        child,
+                        include_subtypes,
+                    )?);
                 }
                 patterns
             }
             DynamicExpr::Or { exprs } => vec![QueryPattern::Or {
                 branches: exprs
                     .iter()
-                    .map(|child| self.expression(draft, thing, type_id, child))
+                    .map(|child| self.expression(draft, thing, type_id, child, include_subtypes))
                     .collect::<Result<_>>()?,
             }],
             DynamicExpr::Not { expr } => vec![QueryPattern::Not {
-                patterns: self.expression(draft, thing, type_id, expr)?,
+                patterns: self.expression(draft, thing, type_id, expr, include_subtypes)?,
             }],
             DynamicExpr::RolePlayer { role_name, expr } => {
                 let role = self.role(type_id, role_name)?;
@@ -347,10 +367,11 @@ impl ManagerPlans {
                         self.links(
                             thing,
                             type_id,
-                            vec![AssertionRolePlayer::new(role.clone(), player)],
-                        ),
+                            AssertionRolePlayer::new(role.clone(), player),
+                            include_subtypes,
+                        )?,
                     ];
-                    branch.extend(self.expression(draft, player, candidate, expr)?);
+                    branch.extend(self.expression(draft, player, candidate, expr, false)?);
                     branches.push(branch);
                 }
                 vec![QueryPattern::Or { branches }]
@@ -386,7 +407,7 @@ impl ManagerPlans {
                 });
             } else {
                 patterns.extend(
-                    self.expression(&mut draft, root, &type_id, expression)?
+                    self.expression(&mut draft, root, &type_id, expression, !exact)?
                         .into_iter()
                         .map(Pattern::Read),
                 );
@@ -396,8 +417,13 @@ impl ManagerPlans {
             self.player_bindings(&mut draft, &type_id, role_filters, !exact, &mut patterns)?
         {
             patterns.push(
-                self.links(root, &type_id, vec![AssertionRolePlayer::new(role, player)])
-                    .into(),
+                self.links(
+                    root,
+                    &type_id,
+                    AssertionRolePlayer::new(role, player),
+                    !exact,
+                )?
+                .into(),
             );
         }
         let mut terms = Vec::new();
@@ -442,8 +468,9 @@ impl ManagerPlans {
                                 self.links(
                                     root,
                                     &type_id,
-                                    vec![AssertionRolePlayer::new(role.clone(), player)],
-                                ),
+                                    AssertionRolePlayer::new(role.clone(), player),
+                                    !exact,
+                                )?,
                                 QueryPattern::Has {
                                     owner: player,
                                     attribute,
@@ -879,7 +906,7 @@ impl ManagerPlans {
         ];
         for key in &keys {
             patterns.extend(
-                self.expression(&mut draft, root, &type_id, key)?
+                self.expression(&mut draft, root, &type_id, key, true)?
                     .into_iter()
                     .map(Pattern::Read),
             );
@@ -888,7 +915,7 @@ impl ManagerPlans {
             self.player_bindings(&mut draft, &type_id, players, true, &mut patterns)?
         {
             patterns.push(
-                self.links(root, &type_id, vec![AssertionRolePlayer::new(role, player)])
+                self.links(root, &type_id, AssertionRolePlayer::new(role, player), true)?
                     .into(),
             );
         }
@@ -1006,7 +1033,7 @@ impl ManagerPlans {
         })];
         for expression in expressions {
             patterns.extend(
-                self.expression(&mut draft, root, &type_id, expression)?
+                self.expression(&mut draft, root, &type_id, expression, true)?
                     .into_iter()
                     .map(Pattern::Read),
             );
@@ -1236,8 +1263,9 @@ impl ManagerPlans {
                         self.links(
                             root,
                             &type_id,
-                            vec![AssertionRolePlayer::new(role.clone(), *binding)],
-                        )
+                            AssertionRolePlayer::new(role.clone(), *binding),
+                            true,
+                        )?
                         .into(),
                     );
                 }
@@ -1521,6 +1549,10 @@ impl ManagerRead {
 }
 
 #[cfg(test)]
+#[path = "../../tests/support/live_database.rs"]
+mod live_database;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1766,8 +1798,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unique_manager_fetches_keep_witnesses_and_partition_baselines() {
+    fn read_fixture() -> ManagerPlans {
         use type_bridge_contract::fingerprint::SemanticProfileId;
         use type_bridge_contract::projection::{
             BindingTarget, ProjectionConfig, ProjectionHandler,
@@ -1780,19 +1811,29 @@ mod tests {
                 r#"format: typebridge.schema/v2
 attributes:
   note: { value: string }
+  identifier: { value: string }
 entities:
-  person: {}
+  person:
+    owns:
+      identifier: { key: true }
   employee:
     sub: person
     owns:
       note: { card: { min: 0, max: 1 } }
 relations:
   membership:
+    owns:
+      note: { card: { min: 0, max: 1 } }
     relates:
       member: { card: { min: 1, max: 1 } }
+  employment:
+    sub: membership
+    relates:
+      worker: { as: member, card: 1 }
 plays:
   person:
     membership: [member]
+    employment: [worker]
 "#,
             )])
             .unwrap(),
@@ -1814,7 +1855,12 @@ plays:
             .unwrap(),
         )
         .unwrap();
-        let plans = ManagerPlans::new(installed.manager_registry().unwrap());
+        ManagerPlans::new(installed.manager_registry().unwrap())
+    }
+
+    #[test]
+    fn unique_manager_fetches_keep_witnesses_and_partition_baselines() {
+        let plans = read_fixture();
         let role_lookup = plans
             .read(
                 "membership",
@@ -1861,6 +1907,152 @@ plays:
             Some(0),
             "split hydration keeps its independent selection proof"
         );
+    }
+
+    #[cfg(feature = "typedb")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires a live TypeDB (TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS / TYPEDB_HTTP_PORT)"]
+    async fn specialized_role_manager_callers_preserve_exact_and_inclusive_mutations() {
+        use crate::_manager::{DynamicEntityManager, DynamicRelationManager};
+        use crate::{AttributeValue, ConnectOptions, Database, TxType};
+        let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
+        let name = super::live_database::name("manager_roles");
+        let db = Database::connect_with_options(
+            &address,
+            &name,
+            "admin",
+            "password",
+            ConnectOptions {
+                http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        db.create_database().await.unwrap();
+        db.execute_raw("define attribute identifier, value string; attribute note, value string; entity person, owns identifier @key, plays membership:member, plays employment:worker; entity employee sub person, owns note @card(0..1); relation membership, relates member @card(1), owns note @card(0..1); relation employment sub membership, relates worker as member @card(1);", TxType::Schema).await.unwrap();
+        let plans = read_fixture();
+        let registry = &plans.registry;
+        let people = DynamicEntityManager::from_registry(
+            &db,
+            Arc::clone(registry),
+            registry.entity("person").unwrap(),
+        );
+        let iid = people
+            .insert(&vec![(
+                "identifier".into(),
+                AttributeValue::String("P".into()),
+            )])
+            .await
+            .unwrap();
+        let player = |role: &str| DynamicRolePlayerInput {
+            role_name: role.into(),
+            player_type_name: "person".into(),
+            iid: Some(iid.clone()),
+            key: None,
+        };
+        let base = DynamicRelationManager::from_registry(
+            &db,
+            Arc::clone(registry),
+            registry.relation("membership").unwrap(),
+        );
+        let child = DynamicRelationManager::from_registry(
+            &db,
+            Arc::clone(registry),
+            registry.relation("employment").unwrap(),
+        );
+        let membership = base.insert(&vec![], &[player("member")]).await.unwrap();
+        let employment = child.insert(&vec![], &[player("worker")]).await.unwrap();
+        let predicate = DynamicExpr::RolePlayer {
+            role_name: "member".into(),
+            expr: Box::new(DynamicExpr::Iid { iid: iid.clone() }),
+        };
+        let expected = std::collections::BTreeSet::from([membership.clone(), employment.clone()]);
+        let identities = |rows: Vec<crate::_dynamic::DynamicRelationRow>| {
+            rows.into_iter()
+                .map(|row| row.iid.unwrap())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            identities(
+                base.get_exact_with_query(std::slice::from_ref(&predicate), &[], Some(1), None)
+                    .await
+                    .unwrap()
+            ),
+            std::collections::BTreeSet::from([membership.clone()])
+        );
+        assert_eq!(
+            identities(
+                base.get_with_query(std::slice::from_ref(&predicate), &[], None, None)
+                    .await
+                    .unwrap()
+            ),
+            expected
+        );
+        assert_eq!(
+            base.count_exact_with_query(std::slice::from_ref(&predicate))
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            base.count_with_query(std::slice::from_ref(&predicate))
+                .await
+                .unwrap(),
+            2
+        );
+        let sort = DynamicSort::RolePlayerAttribute {
+            role_name: "member".into(),
+            attr_name: "identifier".into(),
+            direction: SortDir::Asc,
+        };
+        assert_eq!(
+            identities(base.get_with_query(&[], &[sort], None, None).await.unwrap()),
+            expected
+        );
+        assert_eq!(
+            identities(
+                base.get_with_role_filters(&[], &[player("member")])
+                    .await
+                    .unwrap()
+            ),
+            expected
+        );
+        let note = |value: &str| vec![("note".into(), AttributeValue::String(value.into()))];
+        base.update_exact(&membership, &note("exact"), &[player("member")])
+            .await
+            .unwrap();
+        assert!(
+            base.get_by_iid_exact(&membership).await.unwrap()[0]
+                .attributes
+                .contains(&note("exact")[0])
+        );
+        assert!(
+            !child.get_by_iid_exact(&employment).await.unwrap()[0]
+                .attributes
+                .contains(&note("exact")[0])
+        );
+        base.update(None, &note("inclusive"), &[player("member")])
+            .await
+            .unwrap();
+        for (manager, iid) in [(&base, &membership), (&child, &employment)] {
+            assert!(
+                manager.get_by_iid_exact(iid).await.unwrap()[0]
+                    .attributes
+                    .contains(&note("inclusive")[0])
+            );
+        }
+        base.delete_by_iid_exact(&membership).await.unwrap();
+        assert_eq!(base.count_exact().await.unwrap(), 0);
+        assert_eq!(child.count_exact().await.unwrap(), 1);
+        base.insert(&vec![], &[player("member")]).await.unwrap();
+        base.delete_identity(None, &vec![], &[player("member")])
+            .await
+            .unwrap();
+        assert_eq!(base.count_exact().await.unwrap(), 0);
+        assert_eq!(child.count_exact().await.unwrap(), 0);
+        db.delete_database().await.unwrap();
+        db.close().unwrap();
     }
 
     #[test]

@@ -180,10 +180,14 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
     let Some(db) = live_database("managers").await else {
         return;
     };
-    db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
-        .await
-        .unwrap();
-    let installed = party_projection_with_authority();
+    let typeql = PARTY_SCHEMA_TYPEQL.replace(
+        "plays membership:member;",
+        "plays membership:member, plays employment:employee;",
+    ) + " relation employment sub membership, relates employee as member @card(1..2);";
+    db.execute_raw(&typeql, TxType::Schema).await.unwrap();
+    let yaml = PARTY_SCHEMA_YAML.replace("plays:\n", "  employment:\n    sub: membership\n    relates:\n      employee: { as: member, card: { min: 1, max: 2 } }\nplays:\n")
+        .replace("    membership: [member]", "    membership: [member]\n    employment: [employee]");
+    let installed = party_projection_for_schema(&yaml);
     let registry = Arc::new(installed.match_registry().unwrap());
     let person = registry.entity("person").unwrap();
     let planned =
@@ -372,6 +376,76 @@ async fn registry_manager_heterogeneous_subtypes_keep_selection_evidence() {
     actual.sort();
     expected.sort();
     assert_eq!(actual, expected);
+    db.delete_database().await.unwrap();
+    db.close().unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn specialized_role_queries_keep_legacy_subtype_contract() {
+    use std::sync::Arc;
+    use type_bridge_orm::_dynamic::{DynamicExpr, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::AttributeValue;
+    let Some(db) = live_database("specialized_contract").await else {
+        return;
+    };
+    let typeql = PARTY_SCHEMA_TYPEQL.replace(
+        "plays membership:member;",
+        "plays membership:member, plays employment:employee;",
+    ) + " relation employment sub membership, relates employee as member @card(1..2);";
+    db.execute_raw(&typeql, TxType::Schema).await.unwrap();
+    let yaml = PARTY_SCHEMA_YAML.replace("plays:\n", "  employment:\n    sub: membership\n    relates:\n      employee: { as: member, card: { min: 1, max: 2 } }\nplays:\n")
+        .replace("    membership: [member]", "    membership: [member]\n    employment: [employee]");
+    let installed = party_projection_for_schema(&yaml);
+    let registry = Arc::new(installed.match_registry().unwrap());
+    let people = DynamicEntityManager::new(&db, registry.entity("person").unwrap());
+    let person = people
+        .insert(&vec![(
+            "identifier".into(),
+            AttributeValue::String("P".into()),
+        )])
+        .await
+        .unwrap();
+    let player = |role: &str| DynamicRolePlayerInput {
+        role_name: role.into(),
+        player_type_name: "person".into(),
+        iid: Some(person.clone()),
+        key: None,
+    };
+    let legacy = DynamicRelationManager::new(&db, registry.relation("membership").unwrap());
+    let membership = legacy.insert(&vec![], &[player("member")]).await.unwrap();
+    let employment = DynamicRelationManager::new(&db, registry.relation("employment").unwrap())
+        .insert(&vec![], &[player("employee")])
+        .await
+        .unwrap();
+    let planned = DynamicRelationManager::from_registry(
+        &db,
+        Arc::clone(&registry),
+        registry.relation("membership").unwrap(),
+    );
+    let predicate = DynamicExpr::RolePlayer {
+        role_name: "member".into(),
+        expr: Box::new(DynamicExpr::Iid {
+            iid: person.clone(),
+        }),
+    };
+    let exact = planned
+        .get_exact_with_query(std::slice::from_ref(&predicate), &[], None, None)
+        .await
+        .unwrap();
+    let inclusive = planned
+        .get_with_query(&[predicate], &[], None, None)
+        .await
+        .unwrap();
+    assert_eq!(exact.len(), 1);
+    assert_eq!(exact[0].iid.as_deref(), Some(membership.as_str()));
+    assert_eq!(
+        inclusive
+            .iter()
+            .map(|row| row.iid.clone().unwrap())
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([membership, employment])
+    );
     db.delete_database().await.unwrap();
     db.close().unwrap();
 }

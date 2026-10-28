@@ -892,6 +892,14 @@ run_live_lane() {
             cargo test --manifest-path type-bridge-core/Cargo.toml --locked \
                 -p type-bridge-orm --test plan_execute_live \
                 negated_given_role_iid_preserves_the_provider_connection -- --exact
+        run_step "specialized relation manager role matching (TypeDB $typedb_server_version)" \
+            run_with_timeout 10m \
+            env TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS="$TYPEDB_ADDRESS" \
+                TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                plan_builders::manager::tests::specialized_role_manager_callers_preserve_exact_and_inclusive_mutations \
+                --manifest-path type-bridge-core/Cargo.toml --locked \
+                -p type-bridge-orm --lib
     fi
 
     # The staged V3 suites run on every server of the typedb-3.13.6/v1 profile.

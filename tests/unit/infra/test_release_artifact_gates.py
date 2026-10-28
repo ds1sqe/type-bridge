@@ -1023,7 +1023,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     # The same live job also gates the unsupported-version probe, two recovery
     # probes, generated Rust, generated C, and C runtime with exact selection.
     assert (
-        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 10
+        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 11
     )
     assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration

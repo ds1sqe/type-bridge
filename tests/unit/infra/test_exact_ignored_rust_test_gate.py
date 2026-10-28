@@ -116,13 +116,13 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     # In addition to the CLI/recovery selectors, CI gates the production V2
     # server, generated Rust, generated C, C runtime and TLS live probes, and
     # the 3.13.6 lane's selectors exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 12 + len(lane_3_13_6_tests)
+    assert workflow.count(gate_call) == len(positive_tests) + 13 + len(lane_3_13_6_tests)
     for selector in (
         "fetch_write_commit_failure_reaches_driver_and_v1_query",
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 21
+    assert local.count(gate_call) == 22
     for selector in lane_3_13_6_tests:
         assert workflow.count(selector) == 1, selector
         assert local.count(selector) == 1, selector
@@ -412,3 +412,24 @@ def test_partition_deduplication_regression_runs_on_all_affected_servers() -> No
             assert "if" not in step
             assert workflow["jobs"][job]["strategy"]["matrix"]["typedb"] == ["3.13.6", "3.14.0"]
     assert selector in (REPO_ROOT / "test.sh").read_text(encoding="utf-8")
+
+
+def test_specialized_manager_roles_run_through_the_exact_live_gate() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["rust-integration"]["steps"]
+        if step["name"] == "Run specialized relation manager role matching regression"
+    )
+    selector = (
+        "plan_builders::manager::tests::"
+        "specialized_role_manager_callers_preserve_exact_and_inclusive_mutations"
+    )
+    assert step["if"] == "matrix.typedb-server == 'typedb/typedb:3.12.3'"
+    assert step["env"]["TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS"] == "localhost:1729"
+    assert step["env"]["TYPEDB_HTTP_PORT"] == "8000"
+    assert "scripts/ci/run_exact_ignored_rust_test.sh" in step["run"]
+    assert selector in step["run"]
+    assert "-p type-bridge-orm --lib" in step["run"]
+    source = (REPO_ROOT / "test.sh").read_text()
+    assert selector in source

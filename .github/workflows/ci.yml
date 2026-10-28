@@ -584,6 +584,17 @@ jobs:
           -p type-bridge-orm --test plan_execute_live
           negated_given_role_iid_preserves_the_provider_connection -- --exact
 
+      - name: Run specialized relation manager role matching regression
+        if: matrix.typedb-server == 'typedb/typedb:3.12.3'
+        env:
+          TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
+          TYPEDB_HTTP_PORT: "8000"
+        run: >-
+          bash scripts/ci/run_exact_ignored_rust_test.sh
+          plan_builders::manager::tests::specialized_role_manager_callers_preserve_exact_and_inclusive_mutations
+          --manifest-path type-bridge-core/Cargo.toml --locked
+          -p type-bridge-orm --lib
+
       - name: Run fetch write commit failure regression
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
