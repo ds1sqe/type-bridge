@@ -8,7 +8,7 @@
           "c": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "c38f94554f6acbf6a23d605331576d79807dd3e9f3fc2dc418aaab24101a6156",
+            "digest": "384cb2c322c093f41952843b1cb8c41d27eed7108ade31c2b419721e0c253f08",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.12.1/v1"
           },
@@ -50,7 +50,7 @@
           "c": {
             "algorithm": "sha256",
             "canonicalization": "typebridge.binding-projection/v1",
-            "digest": "c6e18c6f090f3ead36d856f059a55640e7417665593d6d96865d983e6e0a531d",
+            "digest": "833ff0ff0c10ea9cfa2a54f92ae90c42753910e8669094690b5760d495087e01",
             "domain": "typebridge.binding.projection",
             "semantic_profile": "typedb-3.13.6/v1"
           },

@@ -119,6 +119,7 @@ fn manifest_path(path: &Path) -> String {
 /// the set has no entry for it.
 fn sdk_matrix_entry(suite: &str, profile_name: &str) -> SdkProfile {
     sdk_profile_matrix::select_from(&sdk_profile_matrix::repository_root(), suite, profile_name)
+        .selected_server()
 }
 
 /// The matrix entries the consumer's SDK lanes emit, keyed by its suite name.

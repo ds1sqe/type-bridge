@@ -77,6 +77,7 @@ pub(crate) struct PendingState {
 pub(crate) enum PendingSource {
     Raw(Pending<PlanAnswer>),
     Authored(Box<crate::plan_builder::selections::AuthoredPending>),
+    Query(Box<crate::query::StagedQueryPending>),
 }
 impl PendingSource {
     pub(crate) fn get(
@@ -85,11 +86,30 @@ impl PendingSource {
         match self {
             Self::Raw(pending) => pending.get(),
             Self::Authored(pending) => pending.answer(),
+            Self::Query(_) => Err(type_bridge_orm::session::staged::PendingError::InvalidPlan(
+                Box::new(type_bridge_contract::diagnostic::Diagnostic::new(
+                    type_bridge_contract::diagnostic::DiagnosticCategory::InvalidContract,
+                    type_bridge_contract::diagnostic::DiagnosticCode::new(
+                        "c_query_pending_answer_kind",
+                    )
+                    .expect("static diagnostic code"),
+                    "A typed query pending requires the query result accessor",
+                )),
+            )),
         }
     }
 }
 
 impl PendingState {
+    pub(crate) fn query(pending: crate::query::StagedQueryPending) -> Self {
+        Self {
+            pending: PendingSource::Query(Box::new(pending)),
+            shape: None,
+            roles: 0,
+            views: OnceLock::new(),
+        }
+    }
+
     pub(crate) fn new(pending: Pending<PlanAnswer>, plan: &QueryPlanV3) -> Self {
         Self {
             pending: PendingSource::Raw(pending),
@@ -469,6 +489,7 @@ fn check_answer(
 }
 
 pub(crate) const PENDING_TAG: u64 = 0x74625f70656e6469;
+pub(crate) const QUERY_PENDING_TAG: u64 = 0x74625f7170656e64;
 const DOCUMENT_TAG: u64 = 0x74625f646f63756d;
 const ROW_TAG: u64 = 0x74625f726f775f5f;
 
@@ -491,14 +512,18 @@ impl Cursor for TypeBridgeRow {
 impl Cursor for TypeBridgePending {
     const TAG: u64 = PENDING_TAG;
     fn fence(&self, preflight: &DirectOutputPreflight) -> Result<(), TypeBridgeStatus> {
-        if let PendingSource::Authored(pending) = &self.state.pending {
-            preflight.check_package_borrowed_ranges(&pending.source.package)?;
-            if let Some(Ok(result)) = pending.model_result.get() {
-                result.fence(preflight)?;
+        match &self.state.pending {
+            PendingSource::Authored(pending) => {
+                preflight.check_package_borrowed_ranges(&pending.source.package)?;
+                if let Some(Ok(result)) = pending.model_result.get() {
+                    result.fence(preflight)?;
+                }
+                if let Some(Ok(result)) = pending.rows_result.get() {
+                    result.fence(preflight)?;
+                }
             }
-            if let Some(Ok(result)) = pending.rows_result.get() {
-                result.fence(preflight)?;
-            }
+            PendingSource::Query(pending) => pending.check_borrowed_ranges(preflight)?,
+            PendingSource::Raw(_) => {}
         }
         if let Some(views) = self.state.views.get() {
             match views {
@@ -546,7 +571,7 @@ pub(crate) unsafe fn check_cursor_ranges(
     // SAFETY: each recognized tag selects that cursor's actual layout.
     unsafe {
         match tag {
-            PENDING_TAG => fence_as::<TypeBridgePending>(cursor, preflight),
+            PENDING_TAG | QUERY_PENDING_TAG => fence_as::<TypeBridgePending>(cursor, preflight),
             DOCUMENT_TAG => fence_as::<TypeBridgeDocument>(cursor, preflight),
             ROW_TAG => fence_as::<TypeBridgeRow>(cursor, preflight),
             _ => preflight.check_bytes(cursor.cast(), declared_size),

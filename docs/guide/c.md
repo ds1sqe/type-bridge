@@ -141,6 +141,38 @@ transaction.
 ABI 1.6 rollback consumes the write transaction and clears its owner slot,
 just like commit and close. Keep-open rollback requires the later ABI 1.7 API.
 
+### Typed reads in a staged transaction (ABI 1.11)
+
+Open a staged transaction with `type_bridge_database_transaction` or
+`type_bridge_proxy_connection_transaction`. Stage writes with the plan authoring
+API, then stage the same immutable typed terminal used by execute:
+
+```c
+type_bridge_pending_t *pending = NULL;
+status = type_bridge_staged_query_stage(
+    transaction, terminal, kind, NULL, NULL, &pending, &diagnostics);
+/* No I/O yet. The pending result reports IN_USE before commit. */
+status = type_bridge_staged_transaction_commit(transaction, &diagnostics);
+status = type_bridge_pending_query_result(pending, &result, &diagnostics);
+/* Use the existing query-result accessors. */
+type_bridge_query_result_close(&result);
+type_bridge_pending_free(&pending);
+type_bridge_staged_transaction_close(&transaction);
+```
+
+A staged read sees earlier writes in the same transaction, directly or through
+`/v3/staged`. NULL limits select defaults; explicit limits and cancellation use
+the same checks as execute. A pending retains its query and schema proof, so
+query sessions and terminals may close before commit. After commit, its result
+remains readable after the transaction closes; repeated result calls share the
+cached projection. A rollback or failed commit publishes no result.
+
+Generated manager terminals accept direct database and borrowed read targets
+only. Staging one fails with `c_query_manager_staged_unsupported` before I/O.
+C schema packages always require canonical schema authority at admission;
+unlike registry-only managers in other bindings, C has no schema-less package
+mode.
+
 ### Caller-owned exchange
 
 A host that owns the route to the server (its own HTTP stack, a message bus,
@@ -529,20 +561,20 @@ commit whose failure is a retry-safe `STC2` conflict with
 
 <a id="require-abi-17"></a>
 
-### Require ABI 1.10
+### Require ABI 1.11
 
-The 1.10 runtime retains header and descriptor compatibility with minors
-1.6 through 1.9. CMake accepts
+The 1.11 runtime retains header and descriptor compatibility with minors
+1.6 through 1.10. CMake accepts
 `find_package(TypeBridge 1.6.0 EXACT)` and pkg-config keeps
-`type-bridge = 1.6.0` resolving. Applications that use the typed plan authoring helpers
+`type-bridge = 1.6.0` resolving. Applications that use staged typed queries
 require it explicitly:
 
 ```cmake
-find_package(TypeBridge 1.10 CONFIG REQUIRED)
+find_package(TypeBridge 1.11 CONFIG REQUIRED)
 ```
 
 ```text
-Requires: type-bridge-abi >= 1.10.0
+Requires: type-bridge-abi >= 1.11.0
 ```
 
 The runtime's pkg-config file keeps `Version: 1.6.0` and provides

@@ -80,6 +80,7 @@ pub(crate) enum AllocationSite {
     CanonicalRecordEncodeBytes,
     CanonicalArchiveEncodeBytes,
     CanonicalArchiveHandle,
+    QueryStagedPendingHandle,
 }
 
 #[derive(Clone, Copy, Debug)]

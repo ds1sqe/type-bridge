@@ -25,7 +25,7 @@ fn public_query_abi_compiles_under_strict_c_and_cpp() {
 #endif
 
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "query ABI major drifted");
-QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 10u, "query ABI minor drifted");
+QUERY_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 11u, "query ABI minor drifted");
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_QUERY_DESCRIPTOR_VERSION == 1u,
                     "query descriptor version drifted");
 QUERY_STATIC_ASSERT(TYPE_BRIDGE_QUERY_TERMINAL_FIRST == 8u,
@@ -82,6 +82,14 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_execute_fn)(
     const type_bridge_query_execution_limits_v1_t *,
     const type_bridge_cancellation_t *, type_bridge_query_result_t **,
     type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *staged_query_fn)(
+    type_bridge_staged_transaction_t *, const type_bridge_query_terminal_t *,
+    type_bridge_query_terminal_kind_t, const type_bridge_query_execution_limits_v1_t *,
+    const type_bridge_cancellation_t *, type_bridge_pending_t **,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *pending_query_fn)(
+    const type_bridge_pending_t *, type_bridge_query_result_t **,
+    type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *remote_prepare_fn)(
     const type_bridge_query_remote_context_t *,
     const type_bridge_query_terminal_t *, type_bridge_query_terminal_kind_t,
@@ -111,6 +119,8 @@ void query_abi_probe(void) {
   query_open_fn query_open = &type_bridge_query_open_v1;
   query_terminal_open_fn terminal_open = &type_bridge_query_terminal_open_v1;
   database_execute_fn database_execute = &type_bridge_database_query_execute_v1;
+  staged_query_fn staged_query = &type_bridge_staged_query_stage;
+  pending_query_fn pending_query = &type_bridge_pending_query_result;
   remote_prepare_fn remote_prepare = &type_bridge_query_remote_prepare_v1;
   row_thing_fn row_thing = &type_bridge_query_result_row_slot_thing_at;
   reduced_metadata_fn reduced_metadata =
@@ -135,6 +145,8 @@ void query_abi_probe(void) {
   (void)query_open;
   (void)terminal_open;
   (void)database_execute;
+  (void)staged_query;
+  (void)pending_query;
   (void)remote_prepare;
   (void)row_thing;
   (void)reduced_metadata;

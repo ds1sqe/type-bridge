@@ -22,7 +22,7 @@ const STAGED_CONSUMER: &str = r#"#include <stddef.h>
 #endif
 
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MAJOR == 1u, "staged ABI major drifted");
-STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 10u, "staged ABI minor drifted");
+STAGED_STATIC_ASSERT(TYPE_BRIDGE_C_ABI_MINOR == 11u, "staged ABI minor drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_TRANSACTION_READ == 1u, "read kind drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_TRANSACTION_WRITE == 2u, "write kind drifted");
 STAGED_STATIC_ASSERT(TYPE_BRIDGE_PLAN_ANSWER_ROWS == 1, "rows answer drifted");

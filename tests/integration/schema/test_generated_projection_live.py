@@ -285,17 +285,16 @@ def _matrix_error(code: str, message: str) -> AssertionError:
 
 
 def _require_profile_server_version(
-    semantic_profile: str, detected: str | None, suite: str = "queries"
+    semantic_profile: str,
+    detected: str | None,
+    suite: str = "queries",
+    environment: Mapping[str, str] | None = None,
 ) -> Any:
-    """Return {suite}'s matrix entry for ``semantic_profile``.
-
-    TypeDB 3.14.0 shares the 3.13.6 semantic profile, as in test.sh.
-    Other releases must match the entry's live server exactly.
-    """
-    identity = _profile_matrix().select(suite, semantic_profile, error=_matrix_error)
-    if detected != identity.live_server_version and not (
-        semantic_profile == "typedb-3.13.6/v1" and detected == "3.14.0"
-    ):
+    """Require the exact selected server for this suite and package profile."""
+    identity = _profile_matrix().requested(
+        suite, semantic_profile, environment, error=_matrix_error
+    )
+    if detected != identity.live_server_version:
         raise AssertionError(
             f"{semantic_profile} packages require the actual detected TypeDB server "
             f"version {identity.live_server_version}; detected {detected!r}"
@@ -320,7 +319,7 @@ def _requested_sdk_profile(
             f"{suite} reports target {identity.semantic_profile}; "
             f"the generated package uses {generated_profile}"
         )
-    return _require_profile_server_version(identity.semantic_profile, detected, suite)
+    return _require_profile_server_version(identity.semantic_profile, detected, suite, environment)
 
 
 def _generated_profile(generated: ModuleType) -> str:
@@ -1979,21 +1978,28 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes], timeout: float) 
     raise AssertionError("generated remote server never became reachable")
 
 
-def test_generated_profile_server_gate_reads_the_matrix() -> None:
+def test_generated_profile_server_gate_reads_the_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION", raising=False)
+    monkeypatch.delenv("TYPEDB_VERSION", raising=False)
     for profile, server in (("typedb-3.12.1/v1", "3.12.3"), ("typedb-3.13.6/v1", "3.13.6")):
         assert _require_profile_server_version(profile, server).semantic_profile == profile
         for detected in (None, "3.11.5", "3.12.2", "3.13.5", "3.14.0"):
-            if profile == "typedb-3.13.6/v1" and detected == "3.14.0":
-                assert (
-                    _require_profile_server_version(profile, detected).semantic_profile == profile
-                )
-                continue
             with pytest.raises(
                 AssertionError, match=f"actual detected TypeDB server version {server}"
             ):
                 _require_profile_server_version(profile, detected)
     with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
         _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
+
+    monkeypatch.setenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION", "3.14.0")
+    assert (
+        _require_profile_server_version("typedb-3.13.6/v1", "3.14.0").live_server_version
+        == "3.14.0"
+    )
+    with pytest.raises(AssertionError, match="actual detected TypeDB server version 3.14.0"):
+        _require_profile_server_version("typedb-3.13.6/v1", "3.13.6")
+    with pytest.raises(AssertionError, match="server_profile_mismatch"):
+        _require_profile_server_version("typedb-3.12.1/v1", "3.14.0")
 
 
 @pytest.mark.parametrize("suite", ["queries", "models", "serialization"])

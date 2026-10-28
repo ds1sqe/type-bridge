@@ -512,12 +512,80 @@ pub struct TypeBridgeQueryResult {
 #[allow(clippy::large_enum_variant)]
 enum QueryResultStorage {
     Query(ProjectedQueryResult),
+    SharedQuery(Arc<StagedQueryResult>),
     ManagerRows {
         model: TypeId,
         rows: Vec<Arc<ProjectedThing>>,
     },
     ManagerCount(u64),
     ManagerExists(bool),
+}
+
+struct StagedQueryResult {
+    request: Arc<ValidatedMatchRequest>,
+    value: ProjectedQueryValue,
+}
+
+pub(crate) struct StagedQueryPending {
+    state: Arc<QuerySessionState>,
+    request: Arc<ValidatedMatchRequest>,
+    pending: type_bridge_orm::session::staged::Pending<type_bridge_orm::ValidatedMatchResult>,
+    origin: ProjectedQueryOrigin,
+    resources: QueryExecutionResourceLimits,
+    cancellation: type_bridge_orm::AnswerCancellation,
+    projected: std::sync::OnceLock<Arc<StagedQueryResult>>,
+}
+
+impl StagedQueryPending {
+    pub(crate) fn check_borrowed_ranges(
+        &self,
+        preflight: &DirectOutputPreflight,
+    ) -> Result<(), TypeBridgeStatus> {
+        check_state_ranges(&self.state, preflight)?;
+        if let Some(value) = self.projected.get() {
+            check_query_value_ranges(&value.value, preflight)?;
+        }
+        Ok(())
+    }
+
+    fn result(
+        &self,
+        result: &type_bridge_orm::ValidatedMatchResult,
+    ) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
+        let deadline = QueryExecutionDeadline::for_limits(self.resources);
+        deadline.check(&self.cancellation)?;
+        let projected = self.materialize(result, deadline)?;
+        Ok(TypeBridgeQueryResult {
+            state: Arc::clone(&self.state),
+            storage: QueryResultStorage::SharedQuery(Arc::clone(projected)),
+        })
+    }
+
+    fn materialize(
+        &self,
+        result: &type_bridge_orm::ValidatedMatchResult,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<&Arc<StagedQueryResult>, SdkExecutionDiagnostic> {
+        if self.projected.get().is_none() {
+            let (value, _) = self.origin.clone().materialize_borrowed_with_budget(
+                &self.state.package.installed_projection,
+                &self.state.registry,
+                &self.request,
+                result,
+                self.resources.projected(),
+                &self.cancellation,
+                Some(deadline),
+            )?;
+            let _ = self.projected.set(Arc::new(StagedQueryResult {
+                request: Arc::clone(&self.request),
+                value,
+            }));
+        }
+        Ok(self
+            .projected
+            .get()
+            .expect("successful query materialization"))
+    }
 }
 
 struct QueryRemoteContextState {
@@ -767,6 +835,52 @@ impl TypeBridgeQueryRemoteClaim {
     }
 }
 
+fn check_query_value_ranges(
+    value: &ProjectedQueryValue,
+    preflight: &DirectOutputPreflight,
+) -> Result<(), TypeBridgeStatus> {
+    match value {
+        ProjectedQueryValue::Rows { rows } | ProjectedQueryValue::Page { entries: rows, .. } => {
+            for row in rows {
+                for slot in row.slots() {
+                    match slot.value() {
+                        ProjectedQuerySlotValue::One(value) => {
+                            check_projected_thing_ranges(value, preflight)?;
+                        }
+                        ProjectedQuerySlotValue::Many(values) => {
+                            for value in values {
+                                check_projected_thing_ranges(value, preflight)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ProjectedQueryValue::Reduction { rows, .. }
+        | ProjectedQueryValue::FieldReduction { rows, .. }
+        | ProjectedQueryValue::FieldTupleReduction { rows, .. } => {
+            for row in rows {
+                match row.group() {
+                    Some(ProjectedReductionGroup::Thing(value)) => {
+                        check_projected_thing_ranges(value, preflight)?;
+                    }
+                    Some(ProjectedReductionGroup::Field(value)) => {
+                        check_projected_attribute_value_ranges(value, preflight)?;
+                    }
+                    Some(ProjectedReductionGroup::Fields(values)) => {
+                        for value in values {
+                            check_projected_attribute_value_ranges(value, preflight)?;
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+        ProjectedQueryValue::Count { .. } | ProjectedQueryValue::Exists { .. } => {}
+    }
+    Ok(())
+}
+
 impl TypeBridgeQueryResult {
     pub(crate) fn check_borrowed_ranges(
         &self,
@@ -774,46 +888,10 @@ impl TypeBridgeQueryResult {
     ) -> Result<(), TypeBridgeStatus> {
         check_state_ranges(&self.state, preflight)?;
         match &self.storage {
-            QueryResultStorage::Query(value) => match value.value() {
-                ProjectedQueryValue::Rows { rows }
-                | ProjectedQueryValue::Page { entries: rows, .. } => {
-                    for row in rows {
-                        for slot in row.slots() {
-                            match slot.value() {
-                                ProjectedQuerySlotValue::One(value) => {
-                                    check_projected_thing_ranges(value, preflight)?;
-                                }
-                                ProjectedQuerySlotValue::Many(values) => {
-                                    for value in values {
-                                        check_projected_thing_ranges(value, preflight)?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                ProjectedQueryValue::Reduction { rows, .. }
-                | ProjectedQueryValue::FieldReduction { rows, .. }
-                | ProjectedQueryValue::FieldTupleReduction { rows, .. } => {
-                    for row in rows {
-                        match row.group() {
-                            Some(ProjectedReductionGroup::Thing(value)) => {
-                                check_projected_thing_ranges(value, preflight)?;
-                            }
-                            Some(ProjectedReductionGroup::Field(value)) => {
-                                check_projected_attribute_value_ranges(value, preflight)?;
-                            }
-                            Some(ProjectedReductionGroup::Fields(values)) => {
-                                for value in values {
-                                    check_projected_attribute_value_ranges(value, preflight)?;
-                                }
-                            }
-                            None => {}
-                        }
-                    }
-                }
-                ProjectedQueryValue::Count { .. } | ProjectedQueryValue::Exists { .. } => {}
-            },
+            QueryResultStorage::Query(value) => check_query_value_ranges(value.value(), preflight)?,
+            QueryResultStorage::SharedQuery(value) => {
+                check_query_value_ranges(&value.value, preflight)?
+            }
             QueryResultStorage::ManagerRows { rows, .. } => {
                 for value in rows {
                     check_projected_thing_ranges(value, preflight)?;
@@ -932,8 +1010,8 @@ fn write_handle<T>(
 }
 
 fn query_result_kind(storage: &QueryResultStorage) -> u32 {
-    match storage {
-        QueryResultStorage::Query(value) => match value.value() {
+    if let Some(value) = query_result_value(storage) {
+        return match value {
             ProjectedQueryValue::Rows { .. } => RESULT_ROWS,
             ProjectedQueryValue::Page { .. } => RESULT_PAGE,
             ProjectedQueryValue::Count { .. } => RESULT_COUNT,
@@ -941,7 +1019,12 @@ fn query_result_kind(storage: &QueryResultStorage) -> u32 {
             ProjectedQueryValue::FieldReduction { .. } => RESULT_FIELD_REDUCTION,
             ProjectedQueryValue::FieldTupleReduction { .. } => RESULT_FIELD_TUPLE_REDUCTION,
             ProjectedQueryValue::Exists { .. } => RESULT_EXISTS,
-        },
+        };
+    }
+    match storage {
+        QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+            unreachable!("query kind returned above")
+        }
         QueryResultStorage::ManagerRows { .. } => RESULT_ROWS,
         QueryResultStorage::ManagerCount(_) => RESULT_COUNT,
         QueryResultStorage::ManagerExists(_) => RESULT_EXISTS,
@@ -951,6 +1034,7 @@ fn query_result_kind(storage: &QueryResultStorage) -> u32 {
 fn query_result_value(storage: &QueryResultStorage) -> Option<&ProjectedQueryValue> {
     match storage {
         QueryResultStorage::Query(value) => Some(value.value()),
+        QueryResultStorage::SharedQuery(value) => Some(&value.value),
         QueryResultStorage::ManagerRows { .. }
         | QueryResultStorage::ManagerCount(_)
         | QueryResultStorage::ManagerExists(_) => None,
@@ -4145,13 +4229,13 @@ fn check_read_transaction_query_borrowed_ranges(
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn execute_preflight<T>(
+unsafe fn execute_preflight<T, Output>(
     target: *const T,
     target_borrowed_ranges: impl FnOnce(&DirectOutputPreflight, &T) -> Result<(), TypeBridgeStatus>,
     terminal: *const TypeBridgeQueryTerminal,
     limits: *const TypeBridgeQueryExecutionLimitsV1,
     cancellation: *const TypeBridgeCancellation,
-    out_result: *mut *mut TypeBridgeQueryResult,
+    out_result: *mut *mut Output,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> Result<ExecuteInvocationPreflight, TypeBridgeStatus> {
     let preflight = preflight_outputs(out_result, out_diagnostics)?;
@@ -4514,6 +4598,169 @@ fn take_remote_claim(
         .map_err(|_| remote_claim_state_unavailable())?
         .take()
         .ok_or_else(remote_claim_consumed)
+}
+
+/// Stage one typed query with execute's nominal, resource and cancellation fences.
+/// No provider transaction opens until commit. Manager terminals are unsupported.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_staged_query_stage(
+    transaction: *mut crate::staged::TypeBridgeStagedTransaction,
+    terminal: *const TypeBridgeQueryTerminal,
+    expected_terminal_kind: u32,
+    limits: *const TypeBridgeQueryExecutionLimitsV1,
+    cancellation: *const TypeBridgeCancellation,
+    out_pending: *mut *mut crate::staged::TypeBridgePending,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
+    // SAFETY: execute preflight fences every input, including the retained transaction owner.
+    let invocation = match unsafe {
+        execute_preflight(
+            transaction,
+            |outputs, transaction| crate::staged::check_transaction(outputs, transaction),
+            terminal,
+            limits,
+            cancellation,
+            out_pending,
+            out_diagnostics,
+        )
+    } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    let ExecuteInvocationPreflight {
+        outputs: _preflight,
+        answer,
+        parsed,
+    } = invocation;
+    // SAFETY: output slots were fenced against all active input storage.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_pending, out_diagnostics) } {
+        return status;
+    }
+    guarded(|| {
+        if transaction.is_null() || terminal.is_null() {
+            return TypeBridgeStatus::InvalidArgument;
+        }
+        // SAFETY: callers retain these complete handles and exclusively drive the transaction.
+        let (transaction, terminal) = unsafe { (&mut *transaction, &*terminal) };
+        let parsed = match parsed {
+            Ok(value) => value,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        if let Err(error) = parsed.deadline.check(&answer) {
+            return return_execution_error(error, out_diagnostics);
+        }
+        if terminal.kind != expected_terminal_kind {
+            return return_execution_error(nominal_mismatch(), out_diagnostics);
+        }
+        if !Arc::ptr_eq(transaction.package_state(), &terminal.state.package) {
+            return return_execution_error(package_mismatch(), out_diagnostics);
+        }
+        if matches!(terminal.spec, TerminalSpec::Manager { .. }) {
+            return return_execution_error(
+                SdkExecutionDiagnostic::unsupported_capability(
+                    code("c_query_manager_staged_unsupported"),
+                    message("Generated manager terminals do not accept a staged transaction"),
+                ),
+                out_diagnostics,
+            );
+        }
+        let request = match validate_terminal(&terminal.query, &terminal.spec) {
+            Ok(value) => Arc::new(value),
+            Err(error) => return return_execution_error(lower(error), out_diagnostics),
+        };
+        let reservation = match ReservedBox::try_new(AllocationSite::QueryStagedPendingHandle) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        let (pending, origin) = match transaction.stage_query(
+            &terminal.state.registry,
+            Arc::clone(&request),
+            type_bridge_orm::MatchExecutionLimits::from_policy(parsed.resources, answer.clone()),
+        ) {
+            Ok(value) => value,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        let state = crate::staged_answers::PendingState::query(StagedQueryPending {
+            state: Arc::clone(&terminal.state),
+            request,
+            pending,
+            origin,
+            resources: parsed.resources,
+            cancellation: answer,
+            projected: std::sync::OnceLock::new(),
+        });
+        let handle = reservation.initialize(crate::staged::TypeBridgePending {
+            tag: crate::staged_answers::QUERY_PENDING_TAG,
+            state: Arc::new(state),
+        });
+        // SAFETY: initialized output is disjoint and writable.
+        unsafe { out_pending.write_unaligned(Box::into_raw(handle)) };
+        TypeBridgeStatus::Ok
+    })
+}
+
+/// Publish a typed query result after commit; IN_USE means it has not committed.
+/// The result retains its proof independently of the pending and authoring handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_pending_query_result(
+    pending: *const crate::staged::TypeBridgePending,
+    out_result: *mut *mut TypeBridgeQueryResult,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    let _entry = crate::perf_stages::entry().entered();
+    let preflight = match preflight_outputs(out_result, out_diagnostics) {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    // SAFETY: live cursor tags select complete layouts and fence all retained bytes before writes.
+    let tag = match unsafe {
+        crate::staged_answers::check_cursor_ranges(
+            &preflight,
+            pending.cast(),
+            size_of::<crate::staged::TypeBridgePending>(),
+        )
+    } {
+        Ok(value) => value,
+        Err(status) => return status,
+    };
+    // SAFETY: no output overlaps another output, cursor, package, or cached projection.
+    if let Err(status) = unsafe { initialize_execution_outputs(out_result, out_diagnostics) } {
+        return status;
+    }
+    if tag != Some(crate::staged_answers::QUERY_PENDING_TAG) {
+        return TypeBridgeStatus::InvalidArgument;
+    }
+    guarded(|| {
+        // SAFETY: the tag identifies a retained, live pending handle.
+        let pending = unsafe { &*pending };
+        let crate::staged_answers::PendingSource::Query(query) = &pending.state.pending else {
+            return TypeBridgeStatus::InvalidArgument;
+        };
+        let result = match query.pending.get() {
+            Ok(value) => value,
+            Err(type_bridge_orm::session::staged::PendingError::NotCommitted) => {
+                return TypeBridgeStatus::InUse;
+            }
+            Err(error) => {
+                return return_execution_error(
+                    crate::staged::pending_diagnostic(&error),
+                    out_diagnostics,
+                );
+            }
+        };
+        let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
+            Ok(value) => value,
+            Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
+        };
+        let value = match query.result(&result) {
+            Ok(value) => value,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
+        // SAFETY: the output was initialized after full borrowed-range preflight.
+        unsafe { out_result.write_unaligned(Box::into_raw(reservation.initialize(value))) };
+        TypeBridgeStatus::Ok
+    })
 }
 
 /// Execute one reusable terminal through a database-owned read transaction.
@@ -5403,9 +5650,11 @@ pub unsafe extern "C" fn type_bridge_query_result_row_count(
             return return_execution_error(result_mismatch(), out_diagnostics);
         }
         let count = match &result.storage {
-            QueryResultStorage::Query(value) => rows(value.value())
-                .expect("kind checked as row result")
-                .len(),
+            QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+                rows(query_result_value(&result.storage).expect("query storage"))
+                    .expect("kind checked as row result")
+                    .len()
+            }
             QueryResultStorage::ManagerRows { rows, .. } => rows.len(),
             QueryResultStorage::ManagerCount(_) | QueryResultStorage::ManagerExists(_) => {
                 unreachable!("result kind checked as rows")
@@ -5443,8 +5692,8 @@ unsafe fn checked_row_slot(
         return Err(layout_invalid());
     };
     match &result.storage {
-        QueryResultStorage::Query(value) => {
-            let row = rows(value.value())
+        QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+            let row = rows(query_result_value(&result.storage).expect("query storage"))
                 .and_then(|rows| rows.get(row_index))
                 .ok_or_else(result_index_invalid)?;
             let slot = row
@@ -5718,8 +5967,10 @@ pub unsafe extern "C" fn type_bridge_query_result_count(
         // SAFETY: caller retains the immutable result.
         let result = unsafe { &*result };
         let value = match &result.storage {
-            QueryResultStorage::Query(value) => {
-                let ProjectedQueryValue::Count { value, .. } = value.value() else {
+            QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+                let ProjectedQueryValue::Count { value, .. } =
+                    query_result_value(&result.storage).expect("query storage")
+                else {
                     return return_execution_error(result_mismatch(), out_diagnostics);
                 };
                 *value
@@ -5755,8 +6006,10 @@ pub unsafe extern "C" fn type_bridge_query_result_exists(
         // SAFETY: caller retains the immutable result.
         let result = unsafe { &*result };
         let value = match &result.storage {
-            QueryResultStorage::Query(value) => {
-                let ProjectedQueryValue::Exists { value, .. } = value.value() else {
+            QueryResultStorage::Query(_) | QueryResultStorage::SharedQuery(_) => {
+                let ProjectedQueryValue::Exists { value, .. } =
+                    query_result_value(&result.storage).expect("query storage")
+                else {
                     return return_execution_error(result_mismatch(), out_diagnostics);
                 };
                 *value
@@ -5857,17 +6110,18 @@ pub unsafe extern "C" fn type_bridge_query_result_reduction_group_kind(
 fn binding_group_contract(
     result: &TypeBridgeQueryResult,
 ) -> Option<(type_bridge_orm::BindingId, &type_bridge_orm::MatchBinding)> {
-    let QueryResultStorage::Query(projected) = &result.storage else {
-        return None;
+    let (value, request) = match &result.storage {
+        QueryResultStorage::Query(value) => (value.value(), value.request_proof()),
+        QueryResultStorage::SharedQuery(value) => (&value.value, value.request.as_ref()),
+        _ => return None,
     };
     let ProjectedQueryValue::Reduction {
         group: Some(group), ..
-    } = projected.value()
+    } = value
     else {
         return None;
     };
-    let binding = projected
-        .request_proof()
+    let binding = request
         .request()
         .plan
         .bindings
@@ -7757,6 +8011,525 @@ mod tests {
         );
         assert!(diagnostics.is_null());
         context
+    }
+
+    unsafe fn staged_query_transaction(
+        database: &FakeDatabase,
+    ) -> *mut crate::staged::TypeBridgeStagedTransaction {
+        let mut transaction = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_database_transaction(
+                    &*database.value,
+                    crate::staged::TYPE_BRIDGE_TRANSACTION_READ,
+                    &mut transaction,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert!(diagnostics.is_null());
+        transaction
+    }
+
+    #[test]
+    fn staged_query_results_equal_execute_and_outlive_authoring_and_transaction() {
+        let package = package("querystagedresults");
+        for kind in [
+            TERMINAL_ROWS,
+            TERMINAL_FIRST,
+            TERMINAL_PAGE,
+            TERMINAL_COUNT,
+            TERMINAL_EXISTS,
+            TERMINAL_REDUCE,
+        ] {
+            let mut built = unsafe { BuiltQuery::open(&package, kind, ROWS_BOUNDED_MANY) };
+            let database = fake_database(
+                &package,
+                (0..2)
+                    .map(|_| Response::Items(vec![solution("0x01")]))
+                    .collect(),
+                (0..2)
+                    .map(|_| Response::Items(vec![hydration(&package, "0x01", "Ada")]))
+                    .collect(),
+            );
+            let mut direct = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_database_query_execute_v1(
+                        &*database.value,
+                        built.terminal,
+                        kind,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut direct,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok,
+                "kind {kind}"
+            );
+            let before = database.events.opens.load(Ordering::Acquire);
+            let mut transaction = unsafe { staged_query_transaction(&database) };
+            let mut pending = ptr::null_mut();
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        kind,
+                        ptr::null(),
+                        ptr::null(),
+                        &mut pending,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(database.events.opens.load(Ordering::Acquire), before);
+            let mut result = ptr::dangling_mut();
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+                TypeBridgeStatus::InUse
+            );
+            assert!(result.is_null() && diagnostics.is_null());
+            unsafe {
+                built.close_builders();
+                type_bridge_query_terminal_close(&mut built.terminal);
+            }
+            assert_eq!(
+                unsafe {
+                    crate::staged::type_bridge_staged_transaction_commit(
+                        transaction,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+            }
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe { query_result_value(&(*direct).storage) },
+                unsafe { query_result_value(&(*result).storage) },
+                "kind {kind}"
+            );
+            let mut again = ptr::null_mut();
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut again, &mut diagnostics) },
+                TypeBridgeStatus::Ok
+            );
+            let (QueryResultStorage::SharedQuery(first), QueryResultStorage::SharedQuery(second)) =
+                (unsafe { &(*result).storage }, unsafe { &(*again).storage })
+            else {
+                panic!("staged storage");
+            };
+            assert!(Arc::ptr_eq(first, second));
+            unsafe {
+                crate::staged::type_bridge_pending_free(&mut pending);
+                assert_eq!(
+                    type_bridge_query_result_close(&mut direct),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_query_result_close(&mut result),
+                    TypeBridgeStatus::Ok
+                );
+                assert_eq!(
+                    type_bridge_query_result_close(&mut again),
+                    TypeBridgeStatus::Ok
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn staged_query_materialization_retries_after_a_deadline_failure() {
+        let package = package("querystagedretry");
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let database = fake_database(
+            &package,
+            vec![Response::Items(vec![solution("0x01")])],
+            vec![],
+        );
+        let mut transaction = unsafe { staged_query_transaction(&database) };
+        let mut pending = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_commit(transaction, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        let crate::staged_answers::PendingSource::Query(query) =
+            &(unsafe { &*pending }).state.pending
+        else {
+            panic!("typed pending")
+        };
+        let proof = query.pending.get().unwrap();
+        let failure = query
+            .materialize(&proof, QueryExecutionDeadline::from_timeout_milliseconds(0))
+            .err()
+            .unwrap();
+        assert_eq!(failure.code().as_str(), "transaction_deadline_exceeded");
+        assert!(query.projected.get().is_none());
+        let mut result = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert!(query.projected.get().is_some());
+        assert_eq!(database.events.queries.load(Ordering::Acquire), 1);
+        unsafe {
+            type_bridge_query_result_close(&mut result);
+            crate::staged::type_bridge_pending_free(&mut pending);
+            crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+        }
+    }
+
+    #[test]
+    fn staged_query_predispatch_fences_and_rollback_publish_no_result() {
+        let package = ordered_package("querystagedfences");
+        let mut built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        let database = fake_database(&package, vec![], vec![]);
+        let mut transaction = unsafe { staged_query_transaction(&database) };
+        let mut diagnostics = ptr::null_mut();
+        let mut pending = ptr::dangling_mut();
+        // Output slots cannot overwrite either active handle.
+        for output in [transaction.cast(), built.terminal.cast()] {
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        TERMINAL_COUNT,
+                        ptr::null(),
+                        ptr::null(),
+                        output,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::InvalidArgument
+            );
+            assert!(diagnostics.is_null());
+        }
+        let mut invalid_limits = default_limits();
+        invalid_limits.version = 0;
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_cancellation_request(cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        for (kind, limits, cancel, status, expected) in [
+            (
+                TERMINAL_EXISTS,
+                ptr::null(),
+                ptr::null(),
+                TypeBridgeStatus::InvalidArgument,
+                "c_query_nominal_contract_mismatch",
+            ),
+            (
+                TERMINAL_COUNT,
+                &invalid_limits as *const _,
+                ptr::null(),
+                TypeBridgeStatus::InvalidArgument,
+                "c_query_execution_limits_invalid",
+            ),
+            (
+                TERMINAL_COUNT,
+                ptr::null(),
+                cancellation as *const _,
+                TypeBridgeStatus::Cancelled,
+                "provider_cancelled",
+            ),
+        ] {
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        kind,
+                        limits,
+                        cancel,
+                        &mut pending,
+                        &mut diagnostics,
+                    )
+                },
+                status
+            );
+            assert!(pending.is_null());
+            assert_eq!(unsafe { diagnostic_code(diagnostics) }, expected);
+            unsafe {
+                close_diagnostics(&mut diagnostics);
+            }
+        }
+        unsafe {
+            type_bridge_cancellation_close(&mut cancellation);
+        }
+        let failure = inject_failure(AllocationSite::QueryStagedPendingHandle, 0);
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(pending.is_null());
+        drop(failure);
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+        }
+        let descriptor = manager_terminal_descriptor(&built, ManagerTerminalKind::Count);
+        unsafe {
+            replace_terminal(&mut built, &descriptor);
+        }
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Unsupported
+        );
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_query_manager_staged_unsupported"
+        );
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+        }
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_commit(transaction, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(database.events.opens.load(Ordering::Acquire), 0);
+        let descriptor = root_terminal_descriptor(&built, TERMINAL_COUNT);
+        unsafe {
+            replace_terminal(&mut built, &descriptor);
+        }
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { crate::staged::type_bridge_staged_transaction_rollback(transaction) },
+            TypeBridgeStatus::Ok
+        );
+        let mut result = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert!(result.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "staged_transaction_lifecycle"
+        );
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+            crate::staged::type_bridge_pending_free(&mut pending);
+            crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+        }
+    }
+
+    #[test]
+    fn staged_query_commit_budgets_and_retained_cancellation_are_enforced() {
+        let package = package("querystagedbudget");
+        let built = unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+        for statements in [true, false] {
+            let database = fake_database(
+                &package,
+                vec![Response::Items(vec![solution("0x01")])],
+                vec![],
+            );
+            let mut transaction = unsafe { staged_query_transaction(&database) };
+            let mut pending = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            let mut limits = default_limits();
+            if statements {
+                limits.statements = 0;
+            } else {
+                limits.items = 0;
+            }
+            assert_eq!(
+                unsafe {
+                    type_bridge_staged_query_stage(
+                        transaction,
+                        built.terminal,
+                        TERMINAL_COUNT,
+                        &limits,
+                        ptr::null(),
+                        &mut pending,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::Ok
+            );
+            assert_eq!(
+                unsafe {
+                    crate::staged::type_bridge_staged_transaction_commit(
+                        transaction,
+                        &mut diagnostics,
+                    )
+                },
+                TypeBridgeStatus::ResourceLimit
+            );
+            let code = unsafe { diagnostic_code(diagnostics) };
+            assert_eq!(
+                code,
+                if statements {
+                    "statement_count_limit"
+                } else {
+                    "processed_item_limit"
+                }
+            );
+            unsafe {
+                close_diagnostics(&mut diagnostics);
+            }
+            let mut result = ptr::dangling_mut();
+            assert_eq!(
+                unsafe { type_bridge_pending_query_result(pending, &mut result, &mut diagnostics) },
+                TypeBridgeStatus::ResourceLimit
+            );
+            assert!(result.is_null());
+            assert_eq!(unsafe { diagnostic_code(diagnostics) }, code);
+            unsafe {
+                close_diagnostics(&mut diagnostics);
+                crate::staged::type_bridge_pending_free(&mut pending);
+                crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+            }
+        }
+        let database = fake_database(
+            &package,
+            vec![Response::Items(vec![solution("0x01")])],
+            vec![],
+        );
+        let mut transaction = unsafe { staged_query_transaction(&database) };
+        let mut pending = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        let mut cancellation = ptr::null_mut();
+        assert_eq!(
+            unsafe { type_bridge_cancellation_open(&mut cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                type_bridge_staged_query_stage(
+                    transaction,
+                    built.terminal,
+                    TERMINAL_COUNT,
+                    ptr::null(),
+                    cancellation,
+                    &mut pending,
+                    &mut diagnostics,
+                )
+            },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                crate::staged::type_bridge_staged_transaction_commit(transaction, &mut diagnostics)
+            },
+            TypeBridgeStatus::Ok
+        );
+        let failure = inject_failure(AllocationSite::QueryResultHandle, 0);
+        let mut refused = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut refused, &mut diagnostics) },
+            TypeBridgeStatus::ResourceLimit
+        );
+        assert!(refused.is_null());
+        drop(failure);
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+        }
+        // Unaligned outputs remain supported; cached output storage is retained.
+        let mut bytes = [0u8; size_of::<*mut TypeBridgeQueryResult>() + 1];
+        let output = unsafe {
+            bytes
+                .as_mut_ptr()
+                .add(1)
+                .cast::<*mut TypeBridgeQueryResult>()
+        };
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, output, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        let mut result = unsafe { output.read_unaligned() };
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, pending.cast(), &mut diagnostics) },
+            TypeBridgeStatus::InvalidArgument
+        );
+        assert_eq!(
+            unsafe { type_bridge_cancellation_request(cancellation) },
+            TypeBridgeStatus::Ok
+        );
+        let mut cancelled = ptr::dangling_mut();
+        assert_eq!(
+            unsafe { type_bridge_pending_query_result(pending, &mut cancelled, &mut diagnostics) },
+            TypeBridgeStatus::Cancelled
+        );
+        assert!(cancelled.is_null());
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "provider_cancelled"
+        );
+        unsafe {
+            close_diagnostics(&mut diagnostics);
+            type_bridge_query_result_close(&mut result);
+            type_bridge_cancellation_close(&mut cancellation);
+            crate::staged::type_bridge_pending_free(&mut pending);
+            crate::staged::type_bridge_staged_transaction_close(&mut transaction);
+        }
     }
 
     #[test]

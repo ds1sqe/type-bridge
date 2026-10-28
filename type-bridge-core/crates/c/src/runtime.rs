@@ -243,6 +243,9 @@ pub(crate) struct StagedDatabaseGuard {
 }
 
 impl StagedDatabaseGuard {
+    pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
+        &self.database._package
+    }
     pub(crate) fn projected_origin(&self) -> type_bridge_orm::ProjectedQueryOrigin {
         type_bridge_orm::ProjectedQueryOrigin::for_database(&self.database.database)
     }

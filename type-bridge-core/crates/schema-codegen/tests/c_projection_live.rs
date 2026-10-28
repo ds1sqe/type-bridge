@@ -444,6 +444,30 @@ fn cpp_compilers() -> Vec<&'static str> {
 }
 
 #[test]
+fn c_projection_fingerprints_match_each_committed_profile() {
+    let mut actual = serde_json::Map::new();
+    let mut expected = serde_json::Map::new();
+    for profile in ["typedb-3.12.1/v1", "typedb-3.13.6/v1"] {
+        let (_, _, _, queries) = emitted_package_authority_and_fingerprints(profile);
+        let (_, models) = sdk_models_fingerprints(profile);
+        actual.insert(
+            profile.to_owned(),
+            json!({"queries": queries, "models": models}),
+        );
+        expected.insert(profile.to_owned(), json!({
+            "queries": sdk_profile_matrix::select_from(&repository_root(), "queries", profile).expected_fingerprints["projections"]["c"],
+            "models": sdk_profile_matrix::select_from(&repository_root(), "models", profile).expected_fingerprints["projections"]["c"],
+        }));
+    }
+    assert_eq!(
+        actual,
+        expected,
+        "actual C projection fingerprints: {}",
+        Value::Object(actual.clone())
+    );
+}
+
+#[test]
 fn exact_live_consumer_is_strict_c17_against_the_shared_generated_schema() {
     let compilers = c_compilers();
     assert!(!compilers.is_empty(), "GCC or Clang is required");
@@ -1624,7 +1648,10 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
     };
     isolated.setup();
 
-    let remote_port = free_port();
+    let remote_port = env::var("SMOKE_PORT")
+        .ok()
+        .map(|value| value.parse().expect("SMOKE_PORT is a valid port"))
+        .unwrap_or_else(free_port);
     let server_log_path = stage.path().join("v2-smoke-server.log");
     let server_log = File::create(&server_log_path).expect("C V2 server log is created");
     let server_error_log = server_log
@@ -1666,6 +1693,7 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
         .env("SMOKE_TYPEDB_PASSWORD", &password)
         .env("SMOKE_TYPEDB_HTTP_PORT", &http_port)
         .env("SMOKE_DATABASE", &database)
+        .env("SMOKE_ALLOW_STAGED_WRITES", "true")
         .env("SMOKE_AUTHORITY_B64", base64(&authority_bytes))
         .env("SMOKE_PORT", remote_port.to_string())
         .stdout(Stdio::from(server_log))

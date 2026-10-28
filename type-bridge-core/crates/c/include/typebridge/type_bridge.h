@@ -30,7 +30,7 @@
  * product version returned by type_bridge_runtime_version().
  */
 #define TYPE_BRIDGE_C_ABI_MAJOR 1u
-#define TYPE_BRIDGE_C_ABI_MINOR 10u
+#define TYPE_BRIDGE_C_ABI_MINOR 11u
 #define TYPE_BRIDGE_CHUNKED_BYTE_VIEW_VERSION 1u
 #define TYPE_BRIDGE_PROJECTED_TOKEN_VERSION 1u
 
@@ -2349,6 +2349,27 @@ type_bridge_query_terminal_open_v1(const type_bridge_query_t *query,
     type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_query_terminal_close(type_bridge_query_terminal_t **terminal);
+/* ABI 1.11: stage an immutable typed terminal on a database or proxy
+ * transaction. NULL limits use defaults; kind, package, budget, cancellation
+ * and output-alias fences match execute. Manager terminals are unsupported.
+ * No provider transaction opens until commit. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_staged_query_stage(
+    type_bridge_staged_transaction_t *transaction,
+    const type_bridge_query_terminal_t *terminal,
+    type_bridge_query_terminal_kind_t expected_terminal_kind,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_pending_t **out_pending,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/* IN_USE before commit, with NULL outputs. After commit, returns an owned
+ * query result using the existing accessors. Authoring handles, transaction,
+ * and pending may close independently; free pending with type_bridge_pending_free.
+ * Repeated reads share the materialized projection. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_pending_query_result(const type_bridge_pending_t *pending,
+    type_bridge_query_result_t **out_result,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_database_query_execute_v1(const type_bridge_database_t *database,
     const type_bridge_query_terminal_t *terminal,

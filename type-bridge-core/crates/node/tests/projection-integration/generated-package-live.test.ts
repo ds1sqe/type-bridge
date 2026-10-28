@@ -27,12 +27,6 @@ const NODE_RUNTIME_PACKAGE = process.env.TYPE_BRIDGE_NODE_PACKAGE_ROOT ?? NODE_S
 const CORE = resolve(NODE_SOURCE_PACKAGE, "../..");
 const ROOT = resolve(CORE, "..");
 const ACCEPTANCE = resolve(CORE, "crates/schema-codegen/tests/acceptance");
-// Measured acceptance releases; generated packages also admit later patches
-// on these minor lines through the Rust core's GeneratedPackageRelease rule.
-const PROFILE_SERVER_VERSIONS: Readonly<Record<string, string>> = {
-  "typedb-3.12.1/v1": "3.12.3",
-  "typedb-3.13.6/v1": "3.13.6",
-};
 // Generated live fixtures follow `TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE`;
 // new workspaces and the default TypeDB image use TypeDB 3.13.6.
 const DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1";
@@ -128,10 +122,16 @@ function sdkProfileIdentity(
   ) {
     throw new Error(`${suite} entry ${selected} fingerprints name another profile`);
   }
+  const server = environment.TYPE_BRIDGE_EXPECTED_SERVER_VERSION ?? environment.TYPEDB_VERSION;
+  if (server !== undefined) {
+    const checked = spawnSync("python3", [resolve(ROOT, "scripts/ci/sdk_profile_matrix.py"),
+      "--check-server-profile", selected, "--expected-server", server], { encoding: "utf8" });
+    if (checked.status !== 0) throw new Error(checked.stderr);
+  }
   return {
     suite: SDK_CONTRACT_PATHS[suite].suite,
     semanticProfile: selected,
-    liveServerVersion: entry.live_server_version,
+    liveServerVersion: server ?? entry.live_server_version,
     expectedFingerprints: fingerprints,
   };
 }
@@ -444,17 +444,9 @@ async function validateSdkReportPath(rawPath: string): Promise<string> {
   return parent;
 }
 
-function requireProfileServerVersion(profile: string, detected: string | null): void {
-  const expected = PROFILE_SERVER_VERSIONS[profile];
-  if (expected === undefined) {
-    throw new Error(`${profile} names no exact TypeDB server release`);
-  }
-  if (detected !== expected && !(profile === "typedb-3.13.6/v1" && detected === "3.14.0")) {
-    throw new Error(
-      `${profile} packages require the actual detected TypeDB server version ${expected}; `
-      + `detected ${JSON.stringify(detected)}`,
-    );
-  }
+function requireProfileServerVersion(profile: string, detected: string | null,
+  environment: Readonly<Record<string, string | undefined>> = process.env): void {
+  requireSdkServerVersion(sdkProfileIdentity("queries", profile, environment), detected);
 }
 
 function requireSdkServerVersion(identity: SdkProfileIdentity, detected: string | null): void {
@@ -1626,7 +1618,7 @@ test("sdk report identity follows the profile matrix", () => {
       sdkProfileIdentity(suite, undefined, { [SEMANTIC_PROFILE_ENV]: "" }).semanticProfile,
       catalogProfile,
     );
-    const servers = profiles.map((profile) => sdkProfileIdentity(suite, profile).liveServerVersion);
+    const servers = profiles.map((profile) => sdkProfileIdentity(suite, profile, {}).liveServerVersion);
     for (const profile of profiles) {
       const identity = sdkProfileIdentity(suite, undefined, { [SEMANTIC_PROFILE_ENV]: profile });
       assert.equal(identity.semanticProfile, profile);
@@ -1647,20 +1639,24 @@ test("sdk report identity follows the profile matrix", () => {
 });
 
 test("generated profile server gate follows the package profile", () => {
-  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6"));
-  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.14.0"));
-  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.12.3"));
-  assert.throws(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.14.0"));
-  for (const detected of [null, "3.12.3", "3.13.5"] as const) {
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6", {}));
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.14.0", { TYPE_BRIDGE_EXPECTED_SERVER_VERSION: "3.14.0" }));
+  assert.doesNotThrow(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.12.3", {}));
+  assert.throws(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.14.0", {}));
+  for (const detected of [null, "3.12.3", "3.13.5", "3.14.0"] as const) {
     assert.throws(
-      () => requireProfileServerVersion("typedb-3.13.6/v1", detected),
+      () => requireProfileServerVersion("typedb-3.13.6/v1", detected, {}),
       /actual detected TypeDB server version 3\.13\.6/,
     );
   }
   assert.throws(
-    () => requireProfileServerVersion("typedb-3.11.5/v1", "3.11.5"),
-    /names no exact TypeDB server release/,
+    () => requireProfileServerVersion("typedb-3.11.5/v1", "3.11.5", {}),
+    /has no profile-matrix entry/,
   );
+  assert.throws(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6",
+    { TYPE_BRIDGE_EXPECTED_SERVER_VERSION: "3.14.0" }), /actual detected TypeDB server version 3\.14\.0/);
+  assert.throws(() => requireProfileServerVersion("typedb-3.12.1/v1", "3.14.0",
+    { TYPE_BRIDGE_EXPECTED_SERVER_VERSION: "3.14.0" }), /server_profile_mismatch/);
 });
 
 test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, { timeout: 360_000 }, async () => {

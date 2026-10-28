@@ -1623,6 +1623,37 @@ fn assert_rejected(
 /// `tests/contracts/diagnostic-json.json`: Python, Node, and C report the
 /// same malformed schema authority as the same diagnostic JSON.
 #[test]
+fn schema_less_package_admission_is_refused_before_runtime_use() {
+    let bytes = emitted_fixture().bytes;
+    let mut descriptor = bytes.descriptor();
+    descriptor.schema_authority_json = TypeBridgeByteView {
+        data: ptr::null(),
+        length: 0,
+    };
+    let mut package = ptr::dangling_mut();
+    let mut diagnostics = ptr::null_mut();
+    // SAFETY: all retained evidence and independent output slots remain live.
+    assert_eq!(
+        unsafe { type_bridge_schema_package_open_v1(&descriptor, &mut package, &mut diagnostics) },
+        TypeBridgeStatus::InvalidArgument
+    );
+    assert!(package.is_null());
+    // SAFETY: failed admission returned one live diagnostic handle.
+    let value: serde_json::Value =
+        serde_json::from_str(&unsafe { diagnostic_text(diagnostics) }).unwrap();
+    assert_eq!(value[0]["code"], "c_schema_descriptor_invalid_view");
+    assert_eq!(
+        value[0]["path"],
+        serde_json::json!([{"kind":"field","value":"schema_authority_json"}])
+    );
+    // SAFETY: the test owns the diagnostic handle.
+    assert_eq!(
+        unsafe { type_bridge_diagnostics_close(&mut diagnostics) },
+        TypeBridgeStatus::Ok
+    );
+}
+
+#[test]
 fn malformed_authority_diagnostic_json_matches_the_golden() {
     let golden: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../tests/contracts/diagnostic-json.json"
@@ -2626,7 +2657,7 @@ fn clean_staged_cmake_consumer_finds_links_and_runs_generated_package() {
     assert!(
         fs::read_to_string(&installed_config)
             .expect("CMake metadata is UTF-8")
-            .contains("set(TypeBridge_C_ABI_VERSION \"1.10.0\")")
+            .contains("set(TypeBridge_C_ABI_VERSION \"1.11.0\")")
     );
     assert!(
         fs::read_to_string(&installed_pkg_config)
@@ -2668,7 +2699,7 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         "the installed package incorrectly satisfied an incompatible ABI request"
     );
 
-    // ABI 1.10 serves 1.6 through 1.9 exact pins; new consumers can require 1.10.
+    // ABI 1.11 serves 1.6 through 1.10 exact pins; new consumers can require 1.11.
     for (request, accepted) in [
         ("1.6.0 EXACT", true),
         ("1.6", true),
@@ -2684,10 +2715,12 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
         ("1.9.0 EXACT", true),
         ("1.6...1.8", false),
         ("1.6...1.9", false),
-        ("1.6...1.10", true),
+        ("1.6...1.11", true),
+        ("1.11.0 EXACT", true),
+        ("1.11.1 EXACT", false),
+        ("1.12", false),
+        ("1.11", true),
         ("1.10.0 EXACT", true),
-        ("1.10.1 EXACT", false),
-        ("1.11", false),
         ("1.10", true),
         ("1.9", true),
         ("2.0", false),
@@ -2742,8 +2775,8 @@ find_package(TypeBridge 1.2.0 EXACT CONFIG REQUIRED)
             "current consumers resolve"
         );
         assert!(pkg_config("type-bridge-abi >= 1.9.0"));
-        assert!(pkg_config("type-bridge-abi >= 1.10.0"));
-        assert!(!pkg_config("type-bridge-abi >= 1.11.0"));
+        assert!(pkg_config("type-bridge-abi >= 1.11.0"));
+        assert!(!pkg_config("type-bridge-abi >= 1.12.0"));
     }
 
     let output = Command::new("cmake")
@@ -3539,7 +3572,7 @@ int main(void) {
   type_bridge_diagnostics_t *diagnostics = NULL;
   type_bridge_write_transaction_t *transaction = NULL;
   type_bridge_execution_diagnostics_t *execution = NULL;
-  if (type_bridge_c_abi_minor() != 10u) return 1;
+  if (type_bridge_c_abi_minor() != 11u) return 1;
   if (fixture_schema_package_open(&package, &diagnostics) != TYPE_BRIDGE_STATUS_OK) return 2;
   if (package == NULL || diagnostics != NULL) return 3;
   if (type_bridge_write_transaction_rollback(&transaction, &execution) != TYPE_BRIDGE_STATUS_OK) return 4;

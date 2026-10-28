@@ -33,7 +33,7 @@
       "c": {
         "algorithm": "sha256",
         "canonicalization": "typebridge.binding-projection/v1",
-        "digest": "79620352eb1cc4e1029698ddfb797085a829a716c9bf9a8f0083b30e35116ebf",
+        "digest": "b2a1c606b3b46f1115adbac0980c34f847670392182d01e4be6244504cb10749",
         "domain": "typebridge.binding.projection",
         "semantic_profile": "typedb-3.12.1/v1"
       },

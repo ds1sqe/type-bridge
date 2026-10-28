@@ -247,3 +247,28 @@ def test_models_live_profile_gate_admits_the_named_suite_before_schema_io(
 
     with pytest.raises(RuntimeError, match="schema I/O reached"):
         live.sdk_models_data_model_runtime_live(database, generated)
+
+
+@pytest.mark.parametrize(
+    ("profile", "server"), [(BASE, "3.12.3"), (NEXT, "3.13.6"), (NEXT, "3.14.0")]
+)
+def test_explicit_measured_server_selection_is_shared_by_producers_and_runner(
+    profile: str, server: str
+) -> None:
+    environment = {matrix.SEMANTIC_PROFILE_ENV: profile, matrix.EXPECTED_SERVER_ENV: server}
+    assert matrix.requested("queries", environment=environment).live_server_version == server
+    assert runner.lane(None, environment).live_server_version == server
+
+
+def test_explicit_server_selection_refuses_unmeasured_pairs_and_preserves_default() -> None:
+    assert matrix.requested("queries", NEXT, {}).live_server_version == "3.13.6"
+    for profile, server in [(BASE, "3.14.0"), (NEXT, "3.12.3"), (NEXT, "3.14.1"), (NEXT, "")]:
+        with pytest.raises(matrix.ProfileMatrixError, match="server_profile_mismatch"):
+            matrix.requested("queries", profile, {matrix.EXPECTED_SERVER_ENV: server})
+
+
+@pytest.mark.parametrize("server", ["3.13.6", "3.14.0"])
+def test_existing_test_sh_and_ci_server_selection_uses_the_same_guard(server: str) -> None:
+    environment = {matrix.SEMANTIC_PROFILE_ENV: NEXT, "TYPEDB_VERSION": server}
+    assert matrix.requested("queries", environment=environment).live_server_version == server
+    assert runner.lane(None, environment).live_server_version == server

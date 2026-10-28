@@ -72,6 +72,9 @@ pub(crate) struct StagedProxyGuard {
 }
 
 impl StagedProxyGuard {
+    pub(crate) fn package_state(&self) -> &Arc<SchemaPackageState> {
+        &self.package
+    }
     pub(crate) fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
     }

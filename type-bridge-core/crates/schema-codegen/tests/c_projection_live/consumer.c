@@ -2323,6 +2323,72 @@ static int observe_connection_terminals(
   return 0;
 }
 
+/* The authored insert and typed count share one provider transaction. */
+static int check_staged_write_then_typed_read(
+    const type_bridge_schema_package_t *package,
+    const query_connection_t *connection,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_staged_transaction_t *transaction = NULL;
+  type_bridge_plan_builder_t *builder = NULL;
+  fixture_robot_insert_t values = {0};
+  fixture_robot_plan_t insert;
+  fixture_robot_pending_t *insert_pending = NULL;
+  fixture_query_session *session = NULL;
+  fixture_robot_query_exact_binding *binding = NULL;
+  fixture_robot_query_exact_one_selection *selection = NULL;
+  fixture_query *query = NULL;
+  fixture_query_count_terminal *terminal = NULL;
+  type_bridge_pending_t *pending = NULL;
+  type_bridge_query_result_t *result = NULL;
+  uint64_t count = 0u;
+  fixture_robot_handle_t robot;
+  type_bridge_matched_plan_t deletion;
+  type_bridge_matched_pending_t *deleted = NULL;
+  values.robotzuid = 27004;
+  values.valzuconstrained = 10;
+  CHECK(fixture_plan_open(NULL, &builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_insert(builder, &values, &insert) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_session_open(package, &session, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_binding_open(session, &binding, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_one_selection_open(binding, &selection, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_positional_1(session, fixture_robot_query_exact_one_selection_ref(selection), &query, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_count(fixture_robot_query_exact_binding_root(query, binding), &terminal, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK((connection->proxy != NULL
+      ? type_bridge_proxy_connection_transaction(connection->proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)
+      : type_bridge_database_transaction(connection->database, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_stage(transaction, insert, &insert_pending, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_query_stage(transaction, (const type_bridge_query_terminal_t *)terminal,
+      TYPE_BRIDGE_QUERY_TERMINAL_COUNT, NULL, NULL, &pending, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_pending_query_result(pending, &result, diagnostics) == TYPE_BRIDGE_STATUS_IN_USE);
+  CHECK(result == NULL && *diagnostics == NULL);
+  CHECK(fixture_query_count_terminal_close(&terminal) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_close(&query) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_one_selection_close(&selection) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_query_exact_binding_close(&binding) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_query_session_close(&session) == TYPE_BRIDGE_STATUS_OK);
+  type_bridge_plan_builder_free(&builder);
+  CHECK(type_bridge_staged_transaction_commit(transaction, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  type_bridge_staged_transaction_close(&transaction);
+  CHECK(type_bridge_pending_query_result(pending, &result, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_query_result_count(result, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(count == 1u);
+  type_bridge_pending_free(&pending);
+  fixture_robot_pending_free(&insert_pending);
+  CHECK(type_bridge_query_result_close(&result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_plan_open(NULL, &builder, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_match(builder, 27004, &robot) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_robot_delete(builder, robot, &deletion) == TYPE_BRIDGE_STATUS_OK);
+  CHECK((connection->proxy != NULL
+      ? type_bridge_proxy_connection_transaction(connection->proxy, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)
+      : type_bridge_database_transaction(connection->database, TYPE_BRIDGE_TRANSACTION_WRITE, &transaction, diagnostics)) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_matched_stage(transaction, deletion, &deleted, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(type_bridge_staged_transaction_commit(transaction, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  type_bridge_staged_transaction_close(&transaction);
+  type_bridge_matched_pending_free(&deleted);
+  type_bridge_plan_builder_free(&builder);
+  return 0;
+}
+
 static int check_proxy_connection_parity(
     const type_bridge_schema_package_t *package,
     const type_bridge_database_t *database, uint16_t remote_port,
@@ -2356,6 +2422,7 @@ static int check_proxy_connection_parity(
   configurations[1].database = NULL;
   configurations[1].proxy = proxy;
   for (index = 0u; index < 2u; ++index) {
+    CHECK(check_staged_write_then_typed_read(package, &configurations[index], out_diagnostics) == 0);
     if (observe_connection_terminals(
             &configurations[index], rows_terminal, first_terminal,
             nickname_terminal, page_terminal, count_terminal, exists_terminal,

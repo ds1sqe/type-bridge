@@ -81,6 +81,20 @@ enum StagedOwner {
 }
 
 impl StagedOwner {
+    fn package_state(&self) -> &Arc<crate::abi::SchemaPackageState> {
+        match self {
+            Self::Database(guard) => guard.package_state(),
+            Self::Proxy(guard) => guard.package_state(),
+        }
+    }
+
+    fn projected_origin(&self) -> type_bridge_orm::ProjectedQueryOrigin {
+        match self {
+            Self::Database(guard) => guard.projected_origin(),
+            Self::Proxy(_) => type_bridge_orm::ProjectedQueryOrigin::remote_unbound(),
+        }
+    }
+
     fn debug_dispatch(&self) -> Option<tracing::Dispatch> {
         match self {
             Self::Database(guard) => guard.debug_dispatch(),
@@ -102,6 +116,41 @@ impl StagedOwner {
             Self::Database(guard) => guard.check_borrowed_ranges(preflight),
             Self::Proxy(guard) => guard.check_borrowed_ranges(preflight),
         }
+    }
+}
+
+impl TypeBridgeStagedTransaction {
+    pub(crate) fn package_state(&self) -> &Arc<crate::abi::SchemaPackageState> {
+        self.owner.package_state()
+    }
+
+    pub(crate) fn stage_query(
+        &mut self,
+        registry: &type_bridge_orm::_registry::DescriptorRegistry,
+        request: Arc<type_bridge_orm::ValidatedMatchRequest>,
+        limits: type_bridge_orm::MatchExecutionLimits,
+    ) -> Result<
+        (
+            type_bridge_orm::session::staged::Pending<type_bridge_orm::ValidatedMatchResult>,
+            type_bridge_orm::ProjectedQueryOrigin,
+        ),
+        SdkExecutionDiagnostic,
+    > {
+        if self.poisoned {
+            return Err(poisoned_transaction_diagnostic());
+        }
+        let dispatch = self.owner.debug_dispatch();
+        let pending = match dispatch {
+            Some(dispatch) => tracing::dispatcher::with_default(&dispatch, || {
+                self.transaction
+                    .stage_shared_match_with_limits(registry, request, limits)
+            }),
+            None => self
+                .transaction
+                .stage_shared_match_with_limits(registry, request, limits),
+        }
+        .map_err(|error| pending_diagnostic(&error))?;
+        Ok((pending, self.owner.projected_origin()))
     }
 }
 

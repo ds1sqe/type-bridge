@@ -74,7 +74,11 @@ def lane(profile: str | None, environment: Mapping[str, str]) -> profile_matrix.
         profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or (
             profile_matrix.catalog_profile("artifacts")
         )
-    return profile_matrix.select_lane(profile, error=_runner_error)
+    return profile_matrix.with_server(
+        profile_matrix.select_lane(profile, error=_runner_error),
+        profile_matrix.expected_server(environment),
+        error=_runner_error,
+    )
 
 
 def typedb_version(environment: Mapping[str, str]) -> str:
@@ -1300,6 +1304,9 @@ def main(argv: list[str] | None = None) -> int:
             "else the catalogs' own profile); selects the exact TypeDB server"
         ),
     )
+    parser.add_argument(
+        "--expected-server-version", help="exact measured TypeDB server version for this profile"
+    )
     artifact_inputs = (
         "predecessors",
         "acceptance",
@@ -1347,6 +1354,8 @@ def main(argv: list[str] | None = None) -> int:
             profile = environment.get(profile_matrix.SEMANTIC_PROFILE_ENV) or writes_profile(
                 WRITES_SUITES[0]
             )
+        if arguments.expected_server_version is not None:
+            environment[profile_matrix.EXPECTED_SERVER_ENV] = arguments.expected_server_version
         identity = lane(profile, environment)
         environment[profile_matrix.SEMANTIC_PROFILE_ENV] = identity.semantic_profile
         environment["TYPEDB_VERSION"] = identity.live_server_version
