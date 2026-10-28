@@ -71,7 +71,7 @@ fn emitted_fixture(profile: &SdkProfile) -> EmittedFixture {
     let (local_schema, local_authority) = profiled_authority(
         SOURCE,
         "models.yaml",
-        "models-c-manager",
+        support::TEST_SCOPE,
         &profile.semantic_profile,
     );
     let (foreign_schema, foreign_authority) = profiled_authority(

@@ -158,6 +158,80 @@ impl type_bridge::LifecycleHook for RecordingLifecycleHook {
     }
 }
 
+static PLAN_WITNESS: Mutex<Option<Value>> = Mutex::new(None);
+
+fn witness_policy(policy: QueryExecutionResourceLimits) -> Value {
+    json!({
+        "timeout_milliseconds": policy.timeout_milliseconds, "items": policy.items,
+        "bytes": policy.bytes, "graph_nodes": policy.graph_nodes,
+        "attribute_values": policy.attribute_values, "collection_members": policy.collection_members,
+        "role_players": policy.role_players, "statements": policy.statements,
+    })
+}
+
+fn witness_mark(name: &str, enabled: bool) {
+    if enabled && let Some(value) = PLAN_WITNESS.lock().unwrap().as_mut() {
+        assert!(
+            value["calls"].get(name).is_none(),
+            "duplicate plan call label"
+        );
+        value["calls"][name] = json!({"source":"exchange", "requests":[]});
+        value["active"] = json!(name);
+    }
+}
+
+fn witness_stop() {
+    if let Some(value) = PLAN_WITNESS.lock().unwrap().as_mut() {
+        value["active"] = Value::Null;
+    }
+}
+
+fn witness_exchange(request: &[u8]) {
+    if let Some(value) = PLAN_WITNESS.lock().unwrap().as_mut() {
+        if let Some(name) = value["active"].as_str().map(str::to_owned) {
+            let policy = witness_policy(QueryExecutionResourceLimits::default_for(
+                AnswerTransport::Proxy,
+            ));
+            let evidence = json!({
+                "request_hex": witness_hex(request), "advertisement_hex":value["advertisement"],
+                "caller":policy, "session":policy, "proxy_defaults":policy,
+                "caller_deadline_ms":policy["timeout_milliseconds"],
+            });
+            let requests = value["calls"][name]["requests"].as_array_mut().unwrap();
+            assert!(
+                requests.is_empty(),
+                "a selected typed terminal sent an extra exchange"
+            );
+            requests.push(evidence);
+        }
+    }
+}
+
+fn witness_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut result = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(result, "{byte:02x}").unwrap();
+    }
+    result
+}
+
+fn witness_finish() {
+    if let Some(mut value) = PLAN_WITNESS.lock().unwrap().take() {
+        value.as_object_mut().unwrap().remove("active");
+        value.as_object_mut().unwrap().remove("advertisement");
+        let path = env::var("TYPE_BRIDGE_SDK_PLAN_WITNESS").unwrap();
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .unwrap();
+        output
+            .write_all(&serde_json::to_vec(&value).unwrap())
+            .unwrap();
+    }
+}
+
 /// An HTTP exchange that counts its `/v3/staged` requests, for journeys that
 /// assert how many exchanges a terminal performs. Connections that only need
 /// a working proxy use the built-in transport through [`ProxyEndpoint`].
@@ -204,6 +278,9 @@ impl ProxyExchange for HttpTransport {
                     None,
                 ));
             }
+            if let Some(value) = PLAN_WITNESS.lock().unwrap().as_mut() {
+                value["advertisement"] = json!(witness_hex(&bytes));
+            }
             Ok(bytes)
         })
     }
@@ -213,6 +290,7 @@ impl ProxyExchange for HttpTransport {
         request: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = type_bridge::Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
+            witness_exchange(request);
             self.exchange_count.fetch_add(1, Ordering::SeqCst);
             Ok(self
                 .client
@@ -1371,6 +1449,8 @@ async fn sdk_queries_query_observations(
     session: &mut QuerySession<'_, AppSchema>,
     records: &Value,
     person_iids: &[String; 2],
+    membership_iid: &str,
+    network_iid: &str,
     exchange_count: Option<&Arc<AtomicUsize>>,
 ) -> BTreeMap<String, Value> {
     let people_records = records["people"]
@@ -1381,7 +1461,6 @@ async fn sdk_queries_query_observations(
     let dana_key = sdk_field_string(&people_records[1]["fields"], "identifier", "string");
     let employee_key = sdk_field_string(&records["employee"]["fields"], "identifier", "string");
     let manager_key = sdk_field_string(&records["manager"]["fields"], "identifier", "string");
-    let network_key = sdk_field_string(&records["network_link"]["fields"], "identifier", "string");
     let scalar_operand = sdk_field_long(&people_records[0]["fields"], "score__gte");
     assert!(
         people_records
@@ -1415,9 +1494,6 @@ async fn sdk_queries_query_observations(
     let network_destination = session
         .exact::<Person>()
         .expect("queries network destination binding");
-    let network_participant = session
-        .exact::<Person>()
-        .expect("queries network participant binding");
     let source = session
         .exact::<Person>()
         .expect("queries topology source binding");
@@ -1452,33 +1528,47 @@ async fn sdk_queries_query_observations(
         .expect("queries people scope");
 
     let one_terminal = stringify!(one);
-    let exchanges_before_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
-    let ada = people_query
+    witness_mark(
+        "model_values_and_references.person",
+        exchange_count.is_some(),
+    );
+    let ada = session
+        .query(person)
+        .expect("queries Ada selection")
         .where_(identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key")))
         .expect("queries Ada predicate")
         .one()
         .await
         .expect("queries Ada terminal");
-    let exchanges_after_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
     sdk_queries_assert_person(&ada, &people_records[0]);
     let model_values = sdk_queries_model_observation(&ada, &people_records[0]);
 
+    witness_mark("owner_iid_set.owner_keys", exchange_count.is_some());
     let owner_keys = sdk_queries_keys(
-        &people_query
-            .where_(score.is_present())
+        &session
+            .query(person)
+            .expect("queries presence selection")
+            .where_(score.is_present() & scope.clone())
             .expect("queries score owner predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
             .expect("queries score owner rows"),
     );
+    witness_mark(
+        "owner_iid_set.optional_present_keys",
+        exchange_count.is_some(),
+    );
     let optional_present_keys = sdk_queries_keys(
-        &people_query
-            .where_(person.field(PersonType::nickname).is_present())
+        &session
+            .query(person)
+            .expect("queries presence selection")
+            .where_(person.field(PersonType::nickname).is_present() & scope.clone())
             .expect("queries nickname presence predicate")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
             .expect("queries nickname presence rows"),
     );
+    witness_mark("owner_iid_set.iid_set_keys", exchange_count.is_some());
     let iid_set_keys = sdk_queries_keys(
         &session
             .query(person)
@@ -1498,12 +1588,15 @@ async fn sdk_queries_query_observations(
     });
 
     let employee_identifier = employee.field(EmployeeType::identifier);
+    witness_mark("exact_subtypes.exact", exchange_count.is_some());
     let exact_employees = session
         .query(employee)
         .expect("queries exact employee query")
         .where_(
             employee_identifier
-                .eq(Identifier::new(employee_key.clone()).expect("queries employee key")),
+                .eq(Identifier::new(employee_key.clone()).expect("queries employee key"))
+                | employee_identifier
+                    .eq(Identifier::new(manager_key.clone()).expect("queries manager key")),
         )
         .expect("queries exact employee predicate")
         .rows(RowsOptions::new(2).order_by(employee_identifier.asc()))
@@ -1522,6 +1615,7 @@ async fn sdk_queries_query_observations(
     let employee_scope = family_identifier
         .eq(Identifier::new(employee_key.clone()).expect("queries employee key"))
         | family_identifier.eq(Identifier::new(manager_key.clone()).expect("queries manager key"));
+    witness_mark("exact_subtypes.subtypes", exchange_count.is_some());
     let subtypes = session
         .query(employee_family)
         .expect("queries employee subtype query")
@@ -1539,6 +1633,7 @@ async fn sdk_queries_query_observations(
         "subtypes": subtypes,
     });
 
+    witness_mark("scalar_boolean.and", exchange_count.is_some());
     let and_keys = sdk_queries_keys(
         &people_query
             .where_(
@@ -1552,6 +1647,7 @@ async fn sdk_queries_query_observations(
             .await
             .expect("queries conjunction rows"),
     );
+    witness_mark("scalar_boolean.or", exchange_count.is_some());
     let or_keys = sdk_queries_keys(
         &session
             .query(person)
@@ -1565,14 +1661,20 @@ async fn sdk_queries_query_observations(
             .await
             .expect("queries disjunction rows"),
     );
+    witness_mark("scalar_boolean.not", exchange_count.is_some());
     let not_keys = sdk_queries_keys(
         &people_query
-            .where_(!score.ge(scalar_operand))
+            .where_(
+                !person
+                    .field(PersonType::val_bool)
+                    .eq(ValBool::new(true).expect("queries true value")),
+            )
             .expect("queries negation")
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
             .expect("queries negation rows"),
     );
+    witness_mark("scalar_boolean.field_comparison", exchange_count.is_some());
     let field_comparison_keys = sdk_queries_keys(
         &people_query
             .where_(score.ge_field(score_gte))
@@ -1589,13 +1691,17 @@ async fn sdk_queries_query_observations(
     });
 
     let membership_person_identifier = membership_person.field(PersonType::identifier);
-    let (hydrated_membership, hydrated_member) = session
-        .query((membership, membership_person))
+    witness_mark("roles.membership", exchange_count.is_some());
+    let hydrated_membership = session
+        .query(membership)
         .expect("queries membership selection")
+        .match_(membership_person)
+        .expect("queries membership member match")
         .where_(
-            membership
-                .role(MembershipType::member)
-                .connects(membership_person)
+            membership.iid(membership_iid)
+                & membership
+                    .role(MembershipType::member)
+                    .connects(membership_person)
                 & membership_person_identifier
                     .eq(Identifier::new(ada_key.clone()).expect("queries Ada key")),
         )
@@ -1611,11 +1717,9 @@ async fn sdk_queries_query_observations(
             .clone(),
         MembershipMemberPlayer::Robot(_) => panic!("queries member must be a person"),
     };
-    assert_eq!(
-        membership_player_key,
-        hydrated_member.identifier().value().as_str()
-    );
+    assert_eq!(membership_player_key, ada.identifier().value().as_str());
 
+    witness_mark("roles.network", exchange_count.is_some());
     let hydrated_network = session
         .query(network)
         .expect("queries network query")
@@ -1623,21 +1727,20 @@ async fn sdk_queries_query_observations(
         .expect("queries attach network origin")
         .match_(network_destination)
         .expect("queries attach network destination")
-        .match_(network_participant)
-        .expect("queries attach network participant")
         .where_(
-            network
-                .field(NetworkLinkType::identifier)
-                .eq(Identifier::new(network_key.clone()).expect("queries network key"))
+            network.iid(network_iid)
                 & network
                     .role(NetworkLinkType::origin)
                     .connects(network_origin)
                 & network
                     .role(NetworkLinkType::destination)
                     .connects(network_destination)
-                & network
-                    .role(NetworkLinkType::participant)
-                    .connects(network_participant),
+                & network_origin
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+                & network_destination
+                    .field(PersonType::identifier)
+                    .eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
         )
         .expect("queries network role predicates")
         .one()
@@ -1691,23 +1794,23 @@ async fn sdk_queries_query_observations(
             reachability_max_hops,
         )
         .expect("queries one-hop reachability predicate");
-    let reachable_rows = session
-        .query((source, target))
-        .expect("queries reachability query")
-        .where_(
-            reachable
-                & source_identifier.eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
-                & target_identifier
-                    .eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
-        )
-        .expect("queries reachability filters")
-        .rows(
-            RowsOptions::new(2)
-                .order_by(source_identifier.asc())
-                .order_by(target_identifier.asc()),
-        )
-        .await
-        .expect("queries reachability rows");
+    witness_mark("topology.reachable", exchange_count.is_some());
+    let reachable_rows = vec![
+        session
+            .query((source, target))
+            .expect("queries reachability query")
+            .where_(
+                reachable
+                    & source_identifier
+                        .eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
+                    & target_identifier
+                        .eq(Identifier::new(dana_key.clone()).expect("queries Dana key")),
+            )
+            .expect("queries reachability filters")
+            .one()
+            .await
+            .expect("queries reachability rows"),
+    ];
     let reachable = reachable_rows
         .iter()
         .map(|(source, target)| {
@@ -1727,6 +1830,7 @@ async fn sdk_queries_query_observations(
     let right_scope = cross_right_identifier
         .eq(Identifier::new(ada_key.clone()).expect("queries Ada key"))
         | cross_right_identifier.eq(Identifier::new(dana_key.clone()).expect("queries Dana key"));
+    witness_mark("topology.cross_join", exchange_count.is_some());
     let cross_join_pairs = session
         .query((cross_left, cross_right))
         .expect("queries cross-join query")
@@ -1755,15 +1859,14 @@ async fn sdk_queries_query_observations(
         .distinct()
         .order_by(shape_participant_identifier.asc())
         .expect("queries collection order");
-    let shape_predicate = shape_link
-        .field(NetworkLinkType::identifier)
-        .eq(Identifier::new(network_key).expect("queries network key"))
+    let shape_predicate = shape_link.iid(network_iid)
         & shape_link
             .role(NetworkLinkType::origin)
             .connects(shape_origin)
         & shape_link
             .role(NetworkLinkType::participant)
             .connects(shape_participant);
+    witness_mark("selection_shapes.positional", exchange_count.is_some());
     let positional_page = session
         .query((shape_origin, collected.clone()))
         .expect("queries positional selection")
@@ -1773,7 +1876,9 @@ async fn sdk_queries_query_observations(
         .expect("queries positional predicates")
         .page_by(
             shape_origin,
-            PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
+            PageOptions::new(1)
+                .include_total(true)
+                .order_by(shape_origin.field(PersonType::identifier).asc()),
         )
         .await
         .expect("queries positional page");
@@ -1792,6 +1897,7 @@ async fn sdk_queries_query_observations(
         == positional_rows[0].1.len();
     let named_shape =
         SdkNetworkShape::select(shape_origin, collected).expect("queries named selection shape");
+    witness_mark("selection_shapes.named", exchange_count.is_some());
     let named_page = session
         .query(named_shape)
         .expect("queries named selection")
@@ -1801,7 +1907,9 @@ async fn sdk_queries_query_observations(
         .expect("queries named predicates")
         .page_by(
             shape_origin,
-            PageOptions::new(1).order_by(shape_origin.field(PersonType::identifier).asc()),
+            PageOptions::new(1)
+                .include_total(true)
+                .order_by(shape_origin.field(PersonType::identifier).asc()),
         )
         .await
         .expect("queries named page");
@@ -1829,7 +1937,11 @@ async fn sdk_queries_query_observations(
         ),
     });
 
-    let one = people_query
+    let exchanges_before_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    witness_mark("terminals.one", exchange_count.is_some());
+    let one = session
+        .query(person)
+        .expect("queries one selection")
         .where_(identifier.eq(Identifier::new(dana_key).expect("queries Dana key")))
         .expect("queries one predicate")
         .one()
@@ -1838,6 +1950,8 @@ async fn sdk_queries_query_observations(
         .identifier()
         .value()
         .clone();
+    let exchanges_after_one = exchange_count.map(|count| count.load(Ordering::SeqCst));
+    witness_mark("terminals.first", exchange_count.is_some());
     let first = people_query
         .first(identifier.asc())
         .await
@@ -1846,12 +1960,14 @@ async fn sdk_queries_query_observations(
         .identifier()
         .value()
         .clone();
+    witness_mark("terminals.rows", exchange_count.is_some());
     let rows = sdk_queries_keys(
         &people_query
             .rows(RowsOptions::new(2).order_by(identifier.asc()))
             .await
             .expect("queries rows terminal"),
     );
+    witness_mark("terminals.page", exchange_count.is_some());
     let page = people_query
         .page_by(
             person,
@@ -1862,7 +1978,9 @@ async fn sdk_queries_query_observations(
         .await
         .expect("queries page terminal");
     let page_items = sdk_queries_keys(page.items());
+    witness_mark("terminals.count", exchange_count.is_some());
     let count = people_query.count().await.expect("queries count terminal");
+    witness_mark("terminals.exists", exchange_count.is_some());
     let exists = people_query
         .exists()
         .await
@@ -1881,6 +1999,7 @@ async fn sdk_queries_query_observations(
         "exists": exists,
     });
 
+    witness_mark("grouped_reducer.global", exchange_count.is_some());
     let reductions: (
         u64,
         i64,
@@ -1901,6 +2020,7 @@ async fn sdk_queries_query_observations(
         ))
         .await
         .expect("queries reductions");
+    witness_mark("grouped_reducer.binding", exchange_count.is_some());
     let mut binding_groups = people_query
         .match_(grouped_person)
         .expect("queries grouped person match")
@@ -1921,6 +2041,7 @@ async fn sdk_queries_query_observations(
         })
         .collect::<Vec<_>>();
     binding_groups.sort_by(|left, right| left["key"].as_str().cmp(&right["key"].as_str()));
+    witness_mark("grouped_reducer.field", exchange_count.is_some());
     let mut field_groups = people_query
         .group_by_field(score)
         .expect("queries score groups")
@@ -1931,6 +2052,7 @@ async fn sdk_queries_query_observations(
         .map(|(score, (count,))| json!({"key": score.value(), "count": count}))
         .collect::<Vec<_>>();
     field_groups.sort_by_key(|value| value["key"].as_i64());
+    witness_mark("grouped_reducer.field_tuple", exchange_count.is_some());
     let mut tuple_groups = people_query
         .group_by_fields((score, score_gte))
         .expect("queries score tuple groups")
@@ -1965,6 +2087,7 @@ async fn sdk_queries_query_observations(
         integer_input(session, &minimum_score).expect("queries function input");
     let call: IntegerCall =
         qualifying_score(session, person, &minimum).expect("queries function call");
+    witness_mark("schema_function.simple", exchange_count.is_some());
     let values = sdk_queries_keys(
         &people_query
             .where_(call.ge_field(score))
@@ -1975,11 +2098,9 @@ async fn sdk_queries_query_observations(
     );
     let nested: IntegerCall =
         qualifying_score(session, person, &call).expect("queries nested function call");
+    witness_mark("schema_function.nested", exchange_count.is_some());
     let nested_people = people_query
-        .where_(
-            call.ge_call(&nested)
-                .expect("queries nested function predicate"),
-        )
+        .where_(nested.ge_field(score))
         .expect("queries nested function filter")
         .rows(RowsOptions::new(2).order_by(identifier.asc()))
         .await
@@ -2006,6 +2127,7 @@ async fn sdk_queries_query_observations(
         "nested_values": nested_values,
     });
 
+    witness_mark("scalar_domain.rows", exchange_count.is_some());
     let scalar_keys = sdk_queries_keys(
         &people_query
             .where_(score.ge(scalar_operand))
@@ -2020,6 +2142,13 @@ async fn sdk_queries_query_observations(
         "operand": scalar_operand,
         "keys": scalar_keys,
     });
+
+    witness_mark("structured_query_diagnostic.one", exchange_count.is_some());
+    let error = people_query
+        .one()
+        .await
+        .expect_err("queries two rows must refuse one");
+    assert_eq!(sdk_queries_query_category(&error), Some("cardinality"));
 
     let mut observations = BTreeMap::from([
         ("model_values_and_references".to_owned(), model_values),
@@ -2046,6 +2175,7 @@ async fn sdk_queries_query_observations(
             json!({"exchange_count": after - before, "terminal": one_terminal}),
         );
     }
+    witness_stop();
     observations
 }
 
@@ -2526,9 +2656,34 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
     );
 
     let mut direct_session = db.query().expect("queries direct query session");
-    let direct_observations =
-        sdk_queries_query_observations(&mut direct_session, records, &person_iids, None).await;
+    let direct_observations = sdk_queries_query_observations(
+        &mut direct_session,
+        records,
+        &person_iids,
+        &membership_iid,
+        &network_iid,
+        None,
+    )
+    .await;
 
+    if env::var_os("TYPE_BRIDGE_SDK_PLAN_WITNESS").is_some() {
+        let mut identities = serde_json::Map::new();
+        for (name, iid) in journey["create_order"].as_array().unwrap().iter().zip([
+            person_iids[0].as_str(),
+            person_iids[1].as_str(),
+            employee_iid.as_str(),
+            manager_iid.as_str(),
+            membership_iid.as_str(),
+            network_iid.as_str(),
+        ]) {
+            identities.insert(name.as_str().unwrap().to_owned(), json!([iid]));
+        }
+        *PLAN_WITNESS.lock().unwrap() = Some(json!({
+            "format":"typebridge.sdk-plan-witness/v1", "suite":"queries", "binding":"rust",
+            "semantic_profile": env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE").unwrap_or_else(|_| "typedb-3.13.6/v1".to_owned()),
+            "records":identities, "calls":{}, "active":null, "advertisement":null,
+        }));
+    }
     let remote_url = env::var("TYPE_BRIDGE_REMOTE_URL").expect("queries remote URL");
     let exchange_count = Arc::new(AtomicUsize::new(0));
     let remote: ProxyDatabase<AppSchema> =
@@ -2544,9 +2699,12 @@ async fn run_sdk_queries_journey_inner(db: &Database<AppSchema>) {
         &mut remote_session,
         records,
         &person_iids,
+        &membership_iid,
+        &network_iid,
         Some(&exchange_count),
     )
     .await;
+    witness_finish();
     for name in [
         "model_values_and_references",
         "owner_iid_set",
@@ -5103,7 +5261,10 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
     for (connection, score) in [(&direct, 91_i64), (&proxy, 92_i64)] {
         let mut tx = match connection {
             Connection::Direct(database) => database.transaction(Default::default()),
-            Connection::Proxy(database) => database.transaction(Default::default()).await.expect("staged proxy transaction"),
+            Connection::Proxy(database) => database
+                .transaction(Default::default())
+                .await
+                .expect("staged proxy transaction"),
         };
         let mut builder = type_bridge::plan::PlanBuilder::<AppSchema>::new();
         let person = builder.exact::<Person>();
@@ -5115,13 +5276,25 @@ async fn generated_one_program_under_direct_and_proxy_connections() {
         let pending: type_bridge::query::Pending<Person> = {
             let mut session = tx.query().expect("staged query session");
             let person = session.exact::<Person>().expect("staged person");
-            session.query(person).expect("staged query")
-                .where_(person.field(PersonType::identifier).eq(Identifier::new("p-600").unwrap())).expect("staged predicate")
-                .one().await.expect("queue typed read")
+            session
+                .query(person)
+                .expect("staged query")
+                .where_(
+                    person
+                        .field(PersonType::identifier)
+                        .eq(Identifier::new("p-600").unwrap()),
+                )
+                .expect("staged predicate")
+                .one()
+                .await
+                .expect("queue typed read")
         };
         assert!(pending.result().is_err());
         tx.commit().await.expect("staged write and read commit");
-        assert_eq!(*pending.result().expect("staged person").score().value(), score);
+        assert_eq!(
+            *pending.result().expect("staged person").score().value(),
+            score
+        );
     }
     drop(proxy);
     drop(direct);
@@ -5959,7 +6132,9 @@ async fn sdk_serialization_live() {
         let relation = session
             .exact::<Employment>()
             .expect("Serialization employment binding");
-        let person_binding = session.exact::<Person>().expect("Serialization person binding");
+        let person_binding = session
+            .exact::<Person>()
+            .expect("Serialization person binding");
         session
             .query((relation, person_binding))
             .expect("Serialization direct selection")
@@ -5984,24 +6159,25 @@ async fn sdk_serialization_live() {
         .expect("Serialization direct employment snapshot encodes");
 
     let exchange_count = Arc::new(AtomicUsize::new(0));
-    let remote: ProxyDatabase<AppSchema> =
-        ProxyDatabase::connect(
-            ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
-                env::var("TYPE_BRIDGE_REMOTE_URL").expect("Serialization remote URL"),
-                Arc::clone(&exchange_count),
-            ))
-            .answer_limits(remote_answer_limits()),
-        )
-        .await
-        .expect("Serialization remote connects")
-        .with_schema(SCHEMA)
-        .expect("Serialization remote schema binds");
+    let remote: ProxyDatabase<AppSchema> = ProxyDatabase::connect(
+        ProxyConnectionPolicy::with_exchange(HttpTransport::recording(
+            env::var("TYPE_BRIDGE_REMOTE_URL").expect("Serialization remote URL"),
+            Arc::clone(&exchange_count),
+        ))
+        .answer_limits(remote_answer_limits()),
+    )
+    .await
+    .expect("Serialization remote connects")
+    .with_schema(SCHEMA)
+    .expect("Serialization remote schema binds");
     let (remote_employment, remote_person) = {
         let mut session = remote.query().expect("Serialization remote query session");
         let relation = session
             .exact::<Employment>()
             .expect("Serialization remote employment binding");
-        let person_binding = session.exact::<Person>().expect("Serialization remote person binding");
+        let person_binding = session
+            .exact::<Person>()
+            .expect("Serialization remote person binding");
         session
             .query((relation, person_binding))
             .expect("Serialization remote selection")
@@ -6078,7 +6254,10 @@ async fn sdk_serialization_live() {
         "remote_exchange_count": exchange_count.load(Ordering::SeqCst),
         "rebound_mutation": true,
     });
-    publish_sdk_report(&sdk_env_path("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE"), evidence);
+    publish_sdk_report(
+        &sdk_env_path("TYPE_BRIDGE_SDK_SERIALIZATION_RUST_EVIDENCE"),
+        evidence,
+    );
     assert_eq!(rebound_employment.iid(), employment.iid());
     db.relations::<Employment>()
         .delete(employment.iid())
@@ -6091,6 +6270,72 @@ async fn sdk_serialization_live() {
     println!("generated Serialization Rust live evidence: passed");
 }
 
+fn model_plan_mark(name: &str) {
+    if let Some(path) = env::var_os("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL") {
+        fs::write(
+            path,
+            if name.is_empty() {
+                String::new()
+            } else {
+                format!("unkeyed_entity_iid_lifecycle.{name}")
+            },
+        )
+        .unwrap();
+    }
+}
+
+fn model_plan_identity(name: &str, iid: &str) {
+    if let Some(path) = env::var_os("TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS") {
+        let mut output = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        writeln!(output, "{}", json!([name, iid])).unwrap();
+    }
+}
+
+async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
+    if env::var_os("TYPE_BRIDGE_TEST_PLAN_CAPTURE").is_some() {
+        drop(type_bridge::plan::PlanBuilder::<AppSchema>::new());
+    }
+    let manager = db.entities::<Counter>();
+    let before = manager.count().await.unwrap();
+    model_plan_mark("insert");
+    let values = manager
+        .insert_many(vec![
+            CounterCreate::new(CounterValue::new(1).unwrap()).unwrap(),
+            CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
+        ])
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(values.len(), 2);
+    let ids = values
+        .iter()
+        .map(|value| value.iid().to_owned())
+        .collect::<Vec<_>>();
+    for (name, iid) in ["counter-left", "counter-right"].into_iter().zip(&ids) {
+        model_plan_identity(name, iid);
+    }
+    assert_eq!(manager.count().await.unwrap(), before + 2);
+    model_plan_mark("update");
+    let updated = manager
+        .update(
+            &ids[0],
+            CounterCreate::new(CounterValue::new(11).unwrap()).unwrap(),
+        )
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(updated.iid(), ids[0]);
+    assert_eq!(*updated.counter_value().value(), 11);
+    model_plan_mark("delete");
+    manager.delete_many(&ids).await.unwrap();
+    model_plan_mark("");
+    assert_eq!(manager.count().await.unwrap(), before);
+}
+
 #[tokio::test]
 async fn sdk_models_data_model_runtime_live() {
     let Some(_) = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT") else {
@@ -6100,6 +6345,7 @@ async fn sdk_models_data_model_runtime_live() {
     let entry = sdk_matrix_entry("models");
     require_sdk_server_version(&entry).await;
     let db = database().await;
+    sdk_models_counter_plan_lifecycle(&db).await;
 
     let (entity_batch_insert_put, entity_batch_update_delete_atomic, entity_observation) = async {
     let person_baseline = db.entities::<Person>().count().await.expect("person count");

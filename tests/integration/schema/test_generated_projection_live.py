@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import make_dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -278,6 +278,39 @@ def _load_ci_module(name: str, path: Path) -> ModuleType:
 def _profile_matrix() -> ModuleType:
     """`scripts/ci/sdk_profile_matrix.py`: the per-set TypeDB version matrix."""
     return _load_ci_module("_typebridge_sdk_profile_matrix", SDK_PROFILE_MATRIX_LOADER)
+
+
+def _resource_policy(resources: Any) -> dict[str, Any]:
+    return {
+        name: getattr(resources, name)
+        for name in (
+            "timeout_milliseconds",
+            "items",
+            "bytes",
+            "graph_nodes",
+            "attribute_values",
+            "collection_members",
+            "role_players",
+            "statements",
+        )
+    }
+
+
+def _query_plan_capture(advertisement: bytes, generated: ModuleType) -> Any:
+    if "TYPE_BRIDGE_SDK_PLAN_WITNESS" not in os.environ:
+        return None
+    sys.path.insert(0, str(ROOT / "scripts/ci"))
+    module = _load_ci_module("_typebridge_sdk_plan_parity", ROOT / "scripts/ci/sdk_plan_parity.py")
+    defaults = _resource_policy(QueryExecutionResourceLimits())
+    return module.WitnessRecorder.requested(
+        "queries",
+        "python",
+        _generated_profile(generated),
+        advertisement=advertisement,
+        caller=_resource_policy(_REMOTE_RESOURCES),
+        session=defaults,
+        proxy_defaults=defaults,
+    )
 
 
 def _matrix_error(code: str, message: str) -> AssertionError:
@@ -699,8 +732,10 @@ def _sdk_queries_reducers(
     session: Any,
     query: Any,
     person: Any,
+    mark: Callable[[str], None] = lambda _: None,
 ) -> dict[str, object]:
     score = person.field(generated.Person.score)
+    mark("grouped_reducer.global")
     values = query.aggregate(
         person,
         generated.aggregate.count(),
@@ -713,14 +748,17 @@ def _sdk_queries_reducers(
     )
     group_person = session.exact(generated.Person)
     group_identifier = group_person.field(generated.Person.identifier)
+    mark("grouped_reducer.binding")
     binding = (
         query.match(group_person)
         .where(person.field(generated.Person.identifier).eq_field(group_identifier))
         .group_by(person, group_person)
         .aggregate(generated.aggregate.count())
     )
+    mark("grouped_reducer.field")
     field = query.group_by(person, score).aggregate(generated.aggregate.count())
     score_gte = person.field(generated.Person.score__gte)
+    mark("grouped_reducer.field_tuple")
     field_tuple = query.group_by(person, score, score_gte).aggregate(generated.aggregate.count())
 
     def bits(value: object) -> str:
@@ -1110,6 +1148,20 @@ def _run_sdk_queries_journey(
         membership_iid = membership.iid
         network_iid = network.iid
         assert isinstance(membership_iid, str) and isinstance(network_iid, str)
+        plan_capture = _query_plan_capture(remote_advertisement, generated)
+        if plan_capture is not None:
+            record_names = journey["create_order"]
+            assert isinstance(record_names, list)
+            for name, value in zip(
+                record_names, [*people, employee, manager, membership, network], strict=True
+            ):
+                plan_capture.record(name, value.iid)
+            setattr(remote_exchange, "_plan_witness", plan_capture)
+
+        def mark_plan(name: str) -> None:
+            if plan_capture is not None:
+                plan_capture.mark(name)
+
         entity_read_after_create = person_manager.get_by_iid(person_iids[0]) is not None
         relation_read_after_create = membership_manager.get_by_iid(membership_iid) is not None
 
@@ -1427,11 +1479,13 @@ def _run_sdk_queries_journey(
             generated.Identifier("query-ada")
         ) | remote_identifier.eq(generated.Identifier("query-dana"))
         remote_query = remote_session.query(remote_person).where(remote_scoped)
+        mark_plan("terminals.rows")
         remote_keys = [
             row.identifier.value
             for row in asyncio.run(remote_query.rows(limit=2, order_by=(remote_identifier.asc(),)))
         ]
         assert remote_keys == direct_keys
+        mark_plan("model_values_and_references.person")
         remote_ada = asyncio.run(
             remote_session.query(remote_person)
             .where(remote_identifier.eq(generated.Identifier("query-ada")))
@@ -1440,6 +1494,7 @@ def _run_sdk_queries_journey(
 
         remote_membership_var = remote_session.exact(generated.Membership)
         remote_member = remote_session.exact(generated.Person)
+        mark_plan("roles.membership")
         remote_membership = asyncio.run(
             remote_session.query(remote_membership_var)
             .match(remote_member)
@@ -1455,6 +1510,7 @@ def _run_sdk_queries_journey(
         remote_network_var = remote_session.exact(generated.NetworkLink)
         remote_origin = remote_session.exact(generated.Person)
         remote_destination = remote_session.exact(generated.Person)
+        mark_plan("roles.network")
         remote_network = asyncio.run(
             remote_session.query(remote_network_var)
             .match(remote_origin, remote_destination)
@@ -1474,6 +1530,7 @@ def _run_sdk_queries_journey(
             .one()
         )
 
+        mark_plan("owner_iid_set.owner_keys")
         remote_owner_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1481,6 +1538,7 @@ def _run_sdk_queries_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
+        mark_plan("owner_iid_set.optional_present_keys")
         remote_optional_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1488,6 +1546,7 @@ def _run_sdk_queries_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
+        mark_plan("owner_iid_set.iid_set_keys")
         remote_iid_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1498,6 +1557,7 @@ def _run_sdk_queries_journey(
 
         remote_employee_exact = remote_session.exact(generated.Employee)
         remote_employee_exact_id = remote_employee_exact.field(generated.Employee.identifier)
+        mark_plan("exact_subtypes.exact")
         remote_exact_values = asyncio.run(
             remote_session.query(remote_employee_exact)
             .where(
@@ -1508,6 +1568,7 @@ def _run_sdk_queries_journey(
         )
         remote_employee_subtypes = remote_session.subtypes(generated.Employee)
         remote_employee_subtypes_id = remote_employee_subtypes.field(generated.Employee.identifier)
+        mark_plan("exact_subtypes.subtypes")
         remote_subtype_values = asyncio.run(
             remote_session.query(remote_employee_subtypes)
             .where(
@@ -1520,6 +1581,7 @@ def _run_sdk_queries_journey(
         remote_score = remote_person.field(generated.Person.score)
         remote_score_gte = remote_person.field(generated.Person.score__gte)
         remote_boolean = remote_person.field(generated.Person.val_bool)
+        mark_plan("scalar_boolean.and")
         remote_and_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1531,6 +1593,7 @@ def _run_sdk_queries_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
+        mark_plan("scalar_boolean.or")
         remote_or_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1538,6 +1601,7 @@ def _run_sdk_queries_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
+        mark_plan("scalar_boolean.not")
         remote_not_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1545,6 +1609,7 @@ def _run_sdk_queries_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
+        mark_plan("scalar_boolean.field_comparison")
         remote_field_comparison_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1564,6 +1629,7 @@ def _run_sdk_queries_journey(
             min_depth=1,
             max_depth=1,
         )
+        mark_plan("topology.reachable")
         remote_reachable_pair = asyncio.run(
             remote_session.query(remote_source, remote_target)
             .where(
@@ -1588,6 +1654,7 @@ def _run_sdk_queries_journey(
             remote_cross_right_id.eq(generated.Identifier("query-ada"))
             | remote_cross_right_id.eq(generated.Identifier("query-dana"))
         )
+        mark_plan("topology.cross_join")
         remote_cross_pairs = [
             [_sdk_queries_key(left), _sdk_queries_key(right)]
             for left, right in asyncio.run(
@@ -1613,6 +1680,7 @@ def _run_sdk_queries_journey(
                 remote_selection_participant
             ),
         )
+        mark_plan("selection_shapes.positional")
         remote_positional_page = asyncio.run(
             remote_session.query(
                 remote_selection_origin,
@@ -1632,6 +1700,7 @@ def _run_sdk_queries_journey(
         assert remote_positional_page.total == 1
         assert len(remote_positional_page.items) == 1
         remote_positional_origin, remote_positional_participants = remote_positional_page.items[0]
+        mark_plan("selection_shapes.named")
         remote_named_page = asyncio.run(
             remote_session.query_as(
                 selection_row,
@@ -1667,13 +1736,16 @@ def _run_sdk_queries_journey(
         }
 
         requests_before_one = len(remote_requests)
+        mark_plan("terminals.one")
         remote_dana = asyncio.run(
             remote_session.query(remote_person)
             .where(remote_identifier.eq(generated.Identifier("query-dana")))
             .one()
         )
         remote_one_exchange = len(remote_requests) - requests_before_one
+        mark_plan("terminals.first")
         remote_first = asyncio.run(remote_query.first(order_by=(remote_identifier.asc(),)))
+        mark_plan("terminals.page")
         remote_page = asyncio.run(
             remote_query.page_by(
                 remote_person,
@@ -1682,6 +1754,10 @@ def _run_sdk_queries_journey(
                 include_total=True,
             )
         )
+        mark_plan("terminals.count")
+        remote_count = asyncio.run(remote_query.count_by(remote_person))
+        mark_plan("terminals.exists")
+        remote_exists = asyncio.run(remote_query.exists_by(remote_person))
         remote_terminals = {
             "one": _sdk_queries_key(remote_dana),
             "first": _sdk_queries_key(remote_first),
@@ -1692,10 +1768,11 @@ def _run_sdk_queries_journey(
                 "limit": remote_page.limit,
                 "total": remote_page.total,
             },
-            "count": asyncio.run(remote_query.count_by(remote_person)),
-            "exists": asyncio.run(remote_query.exists_by(remote_person)),
+            "count": remote_count,
+            "exists": remote_exists,
         }
 
+        mark_plan("scalar_domain.rows")
         remote_scalar_domain_keys = _sdk_queries_keys(
             asyncio.run(
                 remote_session.query(remote_person)
@@ -1703,11 +1780,14 @@ def _run_sdk_queries_journey(
                 .rows(limit=2, order_by=(remote_identifier.asc(),))
             )
         )
+        if plan_capture is not None:
+            plan_capture.stop()
         remote_reducers = _sdk_queries_reducers(
             generated,
             remote_session,
             blocking(remote_query),
             remote_person,
+            mark_plan,
         )
         assert remote_reducers == direct_reducers
 
@@ -1717,6 +1797,7 @@ def _run_sdk_queries_journey(
             remote_person,
             remote_minimum,
         )
+        mark_plan("schema_function.simple")
         remote_function_values = [
             row.score.value
             for row in asyncio.run(
@@ -1732,6 +1813,7 @@ def _run_sdk_queries_journey(
             remote_person,
             remote_call,
         )
+        mark_plan("schema_function.nested")
         remote_nested_function_values = [
             row.score.value
             for row in asyncio.run(
@@ -1742,6 +1824,14 @@ def _run_sdk_queries_journey(
             )
         ]
         assert remote_nested_function_values == direct_nested_function_values
+
+        mark_plan("structured_query_diagnostic.one")
+        try:
+            asyncio.run(remote_query.one())
+        except MatchRequestError as error:
+            assert _sdk_queries_cardinality_diagnostic(error) == structured_query_diagnostic
+        else:
+            raise AssertionError("queries remote exactly-one query accepted two selected rows")
 
         direct_model_values = _sdk_queries_person_values(generated, direct_ada, direct_membership)
         remote_model_values = _sdk_queries_person_values(generated, remote_ada, remote_membership)
@@ -1832,6 +1922,8 @@ def _run_sdk_queries_journey(
         }
         assert scalar_domain_remote == scalar_domain_direct
         assert remote_one_exchange == 1
+        if plan_capture is not None:
+            plan_capture.stop()
         resource_limits = _sdk_queries_resource_limits(
             generated,
             clean_db,
@@ -1894,6 +1986,9 @@ def _run_sdk_queries_journey(
         assert not overlap, f"queries proof fragments duplicate live lanes: {sorted(overlap)!r}"
         observed.update(proof_observations)
         assert len(observed) == 32
+        if plan_capture is not None:
+            plan_capture.finish()
+            setattr(remote_exchange, "_plan_witness", None)
     finally:
         cleanup_failures: list[BaseException] = []
         for owner, value in reversed(inserted):
@@ -2208,6 +2303,41 @@ def sdk_models_package(
                 del sys.modules[module_name]
 
 
+def _model_plan_mark(name: str = "") -> None:
+    label = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL")
+    if label is not None:
+        Path(label).write_text("unkeyed_entity_iid_lifecycle." + name if name else "")
+
+
+def _model_plan_identity(name: str, iid: str) -> None:
+    path = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS")
+    if path is not None:
+        with Path(path).open("a") as destination:
+            destination.write(json.dumps([name, iid]) + "\n")
+
+
+def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database) -> None:
+    manager = generated.Counter.manager(database)
+    before = manager.count()
+    values = [generated.Counter(counter_value=generated.CounterValue(value)) for value in (1, 2)]
+    _model_plan_mark("insert")
+    assert manager.insert_many(values) == values
+    _model_plan_mark()
+    for name, value in zip(("counter-left", "counter-right"), values, strict=True):
+        assert isinstance(value.iid, str)
+        _model_plan_identity(name, value.iid)
+    assert manager.count() == before + 2
+    values[0].counter_value = generated.CounterValue(11)
+    _model_plan_mark("update")
+    manager.update(values[0])
+    _model_plan_mark()
+    assert manager.get_by_iid(values[0].iid).counter_value.value == 11
+    _model_plan_mark("delete")
+    assert manager.delete_many(values) == values
+    _model_plan_mark()
+    assert manager.count() == before
+
+
 def sdk_models_data_model_runtime_live(
     clean_db: Database,
     sdk_models_package: ModuleType,
@@ -2219,6 +2349,8 @@ def sdk_models_data_model_runtime_live(
         SDK_MODELS_PROVIDER_SCHEMA.read_text(encoding="utf-8"),
         transaction_type="schema",
     )
+
+    _sdk_models_counter_plan_lifecycle(generated, clean_db)
 
     def person(identifier: str, score: int) -> Any:
         return _make_generated_person(generated, identifier, score)
@@ -4370,6 +4502,9 @@ def test_generated_projection_round_trips_live_models(
 
         async def exchange(request: bytes) -> bytes:
             remote_requests.append(request)
+            capture = getattr(exchange, "_plan_witness", None)
+            if capture is not None:
+                capture.exchange(request)
 
             def post() -> bytes:
                 http_request = urllib_request.Request(

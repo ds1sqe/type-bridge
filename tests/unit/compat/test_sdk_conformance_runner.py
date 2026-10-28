@@ -123,6 +123,15 @@ def test_cleanup_evidence_is_exact_and_non_inferential(tmp_path: Path) -> None:
     )
 
 
+def test_query_and_model_database_names_can_use_the_assigned_lane_prefix() -> None:
+    assert RUNNER.database_name({}, "queries", "node").startswith("type_bridge_queries_node_")
+    for suite in ("queries", "models"):
+        for binding in RUNNER.BINDINGS:
+            assert RUNNER.database_name(
+                {"TB_SDK_DATABASE_PREFIX": "tb270_04c_"}, suite, binding
+            ).startswith("tb270_04c_")
+
+
 def test_assembly_runs_each_real_composer_and_one_fan_in(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -247,6 +256,11 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
     calls: list[str] = []
     scratch: list[Path] = []
     names = [f"{binding}.json" for binding in RUNNER.BINDINGS]
+    published_names = names[:]
+    if suite in {"queries", "models"}:
+        published_names += [f"plans/{name}" for name in names] + ["plans/summary.json"]
+    monkeypatch.setattr(RUNNER, "run", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(RUNNER.plan_parity, "compare_twins", lambda *_args, **_kwargs: {})
 
     def stage(name: str) -> Any:
         def produce(directory: Path, *_args: Any) -> tuple[Path, ...]:
@@ -266,6 +280,10 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
                 paths.append(path)
             if fail:
                 raise RUNNER.RunnerError("validation failed")
+            if suite in {"queries", "models"}:
+                (directory / "plans").mkdir()
+                for filename in names:
+                    (directory / "plans" / filename).write_bytes(f"plans/{filename}".encode())
             return tuple(paths)
 
         return produce
@@ -295,8 +313,11 @@ def test_suite_runs_in_order_and_publishes_only_validated_reports(
     if not fail:
         assert sorted(
             path.relative_to(output).as_posix() for path in output.rglob("*.json")
-        ) == sorted(names)
-        for name in names:
+        ) == sorted(published_names)
+        for name in published_names:
+            if name == "plans/summary.json":
+                assert json.loads((output / name).read_bytes()) == {}
+                continue
             assert (output / name).read_bytes() == name.encode()
 
 
@@ -434,10 +455,16 @@ def test_live_suites_keep_all_four_producers(
     for binding in RUNNER.BINDINGS:
         (fragments / f"{binding}-0.json").write_text("{}")
     commands = capture(monkeypatch)
-    args: list[Any] = [tmp_path, {}]
+    native_calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(
+        RUNNER.plan_parity, "native_witness", lambda *args, **_kwargs: native_calls.append(args)
+    )
+    monkeypatch.setattr(RUNNER.plan_parity, "merge_witnesses", lambda *_args, **_kwargs: None)
+    args: list[Any] = [tmp_path, {RUNNER.profile_matrix.SEMANTIC_PROFILE_ENV: "typedb-3.13.6/v1"}]
     if function == "query_live":
         args.append("0" * 64)
     getattr(RUNNER, function)(*args)
+    assert len(native_calls) == (4 if function == "model_live" else 0)
     assert (
         sum(any(item.endswith(f"::{python_test}") for item in command) for command in commands) == 1
     )

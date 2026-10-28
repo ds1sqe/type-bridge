@@ -23,6 +23,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import c_artifact_journey as artifact_journey
 import sdk_artifacts_compare as conformance
+import sdk_plan_parity as plan_parity
 import sdk_profile_matrix as profile_matrix
 import sdk_serialization_compare as codec_contract
 import sdk_writes_compare as writes_contract
@@ -85,6 +86,19 @@ def typedb_version(environment: Mapping[str, str]) -> str:
     """The exact TypeDB server version the run's profile names."""
 
     return environment.get("TYPEDB_VERSION") or lane(None, environment).live_server_version
+
+
+def database_name(environment: Mapping[str, str], suite: str, binding: str) -> str:
+    """Keep default fixture names while allowing an owned lane prefix."""
+    prefix = environment.get("TB_SDK_DATABASE_PREFIX", "type_bridge").rstrip("_")
+    name = f"{prefix}_{suite}_{binding}_{os.getpid()}"
+    if (
+        len(name) > 64
+        or not name
+        or any(not (char.isascii() and (char.isalnum() or char == "_")) for char in name)
+    ):
+        raise RunnerError("SDK database names require a bounded ASCII identifier prefix")
+    return name
 
 
 def run(
@@ -247,14 +261,17 @@ def query_environment(
         "TYPE_BRIDGE_SDK_QUERIES_REPORT": str(directory / f"reports/{binding}.json"),
         "TYPE_BRIDGE_SDK_QUERIES_PROOF_FRAGMENTS": os.pathsep.join(str(path) for path in fragments),
         "TYPE_BRIDGE_SDK_QUERIES_PROOF_RUN_NONCE": nonce,
+        "TYPE_BRIDGE_SDK_PLAN_WITNESS": str(directory / f"plans/{binding}.json"),
     }
     return result
 
 
 def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None:
     (directory / "reports").mkdir()
+    (directory / "plans").mkdir()
     python_env = query_environment(environment, directory, "python", nonce) | {
-        "USE_DOCKER": "false"
+        "USE_DOCKER": "false",
+        "TYPEDB_DATABASE": database_name(environment, "queries", "python"),
     }
     run(
         [
@@ -268,15 +285,17 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
         ],
         env=python_env,
     )
-    run(["npm", "run", "build"], cwd=NODE, env=environment)
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
     node_env = query_environment(environment, directory, "node", nonce) | {
         "TYPE_BRIDGE_SDK_QUERIES_VALIDATOR_PYTHON": str(Path(sys.executable).resolve()),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_queries_node_{os.getpid()}",
+        "TYPE_BRIDGE_NODE_INTG_DATABASE": database_name(environment, "queries", "node"),
     }
     node_live("generated package round-trips exact models on TypeDB", node_env)
     rust_env = query_environment(environment, directory, "rust", nonce) | {
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_queries_rust_{os.getpid()}"
+        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": database_name(environment, "queries", "rust"),
+        "ACCEPTANCE_TARGET_DIR": environment.get(
+            "CARGO_TARGET_DIR", str(directory / "rust-target")
+        ),
     }
     run(
         rust_live(
@@ -286,7 +305,7 @@ def query_live(directory: Path, environment: dict[str, str], nonce: str) -> None
     )
     c_target = Path(environment.get("CARGO_TARGET_DIR", directory / "c-target"))
     c_env = query_environment(environment, directory, "c", nonce) | {
-        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": f"type_bridge_queries_c_{os.getpid()}",
+        "TYPE_BRIDGE_C_PROJECTION_INTG_DATABASE": database_name(environment, "queries", "c"),
         "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
         "ACCEPTANCE_TARGET_DIR": str(c_target),
         "CARGO_TARGET_DIR": str(c_target),
@@ -342,7 +361,9 @@ def model_projections(directory: Path, environment: dict[str, str]) -> None:
     manager_environment = environment | {
         "TYPE_BRIDGE_MANAGER_LIVE_ADDRESS": environment["TYPEDB_ADDRESS"],
         "TYPE_BRIDGE_MANAGER_LIVE_HTTP_PORT": environment["TYPEDB_HTTP_PORT"],
+        "TYPE_BRIDGE_SDK_PLAN_WITNESS_DIRECTORY": str(directory / "manager-plans"),
     }
+    (directory / "manager-plans").mkdir()
     run(
         python_command("run_generated_live.py", "manager", "--output", str(directory / "manager")),
         env=manager_environment,
@@ -417,10 +438,30 @@ def model_proofs(directory: Path, environment: dict[str, str], nonce: str) -> No
 def model_live(directory: Path, environment: dict[str, str]) -> None:
     supplements = directory / "supplements"
     supplements.mkdir()
-    python_env = environment | {
-        "USE_DOCKER": "false",
-        "TYPE_BRIDGE_SDK_MODELS_PYTHON_SUPPLEMENT": str(supplements / "python.json"),
-    }
+    plans = directory / "counter-plans"
+    plans.mkdir()
+
+    def capture(binding: str) -> dict[str, str]:
+        label = plans / f"{binding}-label"
+        identities = plans / f"{binding}-records.jsonl"
+        label.write_text("")
+        identities.write_text("")
+        return {
+            "TYPE_BRIDGE_TEST_PLAN_CAPTURE": str(plans / f"{binding}-native.jsonl"),
+            "TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL": str(label),
+            "TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS": str(identities),
+            "RUST_LOG": "type_bridge.plan=debug",
+        }
+
+    python_env = (
+        environment
+        | {
+            "USE_DOCKER": "false",
+            "TYPEDB_DATABASE": database_name(environment, "models", "python"),
+            "TYPE_BRIDGE_SDK_MODELS_PYTHON_SUPPLEMENT": str(supplements / "python.json"),
+        }
+        | capture("python")
+    )
     run(
         [
             "uv",
@@ -435,27 +476,66 @@ def model_live(directory: Path, environment: dict[str, str]) -> None:
     )
     run(["npm", "run", "build"], cwd=NODE, env=environment)
     run(["npm", "run", "typecheck:projection-integration"], cwd=NODE, env=environment)
-    node_env = environment | {
-        "TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT": str(supplements / "node.json"),
-        "TYPE_BRIDGE_NODE_INTG_DATABASE": f"type_bridge_models_node_{os.getpid()}",
-    }
+    node_env = (
+        environment
+        | {
+            "TYPE_BRIDGE_SDK_MODELS_NODE_SUPPLEMENT": str(supplements / "node.json"),
+            "TYPE_BRIDGE_NODE_INTG_DATABASE": database_name(environment, "models", "node"),
+        }
+        | capture("node")
+    )
     node_live("node.sdk_models_data_model_runtime_live", node_env)
-    rust_env = environment | {
-        "TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT": str(supplements / "rust.json"),
-        "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": f"type_bridge_models_rust_{os.getpid()}",
-    }
+    rust_env = (
+        environment
+        | {
+            "TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT": str(supplements / "rust.json"),
+            "TYPE_BRIDGE_RUST_PROJECTION_INTG_DATABASE": database_name(
+                environment, "models", "rust"
+            ),
+            "ACCEPTANCE_TARGET_DIR": environment.get(
+                "CARGO_TARGET_DIR", str(directory / "rust-target")
+            ),
+        }
+        | capture("rust")
+    )
     run(
         rust_live(
             "generated_rust_projection_round_trips_exact_live_models", "rust_projection_live"
         ),
         env=rust_env,
     )
-    c_env = environment | {
-        "TYPE_BRIDGE_SDK_MODELS_C_SUPPLEMENT": str(supplements / "c.json"),
-        "TYPE_BRIDGE_C_QUERY_INTG_DATABASE": f"type_bridge_models_c_{os.getpid()}",
-        "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
-    }
+    c_env = (
+        environment
+        | {
+            "TYPE_BRIDGE_SDK_MODELS_C_SUPPLEMENT": str(supplements / "c.json"),
+            "TYPE_BRIDGE_C_QUERY_INTG_DATABASE": database_name(environment, "models", "c"),
+            "TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER": "1",
+            "ACCEPTANCE_TARGET_DIR": environment.get(
+                "CARGO_TARGET_DIR", str(directory / "c-target")
+            ),
+        }
+        | capture("c")
+    )
     run(rust_live("sdk_models_data_model_runtime_live", "c_projection_live"), env=c_env)
+    (directory / "plans").mkdir()
+    profile = environment[profile_matrix.SEMANTIC_PROFILE_ENV]
+    for binding in BINDINGS:
+        fragment = plans / f"{binding}.json"
+        plan_parity.native_witness(
+            "models",
+            profile,
+            binding,
+            plans / f"{binding}-native.jsonl",
+            fragment,
+            identities=plans / f"{binding}-records.jsonl",
+        )
+        plan_parity.merge_witnesses(
+            "models",
+            profile,
+            binding,
+            [directory / f"manager-plans/{binding}.json", fragment],
+            directory / f"plans/{binding}.json",
+        )
 
 
 def assemble_models(directory: Path, environment: dict[str, str], nonce: str) -> tuple[Path, ...]:
@@ -1258,11 +1338,15 @@ def execute(
         return writes(directory, environment, live=not arguments.offline)
     if suite == "queries":
         nonce = secrets.token_hex(32)
+        run(["npm", "run", "build"], cwd=NODE, env=environment)
         query_proofs(directory, environment, nonce)
         query_live(directory, environment, nonce)
         compare_queries(directory, environment)
-        return {f"{binding}.json": directory / f"reports/{binding}.json" for binding in BINDINGS}
-    if suite == "models":
+        reports = tuple(directory / f"reports/{binding}.json" for binding in BINDINGS)
+    elif suite == "models":
+        environment = environment | {
+            "RUSTFLAGS": environment.get("RUSTFLAGS", "") + " --cfg type_bridge_test_plan_capture",
+        }
         nonce = secrets.token_hex(32)
         model_projections(directory, environment)
         model_artifacts(directory, environment)
@@ -1281,7 +1365,19 @@ def execute(
         reports = artifact_reports(directory, arguments, environment)
     else:
         raise RunnerError(f"unknown SDK suite: {suite}")
-    return {f"{binding}.json": path for binding, path in zip(BINDINGS, reports, strict=True)}
+    files = {f"{binding}.json": path for binding, path in zip(BINDINGS, reports, strict=True)}
+    if suite in {"queries", "models"}:
+        paths = {binding: directory / f"plans/{binding}.json" for binding in BINDINGS}
+        summary = plan_parity.compare_twins(
+            suite,
+            environment[profile_matrix.SEMANTIC_PROFILE_ENV],
+            paths,
+        )
+        summary_path = directory / "plan-parity.json"
+        summary_path.write_bytes(plan_parity.canonical_json_bytes(summary))
+        files |= {f"plans/{binding}.json": path for binding, path in paths.items()}
+        files["plans/summary.json"] = summary_path
+    return files
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1369,6 +1465,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact_journey.JourneyError,
         cli_artifact.ArtifactError,
         codec_contract.ContractError,
+        plan_parity.ContractError,
         KeyError,
         OSError,
     ) as error:

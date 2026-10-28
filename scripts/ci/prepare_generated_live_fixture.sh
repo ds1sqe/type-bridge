@@ -114,7 +114,7 @@ fi
 primary="$scratch/primary"
 if [[ "$binding" == python* ]]; then
     write_workspace \
-        "$primary" python generated_v2 generated-python-live "$schema_source" yes
+        "$primary" python generated_v2 schema-codegen-acceptance "$schema_source" yes
     generate_workspace "$primary"
     cp -R "$primary/generated/generated_v2" "$output_dir/generated_v2"
     cp "$primary/generated/schema-authority.json" "$output_dir/schema-authority.json"
@@ -123,14 +123,14 @@ if [[ "$binding" == python* ]]; then
         cp -R "$output_dir/generated_v2" "$output_dir/generated_identical"
         ordered="$scratch/ordered"
         write_workspace \
-            "$ordered" python generated_ordered generated-python-ordered \
+            "$ordered" python generated_ordered schema-codegen-acceptance \
             "$ACCEPTANCE_DIR/schema-ordered.yaml" no
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
     elif [[ "$sdk_models_profile" == "yes" ]]; then
         ordered="$scratch/ordered"
         write_workspace \
-            "$ordered" python generated_ordered generated-python-ordered \
+            "$ordered" python generated_ordered schema-codegen-acceptance \
             "$SDK_MODELS_DIR/schema.yaml" yes
         generate_workspace "$ordered"
         cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"
@@ -165,7 +165,7 @@ if [[ "$binding" == python* ]]; then
 fi
 
 write_workspace \
-    "$primary" typescript generated_v2 generated-projection-live "$schema_source" yes
+    "$primary" typescript generated_v2 schema-codegen-acceptance "$schema_source" yes
 generate_workspace "$primary"
 cp -R "$primary/generated/generated_v2" "$output_dir/generated_v2"
 cp "$primary/generated/schema-authority.json" "$output_dir/schema-authority.json"
@@ -179,7 +179,7 @@ cp -R "$foreign/generated/generated_foreign" "$output_dir/generated_foreign"
 if [[ "$sdk_models_profile" == "yes" ]]; then
     ordered="$scratch/ordered"
     write_workspace \
-        "$ordered" typescript generated_ordered generated-node-ordered \
+        "$ordered" typescript generated_ordered schema-codegen-acceptance \
         "$SDK_MODELS_DIR/schema.yaml" yes
     generate_workspace "$ordered"
     cp -R "$ordered/generated/generated_ordered" "$output_dir/generated_ordered"

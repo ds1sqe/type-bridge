@@ -877,6 +877,10 @@ fn staged_query_for_source(
     let _entered = span.enter();
     let result = staged_query_inner(plan, supports_given_rows, fingerprint, source);
     if result.is_ok() {
+        #[cfg(type_bridge_test_plan_capture)]
+        if !span.is_disabled() {
+            crate::debug::plan_capture::record(plan);
+        }
         span.record(
             "statements",
             plan.statement_counts().0 + plan.statement_counts().1,

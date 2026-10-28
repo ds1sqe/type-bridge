@@ -279,6 +279,118 @@ open_interaction_create(const type_bridge_schema_package_t *package,
   return 0;
 }
 
+static void model_plan_mark(const char *name) {
+#ifndef __cplusplus
+  const char *path = getenv("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL");
+  if (path != NULL) {
+    FILE *file = fopen(path, "w");
+    if (file == NULL) abort();
+    if (*name != '\0') fputs("unkeyed_entity_iid_lifecycle.", file);
+    if (fputs(name, file) < 0 || fclose(file) != 0) abort();
+  }
+#else
+  (void)name;
+#endif
+}
+
+static void model_plan_identity(const char *name, type_bridge_byte_view_t iid) {
+#ifndef __cplusplus
+  const char *path = getenv("TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS");
+  if (path != NULL) {
+    FILE *file = fopen(path, "a");
+    if (file == NULL || fprintf(file, "[\"%s\",\"%.*s\"]\n", name,
+        (int)iid.length, (const char *)iid.data) < 0 || fclose(file) != 0) abort();
+  }
+#else
+  (void)name;
+  (void)iid;
+#endif
+}
+
+static int run_counter_plan_lifecycle(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_database_t *database,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  type_bridge_query_execution_limits_v1_t common_limits = *limits;
+  common_limits.items = UINT64_C(100000);
+  common_limits.bytes = UINT64_C(67108864);
+  common_limits.graph_nodes = UINT64_C(1000000);
+  common_limits.attribute_values = UINT64_C(4000000);
+  common_limits.collection_members = UINT64_C(1000000);
+  common_limits.role_players = UINT64_C(1000000);
+  limits = &common_limits;
+  fixture_counter_create *inputs[2] = {NULL, NULL};
+  fixture_counter_create *replacement = NULL;
+  fixture_counter *value = NULL;
+  fixture_counterzuvalue *counter_value = NULL;
+  fixture_counter_insert_batch_builder *insert_builder = NULL;
+  fixture_counter_insert_batch *insert_batch = NULL;
+  fixture_counter_insert_batch_result *insert_result = NULL;
+  fixture_counter_delete_batch_builder *delete_builder = NULL;
+  fixture_counter_delete_batch *delete_batch = NULL;
+  fixture_counter_delete_batch_result *delete_result = NULL;
+  uint8_t iid_storage[2][256];
+  size_t iid_lengths[2] = {0u, 0u};
+  type_bridge_byte_view_t ids[2];
+  type_bridge_byte_view_t borrowed = {NULL, 0u};
+  uint64_t before = 0u;
+  uint64_t count = 0u;
+  size_t result_count = 0u;
+  size_t index;
+  int64_t scalar = 0;
+  CHECK(fixture_counter_database_count_v2(database, limits, NULL, &before, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_insert_batch_builder_open(package, limits, NULL, &insert_builder, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (index = 0u; index < 2u; ++index) {
+    CHECK(open_counter_create(package, (int64_t)index + 1, &inputs[index], out_diagnostics) == 0);
+    CHECK(fixture_counter_insert_batch_builder_add(insert_builder, inputs[index], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(fixture_counter_insert_batch_builder_finish(&insert_builder, &insert_batch, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("insert");
+  CHECK(fixture_counter_database_insert_batch_execute(database, insert_batch, limits, NULL, &insert_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_counter_insert_batch_result_count(insert_result, &result_count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && result_count == 2u);
+  for (index = 0u; index < 2u; ++index) {
+    CHECK(fixture_counter_insert_batch_result_thing_at(insert_result, index, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_iid(value, &borrowed, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(copy_iid(borrowed, iid_storage[index], sizeof(iid_storage[index]), &iid_lengths[index]));
+    ids[index].data = iid_storage[index];
+    ids[index].length = iid_lengths[index];
+    model_plan_identity(index == 0u ? "counter-left" : "counter-right", ids[index]);
+    CHECK(fixture_counter_counterzuvalue(value, &counter_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counterzuvalue_value(counter_value, &scalar, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && scalar == (int64_t)index + 1);
+    CHECK(fixture_counterzuvalue_close(&counter_value) == TYPE_BRIDGE_STATUS_OK);
+    CHECK(fixture_counter_close(&value) == TYPE_BRIDGE_STATUS_OK);
+  }
+  CHECK(fixture_counter_insert_batch_result_close(&insert_result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_insert_batch_close(&insert_batch) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_database_count_v2(database, limits, NULL, &count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && count == before + 2u);
+  CHECK(open_counter_create(package, 11, &replacement, out_diagnostics) == 0);
+  model_plan_mark("update");
+  CHECK(fixture_counter_database_update_v2(database, ids[0], replacement, limits, NULL, &value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_counter_iid(value, &borrowed, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && borrowed.length == ids[0].length && memcmp(borrowed.data, ids[0].data, borrowed.length) == 0);
+  CHECK(fixture_counter_counterzuvalue(value, &counter_value, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counterzuvalue_value(counter_value, &scalar, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && scalar == 11);
+  CHECK(fixture_counterzuvalue_close(&counter_value) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_close(&value) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_delete_batch_builder_open(package, limits, NULL, &delete_builder, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  for (index = 0u; index < 2u; ++index)
+    CHECK(fixture_counter_delete_batch_builder_add(delete_builder, ids[index], out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_delete_batch_builder_finish(&delete_builder, &delete_batch, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("delete");
+  CHECK(fixture_counter_database_delete_batch_execute(database, delete_batch, limits, NULL, &delete_result, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_counter_delete_batch_result_count(delete_result, &result_count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && result_count == 2u);
+  CHECK(fixture_counter_delete_batch_result_close(&delete_result) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_delete_batch_close(&delete_batch) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_counter_database_count_v2(database, limits, NULL, &count, out_diagnostics) == TYPE_BRIDGE_STATUS_OK && count == before);
+  CHECK(fixture_counter_create_close(&replacement) == TYPE_BRIDGE_STATUS_OK);
+  for (index = 0u; index < 2u; ++index)
+    CHECK(fixture_counter_create_close(&inputs[index]) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
 static int
 run_unkeyed_lifecycles(const type_bridge_schema_package_t *package,
                        const type_bridge_database_t *database,
@@ -931,6 +1043,7 @@ int main(void) {
   person_iid.length = person_iid_length;
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
 
+  CHECK(run_counter_plan_lifecycle(package, database, &limits, &diagnostics) == 0);
   CHECK(run_unkeyed_lifecycles(package, database, person_iid, &limits,
                                &diagnostics) == 0);
   CHECK(run_robot_batches(package, database, &limits, &diagnostics) == 0);

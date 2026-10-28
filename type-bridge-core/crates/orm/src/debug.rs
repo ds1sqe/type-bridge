@@ -1,5 +1,8 @@
 //! Shared tracing layer for SDK host loggers. Rust hosts own their subscriber.
 
+#[cfg(type_bridge_test_plan_capture)]
+pub(crate) mod plan_capture;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Instant;

@@ -390,8 +390,7 @@ fn generated_rust_projection_round_trips_exact_live_models() {
     let declared = normalize_documents(&documents).expect("acceptance schema normalizes");
     let profile = SemanticProfileId::new(&profile_name).expect("semantic profile is valid");
     let resolved = resolve(&declared, &profile).expect("acceptance schema resolves");
-    let authority =
-        support::authority_for_declared(&declared, "rust-projection-live", &profile_name);
+    let authority = support::authority_for_declared(&declared, support::TEST_SCOPE, &profile_name);
     let authority_bytes = encode_schema_authority(&authority);
     let emitter = RustEmitter::new();
     let handlers = emitter.generator_handlers_for(&resolved);

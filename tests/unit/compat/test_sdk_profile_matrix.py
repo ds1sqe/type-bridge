@@ -272,3 +272,62 @@ def test_existing_test_sh_and_ci_server_selection_uses_the_same_guard(server: st
     environment = {matrix.SEMANTIC_PROFILE_ENV: NEXT, "TYPEDB_VERSION": server}
     assert matrix.requested("queries", environment=environment).live_server_version == server
     assert runner.lane(None, environment).live_server_version == server
+
+
+@pytest.mark.parametrize("producer", ["projected", "manager"])
+def test_node_live_producers_use_the_exact_measured_server_selection(producer: str) -> None:
+    environments = [
+        {},
+        *[
+            {matrix.SEMANTIC_PROFILE_ENV: profile, matrix.EXPECTED_SERVER_ENV: server}
+            for server, profile in matrix.SERVER_PROFILES.items()
+        ],
+        {matrix.SEMANTIC_PROFILE_ENV: NEXT, "TYPEDB_VERSION": "3.14.0"},
+        {
+            matrix.SEMANTIC_PROFILE_ENV: NEXT,
+            matrix.EXPECTED_SERVER_ENV: "3.14.0",
+            "TYPEDB_VERSION": "3.12.3",
+        },
+        *[
+            {matrix.SEMANTIC_PROFILE_ENV: profile, matrix.EXPECTED_SERVER_ENV: server}
+            for profile, server in [
+                (BASE, "3.14.0"),
+                (NEXT, "3.12.3"),
+                (NEXT, "3.14.1"),
+                (NEXT, ""),
+            ]
+        ],
+    ]
+    expected = []
+    for environment in environments:
+        try:
+            expected.append(matrix.requested("models", environment=environment).live_server_version)
+        except matrix.ProfileMatrixError as error:
+            expected.append(error.code)
+    module = (
+        ROOT
+        / "type-bridge-core/crates/schema-codegen/tests/typescript_acceptance"
+        / f"{producer}_live_check.mjs"
+    )
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "--eval",
+            """
+const producer = await import(process.argv[1]);
+const versions = JSON.parse(process.argv[3]).map(environment => {
+  try { return producer.profileIdentity(process.argv[2], environment).liveServerVersion; }
+  catch (error) { return error.code; }
+});
+process.stdout.write(JSON.stringify(versions));
+""",
+            module.as_uri(),
+            str(ROOT),
+            json.dumps(environments),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(result.stdout) == expected

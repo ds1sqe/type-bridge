@@ -285,6 +285,14 @@
     "database": {
       "path": "type-bridge-core/crates/orm/src/session/database.rs",
       "symbol": "pub struct Database"
+    },
+    "typed_plan_parity": {
+      "path": "scripts/ci/sdk_plan_parity.py",
+      "symbol": "def compare_twins"
+    },
+    "typed_answer_capture_parity": {
+      "path": "scripts/ci/sdk_plan_parity.py",
+      "symbol": "def compare_v2_answers"
     }
   },
   "capabilities": [

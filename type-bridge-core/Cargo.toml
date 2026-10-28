@@ -41,4 +41,4 @@ authors = ["ds1sqe"]
 typeql = "=3.14.0"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)', 'cfg(coverage)', 'cfg(type_bridge_test_plan_capture)'] }

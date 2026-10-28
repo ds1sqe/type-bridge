@@ -12,6 +12,22 @@ import {
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
 export const MAX_REPORT_BYTES = 256 * 1024;
+const SERVER_PROFILES = Object.freeze({
+  "3.12.3": "typedb-3.12.1/v1",
+  "3.13.6": "typedb-3.13.6/v1",
+  "3.14.0": "typedb-3.13.6/v1",
+});
+
+export function expectedServerVersion(profile, fallback, environment) {
+  const server = environment.TYPE_BRIDGE_EXPECTED_SERVER_VERSION ??
+    environment.TYPEDB_VERSION ?? fallback;
+  requireCondition(
+    SERVER_PROFILES[server] === profile,
+    "server_profile_mismatch",
+    `unmeasured TypeDB ${JSON.stringify(server)} / ${JSON.stringify(profile)} pair`,
+  );
+  return server;
+}
 
 export class ProducerError extends Error {
   constructor(code, message, options = undefined) {

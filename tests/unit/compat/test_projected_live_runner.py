@@ -297,7 +297,7 @@ def test_runner_cleans_owned_names_after_interrupt(
     monkeypatch.setattr(runner, "_require_tools", lambda: None)
     monkeypatch.setattr(runner, "_prepare", lambda layout: None)
     monkeypatch.setattr(
-        runner, "command_plan", lambda layout, fixture: (initial_guard, interrupted)
+        runner, "command_plan", lambda layout, fixture, **_kwargs: (initial_guard, interrupted)
     )
 
     def run_command(command):
@@ -365,7 +365,9 @@ def test_runner_never_cleans_when_process_group_termination_is_interrupted(
     monkeypatch.setattr(runner, "_validate_producer_sources", lambda *_args: None)
     monkeypatch.setattr(runner, "_require_tools", lambda: None)
     monkeypatch.setattr(runner, "_prepare", lambda layout: None)
-    monkeypatch.setattr(runner, "command_plan", lambda layout, fixture: (initial_guard, unsafe))
+    monkeypatch.setattr(
+        runner, "command_plan", lambda layout, fixture, **_kwargs: (initial_guard, unsafe)
+    )
     monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: next(processes))
     monkeypatch.setattr(
         runner,
@@ -418,7 +420,7 @@ def test_runner_never_cleans_after_interrupted_popen_launch(
     monkeypatch.setattr(runner, "_require_tools", lambda: None)
     monkeypatch.setattr(runner, "_prepare", lambda layout: None)
     monkeypatch.setattr(
-        runner, "command_plan", lambda layout, fixture: (initial_guard, interrupted)
+        runner, "command_plan", lambda layout, fixture, **_kwargs: (initial_guard, interrupted)
     )
     monkeypatch.setattr(runner, "_process_group_exists", lambda process: False)
 

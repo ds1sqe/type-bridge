@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { link, lstat, mkdtemp, mkdir, open, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
@@ -949,6 +949,90 @@ function sdkQueriesReducers(
  * comes from this one program, so the direct and remote lanes differ only in
  * the connection the session was opened on.
  */
+function modelPlanMark(name = ""): void {
+  const path = process.env.TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL;
+  if (path !== undefined) writeFileSync(path, name ? `unkeyed_entity_iid_lifecycle.${name}` : "");
+}
+
+function modelPlanIdentity(name: string, iid: string): void {
+  const path = process.env.TYPE_BRIDGE_TEST_PLAN_CAPTURE_RECORDS;
+  if (path !== undefined) appendFileSync(path, `${JSON.stringify([name, iid])}\n`);
+}
+
+function sdkModelsCounterPlanLifecycle(generated: any, database: any): void {
+  const manager = generated.Counter.manager(database);
+  const before = manager.count();
+  modelPlanMark("insert");
+  const values = manager.insertMany([1n, 2n].map((value) => generated.Counter.create({
+    counterValue: generated.CounterValue.create(value),
+  })));
+  modelPlanMark();
+  assert.equal(values.length, 2);
+  values.forEach((value: any, index: number) => {
+    assertIid(value.iid);
+    modelPlanIdentity(index === 0 ? "counter-left" : "counter-right", value.iid);
+  });
+  assert.equal(manager.count(), before + 2n);
+  modelPlanMark("update");
+  const updated = manager.update(values[0].iid, generated.Counter.create({
+    counterValue: generated.CounterValue.create(11n),
+  }));
+  modelPlanMark();
+  assert.equal(updated.iid, values[0].iid);
+  assert.equal(updated.counterValue.value, 11n);
+  modelPlanMark("delete");
+  manager.deleteMany(values.map((value: any) => value.iid));
+  modelPlanMark();
+  assert.equal(manager.count(), before);
+}
+
+class FixturePlanWitness {
+  readonly value: any;
+  active: string | undefined;
+  constructor(readonly advertisement: Uint8Array, readonly caller: any, readonly defaults: any) {
+    this.value = {
+      format: "typebridge.sdk-plan-witness/v1", suite: "queries", binding: "node",
+      semantic_profile: REMOTE_PROFILE, records: {}, calls: {},
+    };
+  }
+  record(name: string, iid: string): void {
+    assertIid(iid);
+    this.value.records[name] ??= [];
+    if (!this.value.records[name].includes(iid)) this.value.records[name].push(iid);
+  }
+  mark(name: string): void {
+    assert.equal(this.value.calls[name], undefined);
+    this.active = name;
+    this.value.calls[name] = { source: "exchange", requests: [] };
+  }
+  exchange(request: Uint8Array): void {
+    if (this.active === undefined) return;
+    const requests = this.value.calls[this.active].requests;
+    assert.equal(requests.length, 0, "a selected typed terminal sent an extra exchange");
+    requests.push({
+      request_hex: Buffer.from(request).toString("hex"),
+      advertisement_hex: Buffer.from(this.advertisement).toString("hex"),
+      caller: this.caller, session: this.defaults, proxy_defaults: this.defaults,
+      caller_deadline_ms: Math.min(this.caller.timeout_milliseconds, this.defaults.timeout_milliseconds),
+    });
+  }
+  stop(): void { this.active = undefined; }
+  finish(): void {
+    this.stop();
+    writeFileSync(process.env.TYPE_BRIDGE_SDK_PLAN_WITNESS as string, JSON.stringify(this.value), { flag: "wx" });
+  }
+}
+
+function witnessResourcePolicy(resources: any): Record<string, number | null> {
+  const dimensions = {
+    timeout_milliseconds: "timeoutMilliseconds", items: "items", bytes: "bytes",
+    graph_nodes: "graphNodes", attribute_values: "attributeValues",
+    collection_members: "collectionMembers", role_players: "rolePlayers", statements: "statements",
+  };
+  return Object.fromEntries(Object.entries(dimensions).map(([name, property]) =>
+    [name, resources[property] === undefined ? null : Number(resources[property])]));
+}
+
 async function sdkQueriesQueryLane(
   generated: any,
   session: any,
@@ -956,6 +1040,7 @@ async function sdkQueriesQueryLane(
   personIids: readonly string[],
   membershipIid: string,
   networkIid: string,
+  capture?: FixturePlanWitness,
 ): Promise<{
   observations: Record<string, Record<string, unknown>>;
   oneExchange: number;
@@ -991,16 +1076,19 @@ async function sdkQueriesQueryLane(
       return true;
     },
   );
+  capture?.mark("terminals.rows");
   const keys = (await query.rows({
     limit: 2n,
     orderBy: [identifier.asc()],
   })).map((person: any) => person.identifier.value);
+  capture?.mark("model_values_and_references.person");
   const ada = await session
     .query(person)
     .where(identifier.eq(Identifier.create("query-ada")))
     .one();
   const membershipVar = session.exact(Membership);
   const member = session.exact(Person);
+  capture?.mark("roles.membership");
   const membership = await session
     .query(membershipVar)
     .match(member)
@@ -1013,6 +1101,7 @@ async function sdkQueriesQueryLane(
   const networkVar = session.exact(NetworkLink);
   const origin = session.exact(Person);
   const destination = session.exact(Person);
+  capture?.mark("roles.network");
   const network = await session
     .query(networkVar)
     .match(origin, destination)
@@ -1025,18 +1114,21 @@ async function sdkQueriesQueryLane(
     )
     .one();
 
+  capture?.mark("owner_iid_set.owner_keys");
   const ownerKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.field(Person.score).isPresent(), scope)
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
+  capture?.mark("owner_iid_set.optional_present_keys");
   const optionalKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(person.field(Person.nickname).isPresent(), scope)
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
+  capture?.mark("owner_iid_set.iid_set_keys");
   const iidKeys = sdkQueriesKeys(
     await session
       .query(person)
@@ -1046,6 +1138,7 @@ async function sdkQueriesQueryLane(
 
   const employeeExact = session.exact(Employee);
   const employeeExactId = employeeExact.field(Employee.identifier);
+  capture?.mark("exact_subtypes.exact");
   const exactValues = await session
     .query(employeeExact)
     .where(
@@ -1055,6 +1148,7 @@ async function sdkQueriesQueryLane(
     .rows({ limit: 2n, orderBy: [employeeExactId.asc()] });
   const employeeSubtypes = session.subtypes(Employee);
   const employeeSubtypesId = employeeSubtypes.field(Employee.identifier);
+  capture?.mark("exact_subtypes.subtypes");
   const subtypeValues = await session
     .query(employeeSubtypes)
     .where(
@@ -1066,6 +1160,7 @@ async function sdkQueriesQueryLane(
   const score = person.field(Person.score);
   const scoreGte = person.field(Person.scoreGte);
   const boolean = person.field(Person.valBool);
+  capture?.mark("scalar_boolean.and");
   const andKeys = sdkQueriesKeys(
     await session
       .query(person)
@@ -1075,18 +1170,21 @@ async function sdkQueriesQueryLane(
       )
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
+  capture?.mark("scalar_boolean.or");
   const orKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope)
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
+  capture?.mark("scalar_boolean.not");
   const notKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, boolean.eq(ValBool.create(true)).not())
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
+  capture?.mark("scalar_boolean.field_comparison");
   const fieldComparisonKeys = sdkQueriesKeys(
     await session
       .query(person)
@@ -1104,6 +1202,7 @@ async function sdkQueriesQueryLane(
     NetworkLink.destination,
     { minDepth: 1, maxDepth: 1 },
   );
+  capture?.mark("topology.reachable");
   const reachablePair = await session
     .query(source, target)
     .where(
@@ -1122,6 +1221,7 @@ async function sdkQueriesQueryLane(
       crossRightId.eq(Identifier.create("query-ada"))
         .or(crossRightId.eq(Identifier.create("query-dana"))),
     );
+  capture?.mark("topology.cross_join");
   const crossPairs = (await session
     .query(crossLeft, crossRight)
     .allowCrossJoin(crossLeft, crossRight)
@@ -1144,6 +1244,7 @@ async function sdkQueriesQueryLane(
     .collect()
     .distinct()
     .orderBy(selectionParticipant.field(Person.identifier).asc());
+  capture?.mark("selection_shapes.positional");
   const positionalPage = await session
     .query(selectionOrigin, selectionParticipants)
     .match(selectionLink)
@@ -1157,6 +1258,7 @@ async function sdkQueriesQueryLane(
   assert.equal(positionalPage.items.length, 1);
   const [positionalOrigin, positionalParticipants] =
     positionalPage.items[0];
+  capture?.mark("selection_shapes.named");
   const namedPage = await session
     .queryNamed({ origin: selectionOrigin, participants: selectionParticipants })
     .match(selectionLink)
@@ -1185,17 +1287,24 @@ async function sdkQueriesQueryLane(
   };
 
   const requestsBeforeOne = requests.length;
+  capture?.mark("terminals.one");
   const dana = await session
     .query(person)
     .where(identifier.eq(Identifier.create("query-dana")))
     .one();
   const oneExchange = requests.length - requestsBeforeOne;
+  capture?.mark("terminals.first");
   const first = await query.first({ orderBy: [identifier.asc()] });
+  capture?.mark("terminals.page");
   const page = await query.pageBy(person, {
     limit: 1n,
     orderBy: [identifier.asc()],
     includeTotal: true,
   });
+  capture?.mark("terminals.count");
+  const count = Number(await query.countBy(person));
+  capture?.mark("terminals.exists");
+  const exists = await query.existsBy(person);
   const terminals = {
     one: sdkQueriesKey(dana),
     first: sdkQueriesKey(first),
@@ -1206,15 +1315,17 @@ async function sdkQueriesQueryLane(
       limit: Number(page.limit),
       total: Number(page.total),
     },
-    count: Number(await query.countBy(person)),
-    exists: await query.existsBy(person),
+    count,
+    exists,
   };
+  capture?.mark("scalar_domain.rows");
   const scalarDomainKeys = sdkQueriesKeys(
     await session
       .query(person)
       .where(scope, score.gte(Score.create(40n)))
       .rows({ limit: 2n, orderBy: [identifier.asc()] }),
   );
+  capture?.mark("grouped_reducer.global");
   const values = await query.aggregate(person, [
     aggregate.count(),
     aggregate.sum(score),
@@ -1226,14 +1337,17 @@ async function sdkQueriesQueryLane(
   ] as const);
   const groupPerson = session.exact(Person);
   const groupIdentifier = groupPerson.field(Person.identifier);
+  capture?.mark("grouped_reducer.binding");
   const binding = await query
     .match(groupPerson)
     .where(identifier.eqField(groupIdentifier))
     .groupBy(person, groupPerson)
     .aggregate([aggregate.count()] as const);
+  capture?.mark("grouped_reducer.field");
   const field = await query
     .groupBy(person, score)
     .aggregate([aggregate.count()] as const);
+  capture?.mark("grouped_reducer.field_tuple");
   const tuple = await query
     .groupBy(person, score, person.field(Person.scoreGte))
     .aggregate([aggregate.count()] as const);
@@ -1246,15 +1360,18 @@ async function sdkQueriesQueryLane(
 
   const minimum = integerInput(session, Score.create(30n));
   const call = qualifyingScore(session, person, minimum);
+  capture?.mark("schema_function.simple");
   const functionValues = (await query
     .where(call.gteField(score))
     .rows({ limit: 2n, orderBy: [identifier.asc()] }))
     .map((person: any) => Number(person.score.value));
   const nested = qualifyingScore(session, person, call);
+  capture?.mark("schema_function.nested");
   const nestedFunctionValues = (await query
     .where(nested.gteField(score))
     .rows({ limit: 2n, orderBy: [identifier.asc()] }))
     .map((person: any) => Number(person.score.value));
+  capture?.mark("structured_query_diagnostic.one");
   let diagnostic: Record<string, unknown> | undefined;
   try {
     await query.one();
@@ -1262,6 +1379,7 @@ async function sdkQueriesQueryLane(
     diagnostic = sdkQueriesCardinalityDiagnostic(error);
   }
   assert.notEqual(diagnostic, undefined, "one() over two rows must fail");
+  capture?.stop();
   return {
     oneExchange,
     observations: {
@@ -1452,7 +1570,12 @@ async function runSdkQueriesJourney(
     );
     const directSession = new generated.QuerySession(database);
     const direct = await lane(directSession).finally(() => directSession.close());
-    const remote = await lane(remoteSession);
+    const capture = (exchange as any).planWitness as FixturePlanWitness | undefined;
+    if (capture !== undefined) {
+      journey.create_order.forEach((name: string, index: number) => capture.record(name, inserted[index][1].iid));
+    }
+    const remote = await sdkQueriesQueryLane(generated, remoteSession, requests, personIids, membershipIid, networkIid, capture);
+    capture?.finish();
     // One program, two connections: the lanes must agree observation for
     // observation before either is reported.
     assert.deepEqual(remote.observations, direct.observations);
@@ -2648,6 +2771,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
       const requests: Buffer[] = [];
       async function exchange(request: Uint8Array): Promise<Buffer> {
         requests.push(Buffer.from(request));
+        (exchange as any).planWitness?.exchange(request);
         const response = await fetch(`http://127.0.0.1:${port}/v3/staged`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -2681,6 +2805,16 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
         },
       );
       // docs: remote-query-node:end
+      if (process.env.TYPE_BRIDGE_SDK_PLAN_WITNESS !== undefined) {
+        (exchange as any).planWitness = new FixturePlanWitness(
+          advertisement,
+          witnessResourcePolicy(new QueryExecutionResourceLimits({
+            timeoutMilliseconds: 30_000n, items: 100n, bytes: 1n << 20n,
+            collectionMembers: 100n, graphNodes: 1_000n, attributeValues: 1_000n, rolePlayers: 1_000n,
+          })),
+          witnessResourcePolicy(new QueryExecutionResourceLimits()),
+        );
+      }
       assert.deepEqual(await queryProgram(remoteSession, oneRemoteExchange), direct);
       const proxy = await connectProxy(`http://127.0.0.1:${port}`);
       const proxySession = new QuerySession(proxy);
@@ -3077,6 +3211,7 @@ test(
       database = connectIntegration();
       database.resetDatabase();
       defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
+      sdkModelsCounterPlanLifecycle(generated, database);
 
       const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({
         identifier: Identifier.create(identifierValue),

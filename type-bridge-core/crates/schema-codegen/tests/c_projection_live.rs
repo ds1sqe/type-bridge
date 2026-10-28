@@ -271,7 +271,7 @@ fn emitted_package_authority_and_fingerprints(
     )
     .expect("shared acceptance schema projects to C");
     let authority =
-        support::authority_for_declared(&declared, "c-projection-live", semantic_profile);
+        support::authority_for_declared(&declared, support::TEST_SCOPE, semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let semantic_fingerprint = serde_json::to_value(projection.semantic_fingerprint())
         .expect("C semantic fingerprint serializes");
@@ -313,7 +313,8 @@ fn emitted_query_package_and_authority(semantic_profile: &str) -> (GeneratedPack
         &resources,
     )
     .expect("exact Models schema projects to ordered C");
-    let authority = support::authority_for_declared(&declared, "models-c-query", semantic_profile);
+    let authority =
+        support::authority_for_declared(&declared, support::TEST_SCOPE, semantic_profile);
     let authority_bytes = encode_schema_authority(&authority);
     let package = emitter
         .emit(&projection, &authority)

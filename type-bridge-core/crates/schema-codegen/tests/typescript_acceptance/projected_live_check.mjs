@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   ProducerError,
   canonicalString,
+  expectedServerVersion,
   publishReport,
   realDirectory,
   requireCondition,
@@ -42,7 +43,7 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "bd6898e0328b1c277e7273638849e31b9718f7f962d4f76de1822ee7eaafc72e",
+  digest: "4da473e61c4732530bc2ac39ab203cd3ff59ed6877f2eaec190c67ddccacc7bc",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
@@ -85,7 +86,7 @@ export function profileIdentity(root = MODULE_REPOSITORY_ROOT, environment = {})
   );
   return Object.freeze({
     semanticProfile: profile,
-    liveServerVersion: entry.live_server_version,
+    liveServerVersion: expectedServerVersion(profile, entry.live_server_version, environment),
     semantic: fingerprints.semantic,
     projection: fingerprints.projections.node,
   });

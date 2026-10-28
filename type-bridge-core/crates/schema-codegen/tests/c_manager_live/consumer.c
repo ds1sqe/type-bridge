@@ -46,6 +46,14 @@ static type_bridge_byte_view_t view_of(const char *text) {
   return (type_bridge_byte_view_t){(const uint8_t *)text, strlen(text)};
 }
 
+static void plan_mark(const char *name) {
+  const char *path = getenv("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL");
+  if (path != NULL) {
+    FILE *file = fopen(path, "w");
+    if (file == NULL || fputs(name, file) < 0 || fclose(file) != 0) abort();
+  }
+}
+
 static int same_text(type_bridge_byte_view_t value, const char *text) {
   const size_t length = strlen(text);
   return value.data != NULL && value.length == length &&
@@ -480,6 +488,12 @@ int main(void) {
             TYPE_BRIDGE_STATUS_OK &&
         same_text(version, expected_server_version));
 
+  limits.items = UINT64_C(100000);
+  limits.bytes = UINT64_C(67108864);
+  limits.graph_nodes = UINT64_C(1000000);
+  limits.attribute_values = UINT64_C(4000000);
+  limits.collection_members = UINT64_C(1000000);
+  limits.role_players = UINT64_C(1000000);
   CHECK(open_person_create(
       package, "data-ada", "Ada", 38, 7, 40, 0u, 38, "2026-08-12",
       "2026-08-12T09:30:00", "2026-08-12T09:30:00Z", "38.5",
@@ -565,6 +579,10 @@ int main(void) {
   CHECK(manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
 
   for (index = 0u; index < 6u; ++index) {
+    static const char *const names[6] = {"eq", "ne", "gt", "gte", "lt", "lte"};
+    char label[96];
+    snprintf(label, sizeof(label), "manager_field_token_filter.operator.%s", names[index]);
+    plan_mark(label);
     CHECK(operations[index](&manager,
                             manager_person_manager_filter_root(&manager), seven,
                             &filter, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
@@ -580,6 +598,7 @@ int main(void) {
   CHECK(manager_person_manager_filter_score_gt(
             &manager, manager_person_manager_filter_ref(filter), forty,
             &conjunction, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  plan_mark("manager_field_token_filter.conjunction");
   CHECK(filter_all(read, &manager,
                    manager_person_manager_filter_ref(conjunction), &limits,
                    &diagnostics, &mask) &&
@@ -588,6 +607,7 @@ int main(void) {
             TYPE_BRIDGE_STATUS_OK &&
         manager_person_manager_filter_close(&filter) == TYPE_BRIDGE_STATUS_OK);
 
+  plan_mark("manager_field_token_filter.all");
   CHECK(manager_person_manager_read_transaction_all(
             read, &manager, manager_person_manager_filter_root(&manager),
             &limits, NULL, &root_result, &diagnostics) ==
@@ -595,10 +615,12 @@ int main(void) {
         result_mask(root_result, &diagnostics, &mask) && mask == 3u);
   CHECK(manager_person_manager_all_result_close(&root_result) ==
         TYPE_BRIDGE_STATUS_OK);
+  plan_mark("manager_field_token_filter.count");
   CHECK(manager_person_manager_read_transaction_count(
             read, &manager, manager_person_manager_filter_root(&manager),
             &limits, NULL, &count, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
         count == 2u);
+  plan_mark("manager_field_token_filter.exists");
   CHECK(manager_person_manager_read_transaction_exists(
             read, &manager, manager_person_manager_filter_root(&manager),
             &limits, NULL, &exists, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
@@ -607,6 +629,7 @@ int main(void) {
   CHECK(manager_person_manager_filter_identifier_eq(
             &manager, manager_person_manager_filter_root(&manager),
             ada_identifier, &identity, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  plan_mark("manager_field_token_filter.first");
   CHECK(manager_person_manager_read_transaction_first(
             read, &manager, manager_person_manager_filter_ref(identity), &limits,
             NULL, &person, &diagnostics) == TYPE_BRIDGE_STATUS_OK &&
@@ -620,15 +643,18 @@ int main(void) {
         manager_person_manager_filter_close(&identity) ==
             TYPE_BRIDGE_STATUS_OK);
 
+  plan_mark("manager_field_token_filter.sibling_query_count");
   CHECK(sibling_query_count(package, read, &limits, &diagnostics));
   CHECK(manager_person_manager_filter_foozuzubar_eq(
             &manager, manager_person_manager_filter_root(&manager), nine,
             &sibling, &diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  plan_mark("manager_field_token_filter.sibling_filter");
   CHECK(filter_all(read, &manager, manager_person_manager_filter_ref(sibling),
                    &limits, &diagnostics, &mask) &&
         mask == 2u);
   CHECK(manager_person_manager_filter_close(&sibling) == TYPE_BRIDGE_STATUS_OK);
 
+  plan_mark("");
   /*
    * The normalized wrong_field_owner row below is source-bound for C by the
    * strict nominal compile-negative plus the fail-closed hostile ABI probe

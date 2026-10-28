@@ -502,6 +502,12 @@ def _field_token_observation(package: ModuleType) -> dict[str, str]:
     }
 
 
+def _plan_mark(name: str = "") -> None:
+    path = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL")
+    if path is not None:
+        Path(path).write_text(name)
+
+
 def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, object]:
     comparison = package.ProjectedManagerComparison
     operator_outcomes = []
@@ -516,6 +522,7 @@ def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, o
             ("lt", comparison.LT),
             ("lte", comparison.LTE),
         ):
+            _plan_mark(f"manager_field_token_filter.operator.{operator}")
             selected = manager.where(package.Person.foo__bar, member, package.FooBar(7)).all()
             operator_outcomes.append(
                 {"operator": operator, "normalized_keys": _keys(package, selected)}
@@ -527,10 +534,14 @@ def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, o
             comparison.GTE,
             package.FooBar(7),
         ).where(package.Person.score, comparison.GT, package.Score(40))
+        _plan_mark("manager_field_token_filter.conjunction")
         conjunction_keys = _keys(package, conjunction.all())
 
+        _plan_mark("manager_field_token_filter.all")
         all_keys = _keys(package, root.all())
+        _plan_mark("manager_field_token_filter.count")
         count = root.count()
+        _plan_mark("manager_field_token_filter.exists")
         exists = root.exists()
         if all_keys != ["data-ada", "data-dana"] or count != 2 or exists is not True:
             raise ProducerError("terminal_mismatch", "empty manager terminals drifted")
@@ -540,6 +551,7 @@ def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, o
             comparison.EQ,
             package.Identifier("data-ada"),
         )
+        _plan_mark("manager_field_token_filter.first")
         first = identity.first()
         if type(first) is not package.Person or first.identifier.value != "data-ada":
             raise ProducerError("terminal_mismatch", "strict first returned the wrong person")
@@ -549,6 +561,7 @@ def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, o
         sibling_query = session.query(person).where(
             person.field(package.Person.identifier).eq(package.Identifier("data-ada"))
         )
+        _plan_mark("manager_field_token_filter.sibling_query_count")
         if asyncio.run(sibling_query.count_by(person)) != 1:
             raise ProducerError(
                 "borrowed_read_reuse", "sibling query sibling query did not remain usable"
@@ -558,9 +571,11 @@ def _run_manager_journey(package: ModuleType, database: Database) -> dict[str, o
             comparison.EQ,
             package.FooBar(9),
         )
+        _plan_mark("manager_field_token_filter.sibling_filter")
         if _keys(package, sibling.all()) != ["data-dana"]:
             raise ProducerError("borrowed_read_reuse", "sibling manager filter was not reusable")
 
+        _plan_mark()
         return {
             "model": "person",
             "field_token": _field_token_observation(package),
