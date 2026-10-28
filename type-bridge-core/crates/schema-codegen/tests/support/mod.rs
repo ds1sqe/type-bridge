@@ -711,6 +711,15 @@ pub fn runtime_include() -> PathBuf {
 }
 
 pub fn native_library() -> PathBuf {
+    if let Some(path) = env::var_os("TYPE_BRIDGE_C_SHARED_LIBRARY") {
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "TYPE_BRIDGE_C_SHARED_LIBRARY is absent: {}",
+            path.display()
+        );
+        return path;
+    }
     let executable = env::current_exe().expect("current test executable is available");
     let filename = format!(
         "{}type_bridge_c{}",
@@ -726,7 +735,7 @@ pub fn native_library() -> PathBuf {
             ]
         })
         .find(|candidate| candidate.is_file())
-        .expect("build type-bridge-c's shared library before the C live producer")
+        .expect("set TYPE_BRIDGE_C_SHARED_LIBRARY to type-bridge-c's built shared library")
 }
 
 pub fn base64(bytes: &[u8]) -> String {

@@ -212,3 +212,27 @@ def test_step_timeout_terminates_and_reaps_a_descendant(tmp_path: Path) -> None:
                 with suppress(ProcessLookupError):
                     os.killpg(group, signal.SIGKILL)
         process.wait(timeout=60)
+
+
+def test_shared_library_uses_cargo_target_directory(tmp_path: Path) -> None:
+    source = TEST_SH.read_text()
+    start = source.index('target_directory="$(cargo metadata')
+    setup = source[start : source.index('run_step "cargo test --all-targets"', start)]
+    target = tmp_path / "target with spaces"
+    probe = "\n".join(
+        [
+            'cargo() { printf \'{"target_directory":"%s"}\\n\' "$TEST_TARGET"; }',
+            'uname() { printf "Linux\\n"; }',
+            'run_step() { test "$TYPE_BRIDGE_C_SHARED_LIBRARY" = "$TEST_TARGET/debug/libtype_bridge_c.so"; }',
+            setup,
+            'printf "%s" "$TYPE_BRIDGE_C_SHARED_LIBRARY"',
+        ]
+    )
+    result = subprocess.run(
+        ["bash", "-eu", "-c", probe],
+        env={**os.environ, "TEST_TARGET": str(target)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout == str(target / "debug/libtype_bridge_c.so")

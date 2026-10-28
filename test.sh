@@ -541,6 +541,18 @@ fi
 # ── Offline tiers (always) ───────────────────────────────────────────────────
 printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+target_directory="$(cargo metadata --no-deps --format-version 1 \
+    --manifest-path type-bridge-core/Cargo.toml \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')"
+case "$(uname -s)" in
+    Darwin) c_shared_filename=libtype_bridge_c.dylib ;;
+    MINGW*|MSYS*|CYGWIN*) c_shared_filename=type_bridge_c.dll ;;
+    *) c_shared_filename=libtype_bridge_c.so ;;
+esac
+export TYPE_BRIDGE_C_SHARED_LIBRARY="$target_directory/debug/$c_shared_filename"
+run_step "build the C ABI shared library" \
+    cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
+    -p type-bridge-c --lib
 run_step "cargo test --all-targets" \
     cargo test --manifest-path type-bridge-core/Cargo.toml --all-targets
 
@@ -574,9 +586,6 @@ run_step "C typed-query, diagnostic, function, remote ABI, and parity corpus" \
     --test query_function_abi \
     --test query_remote_abi \
     --test typed_query_corpus
-run_step "build the C ABI shared library" \
-    cargo build --locked --manifest-path type-bridge-core/Cargo.toml \
-    -p type-bridge-c --lib
 run_step "C schema-package ABI and standalone consumer" \
     env TYPE_BRIDGE_C_REQUIRE_SHARED_CONSUMER=1 \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \

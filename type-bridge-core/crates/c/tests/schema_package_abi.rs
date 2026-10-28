@@ -690,7 +690,8 @@ fn native_library() -> Option<PathBuf> {
         let path = PathBuf::from(path);
         assert!(
             path.is_file(),
-            "explicit TypeBridge C shared library is absent"
+            "TYPE_BRIDGE_C_SHARED_LIBRARY is absent: {}",
+            path.display()
         );
         return Some(path);
     }
@@ -719,7 +720,7 @@ fn native_library_or_skip(test_name: &str) -> Option<PathBuf> {
 
     Some(native_library().unwrap_or_else(|| {
         panic!(
-            "{test_name} requires the TypeBridge C shared library; run `cargo build -p type-bridge-c --lib` before the test"
+            "{test_name} requires TYPE_BRIDGE_C_SHARED_LIBRARY pointing to the built shared library"
         )
     }))
 }
@@ -6557,7 +6558,7 @@ impl Drop for IsolatedLiveDatabase<'_> {
 fn live_c17_consumer_exercises_profile_server_transaction_lifecycle() {
     let profile = sdk_profile_matrix::requested("queries");
     let native_library = native_library().unwrap_or_else(|| {
-        panic!("build the TypeBridge C shared library before running the exact C runtime live test")
+        panic!("set TYPE_BRIDGE_C_SHARED_LIBRARY to the built library before the exact C runtime live test")
     });
     let compiler = ["gcc", "clang"]
         .into_iter()
@@ -6895,7 +6896,9 @@ int main(void) {
 fn live_c17_consumer_stages_and_commits_contract_v3_plans() {
     let profile = sdk_profile_matrix::requested("queries");
     let native_library = native_library().unwrap_or_else(|| {
-        panic!("build the TypeBridge C shared library before running the staged C live test")
+        panic!(
+            "set TYPE_BRIDGE_C_SHARED_LIBRARY to the built library before the staged C live test"
+        )
     });
     let compiler = ["gcc", "clang"]
         .into_iter()
@@ -7357,7 +7360,9 @@ const PURCHASE_RACE_ROUNDS: usize = 40;
 fn live_c17_consumer_builds_stages_and_races_the_purchase() {
     let profile = sdk_profile_matrix::requested("queries");
     let native_library = native_library().unwrap_or_else(|| {
-        panic!("build the TypeBridge C shared library before running the builder C live test")
+        panic!(
+            "set TYPE_BRIDGE_C_SHARED_LIBRARY to the built library before the builder C live test"
+        )
     });
     let compiler = ["gcc", "clang"]
         .into_iter()
