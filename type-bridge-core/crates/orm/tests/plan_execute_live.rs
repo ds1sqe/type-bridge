@@ -1,5 +1,7 @@
 //! Opt-in proof that `query-plan/v3` programs execute staged against TypeDB 3.13.6.
 #![cfg(feature = "typedb")]
+#[path = "support/live_database.rs"]
+mod live_database;
 #[path = "support/plan_v3_race.rs"]
 mod race;
 
@@ -28,14 +30,7 @@ fn rows(answer: &QueryResult) -> usize {
 /// when the live address is unset or the server cannot carry `given` plans.
 async fn live_database(stem: &str) -> Option<Database> {
     let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").ok()?;
-    let name = format!(
-        "tb270_04b_{stem}_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
+    let name = live_database::name(stem);
     let db = Database::connect_with_options(
         &address,
         &name,
@@ -68,7 +63,7 @@ async fn live_database(stem: &str) -> Option<Database> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn one_query_purchase_and_write_plans_resolve_at_commit() {
-    let Some(db) = live_database("tb270_09_plans").await else {
+    let Some(db) = live_database("plans").await else {
         return;
     };
     db.execute_raw(race::SCHEMA_TYPEQL, TxType::Schema)
@@ -182,7 +177,7 @@ async fn registry_managers_and_nested_iids_match_legacy_results() {
     use std::sync::Arc;
     use type_bridge_orm::_dynamic::{DynamicComparisonOp, DynamicExpr, DynamicRolePlayerInput};
     use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
-    let Some(db) = live_database("tb270_04b_managers").await else {
+    let Some(db) = live_database("managers").await else {
         return;
     };
     db.execute_raw(PARTY_SCHEMA_TYPEQL, TxType::Schema)
@@ -592,7 +587,7 @@ async fn registry_exact_updates_clear_optional_entity_and_relation_fields() {
     let Ok(address) = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS") else {
         return;
     };
-    let name = format!("tb270_04c_clear_{}", std::process::id());
+    let name = live_database::name("clear");
     let version = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_VERSION").unwrap();
     let db = Database::connect_with_options(
         &address,
@@ -1636,7 +1631,7 @@ async fn native_batches_keep_key_identity_replace_players_and_collect_without_ca
         ProjectedBatch, ProjectedBatchExecutor, ProjectedBatchOperation as Op,
         ProjectedBatchResult, ProjectedBatchRow as Row, ProjectedThing,
     };
-    let Some(db) = live_database("tb270_04b_native_batches").await else {
+    let Some(db) = live_database("native_batches").await else {
         return;
     };
     db.execute_raw("define attribute identifier, value string; attribute tag, value string; attribute score, value integer; entity person, owns identifier @key, owns tag @card(0..), owns score @card(0..), plays pair:left, plays pair:right; relation pair, owns identifier @key, relates left @card(0..4), relates right @card(0..4);", TxType::Schema).await.unwrap();
@@ -1981,7 +1976,7 @@ async fn assert_schema_less_typed_read_refuses(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn playerless_relations_do_not_survive_commit() {
-    let Some(db) = live_database("tb270_04b_playerless").await else {
+    let Some(db) = live_database("playerless").await else {
         return;
     };
     db.execute_raw(

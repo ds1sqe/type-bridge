@@ -201,18 +201,18 @@ async fn mismatching_bulk_documents_roll_back_direct_and_signed_proxy_writes() {
         let state = Arc::new(Mutex::new(State::default()));
         let database = Database::with_backend(
             Box::new(Backend(Arc::clone(&state))),
-            "tb270_09_bulk_validation",
+            "type_bridge_bulk_validation",
         );
         if proxy_transport {
             let proxy = staged_live::proxy_with_database(
-                "tb270_09_bulk_validation",
+                "type_bridge_bulk_validation",
                 LivePolicy {
                     vouch: true,
                     ..Default::default()
                 },
                 false,
                 race::schema(),
-                "tb270_09_bulk_validation",
+                "type_bridge_bulk_validation",
                 database,
             )
             .await;
@@ -1516,11 +1516,7 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
     use tracing_subscriber::layer::SubscriberExt;
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_orm::session::backend::AnswerLimits;
-    let name = format!(
-        "tb270_04a_strings_{}_{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = staged_live::live_database::name("strings");
     eprintln!("TB270_RUNNER pid={} database={name}", std::process::id());
     let db = staged_live::connect(&name).await;
     db.create_database().await.unwrap();
@@ -1662,11 +1658,7 @@ async fn string_comparator_plans_and_semantic_limits_match_direct_and_staged() {
 async fn one_shot_read_stack_matches_borrowed_and_staged_answers() {
     use type_bridge_orm::session::backend::AnswerCancellation;
     use type_bridge_orm::{QueryExecutionDeadline, QueryExecutionResourceLimits};
-    let name = format!(
-        "tb270_04a_stack_{}_{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = staged_live::live_database::name("stack");
     let db = staged_live::connect(&name).await;
     db.create_database().await.unwrap();
     db.execute_raw(
@@ -1752,11 +1744,7 @@ async fn explicitly_raised_string_limits_round_trip_large_values_direct_and_stag
     use type_bridge_contract::migration_assertion::ValueComparator;
     use type_bridge_orm::session::staged::PlanAnswer;
     println!("WIDE_RUNNER pid={}", std::process::id());
-    let name = format!(
-        "tb270_04a_wide_{}_{}",
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = staged_live::live_database::name("wide");
     let db = staged_live::connect(&name).await;
     db.create_database().await.unwrap();
     db.execute_raw(

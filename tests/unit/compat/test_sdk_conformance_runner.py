@@ -128,8 +128,8 @@ def test_query_and_model_database_names_can_use_the_assigned_lane_prefix() -> No
     for suite in ("queries", "models"):
         for binding in RUNNER.BINDINGS:
             assert RUNNER.database_name(
-                {"TB_SDK_DATABASE_PREFIX": "tb270_04c_"}, suite, binding
-            ).startswith("tb270_04c_")
+                {"TB_SDK_DATABASE_PREFIX": "runner_test_"}, suite, binding
+            ).startswith("runner_test_")
 
 
 def test_assembly_runs_each_real_composer_and_one_fan_in(

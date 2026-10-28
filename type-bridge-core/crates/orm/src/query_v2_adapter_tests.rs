@@ -2106,7 +2106,7 @@ async fn native_typed_read_stacks_match_live_rows_pages_counts_and_subtype_roles
     use crate::session::database::Database;
     use crate::session::real_driver::ConnectOptions;
     println!("NATIVE_READ_RUNNER pid={}", std::process::id());
-    let database_name = format!("tb270_04a_native_{}", std::process::id());
+    let database_name = live_database::name("native");
     let options = ConnectOptions {
         http_port: std::env::var("TYPEDB_HTTP_PORT").unwrap().parse().unwrap(),
         ..Default::default()
@@ -2750,3 +2750,6 @@ fn generic_model_partition_refuses_exhausted_binding_budget_before_io() {
         "plan_returning_models_binding_limit"
     );
 }
+
+#[path = "../tests/support/live_database.rs"]
+mod live_database;

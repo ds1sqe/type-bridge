@@ -428,3 +428,6 @@ pub async fn state(db: &Database) -> (usize, usize, usize, usize) {
 pub async fn drop_database(db: Database) {
     db.delete_database().await.expect("database deleted");
 }
+
+#[path = "../../../orm/tests/support/live_database.rs"]
+pub mod live_database;
