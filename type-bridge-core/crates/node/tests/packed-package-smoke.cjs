@@ -29,8 +29,8 @@ function verifyInstalledPackage(installedRoot) {
   const typeBridge = requirePackage("@type-bridge/node");
   for (const name of [
     "QueryV2Authority",
-    "RustDatabase",
-    "RustTransactionContext",
+    "Database",
+    "TransactionContext",
     "TypedQuery",
     "ensureDatabase",
     "long",

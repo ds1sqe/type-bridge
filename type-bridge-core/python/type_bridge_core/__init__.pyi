@@ -95,7 +95,7 @@ class QueryV2Authority:
     def with_query_limits(self, query_limits: QueryLimits) -> QueryV2Authority: ...
     @staticmethod
     def query_only(
-        database: PyRustDatabase,
+        database: PyDatabase,
         declared_schema: bytes,
         scope: str,
         profile: str,
@@ -413,7 +413,7 @@ def query_v2_authority_from_schema_authority(
     semantic_fingerprint: bytes,
 ) -> QueryV2Authority: ...
 def query_v2_query_only_authority(
-    database: PyRustDatabase,
+    database: PyDatabase,
     declared_schema: bytes,
     scope: str,
     profile: str,
@@ -422,7 +422,7 @@ def query_v2_query_only_authority(
     ...
 
 def query_v2_execute_local(
-    database: PyRustDatabase,
+    database: PyDatabase,
     authority: QueryV2Authority,
     plan: bytes,
     invocation_json: str,
@@ -527,7 +527,7 @@ class _CustomRootCaSnapshot:
     def path(self) -> PathLike[str]: ...
     def cleanup(self) -> None: ...
 
-class PyRustDatabase:
+class PyDatabase:
     """Rust-backed TypeDB database connection."""
 
     @staticmethod
@@ -540,7 +540,7 @@ class PyRustDatabase:
         server_version: str | None = ...,
         tls: bool | None = ...,
         tls_root_ca: str | PathLike[str] | None = ...,
-    ) -> PyRustDatabase: ...
+    ) -> PyDatabase: ...
     def close(self) -> None: ...
     def database_exists(self) -> bool: ...
     def database_exists_controlled(
@@ -582,7 +582,7 @@ class PyRustDatabase:
         cancellation: MigrationCancellation | None = ...,
     ) -> PyManagedDatabaseDeletionPlan: ...
     def server_version(self) -> str | None: ...
-    def transaction(self, transaction_type: str = "read") -> PyRustTransactionContext: ...
+    def transaction(self, transaction_type: str = "read") -> PyTransactionContext: ...
     def staged_transaction(
         self,
         kind: Literal["read", "write", "schema"] | None = None,
@@ -618,7 +618,7 @@ class PyManagedDatabaseDeletionPlan:
     ]: ...
     def close(self) -> None: ...
 
-class PyRustTransactionContext:
+class PyTransactionContext:
     """Rust-backed TypeDB transaction context."""
 
     def __getattr__(self, name: str) -> Any: ...
@@ -854,7 +854,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_fetch_rows_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         order: list[MatchOrderHandle],
         offset: int,
         limit: int,
@@ -862,7 +862,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_fetch_rows_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         order: list[MatchOrderHandle],
         offset: int,
         limit: int,
@@ -878,7 +878,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_page_by_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         order: list[MatchOrderHandle],
         offset: int,
@@ -887,7 +887,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_page_by_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         order: list[MatchOrderHandle],
         offset: int,
@@ -904,19 +904,19 @@ class MatchQueryHandle:
         include_total: bool,
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_owned(
-        self, database: PyRustDatabase, root: MatchBindingHandle
+        self, database: PyDatabase, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_borrowed(
-        self, transaction: PyRustTransactionContext, root: MatchBindingHandle
+        self, transaction: PyTransactionContext, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_count_by_proxy(
         self, connection: ProxyConnection, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_owned(
-        self, database: PyRustDatabase, root: MatchBindingHandle
+        self, database: PyDatabase, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_borrowed(
-        self, transaction: PyRustTransactionContext, root: MatchBindingHandle
+        self, transaction: PyTransactionContext, root: MatchBindingHandle
     ) -> ValidatedMatchResultHandle: ...
     def execute_exists_by_proxy(
         self, connection: ProxyConnection, root: MatchBindingHandle
@@ -940,7 +940,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_reduce_by_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         group: MatchBindingHandle | None,
         reducers: Sequence[str],
@@ -948,7 +948,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_reduce_by_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         group: MatchBindingHandle | None,
         reducers: Sequence[str],
@@ -971,7 +971,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_reduce_by_field_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         group: MatchFieldHandle,
         reducers: Sequence[str],
@@ -979,7 +979,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_reduce_by_field_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         group: MatchFieldHandle,
         reducers: Sequence[str],
@@ -1002,7 +1002,7 @@ class MatchQueryHandle:
     ) -> str: ...
     def execute_reduce_by_fields_owned(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         root: MatchBindingHandle,
         groups: Sequence[MatchFieldHandle],
         reducers: Sequence[str],
@@ -1010,7 +1010,7 @@ class MatchQueryHandle:
     ) -> ValidatedMatchResultHandle: ...
     def execute_reduce_by_fields_borrowed(
         self,
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
         root: MatchBindingHandle,
         groups: Sequence[MatchFieldHandle],
         reducers: Sequence[str],
@@ -1180,16 +1180,16 @@ class PyRuntimeProjection:
         connection_limits: QueryExecutionResourceLimits | None = ...,
         answer_limits: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
-    ) -> PyRustDatabase: ...
+    ) -> PyDatabase: ...
     def manager_for_database(
         self,
         model: type[object],
-        database: PyRustDatabase,
+        database: PyDatabase,
     ) -> PyProjectedModelManager: ...
     def manager_for_transaction(
         self,
         model: type[object],
-        transaction: PyRustTransactionContext,
+        transaction: PyTransactionContext,
     ) -> PyProjectedModelManager: ...
     def validate_attribute_value(
         self,
@@ -1332,7 +1332,7 @@ class ProxyConnection:
 class Transaction:
     """Staged transaction: stage plans, then commit them as one transaction.
 
-    Opened by ``RustDatabase.staged_transaction`` (direct) or
+    Opened by ``PyDatabase.staged_transaction`` (direct) or
     ``ProxyConnection.transaction`` (one signed v3 exchange per commit).
     """
 
@@ -1655,10 +1655,10 @@ class MigrationExecutionResources:
 class MigrationPlan:
     @property
     def execution_authorized(self) -> bool: ...
-    def execute(self, database: PyRustDatabase, holder: str) -> MigrationExecutionReport: ...
+    def execute(self, database: PyDatabase, holder: str) -> MigrationExecutionReport: ...
     def execute_controlled(
         self,
-        database: PyRustDatabase,
+        database: PyDatabase,
         holder: str,
         *,
         timeout_milliseconds: int | None = ...,
@@ -1730,8 +1730,8 @@ class MigrationCatalog:
     def is_empty(self) -> bool: ...
     def heads(self) -> list[MigrationIdentity]: ...
     def entry(self, index: int) -> MigrationHistoryEntry | None: ...
-    def verify(self, database: PyRustDatabase) -> MigrationVerificationReport: ...
-    def applied_migrations(self, database: PyRustDatabase) -> list[MigrationIdentity]: ...
+    def verify(self, database: PyDatabase) -> MigrationVerificationReport: ...
+    def applied_migrations(self, database: PyDatabase) -> list[MigrationIdentity]: ...
     def preview_apply(
         self,
         applied: list[MigrationIdentity],

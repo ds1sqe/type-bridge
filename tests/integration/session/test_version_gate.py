@@ -28,7 +28,7 @@ class TestVersionGateLivePositive:
     def test_connect_passes_version_gate(self, clean_db: Database):
         """Database.connect() succeeds against the live server — gate green."""
         # clean_db fixture already called connect(); assert Rust handle is up.
-        assert getattr(clean_db, "_rust_backend_database", None) is not None
+        assert getattr(clean_db, "_native_database", None) is not None
 
     def test_connect_minimal_round_trip(self, clean_db: Database):
         """Gate passes and a trivial schema query returns a non-error response."""
@@ -198,7 +198,7 @@ class TestVersionGateExplicitHttpPort:
             http_port=8000,
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
 
@@ -221,7 +221,7 @@ class TestVersionGatePinnedServerVersion:
             server_version=detected_server,
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
     def test_http_probe_failure_falls_back_to_grpc(self, test_database):
@@ -234,7 +234,7 @@ class TestVersionGatePinnedServerVersion:
             http_port=1,
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
 
@@ -292,7 +292,7 @@ class TestGateNonDefaultHttpPort:
             http_port=int(os.environ["TYPEDB_PROOF_HTTP_PORT"]),
         )
         db.connect()
-        assert getattr(db, "_rust_backend_database", None) is not None
+        assert getattr(db, "_native_database", None) is not None
         db.close()
 
 

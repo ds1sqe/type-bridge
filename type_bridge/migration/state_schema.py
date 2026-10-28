@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from type_bridge import _rust_runtime
+from type_bridge import _native
 
 
 @dataclass(frozen=True)
@@ -25,7 +25,7 @@ class MigrationStateSchema:
 
 def migration_state_schema() -> dict[str, Any]:
     """Return the full canonical migration-state schema descriptor from Rust."""
-    return _rust_runtime.migration_state_schema()
+    return _native.migration_state_schema()
 
 
 def _label_projection(schema: dict[str, Any]) -> MigrationStateSchema:
@@ -59,4 +59,4 @@ def is_migration_state_type(
 
     Role labels must use the qualified ``relation:role`` form.
     """
-    return _rust_runtime.is_migration_state_type(kind, label)
+    return _native.is_migration_state_type(kind, label)

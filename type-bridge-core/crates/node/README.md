@@ -43,10 +43,10 @@ Linux musl and processor architectures outside this list are not prebuilt.
 ## Public Surface
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 import { Age, Person, PersonId } from "./generated/index.js";
 
-const db = RustDatabase.connect("127.0.0.1:1729", "example", {
+const db = Database.connect("127.0.0.1:1729", "example", {
   httpPort: 8000,
   serverVersion: "3.11.5",
 });
@@ -72,7 +72,7 @@ that contradicts `tlsEnabled`. TLS is opt-in through `tlsEnabled`; with no
 bundle requires both options explicitly:
 
 ```ts
-const secureDb = RustDatabase.connect("db.example.com:1729", "example", {
+const secureDb = Database.connect("db.example.com:1729", "example", {
   tlsEnabled: true,
   tlsRootCa: "/run/secrets/type-db-root.pem",
 });
@@ -108,9 +108,9 @@ model descriptors:
 
 ```ts
 import { Person, QuerySession } from "./generated/app-models/index.js";
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "example");
+const db = Database.connect("localhost:1729", "example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 
@@ -121,7 +121,7 @@ const page = await session.query(person).pageBy(person, {
 });
 ```
 
-The session runs on a direct `RustDatabase` or transaction, or on a proxy
+The session runs on a direct `Database` or transaction, or on a proxy
 connection, with the same queries and results. Composition is synchronous;
 every terminal returns a `Promise`. Variables, generated field and role tokens,
 predicates, orders, and queries retain opaque native handles. The same immutable `Query` supports exact or

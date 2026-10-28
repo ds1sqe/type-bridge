@@ -1,8 +1,8 @@
 import type {
   NativeRustDatabase,
   NativeRustTransactionContext,
-  RustDatabase,
-  RustTransactionContext,
+  Database,
+  TransactionContext,
 } from "./index.js";
 
 const databaseHandles = new WeakMap<object, NativeRustDatabase>();
@@ -11,7 +11,7 @@ const transactionHandles = new WeakMap<object, NativeRustTransactionContext>();
 /** @internal Reject structurally forged execution connections. */
 export function isRegisteredRustConnection(
   connection: unknown,
-): connection is RustDatabase | RustTransactionContext {
+): connection is Database | TransactionContext {
   if (
     connection === null ||
     (typeof connection !== "object" && typeof connection !== "function")
@@ -23,7 +23,7 @@ export function isRegisteredRustConnection(
 
 /** @internal Retain an opaque native database handle. */
 export function registerRustDatabaseHandle(
-  database: RustDatabase,
+  database: Database,
   native: NativeRustDatabase,
 ): void {
   databaseHandles.set(database, native);
@@ -31,7 +31,7 @@ export function registerRustDatabaseHandle(
 
 /** @internal Retain an opaque borrowed transaction handle. */
 export function registerRustTransactionHandle(
-  transaction: RustTransactionContext,
+  transaction: TransactionContext,
   native: NativeRustTransactionContext,
 ): void {
   transactionHandles.set(transaction, native);
@@ -39,14 +39,14 @@ export function registerRustTransactionHandle(
 
 /** @internal Resolve database ownership for generated execution. */
 export function rustDatabaseHandle(
-  connection: RustDatabase | RustTransactionContext,
+  connection: Database | TransactionContext,
 ): NativeRustDatabase | undefined {
   return databaseHandles.get(connection);
 }
 
 /** @internal Resolve borrowed transaction ownership for generated execution. */
 export function rustTransactionHandle(
-  connection: RustDatabase | RustTransactionContext,
+  connection: Database | TransactionContext,
 ): NativeRustTransactionContext | undefined {
   return transactionHandles.get(connection);
 }

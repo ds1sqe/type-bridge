@@ -705,7 +705,7 @@ export function decodePlan<R>(plan: Plan<R>, answerJson: string, projection?: Na
 
 /**
  * A validated `query-plan/v3` program. Stage it on a
- * {@link StagedTransaction} from `RustDatabase.stagedTransaction()` or
+ * {@link StagedTransaction} from `Database.stagedTransaction()` or
  * `ProxyConnection.transaction()`.
  */
 export interface PlanExplanation {

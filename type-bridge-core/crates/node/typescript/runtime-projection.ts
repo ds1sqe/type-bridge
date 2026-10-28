@@ -3,8 +3,8 @@ import {
   QueryV2Authority,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
-  type RustDatabase,
-  type RustTransactionContext,
+  type Database,
+  type TransactionContext,
 } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
@@ -64,7 +64,7 @@ export type RuntimeProjectionReduction =
 type RuntimeProjectionRemoteContext = ReturnType<NativeModule["queryV2RemoteModelContextWithResources"]>;
 type RuntimeProjectionRemotePending = ReturnType<NativeModule["queryV2PrepareRemoteModelRows"]>;
 
-export type RuntimeProjectionConnection = RustDatabase | RustTransactionContext;
+export type RuntimeProjectionConnection = Database | TransactionContext;
 
 export interface RuntimeProjectionBinding {
   readonly typeKey: string;
@@ -570,7 +570,7 @@ export class InstalledRuntimeProjection {
     connectionLimits?: QueryExecutionResourceLimits;
     answerLimits?: QueryExecutionResourceLimits;
     cancellation?: QueryCancellation;
-  }): RustDatabase {
+  }): Database {
     return createRustDatabaseFromNative(this.#native.connectDirect(
       input.endpoint,
       input.database,
@@ -588,7 +588,7 @@ export class InstalledRuntimeProjection {
   /** @internal Bind one generated token without exposing its native handle. */
   manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager {
     if (!isRegisteredRustConnection(connection)) {
-      throw new TypeError("projected manager requires a registered RustDatabase or RustTransactionContext");
+      throw new TypeError("projected manager requires a registered Database or TransactionContext");
     }
     const database = rustDatabaseHandle(connection);
     if (database !== undefined) {
@@ -798,7 +798,7 @@ export class InstalledRuntimeProjection {
   /** @internal Reject structural or foreign connection lookalikes. */
   assertConnection(connection: RuntimeProjectionConnection): void {
     if (!isRegisteredRustConnection(connection)) {
-      throw new TypeError("generated query requires a registered RustDatabase or RustTransactionContext");
+      throw new TypeError("generated query requires a registered Database or TransactionContext");
     }
   }
 
@@ -820,7 +820,7 @@ export class InstalledRuntimeProjection {
   }
 
   /**
-   * @internal Bind one registered `RustDatabase` (owned) or transaction
+   * @internal Bind one registered `Database` (owned) or transaction
    * (borrowed) as a terminal executor. Terminals run on the provider runtime
    * and resolve without blocking the event loop.
    */

@@ -18,7 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from type_bridge_core import PyRustDatabase
+from type_bridge_core import PyDatabase
 
 from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected
 
@@ -67,7 +67,7 @@ def _export_declared(directory: Path) -> bytes:
 @pytest.fixture(scope="module")
 def base(tmp_path_factory: pytest.TempPathFactory) -> Target:
     assert ADDRESS is not None and HTTP_PORT is not None
-    probe = PyRustDatabase.connect(ADDRESS, "tb_race_probe", http_port=int(HTTP_PORT))
+    probe = PyDatabase.connect(ADDRESS, "tb_race_probe", http_port=int(HTTP_PORT))
     try:
         version = probe.server_version() or ""
     finally:

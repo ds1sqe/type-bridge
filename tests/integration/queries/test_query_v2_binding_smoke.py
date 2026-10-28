@@ -204,7 +204,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
 
     if tls_enabled:
         assert tls_root_ca is not None
-        rust_db = core.PyRustDatabase.connect(
+        rust_db = core.PyDatabase.connect(
             address,
             database,
             username,
@@ -214,7 +214,7 @@ def test_prepared_plan_executes_locally_and_remotely() -> None:
             tls_root_ca=tls_root_ca,
         )
     else:
-        rust_db = core.PyRustDatabase.connect(
+        rust_db = core.PyDatabase.connect(
             address, database, username, password, http_port=http_port
         )
     server_version = rust_db.server_version()

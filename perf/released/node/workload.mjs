@@ -144,12 +144,15 @@ async function main() {
   const models = await import(pathToFileURL(path.join(options.models, "dist", "index.js")).href);
   const require = createRequire(path.join(options.models, "package.json"));
   const nodePackage = require.resolve("@type-bridge/node");
-  const { RustDatabase } = require(nodePackage);
+  const mod = require(nodePackage);
+  // The same workload serves 2.x (RustDatabase) and 3.0 (Database).
+  const DatabaseClass = mod.Database ?? mod.RustDatabase;
+  if (!DatabaseClass) throw new Error("Node SDK exports no supported database constructor");
   const manifest = JSON.parse(
     fs.readFileSync(path.join(nodePackage.split(`${path.sep}dist${path.sep}`)[0], "package.json")),
   );
   const env = process.env;
-  const db = RustDatabase.connect(env.TYPEDB_ADDRESS || "localhost:1729", options.database, {
+  const db = DatabaseClass.connect(env.TYPEDB_ADDRESS || "localhost:1729", options.database, {
     username: env.TYPEDB_USERNAME || "admin",
     password: env.TYPEDB_PASSWORD || "password",
     httpPort: Number(env.TYPEDB_HTTP_PORT || "8000"),

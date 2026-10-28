@@ -8,7 +8,7 @@ const packageFacade = requirePackage(packageRoot) as typeof import(
   "../../../typescript/public.js"
 );
 
-export const { QueryV2Authority, QueryV2Error, RustDatabase, ensureDatabase } = packageFacade;
+export const { QueryV2Authority, QueryV2Error, Database, ensureDatabase } = packageFacade;
 
 export const TYPEDB_ADDRESS =
   process.env.TYPEDB_ADDRESS ?? "localhost:1730";
@@ -35,7 +35,7 @@ function connectionOptions() {
 export function connectIntegration() {
   const options = connectionOptions();
   ensureDatabase(TYPEDB_ADDRESS, INTG_DATABASE, options);
-  return RustDatabase.connect(TYPEDB_ADDRESS, INTG_DATABASE, options);
+  return Database.connect(TYPEDB_ADDRESS, INTG_DATABASE, options);
 }
 
 export function defineSchema(

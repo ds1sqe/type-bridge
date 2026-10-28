@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
-import { QueryV2Authority, RustDatabase } from "./common/index.js";
+import { QueryV2Authority, Database } from "./common/index.js";
 import type { PlanAnswer, StagedTransaction } from "../../typescript/index.js";
 import { createRequire } from "node:module";
 
@@ -78,7 +78,7 @@ async function failureCode(commit: Promise<void>): Promise<string> {
 
 test("a staged purchase over the proxy answers exactly as direct", { skip }, async () => {
   const live = fixture();
-  const db = RustDatabase.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", live.direct_database, {
+  const db = Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", live.direct_database, {
     httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
   });
   const direct = db.stagedTransaction();

@@ -5,7 +5,9 @@ was released on September 8, 2026.
 
 This page describes the historical 2.1 upgrade. Archive adoption must be
 completed with TypeBridge 2.3.x before upgrading to 3.0; 3.0 removes that
-command. See the current [migration guide](migrations.md).
+command. See the current [migration guide](migrations.md). The development
+guide formerly at `development/rust-backend.md` now lives at
+[Core engine](../development/core-engine.md).
 
 TypeBridge 2.1 makes Split YAML and generated bindings the only active schema
 and model authoring path. It preserves application operations through generated

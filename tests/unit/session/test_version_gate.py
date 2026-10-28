@@ -707,8 +707,8 @@ class TestConnectHttpPortForwarding:
         assert recorded == [9123], f"Expected http_port=9123 forwarded, got {recorded}"
 
     def test_database_embedded_gate_forwards_http_port(self, monkeypatch: pytest.MonkeyPatch):
-        """http_port stored on Database is forwarded to PyRustDatabase.connect."""
-        import type_bridge._rust_runtime as rust_mod
+        """http_port stored on Database is forwarded to PyDatabase.connect."""
+        import type_bridge._native as rust_mod
         import type_bridge.session as session_mod
 
         recorded: list[int] = []
@@ -719,10 +719,10 @@ class TestConnectHttpPortForwarding:
                 recorded.append(http_port)
                 return _CurrentRustDatabaseHandle()
 
-        # Patch rust_core() so PyRustDatabase.connect records the port.
+        # Patch core_module() so PyDatabase.connect records the port.
         fake_core = MagicMock()
-        fake_core.PyRustDatabase = _FakeRustDB
-        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+        fake_core.PyDatabase = _FakeRustDB
+        monkeypatch.setattr(rust_mod, "core_module", lambda: fake_core)
 
         db = session_mod.Database(address="localhost:1729", database="test_db", http_port=9123)
         db.connect()
@@ -730,8 +730,8 @@ class TestConnectHttpPortForwarding:
         assert recorded == [9123], f"Expected http_port=9123 forwarded to Rust, got {recorded}"
 
     def test_database_embedded_gate_forwards_server_version(self, monkeypatch: pytest.MonkeyPatch):
-        """server_version stored on Database is forwarded to PyRustDatabase.connect."""
-        import type_bridge._rust_runtime as rust_mod
+        """server_version stored on Database is forwarded to PyDatabase.connect."""
+        import type_bridge._native as rust_mod
         import type_bridge.session as session_mod
 
         recorded: list[tuple[int, str | None]] = []
@@ -750,8 +750,8 @@ class TestConnectHttpPortForwarding:
                 return _CurrentRustDatabaseHandle()
 
         fake_core = MagicMock()
-        fake_core.PyRustDatabase = _FakeRustDB
-        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+        fake_core.PyDatabase = _FakeRustDB
+        monkeypatch.setattr(rust_mod, "core_module", lambda: fake_core)
 
         db = session_mod.Database(
             address="localhost:1729",
@@ -769,7 +769,7 @@ class TestConnectProbeUnreachable:
 
     def test_probe_version_error_propagates(self, monkeypatch: pytest.MonkeyPatch):
         """VersionError from server_version propagates out of connect uncaught."""
-        import type_bridge._rust_runtime as rust_mod
+        import type_bridge._native as rust_mod
         from type_bridge.session import Database
 
         class _FailRustDB:
@@ -778,8 +778,8 @@ class TestConnectProbeUnreachable:
                 raise type_bridge_core.VersionError("probe unreachable")
 
         fake_core = MagicMock()
-        fake_core.PyRustDatabase = _FailRustDB
-        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+        fake_core.PyDatabase = _FailRustDB
+        monkeypatch.setattr(rust_mod, "core_module", lambda: fake_core)
 
         db = Database(address="localhost:1729", database="test_db")
         with pytest.raises(type_bridge_core.VersionError):
@@ -873,7 +873,7 @@ class TestConnectRuntimeGate:
 
     def test_retained_server_uses_embedded_runtime(self, monkeypatch: pytest.MonkeyPatch):
         """A retained server connection uses the embedded runtime."""
-        import type_bridge._rust_runtime as rust_mod
+        import type_bridge._native as rust_mod
         import type_bridge.session as session_mod
 
         recorded: list[tuple[str, str, int]] = []
@@ -885,8 +885,8 @@ class TestConnectRuntimeGate:
                 return _CurrentRustDatabaseHandle()
 
         fake_core = MagicMock()
-        fake_core.PyRustDatabase = _FakeRustDB
-        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+        fake_core.PyDatabase = _FakeRustDB
+        monkeypatch.setattr(rust_mod, "core_module", lambda: fake_core)
 
         mock_typedb = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
@@ -898,7 +898,7 @@ class TestConnectRuntimeGate:
 
     def test_out_of_window_server_raises_before_driver(self, monkeypatch: pytest.MonkeyPatch):
         """Out-of-window server raises UnsupportedVersionError and TypeDB.driver is NOT called."""
-        import type_bridge._rust_runtime as rust_mod
+        import type_bridge._native as rust_mod
         import type_bridge.session as session_mod
 
         class _FailRustDB:
@@ -907,8 +907,8 @@ class TestConnectRuntimeGate:
                 raise version.UnsupportedVersionError("server 3.10.4 is unsupported")
 
         fake_core = MagicMock()
-        fake_core.PyRustDatabase = _FailRustDB
-        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+        fake_core.PyDatabase = _FailRustDB
+        monkeypatch.setattr(rust_mod, "core_module", lambda: fake_core)
 
         driver_factory = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", driver_factory)
@@ -923,7 +923,7 @@ class TestConnectRuntimeGate:
 
     def test_runtime_gate_failure_message_no_band_tokens(self, monkeypatch: pytest.MonkeyPatch):
         """Runtime gate failure message must not expose raw band numbers."""
-        import type_bridge._rust_runtime as rust_mod
+        import type_bridge._native as rust_mod
         import type_bridge.session as session_mod
 
         class _FailRustDB:
@@ -932,8 +932,8 @@ class TestConnectRuntimeGate:
                 raise version.UnsupportedVersionError("server 3.10.4 is unsupported")
 
         fake_core = MagicMock()
-        fake_core.PyRustDatabase = _FailRustDB
-        monkeypatch.setattr(rust_mod, "rust_core", lambda: fake_core)
+        fake_core.PyDatabase = _FailRustDB
+        monkeypatch.setattr(rust_mod, "core_module", lambda: fake_core)
 
         driver_factory = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", driver_factory)
@@ -982,10 +982,10 @@ class TestSchemaAnnotationGate:
     """
 
     def _database_with_rust_stub(self, monkeypatch, stub):
-        import type_bridge._rust_runtime as rust_mod
+        import type_bridge._native as rust_mod
         from type_bridge import session as session_mod
 
-        monkeypatch.setattr(rust_mod, "rust_database_for", lambda _conn: stub)
+        monkeypatch.setattr(rust_mod, "core_database_for", lambda _conn: stub)
         return session_mod.Database(address="localhost:1729", database="gate_unit")
 
     def test_detected_server_version_delegates_to_rust_handle(self, monkeypatch):
@@ -1039,10 +1039,10 @@ class TestGivenStageSurface:
     """
 
     def _database_with_rust_stub(self, monkeypatch, stub):
-        import type_bridge._rust_runtime as rust_mod
+        import type_bridge._native as rust_mod
         from type_bridge import session as session_mod
 
-        monkeypatch.setattr(rust_mod, "rust_database_for", lambda _conn: stub)
+        monkeypatch.setattr(rust_mod, "core_database_for", lambda _conn: stub)
         return session_mod.Database(address="localhost:1729", database="given_unit")
 
     def test_supports_given_stage_delegates_to_rust_handle(self, monkeypatch):
@@ -1082,13 +1082,15 @@ class TestGivenStageSurface:
                 [["alice"]],
             )
 
-    def test_transaction_context_execute_with_rows_requires_rust_transaction(self):
+    def test_transaction_context_execute_with_rows_requires_native_transaction(self):
         from type_bridge import session as session_mod
 
         db = session_mod.Database(address="localhost:1729", database="given_unit")
         context = session_mod.TransactionContext(db, session_mod.TransactionType.WRITE)
 
-        with pytest.raises(RuntimeError, match="Rust-backend transaction"):
+        with pytest.raises(
+            RuntimeError, match="execute_with_rows requires an open native transaction"
+        ):
             context.execute_with_rows(
                 "given $n: string; insert $p isa person, has name == $n;",
                 ["n"],
@@ -1096,14 +1098,14 @@ class TestGivenStageSurface:
                 [["alice"]],
             )
 
-    def test_transaction_context_execute_with_rows_forwards_to_rust_tx(self):
+    def test_transaction_context_execute_with_rows_forwards_to_native_tx(self):
         from type_bridge import session as session_mod
 
         db = session_mod.Database(address="localhost:1729", database="given_unit")
         context = session_mod.TransactionContext(db, session_mod.TransactionType.WRITE)
         rust_tx = MagicMock()
         rust_tx.execute_with_rows.return_value = [{"iid": "0x1e"}]
-        context._rust_tx = rust_tx
+        context._native_tx = rust_tx
 
         query = "given $n: string; insert $p isa person, has name == $n;"
         result = context.execute_with_rows(query, ["n"], ["string"], [["alice"]])

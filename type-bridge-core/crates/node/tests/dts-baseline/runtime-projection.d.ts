@@ -1,4 +1,4 @@
-import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type RustDatabase, type RustTransactionContext } from "./index.js";
+import { QueryV2Authority, type NativeRustDatabase, type NativeRustTransactionContext, type Database, type TransactionContext } from "./index.js";
 import { loadNative } from "./native.js";
 import type { NativePlan, NativePendingPlanAnswer, NativeQueryCancellation, NativeQueryExecutionResources, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
@@ -19,7 +19,7 @@ export type RuntimeProjectionMatchQuery = ReturnType<RuntimeProjectionMatchSessi
 export type RuntimeProjectionMatchResult = Awaited<ReturnType<RuntimeProjectionMatchQuery["executeFetchRowsOwned"]>>;
 export type RuntimeProjectionMatchThing = ReturnType<RuntimeProjectionMatchResult["slotThing"]>;
 export type RuntimeProjectionReduction = "count" | "sum" | "min" | "max" | "mean" | "median" | "std";
-export type RuntimeProjectionConnection = RustDatabase | RustTransactionContext;
+export type RuntimeProjectionConnection = Database | TransactionContext;
 export interface RuntimeProjectionBinding {
     readonly typeKey: string;
     readonly targetName: string;
@@ -273,7 +273,7 @@ export declare class InstalledRuntimeProjection {
         connectionLimits?: QueryExecutionResourceLimits;
         answerLimits?: QueryExecutionResourceLimits;
         cancellation?: QueryCancellation;
-    }): RustDatabase;
+    }): Database;
     /** @internal Bind one generated token without exposing its native handle. */
     manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager;
     /** @internal Create an opaque query session from verified projection evidence. */
@@ -337,7 +337,7 @@ export declare class InstalledRuntimeProjection {
     /** @internal Materialize one successor query thing with its exact opaque proof. */
     materializeMatchThingProjected(thing: RuntimeProjectionMatchThing): NativeProjectedValueEnvelope;
     /**
-     * @internal Bind one registered `RustDatabase` (owned) or transaction
+     * @internal Bind one registered `Database` (owned) or transaction
      * (borrowed) as a terminal executor. Terminals run on the provider runtime
      * and resolve without blocking the event loop.
      */

@@ -30,7 +30,7 @@ There are no separate public model-query, match-query, or fetch-query classes.
 | Language | Generated-query import | Required connection |
 | --- | --- | --- |
 | Python | `from your_generated_package import Query, QuerySession` | `Database | TransactionContext` |
-| TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `RustDatabase | RustTransactionContext` |
+| TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `Database | TransactionContext` |
 
 Python's package-root `Query` and `QueryBuilder` are removed in 3.0; use
 generated typed queries or `Database.execute_query` for raw TypeQL text. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
@@ -251,11 +251,11 @@ import {
   type Query,
 } from "./generated_v2/src/index.js";
 import {
-  RustDatabase,
-  type RustTransactionContext,
+  Database,
+  type TransactionContext,
 } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "typed_query_example");
+const db = Database.connect("localhost:1729", "typed_query_example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 const event = session.exact(Event);
@@ -381,7 +381,7 @@ const ownedPerson = ownedSession.exact(Person);
 const ownedRows = await ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
-const tx: RustTransactionContext = db.transaction("read");
+const tx: TransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
   const borrowedPerson = borrowed.exact(Person);

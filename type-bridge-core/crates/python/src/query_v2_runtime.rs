@@ -37,7 +37,7 @@ use type_bridge_schema::{
     decode_schema_authority, schema_authority_capability_vocabulary,
 };
 
-use crate::orm_runtime::{PyRustDatabase, provider_block_on};
+use crate::orm_runtime::{PyDatabase, provider_block_on};
 
 pyo3::create_exception!(
     type_bridge_core,
@@ -127,7 +127,7 @@ impl PyQueryV2Authority {
     #[staticmethod]
     fn query_only(
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         declared_schema: &Bound<'_, PyAny>,
         scope: &Bound<'_, PyAny>,
         profile: &Bound<'_, PyAny>,
@@ -352,7 +352,7 @@ fn build_query_v2_authority_from_schema_authority(
 
 fn build_query_v2_query_only_authority(
     py: Python<'_>,
-    database: &PyRustDatabase,
+    database: &PyDatabase,
     declared_schema: &Bound<'_, PyAny>,
     scope: &Bound<'_, PyAny>,
     profile: &Bound<'_, PyAny>,
@@ -411,7 +411,7 @@ pub fn query_v2_authority_from_schema_authority(
 #[pyfunction]
 pub fn query_v2_query_only_authority(
     py: Python<'_>,
-    database: &PyRustDatabase,
+    database: &PyDatabase,
     declared_schema: &Bound<'_, PyAny>,
     scope: &Bound<'_, PyAny>,
     profile: &Bound<'_, PyAny>,
@@ -466,7 +466,7 @@ fn local_limits(deadline_ms: Option<&Bound<'_, PyAny>>) -> PyResult<AnswerLimits
 #[pyo3(signature = (database, authority, plan, invocation_json, deadline_ms=None))]
 pub fn query_v2_execute_local(
     py: Python<'_>,
-    database: &PyRustDatabase,
+    database: &PyDatabase,
     authority: &PyQueryV2Authority,
     plan: &Bound<'_, PyAny>,
     invocation_json: &Bound<'_, PyAny>,

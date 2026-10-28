@@ -14,7 +14,7 @@ for the working agreement and command map.
 - [Testing](testing.md) -- offline, live TypeDB, cross-language, packaging, and
   release-artifact tiers
 - [Internals](internals.md) -- Python model metadata and architecture
-- [Rust backend](rust-backend.md) -- shared ORM execution path and binding
+- [Core engine](core-engine.md) -- shared ORM execution path and binding
   boundary
 - [TypeDB concepts and compatibility](typedb.md) -- driver bands, supported
   versions, and TypeQL behavior

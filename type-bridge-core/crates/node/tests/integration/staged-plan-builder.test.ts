@@ -12,7 +12,7 @@ import type {
 // Load the built package like the shared helpers do, so classes are shared.
 const packageRoot = process.env["TYPE_BRIDGE_NODE_PACKAGE_ROOT"] ?? process.cwd();
 const requirePackage = createRequire(import.meta.url);
-const { Plan, QueryV2Authority, QueryV2Error, RustDatabase } = requirePackage(packageRoot) as typeof import(
+const { Plan, QueryV2Authority, QueryV2Error, Database } = requirePackage(packageRoot) as typeof import(
   "../../typescript/public.js"
 );
 const { ProxyConnection } = requirePackage(
@@ -47,7 +47,7 @@ function fixture(): Fixture {
 }
 
 function connect(database: string) {
-  return RustDatabase.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", database, {
+  return Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1730", database, {
     httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
   });
 }

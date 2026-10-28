@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from type_bridge_core import PyRustDatabase
+from type_bridge_core import PyDatabase
 
 from type_bridge.failure import CommitConflict, CommitOutcomeUnknown, CommitRejected, Failure
 
@@ -28,7 +28,7 @@ def test_python_typed_provider_failure(case: str) -> None:
     if not address or not container:
         pytest.skip("requires isolated failure-smoke environment and owned pause container")
     assert container.startswith("tb-failure-smoke-")
-    db = PyRustDatabase.connect(
+    db = PyDatabase.connect(
         address, f"tb_failure_python_{uuid4().hex}", http_port=int(os.environ["TYPEDB_HTTP_PORT"])
     )
     contexts = []

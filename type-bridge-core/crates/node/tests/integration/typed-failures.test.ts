@@ -3,8 +3,8 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { QueryV2Error, RustDatabase } from "./common/index.js";
-import type { RustTransactionContext } from "../../typescript/index.js";
+import { QueryV2Error, Database } from "./common/index.js";
+import type { TransactionContext } from "../../typescript/index.js";
 
 const fixture = JSON.parse(fs.readFileSync("../../../tests/contracts/typed-failure-scenarios.json", "utf8")) as Record<"schema" | "seed" | "purchase" | "cnt5" | "cnt9" | "paused" | "stock_read", string>;
 
@@ -16,10 +16,10 @@ for (const scenario of ["stc2", "cnt5", "cnt9", "paused"] as const) {
     const container = process.env["TYPE_BRIDGE_FAILURE_CONTAINER"];
     assert.ok(address && container, "requires the isolated failure-smoke environment");
     assert.ok(container.startsWith("tb-failure-smoke-"), "only the owned server may be paused");
-    const db = RustDatabase.connect(address, `tb_failure_node_${randomUUID().replaceAll("-", "")}`, {
+    const db = Database.connect(address, `tb_failure_node_${randomUUID().replaceAll("-", "")}`, {
       httpPort: Number(process.env["TYPEDB_HTTP_PORT"]),
     });
-    const contexts: RustTransactionContext[] = [];
+    const contexts: TransactionContext[] = [];
     db.createDatabase();
     try {
       const schema = db.transaction("schema"); contexts.push(schema);

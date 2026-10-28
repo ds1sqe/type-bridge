@@ -3,7 +3,7 @@
 //! Plans stage as built plans (`type_bridge.plan`) or, over a proxy, as
 //! canonical `query-plan/v3` bytes decoded against the package's declared
 //! schema; nothing reaches the provider until commit.
-//! A transaction opens directly on a `RustDatabase` (`staged_transaction`)
+//! A transaction opens directly on a `PyDatabase` (`staged_transaction`)
 //! or over a proxy connection, where commit is one signed
 //! `query-remote/v3` exchange.
 

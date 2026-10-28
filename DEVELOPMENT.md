@@ -96,7 +96,7 @@ duplicated directory snapshot here.
   boundaries are contracts, not illustrative prose.
 
 See [Internals](docs/development/internals.md),
-[Rust backend](docs/development/rust-backend.md), and the
+[Core engine](docs/development/core-engine.md), and the
 [unified typed-query contract](docs/development/typed-query-contract.md) before
 changing a shared boundary.
 

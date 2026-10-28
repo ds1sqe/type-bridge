@@ -5,54 +5,52 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from type_bridge_core import PyRustDatabase, PyRustTransactionContext
+    from type_bridge_core import PyDatabase, PyTransactionContext
 
 
-def rust_core() -> Any:
-    """Import the optional Rust extension or raise a backend-specific error."""
+def core_module() -> Any:
+    """Import the native extension or report that it is missing."""
     try:
         import type_bridge_core
     except ImportError as exc:
-        raise RuntimeError(
-            "TYPE_BRIDGE_BACKEND=rust requires the type_bridge_core Rust extension"
-        ) from exc
+        raise RuntimeError("The type_bridge_core native extension is required") from exc
     return type_bridge_core
 
 
 def migration_state_schema() -> dict[str, Any]:
     """Return the canonical Rust-owned migration-state schema descriptor."""
-    return rust_core().migration_state_schema()
+    return core_module().migration_state_schema()
 
 
 def applied_migration_entity_label() -> str:
     """Return the canonical applied-migration entity label."""
-    return str(rust_core().applied_migration_entity_label())
+    return str(core_module().applied_migration_entity_label())
 
 
 def is_migration_state_type(kind: str, label: str) -> bool:
     """Return whether a kind-and-label pair belongs to migration state."""
-    return bool(rust_core().is_migration_state_type(kind, label))
+    return bool(core_module().is_migration_state_type(kind, label))
 
 
 def schema_text(connection: Any) -> str:
     """Export the live TypeDB schema as TypeQL text through the Rust driver."""
-    return rust_database_for(connection).schema_text()
+    return core_database_for(connection).schema_text()
 
 
-def rust_database_for(connection: Any) -> PyRustDatabase:
+def core_database_for(connection: Any) -> PyDatabase:
     """Return or create a Rust database handle for a Python Database object."""
     from type_bridge.session import Database, TransactionContext
 
     if isinstance(connection, TransactionContext):
-        return rust_database_for(connection.database)
+        return core_database_for(connection.database)
     if not isinstance(connection, Database):
         raise NotImplementedError(
-            "TYPE_BRIDGE_BACKEND=rust supports Database and TransactionContext connections; "
-            "raw Python Transaction handles cannot be shared with the Rust backend"
+            "Native connections require Database or TransactionContext; "
+            "raw Python transaction handles cannot be shared with the native engine"
         )
 
     with connection._transport_lock:
-        cached = getattr(connection, "_rust_backend_database", None)
+        cached = getattr(connection, "_native_database", None)
         if cached is not None:
             return cached
 
@@ -67,7 +65,7 @@ def rust_database_for(connection: Any) -> PyRustDatabase:
             if prepared.tls_root_ca_snapshot is not None:
                 connect_kwargs["tls_root_ca"] = prepared.tls_root_ca_snapshot
 
-            rust_db = rust_core().PyRustDatabase.connect(
+            native_db = core_module().PyDatabase.connect(
                 identity.address,
                 identity.database,
                 identity.username or "admin",
@@ -77,33 +75,33 @@ def rust_database_for(connection: Any) -> PyRustDatabase:
         except BaseException:
             connection._discard_uncommitted_transport()
             raise
-        setattr(connection, "_rust_backend_database", rust_db)
+        setattr(connection, "_native_database", native_db)
         connection._transport_committed = True
-        return rust_db
+        return native_db
 
 
-def database_from_rust(
+def database_from_core(
     endpoint: str,
     database_name: str,
-    rust_database: PyRustDatabase,
+    native_database: PyDatabase,
 ) -> Any:
     """Wrap one package-owned native database without reconnecting."""
     from type_bridge.session import Database
 
     database = Database(address=endpoint, database=database_name)
-    setattr(database, "_rust_backend_database", rust_database)
+    setattr(database, "_native_database", native_database)
     database._transport_committed = True
     return database
 
 
-def rust_transaction_for(connection: Any) -> PyRustTransactionContext | None:
+def core_transaction_for(connection: Any) -> PyTransactionContext | None:
     """Return the Rust transaction adapter for a Python TransactionContext."""
     from type_bridge.session import TransactionContext
 
     if not isinstance(connection, TransactionContext):
         return None
 
-    rust_tx = getattr(connection, "_rust_tx", None)
-    if rust_tx is None:
-        raise RuntimeError("Rust transaction context is not active")
-    return rust_tx
+    native_tx = getattr(connection, "_native_tx", None)
+    if native_tx is None:
+        raise RuntimeError("Native transaction context is not active")
+    return native_tx

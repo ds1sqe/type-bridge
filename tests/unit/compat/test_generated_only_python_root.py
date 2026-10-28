@@ -15,6 +15,9 @@ import type_bridge.session as session
 @pytest.mark.parametrize(
     "name",
     [
+        "_backend",
+        "_rust",
+        "_rust_runtime",
         "models",
         "crud",
         "fields",
@@ -130,3 +133,11 @@ def test_unused_native_compatibility_exports_are_absent(name: str) -> None:
     assert not hasattr(type_bridge_core, name)
     assert not hasattr(type_bridge_core.type_bridge_core, name)
 
+
+def test_native_connection_classes_use_common_names() -> None:
+    import type_bridge_core
+
+    assert type_bridge_core.PyDatabase.__name__ == "PyDatabase"
+    assert type_bridge_core.PyTransactionContext.__name__ == "PyTransactionContext"
+    assert not hasattr(type_bridge_core, "PyRustDatabase")
+    assert not hasattr(type_bridge_core, "PyRustTransactionContext")

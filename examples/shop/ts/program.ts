@@ -17,7 +17,7 @@
  * generated package (`./index.js`); see
  * tests/contracts/sdk_conformance/writes/shop.
  */
-import { Plan, QueryV2Error, RustDatabase } from "@type-bridge/node";
+import { Plan, QueryV2Error, Database } from "@type-bridge/node";
 import type { PendingPlanAnswer, QueryV2Authority, StagedTransaction } from "@type-bridge/node";
 import { ProxyConnection } from "@type-bridge/node/runtime-projection";
 import { Account, Item, OrderLine, schemaAuthority } from "./index.js";
@@ -326,7 +326,7 @@ async function main(): Promise<void> {
   const database = process.env["TYPE_BRIDGE_SDK_WRITES_DIRECT_DATABASE"];
   const endpoint = process.env["TYPE_BRIDGE_SDK_WRITES_PROXY_ENDPOINT"];
   if (database) {
-    const db = RustDatabase.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1729", database, {
+    const db = Database.connect(process.env["TYPEDB_ADDRESS"] ?? "localhost:1729", database, {
       httpPort: Number(process.env["TYPEDB_HTTP_PORT"] ?? "8000"),
       username: process.env["TYPEDB_USERNAME"] ?? "admin",
       password: process.env["TYPEDB_PASSWORD"] ?? "password",

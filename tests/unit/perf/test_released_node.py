@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -53,6 +54,63 @@ def test_the_node_workload_runs_the_python_ops_in_order() -> None:
     source = released_node.WORKLOAD.read_text(encoding="utf-8")
     block = source.split("const OPS = [", 1)[1].split("];", 1)[0]
     assert tuple(re.findall(r'\["(\w+)"', block)) == released_node.OPS == tuple(workload.OPS)
+
+
+@pytest.mark.parametrize(
+    ("exports", "message"),
+    [
+        ({"Database": "modern"}, "constructor-selected:modern"),
+        ({"RustDatabase": "legacy"}, "constructor-selected:legacy"),
+        (
+            {"Database": "modern", "RustDatabase": "legacy"},
+            "constructor-selected:modern",
+        ),
+        ({}, "Node SDK exports no supported database constructor"),
+    ],
+)
+def test_workload_resolves_released_and_current_database_exports(
+    tmp_path: Path, exports: dict[str, str], message: str
+) -> None:
+    models = tmp_path / "models"
+    (models / "dist").mkdir(parents=True)
+    (models / "package.json").write_text('{"type":"module"}')
+    (models / "dist/index.js").write_text("export {};\n")
+    package = models / "node_modules/@type-bridge/node"
+    (package / "dist").mkdir(parents=True)
+    (package / "package.json").write_text(
+        json.dumps({"name": "@type-bridge/node", "main": "dist/index.cjs", "version": "3.0.0"})
+    )
+    (package / "dist/index.cjs").write_text(
+        "\n".join(
+            f"exports.{name} = {{ connect() {{ throw new Error("
+            f"{json.dumps('constructor-selected:' + marker)}); }} }};"
+            for name, marker in exports.items()
+        )
+    )
+    output = tmp_path / "report.json"
+    result = subprocess.run(
+        [
+            "node",
+            str(released_node.WORKLOAD),
+            "--database",
+            "constructor_stub",
+            "--models",
+            str(models),
+            "--out",
+            str(output),
+            "--iterations",
+            "1",
+            "--warmup",
+            "0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 1
+    assert message in result.stderr
+    assert not output.exists()
 
 
 def test_gaps_name_only_known_ops_and_lines() -> None:

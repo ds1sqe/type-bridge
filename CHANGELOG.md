@@ -93,6 +93,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Native Python `PyRustDatabase` and `PyRustTransactionContext` are renamed to
+  `PyDatabase` and `PyTransactionContext`. Update direct native consumers and
+  regenerate Python packages.
+
 - Removed `type_bridge.migration.exceptions.SchemaValidationError` and
   `SchemaConflictError`; replacement: none. Native migration diagnostics carry
   structured validation failures.
@@ -109,6 +113,20 @@ All notable changes to TypeBridge will be documented in this file.
   `migration_graph_from_json`, and `plan_migration_graph`; replacement: none
   for the retired handwritten migration format. Use the canonical workspace
   `migration make`, `migration verify`, and `migration plan` commands.
+
+- TypeScript `RustDatabase`, `RustTransactionContext`, and
+  `RustDatabaseConnectOptions` become `Database`, `TransactionContext`, and
+  `DatabaseConnectOptions`. Regenerate generated TypeScript packages.
+- Python private module `type_bridge._rust_runtime` becomes `_native`;
+  `rust_core`, `rust_database_for`, `rust_transaction_for`, and
+  `database_from_rust` become `core_module`, `core_database_for`,
+  `core_transaction_for`, and `database_from_core`. Regenerate Python packages.
+- Python `_backend`, `_rust`, `selected_backend`, `BACKEND_ENV_VAR`,
+  `PYTHON_BACKEND`, `RUST_BACKEND`, and `RUST_AVAILABLE` are removed.
+  The native engine is always used; `TYPE_BRIDGE_BACKEND` is retired.
+  `_native.core_module` imports the required extension or reports its absence.
+- The development guide `development/rust-backend.md` moves to
+  `development/core-engine.md`.
 
 - The published `type-bridge-toml-transpiler` crate and its `TypeKind`,
   `TranspileError`, and `toml_to_typeql` API are removed. Python

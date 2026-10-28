@@ -74,7 +74,7 @@ use crate::match_runtime::{
     parse_enum, py_projected_cardinality, py_sdk_diagnostic, py_unknown_enum_value,
 };
 use crate::orm_runtime::{
-    PyRustDatabase, PyRustTransactionContext, provider_block_on, provider_block_on_with_gil,
+    PyDatabase, PyTransactionContext, provider_block_on, provider_block_on_with_gil,
 };
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
@@ -1644,7 +1644,7 @@ impl PyRuntimeProjection {
         connection_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
-    ) -> PyResult<PyRustDatabase> {
+    ) -> PyResult<PyDatabase> {
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let mut policy =
             type_bridge_orm::DirectConnectionPolicy::new(endpoint, database, username, password)
@@ -1668,7 +1668,7 @@ impl PyRuntimeProjection {
             Database::connect_direct(self.package.projection.as_ref(), &policy, cancellation),
         )
         .map_err(py_sdk_diagnostic)?;
-        Ok(PyRustDatabase::from_handles(
+        Ok(PyDatabase::from_handles(
             Arc::new(database),
             runtime,
             self.package.managed_scope_id.clone(),
@@ -1680,7 +1680,7 @@ impl PyRuntimeProjection {
         &self,
         py: Python<'_>,
         model: Py<PyType>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
     ) -> PyResult<PyProjectedModelManager> {
         let type_id = self.package.model_id_for_class(py, &model)?;
         ensure_manageable(self.package.as_ref(), &type_id)?;
@@ -1704,7 +1704,7 @@ impl PyRuntimeProjection {
         &self,
         py: Python<'_>,
         model: Py<PyType>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
     ) -> PyResult<PyProjectedModelManager> {
         let type_id = self.package.model_id_for_class(py, &model)?;
         ensure_manageable(self.package.as_ref(), &type_id)?;
@@ -12117,7 +12117,7 @@ class StructBase:
             let transaction = runtime
                 .block_on(database.transaction_context(TxType::Write))
                 .expect("write transaction should open");
-            let context = PyRustTransactionContext::from_parts_for_test(
+            let context = PyTransactionContext::from_parts_for_test(
                 transaction.clone(),
                 Arc::clone(&runtime),
             );
@@ -15781,7 +15781,7 @@ def failing_initialize(target, original):
                 let transaction = runtime
                     .block_on(database.transaction_context(TxType::Read))
                     .unwrap();
-                let context = PyRustTransactionContext::from_parts_for_test(
+                let context = PyTransactionContext::from_parts_for_test(
                     transaction.clone(),
                     Arc::clone(&runtime),
                 );
@@ -15911,7 +15911,7 @@ def failing_initialize(target, original):
                     let transaction = runtime
                         .block_on(database.transaction_context(TxType::Write))
                         .unwrap();
-                    let context = PyRustTransactionContext::from_parts_for_test(
+                    let context = PyTransactionContext::from_parts_for_test(
                         transaction.clone(),
                         Arc::clone(&runtime),
                     );
@@ -16046,7 +16046,7 @@ def failing_initialize(target, original):
                         let query = session.call_method1("query", (shape,)).unwrap();
                         let database = Py::new(
                             py,
-                            PyRustDatabase::from_handles(
+                            PyDatabase::from_handles(
                                 Arc::clone(&database),
                                 Arc::clone(&runtime),
                                 None,
@@ -16097,7 +16097,7 @@ def failing_initialize(target, original):
                 let transaction = runtime
                     .block_on(database.transaction_context(TxType::Write))
                     .unwrap();
-                let context = PyRustTransactionContext::from_parts_for_test(
+                let context = PyTransactionContext::from_parts_for_test(
                     transaction.clone(),
                     Arc::clone(&runtime),
                 );
@@ -16187,7 +16187,7 @@ def failing_initialize(target, original):
                 if rollback_first {
                     runtime.block_on(transaction.rollback()).unwrap();
                 }
-                let context = PyRustTransactionContext::from_parts_for_test(
+                let context = PyTransactionContext::from_parts_for_test(
                     transaction.clone(),
                     Arc::clone(&runtime),
                 );
@@ -16899,7 +16899,7 @@ class BoundaryIterator:
                 .block_on(database.transaction_context(TxType::Write))
                 .unwrap();
             let context =
-                PyRustTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
+                PyTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
             let context = Py::new(py, context).unwrap();
             context.bind(py).call_method0("commit").unwrap();
             // The second commit is refused before dispatch: it must keep the
@@ -16932,7 +16932,7 @@ class BoundaryIterator:
                 .block_on(database.transaction_context(TxType::Write))
                 .unwrap();
             let context =
-                PyRustTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
+                PyTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
             assert!(!context.successor_batch_marker().load(Ordering::Acquire));
             Py::new(py, context)
                 .unwrap()
@@ -16952,7 +16952,7 @@ class BoundaryIterator:
                 transaction.latch_rollback_only(&SdkExecutionDiagnostic::internal_failure()),
             );
             let context =
-                PyRustTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
+                PyTransactionContext::from_parts_for_test(transaction, Arc::clone(&runtime));
             let error = Py::new(py, context)
                 .unwrap()
                 .bind(py)
@@ -17210,7 +17210,7 @@ class BoundaryIterator:
                             .unwrap()
                     });
                     let context = transaction.as_ref().map(|transaction| {
-                        PyRustTransactionContext::from_parts_for_test(
+                        PyTransactionContext::from_parts_for_test(
                             transaction.clone(),
                             Arc::clone(&runtime),
                         )
@@ -17241,7 +17241,7 @@ class BoundaryIterator:
                         .collect::<Vec<_>>();
                     let marker = context
                         .as_ref()
-                        .map(PyRustTransactionContext::successor_batch_marker);
+                        .map(PyTransactionContext::successor_batch_marker);
                     let error = execute_batch_with_materialization_probe(
                         py,
                         Arc::clone(&package),
@@ -17600,14 +17600,14 @@ class CyclicFinalizer:
                         .unwrap()
                 });
                 let context = transaction.as_ref().map(|transaction| {
-                    PyRustTransactionContext::from_parts_for_test(
+                    PyTransactionContext::from_parts_for_test(
                         transaction.clone(),
                         Arc::clone(&runtime),
                     )
                 });
                 let marker = context
                     .as_ref()
-                    .map(PyRustTransactionContext::successor_batch_marker);
+                    .map(PyTransactionContext::successor_batch_marker);
                 let instances = (0..3)
                     .map(|ordinal| {
                         batch_person(

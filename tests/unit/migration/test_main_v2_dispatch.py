@@ -41,7 +41,7 @@ def test_invocations_run_verbatim_through_the_v2_native_parser(
             observed.append(native_arguments)
             return 27
 
-    monkeypatch.setattr("type_bridge._rust_runtime.rust_core", lambda: Native())
+    monkeypatch.setattr("type_bridge._native.core_module", lambda: Native())
     monkeypatch.setattr("sys.argv", ["type-bridge", *arguments])
 
     with pytest.raises(SystemExit) as excinfo:

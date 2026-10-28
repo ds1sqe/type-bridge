@@ -23,7 +23,7 @@ import {
   qualifyingScore,
 } from "./generated_v2/src/index.js";
 import { Person as ForeignPerson } from "./generated_foreign/src/index.js";
-import { type StagedTransaction, Plan, type RustDatabase } from "@type-bridge/node";
+import { type StagedTransaction, Plan, type Database } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const person = (value: Identifier): Person => Person.create({
@@ -42,7 +42,7 @@ const personReference = Person.reference("person-iid", { identifier });
 const eventReference = Event.reference("event-iid", {});
 declare const exactPersonManager: ReturnType<typeof Person.manager>;
 declare const maybeIdentifier: string | undefined;
-declare const database: RustDatabase;
+declare const database: Database;
 const querySession = new QuerySession(database);
 const personVar = querySession.var(Person);
 const eventVar = querySession.var(Event);

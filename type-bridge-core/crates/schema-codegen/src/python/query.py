@@ -38,9 +38,9 @@ from type_bridge_core import (
     Pending,
     PendingRemoteModelQuery,
     ProxyConnection,
+    PyDatabase,
     PyRuntimeProjection,
-    PyRustDatabase,
-    PyRustTransactionContext,
+    PyTransactionContext,
     QueryCancellation,
     QueryExecutionResourceLimits,
     QueryLimits,
@@ -65,7 +65,7 @@ from type_bridge_core import (
 )
 from typing_extensions import TypeVar
 
-from type_bridge._rust_runtime import rust_database_for, rust_transaction_for
+from type_bridge._native import core_database_for, core_transaction_for
 from type_bridge.session import Database, TransactionContext
 
 from ._authority import SCHEMA_AUTHORITY_BYTES
@@ -781,9 +781,9 @@ class _Terminal[*ArgsT]:
 
     def __init__(
         self,
-        owned: Callable[[MatchQueryHandle, PyRustDatabase, *ArgsT], ValidatedMatchResultHandle],
+        owned: Callable[[MatchQueryHandle, PyDatabase, *ArgsT], ValidatedMatchResultHandle],
         borrowed: Callable[
-            [MatchQueryHandle, PyRustTransactionContext, *ArgsT], ValidatedMatchResultHandle
+            [MatchQueryHandle, PyTransactionContext, *ArgsT], ValidatedMatchResultHandle
         ],
         proxy: Callable[[MatchQueryHandle, ProxyConnection, *ArgsT], ValidatedMatchResultHandle],
         prepare: Callable[
@@ -1045,13 +1045,13 @@ async def _execute[*ArgsT](
     elif isinstance(target, ProxyConnection):
         result = await asyncio.to_thread(lambda: terminal.proxy(query, target, *arguments))
     elif isinstance(target, TransactionContext):
-        transaction = rust_transaction_for(target)
+        transaction = core_transaction_for(target)
         if transaction is None:
             raise RuntimeError("generated query transaction is not active")
         result = await asyncio.to_thread(lambda: terminal.borrowed(query, transaction, *arguments))
     else:
         result = await asyncio.to_thread(
-            lambda: terminal.owned(query, rust_database_for(target), *arguments)
+            lambda: terminal.owned(query, core_database_for(target), *arguments)
         )
     return decode(result)
 

@@ -59,7 +59,7 @@ class TestDatabaseLifecycle:
     def test_connect_creates_rust_handle(self, clean_db):
         """connect() should create a Rust database handle."""
         # clean_db is already connected
-        assert getattr(clean_db, "_rust_backend_database", None) is not None
+        assert getattr(clean_db, "_native_database", None) is not None
 
     def test_close_destroys_rust_handle(self, test_database):
         """close() should terminate and clear the Rust database handle."""
@@ -67,12 +67,12 @@ class TestDatabaseLifecycle:
 
         db = Database(address=TEST_DB_ADDRESS, database=test_database)
         db.connect()
-        rust_database = getattr(db, "_rust_backend_database", None)
+        rust_database = getattr(db, "_native_database", None)
         assert rust_database is not None
         assert rust_database.is_connected() is True
         db.close()
         db.close()
-        assert getattr(db, "_rust_backend_database", None) is None
+        assert getattr(db, "_native_database", None) is None
         assert rust_database.is_connected() is False
         with pytest.raises(RuntimeError, match="TypeDB driver connection is closed"):
             rust_database.database_exists()
@@ -82,8 +82,8 @@ class TestDatabaseLifecycle:
         from tests.integration.conftest import TEST_DB_ADDRESS
 
         with Database(address=TEST_DB_ADDRESS, database=test_database) as db:
-            assert getattr(db, "_rust_backend_database", None) is not None
-        assert getattr(db, "_rust_backend_database", None) is None
+            assert getattr(db, "_native_database", None) is not None
+        assert getattr(db, "_native_database", None) is None
 
     def test_database_exists_true(self, clean_db, test_database):
         """database_exists() should return True for existing database."""

@@ -39,7 +39,7 @@ export {
   type ProxyTlsMode,
 } from "@type-bridge/node/runtime-projection";
 import type { QueryV2Authority } from "@type-bridge/node/query-v2";
-import type { RustDatabase } from "@type-bridge/node";
+import type { Database } from "@type-bridge/node";
 import { Pending, StagedTransaction } from "@type-bridge/node";
 import { Plan, Handle as PlanHandle, Value as PlanValue, Expr as PlanExpr, PlanInput, planFieldToken, planMatch, planInsert, planInsertMany, type FieldToken as AuthoringFieldToken, type PlanModelAuthoring } from "@type-bridge/node";
 export { Plan, PlanHandle, PlanValue, PlanExpr, PlanInput, planMatch, planInsertMany };
@@ -2482,7 +2482,7 @@ export class DirectConnectionPolicy {
   __connect(
     projection: InstalledRuntimeProjection,
     cancellation?: QueryCancellation,
-  ): RustDatabase {
+  ): Database {
     return projection.connectDirect({
       endpoint: this.endpoint,
       database: this.database,
@@ -2510,7 +2510,7 @@ export class DirectConnectionPolicy {
 export function connect(
   policy: DirectConnectionPolicy,
   cancellation?: QueryCancellation,
-): RustDatabase {
+): Database {
   if (!(policy instanceof DirectConnectionPolicy)) {
     throw new TypeError("connect requires this generated package's DirectConnectionPolicy");
   }
@@ -3421,7 +3421,7 @@ function queryExecutor(
   }
   if (typeof connection !== "object" || connection === null) {
     throw new TypeError(
-      "generated QuerySession requires a RustDatabase, RustTransactionContext, ProxyConnection, or ExchangeConnection",
+      "generated QuerySession requires a Database, TransactionContext, ProxyConnection, or ExchangeConnection",
     );
   }
   return projection.direct(connection);
@@ -3430,7 +3430,7 @@ function queryExecutor(
 /**
  * Author and run queries over one connection.
  *
- * The connection is a direct `RustDatabase` or transaction, a
+ * The connection is a direct `Database` or transaction, a
  * `ProxyConnection` from `connectProxy`, or an `ExchangeConnection`. The
  * session, its queries, and their results are the same on every kind;
  * terminals return promises on all of them.

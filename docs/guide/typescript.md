@@ -29,9 +29,9 @@ JSON authority.
 ## Connect
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "application", {
+const db = Database.connect("localhost:1729", "application", {
   username: "admin",
   password: "password",
   httpPort: 8000,
@@ -174,7 +174,7 @@ const rows = await session
 ```
 
 `QuerySession(connection, { resources, cancellation, queryLimits })` runs on a
-direct `RustDatabase` or transaction, or on a proxy connection (see
+direct `Database` or transaction, or on a proxy connection (see
 [Proxy queries](#proxy-queries)). Composition is synchronous and performs no
 I/O. Every terminal (`one`, `first`, `rows`, `pageBy`, `countBy`, `existsBy`,
 `aggregate`, grouped `aggregate`) returns a `Promise` on every connection;
@@ -231,7 +231,7 @@ The one-query purchase checks the stock and the balance, takes the item and
 the price, and records the purchase:
 
 ```ts
-import { Plan, type RustDatabase } from "@type-bridge/node";
+import { Plan, type Database } from "@type-bridge/node";
 import {
   Account,
   Item,
@@ -268,7 +268,7 @@ function purchase(order: string, itemId: string, accountId: string): Plan {
   return plan.build(schemaAuthority());
 }
 
-async function buy(db: RustDatabase): Promise<boolean> {
+async function buy(db: Database): Promise<boolean> {
   await using tx = db.stagedTransaction();
   const bought = tx.stage(purchase("O1", "I1", "A1"));
   await tx.commit();
@@ -311,8 +311,8 @@ plain `number` is not a literal.
   (Node 18.18 or newer, and TypeScript 5.2 or newer or `@types/node` for
   the `using` declaration).
 
-`RustDatabase.transaction(kind)` keeps its released meaning, the eager
-`RustTransactionContext` the generated managers and query sessions run on;
+`Database.transaction(kind)` keeps its released meaning, the eager
+`TransactionContext` the generated managers and query sessions run on;
 the staged transaction is `stagedTransaction(kind)`. Generated managers do
 not stage plans yet.
 
@@ -368,7 +368,7 @@ and scalar groups as direct execution.
 
 Writes cross the proxy as staged transactions.
 `await ProxyConnection.transaction(kind)` returns a `StagedTransaction`, the
-class `RustDatabase.stagedTransaction(kind)` returns for direct staging
+class `Database.stagedTransaction(kind)` returns for direct staging
 (see [Staged transactions and plans](#staged-transactions-and-plans)).
 `tx.stage(plan)` queues a built plan (`tx.stagePlan(bytes, declaredSchema)`
 queues canonical plan bytes), and

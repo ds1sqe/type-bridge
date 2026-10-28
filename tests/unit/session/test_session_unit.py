@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from type_bridge._rust_runtime import database_from_rust
+from type_bridge._native import database_from_core
 from type_bridge.session import (
     Connection,
     Database,
@@ -46,18 +46,18 @@ class TestDatabaseConfiguration:
     def test_package_owned_rust_database_is_registered_and_closes_once(self):
         """The generated facade owns one native handle and close is idempotent."""
         native = MagicMock()
-        database = database_from_rust("localhost:1729", "generated", native)
+        database = database_from_core("localhost:1729", "generated", native)
 
         assert database.address == "localhost:1729"
         assert database.database_name == "generated"
-        assert getattr(database, "_rust_backend_database") is native
+        assert getattr(database, "_native_database") is native
         assert database._transport_committed is True
 
         database.close()
         database.close()
 
         native.close.assert_called_once_with()
-        assert not hasattr(database, "_rust_backend_database")
+        assert not hasattr(database, "_native_database")
         assert database._transport_committed is False
 
     def test_package_owned_rust_database_exposes_pair_administration(self):
@@ -70,7 +70,7 @@ class TestDatabaseConfiguration:
         native.plan_database_delete.return_value = deletion
         native.plan_database_delete_controlled.return_value = controlled_deletion
         cancellation = object()
-        database = database_from_rust("localhost:1729", "generated", native)
+        database = database_from_core("localhost:1729", "generated", native)
 
         assert database.inspect_database_pair() == "owned_pair"
         assert (
@@ -272,13 +272,13 @@ class TestDriverInjection:
 
         driver = FalseyDriver()
         db = Database(driver=driver)  # type: ignore[arg-type]
-        setattr(db, "_rust_backend_database", object())
+        setattr(db, "_native_database", object())
 
         db.close()
 
         assert db._driver is driver
         assert driver.close_calls == 0
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
 
     def test_close_preserves_released_truth_probe_error_order(self):
         """A driver truth-probe error precedes every close-time mutation."""
@@ -290,34 +290,34 @@ class TestDriverInjection:
         driver = ExplodingDriver()
         rust_database = object()
         db = Database(driver=driver)  # type: ignore[arg-type]
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
 
         with pytest.raises(ValueError, match="driver truth probe failed"):
             db.close()
 
         assert db._driver is driver
-        assert getattr(db, "_rust_backend_database") is rust_database
+        assert getattr(db, "_native_database") is rust_database
 
     def test_close_closes_cached_rust_database_before_releasing_it(self):
         """close() should explicitly stop a cached Rust provider connection."""
         db = Database()
         rust_database = MagicMock()
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
         retained_reference = rust_database
 
         db.close()
 
         retained_reference.close.assert_called_once_with()
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
 
     def test_close_releases_legacy_rust_database_double_without_close(self):
         """Older Rust-handle stand-ins remain compatible with close()."""
         db = Database()
-        setattr(db, "_rust_backend_database", object())
+        setattr(db, "_native_database", object())
 
         db.close()
 
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
 
     def test_close_failure_retains_python_transport_for_released_style_retry(self):
         """A transient Python-driver close failure remains retryable."""
@@ -347,7 +347,7 @@ class TestDriverInjection:
         snapshot.cleanup.side_effect = lambda: events.append("snapshot")
         db._driver = python_driver
         db._owns_driver = True
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
         db._tls_root_ca_snapshot = snapshot
         db._tls_root_ca_snapshot_path = "/retained/root.pem"
         prepared = MagicMock()
@@ -360,7 +360,7 @@ class TestDriverInjection:
         assert raised.value is python_error
         assert events == ["python"]
         assert db._driver is python_driver
-        assert getattr(db, "_rust_backend_database") is rust_database
+        assert getattr(db, "_native_database") is rust_database
         assert db._tls_root_ca_snapshot is snapshot
         assert db._tls_root_ca_snapshot_path == "/retained/root.pem"
         assert db._prepared_connection is prepared
@@ -369,7 +369,7 @@ class TestDriverInjection:
         db.close()
         assert events == ["python", "python", "rust", "snapshot"]
         assert db._driver is None
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
         assert db._tls_root_ca_snapshot is None
         assert db._tls_root_ca_snapshot_path is None
         assert db._prepared_connection is None
@@ -393,7 +393,7 @@ class TestDriverInjection:
         snapshot.cleanup.side_effect = lambda: events.append("snapshot")
         db._driver = python_driver
         db._owns_driver = True
-        setattr(db, "_rust_backend_database", rust_database)
+        setattr(db, "_native_database", rust_database)
         db._tls_root_ca_snapshot = snapshot
 
         with caplog.at_level("WARNING", logger="type_bridge.session"):
@@ -401,9 +401,9 @@ class TestDriverInjection:
 
         assert events == ["python", "rust", "snapshot"]
         assert db._driver is None
-        assert not hasattr(db, "_rust_backend_database")
+        assert not hasattr(db, "_native_database")
         assert db._tls_root_ca_snapshot is None
-        assert "Embedded Rust backend cleanup failed" in caplog.text
+        assert "Native database cleanup failed" in caplog.text
         assert "rust backend close failed" not in caplog.text
 
         db.close()
@@ -547,7 +547,7 @@ class TestDriverInjection:
 def test_rust_context_rollback_remains_open_for_work_and_commit() -> None:
     context = TransactionContext(Database(), TransactionType.WRITE)
     native = MagicMock()
-    context._rust_tx = native
+    context._native_tx = native
     context.rollback()
     assert context.transaction.is_open
     context.execute("insert $x isa marker;")

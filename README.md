@@ -101,10 +101,10 @@ Import application values from the generated package and connection primitives
 from `@type-bridge/node`:
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 import { Age, Person, PersonId } from "./generated/models/index.js";
 
-const db = RustDatabase.connect("localhost:1729", "example", {
+const db = Database.connect("localhost:1729", "example", {
   username: "admin",
   password: "password",
 });

@@ -111,7 +111,7 @@ def _tx_type_name(tx_type: TransactionType) -> str:
 
 
 def _tx_type_wire_name(tx_type: TransactionType) -> str:
-    """Get Rust/Python backend transaction type name."""
+    """Get the native wire name for a Python transaction type."""
     names = {
         TransactionType.READ: "read",
         TransactionType.WRITE: "write",
@@ -250,7 +250,7 @@ class Database:
         return path
 
     def _discard_uncommitted_transport(self) -> None:
-        """Drop a failed first-attempt snapshot when no backend owns it."""
+        """Drop a failed first-attempt snapshot when no transport owns it."""
         with self._transport_lock:
             if self._transport_committed:
                 return
@@ -273,11 +273,9 @@ class Database:
             return
 
         logger.debug(f"Connecting to TypeDB at {self.address} (database: {self.database_name})")
-        from type_bridge._backend import selected_backend
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        selected_backend()
-        rust_database_for(self)
+        core_database_for(self)
         logger.info(f"Connected to TypeDB at {self.address}")
 
     def _connect_python_driver(self) -> None:
@@ -384,16 +382,16 @@ class Database:
             # exception from its truth probe occurs before any cleanup state
             # is mutated.
             released_driver_present = bool(driver) if driver is not None else False
-            had_rust_database = hasattr(self, "_rust_backend_database")
-            rust_database = getattr(self, "_rust_backend_database", None)
+            had_native_database = hasattr(self, "_native_database")
+            native_database = getattr(self, "_native_database", None)
             snapshot = self._tls_root_ca_snapshot
             snapshot_path = self._tls_root_ca_snapshot_path
             prepared = self._prepared_connection
             transport_committed = self._transport_committed
             if released_driver_present:
                 self._driver = None
-            if hasattr(self, "_rust_backend_database"):
-                delattr(self, "_rust_backend_database")
+            if hasattr(self, "_native_database"):
+                delattr(self, "_native_database")
             self._tls_root_ca_snapshot = None
             self._tls_root_ca_snapshot_path = None
             self._prepared_connection = None
@@ -422,25 +420,25 @@ class Database:
                 # replacement while the external close callback was running.
                 self._driver = driver
                 self._owns_driver = owns_driver
-                if had_rust_database:
-                    setattr(self, "_rust_backend_database", rust_database)
+                if had_native_database:
+                    setattr(self, "_native_database", native_database)
                 self._tls_root_ca_snapshot = snapshot
                 self._tls_root_ca_snapshot_path = snapshot_path
                 self._prepared_connection = prepared
                 self._transport_committed = transport_committed
                 restored_failed_transport = True
 
-            if not restored_failed_transport and rust_database is not None:
+            if not restored_failed_transport and native_database is not None:
                 try:
-                    rust_close = getattr(rust_database, "close", None)
+                    native_close = getattr(native_database, "close", None)
                     # Older test doubles and third-party compatibility shims
                     # may predate the explicit native-close seam. Real Rust
                     # handles always expose it; V1 stand-ins remain safely
                     # releasable.
-                    if callable(rust_close):
-                        rust_close()
+                    if callable(native_close):
+                        native_close()
                 except Exception:
-                    logger.warning("Embedded Rust backend cleanup failed; releasing the handle")
+                    logger.warning("Native database cleanup failed; releasing the handle")
 
             if not restored_failed_transport and snapshot is not None:
                 try:
@@ -536,11 +534,11 @@ class Database:
             logger.info(f"Database created: {self.database_name}")
             return "created"
 
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
         outcome = cast(
             Literal["created", "already_exists"],
-            rust_database_for(self).create_database_outcome(),
+            core_database_for(self).create_database_outcome(),
         )
         logger.debug(f"Database create outcome for '{self.database_name}': {outcome}")
         return outcome
@@ -565,11 +563,11 @@ class Database:
             logger.info(f"Database deleted: {self.database_name}")
             return "deleted"
 
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
         outcome = cast(
             Literal["deleted", "already_absent"],
-            rust_database_for(self).delete_database_outcome(),
+            core_database_for(self).delete_database_outcome(),
         )
         logger.debug(f"Database delete outcome for '{self.database_name}': {outcome}")
         return outcome
@@ -579,9 +577,9 @@ class Database:
         if self._driver is not None:
             exists = self.driver.databases.contains(self.database_name)
         else:
-            from type_bridge._rust_runtime import rust_database_for
+            from type_bridge._native import core_database_for
 
-            exists = rust_database_for(self).database_exists()
+            exists = core_database_for(self).database_exists()
         logger.debug(f"Database exists check for '{self.database_name}': {exists}")
         return exists
 
@@ -589,11 +587,11 @@ class Database:
         self,
     ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
         """Inspect the managed database and its package-owned journal as one pair."""
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
         return cast(
             Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
-            rust_database_for(self).inspect_database_pair(),
+            core_database_for(self).inspect_database_pair(),
         )
 
     def inspect_database_pair_controlled(
@@ -603,11 +601,11 @@ class Database:
         cancellation: Any | None = None,
     ) -> Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"]:
         """Inspect the managed database pair under explicit execution controls."""
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
         return cast(
             Literal["absent", "standalone_managed", "owned_pair", "owned_journal_orphan"],
-            rust_database_for(self).inspect_database_pair_controlled(
+            core_database_for(self).inspect_database_pair_controlled(
                 timeout_milliseconds=timeout_milliseconds,
                 cancellation=cancellation,
             ),
@@ -615,9 +613,9 @@ class Database:
 
     def plan_database_delete(self) -> Any:
         """Create a single-use, pair-aware managed database deletion plan."""
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        return rust_database_for(self).plan_database_delete()
+        return core_database_for(self).plan_database_delete()
 
     def plan_database_delete_controlled(
         self,
@@ -626,9 +624,9 @@ class Database:
         cancellation: Any | None = None,
     ) -> Any:
         """Create a managed deletion plan under explicit execution controls."""
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        return rust_database_for(self).plan_database_delete_controlled(
+        return core_database_for(self).plan_database_delete_controlled(
             timeout_milliseconds=timeout_milliseconds,
             cancellation=cancellation,
         )
@@ -681,9 +679,9 @@ class Database:
         ``kind`` is inferred from the staged plans. ``transaction()`` keeps
         its eager context.
         """
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        return rust_database_for(self).staged_transaction(kind, commit_on_exit=commit_on_exit)
+        return core_database_for(self).staged_transaction(kind, commit_on_exit=commit_on_exit)
 
     def execute_query(self, query: str, transaction_type: str = "read") -> list[dict[str, Any]]:
         """Execute a query and return results.
@@ -718,9 +716,9 @@ class Database:
         identity; supply ``server_version=`` at construction when strict
         identity validation is required.
         """
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        return rust_database_for(self).server_version()
+        return core_database_for(self).server_version()
 
     def check_schema_annotation_support(self, typeql: str) -> None:
         """Version-gate schema DDL that uses ``@doc``/``@meta`` annotations.
@@ -730,9 +728,9 @@ class Database:
         the server version is unknown, the DDL is sent as-is and the server
         decides.
         """
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        rust_database_for(self).check_schema_annotation_support(typeql)
+        core_database_for(self).check_schema_annotation_support(typeql)
 
     def supports_given_stage(self) -> bool:
         """Whether ``given`` rows can execute on the active connection.
@@ -743,9 +741,9 @@ class Database:
         a band-9 upgrade failure. Bulk operations consult this before dispatch
         and use their per-row fallback when it is ``False``.
         """
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        return rust_database_for(self).supports_given_stage()
+        return core_database_for(self).supports_given_stage()
 
     def execute_with_rows(
         self,
@@ -778,9 +776,9 @@ class Database:
         Returns:
             List of result dictionaries (one per pipeline output row).
         """
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        return rust_database_for(self).execute_with_rows(
+        return core_database_for(self).execute_with_rows(
             query, transaction_type, variables, column_types, rows
         )
 
@@ -791,22 +789,22 @@ class Database:
             db = self.driver.databases.get(self.database_name)
             schema = db.schema()
         else:
-            from type_bridge._rust_runtime import schema_text
+            from type_bridge._native import schema_text
 
             schema = schema_text(self)
         logger.debug(f"Schema fetched ({len(schema)} chars)")
         return schema
 
 
-class _RustTransactionView:
-    """Small compatibility view for Rust transaction state."""
+class _NativeTransactionView:
+    """Small view for native transaction state."""
 
     def __init__(self, context: TransactionContext):
         self._context = context
 
     @property
     def is_open(self) -> bool:
-        return self._context._rust_tx is not None and not self._context._rust_finalized
+        return self._context._native_tx is not None and not self._context._native_finalized
 
     def execute(self, query: str) -> list[dict[str, Any]]:
         return self._context.execute(query)
@@ -824,51 +822,49 @@ class TransactionContext:
     def __init__(self, db: Database, tx_type: TransactionType):
         self.db = db
         self.tx_type = tx_type
-        self._rust_tx: Any | None = None
-        self._rust_finalized = False
+        self._native_tx: Any | None = None
+        self._native_finalized = False
 
     def __enter__(self) -> TransactionContext:
         logger.debug(
             f"Opening {_tx_type_name(self.tx_type)} transaction context for database: {self.db.database_name}"
         )
-        from type_bridge._backend import selected_backend
 
-        selected_backend()
-        from type_bridge._rust_runtime import rust_database_for
+        from type_bridge._native import core_database_for
 
-        rust_db = rust_database_for(self.db)
-        self._rust_tx = rust_db.transaction(_tx_type_wire_name(self.tx_type))
-        self._rust_finalized = False
-        logger.debug(f"Rust transaction context opened: {_tx_type_name(self.tx_type)}")
+        native_db = core_database_for(self.db)
+        self._native_tx = native_db.transaction(_tx_type_wire_name(self.tx_type))
+        self._native_finalized = False
+        logger.debug(f"Native transaction context opened: {_tx_type_name(self.tx_type)}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        if self._rust_tx is not None:
+        if self._native_tx is not None:
             try:
-                if not self._rust_finalized:
+                if not self._native_finalized:
                     if exc_type is None:
                         if self.tx_type in (TransactionType.WRITE, TransactionType.SCHEMA):
-                            logger.debug("Rust transaction context exiting normally, committing")
-                            self._rust_tx.commit()
-                            self._rust_finalized = True
+                            logger.debug("Native transaction context exiting normally, committing")
+                            self._native_tx.commit()
+                            self._native_finalized = True
                     elif self.tx_type in (TransactionType.WRITE, TransactionType.SCHEMA):
                         logger.warning(
-                            f"Rust transaction context exiting with exception, rolling back: {exc_type.__name__}"
+                            f"Native transaction context exiting with exception, rolling back: {exc_type.__name__}"
                         )
-                        self._rust_tx.rollback()
-                        self._rust_finalized = True
+                        self._native_tx.rollback()
+                        self._native_finalized = True
             finally:
-                self._rust_tx.close()
-                self._rust_tx = None
-                logger.debug("Rust transaction context closed")
+                self._native_tx.close()
+                self._native_tx = None
+                logger.debug("Native transaction context closed")
             return
 
     @property
-    def transaction(self) -> _RustTransactionView:
+    def transaction(self) -> _NativeTransactionView:
         """View of the active native transaction."""
-        if self._rust_tx is None:
+        if self._native_tx is None:
             raise RuntimeError("TransactionContext not entered")
-        return _RustTransactionView(self)
+        return _NativeTransactionView(self)
 
     @property
     def database(self) -> Database:
@@ -877,8 +873,8 @@ class TransactionContext:
 
     def execute(self, query: str) -> list[dict[str, Any]]:
         """Execute a query within the active transaction."""
-        if self._rust_tx is not None:
-            return self._rust_tx.execute(query)
+        if self._native_tx is not None:
+            return self._native_tx.execute(query)
         return self.transaction.execute(query)
 
     def execute_with_rows(
@@ -891,25 +887,25 @@ class TransactionContext:
         """Execute a ``given``-stage query with input rows in this transaction.
 
         See :meth:`Database.execute_with_rows` for the argument contract.
-        Requires the Rust backend on a TypeDB 3.12+ connection.
+        Requires a TypeDB 3.12+ connection.
         """
-        if self._rust_tx is None:
-            raise RuntimeError("execute_with_rows requires an open Rust-backend transaction")
-        return self._rust_tx.execute_with_rows(query, variables, column_types, rows)
+        if self._native_tx is None:
+            raise RuntimeError("execute_with_rows requires an open native transaction")
+        return self._native_tx.execute_with_rows(query, variables, column_types, rows)
 
     def commit(self) -> None:
         """Commit the active transaction."""
-        if self._rust_tx is not None:
-            self._rust_tx.commit()
-            self._rust_finalized = True
+        if self._native_tx is not None:
+            self._native_tx.commit()
+            self._native_finalized = True
             return
         self.transaction.commit()
 
     def rollback(self) -> None:
         """Roll back writes and keep the active transaction usable."""
-        if self._rust_tx is not None:
-            self._rust_tx.rollback()
-            self._rust_finalized = False
+        if self._native_tx is not None:
+            self._native_tx.rollback()
+            self._native_finalized = False
             return
         self.transaction.rollback()
 

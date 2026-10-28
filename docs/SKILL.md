@@ -221,9 +221,9 @@ npm install @type-bridge/node
 
 ```ts
 import { Age, Name, Person, QuerySession } from "./generated/app-models/index.js";
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "example");
+const db = Database.connect("localhost:1729", "example");
 const ada = Person.create({ name: Name.create("ada"), age: Age.create(36n) });
 Person.manager(db).put(ada);
 const adults = Person.manager(db).filter({ age__gte: Age.create(18n) }).all();
@@ -236,7 +236,7 @@ database lifecycle, integer `bigint` values, managers, and generation.
 
 Use scheme-free `host:port` addresses by default. Keep URI scheme and
 `tlsEnabled` consistent. Require `tlsEnabled: true` when supplying
-`tlsRootCa`. Close `RustDatabase` handles when finished, but do not treat
+`tlsRootCa`. Close `Database` handles when finished, but do not treat
 synchronous `close()` as an out-of-band cancellation mechanism for a native
 call occupying the event-loop thread. Use V2 deadlines for cancellable work.
 

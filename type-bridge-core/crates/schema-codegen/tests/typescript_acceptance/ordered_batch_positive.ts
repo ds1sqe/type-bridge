@@ -11,9 +11,9 @@ import {
   type ProjectedModelFilter,
   type ProjectedModelManager,
 } from "./generated_ordered/src/index.js";
-import type { RustDatabase } from "@type-bridge/node";
+import type { Database } from "@type-bridge/node";
 
-declare const database: RustDatabase;
+declare const database: Database;
 
 const first = Person.create({
   identifier: Identifier.create("first"),

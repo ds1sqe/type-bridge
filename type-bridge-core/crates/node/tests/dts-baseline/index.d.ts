@@ -292,7 +292,7 @@ export interface NativeRuntime {
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule extends NativeRuntime, NativeQueryV2Runtime, NativeQueryV2BuilderRuntime {
 }
-export interface RustDatabaseConnectOptions {
+export interface DatabaseConnectOptions {
     username?: string | null;
     password?: string | null;
     httpPort?: number;
@@ -300,7 +300,7 @@ export interface RustDatabaseConnectOptions {
     tlsEnabled?: boolean;
     tlsRootCa?: string;
 }
-export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {
+export interface EnsureDatabaseOptions extends DatabaseConnectOptions {
 }
 export declare class MigrationApprovalSet {
     #private;
@@ -322,8 +322,8 @@ export declare class MigrationPlan {
     /** @internal */
     constructor(native: NativeMigrationPlan);
     get executionAuthorized(): boolean;
-    execute(database: RustDatabase, holder: string): MigrationExecutionReport;
-    executeControlled(database: RustDatabase, holder: string, options?: {
+    execute(database: Database, holder: string): MigrationExecutionReport;
+    executeControlled(database: Database, holder: string, options?: {
         timeoutMilliseconds?: number;
         resources?: MigrationExecutionResources;
         cancellation?: MigrationCancellation;
@@ -365,8 +365,8 @@ export declare class MigrationCatalog {
     isEmpty(): boolean;
     heads(): MigrationIdentity[];
     entry(index: number): MigrationHistoryEntry | null;
-    verify(database: RustDatabase): MigrationVerificationReport;
-    appliedMigrations(database: RustDatabase): MigrationIdentity[];
+    verify(database: Database): MigrationVerificationReport;
+    appliedMigrations(database: Database): MigrationIdentity[];
     previewApply(applied: MigrationIdentity[], targets?: MigrationIdentity[]): MigrationPreview;
     previewRollback(applied: MigrationIdentity[], removals: MigrationIdentity[]): MigrationPreview;
 }
@@ -381,7 +381,7 @@ export declare class QueryV2Authority {
      * decoded, and validated under `queryLimits`.
      */
     withQueryLimits(queryLimits: QueryLimits): QueryV2Authority;
-    static queryOnly(database: RustDatabase, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
+    static queryOnly(database: Database, declaredSchema: Uint8Array, scope: string, profile: string): QueryV2Authority;
 }
 export interface QueryV2RemoteLimits {
     readonly maxItems: bigint;
@@ -389,13 +389,13 @@ export interface QueryV2RemoteLimits {
     readonly maxCollectionMembers: bigint;
     readonly deadlineMs?: bigint | null;
 }
-export declare function queryV2ExecuteLocal(database: RustDatabase, authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
+export declare function queryV2ExecuteLocal(database: Database, authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, deadlineMs?: bigint | null): Promise<string>;
 export declare function queryV2RemoteCapabilities(advertisement: Uint8Array): readonly string[];
 export declare function queryV2PrepareRemote(authority: QueryV2Authority, plan: Uint8Array, invocationJson: string, advertisement: Uint8Array, limits: QueryV2RemoteLimits): PendingQueryV2Remote;
-export declare class RustDatabase {
+export declare class Database {
     #private;
     private constructor();
-    static connect(address: string, databaseName: string, options?: RustDatabaseConnectOptions): RustDatabase;
+    static connect(address: string, databaseName: string, options?: DatabaseConnectOptions): Database;
     isConnected(): boolean;
     close(): void;
     databaseName(): string;
@@ -412,7 +412,7 @@ export declare class RustDatabase {
     planDatabaseDelete(): ManagedDatabaseDeletionPlan;
     planDatabaseDeleteControlled(options?: AdministrationExecutionOptions): ManagedDatabaseDeletionPlan;
     resetDatabase(): void;
-    transaction(transactionType?: TransactionType): RustTransactionContext;
+    transaction(transactionType?: TransactionType): TransactionContext;
     /**
      * Create a deferred staged transaction; nothing opens until commit. An
      * omitted kind is inferred from the staged writes. Stage plans from
@@ -430,8 +430,8 @@ export declare class ManagedDatabaseDeletionPlan {
     close(): void;
 }
 /** @internal Wrap a generated-package-owned native database handle. */
-export declare function createRustDatabaseFromNative(native: NativeRustDatabase): RustDatabase;
-export declare class RustTransactionContext {
+export declare function createRustDatabaseFromNative(native: NativeRustDatabase): Database;
+export declare class TransactionContext {
     #private;
     private constructor();
     query(query: string): unknown[];

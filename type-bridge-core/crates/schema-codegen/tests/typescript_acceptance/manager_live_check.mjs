@@ -334,9 +334,9 @@ export async function loadGeneratedPackages(packageRoot, identity = catalogIdent
     }
   }
   requireCondition(
-    typeof runtime?.RustDatabase?.connect === "function",
+    typeof runtime?.Database?.connect === "function",
     "generated_package_import",
-    "@type-bridge/node has no RustDatabase facade",
+    "@type-bridge/node has no Database facade",
   );
   return { local: local.package_, foreign: foreign.package_, runtime };
 }
@@ -948,7 +948,7 @@ async function runOwnedDatabase({
       `exact TypeDB ${liveServerVersion} required, detected ${JSON.stringify(detected)}`,
     );
   }
-  const bootstrap = runtime.RustDatabase.connect(address, databaseName, {
+  const bootstrap = runtime.Database.connect(address, databaseName, {
     httpPort: port,
     ...(tlsRootCa === undefined ? {} : { tlsEnabled: true, tlsRootCa }),
   });

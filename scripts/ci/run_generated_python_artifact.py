@@ -32,7 +32,7 @@ ROOT_REQUIRED_MEMBERS = frozenset(
     {
         "type_bridge/__init__.py",
         "type_bridge/_runtime_projection.py",
-        "type_bridge/_rust_runtime.py",
+        "type_bridge/_native.py",
         "type_bridge/py.typed",
         "type_bridge/query_v2.py",
         "type_bridge/session.py",

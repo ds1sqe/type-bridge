@@ -50,7 +50,7 @@ import {
   connectProxy,
   schemaAuthority,
 } from "./generated_v2/src/index.js";
-import { Plan, type Pending, type PendingPlanAnswer, type RustDatabase, type StagedTransaction } from "@type-bridge/node";
+import { Plan, type Pending, type PendingPlanAnswer, type Database, type StagedTransaction } from "@type-bridge/node";
 
 const identifier = Identifier.create("person-1");
 const identifierBytes: Uint8Array = Identifier.encodeAttribute(identifier);
@@ -98,7 +98,7 @@ const stats: PlayerStats = PlayerStats({ wins: 3n, nickname: null });
 const identifierValue: string = identifier.value;
 const scoreValue: bigint = score.value;
 const completeIid: string | null = person.iid;
-declare const database: RustDatabase;
+declare const database: Database;
 const personManager: ProjectedModelManager<Person> = Person.manager(database);
 personManager.insert(person);
 personManager.put(person);
@@ -341,7 +341,7 @@ void legacyRows;
 void legacySession;
 
 // Staged plans take generated model, field and role tokens.
-async function stagedScore(db: RustDatabase): Promise<PendingPlanAnswer> {
+async function stagedScore(db: Database): Promise<PendingPlanAnswer> {
   const plan = Plan.builder();
   const planPerson = plan.exact(Person);
   const planEmployment = plan.subtypes(Employment);

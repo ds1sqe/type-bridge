@@ -114,10 +114,10 @@ class Workspace:
 
 def drop(address: str, http_port: int, username: str, password: str, database: str) -> None:
     """Delete a managed database and its migration journal, if they exist."""
-    from type_bridge_core import PyRustDatabase
+    from type_bridge_core import PyDatabase
 
     for name in (database, f"{database}__tbv2_journal"):
-        db = PyRustDatabase.connect(
+        db = PyDatabase.connect(
             address, name, username=username, password=password, http_port=http_port
         )
         try:

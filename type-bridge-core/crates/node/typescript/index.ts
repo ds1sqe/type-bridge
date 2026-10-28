@@ -476,7 +476,7 @@ export interface NativeModule
     NativeQueryV2Runtime,
     NativeQueryV2BuilderRuntime {}
 
-export interface RustDatabaseConnectOptions {
+export interface DatabaseConnectOptions {
   username?: string | null;
   password?: string | null;
   httpPort?: number;
@@ -485,7 +485,7 @@ export interface RustDatabaseConnectOptions {
   tlsRootCa?: string;
 }
 
-export interface EnsureDatabaseOptions extends RustDatabaseConnectOptions {}
+export interface EnsureDatabaseOptions extends DatabaseConnectOptions {}
 
 export class MigrationApprovalSet {
   readonly #native: NativeMigrationApprovalSet;
@@ -534,12 +534,12 @@ export class MigrationPlan {
     return this.#native.executionAuthorized;
   }
 
-  execute(database: RustDatabase, holder: string): MigrationExecutionReport {
+  execute(database: Database, holder: string): MigrationExecutionReport {
     return this.#native.execute(preparedV2DatabaseHandle(database), holder);
   }
 
   executeControlled(
-    database: RustDatabase,
+    database: Database,
     holder: string,
     options: {
       timeoutMilliseconds?: number;
@@ -665,11 +665,11 @@ export class MigrationCatalog {
     return this.#native.entry(index);
   }
 
-  verify(database: RustDatabase): MigrationVerificationReport {
+  verify(database: Database): MigrationVerificationReport {
     return this.#native.verify(preparedV2DatabaseHandle(database));
   }
 
-  appliedMigrations(database: RustDatabase): MigrationIdentity[] {
+  appliedMigrations(database: Database): MigrationIdentity[] {
     return this.#native.appliedMigrations(preparedV2DatabaseHandle(database));
   }
 
@@ -750,7 +750,7 @@ export class QueryV2Authority {
   }
 
   static queryOnly(
-    database: RustDatabase,
+    database: Database,
     declaredSchema: Uint8Array,
     scope: string,
     profile: string,
@@ -780,11 +780,11 @@ export interface QueryV2RemoteLimits {
   readonly deadlineMs?: bigint | null;
 }
 
-function preparedV2DatabaseHandle(database: RustDatabase): NativeRustDatabase {
+function preparedV2DatabaseHandle(database: Database): NativeRustDatabase {
   const native = rustDatabaseHandle(database);
   if (native === undefined) {
     throw new TypeError(
-      "queryV2ExecuteLocal requires a type-bridge RustDatabase",
+      "queryV2ExecuteLocal requires a type-bridge Database",
     );
   }
   return native;
@@ -803,7 +803,7 @@ function preparedV2AuthorityHandle(
 }
 
 export function queryV2ExecuteLocal(
-  database: RustDatabase,
+  database: Database,
   authority: QueryV2Authority,
   plan: Uint8Array,
   invocationJson: string,
@@ -859,7 +859,7 @@ export function queryV2PrepareRemote(
   });
 }
 
-export class RustDatabase {
+export class Database {
   readonly #native: NativeRustDatabase;
 
   private constructor(native: NativeRustDatabase) {
@@ -870,8 +870,8 @@ export class RustDatabase {
   static connect(
     address: string,
     databaseName: string,
-    options: RustDatabaseConnectOptions = {},
-  ): RustDatabase {
+    options: DatabaseConnectOptions = {},
+  ): Database {
     validateConnectionTransport(options);
     const native = loadNative().connectRustDatabase(
       address,
@@ -883,7 +883,7 @@ export class RustDatabase {
       options.tlsEnabled ?? null,
       options.tlsRootCa ?? null,
     );
-    return new RustDatabase(native);
+    return new Database(native);
   }
 
   isConnected(): boolean {
@@ -952,7 +952,7 @@ export class RustDatabase {
 
   transaction(
     transactionType: TransactionType = "read",
-  ): RustTransactionContext {
+  ): TransactionContext {
     return createRustTransactionContext(
       this.#native.transaction(transactionType),
     );
@@ -998,16 +998,16 @@ export class ManagedDatabaseDeletionPlan {
 /** @internal Wrap a generated-package-owned native database handle. */
 export function createRustDatabaseFromNative(
   native: NativeRustDatabase,
-): RustDatabase {
-  const Constructor = RustDatabase as unknown as new (
+): Database {
+  const Constructor = Database as unknown as new (
     native: NativeRustDatabase,
-  ) => RustDatabase;
+  ) => Database;
   return new Constructor(native);
 }
 
-const TRANSACTION_CONSTRUCTOR = Symbol("RustTransactionContext");
+const TRANSACTION_CONSTRUCTOR = Symbol("TransactionContext");
 
-export class RustTransactionContext {
+export class TransactionContext {
   readonly #native: NativeRustTransactionContext;
 
   private constructor(
@@ -1016,7 +1016,7 @@ export class RustTransactionContext {
   ) {
     if (token !== TRANSACTION_CONSTRUCTOR) {
       throw new TypeError(
-        "RustTransactionContext values are created by RustDatabase.transaction()",
+        "TransactionContext values are created by Database.transaction()",
       );
     }
     this.#native = native;
@@ -1047,12 +1047,12 @@ export class RustTransactionContext {
 
 function createRustTransactionContext(
   native: NativeRustTransactionContext,
-): RustTransactionContext {
-  const TransactionContext = RustTransactionContext as unknown as new (
+): TransactionContext {
+  const Constructor = TransactionContext as unknown as new (
     native: NativeRustTransactionContext,
     token: typeof TRANSACTION_CONSTRUCTOR,
-  ) => RustTransactionContext;
-  return new TransactionContext(native, TRANSACTION_CONSTRUCTOR);
+  ) => TransactionContext;
+  return new Constructor(native, TRANSACTION_CONSTRUCTOR);
 }
 
 function parseJson<T>(value: string): T {
@@ -1060,7 +1060,7 @@ function parseJson<T>(value: string): T {
 }
 
 function validateConnectionTransport(
-  options: Pick<RustDatabaseConnectOptions, "tlsEnabled" | "tlsRootCa">,
+  options: Pick<DatabaseConnectOptions, "tlsEnabled" | "tlsRootCa">,
 ): void {
   for (const key in options) {
     const normalized = key.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();

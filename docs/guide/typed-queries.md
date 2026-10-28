@@ -23,7 +23,7 @@ same package-scoped session. The connection decides where terminals run: a
 direct `Database` or `TransactionContext`, or a proxy connection (see
 [Proxy connections](#proxy-connections)). Composition is synchronous; every
 terminal is a coroutine on every connection, so Python code awaits it.
-TypeScript is the same: `new QuerySession(connection)` takes a `RustDatabase`,
+TypeScript is the same: `new QuerySession(connection)` takes a `Database`,
 a transaction, or a proxy connection, and every terminal returns a `Promise`.
 
 Use `exact(Model)` for exactly one schema type and `subtypes(Model)` for a
@@ -812,7 +812,7 @@ A handle from another builder raises `TypeError` at once. A generated
 package's `schema_authority()` is its embedded, verified authority.
 
 `Database.staged_transaction(kind=None, *, commit_on_exit=True)` (and
-`RustDatabase.staged_transaction`) returns the core staged transaction:
+`Database.staged_transaction`) returns the core staged transaction:
 `stage(plan)`, `commit()`, `rollback()` and `close()`. Nothing opens before `commit()`; an omitted kind
 is inferred from the staged plans. `Pending.result()` answers `Rows(rows)`,
 `Documents(documents)`, `Count(count)`, `Exists(exists)` or `Matched(count)`, raises the commit's

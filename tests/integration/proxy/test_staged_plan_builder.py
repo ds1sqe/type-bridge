@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from type_bridge_core import ProxyConnection, PyRustDatabase, QueryV2Authority, query_v2_authority
+from type_bridge_core import ProxyConnection, PyDatabase, QueryV2Authority, query_v2_authority
 
 from type_bridge.plan import Matched, Plan, PlanAnswer
 
@@ -37,8 +37,8 @@ def live() -> dict[str, Any]:
     return json.loads((Path(FIXTURE_DIR) / "fixture.json").read_text())
 
 
-def _connect(database: str) -> PyRustDatabase:
-    return PyRustDatabase.connect(
+def _connect(database: str) -> PyDatabase:
+    return PyDatabase.connect(
         os.environ.get("TYPEDB_ADDRESS", "localhost:1730"),
         database,
         http_port=int(os.environ.get("TYPEDB_HTTP_PORT", "8000")),

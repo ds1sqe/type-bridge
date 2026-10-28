@@ -149,7 +149,7 @@ nav:
     - C Release Procedure: development/c-release.md
     - Architecture:
       - Internals: development/internals.md
-      - Rust Backend: development/rust-backend.md
+      - Core Engine: development/core-engine.md
       - TypeDB Concepts & Compatibility: development/typedb.md
       - Abstract Type Concepts: development/abstract-types.md
     - Maintainer Contracts:

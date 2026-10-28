@@ -126,9 +126,9 @@ unsupported versions are rejected before provider work.
 Node exposes the same options:
 
 ```ts
-import { RustDatabase } from "@type-bridge/node";
+import { Database } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "application", {
+const db = Database.connect("localhost:1729", "application", {
   httpPort: 9000,
   serverVersion: "3.12.3",
 });
@@ -198,7 +198,7 @@ once explicit close begins, new operations fail and in-flight work is
 cancelled. Close is idempotent.
 
 Node synchronous native work occupies the JavaScript event-loop thread, so
-`RustDatabase.close()` cannot interrupt a synchronous call out of band.
+`Database.close()` cannot interrupt a synchronous call out of band.
 Cancellable Node V2 work uses Promise-returning execution plus a deadline. The
 explicit shutdown behavior tracks the upstream 3.12.1 lifecycle issue in #196
 and does not patch the packaged TypeDB driver.

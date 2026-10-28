@@ -29,7 +29,7 @@ from pathlib import Path
 from queue import Empty
 from typing import Any, Protocol
 
-from type_bridge_core import PyRustDatabase, QueryV2Authority, query_v2_query_only_authority
+from type_bridge_core import PyDatabase, QueryV2Authority, query_v2_query_only_authority
 
 from type_bridge.plan import Count, Matched, Plan
 
@@ -312,11 +312,11 @@ SCENARIOS: dict[str, Scenario] = {
 # -------------------------------------------------------------- live setup
 
 
-def connect(target: Target) -> PyRustDatabase:
-    return PyRustDatabase.connect(target.address, target.database, http_port=target.http_port)
+def connect(target: Target) -> PyDatabase:
+    return PyDatabase.connect(target.address, target.database, http_port=target.http_port)
 
 
-def authority_for(db: PyRustDatabase, target: Target) -> QueryV2Authority:
+def authority_for(db: PyDatabase, target: Target) -> QueryV2Authority:
     return query_v2_query_only_authority(db, target.declared, SCOPE, target.profile)
 
 

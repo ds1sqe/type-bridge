@@ -256,7 +256,7 @@ test("prepared plan executes locally and remotely", { skip: smokeSkip }, async (
     database,
     connectionOptions,
   );
-  const db = pkg.RustDatabase.connect(
+  const db = pkg.Database.connect(
     address,
     database,
     connectionOptions,

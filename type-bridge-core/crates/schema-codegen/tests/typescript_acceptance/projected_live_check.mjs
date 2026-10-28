@@ -43,7 +43,7 @@ export const SEMANTIC_SCHEMA_FINGERPRINT = Object.freeze({
 export const PROJECTION_FINGERPRINT = Object.freeze({
   algorithm: "sha256",
   canonicalization: "typebridge.binding-projection/v1",
-  digest: "4da473e61c4732530bc2ac39ab203cd3ff59ed6877f2eaec190c67ddccacc7bc",
+  digest: "9d8de35e19a9c4a879cb5cb28a4c336888a72e88fafb831402096d797411fcd2",
   domain: "typebridge.binding.projection",
   semantic_profile: SEMANTIC_PROFILE,
 });
@@ -401,11 +401,11 @@ export async function loadGeneratedPackage(packageRoot, identity = catalogIdenti
   if (
     runtime === null ||
     typeof runtime !== "object" ||
-    typeof runtime.RustDatabase?.connect !== "function"
+    typeof runtime.Database?.connect !== "function"
   ) {
     throw new ProducerError(
       "generated_package_import",
-      "@type-bridge/node has no public RustDatabase connection facade",
+      "@type-bridge/node has no public Database connection facade",
     );
   }
   return { package_, runtime };
@@ -1227,7 +1227,7 @@ export async function runOwnedDatabase({
   journeyRunner = runJourney,
   liveServerVersion = catalogIdentity().liveServerVersion,
 }) {
-  const database = runtime.RustDatabase.connect(address, databaseName, {
+  const database = runtime.Database.connect(address, databaseName, {
     httpPort: port,
   });
   let ownsDatabase = false;

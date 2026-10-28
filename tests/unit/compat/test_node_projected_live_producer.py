@@ -266,7 +266,7 @@ const database = {
   },
 };
 let connected;
-const runtime = { RustDatabase: { connect(address, name, options) {
+const runtime = { Database: { connect(address, name, options) {
   connected = { address, name, options };
   events.push("connect");
   return database;
@@ -319,7 +319,7 @@ const database = {
   deleteDatabase() { events.push("delete"); },
   close() { events.push("close"); },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -368,7 +368,7 @@ const database = {
     };
   },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -406,7 +406,7 @@ const database = {
   deleteDatabase() { events.push("DELETE_FOREIGN_DATABASE"); },
   close() { events.push("close"); },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -439,7 +439,7 @@ const database = {
   close() { events.push("close"); },
   transaction() { return { query() {}, commit() {}, close() {} }; },
 };
-const runtime = { RustDatabase: { connect() { events.push("connect"); return database; } } };
+const runtime = { Database: { connect() { events.push("connect"); return database; } } };
 try {
   await producer.runOwnedDatabase({
     package_: {}, runtime, address: "127.0.0.1:32942",
@@ -482,7 +482,7 @@ def test_report_envelope_source_independence_and_public_crud_boundary() -> None:
     assert "Aliases.create" not in source
     assert "NetworkLink" not in source
     assert "@type-bridge/node" in source
-    assert "RustDatabase.connect" in source
+    assert "Database.connect" in source
     assert "3c8d072b60c575b4c0381c1ea44088a9c18e01ed52e90730311aadccb72cd0c8" in source
     assert source.index("await runOwnedDatabase({") < source.index(
         "publishReport(output, buildReport(authority, observations, identity))"

@@ -14,7 +14,7 @@ use type_bridge_schema_migration::{
 };
 use type_bridge_schema_migration::{MigrationCatalog, migration_runtime_capability_vocabulary};
 
-use crate::orm_runtime::{PyRustDatabase, provider_block_on};
+use crate::orm_runtime::{PyDatabase, provider_block_on};
 
 /// Wakeable cancellation owner for migration execution.
 #[pyclass(name = "MigrationCancellation")]
@@ -226,7 +226,7 @@ impl PyMigrationCatalog {
     fn verify(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
     ) -> PyResult<PyMigrationVerificationReport> {
         let (database, runtime) = database.handles();
         provider_block_on(
@@ -241,7 +241,7 @@ impl PyMigrationCatalog {
     fn applied_migrations(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
     ) -> PyResult<Vec<PyMigrationIdentity>> {
         let (database, runtime) = database.handles();
         provider_block_on(
@@ -519,7 +519,7 @@ impl PyMigrationPlan {
     fn execute(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         holder: String,
     ) -> PyResult<PyMigrationExecutionReport> {
         self.execute_controlled(py, database, holder, None, None, None)
@@ -529,7 +529,7 @@ impl PyMigrationPlan {
     fn execute_controlled(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         holder: String,
         timeout_milliseconds: Option<u64>,
         resources: Option<&PyMigrationExecutionResources>,

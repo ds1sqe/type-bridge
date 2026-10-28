@@ -10,11 +10,11 @@ import {
   type Query,
 } from "./generated_v2/src/index.js";
 import {
-  RustDatabase,
-  type RustTransactionContext,
+  Database,
+  type TransactionContext,
 } from "@type-bridge/node";
 
-const db = RustDatabase.connect("localhost:1729", "typed_query_example");
+const db = Database.connect("localhost:1729", "typed_query_example");
 const session = new QuerySession(db);
 const person = session.exact(Person);
 const event = session.exact(Event);
@@ -125,7 +125,7 @@ const ownedPerson = ownedSession.exact(Person);
 const ownedRows = await ownedSession.query(ownedPerson).rows({ limit: 10n });
 
 // Borrowed: only the caller closes the context, which remains reusable.
-const tx: RustTransactionContext = db.transaction("read");
+const tx: TransactionContext = db.transaction("read");
 try {
   const borrowed = new QuerySession(tx);
   const borrowedPerson = borrowed.exact(Person);

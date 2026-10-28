@@ -36,7 +36,7 @@ from typing import Any, Literal
 
 import type_bridge_core
 from type_bridge_core import (
-    PyRustDatabase,
+    PyDatabase,
     QueryV2Authority,
     query_v2_authority,
     query_v2_query_only_authority,
@@ -211,9 +211,7 @@ def orders(authority: QueryV2Authority, prefix: str, rows: int) -> Plan:
 # --------------------------------------------------------------- iterations
 
 
-def commit(
-    db: PyRustDatabase, kind: Literal["read", "write"], plans: Sequence[Plan]
-) -> list[object]:
+def commit(db: PyDatabase, kind: Literal["read", "write"], plans: Sequence[Plan]) -> list[object]:
     """Stage ``plans`` in one transaction, commit, and decode their answers."""
     tx = db.staged_transaction(kind)
     try:
@@ -237,7 +235,7 @@ def expect(answer: object, rows: int) -> None:
         raise AssertionError(f"{actual} rows, expected {rows}")
 
 
-def seed(name: str, db: PyRustDatabase, authority: QueryV2Authority, iterations: int) -> None:
+def seed(name: str, db: PyDatabase, authority: QueryV2Authority, iterations: int) -> None:
     if name in ("fetch_by_key", "fetch_filtered", "update"):
         commit(db, "write", [insert_items(authority, "item-", range(SEEDED_ITEMS))])
     elif name == "delete":
@@ -246,7 +244,7 @@ def seed(name: str, db: PyRustDatabase, authority: QueryV2Authority, iterations:
         commit(db, "write", [owners(authority), doctors(authority)])
 
 
-def iteration(name: str, db: PyRustDatabase, authority: QueryV2Authority, number: int) -> None:
+def iteration(name: str, db: PyDatabase, authority: QueryV2Authority, number: int) -> None:
     key = f"item-{number % SEEDED_ITEMS}"
     if name == "insert_one":
         expect(
@@ -305,8 +303,8 @@ def _stage_reader() -> Callable[[], dict[str, int]]:
     return reader
 
 
-def connect(config: Config, database: str) -> PyRustDatabase:
-    return PyRustDatabase.connect(
+def connect(config: Config, database: str) -> PyDatabase:
+    return PyDatabase.connect(
         config.address,
         database,
         username=config.username,

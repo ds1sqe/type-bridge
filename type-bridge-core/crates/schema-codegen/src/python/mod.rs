@@ -77,9 +77,9 @@ def connect(
         policy.answer_limits,
         cancellation,
     )
-    from type_bridge._rust_runtime import database_from_rust
+    from type_bridge._native import database_from_core
 
-    return database_from_rust(policy.endpoint, policy.database, native)
+    return database_from_core(policy.endpoint, policy.database, native)
 
 
 def _install_runtime_projection_with_authority(

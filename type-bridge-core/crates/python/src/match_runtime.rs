@@ -29,8 +29,7 @@ use type_bridge_orm::{
 };
 
 use crate::orm_runtime::{
-    PyDescriptorRegistry, PyDynamicValue, PyRustDatabase, PyRustTransactionContext,
-    provider_block_on,
+    PyDatabase, PyDescriptorRegistry, PyDynamicValue, PyTransactionContext, provider_block_on,
 };
 use crate::proxy_connection_runtime::PyProxyConnection;
 use crate::staged_transaction_runtime::{PyPending, PyStagedTransaction};
@@ -161,8 +160,8 @@ impl PyQueryInvocationBudget {
 /// Where one generated terminal runs, as Python passes it.
 #[derive(Clone, Copy)]
 enum TerminalTarget<'a> {
-    Database(&'a PyRustDatabase),
-    Transaction(&'a PyRustTransactionContext),
+    Database(&'a PyDatabase),
+    Transaction(&'a PyTransactionContext),
     Proxy(&'a PyProxyConnection),
 }
 
@@ -1152,7 +1151,7 @@ impl PyMatchQueryHandle {
     fn execute_fetch_rows_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
@@ -1165,7 +1164,7 @@ impl PyMatchQueryHandle {
     fn execute_fetch_rows_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
         limit: &Bound<'_, PyAny>,
@@ -1193,7 +1192,7 @@ impl PyMatchQueryHandle {
     fn execute_page_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
@@ -1217,7 +1216,7 @@ impl PyMatchQueryHandle {
     fn execute_page_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         order: Vec<Py<PyMatchOrderHandle>>,
         offset: &Bound<'_, PyAny>,
@@ -1263,7 +1262,7 @@ impl PyMatchQueryHandle {
     fn execute_count_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Database(database);
@@ -1273,7 +1272,7 @@ impl PyMatchQueryHandle {
     fn execute_count_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Transaction(transaction);
@@ -1293,7 +1292,7 @@ impl PyMatchQueryHandle {
     fn execute_exists_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Database(database);
@@ -1303,7 +1302,7 @@ impl PyMatchQueryHandle {
     fn execute_exists_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
     ) -> PyResult<PyValidatedMatchResultHandle> {
         let target = TerminalTarget::Transaction(transaction);
@@ -1345,7 +1344,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: Option<PyRef<'_, PyMatchBindingHandle>>,
         reducers: Vec<String>,
@@ -1362,7 +1361,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: Option<PyRef<'_, PyMatchBindingHandle>>,
         reducers: Vec<String>,
@@ -1414,7 +1413,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_field_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: PyRef<'_, PyMatchFieldHandle>,
         reducers: Vec<String>,
@@ -1430,7 +1429,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_field_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         group: PyRef<'_, PyMatchFieldHandle>,
         reducers: Vec<String>,
@@ -1482,7 +1481,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_fields_owned(
         &self,
         py: Python<'_>,
-        database: &PyRustDatabase,
+        database: &PyDatabase,
         root: PyRef<'_, PyMatchBindingHandle>,
         groups: Vec<Py<PyMatchFieldHandle>>,
         reducers: Vec<String>,
@@ -1498,7 +1497,7 @@ impl PyMatchQueryHandle {
     fn execute_reduce_by_fields_borrowed(
         &self,
         py: Python<'_>,
-        transaction: &PyRustTransactionContext,
+        transaction: &PyTransactionContext,
         root: PyRef<'_, PyMatchBindingHandle>,
         groups: Vec<Py<PyMatchFieldHandle>>,
         reducers: Vec<String>,

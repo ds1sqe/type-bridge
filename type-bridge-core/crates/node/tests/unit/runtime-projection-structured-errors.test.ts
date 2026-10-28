@@ -6,8 +6,8 @@ import {
   QueryV2Error,
   type NativeRustDatabase,
   type NativeRustTransactionContext,
-  type RustDatabase,
-  type RustTransactionContext,
+  type Database,
+  type TransactionContext,
 } from "../../typescript/index.js";
 import {
   InstalledRuntimeProjection,
@@ -105,9 +105,9 @@ function directExecutionFixture(): {
 }
 
 test("direct generated terminals project native diagnostics for both ownership paths", async () => {
-  const database = {} as RustDatabase;
+  const database = {} as Database;
   registerRustDatabaseHandle(database, {} as NativeRustDatabase);
-  const transaction = {} as RustTransactionContext;
+  const transaction = {} as TransactionContext;
   registerRustTransactionHandle(
     transaction,
     {} as NativeRustTransactionContext,

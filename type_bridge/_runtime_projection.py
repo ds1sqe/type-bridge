@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
 
-from type_bridge._rust_runtime import rust_core, rust_database_for, rust_transaction_for
+from type_bridge._native import core_database_for, core_module, core_transaction_for
 
 
 class GeneratedEntityProjection:
@@ -33,7 +33,7 @@ def install_runtime_projection(
     models: Sequence[tuple[type[object], type[object] | None]],
 ) -> PyRuntimeProjection:
     """Verify and install one generated package's native projection."""
-    installed = rust_core().PyRuntimeProjection(
+    installed = core_module().PyRuntimeProjection(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
@@ -54,7 +54,7 @@ def install_runtime_projection_with_authority(
     structs: Sequence[type[object]] = (),
 ) -> PyRuntimeProjection:
     """Verify and install one ordered generated package with compiled authority."""
-    installed = rust_core().PyRuntimeProjection(
+    installed = core_module().PyRuntimeProjection(
         projection_json,
         semantic_fingerprint_json,
         projection_fingerprint_json,
@@ -138,7 +138,7 @@ def projected_manager_for(
     connection: object,
 ) -> PyProjectedModelManager:
     """Bind a package projection to an existing native connection handle."""
-    transaction = rust_transaction_for(connection)
+    transaction = core_transaction_for(connection)
     if transaction is not None:
         return projection.manager_for_transaction(model, transaction)
-    return projection.manager_for_database(model, rust_database_for(connection))
+    return projection.manager_for_database(model, core_database_for(connection))

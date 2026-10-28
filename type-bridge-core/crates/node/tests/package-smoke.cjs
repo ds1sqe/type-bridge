@@ -8,8 +8,8 @@ const typeBridge = require("../");
 const retainedFunctions = [
   "QueryV2Authority",
   "QueryV2Error",
-  "RustDatabase",
-  "RustTransactionContext",
+  "Database",
+  "TransactionContext",
   "TypedGroupByQuery",
   "TypedQuery",
   "TypedQueryError",
@@ -152,24 +152,24 @@ assert.equal(
 );
 
 assert.equal(
-  Object.hasOwn(typeBridge.RustDatabase.prototype, "entityManager"),
+  Object.hasOwn(typeBridge.Database.prototype, "entityManager"),
   false,
-  "RustDatabase must not construct descriptor-driven entity managers",
+  "Database must not construct descriptor-driven entity managers",
 );
 assert.equal(
-  Object.hasOwn(typeBridge.RustDatabase.prototype, "relationManager"),
+  Object.hasOwn(typeBridge.Database.prototype, "relationManager"),
   false,
-  "RustDatabase must not construct descriptor-driven relation managers",
+  "Database must not construct descriptor-driven relation managers",
 );
 assert.equal(
-  Object.hasOwn(typeBridge.RustTransactionContext.prototype, "entityManager"),
+  Object.hasOwn(typeBridge.TransactionContext.prototype, "entityManager"),
   false,
-  "RustTransactionContext must not construct descriptor-driven entity managers",
+  "TransactionContext must not construct descriptor-driven entity managers",
 );
 assert.equal(
-  Object.hasOwn(typeBridge.RustTransactionContext.prototype, "relationManager"),
+  Object.hasOwn(typeBridge.TransactionContext.prototype, "relationManager"),
   false,
-  "RustTransactionContext must not construct descriptor-driven relation managers",
+  "TransactionContext must not construct descriptor-driven relation managers",
 );
 
 assert.equal(packageJson.main, "dist/public.js");

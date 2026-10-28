@@ -46,7 +46,7 @@ else:
     except ModuleNotFoundError:
 
         class TransactionType(Enum):
-            """Rust-safe fallback transaction type for the default backend."""
+            """Native transaction type when the external Python driver is unavailable."""
 
             READ = "read"
             WRITE = "write"

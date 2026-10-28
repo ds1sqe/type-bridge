@@ -457,13 +457,13 @@ fn compare_expr(
 
 /// Python-facing Rust database handle.
 #[pyclass]
-pub struct PyRustDatabase {
+pub struct PyDatabase {
     db: Arc<type_bridge_orm::Database>,
     runtime: Arc<ProviderRuntimeOwner>,
     managed_scope_id: Option<type_bridge_contract::managed_scope::ManagedScopeId>,
 }
 
-impl PyRustDatabase {
+impl PyDatabase {
     pub(crate) fn from_handles(
         db: Arc<type_bridge_orm::Database>,
         runtime: Arc<ProviderRuntimeOwner>,
@@ -618,7 +618,7 @@ fn py_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) 
 }
 
 #[pymethods]
-impl PyRustDatabase {
+impl PyDatabase {
     /// Connect to TypeDB using the shared Rust ORM session layer.
     #[staticmethod]
     #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None, tls=None, tls_root_ca=None))]
@@ -940,7 +940,7 @@ impl PyRustDatabase {
         &self,
         py: Python<'_>,
         transaction_type: &str,
-    ) -> PyResult<PyRustTransactionContext> {
+    ) -> PyResult<PyTransactionContext> {
         let tx_type = crate::match_runtime::parse_enum::<TxType>(transaction_type)?;
         let context = provider_block_on(
             py,
@@ -948,7 +948,7 @@ impl PyRustDatabase {
             self.db.transaction_context(tx_type),
         )
         .map_err(py_orm_error)?;
-        Ok(PyRustTransactionContext {
+        Ok(PyTransactionContext {
             supports_given_stage: self.db.supports_given_stage(),
             context,
             runtime: Arc::clone(&self.runtime),
@@ -981,16 +981,16 @@ impl PyRustDatabase {
     }
 }
 
-/// Python-facing Rust transaction context.
+/// Python-facing native transaction context.
 #[pyclass]
-pub struct PyRustTransactionContext {
+pub struct PyTransactionContext {
     supports_given_stage: bool,
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
     successor_batch_invoked: Arc<AtomicBool>,
 }
 
-impl PyRustTransactionContext {
+impl PyTransactionContext {
     pub(crate) fn supports_given_stage(&self) -> bool {
         self.supports_given_stage
     }
@@ -1017,7 +1017,7 @@ impl PyRustTransactionContext {
 }
 
 #[pymethods]
-impl PyRustTransactionContext {
+impl PyTransactionContext {
     /// Execute a raw TypeQL query in this Rust transaction.
     fn execute(&self, py: Python<'_>, query: &str) -> PyResult<Py<PyAny>> {
         let query = query.to_owned();
@@ -1027,7 +1027,7 @@ impl PyRustTransactionContext {
     }
 
     /// Execute a `given`-stage TypeQL query with input rows in this Rust
-    /// transaction. See `RustDatabase.execute_with_rows` for the argument
+    /// transaction. See `PyDatabase.execute_with_rows` for the argument
     /// contract; requires a band-9 (TypeDB 3.12+) connection.
     #[pyo3(signature = (query, variables, column_types, rows))]
     fn execute_with_rows(
@@ -1279,9 +1279,9 @@ fn py_runtime_error(message: impl Into<String>) -> PyErr {
 /// Register ORM runtime facade classes on the Python module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDescriptorRegistry>()?;
-    m.add_class::<PyRustDatabase>()?;
+    m.add_class::<PyDatabase>()?;
     m.add_class::<PyManagedDatabaseDeletionPlan>()?;
-    m.add_class::<PyRustTransactionContext>()?;
+    m.add_class::<PyTransactionContext>()?;
     m.add_class::<PyDynamicValue>()?;
     m.add_class::<PyDynamicExpr>()?;
     // Keep these imported so PyO3 validates the signatures at compile time.
@@ -1527,7 +1527,7 @@ mod administration_tests {
     use type_bridge_orm::session::backend::{BoxFuture, DriverBackend, TransactionOps, TxType};
     use type_bridge_orm::{Database, ProviderRuntimeOwner};
 
-    use super::PyRustDatabase;
+    use super::PyDatabase;
     use crate::migration_catalog_runtime::PyMigrationCancellation;
 
     struct AdministrationBackend {
@@ -1583,7 +1583,7 @@ mod administration_tests {
     fn python_generated_administration_is_pair_aware_and_plan_owned() {
         Python::initialize();
         let databases = Arc::new(Mutex::new(BTreeSet::new()));
-        let database = PyRustDatabase {
+        let database = PyDatabase {
             db: Arc::new(Database::with_backend(
                 Box::new(AdministrationBackend {
                     databases: Arc::clone(&databases),
