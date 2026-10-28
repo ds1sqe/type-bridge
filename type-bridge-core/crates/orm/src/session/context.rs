@@ -108,9 +108,16 @@ impl TransactionContextMutationLease {
         &self,
         plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     ) -> Result<super::staged::StagedQuery> {
-        crate::query_plan_exec::check_provider(plan, self.server_version)
-            .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+        self.check_plan_provider(plan)?;
         crate::query_plan_exec::staged_query(plan, true)
+            .map_err(crate::query_plan_exec::plan_diagnostic_error)
+    }
+
+    pub(crate) fn check_plan_provider(
+        &self,
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    ) -> Result<()> {
+        crate::query_plan_exec::check_provider(plan, self.server_version)
             .map_err(crate::query_plan_exec::plan_diagnostic_error)
     }
 

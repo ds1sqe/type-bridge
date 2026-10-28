@@ -226,7 +226,15 @@ impl StagedQuery {
                 rows.clone(),
                 limits.clone(),
                 meter.as_mut().expect("counted meter"),
-                !self.writes,
+                validation.map_or(!self.writes, |plan| {
+                    matches!(
+                        plan.output(),
+                        type_bridge_contract::query_plan::QueryOutput::Documents { .. }
+                    ) || matches!(
+                        plan.pipeline().last(),
+                        Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                    )
+                }),
                 validation,
             )
             .await?

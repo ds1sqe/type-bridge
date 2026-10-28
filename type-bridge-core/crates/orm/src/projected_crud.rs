@@ -59,6 +59,9 @@ use crate::value::AttributeValue;
 use crate::{ClassifiedCommitError, OrmError};
 use type_bridge_contract::query_plan::v3::DocumentRole;
 
+#[path = "projected_crud_controlled_update.rs"]
+mod controlled_update;
+
 /// Binding-neutral exact single-model CRUD executor.
 ///
 /// Every provider descriptor and label is derived from the installed runtime
@@ -1406,17 +1409,21 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_update_batch(
             input.type_id(),
-            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        self.execute_controlled_single_thing(database, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_update(
+            controlled_update::UpdateTarget::Database(database),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware entity replacement in a borrowed write transaction.
@@ -1450,17 +1457,21 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_update_batch(
             input.type_id(),
-            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        self.execute_controlled_single_thing_in_transaction(transaction, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_update(
+            controlled_update::UpdateTarget::Transaction(transaction),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware entity delete in an owned write transaction.
@@ -1728,17 +1739,21 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_update_batch(
             input.type_id(),
-            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        self.execute_controlled_single_thing(database, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_update(
+            controlled_update::UpdateTarget::Database(database),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware relation replacement in a borrowed write transaction.
@@ -1772,17 +1787,21 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_update_batch(
             input.type_id(),
-            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        self.execute_controlled_single_thing_in_transaction(transaction, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_update(
+            controlled_update::UpdateTarget::Transaction(transaction),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware relation delete in an owned write transaction.
@@ -3780,8 +3799,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 if documents.is_empty() {
                     return Err(mutation_rehydration_missing(type_id));
                 }
-                let hydrated =
-                    self.hydrate_entity_documents(transaction, prepared, &documents, mode);
+                let hydrated = self
+                    .hydrate_entity_documents(transaction, prepared, &documents, mode)
+                    .and_then(|thing| {
+                        require_update_iid(thing.iid(), iid, type_id)?;
+                        Ok(thing)
+                    });
                 return after_write(transaction, hydrated).await;
             }
         }
@@ -4212,14 +4235,22 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             });
         }
         let hydrate = || {
-            let iid = single_document_iid(&documents, type_id)?;
+            let returned_iid = single_document_iid(&documents, type_id)?;
+            require_update_iid(&returned_iid, iid, type_id)?;
             if resolved_path {
                 reject_resolved_duplicates(prepared, &documents)?;
             }
-            let rows = coalesce_dynamic_relation_by_iid(&prepared.descriptor, &documents, &iid)
-                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+            let rows =
+                coalesce_dynamic_relation_by_iid(&prepared.descriptor, &documents, &returned_iid)
+                    .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
             let row = require_mutation_relation_row(rows, type_id)?;
-            self.hydrate_relation(row, type_id, &iid, transaction.execution_identity(), mode)
+            self.hydrate_relation(
+                row,
+                type_id,
+                &returned_iid,
+                transaction.execution_identity(),
+                mode,
+            )
         };
         after_write(transaction, hydrate()).await.map(Some)
     }
@@ -6058,6 +6089,23 @@ async fn after_write<T>(
         transaction.latch_rollback_only(diagnostic).await;
     }
     result
+}
+
+fn require_update_iid(
+    returned: &str,
+    expected: &str,
+    type_id: &TypeId,
+) -> Result<(), SdkExecutionDiagnostic> {
+    if returned.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(crate::projected_batch_executor::integrity_at_row(
+            "projected_batch_update_identity_changed",
+            "A projected update returned a different exact target IID",
+            type_id,
+            0,
+        ))
+    }
 }
 
 fn identity_cardinality(type_id: &TypeId) -> SdkExecutionDiagnostic {

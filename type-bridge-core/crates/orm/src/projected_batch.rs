@@ -391,7 +391,7 @@ impl ProjectedBatchConstructionControl {
         rows: &mut Vec<ProjectedBatchRow>,
     ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
         self.validate_finalization_input(installed, rows)?;
-        ProjectedBatch::try_finalize_internal(
+        ProjectedBatch::try_finalize_internal::<false>(
             installed,
             self.state.model.clone(),
             self.state.operation,
@@ -409,7 +409,7 @@ impl ProjectedBatchConstructionControl {
         probe: ProjectedBatchReservationProbe,
     ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
         self.validate_finalization_input(installed, rows)?;
-        ProjectedBatch::try_finalize_internal(
+        ProjectedBatch::try_finalize_internal::<false>(
             installed,
             self.state.model.clone(),
             self.state.operation,
@@ -560,10 +560,32 @@ impl ProjectedBatch {
         control: Option<&ProjectedBatchInvocationControl>,
         probe: ProjectedBatchReservationProbe,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        Self::try_finalize_internal(installed, model, operation, &mut rows, control, probe)
+        Self::try_finalize_internal::<false>(installed, model, operation, &mut rows, control, probe)
     }
 
-    fn try_finalize_internal(
+    pub(crate) fn try_single_update(
+        installed: &InstalledRuntimeProjection,
+        model: TypeId,
+        row: ProjectedBatchRow,
+        control: &ProjectedBatchInvocationControl,
+    ) -> Result<Self, SdkExecutionDiagnostic> {
+        let mut rows = reserved(
+            1,
+            ProjectedBatchReservationSite::Rows,
+            ProjectedBatchReservationProbe::default(),
+        )?;
+        rows.push(row);
+        Self::try_finalize_internal::<true>(
+            installed,
+            model,
+            ProjectedBatchOperation::Update,
+            &mut rows,
+            Some(control),
+            ProjectedBatchReservationProbe::default(),
+        )
+    }
+
+    fn try_finalize_internal<const SINGLE_UPDATE: bool>(
         installed: &InstalledRuntimeProjection,
         model: TypeId,
         operation: ProjectedBatchOperation,
@@ -642,7 +664,11 @@ impl ProjectedBatch {
         check_control(control)?;
         reject_duplicate_keys(projected_model, rows, &mut key_rows)?;
         measure.items = item_count;
-        measure.statements = statement_forecast(operation, measure.role_players > 0, row_count);
+        measure.statements = if SINGLE_UPDATE {
+            1
+        } else {
+            statement_forecast(operation, measure.role_players > 0, row_count)
+        };
         check_control(control)?;
         validate_limits(measure, resource_ceiling)?;
 

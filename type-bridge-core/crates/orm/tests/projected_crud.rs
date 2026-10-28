@@ -86,6 +86,10 @@ struct RecordingState {
 enum RecordingResponse {
     Result(QueryResult),
     Error(&'static str),
+    Cancel(
+        type_bridge_orm::session::backend::AnswerCancellation,
+        QueryResult,
+    ),
 }
 
 #[derive(Clone, Copy)]
@@ -228,6 +232,10 @@ impl TransactionOps for RecordingTransaction {
 
 fn response_result(response: RecordingResponse) -> Result<QueryResult, OrmError> {
     match response {
+        RecordingResponse::Cancel(cancellation, result) => {
+            cancellation.cancel();
+            Ok(result)
+        }
         RecordingResponse::Result(result) => Ok(result),
         RecordingResponse::Error(message) => Err(OrmError::QueryExecution(message.to_owned())),
     }
@@ -2848,6 +2856,481 @@ async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_prov
             assert!(!error.to_string().contains("provider-secret"));
             let state = state.lock().unwrap();
             assert_eq!((state.commits, state.rollbacks), (1, 0));
+        }
+    }
+}
+
+#[tokio::test]
+async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_and_borrowed_targets()
+{
+    use type_bridge_orm::QueryExecutionResourceLimits;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    let installed = installed();
+    let executor = ProjectedCrudExecutor::new(&installed);
+    for relation in [false, true] {
+        let input = if relation {
+            membership_create(&installed)
+        } else {
+            person_create(&installed)
+        };
+        let iid = if relation { "0x20" } else { "0x10" };
+        let mut baseline = None;
+        for controlled in [false, true] {
+            for borrowed in [false, true] {
+                let document = if relation {
+                    membership_document(iid)
+                } else {
+                    person_document(iid)
+                };
+                let (mut backend, state) =
+                    RecordingBackend::new(vec![documents(vec![document])], CommitBehavior::Success);
+                backend.given_enabled = true;
+                let database = Database::with_backend(Box::new(backend), "single-update");
+                let limits = QueryExecutionResourceLimits {
+                    statements: Some(1),
+                    ..Default::default()
+                };
+                let cancellation = AnswerCancellation::default();
+                let thing = if borrowed {
+                    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                    let result = match (relation, controlled) {
+                        (false, false) => {
+                            executor
+                                .update_entity_in_transaction(&transaction, iid, &input)
+                                .await
+                        }
+                        (false, true) => {
+                            executor
+                                .update_entity_in_transaction_controlled(
+                                    &transaction,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                        (true, false) => {
+                            executor
+                                .update_relation_in_transaction(&transaction, iid, &input)
+                                .await
+                        }
+                        (true, true) => {
+                            executor
+                                .update_relation_in_transaction_controlled(
+                                    &transaction,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                    }
+                    .unwrap();
+                    assert_eq!(state.lock().unwrap().commits, 0);
+                    transaction.commit_sdk().await.unwrap();
+                    result
+                } else {
+                    match (relation, controlled) {
+                        (false, false) => executor.update_entity(&database, iid, &input).await,
+                        (false, true) => {
+                            executor
+                                .update_entity_controlled(
+                                    &database,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                        (true, false) => executor.update_relation(&database, iid, &input).await,
+                        (true, true) => {
+                            executor
+                                .update_relation_controlled(
+                                    &database,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                    }
+                    .unwrap()
+                };
+                assert_eq!(thing.iid(), iid);
+                let state = state.lock().unwrap();
+                assert_eq!(
+                    state.queries.len(),
+                    1,
+                    "relation={relation} controlled={controlled} borrowed={borrowed}"
+                );
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+                let actual = (state.queries.clone(), state.given_rows.clone());
+                if let Some(expected) = &baseline {
+                    assert_eq!(&actual, expected);
+                } else {
+                    baseline = Some(actual);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn controlled_single_update_preserves_captured_control_and_poison_after_dispatch() {
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    use type_bridge_orm::{ProjectedBatchInvocationControl, QueryExecutionResourceLimits};
+    let installed = installed();
+    let executor = ProjectedCrudExecutor::new(&installed);
+    let input = person_create(&installed);
+    for expired in [false, true] {
+        let cancellation = AnswerCancellation::default();
+        let mut limits = QueryExecutionResourceLimits::default();
+        if expired {
+            limits.timeout_milliseconds = 1;
+        } else {
+            cancellation.cancel();
+        }
+        let control = ProjectedBatchInvocationControl::capture(limits, cancellation);
+        if expired {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (mut backend, state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+        backend.given_enabled = true;
+        let database = Database::with_backend(Box::new(backend), "single-update");
+        let failure = executor
+            .update_entity_controlled_with_control(&database, "0x10", &input, control)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            failure.code().as_str(),
+            if expired {
+                "transaction_deadline_exceeded"
+            } else {
+                "provider_cancelled"
+            }
+        );
+        assert!(state.lock().unwrap().opens.is_empty());
+    }
+    for cancelled in [false, true] {
+        for borrowed in [false, true] {
+            let cancellation = AnswerCancellation::default();
+            let mut limits = QueryExecutionResourceLimits::default();
+            let mut document = person_document("0x10");
+            let response = if cancelled {
+                RecordingResponse::Cancel(
+                    cancellation.clone(),
+                    QueryResult::Documents(vec![document]),
+                )
+            } else {
+                limits.attribute_values = 2;
+                document["attributes"]["nickname"] = serde_json::json!(["extra"]);
+                documents(vec![document])
+            };
+            let (mut backend, state) =
+                RecordingBackend::new(vec![response], CommitBehavior::Success);
+            backend.given_enabled = true;
+            let database = Database::with_backend(Box::new(backend), "single-update");
+            let failure = if borrowed {
+                let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                let failure = executor
+                    .update_entity_in_transaction_controlled(
+                        &transaction,
+                        "0x10",
+                        &input,
+                        limits,
+                        cancellation,
+                    )
+                    .await
+                    .unwrap_err();
+                let commit = transaction.commit_sdk().await.unwrap_err();
+                assert_eq!(commit.code().as_str(), "transaction_rollback_only");
+                transaction.rollback().await.unwrap();
+                failure
+            } else {
+                executor
+                    .update_entity_controlled(&database, "0x10", &input, limits, cancellation)
+                    .await
+                    .unwrap_err()
+            };
+            if cancelled {
+                assert_eq!(failure.code().as_str(), "provider_cancelled");
+            } else {
+                assert_eq!(
+                    failure.category(),
+                    SdkDiagnosticCategory::ResourceLimit,
+                    "{failure:?}"
+                );
+            }
+            let state = state.lock().unwrap();
+            assert_eq!(state.queries.len(), 1);
+            assert_eq!(state.commits, 0);
+            assert_eq!(state.rollbacks, 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn controlled_relation_update_diagnoses_missing_references_only_after_an_empty_write() {
+    use type_bridge_orm::QueryExecutionResourceLimits;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    let installed = installed();
+    let input = membership_create(&installed);
+    for reference_exists in [false, true] {
+        for borrowed in [false, true] {
+            let references = if reference_exists {
+                vec![serde_json::json!({
+                    "kind0": {"kind":"value", "value":{"kind":"long", "value":"1"}},
+                    "ordinal1": {"kind":"value", "value":{"kind":"long", "value":"0"}},
+                    "reference2": {"kind":"value", "value":{"kind":"long", "value":"0"}},
+                    "thing3": {"kind":"thing", "iid":"0x10", "type_id":{"kind":"entity", "label":"person"}}
+                })]
+            } else {
+                vec![]
+            };
+            let (mut backend, state) = RecordingBackend::new(
+                vec![
+                    documents(vec![]),
+                    RecordingResponse::Result(QueryResult::Rows(references)),
+                ],
+                CommitBehavior::Success,
+            );
+            backend.given_enabled = true;
+            let database = Database::with_backend(Box::new(backend), "single-update");
+            let executor = ProjectedCrudExecutor::new(&installed);
+            let limits = QueryExecutionResourceLimits::default();
+            let cancellation = AnswerCancellation::default();
+            let failure = if borrowed {
+                let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                let failure = executor
+                    .update_relation_in_transaction_controlled(
+                        &transaction,
+                        "0x20",
+                        &input,
+                        limits,
+                        cancellation,
+                    )
+                    .await
+                    .unwrap_err();
+                if reference_exists {
+                    assert_eq!(
+                        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+                        "transaction_rollback_only"
+                    );
+                    transaction.rollback().await.unwrap();
+                } else {
+                    transaction.commit_sdk().await.unwrap();
+                }
+                failure
+            } else {
+                executor
+                    .update_relation_controlled(&database, "0x20", &input, limits, cancellation)
+                    .await
+                    .unwrap_err()
+            };
+            assert_eq!(
+                failure.code().as_str(),
+                if reference_exists {
+                    "projected_batch_mutation_result_missing"
+                } else {
+                    "projected_batch_reference_missing"
+                },
+                "{failure:?}"
+            );
+            let state = state.lock().unwrap();
+            assert_eq!(state.queries.len(), 2);
+            assert_eq!(state.commits, usize::from(borrowed && !reference_exists));
+            assert_eq!(state.rollbacks, usize::from(!borrowed || reference_exists));
+        }
+    }
+}
+
+#[tokio::test]
+async fn single_updates_refuse_a_foreign_iid_before_owned_commit_and_poison_borrowed_targets() {
+    use type_bridge_orm::QueryExecutionResourceLimits;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    let installed = installed();
+    let executor = ProjectedCrudExecutor::new(&installed);
+    for relation in [false, true] {
+        let input = if relation {
+            membership_create(&installed)
+        } else {
+            person_create(&installed)
+        };
+        let iid = if relation { "0x20" } else { "0x10" };
+        for controlled in [false, true] {
+            for borrowed in [false, true] {
+                let document = if relation {
+                    membership_document("0xff")
+                } else {
+                    person_document("0xff")
+                };
+                let (mut backend, state) =
+                    RecordingBackend::new(vec![documents(vec![document])], CommitBehavior::Success);
+                backend.given_enabled = true;
+                let database = Database::with_backend(Box::new(backend), "single-update");
+                let limits = QueryExecutionResourceLimits {
+                    statements: Some(1),
+                    ..Default::default()
+                };
+                let cancellation = AnswerCancellation::default();
+                let failure = if borrowed {
+                    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                    let result = match (relation, controlled) {
+                        (false, false) => {
+                            executor
+                                .update_entity_in_transaction(&transaction, iid, &input)
+                                .await
+                        }
+                        (false, true) => {
+                            executor
+                                .update_entity_in_transaction_controlled(
+                                    &transaction,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                        (true, false) => {
+                            executor
+                                .update_relation_in_transaction(&transaction, iid, &input)
+                                .await
+                        }
+                        (true, true) => {
+                            executor
+                                .update_relation_in_transaction_controlled(
+                                    &transaction,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                    }
+                    .unwrap_err();
+                    assert_eq!(state.lock().unwrap().commits, 0);
+                    assert_eq!(
+                        transaction.commit_sdk().await.unwrap_err().code().as_str(),
+                        "transaction_rollback_only"
+                    );
+                    transaction.rollback().await.unwrap();
+                    result
+                } else {
+                    match (relation, controlled) {
+                        (false, false) => executor.update_entity(&database, iid, &input).await,
+                        (false, true) => {
+                            executor
+                                .update_entity_controlled(
+                                    &database,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                        (true, false) => executor.update_relation(&database, iid, &input).await,
+                        (true, true) => {
+                            executor
+                                .update_relation_controlled(
+                                    &database,
+                                    iid,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                    }
+                    .unwrap_err()
+                };
+                assert_eq!(
+                    failure.code().as_str(),
+                    "projected_batch_update_identity_changed"
+                );
+                let state = state.lock().unwrap();
+                assert_eq!(
+                    state.queries.len(),
+                    1,
+                    "relation={relation} controlled={controlled} borrowed={borrowed}"
+                );
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 1);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn controlled_relation_update_diagnosis_errors_fail_the_lease_and_respect_statement_ceiling()
+{
+    use type_bridge_orm::QueryExecutionResourceLimits;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    let installed = installed();
+    let input = membership_create(&installed);
+    for outcome in ["provider", "cancelled", "statement_ceiling"] {
+        for borrowed in [false, true] {
+            let cancellation = AnswerCancellation::default();
+            let mut responses = vec![documents(vec![])];
+            let mut limits = QueryExecutionResourceLimits::default();
+            match outcome {
+                "provider" => responses.push(RecordingResponse::Error("diagnosis-provider-secret")),
+                "cancelled" => responses.push(RecordingResponse::Cancel(
+                    cancellation.clone(),
+                    QueryResult::Rows(vec![]),
+                )),
+                _ => limits.statements = Some(1),
+            }
+            let (mut backend, state) = RecordingBackend::new(responses, CommitBehavior::Success);
+            backend.given_enabled = true;
+            let database = Database::with_backend(Box::new(backend), "single-update");
+            let executor = ProjectedCrudExecutor::new(&installed);
+            let failure = if borrowed {
+                let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                let failure = executor
+                    .update_relation_in_transaction_controlled(
+                        &transaction,
+                        "0x20",
+                        &input,
+                        limits,
+                        cancellation,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(
+                    transaction.commit_sdk().await.unwrap_err().code().as_str(),
+                    "transaction_rollback_only"
+                );
+                transaction.rollback().await.unwrap();
+                failure
+            } else {
+                executor
+                    .update_relation_controlled(&database, "0x20", &input, limits, cancellation)
+                    .await
+                    .unwrap_err()
+            };
+            assert_eq!(
+                failure.code().as_str(),
+                match outcome {
+                    "provider" => "provider_operation_failed",
+                    "cancelled" => "provider_cancelled",
+                    _ => "projected_batch_mutation_result_missing",
+                }
+            );
+            assert!(!failure.to_string().contains("diagnosis-provider-secret"));
+            let state = state.lock().unwrap();
+            assert_eq!(
+                state.queries.len(),
+                if outcome == "statement_ceiling" { 1 } else { 2 }
+            );
+            assert_eq!((state.commits, state.rollbacks), (0, 1));
         }
     }
 }

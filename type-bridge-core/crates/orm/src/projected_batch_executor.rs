@@ -528,6 +528,81 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         prepared.check_control()?;
         Ok(ProjectedBatchResult::Things(things))
     }
+
+    pub(crate) async fn diagnose_missing_single_update(
+        &self,
+        lease: &mut TransactionContextMutationLease,
+        prepared: &PreparedProjectedBatchInvocation<'_>,
+        ledger: &mut ExecutionLedger,
+        identity: &DatabaseExecutionIdentity,
+    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
+        let mut plan =
+            BatchPlan::compile_for_diagnosis::<true>(self.installed, prepared, identity, false)?;
+        let prerequisite = plan.prerequisite.take();
+        let mut resolved = ResolvedPrerequisites::new(&plan)?;
+        if let Some(statement) = prerequisite {
+            let mut consumer = PrerequisiteConsumer::new(&plan, &mut resolved);
+            let chunks = split_lookups(&statement.source, statement.rows, SplitLimits::CANONICAL)?;
+            if chunks.len() as u64
+                > u64::from(
+                    prepared
+                        .limits()
+                        .statement_limit()
+                        .saturating_sub(ledger.statements),
+                )
+            {
+                return Ok(());
+            }
+            for chunk in chunks {
+                prepared.check_control()?;
+                let native = plan.native_prerequisite(chunk)?;
+                let query = lease.prepare_plan(native.local()).map_err(|error| {
+                    at_type(
+                        lower_orm_error(&error, SdkProviderOperation::Read),
+                        prepared.batch().model(),
+                    )
+                })?;
+                let rows = query
+                    .rows
+                    .as_ref()
+                    .map(|rows| given_rows_bytes(&rows.rows))
+                    .transpose()?
+                    .unwrap_or(0);
+                let bytes = u64::try_from(query.typeql.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(rows);
+                ledger.charge_preflight(bytes, ledger.statements.saturating_add(1))?;
+                let mut policy = prepared.limits();
+                policy.items = ledger.remaining_items();
+                policy.bytes = ledger.remaining_bytes();
+                let limits = crate::query_plan_exec::plan_answer_limits(
+                    policy,
+                    prepared.cancellation(),
+                    prepared.deadline(),
+                )
+                .map_err(|error| {
+                    at_type(
+                        lower_orm_error(&error, SdkProviderOperation::Read),
+                        prepared.batch().model(),
+                    )
+                })?;
+                let (answer, stats) = await_controlled(
+                    lease.dispatch_plan_counted(query, limits, Some(native.local())),
+                    prepared.deadline(),
+                    prepared.cancellation(),
+                )
+                .await
+                .map_err(|error| {
+                    controlled_orm(error, SdkProviderOperation::Read, prepared.batch().model())
+                })?;
+                prepared.check_control()?;
+                ledger.record_reply(stats)?;
+                native::accept_prerequisite_result(native.local(), answer, &mut consumer)?;
+            }
+            consumer.finish()?;
+        }
+        resolved.finish(&plan)
+    }
 }
 
 fn empty_result(operation: ProjectedBatchOperation) -> ProjectedBatchResult {
@@ -538,7 +613,9 @@ fn empty_result(operation: ProjectedBatchOperation) -> ProjectedBatchResult {
     }
 }
 
-fn require_given_capability(supported: bool) -> std::result::Result<(), SdkExecutionDiagnostic> {
+pub(crate) fn require_given_capability(
+    supported: bool,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
     if supported {
         Ok(())
     } else {
@@ -655,6 +732,15 @@ impl<'a> BatchPlan<'a> {
         identity: &DatabaseExecutionIdentity,
         return_deleted: bool,
     ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
+        Self::compile_for_diagnosis::<false>(installed, prepared, identity, return_deleted)
+    }
+
+    fn compile_for_diagnosis<const DIAGNOSIS: bool>(
+        installed: &'a InstalledRuntimeProjection,
+        prepared: &PreparedProjectedBatchInvocation<'a>,
+        identity: &DatabaseExecutionIdentity,
+        return_deleted: bool,
+    ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
         let batch = prepared.batch();
         if return_deleted && batch.operation() != ProjectedBatchOperation::Delete {
             return Err(invalid_at_type(
@@ -729,9 +815,13 @@ impl<'a> BatchPlan<'a> {
                 &role_routes,
             )?)
         };
-        let statement_count = batch.resource_measure().statements();
         let actual_statement_count =
             u32::from(prerequisite.is_some()) + 1 + u32::from(attach_source.is_some());
+        let statement_count = if DIAGNOSIS {
+            actual_statement_count
+        } else {
+            batch.resource_measure().statements()
+        };
         if actual_statement_count != statement_count {
             return Err(SdkExecutionDiagnostic::internal_failure());
         }
@@ -2241,7 +2331,7 @@ impl AnswerConsumer for LocallyBoundedConsumer<'_> {
     }
 }
 
-struct ExecutionLedger {
+pub(crate) struct ExecutionLedger {
     limits: QueryExecutionResourceLimits,
     bytes: u64,
     items: u64,
@@ -2249,7 +2339,7 @@ struct ExecutionLedger {
 }
 
 impl ExecutionLedger {
-    const fn new(limits: QueryExecutionResourceLimits, input_bytes: u64) -> Self {
+    pub(crate) const fn new(limits: QueryExecutionResourceLimits, input_bytes: u64) -> Self {
         Self {
             limits,
             bytes: input_bytes,
@@ -2258,7 +2348,7 @@ impl ExecutionLedger {
         }
     }
 
-    fn charge_preflight(
+    pub(crate) fn charge_preflight(
         &mut self,
         request_bytes: u64,
         statements: u32,
@@ -2295,7 +2385,7 @@ impl ExecutionLedger {
         Ok(())
     }
 
-    fn record_reply(
+    pub(crate) fn record_reply(
         &mut self,
         stats: BoundedAnswerStats,
     ) -> std::result::Result<(), SdkExecutionDiagnostic> {
@@ -2313,11 +2403,11 @@ impl ExecutionLedger {
         self.charge_bytes(stats.response_bytes, "projected_batch_reply_byte_limit")
     }
 
-    fn remaining_bytes(&self) -> u64 {
+    pub(crate) fn remaining_bytes(&self) -> u64 {
         self.limits.bytes.saturating_sub(self.bytes)
     }
 
-    fn remaining_items(&self) -> u64 {
+    pub(crate) fn remaining_items(&self) -> u64 {
         self.limits.items.saturating_sub(self.items)
     }
 
@@ -2338,7 +2428,7 @@ impl ExecutionLedger {
         Ok(())
     }
 
-    fn charge_projected(
+    pub(crate) fn charge_projected(
         &mut self,
         things: &[ProjectedThing],
     ) -> std::result::Result<(), SdkExecutionDiagnostic> {
@@ -3339,7 +3429,7 @@ fn validate_reference_origins(
     Ok(())
 }
 
-fn validate_provider_scalar_inputs(
+pub(crate) fn validate_provider_scalar_inputs(
     rows: &[(usize, &ProjectedBatchRow)],
 ) -> std::result::Result<(), SdkExecutionDiagnostic> {
     for (ordinal, row) in rows {
@@ -3684,7 +3774,7 @@ fn at_type(diagnostic: SdkExecutionDiagnostic, type_id: &TypeId) -> SdkExecution
     )
 }
 
-fn invalid_at_type(
+pub(crate) fn invalid_at_type(
     code_value: &'static str,
     message_value: &'static str,
     type_id: &TypeId,
@@ -3758,7 +3848,7 @@ fn integrity_at_role_with_indices(
     .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
 }
 
-fn integrity_at_row(
+pub(crate) fn integrity_at_row(
     code_value: &'static str,
     message_value: &'static str,
     type_id: &TypeId,

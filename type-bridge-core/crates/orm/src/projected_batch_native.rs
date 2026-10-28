@@ -6,6 +6,7 @@ use crate::plan_builders::{
     batch_native::{self as build, BatchDraft},
 };
 use crate::query_plan_exec::{self, remote_value};
+use crate::session::backend::QueryResult;
 use type_bridge_contract::diagnostic::Diagnostic;
 use type_bridge_contract::query_plan::v3::{AttachItem, DeleteItem, InsertThing, Stage};
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern, ReduceAssignment, Reducer};
@@ -43,7 +44,7 @@ impl BatchPlan<'_> {
             .ok_or_else(SdkExecutionDiagnostic::internal_failure)
     }
 
-    fn native_prerequisite(
+    pub(super) fn native_prerequisite(
         &self,
         rows: GivenRowsSpec,
     ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
@@ -894,6 +895,28 @@ impl AnswerConsumer for Consumer<'_> {
             }
         }
     }
+}
+
+pub(super) fn accept_prerequisite_result(
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    answer: QueryResult,
+    inner: &mut dyn AnswerConsumer,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    let QueryResult::Rows(rows) = answer else {
+        return Err(SdkExecutionDiagnostic::internal_failure());
+    };
+    let mut consumer = Consumer {
+        inner,
+        plan,
+        reply: Reply::Prerequisite,
+        deferred: None,
+    };
+    for row in rows {
+        consumer
+            .accept(AnswerItem::Row(row))
+            .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Read))?;
+    }
+    consumer.deferred.map_or(Ok(()), Err)
 }
 
 #[allow(clippy::too_many_arguments)]
