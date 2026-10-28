@@ -108,6 +108,9 @@ def test_live_step_gates_follow_the_lane_not_a_pinned_server() -> None:
     assert lane.count('if [[ "$lane_in_sdk_matrix" == 1 ]]; then') == 4
     assert 'if [[ "$lane_migrations" == 1 ]]; then\n        run_live_migration_steps' in lane
     assert '[[ "$typedb_server_version" == 3.11.* ]]' in lane
+    pytest_step = lane[lane.index('run_step "pytest -m integration"') :]
+    pytest_step = pytest_step[: pytest_step.index('printf "${BOLD}━━━ Node')]
+    assert 'TYPE_BRIDGE_EXPECTED_SERVER_VERSION="$typedb_server_version"' in pytest_step
     tls = source[source.index("run_lane_tls() {") :]
     assert 'if [[ "$lane_in_sdk_matrix" != 1 ]]; then' in tls
 

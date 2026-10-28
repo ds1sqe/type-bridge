@@ -1125,6 +1125,7 @@ run_live_lane() {
     run_step "pytest -m integration" \
         run_with_timeout 20m \
         env USE_DOCKER=false TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            TYPE_BRIDGE_EXPECTED_SERVER_VERSION="$typedb_server_version" \
             "${sdk_python_env[@]}" \
         uv run pytest -m integration --tb=short "${pytest_args[@]}"
 
