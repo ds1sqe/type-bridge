@@ -46,6 +46,9 @@ mod execution_diagnostic;
 pub mod expr;
 pub mod filter;
 pub mod hooks;
+#[cfg(test)]
+#[path = "../tests/support/live_database.rs"]
+mod live_database;
 pub mod match_request;
 pub mod migration_assertion;
 mod plan_builders;

@@ -1549,10 +1549,6 @@ impl ManagerRead {
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/live_database.rs"]
-mod live_database;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1916,7 +1912,7 @@ plays:
         use crate::_manager::{DynamicEntityManager, DynamicRelationManager};
         use crate::{AttributeValue, ConnectOptions, Database, TxType};
         let address = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS").unwrap();
-        let name = super::live_database::name("manager_roles");
+        let name = crate::live_database::name("manager_roles");
         let db = Database::connect_with_options(
             &address,
             &name,

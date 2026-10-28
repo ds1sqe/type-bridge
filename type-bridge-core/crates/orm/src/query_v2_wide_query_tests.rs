@@ -803,7 +803,7 @@ async fn purchase_shop_native_read_latency_sample() {
     use crate::session::real_driver::ConnectOptions;
     println!("PURCHASE_SHOP_LATENCY_RUNNER pid={}", std::process::id());
     for program in ["purchase", "shop"] {
-        let name = live_database::name(&format!("cost_{program}"));
+        let name = crate::live_database::name(&format!("cost_{program}"));
         let db = Database::connect_with_options(
             &std::env::var("TYPEDB_ADDRESS").unwrap(),
             &name,
@@ -993,7 +993,7 @@ async fn typed_tuple_mapping_window_matches_five_plan_baseline_live() {
     use crate::session::database::Database;
     use crate::session::real_driver::ConnectOptions;
     println!("TUPLE_WINDOW_RUNNER pid={}", std::process::id());
-    let name = live_database::name("tuple_window");
+    let name = crate::live_database::name("tuple_window");
     let db = Database::connect_with_options(
         &std::env::var("TYPEDB_ADDRESS").unwrap(),
         &name,
@@ -1041,7 +1041,7 @@ async fn second_distinct_given_window_provider_quirk() {
     use crate::session::database::Database;
     use crate::session::real_driver::ConnectOptions;
     println!("DISTINCT_QUIRK_RUNNER pid={}", std::process::id());
-    let name = live_database::name("distinct_quirk");
+    let name = crate::live_database::name("distinct_quirk");
     let db = Database::connect_with_options(
         &std::env::var("TYPEDB_ADDRESS").unwrap(),
         &name,
@@ -1087,6 +1087,3 @@ async fn second_distinct_given_window_provider_quirk() {
         std::panic::resume_unwind(payload);
     }
 }
-
-#[path = "../tests/support/live_database.rs"]
-mod live_database;
