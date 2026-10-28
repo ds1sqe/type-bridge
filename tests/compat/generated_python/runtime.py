@@ -54,10 +54,12 @@ def main() -> None:
         "Role",
         "TypeDBManager",
         "TypeDBType",
+        "Query",
+        "QueryBuilder",
     ):
         if hasattr(type_bridge, name):
             raise AssertionError(f"removed handwritten root export is present: {name}")
-    for name in ("Database", "Query", "QueryBuilder"):
+    for name in ("Database", "Plan", "PlanBuilder"):
         if not hasattr(type_bridge, name):
             raise AssertionError(f"retained root operation is missing: {name}")
 

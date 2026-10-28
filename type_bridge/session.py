@@ -23,7 +23,6 @@ from type_bridge.typedb_driver import (
 if TYPE_CHECKING:
     from type_bridge_core import Transaction as StagedTransaction
     from typedb.driver import Driver
-    from typedb.driver import Transaction as TypeDBTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -119,125 +118,6 @@ def _tx_type_wire_name(tx_type: TransactionType) -> str:
         TransactionType.SCHEMA: "schema",
     }
     return names.get(tx_type, "read")
-
-
-def _extract_values_from_dict(raw_dict: dict[str, Any]) -> dict[str, Any]:
-    """Extract actual values from concept objects in a dictionary.
-
-    Args:
-        raw_dict: Dictionary from as_dict() with potential concept objects
-
-    Returns:
-        Dictionary with concept objects replaced by their values
-    """
-    result: dict[str, Any] = {}
-    for key, concept in raw_dict.items():
-        clean_key = key.lstrip("$")
-        # Try to extract value from different concept types
-        if hasattr(concept, "get_value"):
-            # Attribute concept
-            try:
-                result[clean_key] = {"value": concept.get_value()}
-                continue
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug(f"Failed to extract value via get_value() for {key}: {e}")
-        # _Value concept (from aggregations) - use .get() not .as_value()
-        if hasattr(concept, "is_value") and concept.is_value():
-            try:
-                result[clean_key] = {"value": concept.get()}
-                continue
-            except (AttributeError, TypeError, ValueError) as e:
-                logger.debug(f"Failed to extract value via get() for {key}: {e}")
-        # Fallback: keep as-is (may be a nested structure or primitive)
-        result[clean_key] = concept
-    return result
-
-
-def _extract_concept_row(item: Any) -> dict[str, Any]:
-    """Extract concept data from a ConceptRow (V1 SELECT query results).
-
-    Note: With TypeQL 3.8.0+, FETCH queries include iid() and label() directly,
-    so this function is primarily used for edge cases and backward compatibility.
-
-    Args:
-        item: A ConceptRow object from TypeDB driver
-
-    Returns:
-        Dictionary with variable names as keys, containing concept data,
-        or {"result": str(item)} for aggregation/reduce query results
-    """
-    result: dict[str, Any] = {}
-    has_concept_data = False
-
-    # Try to get column names - if this fails, it's likely an aggregation result
-    try:
-        column_names = list(item.column_names())
-    except (AttributeError, TypeError) as e:
-        logger.debug(f"Cannot get column_names, treating as aggregation result: {e}")
-        return {"result": str(item)}
-
-    for var_name in column_names:
-        try:
-            concept = item.get(var_name)
-            concept_data: dict[str, Any] = {}
-
-            # Try to get IID via driver method
-            if hasattr(concept, "get_iid"):
-                try:
-                    iid = concept.get_iid()
-                    if iid is not None:
-                        concept_data["_iid"] = str(iid)
-                        has_concept_data = True
-                except (AttributeError, TypeError) as e:
-                    logger.debug(f"Failed to get IID for {var_name}: {e}")
-
-            # Try to get type label via driver method
-            if hasattr(concept, "get_type"):
-                try:
-                    type_obj = concept.get_type()
-                    if hasattr(type_obj, "get_label"):
-                        label = type_obj.get_label()
-                        if isinstance(label, str):
-                            concept_data["_type"] = label
-                        elif hasattr(label, "name"):
-                            concept_data["_type"] = label.name
-                        has_concept_data = True
-                except (AttributeError, TypeError) as e:
-                    logger.debug(f"Failed to get type for {var_name}: {e}")
-
-            # Try to get value (for attribute concepts)
-            if hasattr(concept, "get_value"):
-                try:
-                    value = concept.get_value()
-                    if value is not None:
-                        concept_data["value"] = value
-                        has_concept_data = True
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.debug(f"Failed to get value for {var_name}: {e}")
-
-            # Try to get value (for _Value concepts from aggregations)
-            # Note: _Value.as_value() returns another _Value, use .get() instead
-            if hasattr(concept, "is_value") and concept.is_value():
-                try:
-                    value = concept.get()
-                    if value is not None:
-                        concept_data["value"] = value
-                        has_concept_data = True
-                except (AttributeError, TypeError, ValueError) as e:
-                    logger.debug(f"Failed to get aggregation value for {var_name}: {e}")
-
-            clean_var_name = var_name.lstrip("$")
-            result[clean_var_name] = concept_data
-
-        except (AttributeError, KeyError, TypeError) as e:
-            logger.debug(f"Error extracting concept for {var_name}: {e}")
-            continue
-
-    # If no concept data was found, fall back to string format
-    if not has_concept_data:
-        return {"result": str(item)}
-
-    return result
 
 
 class Database:
@@ -918,91 +798,6 @@ class Database:
         return schema
 
 
-class _DriverTransaction:
-    """Deprecated direct-driver wrapper; use Database.transaction()."""
-
-    def __init__(self, tx: TypeDBTransaction):
-        """Initialize transaction wrapper.
-
-        Args:
-            tx: TypeDB transaction
-        """
-        warnings.warn(
-            "Transaction is deprecated; use Database.transaction()",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self._tx = tx
-
-    def execute(self, query: str) -> list[dict[str, Any]]:
-        """Execute a query.
-
-        Args:
-            query: TypeQL query string
-
-        Returns:
-            List of result dictionaries
-        """
-        logger.debug(f"Transaction.execute: query ({len(query)} chars)")
-        logger.debug(f"Query: {query}")
-        # Execute query - returns a Promise[QueryAnswer]
-        promise = self._tx.query(query)
-        answer = promise.resolve()
-
-        # Process based on answer type
-        results = []
-
-        # Check if the answer has an iterator (for fetch/get queries)
-        if hasattr(answer, "__iter__"):
-            for item in answer:
-                if hasattr(item, "as_dict"):
-                    # ConceptRow with as_dict method - extract values from concepts
-                    raw_dict = dict(item.as_dict())
-                    results.append(_extract_values_from_dict(raw_dict))
-                elif hasattr(item, "as_json"):
-                    # Document with as_json method
-                    results.append(item.as_json())
-                elif hasattr(item, "column_names") and hasattr(item, "get"):
-                    # ConceptRow - extract IID and concept info
-                    result = _extract_concept_row(item)
-                    results.append(result)
-                else:
-                    # Try to convert to dict
-                    results.append(
-                        dict(item) if hasattr(item, "__iter__") else {"result": str(item)}
-                    )
-
-        logger.debug(f"Query executed, {len(results)} results returned")
-        return results
-
-    def commit(self) -> None:
-        """Commit the transaction."""
-        logger.debug("Committing transaction")
-        self._tx.commit()
-        logger.info("Transaction committed")
-
-    def rollback(self) -> None:
-        """Rollback the transaction."""
-        logger.debug("Rolling back transaction")
-        self._tx.rollback()
-        logger.info("Transaction rolled back")
-
-    @property
-    def is_open(self) -> bool:
-        """Check if transaction is open."""
-        return self._tx.is_open()
-
-    def close(self) -> None:
-        """Close the transaction if open."""
-        if self._tx.is_open():
-            logger.debug("Closing transaction")
-            self._tx.close()
-
-
-# Released module-level compatibility alias, retained until 3.0.
-Transaction = _DriverTransaction
-
-
 class _RustTransactionView:
     """Small compatibility view for Rust transaction state."""
 
@@ -1012,10 +807,6 @@ class _RustTransactionView:
     @property
     def is_open(self) -> bool:
         return self._context._rust_tx is not None and not self._context._rust_finalized
-
-    @property
-    def _tx(self) -> _RustRawTransactionAdapter:
-        return _RustRawTransactionAdapter(self._context)
 
     def execute(self, query: str) -> list[dict[str, Any]]:
         return self._context.execute(query)
@@ -1027,56 +818,12 @@ class _RustTransactionView:
         self._context.rollback()
 
 
-class _RustRawQueryPromise:
-    def __init__(self, context: TransactionContext, query: str):
-        self._context = context
-        self._query = query
-
-    def resolve(self) -> _RustRawQueryResult:
-        return _RustRawQueryResult(self._context.execute(self._query))
-
-
-class _RustRawQueryResult:
-    def __init__(self, rows: list[dict[str, Any]]):
-        self._rows = rows
-
-    def __iter__(self):
-        return iter(self._rows)
-
-    def __len__(self) -> int:
-        return len(self._rows)
-
-    def as_concept_rows(self) -> list[dict[str, Any]]:
-        return self._rows
-
-    def as_concept_documents(self) -> list[dict[str, Any]]:
-        return self._rows
-
-
-class _RustRawTransactionAdapter:
-    def __init__(self, context: TransactionContext):
-        self._context = context
-
-    def query(self, query: str) -> _RustRawQueryPromise:
-        return _RustRawQueryPromise(self._context, query)
-
-    def commit(self) -> None:
-        self._context.commit()
-
-    def rollback(self) -> None:
-        self._context.rollback()
-
-    def is_open(self) -> bool:
-        return self._context._rust_tx is not None and not self._context._rust_finalized
-
-
 class TransactionContext:
     """Context manager for sharing a TypeDB transaction across operations."""
 
     def __init__(self, db: Database, tx_type: TransactionType):
         self.db = db
         self.tx_type = tx_type
-        self._tx: Transaction | None = None
         self._rust_tx: Any | None = None
         self._rust_finalized = False
 
@@ -1116,33 +863,12 @@ class TransactionContext:
                 logger.debug("Rust transaction context closed")
             return
 
-        if self._tx is None:
-            return
-
-        if self._tx.is_open:
-            if exc_type is None:
-                if self.tx_type in (TransactionType.WRITE, TransactionType.SCHEMA):
-                    logger.debug("Transaction context exiting normally, committing")
-                    self._tx.commit()
-            else:
-                # Only rollback WRITE/SCHEMA transactions - READ can't be rolled back
-                if self.tx_type in (TransactionType.WRITE, TransactionType.SCHEMA):
-                    logger.warning(
-                        f"Transaction context exiting with exception, rolling back: {exc_type.__name__}"
-                    )
-                    self._tx.rollback()
-
-        self._tx.close()
-        logger.debug("Transaction context closed")
-
     @property
-    def transaction(self) -> Transaction | _RustTransactionView:
-        """Underlying transaction wrapper."""
-        if self._rust_tx is not None:
-            return _RustTransactionView(self)
-        if self._tx is None:
+    def transaction(self) -> _RustTransactionView:
+        """View of the active native transaction."""
+        if self._rust_tx is None:
             raise RuntimeError("TransactionContext not entered")
-        return self._tx
+        return _RustTransactionView(self)
 
     @property
     def database(self) -> Database:
@@ -1190,73 +916,5 @@ class TransactionContext:
 
 # Type alias for unified connection type (includes proxy equivalents)
 Connection = (
-    Database
-    | Transaction
-    | TransactionContext
-    | ProxyDatabase
-    | ProxyTransaction
-    | ProxyTransactionContext
+    Database | TransactionContext | ProxyDatabase | ProxyTransaction | ProxyTransactionContext
 )
-
-
-class ConnectionExecutor:
-    """Delegate that handles query execution across connection types.
-
-    This class encapsulates the logic for executing queries against different
-    connection types (Database, Transaction, TransactionContext, or proxy equivalents),
-    providing a unified interface for CRUD operations.
-    """
-
-    def __init__(self, connection: Connection):
-        """Initialize the executor with a connection.
-
-        Args:
-            connection: Database, Transaction, TransactionContext, or proxy equivalent
-        """
-        if isinstance(connection, (TransactionContext, ProxyTransactionContext)):
-            logger.debug("ConnectionExecutor initialized with TransactionContext")
-            self._transaction: Transaction | ProxyTransaction | _RustTransactionView | None = (
-                connection.transaction
-            )
-            self._database: Database | ProxyDatabase | None = None
-        elif isinstance(connection, (Transaction, ProxyTransaction)):
-            logger.debug("ConnectionExecutor initialized with Transaction")
-            self._transaction = connection
-            self._database = None
-        else:
-            logger.debug("ConnectionExecutor initialized with Database")
-            self._transaction = None
-            self._database = connection
-
-    def execute(self, query: str, tx_type: TransactionType) -> list[dict[str, Any]]:
-        """Execute query, using existing transaction or creating a new one.
-
-        Args:
-            query: TypeQL query string
-            tx_type: Transaction type (used only when creating new transaction)
-
-        Returns:
-            List of result dictionaries
-        """
-        if self._transaction:
-            logger.debug("ConnectionExecutor: using existing transaction")
-            return self._transaction.execute(query)
-        assert self._database is not None
-        logger.debug(f"ConnectionExecutor: creating new {_tx_type_name(tx_type)} transaction")
-        with self._database.transaction(tx_type) as tx:
-            return tx.execute(query)
-
-    @property
-    def has_transaction(self) -> bool:
-        """Check if using an existing transaction."""
-        return self._transaction is not None
-
-    @property
-    def database(self) -> Database | ProxyDatabase | None:
-        """Get database if available (for creating new transactions)."""
-        return self._database
-
-    @property
-    def transaction(self) -> Transaction | ProxyTransaction | _RustTransactionView | None:
-        """Get transaction if available."""
-        return self._transaction

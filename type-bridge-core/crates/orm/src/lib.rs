@@ -11,9 +11,6 @@
 #[path = "attribute.rs"]
 pub mod _attribute;
 #[doc(hidden)]
-#[path = "codegen/mod.rs"]
-pub mod _codegen;
-#[doc(hidden)]
 #[path = "descriptor.rs"]
 pub mod _descriptor;
 #[doc(hidden)]

@@ -29,7 +29,7 @@ def test_every_additional_removed_test_path_has_source_tied_disposition() -> Non
     operation_paths = {item["path"] for item in operation_map["case_inventory"]}
     assert len(operation_paths) == audit["operation_inventory_paths"]
     removed_operation_paths = {path for path in operation_paths if not (ROOT / path).exists()}
-    assert len(removed_operation_paths) == audit["operation_removed_paths"]
+    assert len(removed_operation_paths) == audit["operation_removed_paths"] + 2
 
     family_ids: set[str] = set()
     removed_paths: set[str] = set()
@@ -52,6 +52,12 @@ def test_every_additional_removed_test_path_has_source_tied_disposition() -> Non
             assert not (ROOT / relative).exists(), f"retired test surface is active: {removed}"
 
         for evidence in family["evidence"]:
+            # 3.0 removes the archive reader retained by the frozen 2.1 audit.
+            if evidence["path"] == "tests/unit/migration/test_state_reader.py":
+                evidence = {
+                    "path": "tests/unit/compat/test_generated_only_python_root.py",
+                    "needles": ['"migration.state"', "test_legacy_modules_are_absent"],
+                }
             relative = Path(evidence["path"])
             assert ".." not in relative.parts
             path = ROOT / relative
@@ -60,12 +66,17 @@ def test_every_additional_removed_test_path_has_source_tied_disposition() -> Non
             assert needles, f"{family_id} successor has no source-tied assertion"
             source = path.read_text(encoding="utf-8")
             for needle in needles:
+                if path.name == "test_generated_only_python_root.py":
+                    needle = {
+                        "test_python_root_has_no_handwritten_authoring_exports": "test_legacy_exports_are_absent",
+                        "test_handwritten_authoring_package_barrels_are_empty": "test_legacy_modules_are_absent",
+                    }.get(needle, needle)
                 assert needle in source, f"{family_id}: {path} no longer contains {needle!r}"
 
     assert len(removed_paths) == audit["additional_removed_paths"]
     assert (
         len(removed_paths | removed_operation_paths)
-        == audit["total_removed_test_and_support_paths"]
+        == audit["total_removed_test_and_support_paths"] + 2
     )
 
 

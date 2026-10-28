@@ -29,8 +29,7 @@ pub use live_authority::{
 pub use descriptor::{
     GENERATED_DECLARED_DESCRIPTOR_PATH, GENERATED_DECLARED_DESCRIPTOR_V1,
     GENERATED_DECLARED_DESCRIPTOR_V2, GeneratedDeclaredDescriptorSetV1,
-    attach_declared_descriptors, empty_generated_declared_descriptors_json,
-    generate_package_with_declared_descriptors, generated_declared_descriptors_json,
+    empty_generated_declared_descriptors_json, generated_declared_descriptors_json,
     generated_descriptors_to_declared, released_typeql_to_declared_lossless_projection,
     released_typeql_to_declared_lossless_projection_with_references,
     released_typeql_to_declared_projection, released_typeql_to_declared_projection_with_references,
@@ -184,7 +183,6 @@ pub(crate) fn released_typeql_to_declared_with_references_omitting_capabilities(
 pub(crate) struct ReleasedReferenceProjection {
     pub(crate) omitted_declarations: BTreeMap<usize, usize>,
     pub(crate) omitted: BTreeMap<usize, usize>,
-    pub(crate) omitted_from_render: BTreeMap<usize, usize>,
     pub(crate) played_role_declarations: BTreeMap<usize, String>,
 }
 
@@ -428,14 +426,6 @@ pub(crate) fn released_unresolved_capability_ranges(
         }
     }
 
-    let mut omitted_from_render = BTreeMap::new();
-    for (key, validity) in &role_resolution.direct {
-        if *validity == ReleasedRoleValidity::Invalid {
-            let indexed = &effective[roles[key].capability_index];
-            omitted_from_render.insert(indexed.start, indexed.end);
-        }
-    }
-
     let mut played_role_declarations = BTreeMap::new();
     let mut first_portable_plays = BTreeSet::new();
     for indexed in &effective {
@@ -488,7 +478,6 @@ pub(crate) fn released_unresolved_capability_ranges(
     Ok(ReleasedReferenceProjection {
         omitted_declarations,
         omitted,
-        omitted_from_render,
         played_role_declarations,
     })
 }

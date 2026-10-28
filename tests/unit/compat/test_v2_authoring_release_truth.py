@@ -7,7 +7,6 @@ ROOT = Path(__file__).resolve().parents[3]
 DURABLE_PLAN_ROOT = ROOT.parents[2] / "docs/plans/type-bridge/#170-rust-ssot-schema-query-v2"
 REPOSITORY_AUTHORING_TRUTH_FILES = (
     ROOT / "docs/guide/upgrade-v2.md",
-    ROOT / "docs/guide/v2-deprecations.md",
     ROOT / "docs/guide/typed-queries.md",
     ROOT / "type-bridge-core/crates/python/src/query_v2_runtime.rs",
     ROOT / "type-bridge-core/crates/node/src/query_v2_runtime.rs",

@@ -82,7 +82,7 @@ def test_sample_count_is_optional(tmp_path: Path) -> None:
 
 def test_bench_id_normalizes_segments() -> None:
     assert bench_id("core", "Compile/Simple-Match") == "micro.core.compile.simple_match"
-    assert metric_id("micro", "orm", "query codegen") == "micro.orm.query_codegen"
+    assert metric_id("micro", "orm", "query schema_generate") == "micro.orm.query_schema_generate"
 
 
 @pytest.mark.parametrize("full_id", ["simple", "validate//"])

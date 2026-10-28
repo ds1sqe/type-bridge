@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from type_bridge import _rust_runtime
-from type_bridge.migration.introspection import IntrospectedSchema
 
 
 @dataclass(frozen=True)
@@ -61,40 +60,3 @@ def is_migration_state_type(
     Role labels must use the qualified ``relation:role`` form.
     """
     return _rust_runtime.is_migration_state_type(kind, label)
-
-
-def without_migration_state_schema(schema: IntrospectedSchema) -> IntrospectedSchema:
-    """Return a copy of ``schema`` without TypeBridge migration-state objects."""
-    state_schema = MIGRATION_STATE_SCHEMA
-    state_owners = state_schema.entities | state_schema.relations
-
-    relations = {}
-    for relation_name, relation in schema.relations.items():
-        if relation_name in state_schema.relations:
-            continue
-        roles = {
-            role_name: role
-            for role_name, role in relation.roles.items()
-            if f"{relation_name}:{role_name}" not in state_schema.roles
-        }
-        relations[relation_name] = replace(relation, roles=roles)
-
-    return IntrospectedSchema(
-        entities={
-            name: entity
-            for name, entity in schema.entities.items()
-            if name not in state_schema.entities
-        },
-        relations=relations,
-        attributes={
-            name: attribute
-            for name, attribute in schema.attributes.items()
-            if name not in state_schema.attributes
-        },
-        ownerships=[
-            ownership
-            for ownership in schema.ownerships
-            if ownership.owner_name not in state_owners
-            and ownership.attribute_name not in state_schema.attributes
-        ],
-    )

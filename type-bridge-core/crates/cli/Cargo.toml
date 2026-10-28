@@ -22,7 +22,6 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 type-bridge-contract = { path = "../contract", version = "2.3.2" }
 type-bridge-orm = { path = "../orm", version = "2.3.2" }
 type-bridge-schema = { path = "../schema", version = "2.3.2" }
-type-bridge-migration = { path = "../migration", version = "2.3.2" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.3.2" }
 type-bridge-schema-compat = { path = "../schema-compat", version = "2.3.2" }
 type-bridge-schema-migration = { path = "../schema-migration", version = "2.3.2" }

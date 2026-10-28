@@ -36,7 +36,6 @@ REQUIRED_OPERATIONS = {
     "authenticated_remote_structured_diagnostics",
     "remote_reducers_and_grouping",
     "foreign_package_token_and_projection_evidence_rejection",
-    "python_retained_raw_query_builder_generated_models",
     "integer_keys_polymorphic_roles_and_optional_role_survival",
     "plain_inherited_abstract_relation_role_lifecycle",
     "unkeyed_entity_iid_lifecycle_and_singular_query",

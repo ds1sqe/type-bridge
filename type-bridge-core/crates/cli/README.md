@@ -2,7 +2,7 @@
 
 The `type-bridge` command-line interface for split-YAML workspaces, generated
 bindings, and canonical schema migrations. Schema checking, generation, and
-migration authoring/planning are offline; apply, verify, rollback, adopt, and
+migration authoring/planning are offline; apply, verify, rollback, and
 upgrade-profile connect only through an explicitly selected workspace
 environment.
 

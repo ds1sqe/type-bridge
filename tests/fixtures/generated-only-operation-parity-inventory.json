@@ -1269,30 +1269,6 @@
       }
     },
     {
-      "id": "python_retained_raw_query_builder_generated_models",
-      "status": "accepted_offline",
-      "required_bindings": [
-        "python"
-      ],
-      "support": {
-        "python": {
-          "surface": "retained_root_query_builder_with_generated_projection",
-          "evidence": [
-            {
-              "mode": "offline",
-              "path": "type-bridge-core/crates/schema-codegen/tests/acceptance/runtime_check.py",
-              "anchors": [
-                "QueryBuilder.match_entity(",
-                "QueryBuilder.insert_entity(person, \"$person\")",
-                "QueryBuilder.match_relation(",
-                "raw QueryBuilder accepted an uninstalled model class"
-              ]
-            }
-          ]
-        }
-      }
-    },
-    {
       "id": "integer_keys_polymorphic_roles_and_optional_role_survival",
       "status": "accepted_live",
       "support": {

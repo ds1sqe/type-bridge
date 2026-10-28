@@ -7,9 +7,7 @@ import pytest
 from type_bridge._rust_runtime import database_from_rust
 from type_bridge.session import (
     Connection,
-    ConnectionExecutor,
     Database,
-    Transaction,
     TransactionContext,
 )
 from type_bridge.typedb_driver import TransactionType
@@ -145,126 +143,6 @@ class TestTransactionContext:
         assert ctx.database is db
 
 
-class TestConnectionExecutor:
-    """Tests for ConnectionExecutor class."""
-
-    def test_executor_with_database_stores_database(self):
-        """Executor created with Database should store it."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor._database is db
-        assert executor._transaction is None
-
-    def test_executor_with_transaction_stores_transaction(self):
-        """Executor created with Transaction should store it."""
-        # Create a mock TypeDB transaction
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor._transaction is tx
-        assert executor._database is None
-
-    def test_executor_with_context_extracts_transaction(self):
-        """Executor created with TransactionContext should extract transaction."""
-        # Create mock context with transaction
-        db = Database()
-        ctx = TransactionContext(db, TransactionType.READ)
-        # Manually set a mock transaction
-        mock_tx = MagicMock()
-        ctx._tx = Transaction(mock_tx)
-
-        executor = ConnectionExecutor(ctx)
-        assert executor._transaction is ctx._tx
-        assert executor._database is None
-
-    def test_has_transaction_property_true(self):
-        """has_transaction should be True when using transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor.has_transaction is True
-
-    def test_has_transaction_property_false(self):
-        """has_transaction should be False when using database."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor.has_transaction is False
-
-    def test_database_property_when_using_database(self):
-        """Database property should return Database when initialized with it."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor.database is db
-
-    def test_database_property_when_using_transaction(self):
-        """Database property should return None when initialized with transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor.database is None
-
-    def test_transaction_property_when_using_transaction(self):
-        """Transaction property should return Transaction when initialized with it."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        executor = ConnectionExecutor(tx)
-        assert executor.transaction is tx
-
-    def test_transaction_property_when_using_database(self):
-        """Transaction property should return None when initialized with database."""
-        db = Database()
-        executor = ConnectionExecutor(db)
-        assert executor.transaction is None
-
-
-class TestTransaction:
-    """Tests for Transaction wrapper class."""
-
-    def test_transaction_init_stores_raw_tx(self):
-        """Transaction should store the raw TypeDB transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        assert tx._tx is mock_tx
-
-    def test_commit_calls_underlying_commit(self):
-        """commit() should call underlying transaction commit."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        tx.commit()
-        mock_tx.commit.assert_called_once()
-
-    def test_rollback_calls_underlying_rollback(self):
-        """rollback() should call underlying transaction rollback."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        tx.rollback()
-        mock_tx.rollback.assert_called_once()
-
-    def test_is_open_delegates_to_underlying(self):
-        """is_open should delegate to underlying transaction."""
-        mock_tx = MagicMock()
-        mock_tx.is_open.return_value = True
-        tx = Transaction(mock_tx)
-        assert tx.is_open is True
-        mock_tx.is_open.assert_called_once()
-
-    def test_close_when_open(self):
-        """close() should close an open transaction."""
-        mock_tx = MagicMock()
-        mock_tx.is_open.return_value = True
-        tx = Transaction(mock_tx)
-        tx.close()
-        mock_tx.close.assert_called_once()
-
-    def test_close_when_already_closed(self):
-        """close() should not call close on already closed transaction."""
-        mock_tx = MagicMock()
-        mock_tx.is_open.return_value = False
-        tx = Transaction(mock_tx)
-        tx.close()
-        mock_tx.close.assert_not_called()
-
-
 class TestDatabaseTransactionCreation:
     """Tests for Database.transaction() method."""
 
@@ -317,14 +195,6 @@ class TestConnectionTypeAlias:
         # Type checking - Connection should accept Database
         conn: Connection = db
         assert isinstance(conn, Database)
-
-    def test_connection_accepts_transaction(self):
-        """Connection type should accept Transaction."""
-        mock_tx = MagicMock()
-        tx = Transaction(mock_tx)
-        # Type checking - Connection should accept Transaction
-        conn: Connection = tx
-        assert isinstance(conn, Transaction)
 
     def test_connection_accepts_transaction_context(self):
         """Connection type should accept TransactionContext."""

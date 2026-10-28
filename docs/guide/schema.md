@@ -52,10 +52,10 @@ not an authored schema input.
 
 - Convert historical TOML through the retained read-only `toml_to_typeql`
   interface, then author the resulting canonical Split-YAML workspace.
-- Adopt frozen V1 migration history through the one-way archive adoption
-  workflow before creating new V2 migrations.
+- Adopt frozen V1 migration history with TypeBridge 2.3.x before upgrading
+  to 3.0; then continue with canonical workspace migrations.
 - Use the safe pre-cutover package pin while an application still depends on a
   removed handwritten authoring surface.
 
 See [schema workflows](schema-workflows.md), [Split-YAML](split-yaml-v1.md),
-[migrations](migrations.md), and the [compatibility inventory](v2-deprecations.md).
+[migrations](migrations.md), and the [compatibility inventory](migrations.md).

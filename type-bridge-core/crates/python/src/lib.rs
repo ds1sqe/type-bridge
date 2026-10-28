@@ -22,7 +22,6 @@ mod debug;
 pub mod match_runtime;
 mod migration_catalog_runtime;
 pub mod migration_runtime;
-pub mod orm;
 pub mod orm_runtime;
 mod perf_stages;
 mod plan_builder_runtime;
@@ -405,17 +404,6 @@ impl TypeSchema {
     /// Serialize to a JSON string.
     fn to_json(&self) -> PyResult<String> {
         self.inner
-            .to_json()
-            .map_err(pyo3::exceptions::PyValueError::new_err)
-    }
-
-    /// Render generated model files as a JSON package for a target language.
-    #[pyo3(signature = (target, options_json=None))]
-    fn render_models_json(&self, target: &str, options_json: Option<&str>) -> PyResult<String> {
-        let target = parse_bindgen_target(target)?;
-        let options = parse_bindgen_options(options_json)?;
-        core::_bindgen::BindgenPlan::from_schema(&self.inner)
-            .render(target, &options)
             .to_json()
             .map_err(pyo3::exceptions::PyValueError::new_err)
     }
@@ -851,41 +839,6 @@ fn parse_typeql_query(py: Python<'_>, input: &str) -> PyResult<Py<PyAny>> {
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
 }
 
-fn parse_bindgen_target(target: &str) -> PyResult<core::_bindgen::TargetLanguage> {
-    target
-        .parse()
-        .map_err(pyo3::exceptions::PyValueError::new_err)
-}
-
-fn parse_bindgen_options(options_json: Option<&str>) -> PyResult<core::_bindgen::BindgenOptions> {
-    match options_json {
-        Some(options_json) => serde_json::from_str(options_json).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "Failed to deserialize bindgen options: {e}"
-            ))
-        }),
-        None => Ok(core::_bindgen::BindgenOptions::default()),
-    }
-}
-
-/// Render generated model files as a JSON package from a TypeQL schema string.
-#[pyfunction(name = "_render_models_json")]
-#[pyo3(signature = (input, target, options_json=None))]
-fn render_models_json(input: &str, target: &str, options_json: Option<&str>) -> PyResult<String> {
-    let target = parse_bindgen_target(target)?;
-    let options = parse_bindgen_options(options_json)?;
-    type_bridge_schema_compat::generate_package_with_declared_descriptors(input, target, &options)
-        .and_then(|package| package.to_json())
-        .map_err(pyo3::exceptions::PyValueError::new_err)
-}
-
-/// Export the canonical direct declaration snapshot without rendering models.
-#[pyfunction(name = "_generated_declared_descriptors_json")]
-fn generated_declared_descriptors_json(input: &str) -> PyResult<String> {
-    type_bridge_schema_compat::generated_declared_descriptors_json(input)
-        .map_err(pyo3::exceptions::PyValueError::new_err)
-}
-
 /// Run the V2 workspace CLI in-process over process-style arguments.
 ///
 /// `arguments` must include `argv[0]`. Output goes to the process stdout
@@ -908,8 +861,6 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ValueCoercer>()?;
     m.add_function(wrap_pyfunction!(parse_typeql_query, m)?)?;
     m.add_function(wrap_pyfunction!(_typeql_queries_equivalent, m)?)?;
-    m.add_function(wrap_pyfunction!(render_models_json, m)?)?;
-    m.add_function(wrap_pyfunction!(generated_declared_descriptors_json, m)?)?;
     m.add_function(wrap_pyfunction!(format_value, m)?)?;
     m.add_function(wrap_pyfunction!(_clear_attribute_query, m)?)?;
     m.add_function(wrap_pyfunction!(coerce_value, m)?)?;
@@ -969,7 +920,6 @@ fn type_bridge_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ast::ReduceClause>()?;
 
     // ORM CRUD query builder
-    m.add_class::<orm::CrudQueryBuilder>()?;
     orm_runtime::register(m)?;
     runtime_projection::register(m)?;
     match_runtime::register(m)?;

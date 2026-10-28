@@ -21,10 +21,6 @@
 #[doc = include_str!("../README.md")]
 pub mod readme_doctests {}
 
-/// Frozen direct-TypeQL renderer retained behind compatibility tooling.
-#[doc(hidden)]
-#[path = "bindgen.rs"]
-pub mod _bindgen;
 /// Frozen released-TypeQL parser retained behind compatibility tooling.
 #[doc(hidden)]
 #[path = "archive_parser.rs"]

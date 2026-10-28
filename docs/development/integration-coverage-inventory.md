@@ -66,14 +66,12 @@ those jobs, so a binding cannot pass cross-language parity by being skipped.
 Generated application tests are separate from retained compatibility contracts.
 The following remain independently exercised:
 
-- Python root `Query` / `QueryBuilder` and private execution dependencies;
 - Node root `TypedQuery` / `TypedGroupByQuery`;
 - Rust match/entity/relation/group-by query facades;
 - low-level Query V2 request, validation, local execution, remote envelopes,
   hydration, and diagnostics;
 - raw database/session/transaction lifecycle needed by generated packages; and
-- read-only archive conversion, migration history, checksum, adoption, and
-  recovery paths.
+- canonical migration history, checksum, and existing adoption ledger guards.
 
 These retained tests may use private test-only model identities. They are not
 schema-authoring examples and are not imported by generated packages.

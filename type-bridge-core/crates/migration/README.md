@@ -1,9 +1,9 @@
 # type-bridge-migration
 
 The released migration IR, validation, checksum, recovery, planning, and
-execution substrate for TypeBridge. It also retains the V1 migration command
-surface and archive-recovery contracts. New schema work should use the V2
-workspace commands exposed by `type-bridge-cli`.
+execution substrate for TypeBridge. Schema work uses canonical workspace
+commands exposed by `type-bridge-cli`. Archive and sidecar adoption must be
+completed with 2.3.x before upgrading to 3.0.
 
 ## Dependency
 
@@ -12,8 +12,7 @@ workspace commands exposed by `type-bridge-cli`.
 type-bridge-migration = "2.3.2"
 ```
 
-Use `load_dir_checked` and `validate_graph` before planning or executing any
-retained migration history; the [crate API](https://docs.rs/type-bridge-migration/2.3.2)
+Use canonical workspace migration commands for application histories; the [crate API](https://docs.rs/type-bridge-migration/2.3.2)
 documents the typed recovery and state-store boundaries. Do not bypass checksum
 or recovery gates with raw database queries.
 

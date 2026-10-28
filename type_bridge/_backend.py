@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 BACKEND_ENV_VAR = "TYPE_BRIDGE_BACKEND"
 PYTHON_BACKEND = "python"
@@ -25,14 +24,3 @@ def selected_backend() -> str:
             "run through the Rust runtime"
         )
     raise ValueError(f"{BACKEND_ENV_VAR} must be '{RUST_BACKEND}' or unset, got {value!r}")
-
-
-def manager_class(default_manager: type[Any]) -> type[Any]:
-    """Return the canonical manager class after validating stale env settings."""
-    selected_backend()
-    if default_manager.__name__ == "RustTypeDBManager":
-        return default_manager
-
-    from type_bridge.crud.rust_manager import _QueryRustTypeDBManager
-
-    return _QueryRustTypeDBManager

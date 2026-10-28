@@ -211,39 +211,3 @@ class TestProxyError:
         proxy = ProxyDatabase(proxy_url="http://127.0.0.1:1", database="testdb", timeout=1)
         with pytest.raises(ConnectionError):
             proxy._send_raw_query("match $p isa person;", "read")
-
-
-class TestConnectionExecutorIntegration:
-    """Test that ProxyDatabase works with ConnectionExecutor."""
-
-    def test_proxy_database_as_connection(self, mock_server: str) -> None:
-        from type_bridge.session import ConnectionExecutor
-
-        proxy = ProxyDatabase(proxy_url=mock_server, database="testdb")
-        proxy.connect()
-        executor = ConnectionExecutor(proxy)
-        assert executor.has_transaction is False
-        assert executor.database is proxy
-        proxy.close()
-
-    def test_proxy_transaction_as_connection(self, mock_server: str) -> None:
-        from type_bridge.session import ConnectionExecutor
-
-        proxy = ProxyDatabase(proxy_url=mock_server, database="testdb")
-        proxy.connect()
-        tx = ProxyTransaction(proxy, "read")
-        executor = ConnectionExecutor(tx)
-        assert executor.has_transaction is True
-        assert executor.transaction is tx
-        proxy.close()
-
-    def test_proxy_transaction_context_as_connection(self, mock_server: str) -> None:
-        from type_bridge.session import ConnectionExecutor
-
-        proxy = ProxyDatabase(proxy_url=mock_server, database="testdb")
-        proxy.connect()
-        with proxy.transaction("read") as ctx:
-            executor = ConnectionExecutor(ctx)
-            assert executor.has_transaction is True
-            assert executor.transaction is ctx.transaction
-        proxy.close()

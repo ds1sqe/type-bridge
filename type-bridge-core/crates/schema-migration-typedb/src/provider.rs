@@ -225,15 +225,6 @@ impl TypeDbMigrationProvider {
         Ok(provider)
     }
 
-    pub(crate) fn new_with_observation_authority(
-        binding: &TypeDbExecutionBinding,
-        observation_authority: ManagedObservationAuthority,
-    ) -> Result<Self, Diagnostic> {
-        let mut provider = Self::new(binding)?;
-        provider.observation_authority = observation_authority;
-        Ok(provider)
-    }
-
     async fn observe_in_transaction(
         &self,
         transaction: &mut Transaction,

@@ -29,10 +29,7 @@ pub use control_schema::{
     JOURNAL_CONTROL_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL, TYPEBRIDGE_INTERNAL_PREFIX,
     control_schema_labels, is_typebridge_internal_label,
 };
-pub use legacy_import::{
-    digest_legacy_applied_records, extract_legacy_applied_set_digest, extract_legacy_frontier,
-    verify_legacy_continuity,
-};
+pub use legacy_import::digest_legacy_applied_records;
 pub use observation::{
     LiveQueryControlPresence, PartitionedDeclaredSchema, observe_managed_state_from_export,
     partition_typeql_export, rebuild_live_managed_state, rebuild_live_query_authority,

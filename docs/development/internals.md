@@ -111,9 +111,9 @@ and applies the same result-shape validation for direct and remote execution.
 Bindings expose language-native typed builders without embedding pre-authored
 plan bytes.
 
-The raw TypeQL builders (`Query`, `QueryBuilder`) are retained compatibility
-contracts. Generated V2 packages do not depend on them except where an
-explicit raw query helper is documented.
+Python raw TypeQL builders (`Query`, `QueryBuilder`) are removed in 3.0.
+Generated packages own typed query construction; explicit raw TypeQL text
+executes through `Database.execute_query`.
 
 ## Transactions and lifecycle
 
@@ -134,13 +134,10 @@ Active change authority is the V2 workspace migration flow:
 migration make -> plan -> apply -> verify
 ```
 
-Read-only readers remain for historical TOML, released Python/JSON migration
-records, checksums, ledgers, snapshots, and metadata. They may verify, convert,
-or adopt immutable history into a V2 workspace. They cannot create a new root
-history, write historical snapshots, or become desired-schema authority.
-
-Private archive modules use `_archive_…` names. Do not add a `_legacy` package
-or expose archive implementation as an application API.
+Python/JSON archive recovery, sidecar conversion, and archive adoption are
+removed in 3.0. Adopt frozen histories with 2.3.x first. Existing canonical
+adopted histories retain their permanent ledger and anchor checks. Historical
+TOML conversion remains read-only and does not confer schema authority.
 
 ## Compatibility and release closure
 

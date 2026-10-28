@@ -93,6 +93,184 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed `type_bridge.migration.exceptions.SchemaValidationError` and
+  `SchemaConflictError`; replacement: none. Native migration diagnostics carry
+  structured validation failures.
+- Removed unused native `_QueryDynamicEntityManager`,
+  `_QueryDynamicRelationManager`, `_query_build_has_lookup_query`, and
+  `_QueryCrudQueryBuilder`; use generated managers and staged plans.
+  `_generated_declared_descriptors_json` is removed; use generated package
+  schema metadata. Native Python `DynamicSort` and `DynamicSortDir` are also
+  removed with those managers; use generated field ordering tokens.
+- Removed native `calculate_migration_file_checksum`, `check_migration_drift`,
+  `validate_migration_graph`, `normalize_migration_spec`,
+  `normalize_migration_graph`, `migration_spec_to_json`,
+  `migration_spec_from_json`, `migration_graph_to_json`,
+  `migration_graph_from_json`, and `plan_migration_graph`; replacement: none
+  for the retired handwritten migration format. Use the canonical workspace
+  `migration make`, `migration verify`, and `migration plan` commands.
+
+- Python compatibility packages `type_bridge.models`, `crud`, `fields`,
+  `attribute`, and `expressions` are removed. Use Split-YAML generated
+  packages, their model managers, fields, attributes, and typed queries.
+- Removed retained Python model names `TypeDBType`, `Entity`, `Relation`,
+  `Role`, `ModelRegistry`, and `SchemaScanner`; attribute names `Attribute`,
+  `Boolean`, `Date`, `DateTime`, `DateTimeTZ`, `Decimal`, `Double`, `Duration`,
+  `Integer`, `NumericAttribute`, `String`, `Doc`, `Meta`, `TypeNameCase`,
+  `TypeFlags`, `Card`, `AttributeFlags`, and `Flag`; and `format_type_name`.
+  Use generated models, attributes, schema annotations, and package metadata.
+- Removed Python field implementation names `FieldRef`, `StringFieldRef`,
+  `NumericFieldRef`, `OrderedFieldRef`, `FieldDescriptor`, `RolePlayerFieldRef`,
+  `RolePlayerStringFieldRef`, `RolePlayerNumericFieldRef`, `RoleRef`,
+  `GeneratedFieldDescriptor`, `GeneratedStringFieldDescriptor`,
+  `GeneratedNumericFieldDescriptor`, `GeneratedOrderedFieldDescriptor`, and
+  `generated_descriptor_default`. Use generated bound-field and role tokens.
+- Removed Python CRUD implementation names `RustTypeDBManager`,
+  `RustTypeDBQuery`, `RustTypeDBGroupByQuery`, `HookRunner`, `ModelStrategy`,
+  `EntityStrategy`, `RelationStrategy`, `parse_aggregate_results`,
+  `parse_grouped_aggregate_results`, `format_value`, `unwrap_attribute`,
+  `build_lookup_expression`, `build_entity_match_ast`,
+  `build_entity_match_pattern`, `build_relation_match_ast`,
+  `build_relation_match_pattern`, `normalize_role_players`,
+  `parse_role_lookup_filters`, `build_role_player_match`,
+  `resolve_entity_class_from_label`, `build_role_player_fetch_items`,
+  `group_results_by_iid`, `extract_relation_attributes`,
+  `extract_role_players_from_results`, `wrap_attribute_value`,
+  `is_multi_value_attribute`, `build_metadata_fetch`, `hydrate_attributes`, and
+  `extract_entity_key`. Use generated managers, projections, and plan codecs.
+- Removed Python model/query helpers `attribute_wrapper`, `MatchClauseInfo`,
+  `WriteQueryInfo`, `FieldInfo`, `ModelAttrInfo`, `extract_metadata`,
+  `get_base_type_for_attribute`, `get_ast_value_type`, `validate_type_name`,
+  `validate_iid`, `generate_attr_var`, `generate_has_pattern`,
+  `get_reserved_words`, `is_reserved_word`, `ValidationError`,
+  `ReservedWordError`, `validate_query_against_schema`, `validate_entity_data`,
+  `model_definition`, `attribute_definition`, and `owns_lines`. Use Split-YAML
+  schema checks, generated projections, and typed plan validation.
+- Removed archive implementation names `AdoptionDirectoryError`,
+  `AdoptionDirectoryEntry`, `AdoptionDirectoryAuthority`, `RetainedImportError`,
+  `CapturedImportInput`, `CapturedImportDirectory`, `RetainedImportMirror`,
+  `retained_import_mirror`, `archive_import_context`, `archive_attribute`,
+  `archive_builtins`, `IgnoredMigrationSource`, `compare_schemas`,
+  `lower_operation`, `lower_migration`, `lower_loaded_migration`,
+  `lower_migration_graph`, `lower_validation_graph`, `lower_execution_migration`,
+  `lower_execution_graph`, `Operation`, `ModifyTypeAnnotations`,
+  `ModifyRoleAnnotations`, `AddAttribute`, `RemoveAttribute`, `AddEntity`,
+  `RemoveEntity`, `AddOwnership`, `RemoveOwnership`, `ModifyOwnership`,
+  `AddRelation`, `RemoveRelation`, `AddRole`, `RemoveRole`, `AddRolePlayer`,
+  `RemoveRolePlayer`, `RunTypeQL`, `RunPython`, `RenameAttribute`,
+  `CopyAttribute`, `EntityRef`, `RelationRef`, and `AttributeRef`. Adopt with
+  TypeBridge 2.3.x first, then use canonical workspace migration commands.
+- Python `expressions::{Expression, ComparisonExpr, AttributeExistsExpr,
+  StringExpr, BooleanExpr, AggregateExpr, FunctionCallExpr, FunctionQuery,
+  ReturnType, IidExpr, RolePlayerExpr, BuiltinFunctionExpr, ArithmeticExpr,
+  iid, label, abs_, ceil, floor, round_, len_, max_, min_, add, sub, mul, div,
+  mod, pow_}` are removed. Use generated bound-field predicates, reductions,
+  function queries, and `PlanBuilder` operations.
+- Python `Query`, `QueryBuilder`, `type_bridge.query` (including `QueryCompiler`,
+  `parse_typeql_query`, and AST nodes), `rules.RuleBuilder`, `validation`,
+  `coercion`, and `reserved_words` are removed. Use generated typed queries
+  and `PlanBuilder`; execute raw TypeQL text with `Database.execute_query`.
+- Python `TypeDBQuery`, `GroupByQuery`, and `has_lookup` are removed; use
+  generated query sessions and typed field predicates. `NotFoundError` and
+  `HydrationError` are removed; use the generated typed `MatchRequestError`.
+- Python `type_bridge.typeql` annotation helpers (`format_card_annotation`,
+  `format_type_annotations`, `escape_annotation_string`, and
+  `format_doc_meta_annotations`) are removed; author annotations in Split-YAML.
+- Removed raw `Query::{match, fetch, delete, insert, limit, offset, sort, build}`,
+  `QueryBuilder::{match_entity, insert_entity, match_relation}`, and
+  `QueryCompiler::{compile, compile_clause_body, compile_batch}`. Use generated
+  query terminals and `PlanBuilder`, or `Database.execute_query` for raw text.
+- Removed `type_bridge.query.ast` types `QueryNode`, `Value`,
+  `FunctionCallValue`, `LiteralValue`, `ArithmeticValue`, `RolePlayer`,
+  `Constraint`, `IidConstraint`, `HasConstraint`, `IsaConstraint`, `Pattern`,
+  `EntityPattern`, `RelationPattern`, `SubTypePattern`, `AttributePattern`,
+  `HasPattern`, `ValueComparisonPattern`, `NotPattern`, `TryPattern`,
+  `OrPattern`, `IidPattern`, `RawPattern`, `Statement`, `RawStatement`,
+  `HasStatement`, `IsaStatement`, `RelationStatement`, `DeleteThingStatement`,
+  `Clause`, `MatchClause`, `MatchLetClause`, `LetAssignment`, `InsertClause`,
+  `DeleteClause`, `UpdateClause`, `FetchItem`, `FetchAttribute`, `FetchVariable`,
+  `FetchAttributeList`, `FetchFunction`, `FetchWildcard`, `FetchNestedWildcard`,
+  `FetchClause`, `AggregateExpr`, `ReduceAssignment`, and `ReduceClause`.
+  Use generated tokens and `PlanBuilder` operations.
+- Python root `CrudEvent`, `CrudHook`, and `HookCancelled` exports are removed;
+  import the equivalents from the generated package. `EntityNotFoundError`,
+  `RelationNotFoundError`, `NotUniqueError`, and `KeyAttributeError` are removed;
+  use the generated query's typed `MatchRequestError` refusal.
+- Python `session.Transaction` and `ConnectionExecutor` are removed. Use
+  `Database.staged_transaction` for plans or `Database.transaction` for
+  explicit native query execution.
+- Python frozen migration recovery is removed: `MigrationLoader`,
+  `LoadedMigration`, `MigrationLoadError`, `MigrationState`,
+  `MigrationStateManager`, `MigrationRecord`, `MigrationRunRecord`,
+  `SchemaIntrospector`, `IntrospectedSchema`, `IntrospectedAttribute`,
+  `IntrospectedEntity`, `IntrospectedRelation`, `IntrospectedRole`,
+  `IntrospectedOwnership`, `SidecarConversionError`, `generate_sidecars`,
+  `get_snapshot_metadata`, `type_exists`, and `without_migration_state_schema`.
+  Use `type-bridge migration` workspace commands and `Database.get_schema`.
+  `SchemaConflictError` and `SchemaValidationError` root exports are removed;
+  use `type-bridge schema check` and `migration verify` diagnostics.
+  Migration-state label helpers remain in
+  `type_bridge.migration.state_schema`.
+- Archive and sidecar adoption (`migration adopt --archive-directory`,
+  native `import_legacy_frontier`, `import_legacy_frontier_in`,
+  `import_verified_legacy_frontier_in`, `load_adoption_history`,
+  `reconstruct_legacy_head`, and the `LegacyAdoption*` directory/metadata APIs)
+  is removed. Adopt old histories with TypeBridge 2.3.x before upgrading;
+  existing canonical adopted histories remain readable and executable.
+- Removed `schema-migration-typedb::{extract_legacy_frontier,
+  extract_legacy_applied_set_digest, verify_legacy_continuity}` with archive
+  import. Adopt with 2.3.x first; canonical histories keep permanent ledger
+  verification through `digest_legacy_applied_records` and the runner.
+- Legacy Python/JSON migration authoring, the `type-bridge-migration` binary,
+  `legacy_cli`, `author`, `map_schema_diff`, `load_sidecar`, `load_dir`, and
+  `load_dir_checked` are removed. Use `type-bridge migration` over Split-YAML.
+  Native Python archive helpers (`PyMigrationStateReader`,
+  `migration_state_reader`, `PyAdoption*`, `load_migration_sidecar`, migration
+  spec/graph conversion and planning, and `_render_migration_operation`) are
+  removed; use canonical workspace commands and catalogs.
+- Legacy model generators `core::_bindgen`, `orm::_codegen`,
+  `_ArchivedTypeSchema.render_models_json`, `_render_models_json`,
+  `generate_package_with_declared_descriptors`, and `attach_declared_descriptors`
+  are removed. Use `type-bridge schema generate` and `schema-codegen` emitters.
+- Removed `core::_bindgen::{AnnotationMap, TargetLanguage, PythonRenderMetadata,
+  BindgenOptions, GeneratedFile, GeneratedPackage, GeneratedRustModels,
+  BindgenPlan, generate_from_typeql, generate_json_from_typeql, python_class_name}`.
+  This includes `GeneratedPackage::{to_json, file}`,
+  `GeneratedRustModels::into_package`, and
+  `BindgenPlan::{from_schema, from_typeql, render, render_rust_models,
+  render_rust_inline}`. Use `type-bridge schema generate` or the
+  `schema-codegen` emitters.
+- Removed `orm::_codegen::generator::{GeneratedModels, generate_from_typeql,
+  generate_for_target, generate_rust_models}` and
+  `orm::_codegen::naming::{to_pascal_case, to_snake_case}`. Use
+  `type-bridge schema generate` and generated package names.
+- Removed `migration::author::{MigrationMetadata, SnapshotContext,
+  PositionedOperations, AuthoredArtifact, AuthoredMigration,
+  AuthorMigrationRequest, author_migration, PythonRenderRequest,
+  render_migration_python, migration_class_name, py_repr, SnapshotRenderRequest,
+  RenderedSnapshot, render_snapshot, ExistingArtifactPolicy,
+  write_authored_migration}`. Use `type-bridge migration make`.
+  Removed `migration::legacy_cli::run_cli` and its display helpers
+  `print_no_pending`, `print_migration_header`, `print_step`,
+  `print_sqlmigrate_forward`, `print_sqlmigrate_reverse`, `print_result`,
+  `print_app_label`, and `print_migration_status`; use `type_bridge_cli::run_cli`.
+- Removed archive constants `LEGACY_ADOPTION_METADATA_V2`,
+  `LEGACY_SIDECAR_ADOPTION_METADATA_V1`, `LEGACY_IGNORED_SOURCE_METADATA_V1`,
+  `MAX_LEGACY_DIRECTORY_ENTRIES`, `MAX_LEGACY_ARTIFACT_BYTES`, and
+  `MAX_LEGACY_HISTORY_BYTES`, plus `LegacyMetadataRevision`,
+  `LegacyDirectoryEntry::{name, revision, is_file, is_directory, is_symlink}`,
+  `LegacyDirectoryAuthority::{open_root, directory_revision,
+  require_directory_revision, entries_relative, inspect_relative,
+  read_relative_bounded, write_atomic_no_replace, validate_publication_name,
+  remove_owned_temporary_if_matches, remove_if_matches}`, `LegacySchemaEffect`,
+  `LegacyAdoptionMetadata::{new, verify, checksum, source_sha256}`,
+  `LegacySidecarAdoptionMetadata::new`,
+  `LegacyIgnoredSourceMetadata::{new, verify, name, checksum, source_sha256}`,
+  `LegacyAdoptionHistory::{graph, directory, require_unchanged,
+  require_unchanged_head}`, and
+  `VerifiedLegacyHead::{source_migration, schema_typeql}`. Adopt with 2.3.x
+  first, then use canonical workspace histories.
+
 - `OrmError::ExecutionDiagnostic` carries canonical execution failures through
   native managers. Exhaustive matches must handle this variant; commit errors
   retain their transaction category and durability outcome.
@@ -1528,7 +1706,7 @@ carry managers or typed queries.
   raised later by application-owned Node `warning` listeners retain ordinary
   Node process semantics.
   The removal schedule names a single release, documented exactly in
-  [V2 Deprecations](docs/guide/v2-deprecations.md#removed-in-21).
+  [V2 Deprecations](https://github.com/ds1sqe/type-bridge/blob/v2.3.2/docs/guide/v2-deprecations.md#removed-in-21).
   Every scheduled removal lands in the 2.1.0 minor release as a deliberate,
   exactly-enumerated exception to ordinary major-version scheduling:
   active TypeDB 3.8/3.10 provider and driver support ends (the wheel then

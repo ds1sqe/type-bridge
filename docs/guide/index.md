@@ -46,8 +46,8 @@ while detailed reference pages keep their stable URLs.
 
 Split-YAML is the authoring authority. Applications check one workspace, review
 and apply canonical migrations, then generate Python, TypeScript, Rust, or C
-projections. Historical inputs use the documented one-way conversion/adoption
-paths; they are not parallel active authoring systems.
+projections. Adopt historical migration inputs with TypeBridge 2.3.x before
+upgrading; existing canonical histories remain supported.
 
 All runtime surfaces delegate semantic work to the shared Rust engine. The
 [Python API reference](../reference/index.md) is generated from source

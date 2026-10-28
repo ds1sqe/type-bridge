@@ -78,8 +78,24 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
             for job, steps in selected["ci_jobs"].items()
             for step, outcome in steps.items()
         }
-        assert frozen_steps.items() < current_steps.items()
-    assert len(selected["ci_jobs"]) == 62
+        retired = {
+            key: value
+            for key, value in frozen_steps.items()
+            if key[0].startswith("Python Integration (expressions,")
+            or key[1]
+            in {
+                "Run legacy adoption and evolution lifecycle",
+                "Run shipped Python converter to native adoption lifecycle",
+            }
+        }
+        assert (
+            len(retired)
+            == 2 * len(frozen["ci_jobs"]["Python Integration (expressions, typedb/typedb:3.12.3)"])
+            + 4
+        )
+        assert frozen_steps.items() - current_steps.items() == retired.items()
+        assert (frozen_steps.items() - retired.items()) < current_steps.items()
+    assert len(selected["ci_jobs"]) == 60
     for server in ("3.13.6", "3.14.0"):
         assert (
             selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][

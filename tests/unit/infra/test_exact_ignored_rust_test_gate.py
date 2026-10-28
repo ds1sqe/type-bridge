@@ -94,8 +94,6 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "empty_workspace_to_replayed_history_live",
         "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
-        "adopt_legacy_history_then_evolve_live",
-        "shipped_python_converter_to_native_adoption_live",
     }
 
     migration_recovery_tests = {

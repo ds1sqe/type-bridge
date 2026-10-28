@@ -63,8 +63,6 @@ from generated_v2 import (
 from type_bridge_core import Pending
 from type_bridge_core import Transaction as StagedTransaction
 
-from type_bridge.query import Query as RawQuery
-from type_bridge.query import QueryBuilder
 from type_bridge.session import Database
 
 
@@ -126,12 +124,6 @@ assert_type(counter.counter_value, CounterValue)
 assert_type(person.identifier, Identifier)
 assert_type(person.nickname, Nickname | None)
 assert_type(person.aliases, tuple[Aliases, ...])
-assert_type(QueryBuilder.match_entity(Person, identifier=Identifier("person-1")), RawQuery)
-assert_type(QueryBuilder.insert_entity(person), RawQuery)
-assert_type(
-    QueryBuilder.match_relation(Membership, role_players={"member": "$person"}),
-    RawQuery,
-)
 
 person_manager = Person.manager(Database(address="localhost:1729", database="generated-manager"))
 assert_type(person_manager.put(person), Person)

@@ -1008,8 +1008,6 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
         "empty_workspace_to_replayed_history_live",
         "documented_examples_initial_constraints_apply_and_verify_live",
         "verify_never_creates_databases_live",
-        "adopt_legacy_history_then_evolve_live",
-        "shipped_python_converter_to_native_adoption_live",
     )
     rust_integration = job_block(ci, "rust-integration")
     # The documented examples pin typedb-3.13.6/v1, so CI runs them on the
@@ -1041,7 +1039,9 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert 'TYPE_BRIDGE_TEST_PYTHON="$ROOT/.venv/bin/python"' in loop["body"]
     assert "timeout-minutes: 30" in rust_integration
     assert "uv sync --no-dev" in rust_integration
-    assert "TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python" in rust_integration
+    assert (
+        "TYPE_BRIDGE_TEST_PYTHON: ${{ github.workspace }}/.venv/bin/python" not in rust_integration
+    )
     assert test_script.count("run_with_timeout ") >= 6
 
 

@@ -368,7 +368,6 @@
     {"id": "remote_rows_terminals_and_identical_materialization", "classification": "canonical", "capabilities": ["query.remote-model-terminals-one-exchange", "query.remote-reply-verification-and-hydration"]},
     {"id": "authenticated_remote_structured_diagnostics", "classification": "canonical", "capabilities": ["diagnostic.remote-structured"]},
     {"id": "remote_reducers_and_grouping", "classification": "canonical", "capabilities": ["query.remote-reducers-and-grouping"]},
-    {"id": "python_retained_raw_query_builder_generated_models", "classification": "non_normative", "capabilities": [], "reason": "the retained root QueryBuilder is a V1/raw compatibility surface"},
     {"id": "integer_keys_polymorphic_roles_and_optional_role_survival", "classification": "canonical", "capabilities": ["model.integer-key-polymorphic-role-optionality"]},
     {"id": "plain_inherited_abstract_relation_role_lifecycle", "classification": "canonical", "capabilities": ["model.inherited-relation-role-lifecycle", "crud.relation.unkeyed-iid-lifecycle"]},
     {"id": "unkeyed_entity_iid_lifecycle_and_singular_query", "classification": "canonical", "capabilities": ["crud.entity.unkeyed-iid-lifecycle", "query.ordered-windowed-model-terminals"]},

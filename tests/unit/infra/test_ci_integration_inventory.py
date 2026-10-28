@@ -28,7 +28,7 @@ def test_live_ci_matrix_covers_every_ordinary_integration_group() -> None:
     }
 
     assert configured == ordinary
-    assert {"queries", "schema", "expressions", "session"} == configured
+    assert {"queries", "schema", "session"} == configured
 
 
 def test_rust_orm_live_suite_is_serialized_locally_and_in_ci() -> None:

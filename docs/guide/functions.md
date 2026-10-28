@@ -44,28 +44,12 @@ preserves `FunctionRef[[Event], Iterator[Event]]`. Application code imports the
 token from its generated package; it does not rebuild the signature in Python
 or Node.
 
-## Retained raw Python function queries
+## Execute a function
 
-The separately retained raw query facade can call a known TypeDB function when
-an application needs explicit TypeQL-shaped results:
-
-```python
-from type_bridge.expressions import FunctionQuery, ReturnType
-
-query = FunctionQuery(
-    name="find-events",
-    args=[("$event", "0x123")],
-    return_type=ReturnType(["event"], is_stream=True),
-).to_query(limit=100)
-
-with db.transaction("read") as tx:
-    rows = tx.execute(query)
-```
-
-`FunctionQuery` is query construction only. It is not schema or model
-authority, and it does not install a generated projection. Prefer generated
-model-owned immutable queries when the result should hydrate as generated
-models.
+Use the generated function tokens in model-owned immutable queries for supported
+scalar returns. For explicit transactions, build staged plans with the generated
+package. Applications needing explicit TypeQL-shaped results can call a function
+in raw TypeQL through `Database.execute_query`.
 
 ## Function shapes
 

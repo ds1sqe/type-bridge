@@ -129,7 +129,6 @@ NON_NORMATIVE_WORKFLOWS = {
     "python_filtered_callback_update_and_filtered_delete",
     "python_cross_type_attribute_owner_lookup",
     "python_key_fallback_update_delete_without_iid",
-    "python_retained_raw_query_builder_generated_models",
 }
 CANONICAL_GAP_WORKFLOWS = {
     "entity_relation_batch_update_delete_and_atomicity",

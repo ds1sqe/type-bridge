@@ -287,40 +287,6 @@ pub fn make_schema_info_for_generation(entity_count: usize) -> SchemaInfo {
     info
 }
 
-pub const SMALL_CODEGEN_SCHEMA: &str = r#"
-        define
-            attribute name, value string;
-            attribute age, value long;
-            attribute active, value boolean;
-            entity person,
-                owns name @key,
-                owns age;
-            entity company,
-                owns name @key;
-            relation employment,
-                relates employee,
-                relates employer;
-    "#;
-
-/// 15 attributes, 10 entities and 5 relations.
-pub fn medium_codegen_schema() -> String {
-    let mut medium_tql = String::from("define\n");
-    for i in 0..15 {
-        medium_tql.push_str(&format!("    attribute attr-{i}, value string;\n"));
-    }
-    for i in 0..10 {
-        medium_tql.push_str(&format!(
-            "    entity entity-{i},\n        owns attr-0,\n        owns attr-1;\n"
-        ));
-    }
-    for i in 0..5 {
-        medium_tql.push_str(&format!(
-            "    relation rel-{i},\n        relates player-a,\n        relates player-b;\n"
-        ));
-    }
-    medium_tql
-}
-
 // ---------------------------------------------------------------------------
 // Staged commit
 // ---------------------------------------------------------------------------

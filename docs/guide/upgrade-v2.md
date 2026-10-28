@@ -3,6 +3,10 @@
 [TypeBridge 2.1.0](https://github.com/ds1sqe/type-bridge/releases/tag/v2.1.0)
 was released on September 8, 2026.
 
+This page describes the historical 2.1 upgrade. Archive adoption must be
+completed with TypeBridge 2.3.x before upgrading to 3.0; 3.0 removes that
+command. See the current [migration guide](migrations.md).
+
 TypeBridge 2.1 makes Split YAML and generated bindings the only active schema
 and model authoring path. It preserves application operations through generated
 Python, TypeScript/Node, and Rust packages, removes the handwritten declaration
@@ -163,4 +167,4 @@ retry over plaintext.
   no removed authoring or provider payload.
 
 The exact removed and retained surfaces are listed in
-[V2.1 cutover inventory](v2-deprecations.md).
+[V2.1 cutover inventory](migrations.md).

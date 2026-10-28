@@ -149,7 +149,7 @@ archives, installation, generation, and the exact supported matrix.
 - [Manage schemas and migrations](https://ds1sqe.github.io/type-bridge/guide/schema-workflows/)
 - [Run the query server](https://ds1sqe.github.io/type-bridge/guide/server-container/)
 - [Browse the Cargo package index](https://ds1sqe.github.io/type-bridge/guide/cargo-packages/)
-- [Compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/v2-deprecations/)
+- [Compatibility and removals](https://ds1sqe.github.io/type-bridge/guide/migrations/)
 
 ## Development
 

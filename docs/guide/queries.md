@@ -98,23 +98,8 @@ value policy where needed. `one`, `first`, `rows`, `page_by`, `count_by`, and
 direct or a proxy connection alike (see
 [Typed queries](typed-queries.md#start-a-session)).
 
-## Raw compatibility builder
+## Raw TypeQL execution
 
-The package-root `Query`/`QueryBuilder` facade remains a raw TypeQL builder
-separate from generated immutable queries. Its model helpers accept exact
-installed generated classes:
-
-```python
-from type_bridge import Query, QueryBuilder
-
-raw = QueryBuilder.match_entity(
-    Person,
-    "$person",
-    person_id=PersonId("ada"),
-).fetch("$person")
-
-manual = Query().match("$person isa person").fetch("$person")
-```
-
-It produces query text; it does not recreate schema authority or provide typed
-hydration. Prefer the generated query session for new application queries.
+Use generated typed queries and `PlanBuilder` for plan execution. For raw
+TypeQL text, call `Database.execute_query`; the former `Query` and
+`QueryBuilder` compatibility builders are removed in 3.0.

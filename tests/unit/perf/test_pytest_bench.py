@@ -16,22 +16,21 @@ def test_converts_every_benchmark_in_ns() -> None:
     bench = convert(FIXTURE)
 
     assert bench.python == "3.13.11"
-    [compile_metric, validate_metric] = bench.metrics
-    assert compile_metric.id == "binding.python.compilation.compile_simple_match"
-    assert compile_metric.family == "binding"
-    assert compile_metric.unit == "ns"
-    assert compile_metric.value == pytest.approx(3214.3594791599805)
-    assert compile_metric.p50 == pytest.approx(3172.08468914032)
-    assert compile_metric.n == 6072
+    [validate_metric] = bench.metrics
     assert validate_metric.id == "binding.python.validation.validate_single_name"
+    assert validate_metric.family == "binding"
+    assert validate_metric.unit == "ns"
+    assert validate_metric.value == pytest.approx(350.34804519577797)
+    assert validate_metric.p50 == pytest.approx(342.26104617118835)
+    assert validate_metric.n == 26455
 
 
 @pytest.mark.parametrize(
     ("fullname", "expected"),
     [
         (
-            "benchmarks/test_compilation_bench.py::test_compile_e2e_batch",
-            "binding.python.compilation.compile_e2e_batch",
+            "benchmarks/test_validation_bench.py::test_validate_batch",
+            "binding.python.validation.validate_batch",
         ),
         (
             "test_validation_bench.py::test_validate_batch_5000",
@@ -47,8 +46,8 @@ def test_bench_id(fullname: str, expected: str) -> None:
     "fullname",
     [
         "benchmarks/conftest.py::test_compile",
-        "benchmarks/test_compilation_bench.py::compile_simple",
-        "benchmarks/test_compilation_bench.py",
+        "benchmarks/test_validation_bench.py::validate_single_name",
+        "benchmarks/test_validation_bench.py",
     ],
 )
 def test_bench_id_rejects_other_layouts(fullname: str) -> None:

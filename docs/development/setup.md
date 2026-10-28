@@ -91,7 +91,7 @@ only when intentionally targeting an existing server.
 
 | Path | Responsibility |
 | --- | --- |
-| `type_bridge/` | Python connection/query facade and archive recovery readers |
+| `type_bridge/` | Python connection facade and generated runtime projections |
 | `type-bridge-core/crates/schema*` | Split-YAML resolution, projection, compatibility, and generation |
 | `type-bridge-core/crates/orm/` | Shared generated-projection ORM execution |
 | `type-bridge-core/crates/python/` | PyO3 generated-runtime boundary |
@@ -129,7 +129,7 @@ connection policy and a C distribution contract remain future work.
 
 ## Logging and debugging
 
-Python uses standard module logging. Enable the retained connection/query
+Python uses standard module logging. Enable the native connection
 facade when debugging:
 
 ```python

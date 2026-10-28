@@ -32,8 +32,8 @@ There are no separate public model-query, match-query, or fetch-query classes.
 | Python | `from your_generated_package import Query, QuerySession` | `Database | TransactionContext` |
 | TypeScript | `import { Query, QuerySession } from "./your-generated-package/index.js"` | `RustDatabase | RustTransactionContext` |
 
-Python's package-root `Query` and `QueryBuilder` remain the mutable raw-TypeQL
-builders. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
+Python's package-root `Query` and `QueryBuilder` are removed in 3.0; use
+generated typed queries or `Database.execute_query` for raw TypeQL text. TypeScript's package-root `TypedQuery<T, Row>` remains the separately
 unscheduled mutable compatibility query. Generated model managers provide the
 concise single-type CRUD/query path; generated `QuerySession` provides immutable
 multi-binding queries and is Python's only typed query API; the handwritten
@@ -844,8 +844,8 @@ The #189 cutover removed the query facades' use as active schema/model
 authoring authority, and 2.3.0 removed the handwritten Python typed facade.
 The retained boundary is narrow:
 
-- Python package-root raw-TypeQL `Query`/`QueryBuilder` imports, in-place
-  mutation, and build output remain;
+- Python package-root raw-TypeQL `Query`/`QueryBuilder` imports are removed
+  in 3.0; generated typed queries and `Database.execute_query` replace them;
 - generated Python managers retain concise single-type filters, ordering,
   terminals, aggregates, updates, deletes, and hydration;
 - TypeScript package-root `TypedQuery<T, Row>` retains its two-parameter query

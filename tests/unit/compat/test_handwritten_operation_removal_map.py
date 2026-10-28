@@ -75,7 +75,13 @@ def test_cut_over_handwritten_sources_are_absent_but_their_audit_is_frozen() -> 
             identities.add(identity)
 
         path = ROOT / item["path"]
-        if item["binding"] in cutover_bindings and family["disposition"] == "generated_successor":
+        if item["path"] in {
+            "tests/integration/queries/test_compiler_integration.py",
+            "tests/integration/queries/test_function_query.py",
+        }:
+            # The frozen 2.1 map retained raw Python builders until 3.0.
+            assert not path.exists(), f"retired raw query evidence still active: {path}"
+        elif item["binding"] in cutover_bindings and family["disposition"] == "generated_successor":
             assert not path.exists(), f"retired handwritten evidence still active: {path}"
         elif family["disposition"] != "generated_successor":
             assert path.is_file(), f"retained contract evidence is absent: {path}"

@@ -37,7 +37,7 @@ environments:
 `migration make` and `migration plan` are offline. Connected commands resolve
 one named environment and enforce its `migrate` policy. TypeDB-backed
 `migration apply`, `migration verify`, `migration rollback --execute`,
-`migration adopt`, and `migration upgrade-profile` run only on these
+and `migration upgrade-profile` run only on these
 profile/server pairs: workspace semantic profile `typedb-3.12.1/v1` with a
 negotiated TypeDB 3.12.3+ server, or `typedb-3.13.6/v1` with TypeDB 3.13.6+ or
 3.14.0+ and newer lines. Here, `+` admits later patches on the same minor
@@ -111,31 +111,12 @@ Do not place target-language callbacks or model declarations in new migration
 authority. Application data jobs use generated bindings for the exact
 intermediate schema and are coordinated explicitly around migration apply.
 
-## Adopt a frozen V1 history
+## Upgrade an archived history
 
-Existing root Python/JSON migration histories are recovery inputs, not active
-writers. Quiesce the old migrator and revoke its write authority before the
-one-way cutover:
-
-```bash
-type-bridge --manifest typebridge.yaml migration adopt \
-  --environment production \
-  --archive-directory path/to/frozen-history
-```
-
-The adopter requires bounded regular files and verifies dependencies, original
-source/sidecar checksums, snapshots, metadata, and the applied ledger. It
-reconstructs the independently verified head, compares it with the live managed
-schema, and publishes an archive-frontier genesis plus zero-operation bridge.
-It never executes archived `RunPython` callbacks.
-
-Adoption is idempotent for the same exact authority and rejects drift or a
-competing canonical publisher. After it succeeds, continue only with V2
-`make/plan/apply/verify` commands.
-
-The retained Python loader, checksum, snapshot metadata, state reader, and
-sidecar converter are read-only recovery components. They cannot author a new
-root history, update an applied ledger, or write a historical snapshot.
+Archive and sidecar adoption are removed in 3.0. Adopt frozen Python/JSON
+histories with TypeBridge 2.3.x before upgrading. Existing canonical adopted
+histories continue through `migration make`, `plan`, `apply`, and `verify`;
+their permanent cutover binding remains checked against the database.
 
 ## Move a history to a new TypeDB line
 
@@ -210,7 +191,7 @@ For every migration change, test:
 - interruption/retry and lease behavior;
 - destructive approval rejection and acceptance;
 - full replay from empty;
-- archive adoption followed by a new V2 migration when recovery changes;
+- existing adopted histories retain their cutover binding during migration;
 - generated package regeneration and application operation parity.
 
 See [schema workflows](schema-workflows.md), [schema commands](schema.md), and

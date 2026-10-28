@@ -23,8 +23,7 @@ type_bridge
 ├── type_bridge.plan          native plan construction and execution
 ├── type_bridge.io            native provider and server IO
 ├── type_bridge.session       connection and transaction facade
-├── type_bridge.query         retained raw query facade
-├── type_bridge.migration     V2 CLI and read-only archive recovery
+├── type_bridge.migration     canonical workspace migration CLI
 └── type_bridge.proxy         remote proxy boundary
 ```
 

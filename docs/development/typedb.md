@@ -42,7 +42,7 @@ Here, `+` admits later patches on the same minor line; it does not admit a new m
 Versions below 3.11.0 fail before TypeBridge opens an application data
 transaction.
 
-General admission applies to application operations and query execution. `migration apply`, `migration verify`, `migration adopt`,
+General admission applies to application operations and query execution. `migration apply`, `migration verify`,
 `migration rollback --execute`, and `migration upgrade-profile` have a
 narrower authority contract. They run only on these pairs of workspace
 semantic profile and negotiated server:
@@ -266,9 +266,9 @@ Important invariants:
 - query variables, fields, and roles retain owner/session identity;
 - selected result shape is validated before hydration.
 
-Raw TypeQL remains available through separately retained query/execution
-facades, but it does not become model authority and cannot install a generated
-projection.
+Use `Database.execute_query` for raw TypeQL and staged plans for explicit
+transactions. Raw text does not become model authority and cannot install a
+generated projection.
 
 ## Transactions
 

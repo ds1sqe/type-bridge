@@ -239,7 +239,6 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert dependency_order["type-bridge-migration"] == [
         "type-bridge-contract",
         "type-bridge-core-lib",
-        "type-bridge-schema-compat",
         "type-bridge-orm",
     ]
     assert {
@@ -1750,8 +1749,8 @@ def test_public_crate_cannot_depend_on_an_unpublished_workspace_crate(
     manifest = workspace.parent / "crates/migration/Cargo.toml"
     manifest.write_text(
         manifest.read_text().replace(
-            'type-bridge-schema-compat = { path = "../schema-compat", version = "2.3.2" }',
-            'type-bridge-schema-compat = { package = "type-bridge-core", path = "../python", version = "2.3.2" }',
+            'type-bridge-contract = { path = "../contract", version = "2.3.2" }',
+            'type-bridge-contract = { package = "type-bridge-core", path = "../python", version = "2.3.2" }',
             1,
         )
     )

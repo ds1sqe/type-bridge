@@ -30,7 +30,7 @@
   "cases": [
     {
       "id": "surface.one-typed-facade",
-      "description": "Each generated package exports one immutable Query with its generated models and tokens; retained root compatibility names remain separate.",
+      "description": "Each generated package exports one immutable Query with its generated models and tokens.",
       "features": ["one_public_facade", "typed_subpath_exports"],
       "operation": "construction",
       "transaction_mode": "none",
@@ -40,11 +40,11 @@
     },
     {
       "id": "compat.legacy-root-surfaces",
-      "description": "Separately unscheduled root raw and mutable query surfaces preserve their query behavior without remaining an active model-authoring path.",
+      "description": "The retained TypeScript mutable query surface preserves query behavior without authorizing model declarations.",
       "features": ["legacy_preservation"],
       "operation": "construction",
       "transaction_mode": "none",
-      "input": {"surfaces": ["python.Query", "python.QueryBuilder", "python.RustTypeDBQuery", "typescript.TypedQuery<T, Row>"]},
+      "input": {"surfaces": ["typescript.TypedQuery<T, Row>"]},
       "expected": {"outcome": "success", "identity_basis": "none", "multiplicity": "not_applicable", "error_category": null, "error_code": null, "zero_executor_invocations": true, "zero_data_statements": true},
       "examples": {"python": ["python-models-and-session"], "typescript": ["typescript-models-and-session"]}
     },

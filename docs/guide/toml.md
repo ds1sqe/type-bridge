@@ -42,4 +42,4 @@ values fail without producing partial active authority. Frozen fixtures verify
 deterministic output and diagnostics.
 
 See the [upgrade guide](upgrade-v2.md) and
-[compatibility inventory](v2-deprecations.md) before removing a pre-cutover pin.
+[compatibility inventory](migrations.md) before removing a pre-cutover pin.

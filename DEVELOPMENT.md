@@ -47,7 +47,7 @@ compatibility override is required. The module retains its GIL requirement.
 
 | Path | Responsibility |
 | --- | --- |
-| `type_bridge/` | Python connection/query facade and read-only archive recovery APIs |
+| `type_bridge/` | Python connection facade and generated runtime projection APIs |
 | `type-bridge-core/crates/` | Rust contracts, engines, ORM, bindings, CLI, and server |
 | `type-bridge-core/crates/node/` | N-API boundary and TypeScript package |
 | `type-bridge-core/crates/rust/` | Public generated-model Rust client |
@@ -77,9 +77,8 @@ duplicated directory snapshot here.
   extending that matrix requires complete artifact and public-consumer checks.
 - Generated files are projections of canonical schema authority and must not be
   edited by hand.
-- Generated packages are Python's only typed query API. The raw TypeQL
-  builders (`Query`, `QueryBuilder`) remain and render through the Rust core;
-  they are not schema authority.
+- Generated packages are Python's only typed query API. Use staged plans
+  for explicit transactions and `Database.execute_query` for raw TypeQL text.
 - Split-YAML is the only active schema/model authoring authority. Python,
   TypeScript/Node, Rust, and C applications consume generated projections.
 - Rust releases starting with 2.0.1 resolve a complete, version-locked crates.io

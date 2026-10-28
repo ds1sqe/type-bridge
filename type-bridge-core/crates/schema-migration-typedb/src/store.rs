@@ -886,18 +886,6 @@ impl<'a> TypeDbMigrationStore<'a> {
         self.bind_plan_inner(plan, false)
     }
 
-    /// Bind the one guarded legacy-import plan.
-    ///
-    /// This is intentionally crate-private: public/generic plan binding must
-    /// never establish the permanent bridge without the runner's managed-side
-    /// recovery anchor and V1 ledger guard.
-    pub(crate) fn bind_legacy_import_plan(
-        self,
-        plan: &'a VerifiedMigrationApplyPlan,
-    ) -> Result<Self, Diagnostic> {
-        self.bind_plan_inner(plan, true)
-    }
-
     /// Bind a descendant apply plan after the runner validated the permanent
     /// legacy cutover binding. Public callers cannot bypass that proof.
     pub(crate) fn bind_guarded_bridge_plan(

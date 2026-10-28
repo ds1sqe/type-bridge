@@ -88,9 +88,9 @@ migration behavior aligned.
 - Evaluating languages and deployment shapes? [Compare the SDKs](guide/sdks.md).
 - Upgrading an application? Read [Upgrading to 2.3](guide/upgrade-2.3.md),
   [Upgrading to 2.1](guide/upgrade-v2.md) for 2.0.x applications, and
-  the exact [deprecation inventory](guide/v2-deprecations.md).
+  the exact [deprecation inventory](guide/migrations.md).
 - Contributing? Start with the [development guide](development/index.md).
 
 The exact retained provider window and upgrade policy are in the
 [server and driver matrix](development/typedb.md#server-and-driver-compatibility)
-and [compatibility inventory](guide/v2-deprecations.md).
+and [compatibility inventory](guide/migrations.md).

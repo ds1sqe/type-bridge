@@ -38,5 +38,5 @@ the normative [unified typed-query contract](../development/typed-query-contract
 Python and Node transaction contexts stay usable after a successful rollback:
 new writes can be committed on that same context. Python's `with` block
 commits work performed after an explicit rollback when the block exits normally.
-The legacy `type_bridge.session.Transaction` name remains a deprecated alias;
+The legacy `type_bridge.session.Transaction` wrapper is removed in 3.0;
 use `Database.transaction()` for application-owned transactions.

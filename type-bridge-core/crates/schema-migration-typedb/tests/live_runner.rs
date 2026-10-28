@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest as _, Sha256};
 use type_bridge_contract::codec::FormatVersion;
 use type_bridge_contract::id::{TypeId, TypeKind};
 use type_bridge_contract::limits::StructuralLimits;
@@ -21,13 +20,7 @@ use type_bridge_contract::schema::{
     DeclaredSchema, DocumentId, SchemaFact, SourceSpan, SourcedSchemaFact, SubFact, SubFactId,
     TypeFact,
 };
-use type_bridge_migration::{
-    AppliedMigrationRecord, LEGACY_CUTOVER_SENTINEL_APP_LABEL, LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
-    LEGACY_CUTOVER_SENTINEL_NAME, LEGACY_WRITER_CUTOVER_MESSAGE, LegacyAdoptionMetadata,
-    LegacySchemaEffect, MigrationDependencySpec, MigrationRunRecord, MigrationStateStore,
-    TypeDbStateStore, migration_file_checksum,
-};
-use type_bridge_orm::session::backend::QueryResult;
+use type_bridge_migration::LEGACY_WRITER_CUTOVER_MESSAGE;
 use type_bridge_orm::{
     ConnectOptions, Database, TxType, require_legacy_writer_open_in_transaction,
 };
@@ -37,83 +30,19 @@ use type_bridge_schema::{
     diff_managed, inverse_delta, managed_schema_state, resolve,
 };
 use type_bridge_schema_compat::{
-    ADOPTED_GENESIS_FILE_NAME, LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL,
-    released_typeql_to_declared_projection, typeql_to_declared,
+    LEGACY_LEDGER_SCHEMA_TYPEQL, MANAGED_FENCE_SCHEMA_TYPEQL, typeql_to_declared,
 };
 use type_bridge_schema_migration::{
-    LeaseHolderId, LegacyAppliedSetDigest, LegacyMigrationChecksum, LegacyMigrationReference,
-    MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding, MigrationExecutionOutcome,
-    MigrationRollbackOutcome, MigrationSafetyPolicy, SchemaLoweringBinding, SchemaMigrationDraft,
-    VerifiedSchemaMigrationManifest, build_legacy_frontier_bridge, build_verified_manifest,
-    encode_verified_manifest, schema_lowering_profile_binding,
+    LeaseHolderId, MigrationApplyApproval, MigrationApplyTarget, MigrationDriftFinding,
+    MigrationExecutionOutcome, MigrationRollbackOutcome, MigrationSafetyPolicy,
+    SchemaLoweringBinding, SchemaMigrationDraft, VerifiedSchemaMigrationManifest,
+    build_verified_manifest, encode_verified_manifest, schema_lowering_profile_binding,
 };
 use type_bridge_schema_migration_typedb::{
     MigrationDirectoryApplyError, MigrationDirectoryApplyOutcome,
     MigrationDirectoryRollbackOutcome, TypeDbMigrationRunner, derived_journal_database_name,
     execution_capability_vocabulary,
 };
-
-fn write_legacy_migration(
-    directory: &Path,
-    app_label: &str,
-    name: &str,
-    python_source: &str,
-    dependencies: Vec<(&str, &str)>,
-    schema_typeql: &str,
-) -> String {
-    let checksum = migration_file_checksum(python_source);
-    fs::write(directory.join(format!("{name}.py")), python_source)
-        .expect("write legacy python source");
-    let dependencies = dependencies
-        .into_iter()
-        .map(|(app_label, migration_name)| MigrationDependencySpec {
-            app_label: app_label.to_owned(),
-            migration_name: migration_name.to_owned(),
-        })
-        .collect::<Vec<_>>();
-    let schema_hash = Sha256::digest(schema_typeql.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let source_sha256 = Sha256::digest(python_source.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let archive = LegacyAdoptionMetadata::new(
-        app_label,
-        name,
-        dependencies,
-        checksum.clone(),
-        source_sha256,
-        LegacySchemaEffect::Snapshot,
-        MigrationDependencySpec {
-            app_label: app_label.to_owned(),
-            migration_name: name.to_owned(),
-        },
-        schema_hash.clone(),
-    )
-    .expect("legacy adoption metadata");
-    fs::write(
-        directory.join(format!("{name}.adoption.json")),
-        serde_json::to_vec(&archive).expect("adoption metadata encoding"),
-    )
-    .expect("write adoption metadata");
-    let snapshot = directory.join("snapshots/v0001");
-    fs::create_dir_all(&snapshot).expect("create snapshot directory");
-    fs::write(snapshot.join("schema.tql"), schema_typeql).expect("write snapshot schema");
-    fs::write(
-        snapshot.join("snapshot.json"),
-        serde_json::to_vec(&serde_json::json!({
-            "version": "v0001",
-            "source_migration": name,
-            "schema_hash": schema_hash,
-            "file_hashes": {"schema.tql": schema_hash},
-        }))
-        .expect("snapshot manifest encoding"),
-    )
-    .expect("write snapshot manifest");
-    checksum
-}
 
 fn connection() -> (String, String, String, String, ConnectOptions) {
     let address = env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".to_owned());
@@ -842,328 +771,6 @@ entity typebridge-internal-v2-legacy-cutover;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
-async fn runner_imports_a_completed_legacy_frontier_on_3_12_3() {
-    let (managed, journal) = databases().await;
-    let context = context();
-
-    // The completed legacy history includes released list semantics absent
-    // from the portable V2 fact graph. Seed its on-disk pair, applied-ledger
-    // record, and exact migrated user schema as a real v1 database carries them.
-    let legacy_root = TempDirectory::new();
-    let legacy_directory = legacy_root.path().join("example");
-    fs::create_dir(&legacy_directory).expect("create app-labelled legacy directory");
-    let adopted_genesis = "define\nattribute tag, value string;\n\
-                           entity person, owns tag[] @distinct;\n";
-    let checksum = write_legacy_migration(
-        &legacy_directory,
-        "example",
-        "0001_initial",
-        "class Migration:\n    operations = []\n",
-        Vec::new(),
-        adopted_genesis,
-    );
-    let state_store = TypeDbStateStore::new(Arc::clone(&managed));
-    state_store
-        .ensure_schema()
-        .await
-        .expect("install the legacy ledger schema");
-    state_store
-        .record_applied(AppliedMigrationRecord {
-            app_label: "example".to_owned(),
-            name: "0001_initial".to_owned(),
-            checksum: checksum.clone(),
-            applied_at: None,
-        })
-        .await
-        .expect("seed the legacy applied ledger");
-    let mut transaction = managed
-        .schema_transaction()
-        .await
-        .expect("open legacy schema transaction");
-    transaction
-        .query(adopted_genesis)
-        .await
-        .expect("replay the legacy migration effect");
-    transaction.commit().await.expect("commit legacy schema");
-
-    // Canonical side: the bridge records the loaded frontier and verifies
-    // against the reconstructed legacy head; ordinary work chains onto it.
-    let head = released_typeql_to_declared_projection(
-        DocumentId::new("live-adopted-list-head.typeql").expect("document id"),
-        adopted_genesis,
-    )
-    .expect("portable adopted head");
-    let with_company = released_typeql_to_declared_projection(
-        DocumentId::new("live-adopted-list-company.typeql").expect("document id"),
-        "define\nattribute tag, value string;\n\
-         entity person, owns tag[] @distinct;\nentity company;\n",
-    )
-    .expect("portable post-adoption target");
-    let legacy_frontier = vec![LegacyMigrationReference::new(
-        type_bridge_contract::migration::MigrationId::from_components(
-            MigrationAppLabel::new("example").expect("legacy app label"),
-            MigrationName::new("0001_initial").expect("legacy name"),
-        ),
-        LegacyMigrationChecksum::new(checksum.clone()).expect("legacy checksum"),
-    )];
-    let legacy_applied_set = LegacyAppliedSetDigest::compute(legacy_frontier.clone())
-        .expect("legacy applied set digest");
-    let bridge = build_legacy_frontier_bridge(
-        migration_id("0000_legacy_frontier"),
-        legacy_frontier,
-        legacy_applied_set,
-        &head,
-        &context,
-    )
-    .expect("legacy frontier bridge");
-    let follow = manifest_with_derived_assertions(
-        "0001_company",
-        vec![bridge.id().clone()],
-        &head,
-        &with_company,
-        &context,
-    );
-    let canonical_directory = TempDirectory::new();
-    fs::write(
-        canonical_directory.path().join(ADOPTED_GENESIS_FILE_NAME),
-        adopted_genesis,
-    )
-    .expect("write adopted genesis authority");
-    write_manifest(canonical_directory.path(), &bridge);
-    write_manifest(canonical_directory.path(), &follow);
-
-    let lowering = SchemaLoweringBinding::for_context(&context).expect("lowering binding");
-    let runner = TypeDbMigrationRunner::new(
-        Arc::clone(&managed),
-        Arc::clone(&journal),
-        head,
-        context,
-        lowering,
-        MigrationSafetyPolicy::default_policy(),
-    );
-    let holder = LeaseHolderId::new("legacy-import").expect("holder");
-
-    let outcome = runner
-        .import_legacy_frontier(&legacy_directory, canonical_directory.path(), &holder)
-        .await
-        .expect("import the completed legacy frontier");
-    assert!(matches!(
-        outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
-    ));
-
-    // The cutover pair is durable and exactly fingerprint-bound. Archival
-    // readers continue to expose the frozen ledger, including the V2-only row,
-    // while every legacy writer surface rejects before mutation.
-    let applied_after_cutover = state_store
-        .load_applied()
-        .await
-        .expect("read the adopted legacy ledger");
-    let sentinel = applied_after_cutover
-        .iter()
-        .find(|record| {
-            record.app_label == LEGACY_CUTOVER_SENTINEL_APP_LABEL
-                && record.name == LEGACY_CUTOVER_SENTINEL_NAME
-        })
-        .expect("exact V2 cutover sentinel");
-    assert_eq!(
-        sentinel.applied_at.as_deref(),
-        Some(LEGACY_CUTOVER_SENTINEL_APPLIED_AT),
-        "TypeDB must return the fixed timestamp byte-for-byte"
-    );
-    assert_eq!(sentinel.checksum.len(), 64);
-    assert!(
-        sentinel
-            .checksum
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    );
-
-    let mut cutover_read = managed
-        .read_transaction()
-        .await
-        .expect("open cutover-pair read snapshot");
-    let anchor_result = cutover_read
-        .query(
-            "match $anchor isa typebridge-internal-v2-legacy-cutover, has typebridge-internal-v2-legacy-cutover-fingerprint $fingerprint; fetch { \"fingerprint\": $fingerprint };",
-        )
-        .await
-        .expect("read managed cutover anchor");
-    cutover_read.close().await.expect("close cutover read");
-    let (QueryResult::Documents(anchor_docs) | QueryResult::Rows(anchor_docs)) = anchor_result
-    else {
-        panic!("cutover anchor fetch must return documents");
-    };
-    let anchor_fingerprint = anchor_docs
-        .first()
-        .and_then(|document| document.get("fingerprint"))
-        .and_then(|value| value.get("value").unwrap_or(value).as_str())
-        .expect("anchor fingerprint scalar");
-    assert_eq!(sentinel.checksum, anchor_fingerprint);
-    assert!(
-        state_store
-            .load_runs()
-            .await
-            .expect("read adopted run log")
-            .is_empty()
-    );
-
-    for rejected in [
-        state_store.ensure_schema().await,
-        state_store
-            .record_applied(AppliedMigrationRecord {
-                app_label: "example".to_owned(),
-                name: "9999_must_not_write".to_owned(),
-                checksum: "blocked".to_owned(),
-                applied_at: None,
-            })
-            .await,
-        state_store
-            .record_unapplied("example", "0001_initial")
-            .await,
-        state_store
-            .record_run(MigrationRunRecord {
-                run_id: "blocked-run".to_owned(),
-                app_label: "example".to_owned(),
-                name: "0001_initial".to_owned(),
-                checksum: checksum.clone(),
-                direction: "apply".to_owned(),
-                status: "started".to_owned(),
-                started_at: "1970-01-01T00:00:00.000000".to_owned(),
-                finished_at: None,
-                error: None,
-                executor_ip: None,
-                executor_mac: None,
-            })
-            .await,
-    ] {
-        let error = rejected.expect_err("legacy writer must remain closed");
-        assert!(
-            error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-            "{error}"
-        );
-    }
-    let released_schema_manager = type_bridge_orm::_schema::SchemaManager::new(managed.as_ref());
-    let schema_error = released_schema_manager
-        .sync_schema(true, false)
-        .await
-        .expect_err("the released Rust SchemaManager must share the permanent cutover fence");
-    assert!(
-        schema_error
-            .to_string()
-            .contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{schema_error}"
-    );
-    assert_eq!(
-        state_store
-            .load_applied()
-            .await
-            .expect("ledger remains readable after rejected writes"),
-        applied_after_cutover
-    );
-
-    let outcome = runner
-        .import_legacy_frontier(&legacy_directory, canonical_directory.path(), &holder)
-        .await
-        .expect("repeat import on a bridged ledger");
-    assert!(matches!(outcome, MigrationDirectoryApplyOutcome::UpToDate));
-
-    // Ordinary canonical work proceeds from the imported basis.
-    let outcome = runner
-        .apply(
-            canonical_directory.path(),
-            &MigrationApplyTarget::DefaultHead,
-            &holder,
-            &[],
-        )
-        .await
-        .expect("apply the post-bridge migration");
-    assert!(matches!(
-        outcome,
-        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
-    ));
-    let export = managed.schema_text().await.expect("post-import export");
-    assert!(export.contains("entity company"), "{export}");
-    assert!(export.contains("owns tag[]"), "{export}");
-    assert!(export.contains("@distinct"), "{export}");
-
-    // Mutating the legacy source breaks byte-for-byte continuity: the
-    // checked v1 loader rejects the directory before any provider write.
-    fs::write(
-        legacy_directory.join("0001_initial.py"),
-        "class Migration:\n    operations = [\"changed\"]\n",
-    )
-    .expect("mutate legacy python source");
-    let drifted = runner
-        .import_legacy_frontier(&legacy_directory, canonical_directory.path(), &holder)
-        .await
-        .expect_err("a drifted legacy file must not import");
-    assert!(
-        drifted
-            .to_string()
-            .contains("legacy migration directory failed the checked adoption loader"),
-        "{drifted}"
-    );
-
-    // A valid post-cutover user function may mention the managed partition in
-    // its body. Presence-only writer fencing must still inspect the canonical
-    // rows; the stricter query/adoption authority remains unchanged.
-    let mut extension = managed
-        .schema_transaction()
-        .await
-        .expect("open post-cutover function transaction");
-    extension
-        .query(
-            r#"define
-fun compatibility-writer-probe($candidate: person) -> { person }:
-  match
-    $candidate isa person;
-    $control isa typebridge-internal-v2-migration-control;
-  return { $candidate };
-"#,
-        )
-        .await
-        .expect("install valid function referencing managed control");
-    extension
-        .commit()
-        .await
-        .expect("commit post-cutover function");
-    let writer = managed
-        .transaction_context(TxType::Schema)
-        .await
-        .expect("open released writer after function extension");
-    let error = tokio::time::timeout(
-        Duration::from_secs(10),
-        require_legacy_writer_open_in_transaction(&writer),
-    )
-    .await
-    .expect("function-bearing schema export must not deadlock")
-    .expect_err("the function body must not reopen the released writer");
-    assert!(
-        error.to_string().contains(LEGACY_WRITER_CUTOVER_MESSAGE),
-        "{error}"
-    );
-    writer
-        .rollback()
-        .await
-        .expect("roll back rejected released writer transaction");
-    writer
-        .close()
-        .await
-        .expect("release rejected writer before deleting its database");
-
-    managed
-        .delete_database()
-        .await
-        .expect("delete isolated managed database");
-    journal
-        .delete_database()
-        .await
-        .expect("delete isolated journal database");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "requires an isolated TypeDB server paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
 async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
     let (managed, journal) = databases().await;
     let context = context();
@@ -1287,4 +894,83 @@ async fn runner_verifies_the_migration_state_triad_on_3_12_3() {
         .delete_database()
         .await
         .expect("delete isolated journal database");
+}
+
+#[path = "../../../../tests/support/adopted_history.rs"]
+mod adopted_history;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB paired with TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE"]
+async fn runner_applies_a_completed_legacy_frontier() {
+    let (managed, journal) = databases().await;
+    let context = context();
+    let source = "define\nattribute tag, value string;\nentity person, owns tag[] @distinct;\n";
+    let head = type_bridge_schema_compat::parse_adopted_genesis(
+        DocumentId::new("head.typeql").unwrap(),
+        source,
+    )
+    .unwrap();
+    let target = type_bridge_schema_compat::parse_adopted_genesis(
+        DocumentId::new("target.typeql").unwrap(),
+        &format!("{source}entity company;\n"),
+    )
+    .unwrap();
+    let bridge = adopted_history::bridge(&context, source);
+    adopted_history::seed(&managed, &journal, &context, &bridge, source).await;
+    adopted_history::assert_writer_closed(&managed).await;
+    let directory = TempDirectory::new();
+    fs::write(directory.path().join("adopted-genesis.typeql"), source).unwrap();
+    write_manifest(directory.path(), &bridge);
+    write_manifest(
+        directory.path(),
+        &manifest_with_derived_assertions(
+            "0001_company",
+            vec![bridge.id().clone()],
+            &head,
+            &target,
+            &context,
+        ),
+    );
+    let lowering = SchemaLoweringBinding::for_context(&context).unwrap();
+    let runner = TypeDbMigrationRunner::new(
+        Arc::clone(&managed),
+        Arc::clone(&journal),
+        head,
+        context,
+        lowering,
+        MigrationSafetyPolicy::default_policy(),
+    );
+    let holder = LeaseHolderId::new("completed-adoption").unwrap();
+    let outcome = runner
+        .apply(
+            directory.path(),
+            &MigrationApplyTarget::DefaultHead,
+            &holder,
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        MigrationDirectoryApplyOutcome::Executed(MigrationExecutionOutcome::Applied { .. })
+    ));
+    assert!(matches!(
+        runner
+            .apply(
+                directory.path(),
+                &MigrationApplyTarget::DefaultHead,
+                &holder,
+                &[]
+            )
+            .await
+            .unwrap(),
+        MigrationDirectoryApplyOutcome::UpToDate
+    ));
+    let export = managed.schema_text().await.unwrap();
+    assert!(export.contains("entity company"), "{export}");
+    assert!(export.contains("owns tag[]"), "{export}");
+    assert!(export.contains("@distinct"), "{export}");
+    adopted_history::assert_writer_closed(&managed).await;
+    managed.delete_database().await.unwrap();
+    journal.delete_database().await.unwrap();
 }

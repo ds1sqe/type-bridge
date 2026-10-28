@@ -286,9 +286,9 @@ where a version has no call for the op.
 
 ## Run the Python binding benchmarks locally
 
-`benchmarks/` is a pytest-benchmark suite over the Python binding: native
-query compilation, clause-to-dict marshalling and validation through
-`type_bridge_core`. Build the native module in release mode first (as
+`benchmarks/` measures native validation through the Python
+`type_bridge_core` binding. Legacy raw-query compilation and marshalling
+benchmarks were removed in 3.0 together with their implementation. Build the native module in release mode first (as
 `uv sync` does), then:
 
 ```bash

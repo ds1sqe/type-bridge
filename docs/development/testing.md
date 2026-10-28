@@ -201,13 +201,13 @@ For an application operation:
 5. Run the equivalent bindings that advertise the operation.
 
 Do not subclass private query-engine classes, build runtime descriptors by
-hand, or widen generated values to `object`/`Any`. The retained raw query
-builders may use private handwritten fixtures only in tests explicitly scoped
-to those contracts.
+hand, or widen generated values to `object`/`Any`. Exercise generated queries
+and staged plans through their public binding APIs.
 
-Historical migration and TOML fixtures are read-only evidence. Tests may load,
-verify, convert, and adopt them, but must not use them as active authoring
-authority or generate new root Python/JSON histories.
+Historical migration fixtures are read-only evidence. Existing adopted
+canonical histories retain ledger and anchor verification; new archive
+adoption requires TypeBridge 2.3.x. TOML fixtures remain read-only conversion
+evidence. Neither is active authoring authority.
 
 ## Release and artifact gates
 

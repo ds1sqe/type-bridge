@@ -43,7 +43,6 @@ from generated_v2 import (
     GroupedQuery,
     Identifier,
     Interaction,
-    Membership,
     Nickname,
     Party,
     Person,
@@ -79,7 +78,6 @@ from generated_v2 import (
 from generated_variant import Person as VariantPerson
 from type_bridge_core import MatchRequestError, blocking
 
-from type_bridge.query import QueryBuilder
 from type_bridge.session import Database
 
 
@@ -543,30 +541,6 @@ assert ordered_update_hook.pre_update_calls == 1
 assert ordered_update_hook.post_update_calls == 0
 assert fake_ordered_native.resolve_iid_calls == 0
 assert fake_ordered_native.update_calls == 0
-
-entity_match = QueryBuilder.match_entity(
-    Person,
-    "$person",
-    identifier=Identifier("person-1"),
-).build()
-assert "$person isa person" in entity_match
-assert 'has identifier "person-1"' in entity_match
-entity_insert = QueryBuilder.insert_entity(person, "$person").build()
-assert "$person isa person" in entity_insert
-assert 'has identifier "person-1"' in entity_insert
-relation_match = QueryBuilder.match_relation(
-    Membership,
-    "$membership",
-    role_players={"member": "$person"},
-).build()
-assert "$membership isa membership" in relation_match
-assert "member: $person" in relation_match
-try:
-    QueryBuilder.match_entity(type("ForgedEntity", (), {}))
-except TypeError:
-    pass
-else:
-    raise AssertionError("raw QueryBuilder accepted an uninstalled model class")
 
 try:
     make_person("person-1", aliases="not-a-sequence-value")

@@ -1048,8 +1048,8 @@ def test_core_sdist_requires_exact_native_and_cli_notices(tmp_path: Path, notice
 
 
 def test_root_artifacts_require_complete_source_inventory(tmp_path: Path) -> None:
-    deep_public_file = "type_bridge/migration/snapshots.py"
-    assert len(SPECS["root"].wheel_members) > 80
+    deep_public_file = "type_bridge/migration/state_schema.py"
+    assert len(SPECS["root"].wheel_members) == 17
     assert deep_public_file in SPECS["root"].wheel_members
 
     wheel = write_wheel(

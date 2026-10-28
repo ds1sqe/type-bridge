@@ -626,9 +626,7 @@ run_live_migration_steps() {
     for cli_live_test in \
         empty_workspace_to_replayed_history_live \
         documented_examples_initial_constraints_apply_and_verify_live \
-        verify_never_creates_databases_live \
-        adopt_legacy_history_then_evolve_live \
-        shipped_python_converter_to_native_adoption_live; do
+        verify_never_creates_databases_live; do
         if [[ "$cli_live_test" == documented_examples_initial_constraints_apply_and_verify_live \
             && "$lane_profile" != typedb-3.13.6/v1 ]]; then
             printf "${CYAN}Skipping documented examples on profile %s: examples require typedb-3.13.6/v1.${RESET}\n\n" "$lane_profile"

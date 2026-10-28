@@ -19,7 +19,7 @@ generated Rust applications and the query server consume the same contracts.
 | Build a Rust application | generated schema crate + `type-bridge` | `guide/rust.md` |
 | Own a canonical schema | Split-YAML workspace and CLI | `guide/schema-workflows.md`, `guide/split-yaml-v1.md` |
 | Run remote queries | TypeBridge server | `guide/server-container.md`, `guide/typed-queries.md` |
-| Upgrade an existing app | compatibility guides | `guide/upgrade-v2.md`, `guide/v2-deprecations.md` |
+| Upgrade an existing app | compatibility guides | `guide/upgrade-v2.md`, `guide/migrations.md` |
 
 Resolve these paths relative to this file when the repository documentation is
 available. Otherwise use <https://ds1sqe.github.io/type-bridge/>.
@@ -58,8 +58,8 @@ behavior in these ownership areas:
 
 - Keep Rust as the only V2 semantic engine. Do not implement schema, query,
   migration, validation, or ORM rules independently in Python or TypeScript.
-- Use Split-YAML as the sole active desired-schema authority. Read-only archive
-  conversion and released query compatibility are not authoring paths.
+- Use Split-YAML as the sole active desired-schema authority. Applications
+  consume generated packages, immutable queries, and staged plans.
 - Treat generated Python, TypeScript, and Rust files as projections. Regenerate
   them after schema changes; do not edit them by hand.
 - Sync or migrate the schema before inserting application data.

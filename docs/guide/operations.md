@@ -20,7 +20,7 @@ Read [Upgrading to 2.3](upgrade-2.3.md) before moving a 2.2 application to
 application. It separates the source-compatible package upgrade from later,
 explicit adoption of V2 schema and query surfaces.
 
-The [V2 deprecation inventory](v2-deprecations.md) is the exact removal
+The [V2 deprecation inventory](migrations.md) is the exact removal
 contract. A surface absent from its scheduled-removal list is not implicitly
 scheduled for removal.
 

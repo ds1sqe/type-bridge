@@ -1547,7 +1547,6 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "type-bridge-contract",
  "typeql",
