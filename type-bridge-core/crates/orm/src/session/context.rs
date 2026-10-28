@@ -396,6 +396,30 @@ impl TransactionContext {
         tx.query_v2_bounded(typeql, limits, consumer).await
     }
 
+    /// Stream a prepared read while preserving the caller's transaction lifecycle.
+    pub(crate) async fn dispatch_read_plan_bounded(
+        &self,
+        query: &super::staged::StagedQuery,
+        limits: AnswerLimits,
+        consumer: &mut dyn AnswerConsumer,
+    ) -> Result<BoundedAnswerStats> {
+        if query.writes || query.snapshot.is_some() {
+            return Err(OrmError::Transaction(
+                "Bounded reads cannot dispatch writes or snapshots".into(),
+            ));
+        }
+        self.check_schema_annotation_support(&query.typeql)?;
+        let mut guard = self.inner.lock().await;
+        let tx = active_transaction(&mut guard)?;
+        match query.rows.as_ref() {
+            Some(rows) => {
+                tx.query_v2_with_rows_bounded(&query.typeql, rows.clone(), limits, consumer)
+                    .await
+            }
+            None => tx.query_v2_bounded(&query.typeql, limits, consumer).await,
+        }
+    }
+
     /// Lower one trusted v3 plan for this transaction without dispatching
     /// it. A failure here means nothing reached the provider.
     ///
@@ -1654,6 +1678,42 @@ mod tests {
         assert_eq!(
             context.lifecycle_state().await,
             TransactionContextState::Committed
+        );
+    }
+
+    #[tokio::test]
+    async fn bounded_native_reads_refuse_writes_without_poisoning_the_context() {
+        let (context, calls) = active_context();
+        let mut consumer = |_item: super::super::backend::AnswerItem| {
+            Ok(super::super::backend::AnswerControl::Continue)
+        };
+        let error = context
+            .dispatch_read_plan_bounded(
+                &super::super::staged::StagedQuery::new("insert $x isa thing;", true),
+                AnswerLimits::default(),
+                &mut consumer,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, OrmError::Transaction(_)));
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        let stats = context
+            .dispatch_read_plan_bounded(
+                &super::super::staged::StagedQuery::new(
+                    "match $x isa thing; fetch { iid: iid($x) };",
+                    false,
+                )
+                .canonical(),
+                AnswerLimits::default(),
+                &mut consumer,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stats, BoundedAnswerStats::default());
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
         );
     }
 

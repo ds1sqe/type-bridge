@@ -31,6 +31,7 @@ use crate::execution_diagnostic::{lower_commit_error, lower_orm_error};
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
+use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
 use crate::plan_builders::put::{KeyedPut, keyed_entity_put};
 use crate::plan_builders::read::reference_identity;
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
@@ -2881,36 +2882,29 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: &ProjectedCrudInvocationControl,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
-        let query = query_builder::build_dynamic_entity_fetch_by_iid_exact(
-            &prepared.descriptor,
-            &prepared.iid,
-            "$e",
-        )
-        .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id))?;
         let mut ledger = ControlledCrudLedger::try_new(
             control.limits,
             controlled_read_input_bytes(&prepared.type_id, Some(&prepared.iid)),
         )?;
-        let answer = self
-            .execute_controlled_read_query(
+        let mut rows = self
+            .execute_controlled_exact_read(
                 transaction,
                 &prepared.type_id,
-                &query,
-                ControlledAnswerKind::Documents,
+                &prepared.iid,
                 control,
                 &mut ledger,
+                crate::_manager::dynamic::plan_entity_row,
             )
             .await?;
-        let QueryResult::Documents(documents) = answer else {
-            unreachable!("controlled answer collector preserves its expected kind")
-        };
-        let row = match documents.as_slice() {
-            [] => None,
-            [document] => Some(
-                hydrate_dynamic_entity(&prepared.descriptor, document).map_err(|error| {
-                    orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-                })?,
-            ),
+        let thing = match rows.len() {
+            0 => None,
+            1 => Some(self.hydrate_entity(
+                rows.pop().expect("one exact entity"),
+                &prepared.type_id,
+                &prepared.iid,
+                transaction.execution_identity(),
+                ExecutionMode::default(),
+            )?),
             _ => {
                 return Err(integrity_at_type(
                     "entity_iid_cardinality_invalid",
@@ -2919,17 +2913,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 ));
             }
         };
-        let thing = row
-            .map(|row| {
-                self.hydrate_entity(
-                    row,
-                    &prepared.type_id,
-                    &prepared.iid,
-                    transaction.execution_identity(),
-                    ExecutionMode::default(),
-                )
-            })
-            .transpose()?;
         if let Some(thing) = thing.as_ref() {
             ledger.charge_projected(thing)?;
         }
@@ -2963,38 +2946,24 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: &ProjectedCrudInvocationControl,
     ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
-        let query = query_builder::build_dynamic_relation_fetch_by_iid_exact(
-            &prepared.descriptor,
-            &prepared.iid,
-            "$r",
-        )
-        .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id))?;
         let mut ledger = ControlledCrudLedger::try_new(
             control.limits,
             controlled_read_input_bytes(&prepared.type_id, Some(&prepared.iid)),
         )?;
-        let answer = self
-            .execute_controlled_read_query(
+        let mut rows = self
+            .execute_controlled_exact_read(
                 transaction,
                 &prepared.type_id,
-                &query,
-                ControlledAnswerKind::Documents,
+                &prepared.iid,
                 control,
                 &mut ledger,
+                crate::_manager::dynamic::plan_relation_row,
             )
             .await?;
-        let QueryResult::Documents(documents) = answer else {
-            unreachable!("controlled answer collector preserves its expected kind")
-        };
-        let rows =
-            coalesce_dynamic_relation_by_iid(&prepared.descriptor, &documents, &prepared.iid)
-                .map_err(|error| {
-                    orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-                })?;
-        let thing = match rows.as_slice() {
-            [] => None,
-            [row] => Some(self.hydrate_relation(
-                row.clone(),
+        let thing = match rows.len() {
+            0 => None,
+            1 => Some(self.hydrate_relation(
+                rows.pop().expect("one exact relation"),
                 &prepared.type_id,
                 &prepared.iid,
                 transaction.execution_identity(),
@@ -3030,6 +2999,96 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         .await
     }
 
+    async fn execute_controlled_exact_read<T>(
+        &self,
+        transaction: &TransactionContext,
+        type_id: &TypeId,
+        iid: &str,
+        control: &ProjectedCrudInvocationControl,
+        ledger: &mut ControlledCrudLedger,
+        map: impl Fn(
+            &crate::_registry::DescriptorRegistry,
+            &crate::match_request::HydratedThing,
+        ) -> crate::Result<T>,
+    ) -> Result<Vec<T>, SdkExecutionDiagnostic> {
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let plans = ManagerPlans::new(Arc::clone(&registry));
+        let ManagerRead::Fetch(stack) = plans
+            .read(
+                type_id.label().as_str(),
+                true,
+                &[crate::_dynamic::DynamicExpr::Iid { iid: iid.into() }],
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Fetch,
+            )
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?
+        else {
+            unreachable!("exact model fetch")
+        };
+        let mut answers = Vec::with_capacity(stack.plans().len());
+        for plan in stack.plans() {
+            control.check(type_id)?;
+            let query = await_crud_controlled(
+                transaction.prepare_plan(plan),
+                control.deadline,
+                &control.cancellation,
+            )
+            .await
+            .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Read, type_id))?;
+            let answer = self
+                .execute_controlled_read_query(
+                    transaction,
+                    type_id,
+                    ControlledReadSource::Plan(&query),
+                    ControlledAnswerKind::Documents,
+                    control,
+                    ledger,
+                )
+                .await?;
+            if type_id.kind() == TypeKind::Entity
+                && stack.plans().len() == 1
+                && matches!(&answer, QueryResult::Documents(documents) if documents.len() > 1)
+            {
+                return Err(integrity_at_type(
+                    "entity_iid_cardinality_invalid",
+                    "The provider returned multiple exact entities for one IID",
+                    type_id,
+                ));
+            }
+            answers.push(
+                TransactionContext::resolve_plan(plan, answer)
+                    .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?,
+            );
+        }
+        let proof = stack
+            .resolve(&registry, &answers, stack.execution_limits(control.limits))
+            .map_err(|error| orm_at_type(error.into(), SdkProviderOperation::Read, type_id))?;
+        let crate::match_request::MatchResult::Rows { rows } = proof
+            .result()
+            .for_request(proof.request())
+            .map_err(|error| orm_at_type(error.into(), SdkProviderOperation::Read, type_id))?
+        else {
+            unreachable!("exact model rows")
+        };
+        rows.iter()
+            .map(|row| match row.slots() {
+                [crate::match_request::SlotValue::One(thing)] => map(&registry, thing)
+                    .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id)),
+                _ => Err(integrity_at_type(
+                    "manager_result_shape",
+                    "An exact read requires one model slot",
+                    type_id,
+                )),
+            })
+            .collect()
+    }
+
     async fn execute_controlled_count(
         &self,
         transaction: &TransactionContext,
@@ -3043,7 +3102,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .execute_controlled_read_query(
                 transaction,
                 type_id,
-                query,
+                ControlledReadSource::Raw(query),
                 ControlledAnswerKind::Rows,
                 control,
                 &mut ledger,
@@ -3067,13 +3126,29 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         type_id: &TypeId,
-        query: &str,
+        query: ControlledReadSource<'_>,
         expected: ControlledAnswerKind,
         control: &ProjectedCrudInvocationControl,
         ledger: &mut ControlledCrudLedger,
     ) -> Result<QueryResult, SdkExecutionDiagnostic> {
         control.check(type_id)?;
-        ledger.charge_statement(u64::try_from(query.len()).unwrap_or(u64::MAX))?;
+        let (source, given_bytes) = match &query {
+            ControlledReadSource::Raw(source) => (*source, 0),
+            ControlledReadSource::Plan(query) => (
+                query.typeql.as_str(),
+                query
+                    .rows
+                    .as_ref()
+                    .map(crate::projected_batch_executor::given_rows_bytes)
+                    .transpose()?
+                    .unwrap_or(0),
+            ),
+        };
+        ledger.charge_statement(
+            u64::try_from(source.len())
+                .unwrap_or(u64::MAX)
+                .saturating_add(given_bytes),
+        )?;
         let limits = AnswerLimits {
             answer: BoundedAnswerLimits {
                 max_items: ledger.remaining_items(),
@@ -3086,7 +3161,20 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         };
         let mut collector = ControlledAnswerCollector::new(expected, type_id.label().as_str());
         let mut observed = LocallyBoundedCrudConsumer::new(&mut collector, limits.answer.clone());
-        let future = transaction.query_v2_bounded(query, limits, &mut observed);
+        let future = async {
+            match query {
+                ControlledReadSource::Raw(source) => {
+                    transaction
+                        .query_v2_bounded(source, limits, &mut observed)
+                        .await
+                }
+                ControlledReadSource::Plan(query) => {
+                    transaction
+                        .dispatch_read_plan_bounded(query, limits, &mut observed)
+                        .await
+                }
+            }
+        };
         let mut provider = await_crud_controlled(future, control.deadline, &control.cancellation)
             .await
             .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Read, type_id))?;
@@ -5231,6 +5319,11 @@ fn controlled_crud_orm(
     }
 }
 
+enum ControlledReadSource<'source> {
+    Raw(&'source str),
+    Plan(&'source crate::session::staged::StagedQuery),
+}
+
 #[derive(Clone, Copy)]
 enum ControlledAnswerKind {
     Documents,
@@ -6610,6 +6703,8 @@ mod tests {
         responses: VecDeque<ControlledProviderResponse>,
         opens: Vec<TxType>,
         bounded_reads: usize,
+        materialized_reads: usize,
+        queries: Vec<(String, Option<GivenRowsSpec>)>,
         bounded_given: usize,
         unbounded_queries: usize,
         commits: usize,
@@ -6678,7 +6773,11 @@ mod tests {
             limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, crate::Result<BoundedAnswerStats>> {
-            self.state.lock().unwrap().bounded_reads += 1;
+            {
+                let mut state = self.state.lock().unwrap();
+                state.bounded_reads += 1;
+                state.queries.push((_typeql.to_owned(), None));
+            }
             stream_controlled_response(self.response(), limits.answer, consumer, _typeql)
         }
 
@@ -6689,8 +6788,38 @@ mod tests {
             limits: AnswerLimits,
             consumer: &'a mut dyn AnswerConsumer,
         ) -> BoxFuture<'a, crate::Result<BoundedAnswerStats>> {
-            self.state.lock().unwrap().bounded_given += 1;
+            {
+                let mut state = self.state.lock().unwrap();
+                state.bounded_given += 1;
+                state
+                    .queries
+                    .push((_typeql.to_owned(), Some(_rows.clone())));
+            }
             stream_controlled_response(self.response(), limits.answer, consumer, _typeql)
+        }
+
+        fn query_materialized_bounded<'a>(
+            &'a mut self,
+            typeql: &'a str,
+            rows: Option<GivenRowsSpec>,
+            limits: AnswerLimits,
+            _canonical: bool,
+            _statement_display: Option<&'a str>,
+        ) -> BoxFuture<'a, crate::Result<QueryResult>> {
+            {
+                let mut state = self.state.lock().unwrap();
+                state.materialized_reads += 1;
+                state.queries.push((typeql.to_owned(), rows));
+            }
+            let response = self.response();
+            Box::pin(async move {
+                let mut collector = ControlledAnswerCollector::new(
+                    ControlledAnswerKind::Documents,
+                    "native exact read",
+                );
+                stream_controlled_response(response, limits.answer, &mut collector, typeql).await?;
+                Ok(collector.finish())
+            })
         }
 
         fn commit(&mut self) -> BoxFuture<'_, crate::Result<()>> {
@@ -6752,8 +6881,7 @@ mod tests {
     }
 
     fn controlled_installed() -> InstalledRuntimeProjection {
-        let documents = SchemaDocumentSet::parse([(
-            DocumentId::new("controlled-crud.yaml").unwrap(),
+        controlled_installed_from(
             r#"format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
@@ -6771,8 +6899,13 @@ plays:
   person:
     membership: [member]
 "#,
-        )])
-        .unwrap();
+        )
+    }
+
+    fn controlled_installed_from(schema: &str) -> InstalledRuntimeProjection {
+        let documents =
+            SchemaDocumentSet::parse([(DocumentId::new("controlled-crud.yaml").unwrap(), schema)])
+                .unwrap();
         let resolved = resolve(
             &normalize_documents(&documents).unwrap(),
             &SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
@@ -7058,6 +7191,271 @@ plays:
         }
         transaction.rollback().await.unwrap();
         assert_eq!(state.lock().unwrap().rollbacks, 1);
+    }
+
+    #[tokio::test]
+    async fn controlled_exact_reads_match_ordinary_empty_ordered_reads_owned_and_borrowed() {
+        let installed = controlled_installed_from(
+            r#"format: typebridge.schema/v2
+attributes:
+  identifier: { value: string }
+  tag: { value: string }
+entities:
+  person:
+    owns:
+      identifier: { key: true }
+      tag: { ordered: true, card: { min: 0, max: 4 } }
+relations:
+  membership:
+    owns:
+      identifier: { key: true }
+    relates:
+      member: { card: { min: 0, max: 4 } }
+      participant: { ordered: true, card: { min: 0, max: 4 } }
+plays:
+  person:
+    membership: [member, participant]
+"#,
+        );
+        let executor = ProjectedCrudExecutor::new(&installed);
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            for borrowed in [false, true] {
+                let type_id = controlled_type(kind);
+                let mut sources = Vec::new();
+                for controlled in [false, true] {
+                    let mut document = json!({
+                        "_iid":"0x20", "_type":type_id.label().as_str(),
+                        "attributes":{"identifier":"key"}
+                    });
+                    if kind == TypeKind::Relation {
+                        document["_role_0_iid"] = json!(null);
+                        document["_role_0_type"] = json!(null);
+                        document["_role_0_attributes"] = json!(null);
+                        document["_role_1_iid"] = json!(null);
+                        document["_role_1_type"] = json!(null);
+                        document["_role_1_attributes"] = json!(null);
+                    }
+                    let (database, state) = controlled_database(vec![
+                        ControlledProviderResponse::Items(vec![AnswerItem::Document(document)]),
+                    ]);
+                    let transaction = if borrowed {
+                        Some(database.transaction_context(TxType::Read).await.unwrap())
+                    } else {
+                        None
+                    };
+                    let limits = QueryExecutionResourceLimits {
+                        statements: Some(1),
+                        ..Default::default()
+                    };
+                    let cancellation = AnswerCancellation::default();
+                    let (observed_iid, ordered_empty) = if controlled {
+                        let thing = match (kind, transaction.as_ref(), true) {
+                            (TypeKind::Entity, None, true) => {
+                                executor
+                                    .get_entity_by_iid_controlled(
+                                        &database,
+                                        &type_id,
+                                        "0x20",
+                                        limits,
+                                        cancellation,
+                                    )
+                                    .await
+                            }
+                            (TypeKind::Relation, None, true) => {
+                                executor
+                                    .get_relation_by_iid_controlled(
+                                        &database,
+                                        &type_id,
+                                        "0x20",
+                                        limits,
+                                        cancellation,
+                                    )
+                                    .await
+                            }
+                            (TypeKind::Entity, Some(tx), true) => {
+                                executor
+                                    .get_entity_by_iid_in_transaction_controlled(
+                                        tx,
+                                        &type_id,
+                                        "0x20",
+                                        limits,
+                                        cancellation,
+                                    )
+                                    .await
+                            }
+                            (TypeKind::Relation, Some(tx), true) => {
+                                executor
+                                    .get_relation_by_iid_in_transaction_controlled(
+                                        tx,
+                                        &type_id,
+                                        "0x20",
+                                        limits,
+                                        cancellation,
+                                    )
+                                    .await
+                            }
+                            _ => unreachable!(),
+                        }
+                        .unwrap()
+                        .unwrap();
+                        let empty = if kind == TypeKind::Entity {
+                            let tag =
+                                OwnsFactId::new(type_id.clone(), AttributeId::new("tag").unwrap())
+                                    .unwrap();
+                            thing.fields()[&tag].is_empty()
+                        } else {
+                            thing.roles()[&RoleId::new("membership", "participant").unwrap()]
+                                .is_empty()
+                        };
+                        (thing.iid().to_owned(), empty)
+                    } else {
+                        let registry = installed.manager_registry().unwrap();
+                        if kind == TypeKind::Entity {
+                            let prepared =
+                                executor.prepare_entity_identity(&type_id, "0x20").unwrap();
+                            let manager = if let Some(tx) = transaction.as_ref() {
+                                DynamicEntityManager::with_registry_transaction(
+                                    tx.clone(),
+                                    registry,
+                                    prepared.descriptor,
+                                )
+                            } else {
+                                DynamicEntityManager::from_registry(
+                                    &database,
+                                    registry,
+                                    prepared.descriptor,
+                                )
+                            };
+                            let row = manager.get_by_iid_exact("0x20").await.unwrap().unwrap();
+                            (
+                                row.iid.unwrap(),
+                                row.attributes.iter().all(|(name, _)| name != "tag"),
+                            )
+                        } else {
+                            let prepared = executor
+                                .prepare_relation_identity(&type_id, "0x20")
+                                .unwrap();
+                            let manager = if let Some(tx) = transaction.as_ref() {
+                                DynamicRelationManager::with_registry_transaction(
+                                    tx.clone(),
+                                    registry,
+                                    prepared.descriptor,
+                                )
+                            } else {
+                                DynamicRelationManager::from_registry(
+                                    &database,
+                                    registry,
+                                    prepared.descriptor,
+                                )
+                            };
+                            let mut rows = manager.get_by_iid_exact("0x20").await.unwrap();
+                            assert_eq!(rows.len(), 1);
+                            let row = rows.pop().unwrap();
+                            (
+                                row.iid.unwrap(),
+                                row.role_players
+                                    .iter()
+                                    .all(|player| player.role_name != "participant"),
+                            )
+                        }
+                    };
+                    assert_eq!(observed_iid, "0x20");
+                    assert!(ordered_empty);
+                    {
+                        let state = state.lock().unwrap();
+                        assert_eq!(state.queries.len(), 1);
+                        assert_eq!(state.bounded_reads, usize::from(controlled));
+                        assert_eq!(state.materialized_reads, usize::from(!controlled));
+                        assert_eq!(state.bounded_given, 0);
+                        assert_eq!(state.unbounded_queries, 0);
+                        assert_eq!(state.opens, [TxType::Read]);
+                        assert_eq!(state.closes, usize::from(!borrowed));
+                        assert_eq!(state.commits, 0);
+                        assert_eq!(state.rollbacks, 0);
+                        sources.push(state.queries.clone());
+                    }
+                    if let Some(tx) = transaction {
+                        assert_eq!(tx.lifecycle_state().await, TransactionContextState::Active);
+                        tx.close().await.unwrap();
+                        assert_eq!(state.lock().unwrap().closes, 1);
+                    }
+                }
+                assert_eq!(sources[0], sources[1], "{kind:?}, borrowed={borrowed}");
+            }
+        }
+        for borrowed in [false, true] {
+            let populated = json!({
+                "_iid":"0x20", "_type":"membership", "attributes":{"identifier":"key"},
+                "_role_0_iid":null, "_role_0_type":null, "_role_0_attributes":null,
+                "_role_1_iid":"0x10", "_role_1_type":"person",
+                "_role_1_attributes":{"identifier":"player"}
+            });
+            let (database, state) = controlled_database(vec![
+                ControlledProviderResponse::Items(vec![AnswerItem::Document(populated)]),
+                ControlledProviderResponse::Items(vec![AnswerItem::Document(json!({
+                    "_iid":"0x40", "_type":"person", "attributes":{"identifier":"reused"}
+                }))]),
+            ]);
+            let transaction = if borrowed {
+                Some(database.transaction_context(TxType::Read).await.unwrap())
+            } else {
+                None
+            };
+            let membership = controlled_type(TypeKind::Relation);
+            let result = match transaction.as_ref() {
+                Some(tx) => {
+                    executor
+                        .get_relation_by_iid_in_transaction_controlled(
+                            tx,
+                            &membership,
+                            "0x20",
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                }
+                None => {
+                    executor
+                        .get_relation_by_iid_controlled(
+                            &database,
+                            &membership,
+                            "0x20",
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                }
+            };
+            assert_eq!(
+                result.unwrap_err().code().as_str(),
+                "query_plan_hydration_ordered_role"
+            );
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.closes, usize::from(!borrowed));
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
+            }
+            if let Some(tx) = transaction {
+                assert_eq!(tx.lifecycle_state().await, TransactionContextState::Active);
+                let reused = executor
+                    .get_entity_by_iid_in_transaction_controlled(
+                        &tx,
+                        &controlled_type(TypeKind::Entity),
+                        "0x40",
+                        QueryExecutionResourceLimits::default(),
+                        AnswerCancellation::default(),
+                    )
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(reused.iid(), "0x40");
+                assert_eq!(state.lock().unwrap().queries.len(), 2);
+                tx.close().await.unwrap();
+            }
+            assert_eq!(state.lock().unwrap().closes, 1);
+        }
     }
 
     #[tokio::test]
