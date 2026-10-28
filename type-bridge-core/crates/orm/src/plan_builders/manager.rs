@@ -1525,6 +1525,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inherited_key_order_and_write_ownership_keep_their_canonical_identities() {
+        use crate::match_request::{
+            MissingOrder, RowCardinality, SessionHandle, SortDirection, Window,
+        };
+        use sha2::{Digest, Sha256};
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+        let declared = normalize_documents(&SchemaDocumentSet::parse([(
+            DocumentId::new("inherited-order.yaml").unwrap(),
+            "format: typebridge.schema/v2\nattributes:\n  name: { value: string }\nentities:\n  person:\n    owns:\n      name: { key: true }\n  employee: { sub: person }\n",
+        )]).unwrap()).unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = crate::InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let registry = installed.manager_registry().unwrap();
+        let session = SessionHandle::new(Arc::clone(&registry));
+        let employee = session.exact("employee").unwrap();
+        let direct = employee.field("name").unwrap();
+        let inherited = employee.field_owned_by("person", "name").unwrap();
+        assert_eq!(inherited.field_id(), direct.field_id());
+        let query = session
+            .query(session.positional([employee.one()]).unwrap())
+            .unwrap();
+        let mut bytes = Vec::new();
+        for field in [direct, inherited] {
+            let request = query
+                .validate_fetch_rows(
+                    &[field.order(SortDirection::Ascending, MissingOrder::Reject)],
+                    Window {
+                        offset: 0,
+                        limit: 2,
+                    },
+                    RowCardinality::BoundedMany,
+                )
+                .unwrap();
+            assert_eq!(request.stable_order().terms().len(), 1);
+            let stack =
+                crate::match_request::plan_adapter::adapt_match_request(&registry, &request)
+                    .unwrap();
+            let Stage::Match { patterns } = &stack.plans[0].pipeline()[0] else {
+                panic!("match prefix")
+            };
+            assert_eq!(patterns.iter().filter(|pattern| matches!(pattern,
+                Pattern::Read(QueryPattern::Has { attribute_id, .. }) if attribute_id.label().as_str() == "name"
+            )).count(), 1);
+            let sort = stack.plans[0]
+                .pipeline()
+                .iter()
+                .find_map(|stage| match stage {
+                    Stage::Sort { terms } => Some(terms),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                sort.len(),
+                2,
+                "one public field and the existing IID tie breaker"
+            );
+            bytes.push(type_bridge_contract::codec::to_canonical_json(&stack.plans).unwrap());
+        }
+        assert_eq!(bytes[0], bytes[1]);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&bytes[0])),
+            "c4c5795900f57813cbd0ae963ab8a8d52e167038d98d30f1be899d6862a63726"
+        );
+        let plans = ManagerPlans::new(registry);
+        let insert = plans
+            .insert(
+                "employee",
+                &vec![("name".into(), crate::AttributeValue::String("Ada".into()))],
+                &[],
+                false,
+                true,
+            )
+            .unwrap();
+        let Stage::Insert { things } = &insert.local().pipeline()[0] else {
+            panic!("insert stage")
+        };
+        assert_eq!(things[0].fields[0].0.owner().label().as_str(), "person");
+    }
+
+    #[test]
     fn clear_only_updates_keep_one_projection_after_each_delete() {
         use sha2::{Digest, Sha256};
         use type_bridge_contract::fingerprint::SemanticProfileId;

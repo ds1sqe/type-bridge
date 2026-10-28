@@ -649,7 +649,10 @@ impl DescriptorRegistry {
         ))
     }
 
-    fn descriptor_by_id(&self, descriptor_id: &DescriptorId) -> Option<TypeDescriptorRef> {
+    pub(crate) fn descriptor_by_id(
+        &self,
+        descriptor_id: &DescriptorId,
+    ) -> Option<TypeDescriptorRef> {
         self.descriptors.read().ok().and_then(|descriptors| {
             descriptors
                 .values()
