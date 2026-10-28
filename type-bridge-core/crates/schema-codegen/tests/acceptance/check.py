@@ -88,6 +88,8 @@ def check_negative(report: dict[str, object], path: Path) -> None:
 
 
 def main() -> None:
+    if shutil.which("uv") is None or shutil.which("uvx") is None:
+        raise RuntimeError("required tool is unavailable: uv (including uvx)")
     fixtures = [
         HERE / "positive.py",
         HERE / "negative.py",
@@ -123,7 +125,7 @@ def main() -> None:
         shutil.copy2(HERE / fixture, STAGE / fixture)
     shutil.copy2(DOCUMENTED_EXAMPLES, STAGE / "documented_examples.py")
 
-    command(["maturin", "develop"], cwd=CORE)
+    command(["bash", str(ROOT / "scripts/ci/run_maturin.sh"), "develop"], cwd=CORE)
 
     command(
         [

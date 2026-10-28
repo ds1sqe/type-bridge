@@ -322,13 +322,13 @@ def _required_fixture(environment: Mapping[str, str], profile: Profile = PROJECT
 def _require_tools() -> None:
     if os.name != "posix":
         raise RunnerError("the Projected live fan-in requires POSIX process-group isolation")
-    for executable in ("cargo", "maturin", "npm", "node", "gcc", "clang"):
+    for executable in ("cargo", "uv", "uvx", "npm", "node", "gcc", "clang"):
         if shutil.which(executable) is None:
             raise RunnerError(f"required Projected live tool is unavailable: {executable}")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     if not tsc.is_file() or not os.access(tsc, os.X_OK):
         raise RunnerError(
-            "required TypeScript compiler is unavailable; run npm ci in type-bridge-core/crates/node"
+            "required tsc in node_modules is unavailable; run npm ci in type-bridge-core/crates/node"
         )
 
 
@@ -445,7 +445,7 @@ def command_plan(
     return (
         CommandSpec(
             "install the Python native facade",
-            ("maturin", "develop"),
+            ("bash", str(ROOT / "scripts/ci/run_maturin.sh"), "develop"),
             CORE,
             600,
             {"TMPDIR": str(layout.scratch)},
@@ -1026,12 +1026,12 @@ def run_tls(environment: Mapping[str, str] = os.environ) -> str:
         ("Node producer", MANAGER.NODE_PRODUCER),
     ):
         contract.validate_producer_source(path.read_bytes())
-    for executable in ("cargo", "maturin", "npm", "node"):
+    for executable in ("cargo", "uv", "uvx", "npm", "node"):
         if shutil.which(executable) is None:
             raise RunnerError(f"required ordered TLS tool is unavailable: {executable}")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     if not tsc.is_file() or not os.access(tsc, os.X_OK):
-        raise RunnerError("the TypeScript compiler is unavailable; run npm ci first")
+        raise RunnerError("the tsc compiler in node_modules is unavailable; run npm ci first")
     with tempfile.TemporaryDirectory(prefix="typebridge-manager-tls-") as temporary:
         layout = Layout.under(
             Path(temporary).resolve(),

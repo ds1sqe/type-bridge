@@ -16,6 +16,10 @@ const FOREIGN = resolve(STAGE, "generated_foreign");
 const PROJECTED = resolve(STAGE, "generated_projected");
 const PROJECTED_FOREIGN = resolve(STAGE, "generated_projected_foreign");
 const NODE_PACKAGE = resolve(CORE, "crates/node");
+const TSC = resolve(NODE_PACKAGE, "node_modules/.bin/tsc");
+if (!existsSync(TSC)) {
+  throw new Error(`required tsc is unavailable: ${TSC}; run npm ci in ${NODE_PACKAGE}`);
+}
 const DOCUMENTED_EXAMPLES = resolve(
   ROOT,
   "tests/contracts/typed_query/typescript/documented_examples.ts",
@@ -194,14 +198,14 @@ command("cargo", [
 });
 mkdirSync(resolve(STAGE, "node_modules/@type-bridge"), { recursive: true });
 symlinkSync(NODE_PACKAGE, resolve(STAGE, "node_modules/@type-bridge/node"), "dir");
-command("tsc", ["--project", resolve(BLOCKERS, "tsconfig.json")]);
-command("tsc", ["--project", resolve(GENERATED, "tsconfig.json")]);
-command("tsc", ["--project", resolve(ORDERED, "tsconfig.json")]);
-command("tsc", ["--project", resolve(PLAN_IDIOMS, "tsconfig.json")]);
-command("tsc", ["--project", resolve(PLAN_NAMES, "tsconfig.json")]);
-command("tsc", ["--project", resolve(FOREIGN, "tsconfig.json")]);
-command("tsc", ["--project", resolve(PROJECTED, "tsconfig.json")]);
-command("tsc", ["--project", resolve(PROJECTED_FOREIGN, "tsconfig.json")]);
+command(TSC, ["--project", resolve(BLOCKERS, "tsconfig.json")]);
+command(TSC, ["--project", resolve(GENERATED, "tsconfig.json")]);
+command(TSC, ["--project", resolve(ORDERED, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PLAN_IDIOMS, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PLAN_NAMES, "tsconfig.json")]);
+command(TSC, ["--project", resolve(FOREIGN, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PROJECTED, "tsconfig.json")]);
+command(TSC, ["--project", resolve(PROJECTED_FOREIGN, "tsconfig.json")]);
 
 const unorderedRuntimeDts = readFileSync(resolve(GENERATED, "dist/runtime.d.ts"), "utf8");
 const unorderedModelsDts = readFileSync(resolve(GENERATED, "dist/models.d.ts"), "utf8");
@@ -280,7 +284,7 @@ writeFileSync(
     ],
   }, null, 2)}\n`,
 );
-command("tsc", ["--project", resolve(STAGE, "tsconfig.json")]);
+command(TSC, ["--project", resolve(STAGE, "tsconfig.json")]);
 command("node", [resolve(STAGE, "authority_rejection_check.mjs")]);
 command("node", [resolve(STAGE, "blockers_check.mjs")]);
 command("node", [resolve(STAGE, "runtime_check.mjs")]);

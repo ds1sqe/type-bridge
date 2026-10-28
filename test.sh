@@ -539,6 +539,18 @@ else
 fi
 
 # ── Offline tiers (always) ───────────────────────────────────────────────────
+for tool in uv uvx npm node; do
+    if ! command -v "$tool" >/dev/null; then
+        printf 'required tool is unavailable: %s\n' "$tool" >&2
+        exit 1
+    fi
+done
+bash scripts/ci/run_maturin.sh --version
+run_step "npm ci" bash -c "cd '$NODE_DIR' && npm ci"
+if [[ ! -x "$NODE_DIR/node_modules/.bin/tsc" ]]; then
+    printf 'required tsc is unavailable: %s/node_modules/.bin/tsc; run npm ci\n' "$NODE_DIR" >&2
+    exit 1
+fi
 printf "${BOLD}━━━ Rust ━━━${RESET}\n\n"
 export PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
 target_directory="$(cargo metadata --no-deps --format-version 1 \
@@ -596,7 +608,6 @@ run_step "pytest tests/unit/" \
     uv run pytest tests/unit/ --tb=short -q
 
 printf "${BOLD}━━━ Node (build + offline) ━━━${RESET}\n\n"
-run_step "npm ci"            bash -c "cd '$NODE_DIR' && npm ci"
 run_step "npm run build"     bash -c "cd '$NODE_DIR' && npm run build"
 run_step "ordered four-binding generated package compiler smoke" \
     cargo test --locked --manifest-path type-bridge-core/Cargo.toml \

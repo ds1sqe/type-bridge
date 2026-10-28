@@ -110,7 +110,11 @@ def command_plan(layout: Layout) -> tuple[CommandSpec, ...]:
     }
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     return (
-        CommandSpec("install the Python native facade", ("maturin", "develop"), CORE),
+        CommandSpec(
+            "install the Python native facade",
+            ("bash", str(ROOT / "scripts/ci/run_maturin.sh"), "develop"),
+            CORE,
+        ),
         CommandSpec(
             "generate the local Python package",
             _cargo_run_example(
@@ -239,13 +243,13 @@ def command_plan(layout: Layout) -> tuple[CommandSpec, ...]:
 
 
 def _require_tools() -> None:
-    for executable in ("cargo", "maturin", "npm", "node", "gcc", "clang"):
+    for executable in ("cargo", "uv", "uvx", "npm", "node", "gcc", "clang"):
         if shutil.which(executable) is None:
             raise RunnerError(f"required Projected parity tool is unavailable: {executable}")
     tsc = NODE_PACKAGE / "node_modules/.bin/tsc"
     if not tsc.is_file() or not os.access(tsc, os.X_OK):
         raise RunnerError(
-            "required TypeScript compiler is unavailable; run npm ci in "
+            "required tsc in node_modules is unavailable; run npm ci in "
             "type-bridge-core/crates/node"
         )
 
