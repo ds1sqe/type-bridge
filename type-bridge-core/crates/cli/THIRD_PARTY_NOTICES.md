@@ -775,7 +775,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:b04c290dea4da4dbe4c9f03b8a60bba6c8f31b13f708d6dfdb281d5fa2b3cd5b`
+- Closure fingerprint: `sha256:070fede20cde937293dbeb7ddb3fc0c5c0aabac03ff28a6cc5929c16bfeb6c53`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -865,7 +865,7 @@ bytes actually reproduced in this notice.
 | `generic-array` | `0.14.7` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:8a28736d1243c67ed9fc964c82315a00f10c67abfa2c868355d70616a7853465` |
 | `getrandom` | `0.2.17` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:42fa16951ce7f24b5a467a40e5b449a1d41e662f97ca779864f053f39e097737` |
 | `getrandom` | `0.4.2` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:523a42c25d245dde9c015f882cec7f4555aad883382a6cf19b4b7d9b2cd5419b` |
-| `granit-parser` | `0.0.7` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
+| `granit-parser` | `2.0.0` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `h2` | `0.4.16` | Python, Node, CLI, C | `crates.io` | `MIT` | `MIT@sha256:b21623012e6c453d944b0342c515b631cfcbf30704c2621b291526b69c10724d` |
 | `hashbrown` | `0.12.3` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2` |
 | `hashbrown` | `0.16.1` | Python, Node, CLI, C | `crates.io` | `MIT OR Apache-2.0` | `MIT@sha256:ff8f68cb076caf8cefe7a6430d4ac086ce6af2ca8ce2c4e5a2004d4552ef52a2` |
