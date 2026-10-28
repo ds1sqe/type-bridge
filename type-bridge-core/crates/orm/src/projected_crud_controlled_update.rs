@@ -1,4 +1,4 @@
-//! Controlled single replacements retain the common single-plan compiler.
+//! Controlled single writes retain the common single-plan compiler.
 
 use super::*;
 use crate::plan_builders::BuiltPlan;
@@ -6,25 +6,26 @@ use crate::projected_batch::PreparedProjectedBatchInvocation;
 use crate::projected_batch_executor::{ExecutionLedger, given_rows_bytes};
 
 #[derive(Clone, Copy)]
-pub(super) enum UpdateTarget<'a> {
+pub(super) enum WriteTarget<'a> {
     Database(&'a Database),
     Transaction(&'a TransactionContext),
 }
 
-enum UpdateModel {
+enum WriteModel {
     Entity(PreparedEntityCreate),
     Relation(PreparedRelationCreate),
 }
 
-struct SingleUpdate {
-    model: UpdateModel,
+struct SingleWrite {
+    model: WriteModel,
     plan: BuiltPlan,
 }
 
 impl ProjectedCrudExecutor<'_> {
-    pub(super) fn single_controlled_update_batch(
+    pub(super) fn single_controlled_write_batch(
         &self,
         model: &TypeId,
+        operation: ProjectedBatchOperation,
         row: ProjectedBatchRow,
         control: &ProjectedBatchInvocationControl,
     ) -> Result<(ProjectedBatch, bool), SdkExecutionDiagnostic> {
@@ -38,16 +39,22 @@ impl ProjectedCrudExecutor<'_> {
                 .values()
                 .all(|role| role.multiplicity().collection_mode() == CollectionMode::Unordered);
         let batch = if native {
-            ProjectedBatch::try_single_update(self.installed, model.clone(), row, control)?
+            ProjectedBatch::try_single_write(
+                self.installed,
+                model.clone(),
+                operation,
+                row,
+                control,
+            )?
         } else {
-            self.single_controlled_batch(model, ProjectedBatchOperation::Update, row, control)?
+            self.single_controlled_batch(model, operation, row, control)?
         };
         Ok((batch, native))
     }
 
-    pub(super) async fn execute_controlled_single_update(
+    pub(super) async fn execute_controlled_single_write(
         &self,
-        target: UpdateTarget<'_>,
+        target: WriteTarget<'_>,
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
         native: bool,
@@ -56,12 +63,12 @@ impl ProjectedCrudExecutor<'_> {
             let executor = ProjectedBatchExecutor::new(self.installed);
             let mapper = |result| single_batch_thing(result, batch.model()).map(Some);
             return match target {
-                UpdateTarget::Database(database) => {
+                WriteTarget::Database(database) => {
                     executor
                         .execute_mapped(database, batch, control, None, mapper)
                         .await
                 }
-                UpdateTarget::Transaction(transaction) => {
+                WriteTarget::Transaction(transaction) => {
                     executor
                         .execute_in_transaction_mapped(transaction, batch, control, None, mapper)
                         .await
@@ -70,15 +77,15 @@ impl ProjectedCrudExecutor<'_> {
             .ok_or_else(|| single_batch_result_invalid(batch.model()));
         }
         let ceiling = match target {
-            UpdateTarget::Database(database) => database.answer_limits(),
-            UpdateTarget::Transaction(transaction) => transaction.answer_limits(),
+            WriteTarget::Database(database) => database.answer_limits(),
+            WriteTarget::Transaction(transaction) => transaction.answer_limits(),
         };
         let prepared = PreparedProjectedBatchInvocation::try_new(
             self.installed,
             batch,
             control.constrained_by(ceiling),
         )?;
-        if let UpdateTarget::Transaction(transaction) = target
+        if let WriteTarget::Transaction(transaction) = target
             && transaction.tx_type() != TxType::Write
         {
             return Err(crate::projected_batch_executor::invalid_at_type(
@@ -89,12 +96,12 @@ impl ProjectedCrudExecutor<'_> {
         }
         prepared.check_control()?;
         let identity = match target {
-            UpdateTarget::Database(database) => database.execution_identity(),
-            UpdateTarget::Transaction(transaction) => transaction.execution_identity().clone(),
+            WriteTarget::Database(database) => database.execution_identity(),
+            WriteTarget::Transaction(transaction) => transaction.execution_identity().clone(),
         };
         let given = match target {
-            UpdateTarget::Database(database) => database.supports_given_stage(),
-            UpdateTarget::Transaction(transaction) => await_crud_controlled(
+            WriteTarget::Database(database) => database.supports_given_stage(),
+            WriteTarget::Transaction(transaction) => await_crud_controlled(
                 transaction.supports_given_stage(),
                 prepared.deadline(),
                 prepared.cancellation(),
@@ -105,7 +112,7 @@ impl ProjectedCrudExecutor<'_> {
             })?,
         };
         crate::projected_batch_executor::require_given_capability(given)?;
-        let single = self.prepare_controlled_update(batch, &identity)?;
+        let single = self.prepare_controlled_write(batch, &identity)?;
         let query = crate::query_plan_exec::staged_query(single.plan.local(), true)
             .map_err(|error| plan_build_failure(&error, batch.model()))?;
         let row_bytes = query
@@ -121,7 +128,7 @@ impl ProjectedCrudExecutor<'_> {
         ledger.charge_preflight(request_bytes, 1)?;
         prepared.check_control()?;
         match target {
-            UpdateTarget::Database(database) => {
+            WriteTarget::Database(database) => {
                 let transaction = await_crud_controlled(
                     database.transaction_context(TxType::Write),
                     prepared.deadline(),
@@ -136,7 +143,7 @@ impl ProjectedCrudExecutor<'_> {
                     )
                 })?;
                 let result = self
-                    .run_controlled_update(&transaction, &prepared, &single, query, &mut ledger)
+                    .run_controlled_write(&transaction, &prepared, &single, query, &mut ledger)
                     .await;
                 match result.and_then(|thing| prepared.check_control().map(|()| thing)) {
                     Ok(thing) => {
@@ -154,71 +161,96 @@ impl ProjectedCrudExecutor<'_> {
                     }
                 }
             }
-            UpdateTarget::Transaction(transaction) => {
-                self.run_controlled_update(transaction, &prepared, &single, query, &mut ledger)
+            WriteTarget::Transaction(transaction) => {
+                self.run_controlled_write(transaction, &prepared, &single, query, &mut ledger)
                     .await
             }
         }
     }
 
-    fn prepare_controlled_update(
+    fn prepare_controlled_write(
         &self,
         batch: &ProjectedBatch,
         identity: &DatabaseExecutionIdentity,
-    ) -> Result<SingleUpdate, SdkExecutionDiagnostic> {
-        let Some((_, ProjectedBatchRow::Update { iid, replacement })) = batch.row_at(0) else {
-            return Err(single_batch_result_invalid(batch.model()));
+    ) -> Result<SingleWrite, SdkExecutionDiagnostic> {
+        let replacement = match batch.row_at(0) {
+            Some((_, ProjectedBatchRow::Update { replacement, .. })) => replacement,
+            Some((_, ProjectedBatchRow::Create(create)))
+                if batch.operation() == ProjectedBatchOperation::Insert =>
+            {
+                create
+            }
+            _ => return Err(single_batch_result_invalid(batch.model())),
         };
         crate::projected_batch_executor::validate_provider_scalar_inputs(&[batch
             .row_at(0)
-            .expect("one validated update row")])?;
+            .expect("one validated write row")])?;
         let authority = self
             .installed
             .plan_authority()
             .map_err(|error| plan_build_failure(&error, batch.model()))?;
         let model = match batch.model().kind() {
-            TypeKind::Entity => UpdateModel::Entity(self.prepare_entity_create(replacement)?),
+            TypeKind::Entity => WriteModel::Entity(self.prepare_entity_create(replacement)?),
             TypeKind::Relation => {
                 let prepared = self.prepare_relation_create(replacement)?;
                 require_role_player_database_identity(&prepared, identity)?;
                 if direct_entity_role_player_inputs(&prepared).is_none() {
                     reject_duplicate_references(&prepared)?;
                 }
-                UpdateModel::Relation(prepared)
+                WriteModel::Relation(prepared)
             }
             _ => return Err(single_batch_result_invalid(batch.model())),
         };
         let (write, players, roles) = match &model {
-            UpdateModel::Entity(prepared) => (prepared.plan_write.as_ref(), Vec::new(), Vec::new()),
-            UpdateModel::Relation(prepared) => (
+            WriteModel::Entity(prepared) => (prepared.plan_write.as_ref(), Vec::new(), Vec::new()),
+            WriteModel::Relation(prepared) => (
                 prepared.plan_write.as_ref(),
                 plan_references(prepared)?,
                 self.document_roles(prepared)?,
             ),
         };
         let write = write.ok_or_else(|| single_batch_result_invalid(batch.model()))?;
-        let plan = update_by_iid(
-            &authority,
-            ValueTransport::Given,
-            ThingUpdate {
-                type_id: batch.model(),
-                iid,
-                cleared_fields: &write.cleared_fields,
-                fields: &write.fields,
-                cleared_roles: &write.cleared_roles,
-                players: &players,
-                document_roles: roles,
-            },
-        )
+        let plan = if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
+            update_by_iid(
+                &authority,
+                ValueTransport::Given,
+                ThingUpdate {
+                    type_id: batch.model(),
+                    iid,
+                    cleared_fields: &write.cleared_fields,
+                    fields: &write.fields,
+                    cleared_roles: &write.cleared_roles,
+                    players: &players,
+                    document_roles: roles,
+                },
+            )
+        } else {
+            match &model {
+                WriteModel::Entity(_) => entity_insert(
+                    &authority,
+                    ValueTransport::Given,
+                    batch.model(),
+                    &write.created,
+                ),
+                WriteModel::Relation(prepared) => relation_insert(
+                    &authority,
+                    ValueTransport::Given,
+                    batch.model(),
+                    &prepared.plan_fields,
+                    &players,
+                    roles,
+                ),
+            }
+        }
         .map_err(|error| plan_build_failure(&error, batch.model()))?;
-        Ok(SingleUpdate { model, plan })
+        Ok(SingleWrite { model, plan })
     }
 
-    async fn run_controlled_update(
+    async fn run_controlled_write(
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedProjectedBatchInvocation<'_>,
-        single: &SingleUpdate,
+        single: &SingleWrite,
         query: crate::session::staged::StagedQuery,
         ledger: &mut ExecutionLedger,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
@@ -260,7 +292,7 @@ impl ProjectedCrudExecutor<'_> {
                 return Err(write_plan_invalid(type_id));
             };
             if documents.is_empty() {
-                if matches!(single.model, UpdateModel::Relation(_))
+                if matches!(single.model, WriteModel::Relation(_))
                     && !stats.stopped_early
                     && prepared.limits().statement_limit() > 1
                     && let Err(diagnostic) = ProjectedBatchExecutor::new(self.installed)
@@ -286,13 +318,13 @@ impl ProjectedCrudExecutor<'_> {
                 ));
             }
             let thing = match &single.model {
-                UpdateModel::Entity(model) => self.hydrate_entity_documents(
+                WriteModel::Entity(model) => self.hydrate_entity_documents(
                     transaction,
                     model,
                     &documents,
                     ExecutionMode::default(),
                 )?,
-                UpdateModel::Relation(model) => {
+                WriteModel::Relation(model) => {
                     let iid = single_document_iid(&documents, type_id)?;
                     if direct_entity_role_player_inputs(model).is_none() {
                         reject_resolved_duplicates(model, &documents)?;
@@ -311,11 +343,9 @@ impl ProjectedCrudExecutor<'_> {
                     )?
                 }
             };
-            let Some((_, ProjectedBatchRow::Update { iid, .. })) = prepared.batch().row_at(0)
-            else {
-                return Err(single_batch_result_invalid(type_id));
-            };
-            require_update_iid(thing.iid(), iid, type_id)?;
+            if let Some((_, ProjectedBatchRow::Update { iid, .. })) = prepared.batch().row_at(0) {
+                require_update_iid(thing.iid(), iid, type_id)?;
+            }
             ledger.charge_projected(std::slice::from_ref(&thing))?;
             prepared.check_control()?;
             Ok(thing)
@@ -348,7 +378,7 @@ mod tests {
     use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
 
     #[test]
-    fn controlled_single_entity_and_relation_updates_pin_the_uncontrolled_plan_bytes() {
+    fn controlled_single_entity_and_relation_writes_pin_the_uncontrolled_plan_bytes() {
         let source = "format: typebridge.schema/v2\nattributes:\n  score: { value: integer }\nentities:\n  counter:\n    owns:\n      score: { card: 1 }\nrelations:\n  event:\n    relates:\n      member: { card: 1 }\n    owns:\n      score: { card: 1 }\nplays:\n  counter:\n    event: [member]\n";
         let declared = normalize_documents(
             &SchemaDocumentSet::parse([(DocumentId::new("single-update.yaml").unwrap(), source)])
@@ -414,7 +444,7 @@ mod tests {
                 )
                 .unwrap();
             let actual = executor
-                .prepare_controlled_update(
+                .prepare_controlled_write(
                     &batch,
                     &DatabaseExecutionIdentity::isolated("single-update"),
                 )
@@ -431,12 +461,12 @@ mod tests {
                     fields: &write.fields,
                     cleared_roles: &write.cleared_roles,
                     players: &match &actual.model {
-                        UpdateModel::Entity(_) => vec![],
-                        UpdateModel::Relation(prepared) => plan_references(prepared).unwrap(),
+                        WriteModel::Entity(_) => vec![],
+                        WriteModel::Relation(prepared) => plan_references(prepared).unwrap(),
                     },
                     document_roles: match &actual.model {
-                        UpdateModel::Entity(_) => vec![],
-                        UpdateModel::Relation(prepared) => {
+                        WriteModel::Entity(_) => vec![],
+                        WriteModel::Relation(prepared) => {
                             executor.document_roles(prepared).unwrap()
                         }
                     },
@@ -452,6 +482,43 @@ mod tests {
                 } else {
                     "02af9a5869968f713d26d1af2b98d8ceee7c3d70e551163c64d68b2001f92f84"
                 },
+            );
+            let insert_batch = executor
+                .single_controlled_write_batch(
+                    &model,
+                    ProjectedBatchOperation::Insert,
+                    ProjectedBatchRow::Create(input),
+                    &control,
+                )
+                .unwrap()
+                .0;
+            assert_eq!(insert_batch.resource_measure().statements(), 1);
+            let inserted = executor
+                .prepare_controlled_write(
+                    &insert_batch,
+                    &DatabaseExecutionIdentity::isolated("single-insert"),
+                )
+                .unwrap();
+            let expected_insert = match &inserted.model {
+                WriteModel::Entity(prepared) => entity_insert(
+                    &authority,
+                    ValueTransport::Given,
+                    &model,
+                    &prepared.plan_write.as_ref().unwrap().created,
+                ),
+                WriteModel::Relation(prepared) => relation_insert(
+                    &authority,
+                    ValueTransport::Given,
+                    &model,
+                    &prepared.plan_fields,
+                    &plan_references(prepared).unwrap(),
+                    executor.document_roles(prepared).unwrap(),
+                ),
+            }
+            .unwrap();
+            assert_eq!(
+                inserted.plan.local().canonical_bytes().unwrap(),
+                expected_insert.local().canonical_bytes().unwrap()
             );
         }
     }

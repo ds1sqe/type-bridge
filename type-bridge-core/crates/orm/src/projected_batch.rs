@@ -563,9 +563,10 @@ impl ProjectedBatch {
         Self::try_finalize_internal::<false>(installed, model, operation, &mut rows, control, probe)
     }
 
-    pub(crate) fn try_single_update(
+    pub(crate) fn try_single_write(
         installed: &InstalledRuntimeProjection,
         model: TypeId,
+        operation: ProjectedBatchOperation,
         row: ProjectedBatchRow,
         control: &ProjectedBatchInvocationControl,
     ) -> Result<Self, SdkExecutionDiagnostic> {
@@ -578,14 +579,14 @@ impl ProjectedBatch {
         Self::try_finalize_internal::<true>(
             installed,
             model,
-            ProjectedBatchOperation::Update,
+            operation,
             &mut rows,
             Some(control),
             ProjectedBatchReservationProbe::default(),
         )
     }
 
-    fn try_finalize_internal<const SINGLE_UPDATE: bool>(
+    fn try_finalize_internal<const SINGLE_WRITE: bool>(
         installed: &InstalledRuntimeProjection,
         model: TypeId,
         operation: ProjectedBatchOperation,
@@ -664,7 +665,7 @@ impl ProjectedBatch {
         check_control(control)?;
         reject_duplicate_keys(projected_model, rows, &mut key_rows)?;
         measure.items = item_count;
-        measure.statements = if SINGLE_UPDATE {
+        measure.statements = if SINGLE_WRITE {
             1
         } else {
             statement_forecast(operation, measure.role_players > 0, row_count)

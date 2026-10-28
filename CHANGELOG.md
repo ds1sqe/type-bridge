@@ -310,6 +310,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Policy-controlled single entity and relation inserts use the same single
+  native plan as ordinary inserts, retaining cancellation, resource limits,
+  precommit hydration and transaction failure handling.
+
 - Generated C plan getters use `<model>_plan_<field>`, borrowed result views
   use `<model>_plan_view_t`, and nested player views use
   `<model>_plan_player_view_t`. Existing owned `<model>_t` types and hydrated

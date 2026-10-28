@@ -2686,7 +2686,7 @@ async fn default_manager_read_does_not_allocate_an_authored_bulk_payload() {
 }
 
 #[tokio::test]
-async fn default_single_crud_does_not_allocate_the_controlled_execution_future() {
+async fn single_crud_does_not_allocate_the_batch_execution_future() {
     use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
     use type_bridge_orm::session::backend::AnswerCancellation;
     use type_bridge_orm::{
@@ -2756,8 +2756,8 @@ async fn default_single_crud_does_not_allocate_the_controlled_execution_future()
         "provider_operation_failed"
     );
     assert_eq!(
-        count, 1,
-        "controlled call must allocate its {bytes}-byte execution future exactly once"
+        count, 0,
+        "single-plan control must not allocate the old {bytes}-byte batch execution future"
     );
     assert_eq!(state.lock().unwrap().rollbacks, 1);
 }
@@ -2955,6 +2955,112 @@ async fn controlled_single_updates_share_the_uncontrolled_one_query_for_owned_an
                                     limits,
                                     cancellation,
                                 )
+                                .await
+                        }
+                    }
+                    .unwrap()
+                };
+                assert_eq!(thing.iid(), iid);
+                let state = state.lock().unwrap();
+                assert_eq!(
+                    state.queries.len(),
+                    1,
+                    "relation={relation} controlled={controlled} borrowed={borrowed}"
+                );
+                assert_eq!(state.commits, 1);
+                assert_eq!(state.rollbacks, 0);
+                let actual = (state.queries.clone(), state.given_rows.clone());
+                if let Some(expected) = &baseline {
+                    assert_eq!(&actual, expected);
+                } else {
+                    baseline = Some(actual);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn controlled_single_inserts_share_the_uncontrolled_one_query_for_owned_and_borrowed_targets()
+{
+    use type_bridge_orm::QueryExecutionResourceLimits;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    let installed = installed();
+    let executor = ProjectedCrudExecutor::new(&installed);
+    for relation in [false, true] {
+        let input = if relation {
+            membership_create(&installed)
+        } else {
+            person_create(&installed)
+        };
+        let iid = if relation { "0x20" } else { "0x10" };
+        let mut baseline = None;
+        for controlled in [false, true] {
+            for borrowed in [false, true] {
+                let document = if relation {
+                    membership_document(iid)
+                } else {
+                    person_document(iid)
+                };
+                let (mut backend, state) =
+                    RecordingBackend::new(vec![documents(vec![document])], CommitBehavior::Success);
+                backend.given_enabled = true;
+                let database = Database::with_backend(Box::new(backend), "single-insert");
+                let limits = QueryExecutionResourceLimits {
+                    statements: Some(1),
+                    ..Default::default()
+                };
+                let cancellation = AnswerCancellation::default();
+                let thing = if borrowed {
+                    let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                    let result = match (relation, controlled) {
+                        (false, false) => {
+                            executor
+                                .insert_entity_in_transaction(&transaction, &input)
+                                .await
+                        }
+                        (false, true) => {
+                            executor
+                                .insert_entity_in_transaction_controlled(
+                                    &transaction,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                        (true, false) => {
+                            executor
+                                .insert_relation_in_transaction(&transaction, &input)
+                                .await
+                        }
+                        (true, true) => {
+                            executor
+                                .insert_relation_in_transaction_controlled(
+                                    &transaction,
+                                    &input,
+                                    limits,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                    }
+                    .unwrap();
+                    assert_eq!(state.lock().unwrap().commits, 0);
+                    transaction.commit_sdk().await.unwrap();
+                    result
+                } else {
+                    match (relation, controlled) {
+                        (false, false) => executor.insert_entity(&database, &input).await,
+                        (false, true) => {
+                            executor
+                                .insert_entity_controlled(&database, &input, limits, cancellation)
+                                .await
+                        }
+                        (true, false) => executor.insert_relation(&database, &input).await,
+                        (true, true) => {
+                            executor
+                                .insert_relation_controlled(&database, &input, limits, cancellation)
                                 .await
                         }
                     }

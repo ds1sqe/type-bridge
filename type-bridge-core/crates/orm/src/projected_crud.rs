@@ -1257,14 +1257,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing(database, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Database(database),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware entity insert in a borrowed write transaction.
@@ -1294,14 +1299,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing_in_transaction(transaction, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Transaction(transaction),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware entity put in an owned write transaction.
@@ -1409,16 +1419,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_update_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
+            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        Box::pin(self.execute_controlled_single_update(
-            controlled_update::UpdateTarget::Database(database),
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Database(database),
             &batch,
             control,
             native,
@@ -1457,16 +1468,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_update_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
+            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        Box::pin(self.execute_controlled_single_update(
-            controlled_update::UpdateTarget::Transaction(transaction),
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Transaction(transaction),
             &batch,
             control,
             native,
@@ -1587,14 +1599,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing(database, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Database(database),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware relation insert in a borrowed write transaction.
@@ -1624,14 +1641,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing_in_transaction(transaction, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Transaction(transaction),
+            &batch,
+            control,
+            native,
+        ))
+        .await
     }
 
     /// Execute one policy-aware relation put in an owned write transaction.
@@ -1739,16 +1761,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_update_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
+            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        Box::pin(self.execute_controlled_single_update(
-            controlled_update::UpdateTarget::Database(database),
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Database(database),
             &batch,
             control,
             native,
@@ -1787,16 +1810,17 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_update_batch(
+        let (batch, native) = self.single_controlled_write_batch(
             input.type_id(),
+            ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
                 iid: iid.to_owned(),
                 replacement: input.clone(),
             },
             &control,
         )?;
-        Box::pin(self.execute_controlled_single_update(
-            controlled_update::UpdateTarget::Transaction(transaction),
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Transaction(transaction),
             &batch,
             control,
             native,
@@ -6812,46 +6836,19 @@ plays:
     }
 
     fn controlled_mutation_answers(kind: TypeKind) -> Vec<ControlledProviderResponse> {
-        let (iid, label) = if kind == TypeKind::Entity {
-            ("0x20", "person")
+        let mut document = if kind == TypeKind::Entity {
+            json!({"_iid": "0x20", "_type": "person", "attributes": {"identifier": "key"}})
         } else {
-            ("0x30", "membership")
+            json!({"_iid": "0x30", "_type": "membership", "attributes": {"identifier": "key"}})
         };
-        let mut answers = Vec::new();
         if kind == TypeKind::Relation {
-            answers.push(ControlledProviderResponse::Items(vec![
-                AnswerItem::Document(json!({
-                    "kind": 1,
-                    "ordinal": 0,
-                    "reference_ordinal": 0,
-                    "iid": "0x10",
-                    "type": "person"
-                })),
-            ]));
+            document["_role_0_iid"] = json!("0x10");
+            document["_role_0_type"] = json!("person");
+            document["_role_0_attributes"] = json!({"identifier": "player-key"});
         }
-        answers.extend([
-            ControlledProviderResponse::Items(vec![AnswerItem::Document(json!({
-                "ordinal": 0,
-                "iid": iid
-            }))]),
-            ControlledProviderResponse::Items(vec![AnswerItem::Document(json!({
-                "ordinal": 0,
-                "_iid": iid,
-                "_type": label,
-                "attributes": {"identifier": "key"},
-                "role_players": if kind == TypeKind::Relation {
-                    json!([{
-                        "role": "membership:member",
-                        "iid": "0x10",
-                        "type_name": "person",
-                        "attributes": {"identifier": [{"value": "player-key"}]}
-                    }])
-                } else {
-                    json!([])
-                }
-            }))]),
-        ]);
-        answers
+        vec![ControlledProviderResponse::Items(vec![
+            AnswerItem::Document(document),
+        ])]
     }
 
     fn controlled_database(
@@ -6967,7 +6964,7 @@ plays:
     }
 
     #[tokio::test]
-    async fn controlled_mutations_route_through_batch_atomicity_for_both_model_kinds() {
+    async fn controlled_single_inserts_preserve_atomicity_for_both_model_kinds() {
         let installed = controlled_installed();
         let executor = ProjectedCrudExecutor::new(&installed);
 
@@ -6985,7 +6982,7 @@ plays:
         {
             let state = state.lock().unwrap();
             assert_eq!(state.opens, [TxType::Write]);
-            assert_eq!(state.bounded_given, 2);
+            assert_eq!(state.bounded_given, 1);
             assert_eq!(state.unbounded_queries, 0);
             assert_eq!(state.commits, 1);
             assert_eq!(state.rollbacks, 0);
@@ -7010,7 +7007,7 @@ plays:
         );
         {
             let state = state.lock().unwrap();
-            assert_eq!(state.bounded_given, 3);
+            assert_eq!(state.bounded_given, 1);
             assert_eq!(state.commits, 0);
             assert_eq!(state.rollbacks, 0);
         }
@@ -7036,16 +7033,9 @@ plays:
             assert_eq!(state.rollbacks, 1);
         }
 
-        let (database, state) = controlled_database(vec![
-            ControlledProviderResponse::Items(vec![AnswerItem::Document(json!({
-                "kind": 1,
-                "ordinal": 0,
-                "reference_ordinal": 0,
-                "iid": "0x10",
-                "type": "person"
-            }))]),
-            ControlledProviderResponse::Error("private borrowed mutation failure"),
-        ]);
+        let (database, state) = controlled_database(vec![ControlledProviderResponse::Error(
+            "private borrowed mutation failure",
+        )]);
         let transaction = database.transaction_context(TxType::Write).await.unwrap();
         let diagnostic = executor
             .insert_relation_in_transaction_controlled(

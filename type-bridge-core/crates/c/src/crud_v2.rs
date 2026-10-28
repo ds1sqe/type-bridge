@@ -1083,37 +1083,6 @@ mod tests {
         ]))
     }
 
-    fn batch_identity(iid: &str) -> Response {
-        documents(vec![serde_json::json!({"ordinal": 0, "iid": iid})])
-    }
-
-    fn delayed_batch_identity(iid: &str) -> Response {
-        Response::Delayed(QueryResult::Documents(vec![
-            serde_json::json!({"ordinal": 0, "iid": iid}),
-        ]))
-    }
-
-    fn batch_hydration(mut document: serde_json::Value) -> Response {
-        let object = document
-            .as_object_mut()
-            .expect("fixture hydration document is an object");
-        object.insert("ordinal".to_owned(), serde_json::json!(0));
-        object
-            .entry("attributes".to_owned())
-            .or_insert_with(|| serde_json::json!({}));
-        documents(vec![document])
-    }
-
-    fn relation_reference() -> Response {
-        documents(vec![serde_json::json!({
-            "kind": 1,
-            "ordinal": 0,
-            "reference_ordinal": 0,
-            "iid": "0x10",
-            "type": "person"
-        })])
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn exercise_database_lane(
         database: &TypeBridgeDatabase,
@@ -1340,8 +1309,7 @@ mod tests {
     fn entity_relation_database_read_and_write_matrix_is_policy_aware_and_owned() {
         let entity_database = fixture(
             vec![
-                batch_identity("0x10"),
-                batch_hydration(person_document("0x10")),
+                documents(vec![person_document("0x10")]),
                 documents(vec![person_document("0x10")]),
                 count_response(1),
             ],
@@ -1357,12 +1325,11 @@ mod tests {
             type_bridge_database_entity_count_v2_impl,
         );
         assert_eq!(entity_database.state.commits.load(Ordering::Acquire), 1);
+        assert_eq!(entity_database.state.query_count(), 3);
 
         let relation_database = relation_fixture(
             vec![
-                relation_reference(),
-                batch_identity("0x20"),
-                batch_hydration(membership_document("0x20")),
+                documents(vec![membership_document("0x20")]),
                 documents(vec![membership_document("0x20")]),
                 count_response(1),
             ],
@@ -1378,6 +1345,7 @@ mod tests {
             type_bridge_database_relation_count_v2_impl,
         );
         assert_eq!(relation_database.state.commits.load(Ordering::Acquire), 1);
+        assert_eq!(relation_database.state.query_count(), 3);
 
         let entity_read = fixture(
             vec![documents(vec![person_document("0x10")]), count_response(1)],
@@ -1410,8 +1378,7 @@ mod tests {
 
         let entity_write = fixture(
             vec![
-                batch_identity("0x10"),
-                batch_hydration(person_document("0x10")),
+                documents(vec![person_document("0x10")]),
                 documents(vec![person_document("0x10")]),
                 count_response(1),
             ],
@@ -1427,13 +1394,12 @@ mod tests {
             type_bridge_write_transaction_entity_count_v2_impl,
         );
         assert_eq!(entity_write.state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(entity_write.state.query_count(), 3);
         assert_eq!(entity_write.state.rollbacks.load(Ordering::Acquire), 1);
 
         let relation_write = relation_fixture(
             vec![
-                relation_reference(),
-                batch_identity("0x20"),
-                batch_hydration(membership_document("0x20")),
+                documents(vec![membership_document("0x20")]),
                 documents(vec![membership_document("0x20")]),
                 count_response(1),
             ],
@@ -1449,6 +1415,7 @@ mod tests {
             type_bridge_write_transaction_relation_count_v2_impl,
         );
         assert_eq!(relation_write.state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(relation_write.state.query_count(), 3);
         assert_eq!(relation_write.state.rollbacks.load(Ordering::Acquire), 1);
     }
 
@@ -2127,10 +2094,9 @@ mod tests {
         );
 
         let legacy = fixture_with_answer_ceiling(
-            vec![
-                delayed_batch_identity("0x10"),
-                batch_hydration(person_document("0x10")),
-            ],
+            vec![Response::Delayed(QueryResult::Documents(vec![
+                person_document("0x10"),
+            ]))],
             COMMIT_SUCCESS,
             Some(QueryExecutionResourceLimits::default()),
         );
@@ -2157,7 +2123,7 @@ mod tests {
         assert_eq!(requester.join().unwrap(), TypeBridgeStatus::Ok);
         assert!(!thing.is_null());
         assert!(diagnostics.is_null());
-        assert_eq!(legacy.state.query_count(), 2);
+        assert_eq!(legacy.state.query_count(), 1);
         assert_eq!(legacy.state.commits.load(Ordering::Acquire), 1);
         close_thing(&mut thing);
         // SAFETY: close consumes the cancellation owner slot.
