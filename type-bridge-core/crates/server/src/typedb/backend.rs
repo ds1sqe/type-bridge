@@ -11,7 +11,7 @@ pub(crate) type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// This is a crate-owned mirror of the driver's transaction-type concept.
 /// The mapping to the underlying driver type lives exclusively in
-/// `real_driver.rs` at the band-8 call site.
+/// `real_driver.rs` at the shared runtime boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TransactionType {
     /// Read-only transaction (no commit needed).

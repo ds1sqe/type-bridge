@@ -67,14 +67,10 @@ pub use workspace_yaml::{
 pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID: &str = "typedb-3.13.6/v1";
 /// Frozen server-semantic profiles accepted for workspace generation.
 ///
-/// Connected migration commands accept only the migration-authority profiles
-/// (`typedb-3.12.1/v1` and `typedb-3.13.6/v1`) and refuse the others with a
-/// stable diagnostic.
-pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] = &[
-    "typedb-3.11.5/v1",
-    "typedb-3.12.1/v1",
-    TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID,
-];
+/// Connected migrations use the same retained semantic profiles, with their
+/// measured server patch floors.
+pub const TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_IDS: &[&str] =
+    &["typedb-3.12.1/v1", TYPEBRIDGE_WORKSPACE_SEMANTIC_PROFILE_ID];
 
 const MAX_SYMBOLIC_ID_BYTES: usize = 255;
 const MAX_EXTENSION_VERSION_BYTES: usize = 64;
@@ -1496,7 +1492,7 @@ impl TypeBridgeConfigBuilder {
         {
             return Err(WorkspaceConfigError::new(
                 WorkspaceConfigErrorCode::UnsupportedSemanticProfile,
-                "workspace requires a frozen TypeDB 3.11.5, 3.12.1, or 3.13.6 semantic profile",
+                "workspace requires a frozen TypeDB 3.12.1 or 3.13.6 semantic profile",
             )
             .with_detail(semantic_profile.as_str()));
         }

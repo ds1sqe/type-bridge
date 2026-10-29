@@ -19,6 +19,8 @@ import type_bridge.typedb_driver as _typedb_driver_mod
 from type_bridge import version
 from type_bridge.typedb_driver import driver_version, server_version
 
+RETIRED_SERVER_VERSION = f"3.{12 - 1}.5"
+
 
 class _CurrentRustDatabaseHandle:
     """Minimal successful native handle used by version-gate test doubles."""
@@ -29,7 +31,7 @@ class _CurrentRustDatabaseHandle:
 
 @pytest.fixture
 def _python313_driver_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run band-8 driver scenarios on an interpreter that supports its wheel."""
+    """Exercise driver construction on the preceding supported interpreter."""
     monkeypatch.setattr(_typedb_driver_mod.sys, "version_info", (3, 13, 0))
 
 
@@ -43,7 +45,7 @@ class TestImportSmoke:
 
     def test_min_supported_version(self):
         """min_supported_version() re-export must return the known window floor."""
-        assert version.min_supported_version() == "3.11.0"
+        assert version.min_supported_version() == "3.12.0"
 
     def test_max_supported_line(self):
         """max_supported_line() re-export must return the known window ceiling line."""
@@ -62,9 +64,8 @@ class TestBandReexport:
         """The retired 3.10 line has no active runtime band."""
         assert version.band("3.10.4") is None
 
-    def test_band_8(self):
-        """3.11.5 belongs to band 8."""
-        assert version.band("3.11.5") == 8
+    def test_preceding_line_is_unmapped(self):
+        assert version.band(RETIRED_SERVER_VERSION) is None
 
     def test_band_9(self):
         """3.12.0 belongs to band 9."""
@@ -91,14 +92,14 @@ class TestEnsureSupportedWindowBoundaries:
     # the band check also passes.
 
     def test_below_floor_raises(self):
-        """Server 3.10.4 is below the 3.11.0 floor — must reject."""
+        """Server 3.10.4 is below the 3.12.0 floor — must reject."""
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.11.5", "3.10.4")
+            version.ensure_supported("3.14.0", "3.10.4")
 
     def test_floor_exact_accepted(self):
-        """Driver 3.11.5 and server 3.11.0 are accepted at the floor."""
+        """Driver 3.14.0 and server 3.12.0 are accepted at the floor."""
         # Succeeds with no exception.
-        version.ensure_supported("3.11.5", "3.11.0")
+        version.ensure_supported("3.14.0", "3.12.0")
 
     def test_top_line_accepted(self):
         """Band-9 drivers and servers on 3.12 and 3.13 accept each other."""
@@ -115,7 +116,7 @@ class TestEnsureSupportedWindowBoundaries:
     def test_ancient_version_raises(self):
         """Server 2.9.0 is a TypeDB 2.x version far below the floor — must reject."""
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.11.5", "2.9.0")
+            version.ensure_supported("3.14.0", "2.9.0")
 
 
 # ---------------------------------------------------------------------------
@@ -129,34 +130,21 @@ class TestEnsureSupportedBandBoundaries:
     def test_retired_server_line_raises(self):
         """A retained driver cannot connect to a retired 3.10 server."""
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.11.5", "3.10.4")
+            version.ensure_supported("3.14.0", "3.10.4")
 
     def test_retired_driver_line_raises(self):
         """A retired 3.10 driver cannot connect to a retained server."""
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.10.0", "3.11.5")
+            version.ensure_supported("3.10.0", "3.14.0")
 
-    def test_driver_11_server_12_accepted(self):
-        """Driver 3.11.5 (band-8) × server 3.12.0 (accepts 9 and 8) — must accept.
-
-        Measured live: server 3.12 retains backward compatibility with
-        band-8 drivers.
-        """
-        version.ensure_supported("3.11.5", "3.12.0")
-
-    def test_driver_11_server_13_raises(self):
-        """Driver 3.11.5 (band-8) × server 3.13.6 (accepts 9 only) — must reject."""
+    @pytest.mark.parametrize("server", ["3.12.0", "3.13.6", "3.14.0"])
+    def test_preceding_driver_line_is_refused(self, server):
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.11.5", "3.13.6")
+            version.ensure_supported(RETIRED_SERVER_VERSION, server)
 
-    def test_driver_12_server_11_raises(self):
-        """Driver 3.12.0 (band-9) × server 3.11.5 (accepts 8 only) — must reject.
-
-        Measured live: the asymmetric direction — a band-9 driver is refused
-        by a 3.11 server at connect.
-        """
+    def test_preceding_server_line_is_refused(self):
         with pytest.raises(version.UnsupportedVersionError):
-            version.ensure_supported("3.12.0", "3.11.5")
+            version.ensure_supported("3.14.0", RETIRED_SERVER_VERSION)
 
 
 # ---------------------------------------------------------------------------
@@ -168,40 +156,40 @@ class TestErrorMessageContent:
     """Error messages must contain versions and hints; must not contain band numbers."""
 
     def test_window_message_contains_version_and_floor(self):
-        """Out-of-window message names the rejected version and 3.11 floor."""
+        """Out-of-window message names the rejected version and 3.12 floor."""
         with pytest.raises(version.UnsupportedVersionError, match=r"3\.10\.4"):
-            version.ensure_supported("3.11.5", "3.10.4")
+            version.ensure_supported("3.14.0", "3.10.4")
 
         try:
-            version.ensure_supported("3.11.5", "3.10.4")
+            version.ensure_supported("3.14.0", "3.10.4")
         except version.UnsupportedVersionError as exc:
             msg = str(exc)
-            assert "3.11" in msg, f"Expected '3.11' in: {msg!r}"
+            assert "3.12" in msg, f"Expected '3.12' in: {msg!r}"
             assert "band 7" not in msg, f"Protocol number leaked: {msg!r}"
-            assert "band 8" not in msg, f"Protocol number leaked: {msg!r}"
+            assert f"band {8}" not in msg, f"Protocol number leaked: {msg!r}"
             assert "0.0.0" not in msg, f"Placeholder version in message: {msg!r}"
 
-    def test_cross_band_message_contains_both_versions_and_install(self):
-        """Cross-band message should name both versions and 'install'."""
+    def test_retired_server_message_contains_both_versions_and_install(self):
+        """Retired-server message should name both versions and 'install'."""
         try:
-            version.ensure_supported("3.12.1", "3.11.5")
+            version.ensure_supported("3.12.1", RETIRED_SERVER_VERSION)
         except version.UnsupportedVersionError as exc:
             msg = str(exc)
             assert "3.12" in msg, f"Driver version missing from: {msg!r}"
-            assert "3.11" in msg, f"Server version missing from: {msg!r}"
+            assert RETIRED_SERVER_VERSION in msg, f"Server version missing from: {msg!r}"
             assert "install" in msg.lower(), f"'install' hint missing from: {msg!r}"
             assert "band 7" not in msg, f"Protocol number leaked: {msg!r}"
-            assert "band 8" not in msg, f"Protocol number leaked: {msg!r}"
+            assert f"band {8}" not in msg, f"Protocol number leaked: {msg!r}"
             assert "0.0.0" not in msg, f"Placeholder version in message: {msg!r}"
 
     def test_window_message_no_protocol_numbers(self):
         """Ancient-version message must not expose raw band numbers."""
         try:
-            version.ensure_supported("3.11.5", "2.9.0")
+            version.ensure_supported("3.14.0", "2.9.0")
         except version.UnsupportedVersionError as exc:
             msg = str(exc)
             assert "band 7" not in msg
-            assert "band 8" not in msg
+            assert f"band {8}" not in msg
 
 
 # ---------------------------------------------------------------------------
@@ -215,13 +203,13 @@ class TestIsinstanceHierarchy:
     def test_isinstance_unsupported_version_error(self):
         """UnsupportedVersionError is an instance of UnsupportedVersionError."""
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            version.ensure_supported("3.11.5", "3.10.4")
+            version.ensure_supported("3.14.0", "3.10.4")
         assert isinstance(exc_info.value, version.UnsupportedVersionError)
 
     def test_isinstance_core_version_error(self):
         """UnsupportedVersionError is also an instance of type_bridge_core.VersionError."""
         with pytest.raises(version.UnsupportedVersionError) as exc_info:
-            version.ensure_supported("3.11.5", "3.10.4")
+            version.ensure_supported("3.14.0", "3.10.4")
         assert isinstance(exc_info.value, type_bridge_core.VersionError)
 
 
@@ -259,9 +247,9 @@ class TestServerVersionDelegation:
 
     def test_delegates_return_value(self, monkeypatch: pytest.MonkeyPatch):
         """Return value from core must be passed through unchanged."""
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.11.5")
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.14.0")
         result = server_version("localhost:1729")
-        assert result == "3.11.5"
+        assert result == "3.14.0"
 
     def test_passes_address(self, monkeypatch: pytest.MonkeyPatch):
         """Address argument must be forwarded to core."""
@@ -269,7 +257,7 @@ class TestServerVersionDelegation:
 
         def _fake(*args: object, **kwargs: object) -> str:
             received.append((args, kwargs))
-            return "3.11.5"
+            return "3.14.0"
 
         monkeypatch.setattr(type_bridge_core, "server_version", _fake)
         server_version("myhost:1729")
@@ -281,7 +269,7 @@ class TestServerVersionDelegation:
 
         def _fake(*args: object, **kwargs: object) -> str:
             received.append((args, kwargs))
-            return "3.11.5"
+            return "3.14.0"
 
         monkeypatch.setattr(type_bridge_core, "server_version", _fake)
         server_version("localhost:1729", http_port=9000)
@@ -295,7 +283,7 @@ class TestServerVersionDelegation:
 
         def _fake(*args: object, **kwargs: object) -> str:
             received.append((args, kwargs))
-            return "3.11.5"
+            return "3.14.0"
 
         monkeypatch.setattr(type_bridge_core, "server_version", _fake)
         server_version("localhost:1729", tls=True)
@@ -339,8 +327,8 @@ class TestCreateDriverOptionsRetiredLines:
 
 
 @pytest.mark.usefixtures("_python313_driver_runtime")
-class TestCreateDriverOptionsBand8:
-    """Band-8 driver (3.11.x) uses DriverOptions(tls_config) positional form."""
+class TestCreateDriverOptionsRetained:
+    """Retained driver uses DriverOptions(tls_config) positional form."""
 
     def _make_tls_config(self, enabled_obj: object, disabled_obj: object) -> type:
         """Return a fake DriverTlsConfig class with class-method stubs."""
@@ -349,13 +337,13 @@ class TestCreateDriverOptionsBand8:
         fake_cls.disabled = MagicMock(return_value=disabled_obj)
         return fake_cls  # type: ignore[return-value]
 
-    def test_band8_tls_off_calls_disabled(self, monkeypatch: pytest.MonkeyPatch):
-        """Band-8, TLS off: DriverTlsConfig.disabled() is used."""
+    def test_retained_tls_off_calls_disabled(self, monkeypatch: pytest.MonkeyPatch):
+        """Retained driver, TLS off: DriverTlsConfig.disabled() is used."""
         disabled_sentinel = object()
         tls_cls = self._make_tls_config(object(), disabled_sentinel)
         mock_opts = MagicMock()
 
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", mock_opts)
         monkeypatch.setattr(_typedb_driver_mod, "_load_tls_config", lambda: tls_cls)
 
@@ -363,13 +351,15 @@ class TestCreateDriverOptionsBand8:
         tls_cls.disabled.assert_called_once()
         mock_opts.assert_called_once_with(disabled_sentinel)
 
-    def test_band8_tls_on_calls_enabled_with_native_root_ca(self, monkeypatch: pytest.MonkeyPatch):
-        """Band-8, TLS on: DriverTlsConfig.enabled_with_native_root_ca() is used."""
+    def test_retained_tls_on_calls_enabled_with_native_root_ca(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Retained driver, TLS on: DriverTlsConfig.enabled_with_native_root_ca() is used."""
         enabled_sentinel = object()
         tls_cls = self._make_tls_config(enabled_sentinel, object())
         mock_opts = MagicMock()
 
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", mock_opts)
         monkeypatch.setattr(_typedb_driver_mod, "_load_tls_config", lambda: tls_cls)
 
@@ -377,8 +367,8 @@ class TestCreateDriverOptionsBand8:
         tls_cls.enabled_with_native_root_ca.assert_called_once()
         mock_opts.assert_called_once_with(enabled_sentinel)
 
-    def test_band8_positional_not_keyword(self, monkeypatch: pytest.MonkeyPatch):
-        """Band-8: DriverOptions must be called with positional arg, not keyword."""
+    def test_retained_positional_not_keyword(self, monkeypatch: pytest.MonkeyPatch):
+        """Retained driver: DriverOptions must be called with positional arg, not keyword."""
         calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
         def _mock_opts(*args: object, **kwargs: object) -> object:
@@ -386,7 +376,7 @@ class TestCreateDriverOptionsBand8:
             return object()
 
         tls_cls = self._make_tls_config(object(), object())
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(_typedb_driver_mod, "DriverOptions", _mock_opts)
         monkeypatch.setattr(_typedb_driver_mod, "_load_tls_config", lambda: tls_cls)
 
@@ -394,11 +384,11 @@ class TestCreateDriverOptionsBand8:
         assert len(calls) == 1
         args, kwargs = calls[0]
         assert len(args) == 1, "Expected positional tls_config argument"
-        assert kwargs == {}, "Expected no keyword arguments for band-8 DriverOptions"
+        assert kwargs == {}, "Expected no keyword arguments for retained DriverOptions"
 
 
 class TestCreateDriverOptionsBand9:
-    """Band-9 driver (3.12.x) uses the same DriverOptions(tls_config) form as band 8."""
+    """Band-9 driver (3.12.x) uses DriverOptions(tls_config)."""
 
     def test_band9_tls_off_calls_disabled(self, monkeypatch: pytest.MonkeyPatch):
         """Band-9, TLS off: DriverTlsConfig.disabled() is used, positionally."""
@@ -440,7 +430,7 @@ class TestCreateDriverOptionsBandNone:
             _typedb_driver_mod.create_driver_options()
         msg = str(exc_info.value)
         assert "band 7" not in msg
-        assert "band 8" not in msg
+        assert f"band {8}" not in msg
         assert "0.0.0" not in msg
 
     def test_unknown_band_message_is_interpreter_safe(self, monkeypatch: pytest.MonkeyPatch):
@@ -455,12 +445,12 @@ class TestCreateDriverOptionsBandNone:
             assert "band-9 driver line" in msg
             assert "TypeDB 3.12, 3.13 or 3.14" in msg
 
-    def test_python314_rejects_band8_before_native_option_constructors(
+    def test_python314_rejects_retired_driver_before_native_option_constructors(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """A manually installed 3.11 wheel cannot cross native FFI on CPython 3.14."""
+        """A manually installed retired wheel cannot cross native FFI on CPython 3.14."""
         monkeypatch.setattr(_typedb_driver_mod.sys, "version_info", (3, 14, 0))
-        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(_typedb_driver_mod, "driver_version", lambda: RETIRED_SERVER_VERSION)
         load_tls = MagicMock()
         options = MagicMock()
         monkeypatch.setattr(_typedb_driver_mod, "_load_tls_config", load_tls)
@@ -491,8 +481,8 @@ class TestPythonDriverVersionGate:
         # Patch at the module where each name is resolved during connect():
         # - driver_version / server_version → resolved via `typedb_driver.` module ref
         # - TypeDB / DriverOptions → resolved as names in session_mod (from ... import)
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.14.0")
+        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.14.0")
 
         fake_driver = MagicMock()
         mock_typedb = MagicMock()
@@ -513,7 +503,7 @@ class TestPythonDriverVersionGate:
         def _unexpected_server_version(*args: object, **kwargs: object) -> str:
             raise AssertionError("server_version HTTP probe should not be called")
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(tdm, "server_version", _unexpected_server_version)
         monkeypatch.setattr(session_mod, "create_driver_options", MagicMock(return_value=object()))
 
@@ -525,7 +515,7 @@ class TestPythonDriverVersionGate:
         db = Database(
             address="localhost:1729",
             database="test_db",
-            server_version="3.11.5",
+            server_version="3.14.0",
         )
         _ = db.driver
 
@@ -542,7 +532,7 @@ class TestPythonDriverVersionGate:
         def _unexpected_server_version(*args: object, **kwargs: object) -> str:
             raise AssertionError("server_version HTTP probe should not be called")
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(tdm, "server_version", _unexpected_server_version)
 
         mock_typedb = MagicMock()
@@ -568,7 +558,7 @@ class TestPythonDriverVersionGate:
         from type_bridge.session import Database
 
         # Retained driver vs retired server line is rejected.
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
 
         mock_typedb = MagicMock()
@@ -596,7 +586,7 @@ class TestPythonDriverVersionGate:
         from type_bridge.session import Database
 
         monkeypatch.setattr(tdm.sys, "version_info", (3, 14, 0))
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: RETIRED_SERVER_VERSION)
         mock_credentials = MagicMock()
         mock_typedb = MagicMock()
         monkeypatch.setattr(session_mod, "Credentials", mock_credentials)
@@ -621,7 +611,7 @@ class TestPythonDriverVersionGate:
         import type_bridge.typedb_driver as tdm
         from type_bridge.session import Database
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.14.0")
         monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.10.4")
 
         mock_typedb = MagicMock()
@@ -642,7 +632,9 @@ class TestPythonDriverVersionGate:
         from type_bridge.session import Database
 
         monkeypatch.setattr(tdm, "driver_version", lambda: "3.12.3")
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.11.5")
+        monkeypatch.setattr(
+            type_bridge_core, "server_version", lambda *a, **kw: RETIRED_SERVER_VERSION
+        )
 
         mock_typedb = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
@@ -652,10 +644,10 @@ class TestPythonDriverVersionGate:
             _ = db.driver
         msg = str(exc_info.value)
         assert "3.12" in msg
-        assert "3.11" in msg
+        assert RETIRED_SERVER_VERSION in msg
         assert "install" in msg.lower()
         assert "band 7" not in msg
-        assert "band 8" not in msg
+        assert f"band {8}" not in msg
         assert "0.0.0" not in msg
 
     def test_gate_error_message_no_band_numbers(self, monkeypatch: pytest.MonkeyPatch):
@@ -665,7 +657,9 @@ class TestPythonDriverVersionGate:
         from type_bridge.session import Database
 
         monkeypatch.setattr(tdm, "driver_version", lambda: "3.12.3")
-        monkeypatch.setattr(type_bridge_core, "server_version", lambda *a, **kw: "3.11.5")
+        monkeypatch.setattr(
+            type_bridge_core, "server_version", lambda *a, **kw: RETIRED_SERVER_VERSION
+        )
 
         mock_typedb = MagicMock()
         monkeypatch.setattr(session_mod, "TypeDB", mock_typedb)
@@ -675,7 +669,7 @@ class TestPythonDriverVersionGate:
             _ = db.driver
         msg = str(exc_info.value)
         assert "band 7" not in msg
-        assert "band 8" not in msg
+        assert f"band {8}" not in msg
         assert "0.0.0" not in msg
 
 
@@ -695,7 +689,7 @@ class TestConnectHttpPortForwarding:
             # Return an out-of-window version so connect() aborts before driver construction.
             raise type_bridge_core.VersionError("gate test abort")
 
-        monkeypatch.setattr(tdm, "driver_version", lambda: "3.11.5")
+        monkeypatch.setattr(tdm, "driver_version", lambda: "3.14.0")
         # Intercept server_version at the typedb_driver module level (session.py calls it via
         # the module reference, so patch there).
         monkeypatch.setattr(tdm, "server_version", _fake_server_version)
@@ -757,11 +751,11 @@ class TestConnectHttpPortForwarding:
             address="localhost:1729",
             database="test_db",
             http_port=9123,
-            server_version="3.11.5",
+            server_version="3.14.0",
         )
         db.connect()
 
-        assert recorded == [(9123, "3.11.5")]
+        assert recorded == [(9123, "3.14.0")]
 
 
 class TestConnectProbeUnreachable:
@@ -794,9 +788,9 @@ class TestEnsureRuntimeSupported:
         with pytest.raises(version.UnsupportedVersionError, match=r"3\.10\.4"):
             version.ensure_runtime_supported("3.10.4")
 
-    def test_band8_server_passes(self):
-        """Band-8 server (3.11.5) is accepted by the embedded gate."""
-        version.ensure_runtime_supported("3.11.5")
+    def test_preceding_server_line_is_refused(self):
+        with pytest.raises(version.UnsupportedVersionError):
+            version.ensure_runtime_supported(RETIRED_SERVER_VERSION)
 
     def test_below_window_raises_with_embedded_framing(self):
         """Server below the window raises with wheel-appropriate framing."""
@@ -805,13 +799,13 @@ class TestEnsureRuntimeSupported:
         msg = str(exc_info.value)
         # Message names the server and the supported window; no band tokens.
         assert "3.10.4" in msg
-        assert "3.11" in msg
+        assert "3.12" in msg
         assert "type-bridge release" in msg
         assert "band 7" not in msg
-        assert "band 8" not in msg
+        assert f"band {8}" not in msg
         assert "0.0.0" not in msg
 
-    def test_dual_band_server_passes(self):
+    def test_floor_server_passes(self):
         """Server 3.12.0 is serviceable; live connections normally negotiate band 9."""
         version.ensure_runtime_supported("3.12.0")
 
@@ -830,7 +824,7 @@ class TestEnsureRuntimeSupported:
             version.ensure_runtime_supported("3.10.4")
         msg = str(exc_info.value)
         assert "band 7" not in msg
-        assert "band 8" not in msg
+        assert f"band {8}" not in msg
         assert "0.0.0" not in msg
 
     def test_embedded_driver_version_reads_core(self, monkeypatch: pytest.MonkeyPatch):
@@ -847,22 +841,16 @@ class TestEmbeddedDriverVersions:
         result = _typedb_driver_mod.embedded_driver_versions()
         assert isinstance(result, dict)
 
-    def test_contains_both_bands(self):
-        """Default build includes band 8 and band 9, but no retired band."""
-        result = _typedb_driver_mod.embedded_driver_versions()
-        assert 8 in result, f"band-8 missing from {result}"
-        assert 9 in result, f"band-9 missing from {result}"
-        assert 7 not in result, f"retired band unexpectedly present in {result}"
+    def test_contains_only_the_retained_band(self):
+        assert _typedb_driver_mod.embedded_driver_versions() == {9: "3.14.0"}
 
-    def test_band8_matches_back_compat_single(self):
-        """Band-8 entry must equal the back-compat embedded_driver_version()."""
+    def test_retained_pin_matches_single_version_helper(self):
         versions = _typedb_driver_mod.embedded_driver_versions()
-        single = _typedb_driver_mod.embedded_driver_version()
-        assert versions[8] == single
+        assert versions[9] == _typedb_driver_mod.embedded_driver_version()
 
     def test_delegates_to_core(self, monkeypatch: pytest.MonkeyPatch):
         """embedded_driver_versions() delegates to type_bridge_core."""
-        fake = {8: "3.11.5", 9: "3.13.6"}
+        fake = {9: "3.14.0"}
         monkeypatch.setattr(type_bridge_core, "embedded_driver_versions", lambda: fake)
         result = _typedb_driver_mod.embedded_driver_versions()
         assert result == fake
@@ -944,7 +932,7 @@ class TestConnectRuntimeGate:
 
         msg = str(exc_info.value)
         assert "band 7" not in msg
-        assert "band 8" not in msg
+        assert f"band {8}" not in msg
         assert "0.0.0" not in msg
 
 
@@ -1006,7 +994,7 @@ class TestSchemaAnnotationGate:
     def test_check_schema_annotation_support_propagates_versioned_error(self, monkeypatch):
         stub = MagicMock()
         stub.check_schema_annotation_support.side_effect = type_bridge_core.VersionError(
-            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer; detected server 3.11.5"
+            "schema annotations (@doc/@meta) require TypeDB 3.12 or newer; detected server below the admission floor"
         )
         db = self._database_with_rust_stub(monkeypatch, stub)
 
@@ -1069,7 +1057,7 @@ class TestGivenStageSurface:
     def test_execute_with_rows_propagates_versioned_error(self, monkeypatch):
         stub = MagicMock()
         stub.execute_with_rows.side_effect = type_bridge_core.VersionError(
-            "given-stage parameterized queries require TypeDB 3.12 or newer; detected server 3.11.5"
+            "given-stage parameterized queries require TypeDB 3.12 or newer; detected server below the admission floor"
         )
         db = self._database_with_rust_stub(monkeypatch, stub)
 

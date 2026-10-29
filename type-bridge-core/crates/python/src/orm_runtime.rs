@@ -710,8 +710,8 @@ impl PyDatabase {
     }
 
     /// Whether the server and active negotiated provider support given-stage
-    /// parameterized queries. `False` for pre-3.12/unknown servers and when a
-    /// 3.12 connection remains on the band-8 discovery provider.
+    /// parameterized queries. `False` for pre-3.12/unknown servers and custom
+    /// backends without given-row transport.
     fn supports_given_stage(&self) -> bool {
         self.db.supports_given_stage()
     }

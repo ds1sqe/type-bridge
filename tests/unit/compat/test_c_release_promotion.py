@@ -78,24 +78,48 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
             for job, steps in selected["ci_jobs"].items()
             for step, outcome in steps.items()
         }
-        retired = {
-            key: value
-            for key, value in frozen_steps.items()
-            if key[0].startswith("Python Integration (expressions,")
-            or key[1]
+        retired_server = "typedb/typedb:3.11.5"
+        retired_jobs = {
+            *(
+                f"Python Integration ({suite}, {retired_server})"
+                for suite in ("schema", "queries", "expressions", "session")
+            ),
+            "Python Integration (expressions, typedb/typedb:3.12.3)",
+            f"Rust integration ({retired_server})",
+            f"Node integration ({retired_server})",
+            "Band feature check (band8)",
+            "TLS transport (band8-packaging)",
+            "Version gate (NEG-driver-band9)",
+            "Version gate (POS-grpc-fallback-band8)",
+        }
+        assert len(retired_jobs) == 11
+        assert frozen["ci_jobs"].keys() - selected["ci_jobs"].keys() == retired_jobs
+        assert selected["ci_jobs"].keys() - frozen["ci_jobs"].keys() == {
+            "Version gate (NEG-http-discovery)"
+        }
+        skipped_retired_probe = (
+            "Rust integration (typedb/typedb:3.12.3)",
+            "Prove unsupported migration apply creates no databases",
+        )
+        assert frozen_steps[skipped_retired_probe] == "skipped"
+        legacy_steps = {
+            key
+            for key in frozen_steps
+            if key[1]
             in {
                 "Run legacy adoption and evolution lifecycle",
                 "Run shipped Python converter to native adoption lifecycle",
             }
         }
-        assert (
-            len(retired)
-            == 2 * len(frozen["ci_jobs"]["Python Integration (expressions, typedb/typedb:3.12.3)"])
-            + 4
-        )
+        assert len(legacy_steps) == 4
+        retired = {
+            key: outcome
+            for key, outcome in frozen_steps.items()
+            if key[0] in retired_jobs or key == skipped_retired_probe or key in legacy_steps
+        }
         assert frozen_steps.items() - current_steps.items() == retired.items()
         assert (frozen_steps.items() - retired.items()) < current_steps.items()
-    assert len(selected["ci_jobs"]) == 60
+    assert len(selected["ci_jobs"]) == 52
     for server in ("3.13.6", "3.14.0"):
         assert (
             selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
@@ -138,7 +162,7 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         == "success"
     )
     assert (
-        selected["ci_jobs"]["Python Integration (schema, typedb/typedb:3.11.5)"][
+        frozen["ci_jobs"]["Python Integration (schema, typedb/typedb:3.11.5)"][
             "Upload Python queries report"
         ]
         == "skipped"

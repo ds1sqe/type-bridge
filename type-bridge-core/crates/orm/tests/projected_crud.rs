@@ -475,12 +475,6 @@ fn retained_reference_facade(
     .unwrap()
 }
 
-fn insert_iid(iid: &str) -> RecordingResponse {
-    RecordingResponse::Result(QueryResult::Documents(vec![
-        serde_json::json!({"iid": iid}),
-    ]))
-}
-
 fn person_document(iid: &str) -> serde_json::Value {
     serde_json::json!({
         "_iid": iid,
@@ -2382,44 +2376,6 @@ plays:
             ))
         ]
     );
-}
-
-#[tokio::test]
-async fn control_characters_on_band_8_fall_back_to_the_released_insert() {
-    let installed = installed();
-    let person = type_id(TypeKind::Entity, "person");
-    let create = ProjectedCreate::try_new(
-        &installed,
-        person.clone(),
-        vec![
-            (
-                field(&person, "identifier"),
-                vec![string_value(&installed, "identifier", "ada")],
-            ),
-            (
-                field(&person, "email"),
-                vec![string_value(&installed, "email", "line\nbreak")],
-            ),
-        ],
-        vec![],
-    )
-    .unwrap();
-    let (backend, state) = RecordingBackend::new(
-        vec![insert_iid("0x10"), documents(vec![person_document("0x10")])],
-        CommitBehavior::Success,
-    );
-    let database = Database::with_backend(Box::new(backend), "test");
-
-    ProjectedCrudExecutor::new(&installed)
-        .insert_entity(&database, &create)
-        .await
-        .unwrap();
-
-    let state = state.lock().unwrap();
-    // The released insert escapes the text; no plan literal was attempted.
-    assert_eq!(state.queries.len(), 2);
-    assert!(state.queries[0].starts_with("insert"));
-    assert!(!state.queries[0].contains("PlanFetchType"));
 }
 
 #[tokio::test]

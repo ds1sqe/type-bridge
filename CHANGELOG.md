@@ -297,6 +297,29 @@ All notable changes to TypeBridge will be documented in this file.
   `VerifiedLegacyHead::{source_migration, schema_typeql}`. Adopt with 2.3.x
   first, then use canonical workspace histories.
 
+- TypeDB admission now requires 3.12.0 or newer. The removed semantic profile
+  `typedb-3.11.5/v1` and Rust `TYPEDB_3_11_SEMANTIC_PROFILE_ID` are replaced
+  by `typedb-3.12.1/v1` and `TYPEDB_3_12_SEMANTIC_PROFILE_ID`; generated
+  packages keep their measured profile patch floors. Newer lines retain the
+  existing warning without an upper admission ceiling.
+- The Python `typedb-driver` extra now requires `>=3.12.3,<3.15`;
+  upgrade older driver installations before using the extra.
+- The `band8` Cargo feature is removed from `type-bridge-typedb-runtime`,
+  `type-bridge-orm`, `type-bridge-server`, and `type-bridge`; use `band9`.
+  The removed `type-bridge-typedb-driver-b8` and
+  `type-bridge-typedb-protocol-b8` compatibility packages are replaced in the
+  runtime graph by official `typedb-driver` and `typedb-protocol` 3.14.0.
+  `PINNED_DRIVER_VERSION` now aliases `PINNED_DRIVER_VERSION_B9`, and
+  `embedded_driver_version()` and `embedded_driver_versions()` expose the
+  retained band-9 pin.
+- The schema diagnostic `ordered_collection_profile_unsupported` is retired
+  with the old profile. Unknown and retired profiles now consistently return
+  `unsupported_semantic_profile` before schema resolution.
+- Failed HTTP version discovery now refuses the connection before constructing
+  the gRPC driver. Configure a reachable HTTP version endpoint, or use the
+  existing exact `server_version` declaration for gRPC-only connections.
+  Generated-package admission still clears that declaration and requires
+  authoritative HTTP discovery before checking its profile floor.
 - In 2.3.3, ordered role players were written through scalar links without
   list order. Nonempty ordered role and attribute writes now refuse before
   provider IO with `query_plan_ordered_collection_unsupported`; use empty

@@ -811,11 +811,7 @@ async fn closed_port_reports_unavailable_live() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a closed test port");
     let address = listener.local_addr().unwrap().to_string();
     drop(listener);
-    let version = if cfg!(feature = "band9") {
-        "3.13.6"
-    } else {
-        "3.11.5"
-    };
+    let version = "3.13.6";
     let error = TypeDBRuntime::connect_secure(
         &address,
         "admin",
@@ -892,15 +888,10 @@ async fn wrong_tls_trust_reports_tls_kind_live() {
     .err()
     .expect("the unrelated CA must also fail direct gRPC admission");
     let message = error.to_string();
-    // The driver stringifies tonic transport errors; only the pinned band-9
-    // driver's exact templates classify as TLS, so a band-8 connection
-    // reports "other" even in builds that also carry band 9.
-    let expected_kind = if expected.driver_band == 9 {
-        "TypeDB transport failed: TLS/certificate failure"
-    } else {
-        "TypeDB transport failed: other transport"
-    };
-    assert!(message.contains(expected_kind), "{message}");
+    assert!(
+        message.contains("TypeDB transport failed: TLS/certificate failure"),
+        "{message}"
+    );
     assert!(!message.contains(&context.address), "{message}");
 }
 

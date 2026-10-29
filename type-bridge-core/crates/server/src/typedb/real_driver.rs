@@ -2,9 +2,9 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#[cfg(not(any(feature = "band8", feature = "band9")))]
+#[cfg(not(feature = "band9"))]
 compile_error!(
-    "type-bridge-server: the `typedb` machinery requires at least one band feature; enable `band8` and/or `band9` (both are default)"
+    "type-bridge-server: the `typedb` machinery requires the `band9` feature (enabled by default)"
 );
 
 use super::{CommitCertainty, CommitFailure, ExecuteError};
@@ -27,8 +27,8 @@ impl RealTypeDBBackend {
     /// Connect to a TypeDB server using the provided configuration.
     ///
     /// Uses the same shared runtime gate as the ORM: caller-supplied
-    /// `server_version` skips HTTP probing, otherwise HTTP probing falls back
-    /// to gRPC-only negotiation when the HTTP endpoint is unavailable.
+    /// `server_version` skips HTTP probing; otherwise discovery must succeed
+    /// before constructing the gRPC driver.
     pub(crate) async fn connect(config: &TypeDBSection) -> Result<Self, PipelineError> {
         let options = connect_options(config)?;
         let inner = type_bridge_orm::session::real_driver::RealBackend::connect(

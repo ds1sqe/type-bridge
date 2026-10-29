@@ -964,9 +964,8 @@ pub trait DriverBackend: Send + Sync {
 
     /// Whether the active negotiated provider can transport `given` rows.
     ///
-    /// Server syntax support and provider transport support are separate: a
-    /// 3.12 server reached through a band-8 fallback still cannot accept the
-    /// band-9 `GivenRows` driver payload. Backends must opt in explicitly.
+    /// Server syntax support and custom-provider transport support are separate.
+    /// Backends must opt in explicitly before receiving a `GivenRows` payload.
     fn supports_given_rows(&self) -> bool {
         false
     }

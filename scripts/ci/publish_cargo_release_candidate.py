@@ -390,7 +390,7 @@ def process_candidate(
         raise PublicationError(f"unknown candidate mode: {mode!r}")
 
     # This pass is deliberately complete before the first irreversible PUT.
-    # It prevents a bad later key (including either immutable b8 input) from
+    # It prevents a bad later key (including non-uploaded immutable inputs) from
     # being discovered only after an earlier first-party package was uploaded.
     initial_states: list[tuple[CandidatePackage, str]] = []
     for candidate in bundle.packages:

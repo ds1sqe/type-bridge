@@ -67,9 +67,8 @@ if [[ -z "$version" || "$version" == "$pkgid" || ! "$version" =~ ^[0-9A-Za-z.+-]
   exit 1
 fi
 
-# This is intentionally a closed map. Historical b7 checksums remain recovery
-# evidence only; retained b8 packages are immutable registry inputs for the
-# current graph. The ordinary release workflow can never replace those keys.
+# This closed map protects already-published immutable historical artifacts.
+# The ordinary release workflow can never replace these registry keys.
 pinned_registry_checksum() {
   case "$1@$2" in
     type-bridge-typedb-protocol-b7@3.7.0)
@@ -78,6 +77,7 @@ pinned_registry_checksum() {
     type-bridge-typedb-driver-b7@3.8.1)
       printf '%s\n' '68c5770db7d2bc36c13a24a9fe37e5841e26b2adbeca4d06489a6689685e651d'
       ;;
+    # Guard published historical versions even though 3.0 no longer supports TypeDB 3.11.
     type-bridge-typedb-protocol-b8@3.11.0)
       printf '%s\n' 'e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16'
       ;;

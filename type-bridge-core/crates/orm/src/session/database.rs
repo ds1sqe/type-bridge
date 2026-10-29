@@ -719,9 +719,8 @@ impl Database {
     /// When the detected server version predates 3.12, fail with an
     /// actionable versioned error instead of a server-side parse error.
     /// The server feature and negotiated provider transport are checked
-    /// separately. A 3.12 server reached through a band-8 fallback therefore
-    /// fails before opening a transaction instead of dispatching an operation
-    /// the active driver cannot carry.
+    /// separately. A custom backend without given-row transport fails before
+    /// opening a transaction instead of receiving an unsupported payload.
     pub fn check_given_stage_support(&self) -> Result<()> {
         use type_bridge_core_lib::version::{Feature, check_feature_supported};
 

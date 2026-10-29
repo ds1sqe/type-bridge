@@ -22,13 +22,8 @@ path = "src/main.rs"
 required-features = ["typedb", "v2-query"]
 
 [features]
-default = ["band8", "band9", "v2-query"]
+default = ["band9", "v2-query"]
 typedb = ["dep:type-bridge-typedb-runtime", "dep:type-bridge-orm"]
-band8 = [
-    "typedb",
-    "type-bridge-typedb-runtime/band8",
-    "type-bridge-orm?/band8",
-]
 band9 = [
     "typedb",
     "type-bridge-typedb-runtime/band9",

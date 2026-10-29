@@ -369,7 +369,6 @@ impl QueryExecutor for MyBackend {
 | Feature | Default | Effect |
 |---------|---------|--------|
 | `typedb` | yes | Enables `TypeDBClient` through the shared TypeDB runtime |
-| `band8` | yes | Enables the TypeDB 3.11 provider band |
 | `band9` | yes | Enables the TypeDB 3.12 provider band |
 | `axum-transport` | yes, through `v2-query` | Enables HTTP server with Axum |
 | `v2-query` | yes | Adds `/v2/capabilities` and `/v2/query`; implies `axum-transport` |
@@ -392,7 +391,7 @@ cargo test -p type-bridge-server
 ```
 
 The crate is released in lockstep with TypeBridge 2.3.2, requires Rust 1.88+,
-and supports TypeDB 3.11.x–3.14.x through provider bands 8 and 9.
+and supports TypeDB 3.12.x–3.14.x through provider band 9.
 
 [Repository](https://github.com/ds1sqe/type-bridge) ·
 [API documentation](https://docs.rs/type-bridge-server/2.3.2) ·

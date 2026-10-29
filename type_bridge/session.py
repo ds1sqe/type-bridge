@@ -735,11 +735,9 @@ class Database:
     def supports_given_stage(self) -> bool:
         """Whether ``given`` rows can execute on the active connection.
 
-        This requires both TypeDB 3.12+ syntax support and a negotiated band-9
-        provider. It remains ``False`` when the server version is unknown or
-        when a 3.12 server stays on the safe band-8 discovery connection after
-        a band-9 upgrade failure. Bulk operations consult this before dispatch
-        and use their per-row fallback when it is ``False``.
+        This requires both TypeDB 3.12+ syntax support and the retained band-9
+        provider. Bulk operations consult this before dispatch and use their
+        per-row fallback when it is ``False``.
         """
         from type_bridge._native import core_database_for
 

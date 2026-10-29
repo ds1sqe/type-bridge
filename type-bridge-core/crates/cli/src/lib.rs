@@ -2436,7 +2436,7 @@ mod migration_command_tests {
     #[test]
     fn migration_make_creates_its_missing_authoring_directory() {
         let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.12.1/v1");
         let migration_directory = directory.path().join("migrations/v2");
         assert!(!migration_directory.exists());
 
@@ -2462,7 +2462,7 @@ mod migration_command_tests {
     #[test]
     fn migration_make_accepts_a_confined_backfill_intent() {
         let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), "typedb-3.11.5/v1");
+        let manifest = write_workspace_manifest(directory.path(), "typedb-3.12.1/v1");
         fs::write(
             directory.path().join("schema/fragments/model.yaml"),
             "format: typebridge.schema/v2\nattributes:\n  display-name: { value: string }\n  legacy-name: { value: string }\n  person-id: { value: string }\nentities:\n  person:\n    owns:\n      display-name: {}\n      legacy-name: {}\n      person-id: { key: true }\n",
@@ -2513,31 +2513,24 @@ mod migration_command_tests {
     }
 
     #[test]
-    fn unsupported_execution_profile_rejects_before_credentials_or_filesystem_mutation() {
-        // A workspace on a query-only profile (3.11.5) never reaches setup.
-        let profile = "typedb-3.11.5/v1";
+    fn retired_workspace_profile_rejects_before_credentials_or_filesystem_mutation() {
+        let profile = format!("typedb-3.{}.5/v1", 12 - 1);
         let directory = tempfile::tempdir().expect("workspace directory");
-        let manifest = write_workspace_manifest(directory.path(), profile);
-        let workspace = load_workspace(&manifest).expect("workspace loads");
-
-        for action in connected_actions(directory.path()) {
-            let error = run_connected(&workspace, "dev", action)
-                .expect_err("every connected migration operation uses a paired profile");
-
-            assert!(
-                error.contains("migration_typedb_semantic_profile_unsupported"),
-                "{error}"
-            );
-            assert!(error.contains(profile), "{error}");
-            assert!(error.contains("typedb-3.12.1/v1"), "{error}");
-            assert!(error.contains("typedb-3.13.6/v1"), "{error}");
-            assert!(
-                !error.contains("credential environment variable")
-                    && !error.contains("cannot connect")
-                    && !error.contains("cannot check database"),
-                "profile gate ran after external setup: {error}"
-            );
-        }
+        let manifest = write_workspace_manifest(directory.path(), &profile);
+        let error = load_workspace(&manifest)
+            .err()
+            .expect("retired workspace profile must refuse");
+        assert!(
+            error.contains("workspace requires a frozen TypeDB 3.12.1 or 3.13.6 semantic profile"),
+            "{error}"
+        );
+        assert!(error.contains(&profile), "{error}");
+        assert!(
+            !error.contains("credential environment variable")
+                && !error.contains("cannot connect")
+                && !error.contains("cannot check database"),
+            "profile gate ran after external setup: {error}"
+        );
         assert!(
             !directory.path().join("migrations/v2").exists(),
             "profile rejection must not create the migration directory"

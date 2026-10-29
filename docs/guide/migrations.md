@@ -45,7 +45,7 @@ line. Newer lines reuse the newest measured profile and protocol assumptions
 and warn once per connection that they are
 "not tested or supported by this TypeBridge release". No compatibility is
 guaranteed. Older profiles still reject other server lines. General version
-admission requires >=3.11.0; supported lines remain the measured 3.11–3.14.
+admission requires >=3.12.0; supported lines remain the measured 3.12–3.14.
 Offline authoring remains available for supported semantic profiles.
 
 ## Author and apply a change

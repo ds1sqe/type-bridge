@@ -22,8 +22,6 @@ members = [
     "crates/rust",
     "crates/perf",
     "crates/perf-stages",
-    "vendor/typedb-protocol-b8",
-    "vendor/typedb-driver-b8",
 ]
 exclude = [
     "vendor/typedb-protocol-b9",

@@ -128,29 +128,27 @@ uv run python scripts/ci/run_generated_live.py manager
 ```
 
 Each live lane creates and removes its own isolated TypeDB and runs under that
-line's semantic profile: 3.11.5 with `typedb-3.11.5/v1`, 3.12.3 with
+line's semantic profile: 3.12.3 with
 `typedb-3.12.1/v1`, and 3.13.6 and 3.14.0 with `typedb-3.13.6/v1`. The offline tiers run
 once. With `--typedb all`, each line is its own compose project
 (`tb-<worktree>-typedb-<line>`), and the summary lists every lane.
 `--no-integration` runs offline Rust, Python, Node, and internal C-foundation
 tiers. `--no-isolated` uses an existing server; its version picks the lane.
 
-| Live step | 3.11.5 | 3.12.3 | 3.13.6 | 3.14.0 |
-| --- | --- | --- | --- | --- |
-| Rust ORM, production V2 server, generated Rust | yes | yes | yes | yes |
-| Python and Node integration, generated projections | yes | yes | yes | yes |
-| SDK report fan-in, projected exact-live parity | — | yes | yes | — |
-| C runtime and generated C CRUD live | — | yes | yes | — |
-| CLI workspace and migration recovery lifecycles | — | yes | yes | yes |
-| Unsupported-server migration refusal | yes | — | — | — |
-| TLS lane (`--tls`) | — | yes | yes | — |
+| Live step | 3.12.3 | 3.13.6 | 3.14.0 |
+| --- | --- | --- | --- |
+| Rust ORM, production V2 server, generated Rust | yes | yes | yes |
+| Python and Node integration, generated projections | yes | yes | yes |
+| SDK report fan-in, projected exact-live parity | yes | yes | — |
+| C runtime and generated C CRUD live | yes | yes | — |
+| CLI workspace and migration recovery lifecycles | yes | yes | yes |
+| TLS lane (`--tls`) | yes | yes | — |
 
 Steps bound to the SDK conformance contracts run where the lane's profile is in
 the SDK version matrix and pairs with the lane's server; the matrix pairs
 `typedb-3.13.6/v1` with 3.13.6, so the 3.14.0 lane skips them, as well as
-the staged C ABI plans and the four-language writes suites. Connected migrations refuse TypeDB 3.11, so that lane
-proves the refusal instead of the lifecycles. Its TLS lane is skipped too: the
-TLS steps assert the band-9 driver and apply a workspace migration.
+the staged C ABI plans and the four-language writes suites. TLS steps assert
+the band-9 driver and apply a workspace migration.
 
 The upgrade lane starts a 3.12.3 and a 3.13.6 server together and moves a
 migration history across a profile bridge
@@ -173,10 +171,7 @@ removes its isolated database before evaluating process assertions. These
 remain internal foundation evidence, not a public C support or distribution
 claim.
 
-Both server bands run the same generated application assertions. The 3.11.5
-lane emits from `schema-3.11.5.yaml` and defines `provider-3.11.5.tql`; an
-offline guard proves those fixtures differ from the 3.12.1 pair only by the
-removal of 3.12-only plays-side documentation annotations.
+All retained server lines run the same generated application assertions.
 
 The generated live journeys cover, where advertised by each binding:
 

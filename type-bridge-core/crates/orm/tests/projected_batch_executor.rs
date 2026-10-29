@@ -505,7 +505,7 @@ fn assert_owned_atomic_failure(state: &Arc<Mutex<State>>, expected_calls: usize)
 }
 
 #[tokio::test]
-async fn empty_and_band8_reject_without_transaction_or_provider_work() {
+async fn empty_and_missing_given_transport_reject_without_transaction_or_provider_work() {
     let installed = installed();
     let person = type_id(TypeKind::Entity, "person");
     let empty = ProjectedBatch::try_new(
@@ -1779,7 +1779,7 @@ async fn update_is_two_calls_clears_keys_and_rejects_a_changed_target_iid() {
 }
 
 #[tokio::test]
-async fn borrowed_success_stays_active_and_band8_failure_does_not_poison() {
+async fn borrowed_success_stays_active_and_transport_refusal_does_not_poison() {
     let installed = installed();
     let person = type_id(TypeKind::Entity, "person");
     let batch = ProjectedBatch::try_new(

@@ -5215,14 +5215,6 @@ async fn role_player_refusal(
 
 #[tokio::test]
 async fn generated_one_program_under_direct_and_proxy_connections() {
-    let semantics: Value = serde_json::from_str(SEMANTIC_SCHEMA_FINGERPRINT_JSON)
-        .expect("generated semantic fingerprint JSON");
-    if semantics["semantic_profile"].as_str() == Some("typedb-3.11.5/v1") {
-        eprintln!(
-            "skipping direct/proxy connection parity: TypeDB 3.11 has no direct-connection profile"
-        );
-        return;
-    }
     let db = database().await;
     let workers = [
         db.entities::<Person>()

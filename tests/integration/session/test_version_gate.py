@@ -1,6 +1,6 @@
 """Integration tests for the version gate (type_bridge/version.py wiring).
 
-Requires a running TypeDB server (band-8, 3.11.5 compose default).
+Requires a running supported TypeDB server.
 All tests use @pytest.mark.integration.
 """
 
@@ -23,7 +23,7 @@ from type_bridge.session import Database
 @pytest.mark.integration
 @pytest.mark.order(410)
 class TestVersionGateLivePositive:
-    """Gate passes on the live compose server (band-8 driver × band-8 server)."""
+    """The retained driver passes the gate on the live compose server."""
 
     def test_connect_passes_version_gate(self, clean_db: Database):
         """Database.connect() succeeds against the live server — gate green."""
@@ -79,9 +79,7 @@ class TestServerVersionLive:
         # optional Python typedb-driver package.  The installed Python driver
         # may target a different protocol band from the live test server.
         # ensure_runtime_supported is the full serviceability check: it passes
-        # exactly when some band the server accepts is embedded. A confirmed
-        # 3.12 server normally upgrades from safe band-8 discovery to native
-        # band 9, retaining band 8 only as a compatible fallback.
+        # exactly when the server's protocol is served by the embedded driver.
         version.ensure_runtime_supported(sv)
 
 
@@ -90,43 +88,17 @@ class TestServerVersionLive:
 # ---------------------------------------------------------------------------
 
 
-def _mismatched_driver_version(server: str) -> str:
-    """Pick a driver version the live server gate rejects.
-
-    Prefer the other retained driver line, then use the retired 3.10 line for
-    a 3.12 server that accepts both retained providers. The decision remains
-    owned by the core gate.
-    """
-    import type_bridge_core
-
-    candidate_lines = ("3.11.5", "3.12.1", "3.10.0")
-    for candidate in candidate_lines:
-        try:
-            type_bridge_core.check_supported(candidate, server)
-        except type_bridge_core.VersionError:
-            return candidate
-    raise AssertionError(
-        f"no candidate driver line mismatches server {server!r}; "
-        f"extend candidate_lines to cover its band map entry"
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.order(412)
 class TestVersionGateLiveNegative:
     """Python driver gate fires before driver construction when monkeypatched."""
 
-    def test_cross_band_raises_before_driver_constructed(self, monkeypatch: pytest.MonkeyPatch):
-        """Monkeypatching driver_version to the opposite band of the live server
-        causes direct driver access to raise UnsupportedVersionError before TypeDB.driver is
-        called."""
+    def test_retired_driver_raises_before_driver_constructed(self, monkeypatch: pytest.MonkeyPatch):
+        """A retired driver is refused before the native constructor runs."""
         import type_bridge.session as session_mod
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(
-            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
-        )
-        mismatched = _mismatched_driver_version(detected_server)
+        mismatched = "3.10.0"
         monkeypatch.setattr(_tdm, "driver_version", lambda: mismatched)
 
         # Spy on TypeDB.driver to assert it is never reached.
@@ -158,10 +130,7 @@ class TestVersionGateLiveNegative:
         """The live gate error names the rejected driver and gives remediation."""
         from tests.integration.conftest import TEST_DB_ADDRESS, TEST_DB_HTTP_PORT
 
-        detected_server = _tdm.server_version(
-            TEST_DB_ADDRESS, http_port=TEST_DB_HTTP_PORT, tls=False
-        )
-        mismatched = _mismatched_driver_version(detected_server)
+        mismatched = "3.10.0"
         monkeypatch.setattr(_tdm, "driver_version", lambda: mismatched)
 
         db = Database(

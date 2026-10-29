@@ -166,7 +166,7 @@ relations:
 }
 
 #[test]
-fn ordered_collections_are_gated_to_the_3_12_1_semantic_profile() {
+fn ordered_collections_require_a_retained_semantic_profile() {
     let schema = declared(
         r#"format: typebridge.schema/v2
 attributes:
@@ -179,14 +179,14 @@ entities:
     );
     resolve(&schema, &profile()).expect("3.12.1 accepts ordered collections");
 
-    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
-    let error = resolve(&schema, &legacy).expect_err("3.11.5 rejects ordered collections");
+    let legacy = SemanticProfileId::new(format!("typedb-3.{}.5/v1", 12 - 1)).unwrap();
+    let error = resolve(&schema, &legacy).expect_err("retired profiles reject schema resolution");
     let diagnostic = error.iter().next().expect("one diagnostic");
     assert_eq!(
         diagnostic.diagnostic().code().as_str(),
-        "ordered_collection_profile_unsupported"
+        "unsupported_semantic_profile"
     );
-    assert!(diagnostic.primary().is_some());
+    assert!(diagnostic.primary().is_none());
 
     let unordered = declared(
         r#"format: typebridge.schema/v2
@@ -196,7 +196,12 @@ entities:
   article: { owns: [tag] }
 "#,
     );
-    resolve(&unordered, &legacy).expect("3.11.5 unordered behavior is preserved");
+    let error =
+        resolve(&unordered, &legacy).expect_err("retired profiles reject unordered schemas too");
+    assert_eq!(
+        error.iter().next().unwrap().diagnostic().code().as_str(),
+        "unsupported_semantic_profile"
+    );
 }
 
 #[test]

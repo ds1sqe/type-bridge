@@ -1030,7 +1030,7 @@ mod tests {
                 .authority("other-scope", "typedb-3.12.1/v1")
                 .answer_limits(limits()),
             ProxyConnectionPolicy::with_exchange(UnusedTransport)
-                .authority("rust-client-test", "typedb-3.11.5/v1")
+                .authority("rust-client-test", "typedb-3.13.6/v1")
                 .answer_limits(limits()),
         ] {
             let error = unconnected_remote(mismatched)

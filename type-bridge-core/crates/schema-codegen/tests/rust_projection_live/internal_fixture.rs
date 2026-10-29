@@ -40,19 +40,17 @@ async fn main() {
 
     let semantic_profile = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
         .unwrap_or_else(|_| "typedb-3.13.6/v1".to_owned());
-    if semantic_profile != "typedb-3.11.5/v1" {
-        let exported_schema = db.schema_text().await.expect("provider schema exports");
-        for annotation in [
-            r#"@doc("cyclic relation player")"#,
-            r#"@doc("membership player")"#,
-            r#"@doc("employment player")"#,
-            r#"@doc("robot membership player")"#,
-        ] {
-            assert!(
-                exported_schema.contains(annotation),
-                "exported TypeDB {semantic_profile} schema omitted {annotation}:\n{exported_schema}"
-            );
-        }
+    let exported_schema = db.schema_text().await.expect("provider schema exports");
+    for annotation in [
+        r#"@doc("cyclic relation player")"#,
+        r#"@doc("membership player")"#,
+        r#"@doc("employment player")"#,
+        r#"@doc("robot membership player")"#,
+    ] {
+        assert!(
+            exported_schema.contains(annotation),
+            "exported TypeDB {semantic_profile} schema omitted {annotation}:\n{exported_schema}"
+        );
     }
 
     db.close().expect("generated live database closes");

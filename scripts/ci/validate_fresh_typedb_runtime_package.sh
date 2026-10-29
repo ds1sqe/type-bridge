@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resolve and compile the extracted default multiband runtime from a fresh lock.
+# Resolve and compile the extracted default runtime from a fresh lock.
 set -euo pipefail
 
 package_dir="${1:?usage: validate_fresh_typedb_runtime_package.sh PACKAGE_DIR RELEASE_VERSION}"
@@ -54,10 +54,6 @@ payload = tomllib.loads(runtime_manifest.read_text(encoding="utf-8"))
 dependencies = payload.get("dependencies", {})
 authorities = (
     (
-        "type-bridge-typedb-driver-b8",
-        "PINNED_DRIVER_VERSION",
-    ),
-    (
         "typedb-driver",
         "PINNED_DRIVER_VERSION_B9",
     ),
@@ -89,74 +85,17 @@ for dependency, constant in authorities:
     print(pin)
 PY
 )
-if [[ ${#driver_pins[@]} -ne 2 ]]; then
-  echo "Extracted runtime did not yield exactly two retained driver pins" >&2
+if [[ ${#driver_pins[@]} -ne 1 ]]; then
+  echo "Extracted runtime did not yield exactly one retained driver pin" >&2
   exit 1
 fi
-driver_b8_pin="${driver_pins[0]}"
-driver_b9_pin="${driver_pins[1]}"
-
-driver_b8_archive="$package_dir/type-bridge-typedb-driver-b8-${driver_b8_pin}.crate"
-if [[ ! -f "$driver_b8_archive" || -L "$driver_b8_archive" ]]; then
-  echo "Expected one regular packaged crate: $driver_b8_archive" >&2
-  exit 1
-fi
-"$tar_bin" -xzf "$driver_b8_archive" -C "$extract_root"
-driver_b8_root="$extract_root/type-bridge-typedb-driver-b8-${driver_b8_pin}"
-
-readarray -t protocol_pins < <("$python_bin" - \
-  "$driver_b8_root" <<'PY'
-import pathlib
-import re
-import sys
-import tomllib
-
-authorities = ((pathlib.Path(sys.argv[1]), "type-bridge-typedb-protocol-b8"),)
-for driver_root, expected_package in authorities:
-    manifest = driver_root / "Cargo.toml"
-    if not manifest.is_file() or manifest.is_symlink():
-        raise SystemExit(f"Extracted driver manifest is missing or non-regular: {manifest}")
-    payload = tomllib.loads(manifest.read_text(encoding="utf-8"))
-    specification = payload.get("dependencies", {}).get("typedb-protocol", {})
-    package = specification.get("package")
-    requirement = specification.get("version")
-    if package != expected_package:
-        raise SystemExit(
-            f"Extracted driver does not name {expected_package}: actual={package!r}"
-        )
-    if not isinstance(requirement, str) or re.fullmatch(
-        r"=[0-9]+\.[0-9]+\.[0-9]+", requirement
-    ) is None:
-        raise SystemExit(
-            f"Extracted driver protocol requirement is not exact: actual={requirement!r}"
-        )
-    print(requirement[1:])
-PY
-)
-if [[ ${#protocol_pins[@]} -ne 1 ]]; then
-  echo "Extracted b8 driver did not yield exactly one compatibility protocol pin" >&2
-  exit 1
-fi
-protocol_b8_pin="${protocol_pins[0]}"
-
-# The expected-new b8 packages are validated from candidate archives.
-protocol_b8_archive="$package_dir/type-bridge-typedb-protocol-b8-${protocol_b8_pin}.crate"
-if [[ ! -f "$protocol_b8_archive" || -L "$protocol_b8_archive" ]]; then
-  echo "Expected one regular packaged crate: $protocol_b8_archive" >&2
-  exit 1
-fi
-"$tar_bin" -xzf "$protocol_b8_archive" -C "$extract_root"
-protocol_b8_root="$extract_root/type-bridge-typedb-protocol-b8-${protocol_b8_pin}"
+driver_b9_pin="${driver_pins[0]}"
 
 "$python_bin" - \
   "$runtime_root" \
   "$core_root" \
   "$contract_root" \
-  "$driver_b8_root" \
-  "$protocol_b8_root" \
-  "$driver_b8_pin" \
   "$driver_b9_pin" \
-  "$protocol_b8_pin" \
   "$consumer_root/Cargo.toml" \
   "$consumer_root/expected-versions.json" <<'PY'
 import json
@@ -168,20 +107,15 @@ import tomllib
     runtime_root,
     core_root,
     contract_root,
-    driver_b8_root,
-    protocol_b8_root,
-) = map(pathlib.Path, sys.argv[1:6])
-driver_b8_pin, driver_b9_pin = sys.argv[6:8]
-protocol_b8_pin = sys.argv[8]
-consumer_manifest = pathlib.Path(sys.argv[9])
-expected_versions = pathlib.Path(sys.argv[10])
+) = map(pathlib.Path, sys.argv[1:4])
+driver_b9_pin = sys.argv[4]
+consumer_manifest = pathlib.Path(sys.argv[5])
+expected_versions = pathlib.Path(sys.argv[6])
 
 expected_packages = (
     (runtime_root, "type-bridge-typedb-runtime", None),
     (core_root, "type-bridge-core-lib", None),
     (contract_root, "type-bridge-contract", None),
-    (driver_b8_root, "type-bridge-typedb-driver-b8", driver_b8_pin),
-    (protocol_b8_root, "type-bridge-typedb-protocol-b8", protocol_b8_pin),
 )
 for root, expected_name, expected_version in expected_packages:
     manifest = root / "Cargo.toml"
@@ -221,8 +155,6 @@ consumer_manifest.write_text(
             "[patch.crates-io]",
             f"type-bridge-core-lib = {{ path = {toml_string(core_root)} }}",
             f"type-bridge-contract = {{ path = {toml_string(contract_root)} }}",
-            f"type-bridge-typedb-driver-b8 = {{ path = {toml_string(driver_b8_root)} }}",
-            f"type-bridge-typedb-protocol-b8 = {{ path = {toml_string(protocol_b8_root)} }}",
             "",
         )
     ),
@@ -232,8 +164,6 @@ consumer_manifest.write_text(
 expected_versions.write_text(
     json.dumps(
         {
-            "type-bridge-typedb-driver-b8": driver_b8_pin,
-            "type-bridge-typedb-protocol-b8": protocol_b8_pin,
             "typedb-driver": driver_b9_pin,
         },
         sort_keys=True,
@@ -288,16 +218,6 @@ def require_package(
     return package
 
 
-require_package(
-    "type-bridge-typedb-driver-b8",
-    expected["type-bridge-typedb-driver-b8"],
-    registry=False,
-)
-require_package(
-    "type-bridge-typedb-protocol-b8",
-    expected["type-bridge-typedb-protocol-b8"],
-    registry=False,
-)
 official_driver = require_package(
     "typedb-driver", expected["typedb-driver"], registry=True
 )
@@ -334,12 +254,12 @@ official_protocol_pin = protocol_match.group(1)
 require_package("typedb-protocol", official_protocol_pin, registry=True)
 
 for forbidden in (
-    "type-bridge-typedb-driver-b9",
-    "type-bridge-typedb-protocol-b9",
+    package["name"] for package in packages
+    if package.get("name", "").startswith(("type-bridge-typedb-driver-", "type-bridge-typedb-protocol-"))
 ):
     matches = [package for package in packages if package.get("name") == forbidden]
     if matches:
-        raise SystemExit(f"Unexpected downstream band-9 fork in fresh graph: {matches!r}")
+        raise SystemExit(f"Unexpected downstream driver fork in fresh graph: {matches!r}")
 
 resolve = metadata.get("resolve", {})
 runtime_nodes = [
@@ -350,15 +270,13 @@ runtime_nodes = [
 if len(runtime_nodes) != 1:
     raise SystemExit(f"Expected one runtime resolve node, found: {runtime_nodes!r}")
 features = set(runtime_nodes[0].get("features", []))
-if not {"default", "band8", "band9"} <= features:
-    raise SystemExit(f"Fresh runtime did not activate its default multiband graph: {features!r}")
+if features != {"default", "band9"}:
+    raise SystemExit(f"Fresh runtime did not activate its default retained-driver graph: {features!r}")
 if "band7" in features:
     raise SystemExit(f"Fresh runtime activated the retired band-7 feature: {features!r}")
 
 print(
     "fresh extracted default runtime resolved "
-    f"b8 {expected['type-bridge-typedb-driver-b8']}/"
-    f"{expected['type-bridge-typedb-protocol-b8']}, and "
     f"official b9 {expected['typedb-driver']}/{official_protocol_pin}"
 )
 PY

@@ -5622,7 +5622,12 @@ entities:
             unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
             TypeBridgeStatus::Ok
         );
-        let mut old_package = Box::into_raw(Box::new(package("typedb-3.11.5/v1", "oldprofile")));
+        let mut unsupported_package = package("typedb-3.12.1/v1", "oldprofile");
+        // A retired profile cannot install; corrupt the cached field to test its guard.
+        Arc::get_mut(&mut unsupported_package.state)
+            .unwrap()
+            .semantic_profile = format!("typedb-3.{}.5/v1", 12 - 1).into_bytes();
+        let mut old_package = Box::into_raw(Box::new(unsupported_package));
         let (database, mut diagnostics, status) =
             unsafe { open_database(runtime_handle, old_package, ptr::null()) };
         assert_eq!(status, TypeBridgeStatus::Unsupported);

@@ -444,11 +444,8 @@ jobs:
       fail-fast: false
       matrix:
         typedb-server:
-          - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.3"
         include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
           - typedb-server: "typedb/typedb:3.12.3"
             semantic-profile: "typedb-3.12.1/v1"
 
@@ -529,7 +526,7 @@ jobs:
           --test integration -- --nocapture --test-threads=1
 
       # Integers beyond 2^53 stay exact in rows and fetch documents on every
-      # supported server, including the band-8 3.11.5 leg.
+      # supported server, on each measured line.
       - name: Run exact integer round trip
         env:
           TYPE_BRIDGE_TRANSACTION_LIVE_ADDRESS: localhost:1729
@@ -765,17 +762,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Prove unsupported migration apply creates no databases
-        if: matrix.typedb-server == 'typedb/typedb:3.11.5'
-        env:
-          TYPEDB_ADDRESS: localhost:1729
-          TYPEDB_HTTP_PORT: "8000"
-        run: >-
-          bash scripts/ci/run_exact_ignored_rust_test.sh
-          unsupported_server_apply_creates_neither_database_live
-          --manifest-path type-bridge-core/Cargo.toml
-          -p type-bridge-cli --test e2e_workspace_live
-
       - name: Run CLI empty-workspace replay lifecycle
         if: matrix.typedb-server == 'typedb/typedb:3.12.3'
         env:
@@ -823,7 +809,7 @@ jobs:
           -p type-bridge-schema-migration-typedb --test live_store
 
   # Every server of the default profile typedb-3.13.6/v1 (3.13.6, 3.14.0):
-  # the live steps test.sh's lanes on that profile run and no 3.11/3.12 leg
+  # the live steps test.sh's lanes on that profile run and no 3.12 leg
   # can (staged query-plan/v3 programs, the ABI 1.7 C plans, the
   # four-language writes suites, the profile's migration probes; the
   # concurrency guide's pinned outcomes on 3.13.6 only). Commands and env
@@ -1464,18 +1450,10 @@ jobs:
         # parity and proxy retain dedicated jobs because they need extra runtimes.
         test-group:
           [queries, schema, session]
-        # Fan across the retained server lines: band 8 (3.11.5) and the
-        # dual-band 3.12 line. The 3.12 leg prefers the
-        # embedded band-9 driver after safe discovery, with band-8 retained as
-        # the compatibility fallback. Keep in sync with compose default and
-        # version SSOT in crates/core.
+        # Exercise the retained provider on the measured baseline.
         typedb-server:
-          - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.3"
         include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
           # The 3.12 leg pairs the band-9 installed driver a 3.12 user has;
           # server 3.12 accepts it natively.
           - typedb-server: "typedb/typedb:3.12.3"
@@ -1655,12 +1633,8 @@ jobs:
     strategy:
       matrix:
         typedb-server:
-          - "typedb/typedb:3.11.5"
           - "typedb/typedb:3.12.3"
         include:
-          - typedb-server: "typedb/typedb:3.11.5"
-            typedb-version: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
           - typedb-server: "typedb/typedb:3.12.3"
             typedb-version: "3.12.3"
             semantic-profile: "typedb-3.12.1/v1"
@@ -1822,11 +1796,9 @@ jobs:
 
   # Version-gate cells: each cell boots a server and checks either a positive
   # connect path or the expected rejection class.
-  #   POS-grpc-fallback-band8: wrong HTTP port still connects through gRPC band 8.
+  #   NEG-http-discovery: unavailable HTTP discovery refuses before gRPC.
   #   NEG-window: Database.connect() rejects unsupported servers.
-  #   NEG-driver-window: Database.driver rejects retired installed Python drivers.
-  #   NEG-driver-band9: the asymmetric 3.12 pair — a band-9 driver against a
-  #     3.11 server is rejected, while band-8 against 3.12 is served.
+  #   NEG-driver-window: Database.driver rejects retired installed drivers.
   # Retired 3.10 servers are rejected before data work. Cell versions mirror
   # the version SSOT in crates/core and the compatibility table.
   version-gate-cells:
@@ -1836,33 +1808,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - cell: POS-grpc-fallback-band8
-            typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.11.5"
+          - cell: NEG-http-discovery
+            typedb-server: "typedb/typedb:3.12.3"
+            python-driver: "3.14.0"
             probe: connect
             http-port: 1
-            expect: ok
+            expect: discovery
           - cell: NEG-window
             typedb-server: "typedb/typedb:3.10.4"
-            python-driver: "3.11.5"
+            python-driver: "3.14.0"
             probe: connect
             http-port: 8000
             expect: window
           - cell: NEG-driver-window
-            typedb-server: "typedb/typedb:3.11.5"
+            typedb-server: "typedb/typedb:3.12.3"
             python-driver: "3.10.0"
             probe: driver
             http-port: 8000
             expect: window
-          # Asymmetric band acceptance (measured live): a band-9 (3.12) driver
-          # is refused by a 3.11 server even though the reverse pair —
-          # band-8 driver against a 3.12 server — is served.
-          - cell: NEG-driver-band9
-            typedb-server: "typedb/typedb:3.11.5"
-            python-driver: "3.12.3"
-            probe: driver
-            http-port: 8000
-            expect: installed
 
     services:
       typedb:
@@ -1927,8 +1890,7 @@ jobs:
   # Required, bounded TLS proof over one server per supported protocol band.
   # This intentionally runs only typedb-runtime's focused live target: the
   # broader plaintext, binding, CLI, and remote-envelope suites have separate
-  # gates. Band 8 consumes the namespaced compatibility package; band 9
-  # consumes the official upstream 3.12.3 driver against the current server.
+  # gates. The retained provider consumes the official upstream driver.
   tls-transport-matrix:
     name: TLS transport (${{ matrix.lane }})
     runs-on: ubuntu-latest
@@ -1937,12 +1899,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: band8-packaging
-            typedb-server: "typedb/typedb:3.11.5"
-            server-version: "3.11.5"
-            semantic-profile: "typedb-3.11.5/v1"
-            driver-band: "8"
-            driver-version: "3.11.5"
           - lane: band9-upstream
             typedb-server: "typedb/typedb:3.12.3"
             server-version: "3.12.3"
@@ -2087,7 +2043,7 @@ jobs:
           docker compose -f docker-compose.yml -p type-bridge-tls-ci
           down -v --remove-orphans
 
-  # I6 single-band V2 legs: verify neither supported driver selection pulls the other band.
+  # Verify the retained provider does not pull retired namespaced drivers.
   # These are compile-only checks (no live server, no tests) plus an exact dependency proof.
   band-feature-check:
     name: Band feature check (${{ matrix.band }})
@@ -2096,14 +2052,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - band: band8
-            features: band8,v2-query
-            required_driver: type-bridge-typedb-driver-b8 v3.11.5
-            forbidden_driver: typedb-driver v3.14.0
           - band: band9
             features: band9,v2-query
             required_driver: typedb-driver v3.14.0
-            forbidden_driver: type-bridge-typedb-driver-b8 v3.11.5
+            forbidden_driver: type-bridge-typedb-driver-
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

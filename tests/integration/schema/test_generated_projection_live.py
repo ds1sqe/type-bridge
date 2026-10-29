@@ -45,9 +45,7 @@ ROOT = Path(__file__).resolve().parents[3]
 CORE = ROOT / "type-bridge-core"
 ACCEPTANCE_DIRECTORY = CORE / "crates/schema-codegen/tests/acceptance"
 ACCEPTANCE_SCHEMA = ACCEPTANCE_DIRECTORY / "schema.yaml"
-ACCEPTANCE_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "schema-3.11.5.yaml"
 PROVIDER_SCHEMA = ACCEPTANCE_DIRECTORY / "provider-3.12.1.tql"
-PROVIDER_SCHEMA_3_11 = ACCEPTANCE_DIRECTORY / "provider-3.11.5.tql"
 SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json"
 SDK_QUERIES_CATALOG_RELATIVE = "tests/contracts/sdk_conformance/queries/catalog.json"
 SDK_QUERIES_JOURNEY_RELATIVE = "tests/contracts/sdk_conformance/queries/journey.json"
@@ -2078,13 +2076,13 @@ def test_generated_profile_server_gate_reads_the_matrix(monkeypatch: pytest.Monk
     monkeypatch.delenv("TYPEDB_VERSION", raising=False)
     for profile, server in (("typedb-3.12.1/v1", "3.12.3"), ("typedb-3.13.6/v1", "3.13.6")):
         assert _require_profile_server_version(profile, server).semantic_profile == profile
-        for detected in (None, "3.11.5", "3.12.2", "3.13.5", "3.14.0"):
+        for detected in (None, f"3.{12 - 1}.5", "3.12.2", "3.13.5", "3.14.0"):
             with pytest.raises(
                 AssertionError, match=f"actual detected TypeDB server version {server}"
             ):
                 _require_profile_server_version(profile, detected)
     with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
-        _require_profile_server_version("typedb-3.11.5/v1", "3.11.5")
+        _require_profile_server_version(f"typedb-3.{12 - 1}.5/v1", f"3.{12 - 1}.5")
 
     monkeypatch.setenv("TYPE_BRIDGE_EXPECTED_SERVER_VERSION", "3.14.0")
     assert (
@@ -2123,9 +2121,9 @@ def test_sdk_reports_declare_the_requested_matrix_profile(suite: str) -> None:
     with pytest.raises(AssertionError, match="semantic_profile_mismatch"):
         _requested_sdk_profile(
             suite,
-            "typedb-3.11.5/v1",
-            "3.11.5",
-            {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": "typedb-3.11.5/v1"},
+            f"typedb-3.{12 - 1}.5/v1",
+            f"3.{12 - 1}.5",
+            {"TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE": f"typedb-3.{12 - 1}.5/v1"},
         )
 
 
@@ -2193,10 +2191,6 @@ def _make_generated_person(
 
 def _acceptance_contract(database: Database) -> tuple[Path, Path, str]:
     server_version = database.detected_server_version()
-    if server_version is not None:
-        major, minor = (int(part) for part in server_version.split(".")[:2])
-        if (major, minor) < (3, 12):
-            return ACCEPTANCE_SCHEMA_3_11, PROVIDER_SCHEMA_3_11, "typedb-3.11.5/v1"
     semantic_profile = os.environ.get(
         "TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE", DEFAULT_ACCEPTANCE_PROFILE
     )
@@ -5042,8 +5036,6 @@ def test_generated_direct_terminals_run_under_the_connection_answer_ceiling(
     clean_db: Database,
     generated_package: ModuleType,
 ) -> None:
-    if (clean_db.detected_server_version() or "").startswith("3.11."):
-        pytest.skip("TypeDB 3.11 has no direct-connection profile")
     generated = generated_package
     _, provider_schema, _ = _acceptance_contract(clean_db)
     clean_db.execute_query(provider_schema.read_text(encoding="utf-8"), transaction_type="schema")

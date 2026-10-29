@@ -245,7 +245,7 @@ fn config_profile_scope_and_capability_claim_tampering_is_rejected() {
 
     for tampered in [
         replace_first(lock.bytes(), "example-schema", "changed-schema"),
-        replace_first(lock.bytes(), "typedb-3.12.1/v1", "typedb-3.11.5/v1"),
+        replace_first(lock.bytes(), "typedb-3.12.1/v1", "typedb-3.13.6/v1"),
         replace_first(lock.bytes(), "schema.doc-meta", "schema.annotations"),
     ] {
         assert_eq!(

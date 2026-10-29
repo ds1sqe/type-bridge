@@ -21,7 +21,7 @@ fn profile() -> SemanticProfileId {
 }
 
 #[test]
-fn ordered_semantic_bytes_reject_profiles_without_collection_semantics() {
+fn ordered_semantic_bytes_reject_retired_profiles() {
     let declared = normalize_documents(&document(
         r#"format: typebridge.schema/v2
 attributes:
@@ -36,15 +36,15 @@ entities:
     canonical_semantic_schema_bytes(&declared, &profile())
         .expect("3.12.1 semantic bytes preserve ordered collections");
 
-    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    let legacy = SemanticProfileId::new(format!("typedb-3.{}.5/v1", 12 - 1)).unwrap();
     let error = canonical_semantic_schema_bytes(&declared, &legacy)
-        .expect_err("3.11.5 has no ordered collection semantics");
+        .expect_err("retired profiles have no supported schema semantics");
     let diagnostic = error.iter().next().expect("one diagnostic");
     assert_eq!(
         diagnostic.diagnostic().code().as_str(),
-        "ordered_collection_profile_unsupported"
+        "unsupported_semantic_profile"
     );
-    assert!(diagnostic.primary().is_some());
+    assert!(diagnostic.primary().is_none());
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn managed_fingerprints_bind_scope_profile_and_semantic_profile() {
         managed_semantic_schema_fingerprint(&declared, &profile(), &second_scope).unwrap(),
     );
 
-    let previous_profile = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
+    let previous_profile = SemanticProfileId::new("typedb-3.13.6/v1").unwrap();
     assert_ne!(
         managed_semantic_schema_fingerprint(&declared, &profile(), &first_scope).unwrap(),
         managed_semantic_schema_fingerprint(&declared, &previous_profile, &first_scope).unwrap(),

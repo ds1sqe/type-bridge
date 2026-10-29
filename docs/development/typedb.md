@@ -2,36 +2,34 @@
 
 ## Server and driver compatibility
 
-TypeBridge supports the measured TypeDB lines 3.11.x–3.14.x, subject to the
+TypeBridge supports the measured TypeDB lines 3.12.x–3.14.x, subject to the
 profile patch floors below. General version admission accepts any version
-at or above 3.11.0; only versions below that floor are refused by the general
+at or above 3.12.0; only versions below that floor are refused by the general
 version gate. Each connection to a newer line emits one warning naming the
 server, newest measured line and fallback profile. Newer lines are
 "not tested or supported by this TypeBridge release". Admission does not
 guarantee compatibility.
 
-The live release matrix uses 3.11.5, 3.12.3, 3.13.6 and 3.14.0; 3.14.0 remains
+The live release matrix uses 3.12.3, 3.13.6 and 3.14.0; 3.14.0 remains
 the recommended server and 3.13.6 the V2 conformance baseline. Newer lines,
 including 3.15 and 4.x, reuse `typedb-3.13.6/v1`, protocol band 9 and the newest
-measured accepted-band set `[9, 8]`. These are assumptions, not new support
+measured accepted-band set `[9]`. These are assumptions, not new support
 claims. Generated Python, TypeScript/Node, Rust and C use the same Rust rule.
 Earlier releases' windows are listed in
 [TypeDB versions](../getting-started/installation.md#typedb-versions).
 
 Generated live acceptance executes the same application operation set on every
-verified tag. Its 3.11 fixture omits only plays-side `@doc` annotations, which
-are unavailable before 3.12; an offline source guard pins that as the complete
-difference from the 3.12 and 3.13 fixtures, which 3.14 shares.
+verified tag.
 
 | Dimension | Supported value |
 | --- | --- |
-| Supported TypeDB lines | Measured 3.11.x–3.14.x with profile patch floors |
-| General version admission | >=3.11.0; newer lines warn and are not tested or supported |
-| Verified tags | 3.11.5, 3.12.3, 3.13.6, 3.14.0 |
+| Supported TypeDB lines | Measured 3.12.x–3.14.x with profile patch floors |
+| General version admission | >=3.12.0; newer lines warn and are not tested or supported |
+| Verified tags | 3.12.3, 3.13.6, 3.14.0 |
 | Recommended server | 3.14.0 |
-| Generated CRUD/query acceptance | 3.11.5, 3.12.3, 3.13.6 and 3.14.0 |
+| Generated CRUD/query acceptance | 3.12.3, 3.13.6 and 3.14.0 |
 | Connected V2 migration execution | Profile floors below; newest profile also admits newer lines |
-| Protocol providers | band 8 and band 9 |
+| Protocol providers | band 9 |
 | V2 conformance baseline | 3.13.6 |
 | CPython | 3.12–3.14 |
 | Node | 18+; primary lane 20 |
@@ -39,7 +37,7 @@ difference from the 3.12 and 3.13 fixtures, which 3.14 shares.
 
 Here, `+` admits later patches on the same minor line; it does not admit a new minor line.
 
-Versions below 3.11.0 fail before TypeBridge opens an application data
+Versions below 3.12.0 fail before TypeBridge opens an application data
 transaction.
 
 General admission applies to application operations and query execution. `migration apply`, `migration verify`,
@@ -65,26 +63,15 @@ semantic profile. To move an existing history from 3.12 to 3.13, see
 
 ### Protocol providers
 
-A TypeDB driver speaks one protocol band. Server acceptance is asymmetric:
-
-| Provider | Driver | Accepted servers |
-| --- | --- | --- |
-| band 8 | namespaced `typedb-driver` 3.11.5 | 3.11, 3.12, 3.14 |
-| band 9 | official `typedb-driver` 3.14.0 | 3.12, 3.13, 3.14 |
-
-Band 8 does not serve TypeDB 3.13. The native runtime embeds the
-source-unmodified namespaced 3.11.5 provider and uses the official 3.14.0
-driver for band 9. Band 8 is the safe unknown-server discovery path; a
-confirmed 3.12, 3.13 or 3.14 server upgrades to band 9. No application-side provider
+The native runtime uses the official `typedb-driver` 3.14.0 provider for
+protocol band 9 on TypeDB 3.12, 3.13 and 3.14. No application-side provider
 selection is required.
 
 The Python `typedb-driver` extra is independent of generated ORM execution. It
-exists for direct driver calls and accepts `typedb-driver>=3.11,<3.15`. On
-CPython 3.14, where only band-9 drivers publish wheels, it accepts
-`>=3.12.3,<3.15`, so direct driver calls there need a 3.12, 3.13 or 3.14
-server; the
-embedded TypeBridge runtime admits newer servers using the measured drivers,
-with the warning above and without a compatibility guarantee.
+exists for direct driver calls and accepts `typedb-driver>=3.12.3,<3.15` on all
+supported interpreters. The embedded TypeBridge runtime admits newer servers
+using the measured driver, with the warning above and without a compatibility
+guarantee.
 
 ### Version discovery
 
@@ -103,9 +90,9 @@ db = Database(
 db.connect()
 ```
 
-If HTTP discovery is unavailable, the runtime discovers the version through
-band 8 and reconnects on band 9 for TypeDB 3.12, 3.13 or 3.14. A 3.13 connection
-fails if that upgrade fails; only servers accepting band 8 may retain it.
+If HTTP discovery is unavailable, the connection is refused before constructing
+the gRPC driver. Configure a reachable HTTP version endpoint or supply the
+exact server version through the existing declaration below.
 
 For gRPC-only deployments, supply an exact supported server version to skip
 discovery:
@@ -114,7 +101,7 @@ discovery:
 db = Database(
     address="localhost:1729",
     database="application",
-    server_version="3.11.5",
+    server_version="3.14.0",
 )
 db.connect()
 ```
@@ -181,10 +168,10 @@ operations. Repeated `close()` calls are safe.
 The admission floor and profile constraints determine whether TypeBridge can
 attempt a connection; individual features may have a higher minimum.
 
-| Feature | Minimum server | Behavior on 3.11 |
+| Feature | Minimum server | Behavior below the floor |
 | --- | --- | --- |
 | `@doc` / `@meta` schema annotations | 3.12.0 | rejected with a versioned client diagnostic before migration/data work |
-| `given` rows | 3.12.0 | generated queries use validated bounded literal lowering |
+| `given` rows | 3.12.0 | connection refused before provider work |
 
 Feature gates live in the Rust version authority and are consumed by all
 bindings. A too-old server produces the same actionable TypeBridge diagnostic
@@ -311,7 +298,7 @@ USE_DOCKER=false TYPEDB_HTTP_PORT=9000 ./test.sh --no-isolated
 
 Focused version/provider tests live in `crates/core`, `crates/typedb-runtime`,
 binding session tests, generated live acceptance, and the release identity
-validators. Positive live support covers only 3.11–3.14; older versions appear
+validators. Positive live support covers only 3.12–3.14; older versions appear
 only as rejection evidence.
 
 ## Maintainer checklist

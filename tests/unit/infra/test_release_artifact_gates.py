@@ -41,9 +41,6 @@ CARGO_PUBLICATION_MARKERS = (
     "cargo-release-candidate",
     '"${cargo_command[@]}" package',
     "patch.crates-io",
-    "--verify-preexisting",
-    "type-bridge-typedb-protocol-b8",
-    "type-bridge-typedb-driver-b8",
 )
 
 
@@ -836,8 +833,7 @@ def test_crates_helper_requires_identical_registry_bytes() -> None:
     assert "CRATES_IO_VERIFY_ATTEMPTS" in helper
     assert "--verify-preexisting" in helper
     assert "--preflight" in helper
-    # Closed Band 7 checksums remain recovery evidence only; retained Band 8
-    # checksums protect the immutable inputs to the current release graph.
+    # Historical checksums protect already-published immutable artifacts.
     assert "030327872cad70433b3c8bde72529d0df6291af08ab3aad82550f8871e409364" in helper
     assert "e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16" in helper
     assert "a2c4fe7da8c6c8d6a075bb667c916f8fceda416bbb844d0396f987cd48204d2e" in helper
@@ -860,11 +856,7 @@ def test_fresh_runtime_probe_cannot_reuse_the_workspace_lock() -> None:
     assert '"$cargo_bin" metadata' in probe
     assert "--format-version 1" in probe
     assert "Fresh consumer resolution did not create an independent Cargo.lock" in probe
-    assert "type-bridge-typedb-driver-b8-${driver_b8_pin}.crate" in probe
-    assert "type-bridge-typedb-protocol-b8-${protocol_b8_pin}.crate" in probe
     for package in (
-        "type-bridge-typedb-driver-b8",
-        "type-bridge-typedb-protocol-b8",
         "typedb-driver",
         "typedb-protocol",
     ):
@@ -877,9 +869,9 @@ def test_fresh_runtime_probe_cannot_reuse_the_workspace_lock() -> None:
     assert 'dependency.get("name") == "typedb-protocol"' in probe
     assert 're.fullmatch(r"=([0-9]+\\.[0-9]+\\.[0-9]+)"' in probe
     assert "Official typedb-driver typedb-protocol requirement is not exact" in probe
-    assert "Unexpected downstream band-9 fork" in probe
+    assert "Unexpected downstream driver fork" in probe
     assert 'not source.startswith("registry+")' in probe
-    assert '{"default", "band8", "band9"}' in probe
+    assert '{"default", "band9"}' in probe
     assert 'if "band7" in features:' in probe
     assert "Fresh downstream resolution escaped {name} pin" in probe
     assert 'env RUSTFLAGS="-Dwarnings" "$cargo_bin" check' in probe
@@ -1018,12 +1010,12 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
         block = live_3_13_6 if test == documented else rust_integration
         assert f"          {test}\n          --manifest-path" in block
     assert documented not in rust_integration
-    # The same live job also gates the unsupported-version probe, two recovery
-    # probes, generated Rust, generated C, and C runtime with exact selection.
+    # The same live job gates two recovery probes, generated Rust, generated C,
+    # and C runtime; the retired-server live probe was removed with its lane.
     assert (
-        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 11
+        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 10
     )
-    assert "unsupported_server_apply_creates_neither_database_live" in rust_integration
+    assert "unsupported_server_apply_creates_neither_database_live" not in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration
     assert "control_schema_and_fenced_lease_round_trip_on_3_12_3" in rust_integration
 

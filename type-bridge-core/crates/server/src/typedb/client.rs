@@ -216,7 +216,7 @@ pub(crate) fn parse_transaction_type(tx_type: &str) -> Result<TransactionType, P
 }
 
 #[cfg(test)]
-#[cfg(feature = "band8")]
+#[cfg(feature = "band9")]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::collections::VecDeque;

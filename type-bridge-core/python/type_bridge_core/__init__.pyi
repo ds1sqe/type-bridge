@@ -455,7 +455,7 @@ class VersionError(Exception):
     ...
 
 def min_supported_version() -> str:
-    """Return the minimum supported TypeDB version as ``"3.11.0"``."""
+    """Return the minimum supported TypeDB version as ``"3.12.0"``."""
     ...
 
 def max_supported_line() -> str:
@@ -479,7 +479,7 @@ def check_supported(driver: str, server: str) -> None:
 def embedded_driver_version() -> str:
     """Return the typedb-driver version compiled into the Rust runtime.
 
-    Returns the band-8 (3.11.x) pin for back-compat. Use
+    Returns the retained band-9 pin. Use
     ``embedded_driver_versions()`` to get all compiled-in bands.
     """
     ...
@@ -489,7 +489,7 @@ def embedded_driver_versions() -> dict[int, str]:
 
     Returns a dict mapping ``int`` band → ``str`` version for every band
     feature compiled into this build.  The default build returns
-    ``{8: "3.11.5", 9: "3.14.0"}``.
+    ``{9: "3.14.0"}``.
     """
     ...
 

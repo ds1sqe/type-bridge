@@ -1743,7 +1743,7 @@ address = "localhost:1729"
 database = "mydb"
 username = "root"
 password = "secret"
-server_version = "3.11.5"
+server_version = "3.14.0"
 
 [schema]
 source_file = "schema.tql"
@@ -1783,7 +1783,7 @@ database = "mydb"
         assert_eq!(config.typedb.database, "mydb");
         assert_eq!(config.typedb.username, "root");
         assert_eq!(config.typedb.password, "secret");
-        assert_eq!(config.typedb.server_version.as_deref(), Some("3.11.5"));
+        assert_eq!(config.typedb.server_version.as_deref(), Some("3.14.0"));
         assert_eq!(config.schema.source_file, "schema.tql");
         assert_eq!(config.interceptors.enabled, vec!["audit-log"]);
         let audit = config.interceptors.audit_log.unwrap();

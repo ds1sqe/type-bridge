@@ -778,11 +778,11 @@ def test_artifacts_reject_unrecognized_license_like_members(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     "source_name",
     [
-        "vendor/typedb-protocol-b8/src/typedb.protocol.rs",
-        "vendor/typedb-driver-b8/Cargo.toml",
+        "crates/typedb-runtime/src/lib.rs",
+        "crates/core/src/version.rs",
     ],
 )
-def test_core_sdist_rejects_changed_vendor_sources(
+def test_core_sdist_rejects_changed_workspace_sources(
     tmp_path: Path,
     source_name: str,
 ) -> None:

@@ -33,8 +33,8 @@ def canonical_license(license_id: str) -> bytes:
     """Return the repository's canonical body for one package family."""
     paths = {
         validator.MIT_LICENSE: ROOT / "LICENSE",
-        validator.APACHE_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-driver-b8/LICENSE",
-        validator.MPL_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-protocol-b8/LICENSE",
+        validator.APACHE_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-driver-b9/LICENSE",
+        validator.MPL_2_LICENSE: ROOT / "type-bridge-core/vendor/typedb-protocol-b9/LICENSE",
     }
     return paths[license_id].read_bytes()
 
@@ -101,95 +101,12 @@ def crate_bytes(
     return stream.getvalue()
 
 
-def synthetic_vendor_manifests(
-    name: str,
-    version: str,
-    license_id: str,
-) -> tuple[bytes, bytes]:
-    """Return one source manifest and Cargo's expected normalized equivalent."""
-    source = f"""
-[package]
-name = "{name}"
-version = "{version}"
-edition = "2024"
-license = "{license_id}"
-license-file = "LICENSE"
-readme = "README.md"
-description = "Synthetic compatibility package"
-
-[features]
-compat = []
-
-[lib]
-path = "src/lib.rs"
-doctest = false
-
-[dependencies.tonic]
-version = "0.12"
-features = ["tls"]
-
-[dev-dependencies]
-rand = "0.8"
-
-[lints.rust]
-unused = "allow"
-""".lstrip().encode()
-    normalized = f"""
-[package]
-name = "{name}"
-version = "{version}"
-edition = "2024"
-license = "{license_id}"
-license-file = "LICENSE"
-readme = "README.md"
-description = "Synthetic compatibility package"
-build = false
-autolib = false
-autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
-
-[features]
-compat = []
-
-[lib]
-name = "{name.replace("-", "_")}"
-path = "src/lib.rs"
-doctest = false
-
-[dependencies.tonic]
-version = "0.12"
-features = ["tls"]
-
-[dev-dependencies.rand]
-version = "0.8"
-
-[lints.rust]
-unused = "allow"
-""".lstrip().encode()
-    return source, normalized
-
-
 def write_release_set(directory: Path, release_version: str = "9.8.7") -> Path:
     """Write the complete closed archive set expected by the gate."""
     directory.mkdir()
     repository_root = directory.parent / "repository"
     for name, (version, license_id) in validator.expected_packages(release_version).items():
-        if name in validator.VENDORED_SOURCE_MANIFESTS:
-            source, normalized = synthetic_vendor_manifests(name, version, license_id)
-            source_path = repository_root / validator.VENDORED_SOURCE_MANIFESTS[name]
-            source_path.parent.mkdir(parents=True, exist_ok=True)
-            source_path.write_bytes(source)
-            archive = crate_bytes(
-                name,
-                version,
-                license_id,
-                manifest_body=normalized,
-                manifest_orig=source,
-            )
-        else:
-            archive = crate_bytes(name, version, license_id)
+        archive = crate_bytes(name, version, license_id)
         readme_path = repository_root / validator.PUBLIC_SOURCE_READMES[name]
         readme_path.parent.mkdir(parents=True, exist_ok=True)
         readme_path.write_bytes(synthetic_readme(name))
@@ -221,12 +138,8 @@ def test_complete_rust_release_archive_set_is_accepted(tmp_path: Path) -> None:
     )
 
     assert report["status"] == "ok"
-    assert len(report["artifacts"]) == 18
-    assert {entry["license"] for entry in report["artifacts"]} == {
-        "MIT",
-        "Apache-2.0",
-        "MPL-2.0",
-    }
+    assert len(report["artifacts"]) == 16
+    assert {entry["license"] for entry in report["artifacts"]} == {"MIT"}
 
 
 def test_expected_rust_archive_identity_set_is_closed() -> None:
@@ -250,8 +163,6 @@ def test_expected_rust_archive_identity_set_is_closed() -> None:
     assert expected["type-bridge-cli"] == ("2.0.0", "MIT")
     assert expected["type-bridge"] == ("2.0.0", "MIT")
     assert expected["type-bridge-server"] == ("2.0.0", "MIT")
-    assert expected["type-bridge-typedb-protocol-b8"] == ("3.11.0", "MPL-2.0")
-    assert expected["type-bridge-typedb-driver-b8"] == ("3.11.5", "Apache-2.0")
 
 
 @pytest.mark.parametrize("mutation", ("missing", "unexpected"))
@@ -381,87 +292,6 @@ def test_packaged_archive_symlink_member_hard_fails(tmp_path: Path) -> None:
     )
 
     with pytest.raises(validator.ValidationError, match="symlink or non-regular"):
-        validator.validate_release_artifacts(
-            artifacts,
-            expected_release_version="9.8.7",
-            repository_root=repository_root,
-        )
-
-
-def test_b8_packaged_original_manifest_is_repository_exact(tmp_path: Path) -> None:
-    artifacts = tmp_path / "package"
-    repository_root = write_release_set(artifacts)
-    name = "type-bridge-typedb-driver-b8"
-    version, license_id = validator.expected_packages("9.8.7")[name]
-    source, normalized = synthetic_vendor_manifests(name, version, license_id)
-    replace_archive(
-        artifacts,
-        "9.8.7",
-        name,
-        manifest_body=normalized,
-        manifest_orig=source + b"# post-package drift\n",
-    )
-
-    with pytest.raises(validator.ValidationError, match="Cargo.toml.orig drifted"):
-        validator.validate_release_artifacts(
-            artifacts,
-            expected_release_version="9.8.7",
-            repository_root=repository_root,
-        )
-
-
-@pytest.mark.parametrize(
-    ("needle", "replacement"),
-    (
-        ("compat = []", 'compat = ["hostile"]'),
-        ('path = "src/lib.rs"', 'path = "src/hostile.rs"'),
-        ('features = ["tls"]', 'features = ["tls", "hostile"]'),
-        ("build = false", 'build = "build.rs"'),
-        ('unused = "allow"', 'unused = "deny"'),
-    ),
-)
-def test_b8_normalized_manifest_behavior_is_closed(
-    tmp_path: Path,
-    needle: str,
-    replacement: str,
-) -> None:
-    artifacts = tmp_path / "package"
-    repository_root = write_release_set(artifacts)
-    name = "type-bridge-typedb-driver-b8"
-    version, license_id = validator.expected_packages("9.8.7")[name]
-    source, normalized = synthetic_vendor_manifests(name, version, license_id)
-    assert needle.encode() in normalized
-    replace_archive(
-        artifacts,
-        "9.8.7",
-        name,
-        manifest_body=normalized.replace(needle.encode(), replacement.encode(), 1),
-        manifest_orig=source,
-    )
-
-    with pytest.raises(validator.ValidationError, match="packaging-only transform"):
-        validator.validate_release_artifacts(
-            artifacts,
-            expected_release_version="9.8.7",
-            repository_root=repository_root,
-        )
-
-
-def test_b8_normalized_manifest_cannot_add_build_dependency(tmp_path: Path) -> None:
-    artifacts = tmp_path / "package"
-    repository_root = write_release_set(artifacts)
-    name = "type-bridge-typedb-protocol-b8"
-    version, license_id = validator.expected_packages("9.8.7")[name]
-    source, normalized = synthetic_vendor_manifests(name, version, license_id)
-    replace_archive(
-        artifacts,
-        "9.8.7",
-        name,
-        manifest_body=normalized + b'\n[build-dependencies.cc]\nversion = "1"\n',
-        manifest_orig=source,
-    )
-
-    with pytest.raises(validator.ValidationError, match="packaging-only transform"):
         validator.validate_release_artifacts(
             artifacts,
             expected_release_version="9.8.7",

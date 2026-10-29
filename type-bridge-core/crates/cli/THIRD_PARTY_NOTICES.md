@@ -12,17 +12,14 @@ public-local license union for all native distributions and reproduces every dis
 selected or harvested dependency license text. Private TypeBridge-authored
 crates remain covered by the canonical MIT section. TypeBridge makes no
 ownership claim over TypeDB's work,
-and distributing these components does not relicense them as MIT. The band-8
-compatibility copies are source-unmodified and
-owner-authorized for TypeBridge Cargo distribution. TypeDB is not responsible
-for the downstream package names or packaging metadata.
+and distributing these components does not relicense them as MIT. TypeDB
+remains the original upstream owner and source for every component in the
+table.
 
 ## Included TypeDB components
 
 | Runtime band | Included component | Exact upstream source | License and downstream status |
 | --- | --- | --- | --- |
-| 8 | `type-bridge-typedb-driver-b8` 3.11.5 | TypeDB `typedb-driver` tag [3.11.5](https://github.com/typedb/typedb-driver/tree/7e669e41d9fee22fde8d5e60be7edbf00c6ec64b) (commit `7e669e41d9fee22fde8d5e60be7edbf00c6ec64b`) | Apache-2.0 namespaced packaging-only package; source behavior unchanged; owner-authorized for TypeBridge Cargo distribution |
-| 8 | `type-bridge-typedb-protocol-b8` 3.11.0 | TypeDB `typedb-protocol` tag [3.11.0](https://github.com/typedb/typedb-protocol/tree/1db5bdd6579352d31343da28be41844ed07da1b5) (commit `1db5bdd6579352d31343da28be41844ed07da1b5`) | MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; owner-authorized for TypeBridge Cargo distribution |
 | 9 (default) | official `typedb-driver` 3.14.0 | TypeDB official crates.io package [3.14.0](https://crates.io/crates/typedb-driver/3.14.0) | Apache-2.0, unmodified official package |
 | 9 (default) | official `typedb-protocol` 3.14.0 | TypeDB official crates.io package [3.14.0](https://crates.io/crates/typedb-protocol/3.14.0) | MPL-2.0, unmodified official package |
 
@@ -38,44 +35,19 @@ The official 3.14.0 Rust driver is currently the newest non-yanked stable
 active, consumed, or release-input TypeBridge band-9 driver or protocol fork.
 Band 9 consumes the exact official upstream packages listed above.
 
-## Namespacing disclosure
-
-The band-8 package names exist solely to prevent Cargo package version
-unification from collapsing incompatible TypeDB protocol generations in one
-native binary. The driver `src/` tree and protocol generated source
-are byte-identical to their respective upstream archives: TypeBridge carries
-no transaction terminal-close patch or other behavioral change. Differences
-are confined to package metadata, same-band dependency aliases, workspace
-lint/doctest accommodation, and the documented downstream disclosure. TypeDB
-remains the original upstream owner and source for every component in the
-table.
-
 ## Corresponding source and archive provenance
 
-The complete corresponding source for the included namespaced compatibility
-components is available from the immutable TypeBridge v2.0.0 source tag:
-
-- <https://github.com/ds1sqe/type-bridge/tree/v2.0.0/type-bridge-core/vendor/typedb-driver-b8>
-- <https://github.com/ds1sqe/type-bridge/tree/v2.0.0/type-bridge-core/vendor/typedb-protocol-b8>
-
-The TypeBridge owner authorized first publication of the band-8 packages on
-2026-08-03. These exact source-unmodified packages are the authorized
-compatibility artifacts, with the protocol package preceding the driver
-package. The upstream source archives used as the packaging bases, and the
-official band-9 archives, are:
+The official upstream source archives are:
 
 | Component archive | SHA-256 |
 | --- | --- |
-| <https://static.crates.io/crates/typedb-driver/typedb-driver-3.11.5.crate> | `71c456fc6fb8f9112236fc088569cbe47f620443629ef8c81b1d79aec7b49fc6` |
-| <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.11.0.crate> | `f051694ab18c9fb31f15e4567421b55a70e7dddbc1af60a6a1c4cf73ffe8d5e8` |
 | <https://static.crates.io/crates/typedb-driver/typedb-driver-3.14.0.crate> | `dc7d34c9252d3d1ff047ad5e33bd1a4cf35207340c8f6a158e17ad807e0e4960` |
 | <https://static.crates.io/crates/typedb-protocol/typedb-protocol-3.14.0.crate> | `f1035e56786c61fe39c662d270fb5a6243ec87ba2302810486bd95a87465f810` |
 
-The MPL-2.0 protocol source form is therefore available at the exact upstream
-commits, exact crates.io archives, and the TypeBridge v2.0.0 source locations
-above. If any link becomes unavailable, contact the TypeBridge maintainers
-through <https://github.com/ds1sqe/type-bridge/issues> for the corresponding
-source.
+The MPL-2.0 protocol source form is available from the exact crates.io
+archives above. If any link becomes unavailable, contact the TypeBridge
+maintainers through <https://github.com/ds1sqe/type-bridge/issues> for the
+corresponding source.
 
 ## TypeBridge-authored portions — MIT License
 
@@ -775,7 +747,7 @@ and fails the byte-for-byte CI freshness check.
 - C root: `crates/c/Cargo.toml` with default features
 - Release targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`
 - Excluded from this package inventory: build-only and development-only dependencies, plus private TypeBridge-authored crates covered by the MIT section
-- Closure fingerprint: `sha256:3edd158b63a7ec6000e9a41d060faf2bb68895b5442fb2146bd0fb35209410fa`
+- Closure fingerprint: `sha256:1da37028623166bce529ed4c9a480653ff274aa6142e07c8ef3f5657d9e3d379`
 
 Every evaluated package's complete cargo-about-resolved SPDX expression is retained
 below. The
@@ -1023,8 +995,6 @@ bytes actually reproduced in this notice.
 | `type-bridge-schema-compat` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/schema-compat/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema-migration` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/schema-migration/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-schema-migration-typedb` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/schema-migration-typedb/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
-| `type-bridge-typedb-driver-b8` | `3.11.5` | Python, Node, CLI, C | `workspace:vendor/typedb-driver-b8/Cargo.toml` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |
-| `type-bridge-typedb-protocol-b8` | `3.11.0` | Python, Node, CLI, C | `workspace:vendor/typedb-protocol-b8/Cargo.toml` | `MPL-2.0` | `MPL-2.0@sha256:3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04` |
 | `type-bridge-typedb-runtime` | `2.3.2` | Python, Node, CLI, C | `workspace:crates/typedb-runtime/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `type-bridge-workspace` | `2.3.2` | Python, CLI | `workspace:crates/workspace/Cargo.toml` | `MIT` | `MIT@sha256:b05785f9f18e6716bab63424b11454513b9943a222595b70411009202fc592b5` |
 | `typedb-driver` | `3.14.0` | Python, Node, CLI, C | `crates.io` | `Apache-2.0` | `Apache-2.0@sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff` |

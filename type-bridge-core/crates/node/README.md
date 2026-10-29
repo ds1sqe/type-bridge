@@ -48,7 +48,7 @@ import { Age, Person, PersonId } from "./generated/index.js";
 
 const db = Database.connect("127.0.0.1:1729", "example", {
   httpPort: 8000,
-  serverVersion: "3.11.5",
+  serverVersion: "3.14.0",
 });
 const ada = Person.create({
   personId: PersonId.create("ada"),

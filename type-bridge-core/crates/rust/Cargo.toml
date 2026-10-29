@@ -17,9 +17,8 @@ name = "type_bridge"
 path = "src/lib.rs"
 
 [features]
-default = ["typedb", "band8", "band9"]
+default = ["typedb", "band9"]
 typedb = ["type-bridge-orm/typedb", "dep:type-bridge-schema-migration-typedb"]
-band8 = ["typedb", "type-bridge-orm/band8"]
 band9 = ["typedb", "type-bridge-orm/band9"]
 test-harness = []
 

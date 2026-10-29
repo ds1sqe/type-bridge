@@ -262,7 +262,7 @@ jobs:
             -p type-bridge-cli --bin type-bridge
           cp "$CARGO_TARGET_DIR/release/type-bridge" "$PERF_DIR/cli-unstripped"
           cargo build --locked --release --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --no-default-features --features band8,band9,v2-query
+            -p type-bridge-server --no-default-features --features band9,v2-query
           strip -o "$PERF_DIR/server" "$CARGO_TARGET_DIR/release/type-bridge-server"
       - name: Build canonical stripped CLI
         run: >-

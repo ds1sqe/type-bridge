@@ -228,7 +228,7 @@ fn every_derived_authority_claim_is_reconstructed_after_resigning() {
     assert_resigned_mutation_rejected(
         &base,
         &available,
-        |value| value["content"]["semantic_profile"]["id"] = "typedb-3.11.5/v1".into(),
+        |value| value["content"]["semantic_profile"]["id"] = "typedb-3.13.6/v1".into(),
         SchemaAuthorityErrorCode::IntegrityMismatch,
     );
     assert_resigned_mutation_rejected(

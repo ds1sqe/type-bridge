@@ -17,8 +17,7 @@ name = "type_bridge_typedb_runtime"
 path = "src/lib.rs"
 
 [features]
-default = ["band8", "band9"]
-band8 = ["dep:type-bridge-typedb-driver-b8", "dep:chrono"]
+default = ["band9"]
 band9 = ["dep:typedb-driver", "dep:chrono", "dep:chrono-tz"]
 
 [dependencies]
@@ -30,7 +29,6 @@ serde_json = "1.0"
 thiserror = "2"
 tracing = "0.1"
 futures = "0.3"
-type-bridge-typedb-driver-b8 = { path = "../../vendor/typedb-driver-b8", version = "=3.11.5", optional = true }
 typedb-driver = { version = "=3.14.0", optional = true }
 # Driver-band temporal bridging: parse GivenValue on band 9 and preserve exact
 # datetime-tz evidence across every supported driver band.

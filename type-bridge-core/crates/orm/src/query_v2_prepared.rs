@@ -2596,7 +2596,7 @@ mod tests {
             Box::new(UnsupportedFenceBackend {
                 metrics: Arc::clone(&metrics),
                 schema: "define entity person;".to_owned(),
-                server_version: type_bridge_core_lib::version::Version::new(3, 11, 5),
+                server_version: type_bridge_core_lib::version::Version::new(3, 13, 6),
             }),
             "prepared-profile-mismatch",
         );
@@ -2609,7 +2609,7 @@ mod tests {
             AnswerLimits::default(),
         )
         .await
-        .expect_err("a 3.12 authority must not execute against a 3.11 provider");
+        .expect_err("a 3.12 authority must not execute against a 3.13 provider");
 
         assert_eq!(
             diagnostic.code().as_str(),

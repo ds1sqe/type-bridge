@@ -3926,7 +3926,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn catalog_from_3_11_cannot_be_relabelled_with_a_3_12_execution_context() {
+    fn catalog_from_3_13_cannot_be_relabelled_with_a_3_12_execution_context() {
         let calls = Arc::new(AtomicUsize::new(0));
         let authority = DatabaseConnectionAuthority::isolated();
         let managed = no_io_database(
@@ -3942,7 +3942,7 @@ pub(crate) mod tests {
         let scope = ManagedScopeId::new("profile-relabel-scope").expect("scope");
         let legacy_context = ManagedDeltaContext::new(
             scope.clone(),
-            SemanticProfileId::new("typedb-3.11.5/v1").expect("legacy profile"),
+            SemanticProfileId::new("typedb-3.13.6/v1").expect("legacy profile"),
             CapabilitySet::new(),
         );
         let manifest = verified_manifest_for_context(&legacy_context);
@@ -3953,7 +3953,7 @@ pub(crate) mod tests {
             .expect("the exact supported pair must bind without backend I/O");
         let error = TypeDbMigrationStore::new(&binding, catalog)
             .err()
-            .expect("a 3.11 catalog cannot be relabelled as a 3.12 execution catalog");
+            .expect("a 3.13 catalog cannot be relabelled as a 3.12 execution catalog");
         assert_eq!(
             error.code().as_str(),
             "migration_typedb_manifest_semantic_profile_mismatch"

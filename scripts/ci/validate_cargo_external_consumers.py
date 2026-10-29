@@ -609,7 +609,7 @@ def validate_server_features(
     if len(matches) != 1 or not isinstance(matches[0].get("features"), list):
         raise ExternalConsumerError("Cargo server feature resolution is ambiguous")
     features = set(matches[0]["features"])
-    forbidden = {"default", "typedb", "band8", "band9"} & features
+    forbidden = {"default", "typedb", "band9"} & features
     if forbidden:
         raise ExternalConsumerError(
             f"Cargo server isolated feature probe activated forbidden features: {sorted(forbidden)!r}"

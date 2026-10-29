@@ -2,9 +2,9 @@
 //!
 //! This module is only compiled when the `typedb` feature is enabled.
 
-#[cfg(not(any(feature = "band8", feature = "band9")))]
+#[cfg(not(feature = "band9"))]
 compile_error!(
-    "type-bridge-orm: the `typedb` machinery requires at least one band feature; enable `band8` and/or `band9` (both are default)"
+    "type-bridge-orm: the `typedb` machinery requires the `band9` feature (enabled by default)"
 );
 
 use std::sync::Arc;

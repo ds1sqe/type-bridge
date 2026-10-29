@@ -15,7 +15,7 @@ use type_bridge_contract::schema::{
 };
 use type_bridge_contract::value::{Cardinality, ValueTypeTag};
 
-use crate::semantic::{semantic_schema_fingerprint, validate_collection_profile};
+use crate::semantic::semantic_schema_fingerprint;
 
 /// Direct-fact identity plus the inheritance path used to derive an effective entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -663,7 +663,6 @@ pub fn resolve_schema_with_capabilities(
             type_bridge_contract::schema::SchemaDiagnostic::new(diagnostic, None),
         )
     })?;
-    validate_collection_profile(declared, profile_id)?;
     let index = DirectIndex::build(declared)?;
     let parents = validate_parents(declared, &index)?;
     validate_inheritance_cycles(declared, &index.types, &parents)?;

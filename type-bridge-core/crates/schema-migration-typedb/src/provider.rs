@@ -1072,7 +1072,7 @@ mod tests {
             migration_server_for_profile(&profile("typedb-3.13.6/v1")),
             Some(Version::new(3, 14, 0))
         );
-        for unsupported in ["typedb-3.11.5/v1", "typedb-3.12.3/v1", "typedb-3.14.0/v1"] {
+        for unsupported in ["typedb-0.0.0/v1", "typedb-3.12.3/v1", "typedb-3.14.0/v1"] {
             assert_eq!(migration_server_for_profile(&profile(unsupported)), None);
             let error = require_supported_migration_profile(&profile(unsupported))
                 .expect_err("only paired profiles run connected migrations");
@@ -1211,7 +1211,7 @@ mod tests {
             "missing",
         );
         let unsupported =
-            require_supported_migration_server_for_profile(&database, &profile("typedb-3.11.5/v1"))
+            require_supported_migration_server_for_profile(&database, &profile("typedb-0.0.0/v1"))
                 .expect_err("an unsupported profile rejects before the server");
         assert_eq!(
             unsupported.code().as_str(),
@@ -1247,7 +1247,7 @@ mod tests {
             authority,
         );
         let unsupported =
-            SemanticProfileId::new("typedb-3.11.5/v1").expect("valid unsupported profile");
+            SemanticProfileId::new("typedb-0.0.0/v1").expect("valid unsupported profile");
         let unsupported_context = ManagedDeltaContext::new(
             ManagedScopeId::new("provider-binding-gate").expect("managed scope"),
             unsupported,

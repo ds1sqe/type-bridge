@@ -144,7 +144,7 @@ def test_unsupported_profile_and_cross_profile_fingerprints_are_refused(tmp_path
     contracts = v2.load_contracts()
     unsupported = _reports(v2, contracts, NEXT)
     for report in unsupported.values():
-        report["fixture"]["semantic_profile"] = "typedb-3.11.5/v1"
+        report["fixture"]["semantic_profile"] = "typedb-0.0.0/v1"
     with pytest.raises(v2.ContractError) as rejected:
         v2.compare_reports(_write(v2, tmp_path / "unsupported", unsupported))
     assert rejected.value.code == "semantic_profile_mismatch"
@@ -176,7 +176,7 @@ def test_runner_selects_the_profile_and_exact_server() -> None:
     assert runner.typedb_version(environment) == "3.13.6"
     assert runner.typedb_version({}) == "3.12.3"
     with pytest.raises(runner.RunnerError):
-        runner.lane("typedb-3.11.5/v1", {})
+        runner.lane("typedb-0.0.0/v1", {})
 
 
 def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
@@ -185,7 +185,7 @@ def test_proof_fragments_refuse_a_profile_outside_the_matrix() -> None:
             [],
             expected_binding="python",
             run_nonce="0" * 64,
-            semantic_profile="typedb-3.11.5/v1",
+            semantic_profile="typedb-0.0.0/v1",
         )
     assert rejected.value.code == "semantic_profile_mismatch"
 
@@ -213,7 +213,7 @@ def test_administration_rejects_missing_or_malformed_history_digest(
 
 @pytest.mark.parametrize(
     ("profile", "supported"),
-    [("typedb-3.11.5/v1", "no"), (BASE, "yes"), (NEXT, "yes")],
+    [("typedb-0.0.0/v1", "no"), (BASE, "yes"), (NEXT, "yes")],
 )
 def test_live_fixture_selects_the_models_suite(profile: str, supported: str) -> None:
     script = (CI / "prepare_generated_live_fixture.sh").read_text()

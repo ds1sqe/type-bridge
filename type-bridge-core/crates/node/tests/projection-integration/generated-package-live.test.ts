@@ -31,14 +31,11 @@ const ACCEPTANCE = resolve(CORE, "crates/schema-codegen/tests/acceptance");
 // new workspaces and the default TypeDB image use TypeDB 3.13.6.
 const DEFAULT_ACCEPTANCE_PROFILE = "typedb-3.13.6/v1";
 const TYPEDB_VERSION = process.env.TYPEDB_VERSION ?? "3.13.6";
-const IS_TYPEDB_3_11 = TYPEDB_VERSION.startsWith("3.11.");
 const PROVIDER_SCHEMA = resolve(
   ACCEPTANCE,
-  IS_TYPEDB_3_11 ? "provider-3.11.5.tql" : "provider-3.12.1.tql",
+  "provider-3.12.1.tql",
 );
-const REMOTE_PROFILE = IS_TYPEDB_3_11
-  ? "typedb-3.11.5/v1"
-  : process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? DEFAULT_ACCEPTANCE_PROFILE;
+const REMOTE_PROFILE = process.env.TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE ?? DEFAULT_ACCEPTANCE_PROFILE;
 const SDK_MANIFEST_RELATIVE = "tests/contracts/sdk_conformance/manifest.json";
 const SDK_QUERIES_CATALOG_RELATIVE =
   "tests/contracts/sdk_conformance/queries/catalog.json";
@@ -1828,7 +1825,7 @@ test("generated profile server gate follows the package profile", () => {
     );
   }
   assert.throws(
-    () => requireProfileServerVersion("typedb-3.11.5/v1", "3.11.5", {}),
+    () => requireProfileServerVersion(`typedb-3.${12 - 1}.5/v1`, `3.${12 - 1}.5`, {}),
     /has no profile-matrix entry/,
   );
   assert.throws(() => requireProfileServerVersion("typedb-3.13.6/v1", "3.13.6",
@@ -1944,12 +1941,10 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
     let sdkQueriesProofObservations:
       | ReadonlyMap<string, Record<string, unknown>>
       | undefined;
-    if (!IS_TYPEDB_3_11) {
-      requireProfileServerVersion(
-        REMOTE_PROFILE,
-        await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
-      );
-    }
+    requireProfileServerVersion(
+      REMOTE_PROFILE,
+      await detectTypeDBServerVersion(TYPEDB_ADDRESS, TYPEDB_HTTP_PORT),
+    );
     if (sdkQueriesReportPath !== undefined) {
       sdkQueriesIdentity = sdkReportIdentity("queries");
       await validateSdkReportPath(sdkQueriesReportPath);
@@ -3206,7 +3201,7 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
 
 test(
   "node.sdk_models_data_model_runtime_live",
-  { skip: IS_TYPEDB_3_11 || !Object.hasOwn(sdkProfileMatrix("models"), REMOTE_PROFILE), timeout: 360_000 },
+  { skip: !Object.hasOwn(sdkProfileMatrix("models"), REMOTE_PROFILE), timeout: 360_000 },
   async () => {
     const suppliedStage = process.env.TYPE_BRIDGE_GENERATED_NODE_STAGE;
     const stage = suppliedStage === undefined
@@ -3593,8 +3588,7 @@ test(
 test(
   "node.sdk_serialization_live",
   {
-    skip: IS_TYPEDB_3_11
-      || !Object.hasOwn(sdkProfileMatrix("serialization"), REMOTE_PROFILE)
+    skip: !Object.hasOwn(sdkProfileMatrix("serialization"), REMOTE_PROFILE)
       || process.env.TYPE_BRIDGE_SDK_SERIALIZATION_NODE_EVIDENCE === undefined,
     timeout: 360_000,
   },

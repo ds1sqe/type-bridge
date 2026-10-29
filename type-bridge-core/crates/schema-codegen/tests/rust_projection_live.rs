@@ -21,9 +21,7 @@ use support::sdk_profile_matrix::{self, SdkProfile};
 use support::{Stage, base64, free_port};
 
 const SCHEMA: &str = include_str!("acceptance/schema.yaml");
-const SCHEMA_3_11: &str = include_str!("acceptance/schema-3.11.5.yaml");
 const PROVIDER_SCHEMA: &str = include_str!("acceptance/provider-3.12.1.tql");
-const PROVIDER_SCHEMA_3_11: &str = include_str!("acceptance/provider-3.11.5.tql");
 const INTERNAL_FIXTURE: &str = include_str!("rust_projection_live/internal_fixture.rs");
 const CONSUMER: &str = include_str!("rust_projection_live/consumer.rs");
 const CONSUMER_LOCK: &[u8] = include_bytes!("rust_projection_live/consumer-Cargo.lock");
@@ -264,51 +262,11 @@ fn external_consumer_remains_a_focused_public_api_suite() {
 }
 
 #[test]
-fn typedb_3_11_acceptance_is_the_same_application_without_3_12_docs() {
-    fn strip_yaml_docs(source: &str) -> String {
-        source
-            .split_inclusive('\n')
-            .map(|line| {
-                let Some(start) = line.find(", doc: ") else {
-                    return line.to_owned();
-                };
-                let end = line.rfind(" }").expect("inline YAML doc closes");
-                format!("{}{}", &line[..start], &line[end..])
-            })
-            .collect()
-    }
-
-    fn strip_typeql_docs(source: &str) -> String {
-        source
-            .split_inclusive('\n')
-            .map(|line| {
-                let Some(start) = line.find(" @doc(\"") else {
-                    return line.to_owned();
-                };
-                let relative_end = line[start..]
-                    .find("\")")
-                    .expect("TypeQL doc annotation closes");
-                let end = start + relative_end + 2;
-                format!("{}{}", &line[..start], &line[end..])
-            })
-            .collect()
-    }
-
-    assert_eq!(SCHEMA.matches(", doc: ").count(), 12);
-    assert_eq!(PROVIDER_SCHEMA.matches(" @doc(\"").count(), 12);
-    assert!(!SCHEMA_3_11.contains("doc:"));
-    assert!(!PROVIDER_SCHEMA_3_11.contains("@doc"));
-    assert_eq!(strip_yaml_docs(SCHEMA), SCHEMA_3_11);
-    assert_eq!(strip_typeql_docs(PROVIDER_SCHEMA), PROVIDER_SCHEMA_3_11);
-}
-
-#[test]
 #[ignore = "requires an isolated retained TypeDB server"]
 fn generated_rust_projection_round_trips_exact_live_models() {
     let profile_name = env::var("TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE")
         .unwrap_or_else(|_| DEFAULT_ACCEPTANCE_PROFILE.to_owned());
     let (schema, provider_schema) = match profile_name.as_str() {
-        "typedb-3.11.5/v1" => (SCHEMA_3_11, PROVIDER_SCHEMA_3_11),
         "typedb-3.12.1/v1" | "typedb-3.13.6/v1" => (SCHEMA, PROVIDER_SCHEMA),
         other => panic!("unsupported generated live semantic profile: {other}"),
     };

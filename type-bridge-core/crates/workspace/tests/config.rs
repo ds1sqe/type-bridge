@@ -530,15 +530,20 @@ fn frozen_semantic_profiles_and_all_required_fields_fail_closed() {
     assert_eq!(error.code(), WorkspaceConfigErrorCode::MissingRequiredField);
     assert_eq!(error.detail(), Some("schema_set"));
 
-    let band8 = TypeBridgeConfig::builder(root())
+    let retired_profile = format!("typedb-3.{}.5/v1", 12 - 1);
+    let error = TypeBridgeConfig::builder(root())
         .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())
         .app_label(MigrationAppLabel::new("example").unwrap())
         .exclusive_managed_scope(ManagedScopeId::new("example-schema").unwrap())
-        .semantic_profile(SemanticProfileId::new("typedb-3.11.5/v1").unwrap())
+        .semantic_profile(SemanticProfileId::new(&retired_profile).unwrap())
         .migration_v2_directory(MigrationV2Directory::new("migrations/v2").unwrap())
         .build(&services(&source, &secrets, &extensions))
-        .expect("the retained TypeDB 3.11 semantic profile is supported for generation");
-    assert_eq!(band8.semantic_profile().as_str(), "typedb-3.11.5/v1");
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        WorkspaceConfigErrorCode::UnsupportedSemanticProfile
+    );
+    assert_eq!(error.detail(), Some(retired_profile.as_str()));
 
     let error = TypeBridgeConfig::builder(root())
         .schema_set(SchemaSetPath::new("schema/schema.yaml").unwrap())

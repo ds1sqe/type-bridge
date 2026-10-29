@@ -216,18 +216,12 @@ fn schema_lowering_profile_ids_are_a_closed_per_semantic_profile_set() {
         "typedb-3.13.6-schema-lowering/v1"
     );
     for unknown in [
-        "typedb-3.11.5-schema-lowering/v1",
+        "typedb-0.0.0-schema-lowering/v1",
         "typedb-3.13.6-schema-lowering/v2",
     ] {
         assert!(SchemaLoweringProfileId::new(unknown).is_err());
         assert!(serde_json::from_str::<SchemaLoweringProfileId>(&format!("{unknown:?}")).is_err());
     }
-    // 3.11.5 keeps lowering through the 3.12.1 registry.
-    let legacy = SemanticProfileId::new("typedb-3.11.5/v1").unwrap();
-    assert_eq!(
-        SchemaLoweringProfileId::for_semantic_profile(&legacy),
-        Some(SchemaLoweringProfileId::typedb_3_12_1())
-    );
     let unknown = SemanticProfileId::new("typedb-9.9.9/v1").unwrap();
     assert!(SchemaLoweringProfileId::for_semantic_profile(&unknown).is_none());
 

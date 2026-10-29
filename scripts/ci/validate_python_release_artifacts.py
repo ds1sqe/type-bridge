@@ -83,8 +83,6 @@ CORE_SDIST_WORKSPACE_MEMBERS = (
     "crates/python",
     "crates/typedb-runtime",
     "crates/orm",
-    "vendor/typedb-protocol-b8",
-    "vendor/typedb-driver-b8",
 )
 # Maturin 1.14.1 does not discover the optional orm-derive and perf-stages path dependencies
 # while constructing the Python sdist. pyproject.toml therefore includes this
@@ -146,12 +144,6 @@ CORE_SDIST_README_TRANSFORMS = frozenset(
 )
 CORE_SDIST_TRANSFORMED_MANIFESTS = (
     CORE_SDIST_TRANSFORMED_FIRST_PARTY_MANIFESTS | CORE_SDIST_README_TRANSFORMS | {"Cargo.toml"}
-)
-CORE_SDIST_VENDOR_LICENSES = frozenset(
-    {
-        "vendor/typedb-driver-b8/LICENSE",
-        "vendor/typedb-protocol-b8/LICENSE",
-    }
 )
 
 
@@ -1282,7 +1274,6 @@ def validate_sdist(path: Path, spec: PackageSpec) -> dict[str, Any]:
                 CORE_SDIST_NOTICE,
                 *CORE_SDIST_CRATE_NOTICES,
                 *CORE_SDIST_GENERATED_LICENSES,
-                *CORE_SDIST_VENDOR_LICENSES,
             }
         )
         actual_license_members = {name for name in members if is_license_like_member(name)}

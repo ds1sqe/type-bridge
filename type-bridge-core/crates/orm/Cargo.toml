@@ -17,12 +17,11 @@ name = "type_bridge_orm"
 path = "src/lib.rs"
 
 [features]
-default = ["band8", "band9"]
+default = ["band9"]
 typedb = ["dep:type-bridge-typedb-runtime"]
-band8 = ["typedb", "type-bridge-typedb-runtime/band8"]
 band9 = ["typedb", "type-bridge-typedb-runtime/band9"]
 internal-eager = []
-integration-tests = ["band8", "band9"]
+integration-tests = ["band9"]
 
 [dependencies]
 type-bridge-contract = { path = "../contract", version = "2.3.2" }

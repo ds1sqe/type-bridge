@@ -30,7 +30,7 @@ COPY crates crates
 COPY vendor vendor
 
 RUN cargo build --locked --release -p type-bridge-server --no-default-features \
-    --features band8,band9,v2-query \
+    --features band9,v2-query \
     && strip target/release/type-bridge-server
 
 FROM ${RUNTIME_IMAGE} AS runtime

@@ -156,7 +156,7 @@ impl ProjectedCrudExecutor<'_> {
             TypeKind::Relation => {
                 let prepared = self.prepare_relation_create(replacement)?;
                 require_role_player_database_identity(&prepared, identity)?;
-                if direct_entity_role_player_inputs(&prepared).is_none() {
+                if has_polymorphic_or_relation_players(&prepared) {
                     reject_duplicate_references(&prepared)?;
                 }
                 WriteModel::Relation(prepared)
@@ -164,14 +164,13 @@ impl ProjectedCrudExecutor<'_> {
             _ => return Err(single_batch_result_invalid(batch.model())),
         };
         let (write, players, roles) = match &model {
-            WriteModel::Entity(prepared) => (prepared.plan_write.as_ref(), Vec::new(), Vec::new()),
+            WriteModel::Entity(prepared) => (&prepared.plan_write, Vec::new(), Vec::new()),
             WriteModel::Relation(prepared) => (
-                prepared.plan_write.as_ref(),
+                &prepared.plan_write,
                 plan_references(prepared)?,
                 self.document_roles(prepared)?,
             ),
         };
-        let write = write.ok_or_else(|| single_batch_result_invalid(batch.model()))?;
         let plan = if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
             update_by_iid(
                 &authority,
@@ -198,7 +197,7 @@ impl ProjectedCrudExecutor<'_> {
                     &authority,
                     ValueTransport::Given,
                     batch.model(),
-                    &prepared.plan_fields,
+                    &prepared.plan_write.created,
                     &players,
                     roles,
                 ),
@@ -288,7 +287,7 @@ impl ProjectedCrudExecutor<'_> {
                 )?,
                 WriteModel::Relation(model) => {
                     let iid = single_document_iid(&documents, type_id)?;
-                    if direct_entity_role_player_inputs(model).is_none() {
+                    if has_polymorphic_or_relation_players(model) {
                         reject_resolved_duplicates(model, &documents)?;
                     }
                     let rows =
@@ -411,7 +410,7 @@ mod tests {
                     &DatabaseExecutionIdentity::isolated("single-update"),
                 )
                 .unwrap();
-            let write = executor.lower_plan_write(&input).unwrap().unwrap();
+            let write = executor.lower_plan_write(&input).unwrap();
             let authority = installed.plan_authority().unwrap();
             let expected = update_by_iid(
                 &authority,
@@ -465,13 +464,13 @@ mod tests {
                     &authority,
                     ValueTransport::Given,
                     &model,
-                    &prepared.plan_write.as_ref().unwrap().created,
+                    &prepared.plan_write.created,
                 ),
                 WriteModel::Relation(prepared) => relation_insert(
                     &authority,
                     ValueTransport::Given,
                     &model,
-                    &prepared.plan_fields,
+                    &prepared.plan_write.created,
                     &plan_references(prepared).unwrap(),
                     executor.document_roles(prepared).unwrap(),
                 ),

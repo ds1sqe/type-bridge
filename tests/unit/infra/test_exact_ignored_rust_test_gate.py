@@ -114,13 +114,14 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
     # In addition to the CLI/recovery selectors, CI gates the production V2
     # server, generated Rust, generated C, C runtime and TLS live probes, and
     # the 3.13.6 lane's selectors exactly.
-    assert workflow.count(gate_call) == len(positive_tests) + 13 + len(lane_3_13_6_tests)
+    assert workflow.count(gate_call) == len(positive_tests) + 12 + len(lane_3_13_6_tests)
     for selector in (
         "fetch_write_commit_failure_reaches_driver_and_v1_query",
         "typedb::client::tests::integration_classified_commit_isolation_conflict",
     ):
         assert workflow.count(selector) == 1
-    assert local.count(gate_call) == 22
+    # The retired-server migration probe left with its local server branch.
+    assert local.count(gate_call) == 21
     for selector in lane_3_13_6_tests:
         assert workflow.count(selector) == 1, selector
         assert local.count(selector) == 1, selector
@@ -133,17 +134,12 @@ def test_ci_and_local_harness_route_cli_live_tests_through_the_gate() -> None:
         "upgrade_profile_moves_a_3_12_history_to_3_13_live",
     }
 
-    # The local harness also gates the 3.11 refusal probe and the two-server
-    # upgrade lane.
-    assert local.count("unsupported_server_apply_creates_neither_database_live") == 1
+    # The local harness retains the two-server profile-upgrade lane.
+    assert "unsupported_server_apply_creates_neither_database_live" not in local
     for test_name in upgrade_tests:
         assert local.count(test_name) == 1
     assert "-- --ignored --exact --nocapture" not in local
-    for test_name in (
-        positive_tests
-        | migration_recovery_tests
-        | {"unsupported_server_apply_creates_neither_database_live"}
-    ):
+    for test_name in positive_tests | migration_recovery_tests:
         assert workflow.count(test_name) == 1
     for test_name in positive_tests | migration_recovery_tests:
         # Documented examples also name their profile gate in the local loop.
@@ -211,9 +207,7 @@ def test_migration_live_lanes_are_bound_to_the_exact_server_leg() -> None:
         step["name"]: step for step in workflow["jobs"]["rust-integration"]["steps"]
     }
 
-    unsupported = steps["Prove unsupported migration apply creates no databases"]
-    assert unsupported["if"] == "matrix.typedb-server == 'typedb/typedb:3.11.5'"
-    assert "unsupported_server_apply_creates_neither_database_live" in unsupported["run"]
+    assert "Prove unsupported migration apply creates no databases" not in steps
 
     for name, test_name in {
         "Run CLI empty-workspace replay lifecycle": "empty_workspace_to_replayed_history_live",
@@ -380,7 +374,7 @@ def test_fresh_replay_and_documented_constraint_probes_cannot_regress_to_offline
     documented = source.split(
         "async fn documented_examples_initial_constraints_apply_and_verify_live()",
         maxsplit=1,
-    )[1].split("async fn unsupported_server_apply_creates_neither_database_live()", maxsplit=1)[0]
+    )[1].split("async fn verify_never_creates_databases_live()", maxsplit=1)[0]
 
     assert "ensure_database_exists" not in fresh
     assert fresh.count('&["migration", "apply", "--environment"') == 3

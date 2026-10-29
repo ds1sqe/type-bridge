@@ -70,8 +70,6 @@ and fixed versions; they do not follow the TypeBridge 2.2 version line.
 
 | Package | Fixed version | Purpose |
 | --- | --- | --- |
-| [`type-bridge-typedb-protocol-b8`](https://crates.io/crates/type-bridge-typedb-protocol-b8/3.11.0) · [rustdoc](https://docs.rs/type-bridge-typedb-protocol-b8/3.11.0) | 3.11.0 | Namespaced protocol package for the retained band-8 driver graph |
-| [`type-bridge-typedb-driver-b8`](https://crates.io/crates/type-bridge-typedb-driver-b8/3.11.5) · [rustdoc](https://docs.rs/type-bridge-typedb-driver-b8/3.11.5) | 3.11.5 | Namespaced TypeDB driver package for the retained band-8 runtime |
 
 ## Private native-binding crates
 

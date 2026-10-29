@@ -23,7 +23,7 @@ perf-stages = ["dep:type-bridge-perf-stages"]
 [dependencies]
 type-bridge-contract = { path = "../contract", version = "2.3.2" }
 type-bridge-core-lib = { path = "../core", version = "2.3.2" }
-type-bridge-orm = { path = "../orm", version = "2.3.2", default-features = false, features = ["band8", "band9"] }
+type-bridge-orm = { path = "../orm", version = "2.3.2", default-features = false, features = ["band9"] }
 type-bridge-schema = { path = "../schema", version = "2.3.2" }
 type-bridge-schema-codegen = { path = "../schema-codegen", version = "2.3.2" }
 type-bridge-schema-migration = { path = "../schema-migration", version = "2.3.2" }

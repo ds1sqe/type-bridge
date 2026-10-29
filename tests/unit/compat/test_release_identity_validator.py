@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
-import io
 import json
+import re
 import shutil
 import sys
-import tarfile
 import tomllib
-from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -32,14 +29,6 @@ def load_module(name: str, path: Path) -> ModuleType:
 
 
 validator = load_module("validate_release_identity", VALIDATOR_PATH)
-SYNTHETIC_DRIVER_NAME = "synthetic-driver"
-SYNTHETIC_PROTOCOL_NAME = "synthetic-protocol"
-validator.LEGACY_VENDOR_DESCRIPTIONS[SYNTHETIC_DRIVER_NAME] = (
-    "Synthetic renamed TypeDB driver used by provenance tests"
-)
-validator.LEGACY_VENDOR_DESCRIPTIONS[SYNTHETIC_PROTOCOL_NAME] = (
-    "Synthetic renamed TypeDB protocol used by provenance tests"
-)
 
 
 def validate(**overrides: object) -> dict[str, Any]:
@@ -88,12 +77,6 @@ def copy_workspace_manifests(tmp_path: Path) -> Path:
         shutil.copyfile(source_root / relative / "Cargo.toml", target / "Cargo.toml")
         shutil.copyfile(source_root / relative / "README.md", target / "README.md")
         shutil.copyfile(source_root / relative / "LICENSE", target / "LICENSE")
-    for component in validator.LEGACY_TYPEDB_COMPONENTS:
-        relative = Path(component.vendor_directory)
-        shutil.copyfile(
-            source_root / relative / "LICENSE",
-            target_root / relative / "LICENSE",
-        )
     runtime_source = target_root / "crates/typedb-runtime/src"
     runtime_source.mkdir()
     shutil.copyfile(
@@ -178,7 +161,7 @@ def test_repository_cargo_inclusive_stable_identity_is_complete() -> None:
         "MPL-2.0",
     }
     assert "typedb_runtime_band7_driver_pin" not in report
-    assert report["typedb_runtime_driver_pin"] == "3.11.5"
+    assert report["typedb_runtime_driver_pin"] == "3.14.0"
     assert report["typedb_runtime_band9_driver_pin"] == "3.14.0"
     assert report["typedb_runtime_band9_components"] == {
         "typedb-driver": {
@@ -204,27 +187,9 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert report["status"] == "ok"
     assert report["crates_io_mutation"] is True
     assert report["cargo_publication_plan"] == list(validator.EXPECTED_NEW_CRATES)
-    assert report["legacy_vendor_identities"] == [
-        "|".join(
-            (
-                component.manifest_path,
-                component.downstream_name,
-                component.downstream_version,
-                component.license,
-            )
-        )
-        for component in validator.LEGACY_TYPEDB_COMPONENTS
-    ]
     assert report["cargo_manifest_publishable_crates"] == list(validator.PUBLISHED_CRATES)
     assert report["unpublished_v2_crates"] == []
-    assert validator.PREEXISTING_CRATES == (
-        "type-bridge-typedb-protocol-b8",
-        "type-bridge-typedb-driver-b8",
-    )
-    assert "type-bridge-typedb-protocol-b8" in validator.PACKAGED_RELEASE_CRATES
-    assert "type-bridge-typedb-driver-b8" in validator.PACKAGED_RELEASE_CRATES
-    assert "type-bridge-typedb-protocol-b8" not in validator.EXPECTED_NEW_CRATES
-    assert "type-bridge-typedb-driver-b8" not in validator.EXPECTED_NEW_CRATES
+    assert validator.PREEXISTING_CRATES == ()
     assert not set(validator.PREEXISTING_CRATES) & set(validator.EXPECTED_NEW_CRATES)
     assert report["unpublished_crates"] == [
         "type-bridge-c",
@@ -271,8 +236,6 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
         "type-bridge-schema-migration",
         "type-bridge-schema-migration-typedb",
         "type-bridge-server",
-        "type-bridge-typedb-driver-b8",
-        "type-bridge-typedb-protocol-b8",
         "type-bridge-workspace",
         "type-bridge-typedb-runtime",
     }
@@ -518,27 +481,6 @@ def test_v2_crate_cannot_be_marked_unpublished(tmp_path: Path) -> None:
 
     with pytest.raises(validator.ValidationError, match="publishable package set"):
         validate(workspace_manifest=workspace)
-
-
-def test_repository_driver_components_are_packaging_only() -> None:
-    drivers = tuple(
-        component
-        for component in validator.LEGACY_TYPEDB_COMPONENTS
-        if component.upstream_name == "typedb-driver"
-    )
-
-    assert {(component.band, component.downstream_version) for component in drivers} == {
-        (8, "3.11.5"),
-    }
-    for component in drivers:
-        assert component.downstream_version == component.upstream_version
-        assert component.license_status == (
-            "Apache-2.0 namespaced packaging-only package; source behavior unchanged"
-            "; owner-authorized for TypeBridge Cargo distribution"
-        )
-        disclosure = validator.legacy_vendor_readme_disclosure(component)
-        assert b"behavioral change" not in disclosure
-        assert b"transaction close" not in disclosure
 
 
 def test_historical_band9_quarantine_docs_state_external_compatibility_policy() -> None:
@@ -901,20 +843,6 @@ def test_workspace_cargo_license_must_remain_mit(tmp_path: Path) -> None:
         validate(workspace_manifest=workspace)
 
 
-def test_workspace_cargo_license_file_must_name_the_root_mit_body(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    workspace.write_text(
-        workspace.read_text().replace(
-            'license-file = "LICENSE"',
-            'license-file = "vendor/typedb-driver-b8/LICENSE"',
-            1,
-        )
-    )
-
-    with pytest.raises(validator.ValidationError, match="workspace license-file"):
-        validate(workspace_manifest=workspace)
-
-
 def test_workspace_cargo_license_file_body_must_be_canonical_mit(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     license_file = workspace.parent / "LICENSE"
@@ -971,87 +899,6 @@ def test_first_party_cargo_member_must_inherit_workspace_license_file(
         validate(workspace_manifest=workspace)
 
 
-@pytest.mark.parametrize(
-    ("relative", "old_license", "new_license"),
-    [
-        ("vendor/typedb-driver-b8/Cargo.toml", "Apache-2.0", "MIT"),
-        ("vendor/typedb-protocol-b8/Cargo.toml", "MPL-2.0", "MIT"),
-    ],
-)
-def test_legacy_vendor_manifest_license_cannot_drift(
-    tmp_path: Path,
-    relative: str,
-    old_license: str,
-    new_license: str,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / relative
-    manifest.write_text(
-        manifest.read_text().replace(
-            f'license = "{old_license}"',
-            f'license = "{new_license}"',
-            1,
-        )
-    )
-
-    with pytest.raises(validator.ValidationError, match="effective license drifted"):
-        validate(workspace_manifest=workspace)
-
-
-@pytest.mark.parametrize(
-    "relative",
-    [
-        component.manifest_path
-        for component in validator.LEGACY_TYPEDB_COMPONENTS
-        if component.downstream_name not in validator.IMMUTABLE_BASELINE_CRATES
-    ],
-)
-def test_active_legacy_vendor_must_use_its_local_license_file(
-    tmp_path: Path,
-    relative: str,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / relative
-    manifest.write_text(
-        manifest.read_text().replace(
-            'license-file = "LICENSE"',
-            'license-file = "../../LICENSE"',
-            1,
-        )
-    )
-
-    with pytest.raises(validator.ValidationError, match="license-file drifted"):
-        validate(workspace_manifest=workspace)
-
-
-def test_no_retained_compatibility_manifest_uses_the_removed_baseline_policy() -> None:
-    assert validator.IMMUTABLE_BASELINE_CRATES == ()
-    assert {component.band for component in validator.LEGACY_TYPEDB_COMPONENTS} == {8}
-    for component in validator.LEGACY_TYPEDB_COMPONENTS:
-        manifest = ROOT / "type-bridge-core" / component.manifest_path
-        assert 'license-file = "LICENSE"' in manifest.read_text()
-
-
-def test_legacy_vendor_cannot_relocate_and_claim_the_workspace_mit_license(
-    tmp_path: Path,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    original = workspace.parent / "vendor/typedb-driver-b8"
-    relocated = workspace.parent / "vendor/relocated-driver"
-    shutil.move(original, relocated)
-    manifest = relocated / "Cargo.toml"
-    manifest.write_text(manifest.read_text().replace('license = "Apache-2.0"', 'license = "MIT"'))
-    workspace.write_text(
-        workspace.read_text().replace(
-            '"vendor/typedb-driver-b8"',
-            '"vendor/relocated-driver"',
-        )
-    )
-
-    with pytest.raises(validator.ValidationError, match="canonical paths"):
-        validate(workspace_manifest=workspace)
-
-
 def test_unexpected_workspace_vendor_member_hard_fails(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     unexpected = workspace.parent / "vendor/unexpected"
@@ -1067,7 +914,10 @@ def test_unexpected_workspace_vendor_member_hard_fails(tmp_path: Path) -> None:
         )
     )
 
-    with pytest.raises(validator.ValidationError, match="unexpected=.*vendor/unexpected"):
+    with pytest.raises(
+        validator.ValidationError,
+        match=re.escape("Unpinned workspace vendor crate: unexpected-vendor@2.3.2-rc.0"),
+    ):
         validate(workspace_manifest=workspace)
 
 
@@ -1151,73 +1001,6 @@ def test_retired_band7_packages_are_absent_from_the_current_workspace() -> None:
     assert not (ROOT / "type-bridge-core/vendor/typedb-protocol-b7").exists()
 
 
-def test_band8_protocol_vendor_identity_drift_hard_fails(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "vendor/typedb-protocol-b8/Cargo.toml"
-    manifest.write_text(manifest.read_text().replace('version = "3.11.0"', 'version = "3.11.1"', 1))
-
-    with pytest.raises(validator.ValidationError, match="immutable package metadata drifted"):
-        validate(workspace_manifest=workspace)
-
-
-def test_band8_vendor_identity_drift_hard_fails(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "vendor/typedb-driver-b8/Cargo.toml"
-    manifest.write_text(manifest.read_text().replace('version = "3.11.5"', 'version = "3.11.6"', 1))
-
-    with pytest.raises(validator.ValidationError, match="immutable package metadata drifted"):
-        validate(workspace_manifest=workspace)
-
-
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        (
-            "Renamed package of upstream typedb-driver 3.11.5 "
-            "(TypeDB protocol band 8); source-unmodified compatibility package "
-            "authorized for TypeBridge Cargo distribution",
-            "generic driver package",
-        ),
-        ("https://github.com/typedb/typedb-driver", "https://example.invalid/upstream"),
-        ("https://github.com/ds1sqe/type-bridge", "https://example.invalid/downstream"),
-        ('readme = "README.md"', 'readme = "OTHER.md"'),
-    ],
-)
-def test_active_legacy_vendor_crates_io_metadata_is_immutable(
-    tmp_path: Path,
-    old: str,
-    new: str,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "vendor/typedb-driver-b8/Cargo.toml"
-    source = manifest.read_text()
-    assert old in source
-    manifest.write_text(source.replace(old, new, 1))
-
-    with pytest.raises(validator.ValidationError, match="immutable package metadata drifted"):
-        validate(workspace_manifest=workspace)
-
-
-def test_band8_driver_requirement_must_exactly_match_runtime_constant(
-    tmp_path: Path,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
-    manifest.write_text(
-        manifest.read_text().replace(
-            'version = "=3.11.5", optional = true }',
-            'version = "3", optional = true }',
-            1,
-        )
-    )
-
-    with pytest.raises(
-        validator.ValidationError,
-        match="type-bridge-typedb-driver-b8 dependency must exactly match its runtime pin",
-    ):
-        validate(workspace_manifest=workspace)
-
-
 def test_retired_band7_dependency_cannot_reenter_the_runtime_manifest(
     tmp_path: Path,
 ) -> None:
@@ -1234,43 +1017,7 @@ def test_retired_band7_dependency_cannot_reenter_the_runtime_manifest(
 
     with pytest.raises(
         validator.ValidationError,
-        match="reintroduces retired band-7 support",
-    ):
-        validate(workspace_manifest=workspace)
-
-
-def test_band8_driver_dependency_must_name_the_renamed_package(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "crates/typedb-runtime/Cargo.toml"
-    manifest.write_text(
-        manifest.read_text().replace(
-            "type-bridge-typedb-driver-b8 = { path",
-            'type-bridge-typedb-driver-b8 = { package = "type-bridge-typedb-driver-b7", path',
-            1,
-        )
-    )
-
-    with pytest.raises(
-        validator.ValidationError,
-        match="band-8 package dependency has the wrong package identity",
-    ):
-        validate(workspace_manifest=workspace)
-
-
-def test_band8_runtime_constant_drift_hard_fails(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    source = workspace.parent / "crates/typedb-runtime/src/lib.rs"
-    source.write_text(
-        source.read_text().replace(
-            'pub const PINNED_DRIVER_VERSION: &str = "3.11.5";',
-            'pub const PINNED_DRIVER_VERSION: &str = "3.11.4";',
-            1,
-        )
-    )
-
-    with pytest.raises(
-        validator.ValidationError,
-        match="actual='=3.11.5', expected='=3.11.4'",
+        match="TypeDB runtime must not depend on namespaced driver forks",
     ):
         validate(workspace_manifest=workspace)
 
@@ -1414,115 +1161,6 @@ def test_band9_notice_source_must_name_exact_official_crates_io_package(
         validate(workspace_manifest=workspace)
 
 
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        (
-            "TypeDB `typedb-driver` tag [3.11.5]"
-            "(https://github.com/typedb/typedb-driver/tree/"
-            "7e669e41d9fee22fde8d5e60be7edbf00c6ec64b) "
-            "(commit `7e669e41d9fee22fde8d5e60be7edbf00c6ec64b`)",
-            "TypeDB `typedb-driver` tag [3.11.6]"
-            "(https://github.com/typedb/typedb-driver/tree/"
-            "7e669e41d9fee22fde8d5e60be7edbf00c6ec64b) "
-            "(commit `7e669e41d9fee22fde8d5e60be7edbf00c6ec64b`)",
-        ),
-        (
-            "MPL-2.0 namespaced packaging-only package; generated protocol source unchanged; "
-            "owner-authorized for TypeBridge Cargo distribution",
-            "MIT namespaced packaging-only package; generated protocol source unchanged; "
-            "owner-authorized for TypeBridge Cargo distribution",
-        ),
-    ],
-)
-def test_legacy_notice_component_rows_are_exact(
-    tmp_path: Path,
-    old: str,
-    new: str,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    replace_both_native_notices(workspace, old, new)
-
-    with pytest.raises(validator.ValidationError, match="component provenance drifted"):
-        validate(workspace_manifest=workspace)
-
-
-def test_native_notices_describe_only_the_retained_compatibility_band() -> None:
-    python_notice = ROOT / "type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md"
-    node_notice = ROOT / "type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md"
-    python_body = python_notice.read_bytes()
-
-    assert python_body == node_notice.read_bytes()
-    compact = " ".join(python_body.decode().split())
-    assert "band-7" not in compact.lower()
-    assert (
-        "band-8 compatibility copies are source-unmodified and owner-authorized "
-        "for TypeBridge Cargo distribution"
-    ) in compact
-    assert "authorized first publication of the band-8 packages on 2026-08-03" in compact
-    assert "These exact source-unmodified packages" in compact
-    assert "protocol package preceding the driver package" in compact
-    assert "renamed crates are also distributed as immutable crates.io" not in compact
-    assert "currently absent" not in compact
-    assert "currently unpublished" not in compact
-
-
-def test_native_notice_cannot_remove_band8_publication_authorization(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    replace_both_native_notices(
-        workspace,
-        "authorized first publication of the band-8 packages on\n2026-08-03",
-        "did not authorize publication of the band-8 packages",
-    )
-
-    with pytest.raises(validator.ValidationError, match="band-8 registry disposition"):
-        validate(workspace_manifest=workspace)
-
-
-def test_band8_artifact_text_is_time_stable() -> None:
-    paths = (
-        ROOT / "type-bridge-core/vendor/typedb-driver-b8/Cargo.toml",
-        ROOT / "type-bridge-core/vendor/typedb-driver-b8/README.md",
-        ROOT / "type-bridge-core/vendor/typedb-protocol-b8/Cargo.toml",
-        ROOT / "type-bridge-core/vendor/typedb-protocol-b8/README.md",
-        ROOT / "type-bridge-core/vendor/README.md",
-        ROOT / "type-bridge-core/python/type_bridge_core/THIRD_PARTY_NOTICES.md",
-        ROOT / "type-bridge-core/crates/node/THIRD_PARTY_NOTICES.md",
-    )
-    for path in paths:
-        body = " ".join(path.read_text().split()).lower()
-        assert "separate explicit typedb" not in body
-        assert "authorized" in body
-        assert "cargo distribution" in body
-        assert "currently absent" not in body
-        assert "currently unpublished" not in body
-
-
-@pytest.mark.parametrize(
-    ("old", "new"),
-    [
-        (
-            "https://static.crates.io/crates/typedb-driver/typedb-driver-3.11.5.crate",
-            "https://example.invalid/typedb-driver-3.11.5.crate",
-        ),
-        (
-            "71c456fc6fb8f9112236fc088569cbe47f620443629ef8c81b1d79aec7b49fc6",
-            "0" * 64,
-        ),
-    ],
-)
-def test_legacy_notice_archive_rows_are_exact(
-    tmp_path: Path,
-    old: str,
-    new: str,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    replace_both_native_notices(workspace, old, new)
-
-    with pytest.raises(validator.ValidationError, match="archive provenance drifted"):
-        validate(workspace_manifest=workspace)
-
-
 def test_native_notice_copies_must_remain_byte_identical(tmp_path: Path) -> None:
     workspace = copy_workspace_manifests(tmp_path)
     node_notice = workspace.parent / "crates/node/THIRD_PARTY_NOTICES.md"
@@ -1584,38 +1222,6 @@ def test_embedded_notice_license_bodies_must_be_canonical(
     replace_both_native_notices(workspace, old, new)
 
     with pytest.raises(validator.ValidationError, match=rf"{license_name}.*canonical LICENSE"):
-        validate(workspace_manifest=workspace)
-
-
-@pytest.mark.parametrize(
-    ("relative", "old", "new", "message"),
-    [
-        (
-            "vendor/typedb-driver-b8/LICENSE",
-            "Apache License",
-            "Apache Licence",
-            "canonical Apache-2.0 body",
-        ),
-        (
-            "vendor/typedb-protocol-b8/LICENSE",
-            "Mozilla Public License",
-            "Mozilla Public Licence",
-            "canonical MPL-2.0 body",
-        ),
-    ],
-)
-def test_legacy_license_family_files_must_be_byte_identical(
-    tmp_path: Path,
-    relative: str,
-    old: str,
-    new: str,
-    message: str,
-) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    license_path = workspace.parent / relative
-    license_path.write_text(license_path.read_text().replace(old, new, 1))
-
-    with pytest.raises(validator.ValidationError, match=message):
         validate(workspace_manifest=workspace)
 
 
@@ -1696,8 +1302,6 @@ def test_vendor_provenance_current_driver_prose_tracks_resolved_pin(tmp_path: Pa
         "publish-crates:",
         "name: rust-crates",
         "path: type-bridge-core/target/package",
-        "type-bridge-typedb-driver-b8",
-        "type-bridge-typedb-protocol-b8",
         "validate_fresh_typedb_runtime_package.sh",
         "validate_rust_release_artifacts.py",
     ),
@@ -1776,487 +1380,3 @@ def test_planned_public_crate_cannot_be_marked_unpublished(
 
     with pytest.raises(validator.ValidationError, match="publishable package set"):
         validate(workspace_manifest=workspace)
-
-
-def test_unpinned_publishable_vendor_crate_hard_fails(tmp_path: Path) -> None:
-    workspace = copy_workspace_manifests(tmp_path)
-    manifest = workspace.parent / "vendor/typedb-driver-b8/Cargo.toml"
-    manifest.write_text(
-        manifest.read_text().replace(
-            'name = "type-bridge-typedb-driver-b8"',
-            'name = "hostile-unpinned-vendor"',
-            1,
-        )
-    )
-
-    with pytest.raises(validator.ValidationError, match="immutable package metadata drifted"):
-        validate(workspace_manifest=workspace)
-
-
-def synthetic_crate_archive(
-    package: str,
-    version: str,
-    files: dict[str, bytes],
-    *,
-    symlink: tuple[str, str] | None = None,
-) -> bytes:
-    """Build a deterministic-enough in-memory .crate fixture without network access."""
-    stream = io.BytesIO()
-    root = f"{package}-{version}"
-    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-        for relative, body in sorted(files.items()):
-            member = tarfile.TarInfo(f"{root}/{relative}")
-            member.size = len(body)
-            archive.addfile(member, io.BytesIO(body))
-        if symlink is not None:
-            relative, target = symlink
-            member = tarfile.TarInfo(f"{root}/{relative}")
-            member.type = tarfile.SYMTYPE
-            member.linkname = target
-            archive.addfile(member)
-    return stream.getvalue()
-
-
-def write_synthetic_vendor_tree(root: Path, relative: str, files: dict[str, bytes]) -> None:
-    """Write one synthetic local tree whose inventory matches the release gate."""
-    component_root = root / relative
-    for path, body in files.items():
-        target = component_root / path
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(body)
-
-
-def synthetic_driver_provenance_fixture(
-    tmp_path: Path,
-    *,
-    band: int = 8,
-) -> tuple[Path, Any, bytes, dict[str, bytes]]:
-    """Create one byte-identical synthetic downstream driver package."""
-    protocol = validator.legacy_protocol_component(band)
-    protocol_version = f"={protocol.upstream_version}"
-    upstream_source = {
-        "src/lib.rs": b"upstream lib\n",
-        "src/connection/message.rs": b"upstream message\n",
-        "src/connection/network/proto/message.rs": b"upstream proto message\n",
-        "src/connection/network/transmitter/transaction.rs": b"upstream transaction\n",
-    }
-    upstream_manifest = f"""
-[features]
-sync = []
-
-[package]
-license = "Apache-2.0"
-name = "typedb-driver"
-edition = "2024"
-description = "TypeDB Rust Driver"
-readme = "README.md"
-repository = "https://github.com/typedb/typedb-driver"
-version = "9.8.1"
-licenseFile = "LICENSE"
-authors = []
-homepage = "https://github.com/typedb/typedb-driver"
-
-[lib]
-path = "src/lib.rs"
-
-[dependencies.typedb-protocol]
-features = []
-version = "{protocol_version}"
-
-[dependencies.tonic]
-version = "0.12"
-features = ["tls", "tls-roots"]
-""".lstrip().encode()
-    upstream_files = {
-        "Cargo.toml": upstream_manifest,
-        "LICENSE": b"synthetic Apache-2.0 license\n",
-        "README.md": b"TypeDB upstream\n",
-        **upstream_source,
-    }
-    archive = synthetic_crate_archive("typedb-driver", "9.8.1", upstream_files)
-    component = validator.LegacyTypeDbComponent(
-        archive_checksum=hashlib.sha256(archive).hexdigest(),
-        band=band,
-        downstream_name=SYNTHETIC_DRIVER_NAME,
-        downstream_version="9.8.1",
-        license=validator.APACHE_2_LICENSE,
-        license_status="synthetic Apache compatibility package",
-        manifest_path="vendor/synthetic-driver/Cargo.toml",
-        upstream_commit="0" * 40,
-        upstream_name="typedb-driver",
-        upstream_version="9.8.1",
-    )
-    license_file = 'license-file = "LICENSE"\n' if band == 8 else ""
-    local_manifest = f"""
-[package]
-name = "{SYNTHETIC_DRIVER_NAME}"
-version = "9.8.1"
-edition = "2024"
-license = "Apache-2.0"
-{license_file}description = "{validator.LEGACY_VENDOR_DESCRIPTIONS[SYNTHETIC_DRIVER_NAME]}"
-readme = "README.md"
-repository = "{validator.TYPEBRIDGE_REPOSITORY}"
-homepage = "https://github.com/typedb/typedb-driver"
-
-[features]
-sync = []
-
-[lints.rust]
-unused = "allow"
-dead_code = "allow"
-private_interfaces = "allow"
-
-[lints.clippy]
-all = "allow"
-
-[lib]
-path = "src/lib.rs"
-doctest = false
-
-[dependencies]
-typedb-protocol = {{ package = "{protocol.downstream_name}", path = "../{Path(protocol.vendor_directory).name}", version = "{protocol_version}" }}
-tonic = {{ version = "0.12", features = ["tls", "tls-roots"] }}
-
-[dev-dependencies]
-rand = "0.8"
-serde_json = "1"
-""".lstrip().encode()
-    local_files = {
-        "Cargo.toml": local_manifest,
-        "LICENSE": upstream_files["LICENSE"],
-        "README.md": (
-            validator.legacy_vendor_readme_disclosure(component) + upstream_files["README.md"]
-        ),
-        **upstream_source,
-    }
-    write_synthetic_vendor_tree(tmp_path, "vendor/synthetic-driver", local_files)
-    return tmp_path, component, archive, upstream_source
-
-
-def synthetic_protocol_provenance_fixture(
-    tmp_path: Path,
-    *,
-    band: int = 8,
-) -> tuple[Path, Any, bytes]:
-    """Create one byte-identical synthetic downstream protocol package."""
-    upstream_manifest = b"""
-[package]
-license = "MPL-2.0"
-name = "typedb-protocol"
-edition = "2024"
-description = "TypeDB Protocol"
-readme = "README.md"
-repository = "https://github.com/typedb/typedb-protocol"
-version = "9.8.0"
-licenseFile = "LICENSE"
-authors = []
-homepage = "https://github.com/typedb/typedb-protocol"
-
-[lib]
-path = "src/typedb.protocol.rs"
-
-[dependencies.prost]
-version = "=0.13.5"
-
-[dependencies.tonic]
-version = "=0.12.3"
-""".lstrip()
-    upstream_files = {
-        "Cargo.toml": upstream_manifest,
-        "LICENSE": b"synthetic MPL-2.0 license\n",
-        "README.md": b"TypeDB upstream\n",
-        "src/typedb.protocol.rs": b"// generated protocol\n",
-    }
-    archive = synthetic_crate_archive("typedb-protocol", "9.8.0", upstream_files)
-    component = validator.LegacyTypeDbComponent(
-        archive_checksum=hashlib.sha256(archive).hexdigest(),
-        band=band,
-        downstream_name=SYNTHETIC_PROTOCOL_NAME,
-        downstream_version="9.8.0",
-        license=validator.MPL_2_LICENSE,
-        license_status="synthetic MPL package",
-        manifest_path="vendor/synthetic-protocol/Cargo.toml",
-        upstream_commit="0" * 40,
-        upstream_name="typedb-protocol",
-        upstream_version="9.8.0",
-    )
-    license_file = 'license-file = "LICENSE"\n' if band == 8 else ""
-    local_manifest = f"""
-[package]
-name = "{SYNTHETIC_PROTOCOL_NAME}"
-version = "9.8.0"
-edition = "2024"
-license = "MPL-2.0"
-{license_file}description = "{validator.LEGACY_VENDOR_DESCRIPTIONS[SYNTHETIC_PROTOCOL_NAME]}"
-readme = "README.md"
-repository = "{validator.TYPEBRIDGE_REPOSITORY}"
-homepage = "https://github.com/typedb/typedb-protocol"
-
-[lints.rust]
-unused = "allow"
-dead_code = "allow"
-
-[lints.clippy]
-all = "allow"
-
-[lib]
-path = "src/typedb.protocol.rs"
-doctest = false
-
-[dependencies]
-prost = "=0.13.5"
-tonic = "=0.12.3"
-""".lstrip().encode()
-    local_files = {
-        **upstream_files,
-        "Cargo.toml": local_manifest,
-        "README.md": (
-            validator.legacy_vendor_readme_disclosure(component) + upstream_files["README.md"]
-        ),
-    }
-    write_synthetic_vendor_tree(tmp_path, "vendor/synthetic-protocol", local_files)
-    return tmp_path, component, archive
-
-
-def test_synthetic_driver_source_and_license_remain_byte_identical(tmp_path: Path) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-
-    assert validator.validate_legacy_component_tree(root, component, archive) == ()
-
-
-def test_synthetic_protocol_source_and_license_can_remain_byte_identical(
-    tmp_path: Path,
-) -> None:
-    root, component, archive = synthetic_protocol_provenance_fixture(tmp_path)
-
-    assert validator.validate_legacy_component_tree(root, component, archive) == ()
-
-
-@pytest.mark.parametrize(
-    ("needle", "replacement"),
-    (
-        ("sync = []", 'sync = ["hostile"]'),
-        ('path = "src/lib.rs"', 'path = "src/hostile.rs"'),
-        ('version = "0.12", features', 'version = "9.99", features'),
-        ('package = "type-bridge-typedb-protocol-b8"', 'package = "hostile-protocol"'),
-        ('path = "../typedb-protocol-b8"', 'path = "../hostile-protocol"'),
-        ('private_interfaces = "allow"', 'private_interfaces = "deny"'),
-        ('rand = "0.8"', 'rand = "9"'),
-    ),
-)
-def test_driver_manifest_behavior_must_match_packaging_only_transform(
-    tmp_path: Path,
-    needle: str,
-    replacement: str,
-) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    manifest = root / component.vendor_directory / "Cargo.toml"
-    body = manifest.read_text()
-    assert needle in body
-    manifest.write_text(body.replace(needle, replacement, 1))
-
-    with pytest.raises(validator.ValidationError, match="packaging-only transform"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_driver_manifest_cannot_add_build_behavior(tmp_path: Path) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    manifest = root / component.vendor_directory / "Cargo.toml"
-    manifest.write_text(manifest.read_text() + '\n[build-dependencies]\ncc = "1"\n')
-
-    with pytest.raises(validator.ValidationError, match="packaging-only transform"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_protocol_manifest_dependency_must_match_upstream(tmp_path: Path) -> None:
-    root, component, archive = synthetic_protocol_provenance_fixture(tmp_path)
-    manifest = root / component.vendor_directory / "Cargo.toml"
-    manifest.write_text(manifest.read_text().replace('tonic = "=0.12.3"', 'tonic = "9"'))
-
-    with pytest.raises(validator.ValidationError, match="packaging-only transform"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_retired_band7_has_no_current_provenance_component() -> None:
-    assert all(component.band == 8 for component in validator.LEGACY_TYPEDB_COMPONENTS)
-    with pytest.raises(validator.ValidationError, match="exactly one protocol component"):
-        validator.legacy_protocol_component(7)
-
-
-def test_driver_readme_disclosure_prefix_is_exact(tmp_path: Path) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    readme = root / component.vendor_directory / "README.md"
-    readme.write_bytes(readme.read_bytes().replace(b"SHA-256", b"SHA256", 1))
-
-    with pytest.raises(validator.ValidationError, match="README disclosure drifted"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_driver_readme_upstream_suffix_is_exact(tmp_path: Path) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    readme = root / component.vendor_directory / "README.md"
-    readme.write_bytes(readme.read_bytes() + b"downstream appendix\n")
-
-    with pytest.raises(validator.ValidationError, match="exact upstream suffix"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_band8_protocol_readme_disclosure_prefix_is_exact(tmp_path: Path) -> None:
-    root, component, archive = synthetic_protocol_provenance_fixture(tmp_path)
-    readme = root / component.vendor_directory / "README.md"
-    readme.write_bytes(readme.read_bytes().replace(b"original source", b"mirror", 1))
-
-    with pytest.raises(validator.ValidationError, match="README disclosure drifted"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-@pytest.mark.parametrize("package_kind", ("driver", "protocol"))
-def test_retained_band8_readme_cannot_drop_its_disclosure(
-    tmp_path: Path,
-    package_kind: str,
-) -> None:
-    if package_kind == "driver":
-        root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    else:
-        root, component, archive = synthetic_protocol_provenance_fixture(tmp_path)
-    readme = root / component.vendor_directory / "README.md"
-    readme.write_bytes(b"TypeDB upstream\n")
-    with pytest.raises(validator.ValidationError, match="README disclosure drifted"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_archive_checksum_is_rejected_before_archive_parsing(tmp_path: Path) -> None:
-    _, component, _, _ = synthetic_driver_provenance_fixture(tmp_path)
-
-    with pytest.raises(validator.ValidationError, match="archive checksum mismatch"):
-        validator.verified_crate_archive_files(component, b"not even a tar archive")
-
-
-def test_archive_traversal_path_hard_fails(tmp_path: Path) -> None:
-    _, component, _, _ = synthetic_driver_provenance_fixture(tmp_path)
-    archive = synthetic_crate_archive(
-        "typedb-driver",
-        "9.8.1",
-        {"../escape.rs": b"hostile\n"},
-    )
-    component = replace(component, archive_checksum=hashlib.sha256(archive).hexdigest())
-
-    with pytest.raises(validator.ValidationError, match="unsafe path"):
-        validator.verified_crate_archive_files(component, archive)
-
-
-def test_archive_symlink_hard_fails(tmp_path: Path) -> None:
-    _, component, _, _ = synthetic_driver_provenance_fixture(tmp_path)
-    archive = synthetic_crate_archive(
-        "typedb-driver",
-        "9.8.1",
-        {"LICENSE": b"license\n"},
-        symlink=("src/lib.rs", "../../host-file"),
-    )
-    component = replace(component, archive_checksum=hashlib.sha256(archive).hexdigest())
-
-    with pytest.raises(validator.ValidationError, match="symlink or non-regular"):
-        validator.verified_crate_archive_files(component, archive)
-
-
-@pytest.mark.parametrize(
-    "relative",
-    (
-        "src/lib.rs",
-        "src/connection/message.rs",
-        "src/connection/network/proto/message.rs",
-        "src/connection/network/transmitter/transaction.rs",
-    ),
-)
-def test_driver_source_mutation_hard_fails(tmp_path: Path, relative: str) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    changed = root / component.vendor_directory / relative
-    changed.write_bytes(changed.read_bytes() + b"hostile delta\n")
-
-    with pytest.raises(validator.ValidationError, match="source must remain byte-identical"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_driver_source_path_inventory_must_exactly_match_upstream(tmp_path: Path) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    unexpected = root / component.vendor_directory / "src/hostile.rs"
-    unexpected.write_text("// undisclosed source\n")
-
-    with pytest.raises(validator.ValidationError, match="source path inventory drifted"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-@pytest.mark.parametrize("relative", ("LICENSE", "src/typedb.protocol.rs"))
-def test_protocol_source_and_license_mutations_hard_fail(
-    tmp_path: Path,
-    relative: str,
-) -> None:
-    root, component, archive = synthetic_protocol_provenance_fixture(tmp_path)
-    changed = root / component.vendor_directory / relative
-    changed.write_bytes(changed.read_bytes() + b"hostile delta\n")
-
-    with pytest.raises(validator.ValidationError, match="byte-identical"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-def test_unexpected_local_vendor_file_hard_fails(tmp_path: Path) -> None:
-    root, component, archive, _ = synthetic_driver_provenance_fixture(tmp_path)
-    (root / component.vendor_directory / "build.rs").write_text("fn main() {}\n")
-
-    with pytest.raises(validator.ValidationError, match="root inventory drifted"):
-        validator.validate_legacy_component_tree(root, component, archive)
-
-
-class FakeArchiveResponse:
-    """Minimal bounded HTTP response used by the no-network downloader tests."""
-
-    status = 200
-
-    def __init__(self, url: str, body: bytes, *, content_length: str | None = None) -> None:
-        self.url = url
-        self.body = io.BytesIO(body)
-        self.headers = {} if content_length is None else {"Content-Length": content_length}
-
-    def __enter__(self) -> FakeArchiveResponse:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        return None
-
-    def geturl(self) -> str:
-        return self.url
-
-    def read(self, size: int) -> bytes:
-        return self.body.read(size)
-
-
-@pytest.mark.parametrize("declared_length", ("invalid", "9"))
-def test_archive_download_declared_length_is_bounded_and_fail_closed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    declared_length: str,
-) -> None:
-    _, component, _, _ = synthetic_driver_provenance_fixture(tmp_path)
-    monkeypatch.setattr(validator, "MAX_LEGACY_ARCHIVE_BYTES", 8)
-
-    def opener(request: object, *, timeout: int) -> FakeArchiveResponse:
-        assert timeout == validator.LEGACY_ARCHIVE_HTTP_TIMEOUT_SECONDS
-        return FakeArchiveResponse(component.archive_url, b"", content_length=declared_length)
-
-    with pytest.raises(validator.ValidationError, match="Content-Length|compressed byte budget"):
-        validator.download_legacy_crate_archive(component, opener=opener)
-
-
-def test_archive_download_stream_is_bounded_without_content_length(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _, component, _, _ = synthetic_driver_provenance_fixture(tmp_path)
-    monkeypatch.setattr(validator, "MAX_LEGACY_ARCHIVE_BYTES", 8)
-
-    def opener(request: object, *, timeout: int) -> FakeArchiveResponse:
-        assert timeout == validator.LEGACY_ARCHIVE_HTTP_TIMEOUT_SECONDS
-        return FakeArchiveResponse(component.archive_url, b"123456789")
-
-    with pytest.raises(validator.ValidationError, match="compressed byte budget while reading"):
-        validator.download_legacy_crate_archive(component, opener=opener)

@@ -2208,7 +2208,7 @@ mod tests {
     #[tokio::test]
     async fn every_connected_runner_path_preserves_binding_gate_order_without_database_io() {
         let (profile_runner, profile_calls) =
-            no_io_runner_with_pair("typedb-3.11.5/v1", "wrong-journal", false);
+            no_io_runner_with_pair("typedb-0.0.0/v1", "wrong-journal", false);
         assert_every_connected_runner_path_rejects_without_database_io(
             &profile_runner,
             &profile_calls,

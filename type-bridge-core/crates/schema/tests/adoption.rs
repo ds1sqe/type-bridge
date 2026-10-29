@@ -228,7 +228,7 @@ fn canonicalization_profile_mismatch_is_rejected() {
     let error = adopt_observed_schema(
         &canonical,
         ManagedScopeId::new("adoption-test").expect("test scope"),
-        &profile_id("typedb-3.11.5/v1"),
+        &profile_id("typedb-3.13.6/v1"),
         &CapabilitySet::new(),
     )
     .expect_err("profile mismatch");

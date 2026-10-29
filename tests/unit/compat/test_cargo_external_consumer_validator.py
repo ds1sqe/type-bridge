@@ -233,7 +233,7 @@ def test_only_temporary_cargo_config_patches_exact_extracted_roots(tmp_path: Pat
     patches = tomllib.loads(config.read_text(encoding="utf-8"))["patch"]["crates-io"]
 
     assert set(patches) == set(extracted)
-    assert len(patches) == 18
+    assert len(patches) == 16
     for name, specification in patches.items():
         assert specification == {"path": str(extracted[name].root.resolve())}
 
@@ -302,7 +302,7 @@ def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path)
     (
         ([], False, True),
         (["v2-query", "axum-transport"], True, True),
-        (["default", "band8", "band9", "typedb", "v2-query"], True, False),
+        (["default", "band9", "typedb", "v2-query"], True, False),
         ([], True, False),
     ),
 )
@@ -392,7 +392,7 @@ def test_release_wires_external_consumers_between_archive_and_identity_gates() -
         ("", ""),
         ("type-bridge 2.3.2", "type-bridge 2.1.0"),
         ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"),
-        ("typedb-3.11.5/v1,typedb-3.12.1/v1,typedb-3.13.6/v1", "typedb-3.12.1/v1"),
+        ("typedb-3.12.1/v1,typedb-3.13.6/v1", "typedb-3.12.1/v1"),
         ("source-commit: development-uncommitted", "source-commit: wrong"),
         ("source-tree: development-uncommitted", "source-tree: wrong"),
         (
@@ -407,7 +407,7 @@ def test_installed_cli_checks_the_complete_build_identity(
     report = (
         "type-bridge 2.3.2\n"
         "target: x86_64-unknown-linux-gnu\n"
-        "semantic-profiles: typedb-3.11.5/v1,typedb-3.12.1/v1,typedb-3.13.6/v1\n"
+        "semantic-profiles: typedb-3.12.1/v1,typedb-3.13.6/v1\n"
         "source-commit: development-uncommitted\n"
         "source-tree: development-uncommitted\n"
     )

@@ -5,9 +5,8 @@ candidate-toolchain = "1.94.1"
 repository = "https://github.com/ds1sqe/type-bridge"
 
 # This is the closed Cargo product inventory. Publication order is dependency
-# order; immutable packages are verified in place, and private bindings and
-# tooling are classified here so they cannot silently enter a crates.io
-# release.
+# order; private bindings and tooling are classified here so they cannot
+# silently enter a crates.io release.
 
 [[packages]]
 name = "type-bridge-contract"
@@ -82,34 +81,12 @@ publish-order = 8
 docs-target = "lib"
 
 [[packages]]
-name = "type-bridge-typedb-protocol-b8"
-manifest = "vendor/typedb-protocol-b8/Cargo.toml"
-classification = "public-immutable"
-role = "compatibility"
-version-policy = "fixed"
-version = "3.11.0"
-registry-checksum = "e181af88e3742a13e35225c439f8a98968f014417b1814b18736743f6d799b16"
-publish-order = 9
-docs-target = "lib"
-
-[[packages]]
-name = "type-bridge-typedb-driver-b8"
-manifest = "vendor/typedb-driver-b8/Cargo.toml"
-classification = "public-immutable"
-role = "compatibility"
-version-policy = "fixed"
-version = "3.11.5"
-registry-checksum = "a2c4fe7da8c6c8d6a075bb667c916f8fceda416bbb844d0396f987cd48204d2e"
-publish-order = 10
-docs-target = "lib"
-
-[[packages]]
 name = "type-bridge-typedb-runtime"
 manifest = "crates/typedb-runtime/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 11
+publish-order = 9
 docs-target = "lib"
 
 [[packages]]
@@ -118,7 +95,7 @@ manifest = "crates/orm/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 12
+publish-order = 10
 docs-target = "lib"
 
 [[packages]]
@@ -127,7 +104,7 @@ manifest = "crates/migration/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 13
+publish-order = 11
 docs-target = "lib"
 
 [[packages]]
@@ -136,7 +113,7 @@ manifest = "crates/schema-migration-typedb/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 14
+publish-order = 12
 docs-target = "lib"
 
 [[packages]]
@@ -145,7 +122,7 @@ manifest = "crates/server/Cargo.toml"
 classification = "public-first-party"
 role = "primary"
 version-policy = "lockstep"
-publish-order = 15
+publish-order = 13
 docs-target = "lib"
 
 [[packages]]
@@ -154,7 +131,7 @@ manifest = "crates/workspace/Cargo.toml"
 classification = "public-first-party"
 role = "supporting"
 version-policy = "lockstep"
-publish-order = 16
+publish-order = 14
 docs-target = "lib"
 
 [[packages]]
@@ -163,7 +140,7 @@ manifest = "crates/cli/Cargo.toml"
 classification = "public-first-party"
 role = "primary"
 version-policy = "lockstep"
-publish-order = 17
+publish-order = 15
 docs-target = "lib"
 
 [[packages]]
@@ -172,7 +149,7 @@ manifest = "crates/rust/Cargo.toml"
 classification = "public-first-party"
 role = "primary"
 version-policy = "lockstep"
-publish-order = 18
+publish-order = 16
 docs-target = "lib"
 
 [[packages]]

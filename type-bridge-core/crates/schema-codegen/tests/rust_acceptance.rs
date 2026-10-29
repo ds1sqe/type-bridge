@@ -514,7 +514,7 @@ fn main() {
     let _ = released_connection_compatibility;
 }
 "#,
-        &["band8", "band9"],
+        &["band9"],
     );
 
     let output = cargo_with_env(
@@ -616,7 +616,7 @@ fn main() {}"#,
 
     for (name, source, expected) in cases {
         let consumer = stage.path().join(name);
-        write_consumer_with_features(&consumer, name, source, &["band8", "band9"]);
+        write_consumer_with_features(&consumer, name, source, &["band9"]);
         let output = cargo_with_env(
             &[
                 "check",

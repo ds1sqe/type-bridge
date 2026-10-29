@@ -69,7 +69,7 @@ pytest_args=()
 usage() {
     cat <<'EOF'
 Usage: ./test.sh [--no-integration] [--proxy] [--tls] [--no-isolated]
-                 [--typedb <3.11.5|3.12.3|3.13.6|3.14.0|all>] [-- <pytest args>]
+                 [--typedb <3.12.3|3.13.6|3.14.0|all>] [-- <pytest args>]
 
   --no-integration  Run only the offline tiers (Rust, Python unit, Node unit/dts,
                     and the internal C foundation).
@@ -171,9 +171,8 @@ CALLER_ACCEPTANCE_PROFILE="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-}"
 # ── TypeDB lanes ─────────────────────────────────────────────────────────────
 # Each supported TypeDB line and the semantic profile its live tier runs under.
 # 3.14.0 is the default line; 3.14 shares the 3.13 profile.
-TYPEDB_LANES=(3.11.5 3.12.3 3.13.6 3.14.0)
+TYPEDB_LANES=(3.12.3 3.13.6 3.14.0)
 declare -A LANE_PROFILES=(
-    [3.11.5]=typedb-3.11.5/v1
     [3.12.3]=typedb-3.12.1/v1
     [3.13.6]=typedb-3.13.6/v1
     [3.14.0]=typedb-3.13.6/v1
@@ -620,7 +619,6 @@ run_step "npm run test:dts"  bash -c "cd '$NODE_DIR' && npm run test:dts"
 run_step "npm run dts:parity" bash -c "cd '$NODE_DIR' && npm run dts:parity"
 
 # ── Integration tiers (one run per TypeDB lane) ──────────────────────────────
-# Connected migrations need a migration profile, which TypeDB 3.11 lacks.
 run_live_migration_steps() {
     printf "${BOLD}━━━ CLI workspace lifecycle (integration) ━━━${RESET}\n\n"
     for cli_live_test in \
@@ -742,17 +740,8 @@ run_live_lane() {
         && [[ "$lane_matrix_server" == "$typedb_server_version" ]]; then
         lane_in_sdk_matrix=1
     fi
-    # TypeDB 3.11 has no migration profile: connected migrations refuse it.
     lane_migrations=1
-    if [[ "$typedb_server_version" == 3.11.* ]]; then
-        lane_migrations=0
-    fi
-    # Staged purchase plans bind given rows, which TypeDB 3.11 lacks; the V3
-    # staged suites skip there, so run them only where they prove something.
     lane_given_rows=1
-    if [[ "$typedb_server_version" == 3.11.* ]]; then
-        lane_given_rows=0
-    fi
     # Live workspace tests author their manifests on
     # TYPE_BRIDGE_MIGRATION_SEMANTIC_PROFILE; keep it on the lane's profile.
     migration_profile_env=()
@@ -1031,14 +1020,13 @@ run_live_lane() {
                 -p type-bridge --test plan_builder_live -- --ignored
     fi
 
-    # Connects without an HTTP port, so discovery takes the band-8 gRPC
-    # fallback and must reach the lane server's own band.
-    run_step "runtime gRPC-only fallback discovery" \
+    # An exact version declaration permits a gRPC-only connection.
+    run_step "runtime declared-version gRPC connection" \
         run_with_timeout 10m \
-        env TYPEDB_GRPC_FALLBACK_ADDRESS="$TYPEDB_ADDRESS" \
-            TYPEDB_GRPC_FALLBACK_VERSION="$typedb_server_version" \
+        env TYPEDB_GRPC_DECLARED_ADDRESS="$TYPEDB_ADDRESS" \
+            TYPEDB_GRPC_DECLARED_VERSION="$typedb_server_version" \
         cargo test --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-typedb-runtime --test grpc_fallback_live
+            -p type-bridge-typedb-runtime --test declared_version_live
 
     printf "${BOLD}━━━ Generated Rust projection (integration) ━━━${RESET}\n\n"
     if [[ -n "$sdk_report_dir" ]]; then
@@ -1100,17 +1088,6 @@ run_live_lane() {
 
     if [[ "$lane_migrations" == 1 ]]; then
         run_live_migration_steps
-    else
-        printf "${CYAN}Connected migrations refuse TypeDB %s (no migration profile); skipping the CLI workspace and recovery lifecycles.${RESET}\n\n" \
-            "$typedb_server_version"
-        printf "${BOLD}━━━ Unsupported-server migration refusal (integration) ━━━${RESET}\n\n"
-        run_step "unsupported migration apply creates no databases" \
-            run_with_timeout 10m \
-            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-            bash scripts/ci/run_exact_ignored_rust_test.sh \
-                unsupported_server_apply_creates_neither_database_live \
-                --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-cli --test e2e_workspace_live
     fi
 
     printf "${BOLD}━━━ Python (integration) ━━━${RESET}\n\n"
@@ -1381,9 +1358,7 @@ run_tls_transport_steps() {
 run_lane_tls() {
     printf "${BOLD}━━━ TLS transport (opt-in) ━━━${RESET}\n\n"
     if [[ "$lane_in_sdk_matrix" != 1 ]]; then
-        # The TLS lane asserts the band-9 driver identity and applies a
-        # workspace migration; TypeDB 3.11 is served by band 8 and refuses
-        # migrations.
+        # TLS acceptance requires a profile in the SDK matrix.
         printf "${CYAN}Skipping TLS transport on TypeDB %s: it needs a profile in the SDK matrix.${RESET}\n\n" \
             "$typedb_server_version"
     elif [[ "$isolated" != 1 ]]; then

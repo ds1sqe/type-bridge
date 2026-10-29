@@ -87,7 +87,7 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
     assert "rm -f /tmp/libpcre2.deb /tmp/perl-base.deb /var/log/dpkg.log" in source
     assert "/var/cache/ldconfig/aux-cache" in source
     assert "cargo build --locked --release -p type-bridge-server --no-default-features" in source
-    assert "--features band8,band9,v2-query" in source
+    assert "--features band9,v2-query" in source
     assert "&& chage --lastday 0 typebridge" in source
     assert "&& rm -f /etc/shadow-" in source
     assert "USER 10001:10001" in source

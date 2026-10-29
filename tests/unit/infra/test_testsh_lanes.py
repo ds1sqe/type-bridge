@@ -55,7 +55,7 @@ def _run(*arguments: str, **pins: str) -> subprocess.CompletedProcess[str]:
 def test_unknown_line_is_refused_with_usage() -> None:
     result = _run("--typedb", "3.10.0")
     assert result.returncode == 1
-    assert "--typedb must be one of 3.11.5 3.12.3 3.13.6 3.14.0 or all, got 3.10.0" in result.stderr
+    assert "--typedb must be one of 3.12.3 3.13.6 3.14.0 or all, got 3.10.0" in result.stderr
     assert "--typedb LINE" in result.stdout
 
 
@@ -107,7 +107,8 @@ def test_live_step_gates_follow_the_lane_not_a_pinned_server() -> None:
     # staged C ABI plans with the four-language writes.
     assert lane.count('if [[ "$lane_in_sdk_matrix" == 1 ]]; then') == 4
     assert 'if [[ "$lane_migrations" == 1 ]]; then\n        run_live_migration_steps' in lane
-    assert '[[ "$typedb_server_version" == 3.11.* ]]' in lane
+    assert "lane_migrations=1" in lane
+    assert "lane_given_rows=1" in lane
     pytest_step = lane[lane.index('run_step "pytest -m integration"') :]
     pytest_step = pytest_step[: pytest_step.index('printf "${BOLD}━━━ Node')]
     assert 'TYPE_BRIDGE_EXPECTED_SERVER_VERSION="$typedb_server_version"' in pytest_step

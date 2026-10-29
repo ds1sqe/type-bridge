@@ -3,7 +3,7 @@
 //! A builder declares bindings and caller values on a [`PlanDraft`], then
 //! validates the finished program against the installed schema authority.
 //! Caller values become `given` input columns when the transaction can carry
-//! a `given` stage, and plan literals otherwise (band-8 connections), so the
+//! a `given` stage, and plan literals otherwise (custom backends without given transport), so the
 //! adaptor renders them in both cases.
 
 pub(crate) mod authority;
@@ -13,7 +13,6 @@ pub(crate) mod input;
 pub(crate) mod insert;
 pub(crate) mod manager;
 pub(crate) mod put;
-pub(crate) mod read;
 pub(crate) mod reference;
 pub(crate) mod write;
 

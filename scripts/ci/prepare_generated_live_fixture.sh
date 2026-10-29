@@ -28,7 +28,6 @@ semantic_profile="${TYPE_BRIDGE_ACCEPTANCE_SEMANTIC_PROFILE:-typedb-3.13.6/v1}"
 output_dir="$(realpath -m "$requested_output")"
 
 case "$semantic_profile" in
-    typedb-3.11.5/v1) schema_source="$ACCEPTANCE_DIR/schema-3.11.5.yaml" ;;
     typedb-3.12.1/v1 | typedb-3.13.6/v1) schema_source="$ACCEPTANCE_DIR/schema.yaml" ;;
     *)
         echo "Unsupported generated-fixture semantic profile: $semantic_profile" >&2

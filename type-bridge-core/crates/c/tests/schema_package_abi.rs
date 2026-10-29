@@ -5567,7 +5567,7 @@ fn schema_package_open_v2_classifies_all_seven_nonempty_hostile_evidence_slots()
         |bytes| bytes.semantic = b"{".to_vec(),
         |bytes| bytes.binding = b"{".to_vec(),
         |bytes| bytes.scope.extend_from_slice(b"-foreign"),
-        |bytes| bytes.profile = b"typedb-3.11.5/v1".to_vec(),
+        |bytes| bytes.profile = b"typedb-0.0.0/v1".to_vec(),
     ];
 
     for mutate in mutations {

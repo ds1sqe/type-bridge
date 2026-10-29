@@ -14,59 +14,19 @@ use type_bridge_core_lib::version::{self as core_version, VersionError};
 use type_bridge_orm::error::OrmError;
 use type_bridge_orm::session::real_driver::{PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B9};
 
+fn previous_server_line() -> core_version::Version {
+    core_version::Version::new(3, core_version::MIN_SUPPORTED.minor - 1, 5)
+}
+
 // ── 1. Cargo.lock pin assertion ──────────────────────────────────────────────
 
-/// Assert that `PINNED_DRIVER_VERSION` matches the
-/// `type-bridge-typedb-driver-b8` entry in `Cargo.lock`, and that the pinned
-/// version falls in the expected protocol band.
-///
-/// If this test breaks after a dependency bump, update `PINNED_DRIVER_VERSION`
-/// in `crates/orm/src/session/real_driver.rs` to the new value.
+/// The compatibility pin follows the retained provider's lock-checked pin.
 #[test]
 fn cargo_lock_pin() {
-    // Read Cargo.lock at test time (relative to this crate's manifest dir).
-    let lock_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Cargo.lock");
-    let lock_contents =
-        std::fs::read_to_string(lock_path).expect("Cargo.lock not found relative to crate root");
-
-    // Find the band-8 driver fork package block and extract its version line.
-    // The block looks like:
-    //   [[package]]
-    //   name = "type-bridge-typedb-driver-b8"
-    //   version = "3.11.5"
-    let lock_version = lock_contents
-        .split("[[package]]")
-        .find(|block| block.contains("name = \"type-bridge-typedb-driver-b8\""))
-        .and_then(|block| {
-            block
-                .lines()
-                .find(|l| l.trim_start().starts_with("version = "))
-        })
-        .and_then(|line| {
-            // Extract the quoted value: version = "3.8.1"
-            let start = line.find('"')? + 1;
-            let end = line.rfind('"')?;
-            Some(&line[start..end])
-        })
-        .expect("could not parse type-bridge-typedb-driver-b8 version from Cargo.lock");
-
+    assert_eq!(PINNED_DRIVER_VERSION, PINNED_DRIVER_VERSION_B9);
     assert_eq!(
-        lock_version, PINNED_DRIVER_VERSION,
-        "PINNED_DRIVER_VERSION ({PINNED_DRIVER_VERSION}) does not match \
-         Cargo.lock type-bridge-typedb-driver-b8 version ({lock_version}); \
-         update the constant in crates/orm/src/session/real_driver.rs"
-    );
-
-    // Also assert the pinned driver is in the expected protocol band (8).
-    // A dep bump that crosses a band boundary requires a conscious update here.
-    let pinned: core_version::Version = PINNED_DRIVER_VERSION
-        .parse()
-        .expect("PINNED_DRIVER_VERSION must be a valid version string");
-    assert_eq!(
-        core_version::band(&pinned),
-        Some(8),
-        "pinned driver {PINNED_DRIVER_VERSION} is no longer in band 8; \
-         update PINNED_DRIVER_VERSION and review the compatibility window"
+        core_version::band(&PINNED_DRIVER_VERSION.parse().unwrap()),
+        Some(9)
     );
 }
 
@@ -132,10 +92,13 @@ fn cargo_lock_pin_b9() {
 /// contain "protocol" as a bare term (band numbers are not user-facing text).
 #[test]
 fn orm_error_band_mismatch_message_preserved() {
-    // Driver 3.12.1 (band 9) vs server 3.11.5 (band 8) → BandMismatch.
-    let core_err =
-        core_version::check_supported(&"3.12.1".parse().unwrap(), &"3.11.5".parse().unwrap())
-            .unwrap_err();
+    // Diagnostic mapping remains stable independently of server admission.
+    let core_err = VersionError::BandMismatch {
+        driver: "3.12.1".parse().unwrap(),
+        server: previous_server_line(),
+        driver_band: 9,
+        server_band: 8,
+    };
 
     // Wrap into OrmError via the #[from] impl.
     let orm_err: OrmError = core_err.into();
@@ -148,8 +111,8 @@ fn orm_error_band_mismatch_message_preserved() {
         "OrmError message missing driver version 3.12.1: {msg}"
     );
     assert!(
-        msg.contains("3.11.5"),
-        "OrmError message missing server version 3.11.5: {msg}"
+        msg.contains(&previous_server_line().to_string()),
+        "OrmError message missing detected server version: {msg}"
     );
 
     // Remediation stays interpreter-neutral while still telling users to
@@ -162,7 +125,7 @@ fn orm_error_band_mismatch_message_preserved() {
     // Protocol-band NUMBERS must never surface — the explanation stays in
     // human versions ("not protocol-compatible" prose is fine; "band 7" is not).
     assert!(
-        !msg.contains("band 8") && !msg.contains("band 9"),
+        !msg.contains(&format!("band {}", 8)) && !msg.contains("band 9"),
         "OrmError message exposes protocol band numbers: {msg}"
     );
     assert!(
@@ -173,15 +136,17 @@ fn orm_error_band_mismatch_message_preserved() {
 
 // ── 3. Window negative — Unsupported server via OrmError ────────────────────
 
-/// Server 3.10.4 is below the support floor (3.11.0). The error must name
+/// Server 3.10.4 is below the support floor (3.12.0). The error must name
 /// 3.10.4 and describe the supported window.
 #[test]
 fn orm_error_window_negative_server_3_10_4() {
-    // Use a retained 3.11 driver against a retired 3.10 server. The gate must
+    // Use a retained driver against a retired 3.10 server. The gate must
     // reject on the server window check.
-    let core_err =
-        core_version::check_supported(&"3.11.5".parse().unwrap(), &"3.10.4".parse().unwrap())
-            .unwrap_err();
+    let core_err = core_version::check_supported(
+        &PINNED_DRIVER_VERSION.parse().unwrap(),
+        &"3.10.4".parse().unwrap(),
+    )
+    .unwrap_err();
 
     let orm_err: OrmError = core_err.into();
     let msg = orm_err.to_string();
@@ -195,8 +160,8 @@ fn orm_error_window_negative_server_3_10_4() {
     // The window boundary must be mentioned so the user knows what is
     // acceptable.
     assert!(
-        msg.contains("3.11"),
-        "OrmError message missing window floor 3.11: {msg}"
+        msg.contains("3.12"),
+        "OrmError message missing window floor 3.12: {msg}"
     );
 }
 
@@ -299,7 +264,7 @@ const PLAIN_DDL: &str = "define\nentity person, owns name @key;";
 #[test]
 fn annotation_gate_rejects_annotated_ddl_on_pre_312_server() {
     let db = Database::with_backend(
-        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        Box::new(VersionedBackend::new(Some(previous_server_line()))),
         "gate-test",
     );
     let error = db
@@ -311,7 +276,7 @@ fn annotation_gate_rejects_annotated_ddl_on_pre_312_server() {
         "message must name 3.12: {message}"
     );
     assert!(
-        message.contains("3.11.5"),
+        message.contains(&previous_server_line().to_string()),
         "message must name the detected server: {message}"
     );
     assert!(
@@ -323,7 +288,7 @@ fn annotation_gate_rejects_annotated_ddl_on_pre_312_server() {
 #[test]
 fn annotation_gate_passes_plain_ddl_on_pre_312_server() {
     let db = Database::with_backend(
-        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        Box::new(VersionedBackend::new(Some(previous_server_line()))),
         "gate-test",
     );
     assert!(db.check_schema_annotation_support(PLAIN_DDL).is_ok());
@@ -339,14 +304,14 @@ fn annotation_gate_passes_annotated_ddl_on_312_server() {
 }
 
 #[test]
-fn given_stage_gate_rejects_312_server_when_provider_remains_band8() {
+fn given_stage_gate_requires_a_provider_with_given_transport() {
     let db = Database::with_backend(
         Box::new(VersionedBackend::new(Some(Version::new(3, 12, 0)))),
         "gate-test",
     );
     let error = db
         .check_given_stage_support()
-        .expect_err("band-8 fallback must not advertise given-row transport");
+        .expect_err("a custom backend without given transport must not advertise it");
     assert!(
         error.to_string().contains("active band-9 provider"),
         "unexpected error: {error}"
@@ -363,7 +328,7 @@ fn annotation_gate_defers_to_server_when_version_unknown() {
 
 #[tokio::test]
 async fn execute_raw_rejects_annotations_before_opening_schema_transaction() {
-    let backend = VersionedBackend::new(Some(Version::new(3, 11, 5)));
+    let backend = VersionedBackend::new(Some(previous_server_line()));
     let open_count = Arc::clone(&backend.open_count);
     let db = Database::with_backend(Box::new(backend), "gate-test");
 
@@ -385,7 +350,7 @@ async fn execute_raw_rejects_annotations_before_opening_schema_transaction() {
 
 #[tokio::test]
 async fn owned_schema_transaction_rejects_annotations_before_provider_query() {
-    let backend = VersionedBackend::new(Some(Version::new(3, 11, 5)));
+    let backend = VersionedBackend::new(Some(previous_server_line()));
     let queries = Arc::clone(&backend.inner.queries);
     let db = Database::with_backend(Box::new(backend), "gate-test");
     let mut transaction = db
@@ -410,7 +375,7 @@ async fn owned_schema_transaction_rejects_annotations_before_provider_query() {
 
 #[tokio::test]
 async fn shared_schema_transaction_rejects_annotations_before_provider_query() {
-    let backend = VersionedBackend::new(Some(Version::new(3, 11, 5)));
+    let backend = VersionedBackend::new(Some(previous_server_line()));
     let queries = Arc::clone(&backend.inner.queries);
     let db = Database::with_backend(Box::new(backend), "gate-test");
     let transaction = db
@@ -453,7 +418,7 @@ fn empty_rows() -> GivenRowsSpec {
 #[test]
 fn given_stage_gate_rejects_pre_312_server() {
     let db = Database::with_backend(
-        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        Box::new(VersionedBackend::new(Some(previous_server_line()))),
         "gate-test",
     );
     let error = db
@@ -465,7 +430,7 @@ fn given_stage_gate_rejects_pre_312_server() {
         "message must name 3.12: {message}"
     );
     assert!(
-        message.contains("3.11.5"),
+        message.contains(&previous_server_line().to_string()),
         "message must name the detected server: {message}"
     );
     assert!(
@@ -487,7 +452,7 @@ fn given_stage_gate_passes_on_312_server() {
 #[test]
 fn supports_given_stage_is_false_pre_312_and_when_unknown() {
     let pre = Database::with_backend(
-        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        Box::new(VersionedBackend::new(Some(previous_server_line()))),
         "gate-test",
     );
     assert!(!pre.supports_given_stage());
@@ -499,7 +464,7 @@ fn supports_given_stage_is_false_pre_312_and_when_unknown() {
 #[tokio::test]
 async fn execute_with_rows_rejects_pre_312_before_opening_transaction() {
     let db = Database::with_backend(
-        Box::new(VersionedBackend::new(Some(Version::new(3, 11, 5)))),
+        Box::new(VersionedBackend::new(Some(previous_server_line()))),
         "gate-test",
     );
     let error = db

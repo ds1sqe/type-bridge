@@ -225,8 +225,8 @@ def load_inventory(path: Path = INVENTORY_PATH) -> CargoReleaseInventory:
         )
     if len(inventory.first_party_packages) != 16:
         raise InventoryError("Cargo inventory must contain exactly 16 first-party public packages")
-    if len(inventory.immutable_packages) != 2:
-        raise InventoryError("Cargo inventory must contain exactly two immutable packages")
+    if inventory.immutable_packages:
+        raise InventoryError("Cargo inventory must not contain immutable packages")
     private_bindings = frozenset(package.name for package in inventory.binding_packages)
     if private_bindings != EXPECTED_PRIVATE_BINDINGS:
         raise InventoryError(

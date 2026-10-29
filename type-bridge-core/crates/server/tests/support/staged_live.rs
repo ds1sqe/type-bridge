@@ -212,9 +212,7 @@ pub async fn connect(name: &str) -> Database {
 }
 
 /// Whether the live server takes `given` rows, which every staged purchase
-/// plan binds. TypeDB 3.11 does not, so those tests skip there with a reason
-/// instead of failing with `query_plan_given_transport_unsupported`; test.sh
-/// runs them only on the lanes that support given rows.
+/// plan binds. A custom provider must also advertise given-row transport.
 pub async fn given_rows_supported(test: &str) -> bool {
     let db = connect("tb_server_v3_given_rows_probe").await;
     let supported = db.supports_given_stage();
