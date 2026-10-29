@@ -28,28 +28,8 @@ impl ProjectedCrudExecutor<'_> {
         operation: ProjectedBatchOperation,
         row: ProjectedBatchRow,
         control: &ProjectedBatchInvocationControl,
-    ) -> Result<(ProjectedBatch, bool), SdkExecutionDiagnostic> {
-        let tokens = self.model_integrity(model)?.query_tokens();
-        let native = tokens
-            .fields()
-            .values()
-            .all(|field| field.multiplicity().collection_mode() == CollectionMode::Unordered)
-            && tokens
-                .roles()
-                .values()
-                .all(|role| role.multiplicity().collection_mode() == CollectionMode::Unordered);
-        let batch = if native {
-            ProjectedBatch::try_single_write(
-                self.installed,
-                model.clone(),
-                operation,
-                row,
-                control,
-            )?
-        } else {
-            self.single_controlled_batch(model, operation, row, control)?
-        };
-        Ok((batch, native))
+    ) -> Result<ProjectedBatch, SdkExecutionDiagnostic> {
+        ProjectedBatch::try_single_write(self.installed, model.clone(), operation, row, control)
     }
 
     pub(super) async fn execute_controlled_single_write(
@@ -57,25 +37,7 @@ impl ProjectedCrudExecutor<'_> {
         target: WriteTarget<'_>,
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
-        native: bool,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        if !native {
-            let executor = ProjectedBatchExecutor::new(self.installed);
-            let mapper = |result| single_batch_thing(result, batch.model()).map(Some);
-            return match target {
-                WriteTarget::Database(database) => {
-                    executor
-                        .execute_mapped(database, batch, control, None, mapper)
-                        .await
-                }
-                WriteTarget::Transaction(transaction) => {
-                    executor
-                        .execute_in_transaction_mapped(transaction, batch, control, None, mapper)
-                        .await
-                }
-            }?
-            .ok_or_else(|| single_batch_result_invalid(batch.model()));
-        }
         let ceiling = match target {
             WriteTarget::Database(database) => database.answer_limits(),
             WriteTarget::Transaction(transaction) => transaction.answer_limits(),
@@ -182,7 +144,7 @@ impl ProjectedCrudExecutor<'_> {
             }
             _ => return Err(single_batch_result_invalid(batch.model())),
         };
-        crate::projected_batch_executor::validate_provider_scalar_inputs(&[batch
+        crate::projected_batch_executor::validate_provider_write_inputs(&[batch
             .row_at(0)
             .expect("one validated write row")])?;
         let authority = self
@@ -490,8 +452,7 @@ mod tests {
                     ProjectedBatchRow::Create(input),
                     &control,
                 )
-                .unwrap()
-                .0;
+                .unwrap();
             assert_eq!(insert_batch.resource_measure().statements(), 1);
             let inserted = executor
                 .prepare_controlled_write(

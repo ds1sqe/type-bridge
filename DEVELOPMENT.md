@@ -71,8 +71,9 @@ duplicated directory snapshot here.
   values, transactions, CRUD, queries, migration, canonical serialization,
   diagnostics, resource limits, and cancellation. Generated nominal models
   enforce package and role boundaries. Ordered schema packages expose typed
-  manager filters; live TypeDB 3.12.3 checks keep ordered attributes and role
-  lists empty because the provider does not accept those instances. Public C
+  manager filters. TypeDB list DML is not implemented on 3.12.3, 3.13.6 or
+  3.14.0 (measured); TypeBridge refuses non-empty ordered writes; populated
+  ordered roles written by other clients are refused at hydration. Public C
   support is limited to the verified Ubuntu 24.04 x86_64 shared-runtime matrix;
   extending that matrix requires complete artifact and public-consumer checks.
 - Generated files are projections of canonical schema authority and must not be

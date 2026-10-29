@@ -127,6 +127,11 @@ pub(crate) fn update_by_iid(
             role: role.clone(),
         }))
         .collect();
+    let operation = if deleted.is_empty() && attached.is_empty() {
+        Operation::Rows
+    } else {
+        ROWS
+    };
     let mut pipeline = vec![Stage::Match { patterns }];
     if !deleted.is_empty() {
         pipeline.push(Stage::Delete { items: deleted });
@@ -144,7 +149,7 @@ pub(crate) fn update_by_iid(
         thing,
         update.document_roles,
     )));
-    draft.finish(authority, pipeline, ROWS, no_columns())
+    draft.finish(authority, pipeline, operation, no_columns())
 }
 
 /// Delete the thing of exactly `type_id` at `iid`; absent is not an error.

@@ -2520,6 +2520,8 @@ mod tests {
     #[derive(Default)]
     struct State {
         events: Vec<String>,
+        pending_writes: usize,
+        visible_writes: usize,
         kinds: Vec<TxType>,
         fail_close: bool,
         given: bool,
@@ -2553,6 +2555,11 @@ mod tests {
         }
     }
     impl Fake {
+        fn record_write(&self, query: &str) {
+            if query == "earlier-write" || query.split_whitespace().any(|part| part == "update") {
+                self.0.lock().unwrap().pending_writes += 1;
+            }
+        }
         fn documents(&self) -> Option<QueryResult> {
             let mut state = self.0.lock().unwrap();
             state
@@ -2578,6 +2585,7 @@ mod tests {
     impl TransactionOps for Fake {
         fn query(&mut self, query: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
             self.0.lock().unwrap().events.push(query.to_owned());
+            self.record_write(query);
             let fail =
                 query == "fail" || (self.0.lock().unwrap().fail_delete && query.contains("delete"));
             let typed = query == "typed-fail";
@@ -2604,6 +2612,7 @@ mod tests {
             typeql: &str,
             rows: GivenRowsSpec,
         ) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+            self.record_write(typeql);
             self.0.lock().unwrap().given_payloads.push(rows.clone());
             self.0.lock().unwrap().given_queries.push(typeql.to_owned());
             self.0
@@ -2620,11 +2629,17 @@ mod tests {
             Box::pin(async move { Ok(answer) })
         }
         fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
-            self.0.lock().unwrap().events.push("commit".into());
+            let mut state = self.0.lock().unwrap();
+            state.events.push("commit".into());
+            let pending = state.pending_writes;
+            state.visible_writes += pending;
+            state.pending_writes = 0;
             Box::pin(async { Ok(()) })
         }
         fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
-            self.0.lock().unwrap().events.push("rollback".into());
+            let mut state = self.0.lock().unwrap();
+            state.events.push("rollback".into());
+            state.pending_writes = 0;
             Box::pin(async { Ok(()) })
         }
         fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -2935,6 +2950,165 @@ mod tests {
                 assert!(state.lock().unwrap().events.is_empty());
             } else {
                 assert_eq!(&state.lock().unwrap().events[2..], ["commit", "close"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn authored_ordered_model_fetch_refuses_population_before_commit_and_rolls_back_all_writes()
+     {
+        use crate::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptor};
+        use crate::match_request::{DescriptorId, MatchResult, SlotValue};
+        use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+        use type_bridge_contract::query_plan::QueryOperand;
+        use type_bridge_contract::query_plan::v3::{DocumentRole, PlanBuilder};
+        use type_bridge_contract::schema::OwnsFactId;
+        use type_bridge_contract::value::CanonicalValue;
+        for ordered in [false, true] {
+            for populated in [false, true] {
+                let (original, _) =
+                    crate::query_v2_adapter_tests::generic_model_selection(&[0], false);
+                let registry = Arc::new(DescriptorRegistry::new());
+                for descriptor in original.snapshot() {
+                    match descriptor {
+                        TypeDescriptor::Entity(entity) => {
+                            registry.register_entity(entity).unwrap();
+                        }
+                        TypeDescriptor::Relation(mut relation) => {
+                            if relation.type_name == "employment" {
+                                relation.roles[0].ordered = ordered;
+                                relation.roles.push(RoleDescriptor {
+                                    role_name: "anchor".into(),
+                                    player_type_names: vec!["person".into()],
+                                    cardinality: Some((1, Some(1))),
+                                    ..Default::default()
+                                });
+                                relation.owned_attributes.push(OwnedAttributeDescriptor {
+                                    field_name: "status".into(),
+                                    attr_name: "status".into(),
+                                    value_type: crate::ValueType::Long,
+                                    annotations: vec![],
+                                    is_optional: true,
+                                    is_ordered: false,
+                                    doc: None,
+                                    meta: Default::default(),
+                                });
+                            }
+                            registry.register_relation(relation).unwrap();
+                        }
+                    }
+                }
+                let authority = crate::match_request::descriptor_plan::MatchRequestAdapterAuthority::from_registry(&registry).unwrap();
+                let employment = TypeId::new(TypeKind::Relation, "employment").unwrap();
+                let mut builder = PlanBuilder::new();
+                let thing = builder.exact(employment.clone());
+                builder.update(
+                    thing,
+                    OwnsFactId::new(employment, AttributeId::new("status").unwrap()).unwrap(),
+                    QueryOperand::Literal {
+                        value: CanonicalValue::Long(2),
+                    },
+                );
+                builder.fetch_held(
+                    thing,
+                    ["anchor", "worker"]
+                        .into_iter()
+                        .map(|name| {
+                            DocumentRole::new(RoleId::new("employment", name).unwrap(), false)
+                        })
+                        .collect(),
+                );
+                let plan = builder
+                    .build(
+                        authority.declared(),
+                        authority
+                            .context()
+                            .managed_state()
+                            .managed_semantic_schema()
+                            .clone(),
+                    )
+                    .unwrap();
+                plan.validate_model_projection().unwrap();
+                assert!(plan.writes());
+                let source = Arc::new(
+                    crate::match_request::build_plan_fetch_stack(
+                        &registry,
+                        &plan,
+                        &[(thing, DescriptorId::new("relation:employment"))],
+                    )
+                    .unwrap(),
+                );
+                assert_eq!(source.plans().len(), 1);
+                let (mut tx, state) = fixture(Default::default());
+                let mut document = serde_json::json!({
+                    "_iid":"0x20", "_type":"employment", "attributes":{"status":2},
+                    "_role_0_iid":"0x01", "_role_0_type":"person", "_role_0_attributes":{"person-name":"Alice"},
+                    "_role_1_iid":null, "_role_1_type":null, "_role_1_attributes":null,
+                });
+                if populated {
+                    document["_role_1_iid"] = serde_json::json!("0x02");
+                    document["_role_1_type"] = serde_json::json!("person");
+                    document["_role_1_attributes"] = serde_json::json!({"person-name":"Bob"});
+                }
+                state.lock().unwrap().snapshot_documents = Some(vec![document]);
+                let earlier = tx.stage(StagedQuery::new("earlier-write", true)).unwrap();
+                let pending = tx
+                    .stage_plan_fetch(source, registry, Default::default())
+                    .unwrap();
+                assert!(matches!(pending.get(), Err(PendingError::NotCommitted)));
+                let outcome = tx.commit().await;
+                let recorded = state.lock().unwrap();
+                assert_eq!(recorded.kinds, [TxType::Write]);
+                assert_eq!(recorded.pending_writes, 0);
+                if ordered && populated {
+                    let error = outcome.unwrap_err();
+                    assert_eq!(
+                        error.diagnostic().code().as_str(),
+                        "query_plan_hydration_ordered_role"
+                    );
+                    assert_eq!(recorded.visible_writes, 0);
+                    assert!(!recorded.events.iter().any(|event| event == "commit"));
+                    assert_eq!(
+                        &recorded.events[recorded.events.len() - 2..],
+                        ["rollback", "close"]
+                    );
+                    assert!(earlier.get().is_err());
+                    assert_eq!(
+                        pending
+                            .get()
+                            .err()
+                            .unwrap()
+                            .diagnostic()
+                            .unwrap()
+                            .code()
+                            .as_str(),
+                        "query_plan_hydration_ordered_role"
+                    );
+                } else {
+                    outcome.unwrap();
+                    assert_eq!(recorded.visible_writes, 2);
+                    assert_eq!(
+                        &recorded.events[recorded.events.len() - 2..],
+                        ["commit", "close"]
+                    );
+                    earlier.get().unwrap();
+                    let result = pending.get().unwrap();
+                    let MatchResult::Rows { rows } =
+                        result.result().for_request(result.request()).unwrap()
+                    else {
+                        panic!("model rows")
+                    };
+                    let SlotValue::One(model) = &rows[0].slots()[0] else {
+                        panic!("one model")
+                    };
+                    let workers = model
+                        .roles()
+                        .iter()
+                        .find(|role| role.role().name == "worker")
+                        .unwrap()
+                        .players();
+                    assert_eq!(workers.len(), usize::from(populated));
+                }
             }
         }
     }

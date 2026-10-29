@@ -3691,7 +3691,9 @@ impl PyProjectedModelManager {
 
     fn validate_ordered_create(&self, py: Python<'_>, instance: &Bound<'_, PyAny>) -> PyResult<()> {
         if self.uses_successor_runtime() {
-            project_create(py, self.package.as_ref(), &self.type_id, instance)?;
+            project_create(py, self.package.as_ref(), &self.type_id, instance)?
+                .validate_native_write()
+                .map_err(py_sdk_diagnostic)?;
         }
         Ok(())
     }
@@ -9900,6 +9902,7 @@ structs:
       - { name: note, type: string, optional: true }
 "#;
 
+    // Batch mutations keep writable tags; memo retains the ordered package projection.
     const BATCH_SCHEMA: &str = r#"format: typebridge.schema/v2
 attributes:
   identifier: { value: string }
@@ -9914,9 +9917,12 @@ entities:
       identifier: { key: true }
       tag:
         card: { min: 0, max: 4 }
+  memo:
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
         ordered: true
         distinct: true
-  memo: {}
   switch:
     owns:
       flag: { key: true }
@@ -10967,7 +10973,26 @@ class StructBase:
     }
 
     fn install_ordered(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
-        let authority = authority(ORDERED_SCHEMA, "python-ordered-native.yaml");
+        install_ordered_schema(py, ORDERED_SCHEMA)
+    }
+
+    fn install_ordered_origins(py: Python<'_>) -> (RuntimeProjection, Arc<InstalledPackage>) {
+        // Origin fencing needs writable roles while the package retains ordered ownerships.
+        let (entities, roles) = ORDERED_SCHEMA.split_once("\nrelations:").unwrap();
+        let schema = format!(
+            "{entities}\nrelations:{}",
+            roles
+                .replace("        ordered: true\n", "")
+                .replace("        distinct: true\n", "")
+        );
+        install_ordered_schema(py, &schema)
+    }
+
+    fn install_ordered_schema(
+        py: Python<'_>,
+        schema: &str,
+    ) -> (RuntimeProjection, Arc<InstalledPackage>) {
+        let authority = authority(schema, "python-ordered-native.yaml");
         let authority_bytes = encode_schema_authority(&authority);
         let projection = python_projection(&authority);
         let projection_json = String::from_utf8(to_canonical_json(&projection).unwrap()).unwrap();
@@ -11017,46 +11042,23 @@ class StructBase:
             "_iid": iid,
             "_type": "person",
             "attributes": {
-                "tag": [{"value": "source-tag"}]
+                "tag": ["source-tag"]
             }
-        })
-    }
-
-    fn origin_gathering_document(iid: &str, player_iid: &str) -> serde_json::Value {
-        serde_json::json!({
-            "_iid": iid,
-            "_type": "gathering",
-            "attributes": {},
-            "role_players": [{
-                "role_name": "participant",
-                "player_iid": player_iid,
-                "player_type_name": "person",
-                "attributes": {
-                    "tag": [{"value": "source-tag"}]
-                }
-            }]
         })
     }
 
     fn origin_gathering_fetch_document(iid: &str, player_iid: &str) -> serde_json::Value {
         serde_json::json!({
-            "_iid": iid,
-            "_type": "gathering",
-            "attributes": {},
-            "_role_0_iid": player_iid,
-            "_role_0_type": "person",
-            "_role_0_attributes": {"tag": ["source-tag"]}
+            "_iid": iid, "_type": "gathering", "attributes": {},
+            "_role_0_iid": player_iid, "_role_0_type": "person",
+            "_role_0_attributes": {"tag": ["source-tag"]},
         })
     }
 
     fn origin_container_document(iid: &str, player_iid: &str) -> serde_json::Value {
         serde_json::json!({
-            "_iid": iid,
-            "_type": "container",
-            "attributes": {},
-            "_role_0_iid": player_iid,
-            "_role_0_type": "gathering",
-            "_role_0_attributes": {}
+            "_iid": iid, "_type": "container", "attributes": {},
+            "_role_0_iid": player_iid, "_role_0_type": "gathering", "_role_0_attributes": {},
         })
     }
 
@@ -12901,6 +12903,48 @@ class StructBase:
                     "ordered_distinct_duplicate"
                 );
             }
+            let tag = manager
+                .package
+                .class(&tag_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call1(("unsupported",))
+                .unwrap();
+            let kwargs = PyDict::new(py);
+            kwargs
+                .set_item("tag", PyTuple::new(py, [tag]).unwrap())
+                .unwrap();
+            let unsupported = manager
+                .package
+                .class(&manager.type_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py)
+                .call((), Some(&kwargs))
+                .unwrap();
+            for error in [
+                manager.insert(py, unsupported.clone()).unwrap_err(),
+                manager.put(py, unsupported.clone()).unwrap_err(),
+                manager.update(py, unsupported).unwrap_err(),
+            ] {
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("code")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "query_plan_ordered_collection_unsupported"
+                );
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("sdk_category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "unsupported_capability"
+                );
+            }
         });
     }
 
@@ -14087,7 +14131,7 @@ def public_state(value):
     fn ordered_manager_facades_accept_same_origin_and_fence_foreign_before_io() {
         Python::initialize();
         Python::attach(|py| {
-            let (_, package) = install_ordered(py);
+            let (_, package) = install_ordered_origins(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
                 .unwrap()
@@ -14143,7 +14187,6 @@ def public_state(value):
             );
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb1"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb1", "0xa1")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
@@ -14166,7 +14209,7 @@ def public_state(value):
             {
                 let state = same_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.queries.len(), 1);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }
@@ -14213,7 +14256,7 @@ def public_state(value):
     fn ordered_borrowed_facade_keeps_transaction_authority_identity() {
         Python::initialize();
         Python::attach(|py| {
-            let (_, package) = install_ordered(py);
+            let (_, package) = install_ordered_origins(py);
             let person_id = package
                 .type_by_label("person", TypeKind::Entity)
                 .unwrap()
@@ -14251,7 +14294,6 @@ def public_state(value):
                 .expect("borrowed transaction hydration should succeed");
 
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb2"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb2", "0xa2")]),
             ]);
             let same = Arc::new(Database::with_backend_authority(
@@ -14286,7 +14328,7 @@ def public_state(value):
     fn ordered_query_facades_bind_direct_and_borrowed_origins_but_remote_stays_unbound() {
         Python::initialize();
         Python::attach(|py| {
-            let (_, package) = install_ordered(py);
+            let (_, package) = install_ordered_origins(py);
             let gathering_id = package
                 .type_by_label("gathering", TypeKind::Relation)
                 .unwrap()
@@ -14397,7 +14439,6 @@ def public_state(value):
             .unwrap();
             let borrowed = hydrate_first_query_thing(py, package.as_ref(), borrowed_handle);
             let (same_backend, same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb4"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb4", "0xa4")]),
             ]);
             let same_database = Arc::new(Database::with_backend_authority(
@@ -14460,7 +14501,6 @@ def public_state(value):
             assert!(remote_reference().origin_carrier().is_none());
 
             let (target_backend, target_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb5"})]),
                 QueryResult::Documents(vec![origin_gathering_fetch_document("0xb5", "0xa5")]),
             ]);
             let target = Arc::new(Database::with_backend(
@@ -14483,7 +14523,7 @@ def public_state(value):
             {
                 let state = target_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.queries.len(), 1);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }
@@ -14601,7 +14641,7 @@ def public_state(value):
     fn ordered_manager_and_query_relation_players_fence_foreign_origin_before_io() {
         Python::initialize();
         Python::attach(|py| {
-            let (_, package) = install_ordered(py);
+            let (_, package) = install_ordered_origins(py);
             let gathering_id = package
                 .type_by_label("gathering", TypeKind::Relation)
                 .unwrap()
@@ -14615,7 +14655,7 @@ def public_state(value):
             let manager_authority = DatabaseConnectionAuthority::isolated();
 
             let (manager_backend, manager_source_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![origin_gathering_document("0xb6", "0xa6")]),
+                QueryResult::Documents(vec![origin_gathering_fetch_document("0xb6", "0xa6")]),
             ]);
             let manager_source = Arc::new(Database::with_backend_authority(
                 Box::new(manager_backend),
@@ -14634,8 +14674,6 @@ def public_state(value):
                 .expect("manager relation hydration should succeed");
 
             let (manager_same_backend, manager_same_state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![serde_json::json!({"iid":"0xb6"})]),
-                QueryResult::Documents(vec![serde_json::json!({"iid":"0xc6"})]),
                 QueryResult::Documents(vec![origin_container_document("0xc6", "0xb6")]),
             ]);
             let manager_same = Arc::new(Database::with_backend_authority(
@@ -14668,8 +14706,7 @@ def public_state(value):
             {
                 let state = manager_same_state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                // Ordered transport resolves the reference, inserts its IID, then reads complete state.
-                assert_eq!(state.queries.len(), 3);
+                assert_eq!(state.queries.len(), 1);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }
@@ -14935,7 +14972,7 @@ def public_state(value):
     }
 
     #[test]
-    fn ordered_insert_and_put_publish_exact_provider_rehydration() {
+    fn ordered_single_writes_refuse_nonempty_values_before_provider_io() {
         Python::initialize();
         Python::attach(|py| {
             for put in [false, true] {
@@ -14948,33 +14985,18 @@ def public_state(value):
                     .type_by_label("tag", TypeKind::Attribute)
                     .unwrap()
                     .clone();
-                let iid = if put { "0xab" } else { "0xaa" };
-                let responses = vec![
-                    QueryResult::Documents(vec![serde_json::json!({"iid": iid})]),
-                    QueryResult::Documents(vec![serde_json::json!({
-                        "_iid": iid,
-                        "_type": "person",
-                        "attributes": {
-                            "tag": [{"value": "provider-normalized"}]
-                        }
-                    })]),
-                ];
-                let (backend, state) = OriginRecordingBackend::new(responses);
+                let (backend, state) = OriginRecordingBackend::new(vec![]);
                 let manager = origin_manager(
                     Arc::clone(&package),
                     person_id.clone(),
                     Some(Arc::new(Database::with_backend(
                         Box::new(backend),
-                        if put {
-                            "provider-normalized-put"
-                        } else {
-                            "provider-normalized-insert"
-                        },
+                        "ordered-refusal",
                     ))),
                     None,
                     Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
                 );
-                let authored = package
+                let tag = package
                     .class(&tag_id, ProjectedModelForm::Complete)
                     .unwrap()
                     .bind(py)
@@ -14982,7 +15004,7 @@ def public_state(value):
                     .unwrap();
                 let kwargs = PyDict::new(py);
                 kwargs
-                    .set_item("tag", PyTuple::new(py, [authored]).unwrap())
+                    .set_item("tag", PyTuple::new(py, [tag]).unwrap())
                     .unwrap();
                 let instance = package
                     .class(&person_id, ProjectedModelForm::Complete)
@@ -14990,69 +15012,36 @@ def public_state(value):
                     .bind(py)
                     .call((), Some(&kwargs))
                     .unwrap();
-
-                let published = if put {
+                let error = if put {
                     manager.put(py, instance.clone())
                 } else {
                     manager.insert(py, instance.clone())
                 }
-                .expect("valid provider rehydration should publish");
-                assert!(published.bind(py).is(&instance));
+                .unwrap_err();
                 assert_eq!(
-                    instance
-                        .getattr("iid")
+                    error
+                        .value(py)
+                        .getattr("code")
                         .unwrap()
                         .extract::<String>()
                         .unwrap(),
-                    iid
+                    "query_plan_ordered_collection_unsupported"
                 );
-                let values = instance
-                    .call_method0("runtime_values")
-                    .unwrap()
-                    .cast_into::<PyDict>()
-                    .unwrap();
-                let tags = values
-                    .get_item("tag")
-                    .unwrap()
-                    .unwrap()
-                    .cast_into::<PyTuple>()
-                    .unwrap();
-                assert_eq!(tags.len(), 1);
                 assert_eq!(
-                    tags.get_item(0)
-                        .unwrap()
-                        .call_method0("runtime_attribute_value")
+                    error
+                        .value(py)
+                        .getattr("sdk_category")
                         .unwrap()
                         .extract::<String>()
                         .unwrap(),
-                    "provider-normalized"
+                    "unsupported_capability"
                 );
-
-                let proof = match package.facade_origins.proof(&instance).unwrap() {
-                    FacadeProjectionProof::Thing(proof) => proof,
-                    FacadeProjectionProof::Reference(_) => {
-                        panic!("insert/put retained a reference proof")
-                    }
-                    FacadeProjectionProof::RolePlayer { .. } => {
-                        panic!("insert/put retained a nested role-player proof")
-                    }
-                    FacadeProjectionProof::DetachedSnapshot => {
-                        panic!("insert/put retained a detached snapshot proof")
-                    }
-                };
-                let field_id = package.projection.projection().models()[&person_id]
-                    .complete_read()
-                    .fields()[0]
-                    .token();
-                assert_eq!(
-                    proof.fields()[field_id][0].to_attribute_value(),
-                    AttributeValue::String("provider-normalized".into())
-                );
+                assert!(instance.getattr("iid").unwrap().is_none());
+                assert!(package.facade_origins.proof(&instance).is_none());
                 let state = state.lock().unwrap();
-                assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 2);
-                assert_eq!(state.commits, 1);
-                assert_eq!(state.rollbacks, 0);
+                assert!(state.opens.is_empty());
+                assert!(state.queries.is_empty());
+                assert_eq!(state.commits, 0);
             }
         });
     }
@@ -15068,7 +15057,7 @@ def public_state(value):
                     .unwrap()
                     .clone();
                 let responses = vec![QueryResult::Documents(vec![serde_json::json!({
-                    "iid": "not-a-canonical-iid"
+                    "_iid": "not-a-canonical-iid", "_type": "person", "attributes": {}
                 })])];
                 let (backend, state) = OriginRecordingBackend::new(responses);
                 let database = Arc::new(Database::with_backend(
@@ -15113,7 +15102,7 @@ def public_state(value):
                         .unwrap()
                         .extract::<String>()
                         .unwrap(),
-                    "provider_hydration_failed"
+                    "query_remote_v3_document_value"
                 );
                 assert!(instance.getattr("iid").unwrap().is_none());
                 assert!(package.facade_origins.proof(&instance).is_none());
@@ -15164,10 +15153,9 @@ def failing_initialize(target, original):
                     .type_by_label("person", TypeKind::Entity)
                     .unwrap()
                     .clone();
-                let responses = vec![
-                    QueryResult::Documents(vec![serde_json::json!({"iid": "0xac"})]),
-                    QueryResult::Documents(vec![origin_person_document("0xac")]),
-                ];
+                let responses = vec![QueryResult::Documents(vec![
+                    serde_json::json!({"_iid": "0xac", "_type": "person", "attributes": {}}),
+                ])];
                 let (backend, state) = OriginRecordingBackend::new(responses);
                 let manager = origin_manager(
                     Arc::clone(&package),
@@ -15218,7 +15206,7 @@ def failing_initialize(target, original):
                 assert!(package.facade_origins.proof(&instance).is_none());
                 let state = state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.queries.len(), 2);
+                assert_eq!(state.queries.len(), 1);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
             }
@@ -15229,9 +15217,12 @@ def failing_initialize(target, original):
                 .unwrap()
                 .clone();
             let (backend, state) = OriginRecordingBackend::new(vec![
-                QueryResult::Documents(vec![origin_person_document("0xad")]),
-                QueryResult::Ok,
-                QueryResult::Documents(vec![origin_person_document("0xad")]),
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid": "0xad", "_type": "person", "attributes": {}}),
+                ]),
+                QueryResult::Documents(vec![
+                    serde_json::json!({"_iid": "0xad", "_type": "person", "attributes": {}}),
+                ]),
             ]);
             let manager = origin_manager(
                 Arc::clone(&package),
@@ -15299,7 +15290,7 @@ def failing_initialize(target, original):
             assert!(Arc::ptr_eq(&prior_proof, &after_proof));
             let state = state.lock().unwrap();
             assert_eq!(state.opens, [TxType::Read, TxType::Write]);
-            assert_eq!(state.queries.len(), 3);
+            assert_eq!(state.queries.len(), 2);
             assert_eq!(state.commits, 1);
             assert_eq!(state.rollbacks, 0);
             assert_eq!(state.closes, 1);
@@ -16628,26 +16619,32 @@ class BoundaryIterator:
             let (database, state) = BatchRecordingBackend::fixture(vec![], false);
             let manager = origin_manager(
                 Arc::clone(&package),
-                person_id.clone(),
+                memo_id.clone(),
                 Some(database),
                 None,
                 Arc::new(ProviderRuntimeOwner::new().expect("provider runtime should start")),
             );
-            let valid = batch_person(py, package.as_ref(), "valid", "valid", None);
-            let invalid = batch_person(py, package.as_ref(), "invalid", "duplicate", None);
+            let memo_class = package
+                .class(&memo_id, ProjectedModelForm::Complete)
+                .unwrap()
+                .bind(py);
+            let valid = memo_class.call0().unwrap().unbind();
+            let invalid = memo_class.call0().unwrap().unbind();
             let values = invalid
                 .bind(py)
                 .getattr("_values")
                 .unwrap()
                 .cast_into::<PyDict>()
                 .unwrap();
-            let tags = values
-                .get_item("tag")
+            let tag = package
+                .class(
+                    package.type_by_label("tag", TypeKind::Attribute).unwrap(),
+                    ProjectedModelForm::Complete,
+                )
                 .unwrap()
-                .unwrap()
-                .cast_into::<PyTuple>()
+                .bind(py)
+                .call1(("duplicate",))
                 .unwrap();
-            let tag = tags.get_item(0).unwrap();
             values
                 .set_item("tag", PyTuple::new(py, [tag.clone(), tag]).unwrap())
                 .unwrap();

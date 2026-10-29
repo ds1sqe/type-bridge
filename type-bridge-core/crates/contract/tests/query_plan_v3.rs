@@ -1834,3 +1834,76 @@ fn native_output_columns_use_the_binding_budget_while_v1_remains_frozen() {
         Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(16))
     );
 }
+
+#[test]
+fn native_write_stages_refuse_ordered_collections_without_a_scalar_escape() {
+    use type_bridge_contract::diagnostic::DiagnosticCategory;
+    use type_bridge_contract::query_plan::v3::AttachItem;
+    let schema = schema_with_ordered_collections();
+    let mut stages = stage_plans()
+        .into_iter()
+        .filter(|(name, _)| {
+            matches!(
+                *name,
+                "insert" | "put" | "update" | "delete_has" | "link" | "delete_links"
+            )
+        })
+        .map(|(name, plan)| (name, plan.pipeline().to_vec()))
+        .collect::<Vec<_>>();
+    for (name, stage) in [
+        (
+            "attach_field",
+            Stage::Attach {
+                items: vec![AttachItem::Has {
+                    owner: id(0),
+                    field: field("score"),
+                    operand: literal(2),
+                    optional: false,
+                }],
+            },
+        ),
+        (
+            "attach_role",
+            Stage::Attach {
+                items: vec![AttachItem::Links {
+                    relation: id(1),
+                    role: role(),
+                    player: id(0),
+                    optional: false,
+                }],
+            },
+        ),
+        (
+            "clear_role",
+            Stage::Delete {
+                items: vec![DeleteItem::Players {
+                    relation: id(1),
+                    role: role(),
+                }],
+            },
+        ),
+    ] {
+        stages.push((
+            name,
+            vec![
+                Stage::Match {
+                    patterns: vec![pat(0, entity("account")), pat(1, relation())],
+                },
+                stage,
+            ],
+        ));
+    }
+    for (name, pipeline) in stages {
+        let error = QueryPlanV3::new(spec(pipeline, vec![]), &schema).unwrap_err();
+        assert_eq!(
+            error.category(),
+            DiagnosticCategory::UnsupportedCapability,
+            "{name}"
+        );
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_ordered_collection_unsupported",
+            "{name}"
+        );
+    }
+}

@@ -153,8 +153,11 @@ open_counter_create(const type_bridge_schema_package_t *package, int64_t value,
 
 static int
 open_person_create(const type_bridge_schema_package_t *package, const char *key,
-                   fixture_person_create **out_create,
+                   int nonempty, fixture_person_create **out_create,
                    type_bridge_execution_diagnostics_t **out_diagnostics) {
+  fixture_aliases *alias = NULL;
+  const fixture_aliases *aliases[1];
+  fixture_person_create_field_aliases_chunks_v1_t aliases_chunk;
   fixture_identifier *identifier = NULL;
   fixture_score *score = NULL;
   fixture_valzubool *boolean_value = NULL;
@@ -168,6 +171,7 @@ open_person_create(const type_bridge_schema_package_t *package, const char *key,
   fixture_person_create_args_v1_t args;
 
   memset(&args, 0, sizeof(args));
+  memset(&aliases_chunk, 0, sizeof(aliases_chunk));
   CHECK(fixture_identifier_open(package, view_of(key), &identifier,
                                 out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_score_open(package, 30, &score, out_diagnostics) ==
@@ -192,10 +196,17 @@ open_person_create(const type_bridge_schema_package_t *package, const char *key,
                                  out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_valzuduration_open(package, view_of("PT30S"), &duration,
                                    out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  if (nonempty) {
+    CHECK(fixture_aliases_open(package, view_of("unsupported"), &alias, out_diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    aliases[0] = alias;
+    aliases_chunk.struct_size = sizeof(aliases_chunk);
+    aliases_chunk.version = FIXTURE_CREATE_ARGS_VERSION;
+    aliases_chunk.values = aliases;
+    aliases_chunk.count = 1u;
+    args.field_aliases_chunks = &aliases_chunk;
+  }
   args.struct_size = sizeof(args);
   args.version = FIXTURE_CREATE_ARGS_VERSION;
-  /* aliases is intentionally empty: TypeDB 3.12.1 cannot provide ordered
-   * list-instance evidence, so this lane exercises no ordered values. */
   args.field_identifier = identifier;
   args.field_score = score;
   args.field_valzubool = boolean_value;
@@ -219,6 +230,7 @@ open_person_create(const type_bridge_schema_package_t *package, const char *key,
   CHECK(fixture_valzubool_close(&boolean_value) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_score_close(&score) == TYPE_BRIDGE_STATUS_OK);
   CHECK(fixture_identifier_close(&identifier) == TYPE_BRIDGE_STATUS_OK);
+  if (alias != NULL) CHECK(fixture_aliases_close(&alias) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -285,7 +297,7 @@ static void model_plan_mark(const char *name) {
   if (path != NULL) {
     FILE *file = fopen(path, "w");
     if (file == NULL) abort();
-    if (*name != '\0') fputs("unkeyed_entity_iid_lifecycle.", file);
+    if (*name != '\0' && strchr(name, '.') == NULL) fputs("unkeyed_entity_iid_lifecycle.", file);
     if (fputs(name, file) < 0 || fclose(file) != 0) abort();
   }
 #else
@@ -388,6 +400,127 @@ static int run_counter_plan_lifecycle(
   CHECK(fixture_counter_create_close(&replacement) == TYPE_BRIDGE_STATUS_OK);
   for (index = 0u; index < 2u; ++index)
     CHECK(fixture_counter_create_close(&inputs[index]) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int open_empty_ordered_link(
+    const type_bridge_schema_package_t *package, type_bridge_byte_view_t iid,
+    int nonempty, fixture_networkzhlink_create **out,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  fixture_networkzhlink_create_args_v1_t args;
+  fixture_identifier *identifier = NULL;
+  fixture_person_ref *reference = NULL;
+  fixture_networkzhlink_origin_player *origin = NULL;
+  fixture_networkzhlink_destination_player *destination = NULL;
+  fixture_networkzhlink_participant_player *participant = NULL;
+  const fixture_networkzhlink_participant_player *participants[1];
+  fixture_networkzhlink_create_role_participant_chunks_v1_t chunk;
+  memset(&args, 0, sizeof(args));
+  memset(&chunk, 0, sizeof(chunk));
+  CHECK(fixture_identifier_open(package, view_of("data-link-forward"), &identifier, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_ref_from_iid(package, iid, &reference, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_origin_player_from_person(reference, &origin, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_destination_player_from_person(reference, &destination, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  if (nonempty) {
+    CHECK(fixture_networkzhlink_participant_player_from_person(reference, &participant, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+    participants[0] = participant;
+    chunk.struct_size = sizeof(chunk);
+    chunk.version = FIXTURE_CREATE_ARGS_VERSION;
+    chunk.values = participants;
+    chunk.count = 1u;
+    args.role_participant_chunks = &chunk;
+  }
+  args.struct_size = sizeof(args);
+  args.version = FIXTURE_CREATE_ARGS_VERSION;
+  args.field_identifier = identifier;
+  args.role_origin = origin;
+  args.role_destination = destination;
+  CHECK(fixture_networkzhlink_create_open(package, &args, out, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  if (participant != NULL) CHECK(fixture_networkzhlink_participant_player_close(&participant) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_destination_player_close(&destination) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_origin_player_close(&origin) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_ref_close(&reference) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_identifier_close(&identifier) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int check_ordered_refusal(type_bridge_execution_diagnostics_t **diagnostics) {
+  type_bridge_execution_diagnostic_view_v1_t view;
+  size_t count = 0u;
+  CHECK(type_bridge_execution_diagnostics_count(*diagnostics, &count) == TYPE_BRIDGE_STATUS_OK && count == 1u);
+  CHECK(type_bridge_execution_diagnostics_get_v1(*diagnostics, 0u, &view) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(view.category == TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_UNSUPPORTED_CAPABILITY);
+  CHECK(same_text(view.code, "query_plan_ordered_collection_unsupported"));
+  CHECK(type_bridge_execution_diagnostics_close(diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  return 0;
+}
+
+static int run_empty_ordered_lifecycle(
+    const type_bridge_schema_package_t *package, const type_bridge_database_t *database,
+    const type_bridge_query_execution_limits_v1_t *limits,
+    type_bridge_execution_diagnostics_t **diagnostics) {
+  fixture_person_create *input = NULL;
+  fixture_person *person = NULL;
+  fixture_networkzhlink_create *link_input = NULL;
+  fixture_networkzhlink *link = NULL;
+  uint8_t person_storage[256], link_storage[256];
+  size_t person_length = 0u, link_length = 0u, count = 0u;
+  type_bridge_byte_view_t person_iid, link_iid, borrowed;
+  CHECK(open_person_create(package, "data-ada", 0, &input, diagnostics) == 0);
+  model_plan_mark("ordered_distinct_collections.entity_insert");
+  CHECK(fixture_person_database_insert_v2(database, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_person_iid(person, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(copy_iid(borrowed, person_storage, sizeof(person_storage), &person_length));
+  person_iid.data = person_storage; person_iid.length = person_length;
+  model_plan_identity("data-ada", person_iid);
+  CHECK(fixture_person_aliases_count(person, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("ordered_distinct_collections.entity_update");
+  CHECK(fixture_person_database_update_v2(database, person_iid, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("ordered_distinct_collections.entity_read");
+  CHECK(fixture_person_database_get_by_iid_v2(database, person_iid, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_person_aliases_count(person, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(open_empty_ordered_link(package, person_iid, 0, &link_input, diagnostics) == 0);
+  model_plan_mark("ordered_distinct_collections.role_insert");
+  CHECK(fixture_networkzhlink_database_insert_v2(database, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_networkzhlink_iid(link, &borrowed, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(copy_iid(borrowed, link_storage, sizeof(link_storage), &link_length));
+  link_iid.data = link_storage; link_iid.length = link_length;
+  model_plan_identity("link-forward", link_iid);
+  CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("ordered_distinct_collections.role_update");
+  CHECK(fixture_networkzhlink_database_update_v2(database, link_iid, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("ordered_distinct_collections.role_read");
+  CHECK(fixture_networkzhlink_database_get_by_iid_v2(database, link_iid, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  model_plan_mark("");
+  CHECK(fixture_networkzhlink_participant_count(link, &count, diagnostics) == TYPE_BRIDGE_STATUS_OK && count == 0u);
+  CHECK(fixture_networkzhlink_close(&link) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(open_person_create(package, "data-ada", 1, &input, diagnostics) == 0);
+  model_plan_mark("ordered_distinct_collections.refused_nonempty");
+  CHECK(fixture_person_database_insert_v2(database, input, limits, NULL, &person, diagnostics) == TYPE_BRIDGE_STATUS_UNSUPPORTED);
+  CHECK(person == NULL && check_ordered_refusal(diagnostics) == 0);
+  model_plan_mark("");
+  CHECK(fixture_person_create_close(&input) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_create_close(&link_input) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(open_empty_ordered_link(package, person_iid, 1, &link_input, diagnostics) == 0);
+  model_plan_mark("ordered_distinct_collections.refused_nonempty");
+  CHECK(fixture_networkzhlink_database_insert_v2(database, link_input, limits, NULL, &link, diagnostics) == TYPE_BRIDGE_STATUS_UNSUPPORTED);
+  CHECK(link == NULL && check_ordered_refusal(diagnostics) == 0);
+  model_plan_mark("");
+  CHECK(fixture_networkzhlink_create_close(&link_input) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_networkzhlink_database_delete_by_iid_v2(database, link_iid, limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
+  CHECK(fixture_person_database_delete_by_iid_v2(database, person_iid, limits, NULL, diagnostics) == TYPE_BRIDGE_STATUS_OK);
   return 0;
 }
 
@@ -1030,7 +1163,7 @@ int main(void) {
                                          &database_config, &limits) == 0);
   puts("ABI 1.6 database and transaction policy entries: passed");
 
-  CHECK(open_person_create(package, "query-target", &person_create,
+  CHECK(open_person_create(package, "query-target", 0, &person_create,
                            &diagnostics) == 0);
   CHECK(fixture_person_database_insert_v2(database, person_create, &limits,
                                           NULL, &person, &diagnostics) ==
@@ -1044,6 +1177,7 @@ int main(void) {
   CHECK(fixture_person_close(&person) == TYPE_BRIDGE_STATUS_OK);
 
   CHECK(run_counter_plan_lifecycle(package, database, &limits, &diagnostics) == 0);
+  CHECK(run_empty_ordered_lifecycle(package, database, &limits, &diagnostics) == 0);
   CHECK(run_unkeyed_lifecycles(package, database, person_iid, &limits,
                                &diagnostics) == 0);
   CHECK(run_robot_batches(package, database, &limits, &diagnostics) == 0);

@@ -61,6 +61,10 @@ entities:
       name: { key: true }
       tag:
         card: { min: 0, max: 4 }
+  memo:
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
         ordered: true
 relations:
   assignment:
@@ -85,8 +89,12 @@ entities:
       name: { key: true }
       tag:
         card: { min: 0, max: 4 }
-        ordered: true
       foreign: { card: { min: 0 } }
+  memo:
+    owns:
+      tag:
+        card: { min: 0, max: 4 }
+        ordered: true
 relations:
   assignment:
     owns:
@@ -1058,7 +1066,39 @@ async fn successor_empty_batches_do_no_provider_work_on_every_public_surface() {
 }
 
 #[tokio::test]
-async fn owned_entity_results_preserve_row_and_ordered_collection_order() {
+async fn nonempty_ordered_batch_refuses_before_provider_io_without_post_hooks() {
+    let schema = SUCCESSOR_SCHEMA.replacen(
+        "      tag:\n        card: { min: 0, max: 4 }",
+        "      tag:\n        card: { min: 0, max: 4 }\n        ordered: true",
+        1,
+    );
+    let (database, state) = fixture_named(
+        "ordered-refusal",
+        vec![],
+        CommitBehavior::Success,
+        installed_from(&schema, true),
+    );
+    let hook = Arc::new(CountingHook::default());
+    let mut manager = database.entities::<Person>();
+    manager.add_hook(hook.clone());
+    let error = manager
+        .insert_many(vec![PersonCreate::named("person")])
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        Some("query_plan_ordered_collection_unsupported")
+    );
+    assert_eq!(hook.before.load(Ordering::SeqCst), 1);
+    assert_eq!(hook.after.load(Ordering::SeqCst), 0);
+    let state = state.lock().unwrap();
+    assert!(state.opens.is_empty());
+    assert!(state.calls.is_empty());
+    assert_eq!(state.commits, 0);
+}
+
+#[tokio::test]
+async fn owned_entity_results_preserve_row_and_materialized_collection_order() {
     let (database, state) = fixture(
         vec![
             Response::Documents(vec![

@@ -70,6 +70,10 @@ struct Record {
 }
 
 fn minimal_fixture() -> type_bridge_orm::InstalledRuntimeProjection {
+    fixture_with_ordered_text(false)
+}
+
+fn fixture_with_ordered_text(ordered: bool) -> type_bridge_orm::InstalledRuntimeProjection {
     let docs = SchemaDocumentSet::parse([(
         DocumentId::new("e01.yaml").unwrap(),
         r#"format: typebridge.schema/v2
@@ -87,7 +91,16 @@ entities:
     owns:
       name: { key: true }
       text: { card: 1 }
-"#,
+"#
+        .replace(
+            "text: { card: 1 }",
+            if ordered {
+                "text: { ordered: true, card: 1 }"
+            } else {
+                "text: { card: 1 }"
+            },
+        )
+        .as_str(),
     )])
     .unwrap();
     let resolved = resolve(
@@ -1980,4 +1993,33 @@ async fn schema_less_generated_managers_keep_the_query_authority_fence() {
     let error = session.query(record).unwrap().count().await.unwrap_err();
     assert_eq!(error.code(), Some("schema_authority_required"));
     assert_eq!(state.lock().unwrap().events.len(), before);
+}
+
+#[tokio::test]
+async fn nonempty_ordered_write_is_refused_before_provider_io() {
+    let state = Arc::new(Mutex::new(State::default()));
+    let backend = Backend {
+        state: Arc::clone(&state),
+        responses: Arc::new(Mutex::new(VecDeque::new())),
+        rollback_error: false,
+        close_error: false,
+    };
+    let orm = OrmDatabase::with_backend(Box::new(backend), "ordered-refusal");
+    let db = crate::session::Database::<TestSchema>::from_test_parts(
+        orm,
+        fixture_with_ordered_text(true),
+    );
+    let error = db
+        .entities::<Record>()
+        .insert(RecordCreate {
+            name: "n1".into(),
+            value: "nonempty".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        Some("query_plan_ordered_collection_unsupported")
+    );
+    assert!(state.lock().unwrap().events.is_empty());
 }

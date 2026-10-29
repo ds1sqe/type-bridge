@@ -193,7 +193,8 @@ impl TransactionContextMutationLease {
         let rows = query
             .rows
             .ok_or_else(|| OrmError::Transaction("Native batch plans require given rows".into()))?;
-        if query.writes {
+        // Readback retains the poison latch already armed by an earlier write.
+        if query.writes || self.phase == MutationLeasePhase::PossibleEffect {
             self.mutate_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
                 .await
         } else {

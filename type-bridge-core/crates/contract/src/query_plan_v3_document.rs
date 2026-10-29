@@ -65,7 +65,7 @@ impl FetchDocumentShape {
             .collect();
         let mut ordered_roles = false;
         let mut complete_model_roles = true;
-        'types: for candidate in &bindings[&document.thing] {
+        for candidate in &bindings[&document.thing] {
             let ancestors = index.ancestors(candidate);
             for fact in index.schema.facts() {
                 let SchemaFact::Relates(role) = fact else {
@@ -76,7 +76,6 @@ impl FetchDocumentShape {
                 }
                 if !role.collection_mode().is_unordered() {
                     ordered_roles = true;
-                    break 'types;
                 }
                 complete_model_roles &= document
                     .roles
@@ -111,7 +110,7 @@ impl FetchDocumentShape {
     /// Whether one terminal fetch can represent every possible model's roles.
     #[must_use]
     pub const fn supports_write_model_projection(&self) -> bool {
-        self.complete_model_roles && !self.ordered_roles
+        self.complete_model_roles
     }
 
     /// Concrete type labels admitted by this terminal fetch shape.

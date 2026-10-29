@@ -987,6 +987,9 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
+        create
+            .validate_native_write()
+            .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
         let tx = self
             .db
             .inner_orm()

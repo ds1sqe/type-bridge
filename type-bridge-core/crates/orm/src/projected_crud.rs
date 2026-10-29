@@ -1258,7 +1258,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
@@ -1268,7 +1268,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Database(database),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1300,7 +1299,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
@@ -1310,7 +1309,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Transaction(transaction),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1420,7 +1418,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
@@ -1433,7 +1431,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Database(database),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1469,7 +1466,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
@@ -1482,7 +1479,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Transaction(transaction),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1600,7 +1596,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
@@ -1610,7 +1606,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Database(database),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1642,7 +1637,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Insert,
             ProjectedBatchRow::Create(input.clone()),
@@ -1652,7 +1647,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Transaction(transaction),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1762,7 +1756,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
@@ -1775,7 +1769,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Database(database),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -1811,7 +1804,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         validate_iid(input.type_id(), iid)?;
         control.check()?;
-        let (batch, native) = self.single_controlled_write_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Update,
             ProjectedBatchRow::Update {
@@ -1824,7 +1817,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             controlled_update::WriteTarget::Transaction(transaction),
             &batch,
             control,
-            native,
         ))
         .await
     }
@@ -3213,17 +3205,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         mode: ExecutionMode<'_>,
     ) -> Result<DynamicEntityManager<'static>, SdkExecutionDiagnostic> {
-        if descriptor
-            .owned_attributes
-            .iter()
-            .any(|attribute| attribute.is_ordered)
-        {
-            // raw remainder: native plans do not yet represent ordered ownerships.
-            return Ok(DynamicEntityManager::with_canonical_transaction(
-                transaction.clone(),
-                descriptor,
-            ));
-        }
         let registry = self
             .installed
             .manager_registry()
@@ -3253,18 +3234,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         type_id: &TypeId,
         mode: ExecutionMode<'_>,
     ) -> Result<DynamicRelationManager<'static>, SdkExecutionDiagnostic> {
-        if descriptor
-            .owned_attributes
-            .iter()
-            .any(|attribute| attribute.is_ordered)
-            || descriptor.roles.iter().any(|role| role.ordered)
-        {
-            // raw remainder: native plans do not yet represent ordered ownerships or roles.
-            return Ok(DynamicRelationManager::with_canonical_transaction(
-                transaction.clone(),
-                descriptor,
-            ));
-        }
         let registry = self
             .installed
             .manager_registry()
@@ -3292,6 +3261,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         input: &ProjectedCreate,
     ) -> Result<PreparedEntityCreate, SdkExecutionDiagnostic> {
         input.validate_for(self.installed)?;
+        input.validate_native_write()?;
         let prepared = self.prepare_entity_type(input.type_id())?;
         Ok(PreparedEntityCreate {
             type_id: prepared.type_id,
@@ -3307,6 +3277,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         input: &ProjectedCreate,
     ) -> Result<PreparedRelationCreate, SdkExecutionDiagnostic> {
         input.validate_for(self.installed)?;
+        input.validate_native_write()?;
         let prepared = self.prepare_relation_type(input.type_id())?;
         Ok(PreparedRelationCreate {
             type_id: prepared.type_id,
@@ -3467,24 +3438,13 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     /// A create as an insert or update plan input: the given non-key values
     /// and every non-key ownership and role the update clears first (the
     /// helpers' complete replacement). `None` keeps the released path for
-    /// models with ordered fields or roles.
+    /// literal values the provider cannot transport.
     fn lower_plan_write(
         &self,
         input: &ProjectedCreate,
     ) -> Result<Option<PreparedPlanWrite>, SdkExecutionDiagnostic> {
         let model = self.model_integrity(input.type_id())?;
         let tokens = model.query_tokens();
-        if tokens
-            .fields()
-            .values()
-            .any(|token| token.multiplicity().collection_mode() != CollectionMode::Unordered)
-            || tokens
-                .roles()
-                .values()
-                .any(|token| token.multiplicity().collection_mode() != CollectionMode::Unordered)
-        {
-            return Ok(None);
-        }
         let mut created = Vec::new();
         let mut fields = Vec::new();
         for (field_id, values) in input.fields() {
@@ -3509,7 +3469,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let mut cleared_fields: Vec<OwnsFactId> = tokens
             .fields()
             .values()
-            .filter(|token| !token.is_key())
+            .filter(|token| {
+                !token.is_key() && token.multiplicity().collection_mode().is_unordered()
+            })
             .map(|token| token.declaring_id().clone())
             .collect();
         cleared_fields.sort();
@@ -3518,7 +3480,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             created,
             fields,
             cleared_fields,
-            cleared_roles: tokens.roles().keys().cloned().collect(),
+            cleared_roles: tokens
+                .roles()
+                .iter()
+                .filter(|(_, token)| token.multiplicity().collection_mode().is_unordered())
+                .map(|(role, _)| role.clone())
+                .collect(),
         }))
     }
 
@@ -3526,8 +3493,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     /// ownerships to clear and multi-valued values to attach.
     ///
     /// `None` keeps the released path: a create without a key value is an
-    /// insert (no read either), and ordered fields need list syntax the plan
-    /// vocabulary does not have.
+    /// insert (no read either), and empty ordered fields are omitted.
     fn lower_keyed_put(
         &self,
         input: &ProjectedCreate,
@@ -3552,7 +3518,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             let multiplicity = token.multiplicity();
             if values.is_empty() && !token.is_key() {
                 if multiplicity.collection_mode() != CollectionMode::Unordered {
-                    return Ok(None);
+                    continue;
                 }
                 put.cleared.push(token.declaring_id().clone());
                 continue;
@@ -3582,7 +3548,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 continue;
             }
             if token.multiplicity().collection_mode() != CollectionMode::Unordered {
-                return Ok(None);
+                continue;
             }
             put.cleared.push(token.declaring_id().clone());
         }
@@ -3761,7 +3727,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return after_write(transaction, hydrated).await;
             }
         }
-        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+        // raw remainder: band-8 control-character literals; removed in 06.
         let manager = DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -3794,6 +3760,11 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         prepared: &PreparedEntityCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
+        if prepared.keyed_put.is_none() {
+            return self
+                .insert_entity_prepared(transaction, prepared, mode)
+                .await;
+        }
         let manager = self
             .entity_manager(
                 transaction,
@@ -3814,7 +3785,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return Ok(thing);
             }
         }
-        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+        // raw remainder: band-8 control-character literals; removed in 06.
         let released = DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -3920,7 +3891,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return after_write(transaction, hydrated).await;
             }
         }
-        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+        // raw remainder: band-8 control-character literals; removed in 06.
         let manager = DynamicEntityManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -4092,7 +4063,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4109,7 +4080,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4417,7 +4388,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                         .map_err(|error| {
                             mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
                         })?;
-                        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+                        // raw remainder: band-8 control-character literals; removed in 06.
                         transaction.query_canonical(&query).await.map_err(|error| {
                             mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
                         })?
@@ -4497,7 +4468,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return Ok(thing);
             }
         }
-        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+        // raw remainder: band-8 control-character literals; removed in 06.
         let manager = DynamicRelationManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -4571,7 +4542,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 return Ok(thing);
             }
         }
-        // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+        // raw remainder: band-8 control-character literals; removed in 06.
         let manager = DynamicRelationManager::with_canonical_transaction(
             transaction.clone(),
             Arc::clone(&prepared.descriptor),
@@ -4618,7 +4589,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })? {
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4642,7 +4613,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             let answer = transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4673,7 +4644,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4688,7 +4659,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4702,7 +4673,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
-            // raw remainder: ordered collections or band-8 control-character literals; removed in 06.
+            // raw remainder: band-8 control-character literals; removed in 06.
             transaction.query_canonical(&query).await.map_err(|error| {
                 mode.orm_at_type(error, SdkProviderOperation::Write, &prepared.type_id)
             })?;
@@ -4995,6 +4966,14 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     role_id,
                 )
             })?;
+            if token.multiplicity().collection_mode() == CollectionMode::OrderedList {
+                return Err(integrity_at_role(
+                    "query_plan_hydration_ordered_role",
+                    "populated ordered roles require provider fetch ordinals",
+                    type_id,
+                    role_id,
+                ));
+            }
             if token
                 .annotations()
                 .keys()
@@ -5691,8 +5670,7 @@ struct PreparedKeyedPut {
 }
 
 /// A create in plan form: the given values and every non-key ownership an
-/// update clears first. Absent when an ordered field or role needs list
-/// syntax the plan vocabulary does not have.
+/// update clears first. Empty ordered fields and roles are omitted.
 struct PreparedPlanWrite {
     /// Every given value, keys included, for an insert.
     created: Vec<(OwnsFactId, CanonicalValue)>,

@@ -1210,6 +1210,7 @@ pub struct ProjectedCreate {
     roles: BTreeMap<RoleId, Vec<ProjectedReference>>,
     present_roles: BTreeSet<RoleId>,
     size: ProjectedSize,
+    unsupported_ordered_member: Option<SdkDiagnosticPathSegment>,
 }
 
 impl ProjectedCreate {
@@ -1233,12 +1234,26 @@ impl ProjectedCreate {
             collect_unique_fields(&type_id, fields, &mut budget, ValidationOrigin::Input)?;
         let supplied_roles =
             collect_unique_roles(&type_id, roles, &mut budget, ValidationOrigin::Input)?;
-        let (fields, present_fields) =
-            validate_create_fields(installed, &type_id, model, supplied_fields, &mut budget)?;
-        let (roles, present_roles) =
-            validate_create_roles(installed, &type_id, model, supplied_roles, &mut budget)?;
+        let mut unsupported_ordered_member = None;
+        let (fields, present_fields) = validate_create_fields(
+            installed,
+            &type_id,
+            model,
+            supplied_fields,
+            &mut budget,
+            &mut unsupported_ordered_member,
+        )?;
+        let (roles, present_roles) = validate_create_roles(
+            installed,
+            &type_id,
+            model,
+            supplied_roles,
+            &mut budget,
+            &mut unsupported_ordered_member,
+        )?;
         let size = budget.finish();
         Ok(Self {
+            unsupported_ordered_member,
             brand: ProjectionBrand::from_installed(installed),
             type_id,
             fields,
@@ -1247,6 +1262,24 @@ impl ProjectedCreate {
             present_roles,
             size,
         })
+    }
+
+    /// All measured providers reject nonempty lists; keep this refusal before IO.
+    #[doc(hidden)]
+    pub fn validate_native_write(&self) -> Result<(), SdkExecutionDiagnostic> {
+        if let Some(member) = &self.unsupported_ordered_member {
+            return Err(with_path(
+                SdkExecutionDiagnostic::unsupported_capability(
+                    sdk_code("query_plan_ordered_collection_unsupported"),
+                    sdk_message("Supported TypeDB providers do not implement ordered list DML"),
+                ),
+                vec![
+                    SdkDiagnosticPathSegment::Type(self.type_id.clone()),
+                    member.clone(),
+                ],
+            ));
+        }
+        Ok(())
     }
 
     /// Return the exact projected model type.
@@ -1653,6 +1686,7 @@ fn validate_create_fields(
     model: &ModelProjection,
     mut supplied: BTreeMap<OwnsFactId, Vec<ProjectedAttributeValue>>,
     budget: &mut ProjectedBudget,
+    unsupported_ordered_member: &mut Option<SdkDiagnosticPathSegment>,
 ) -> Result<PresentFields, SdkExecutionDiagnostic> {
     let allowed = model
         .create()
@@ -1704,6 +1738,12 @@ fn validate_create_fields(
             budget,
             ValidationOrigin::Input,
         )?;
+        if unsupported_ordered_member.is_none()
+            && !values.is_empty()
+            && !token.multiplicity().collection_mode().is_unordered()
+        {
+            *unsupported_ordered_member = Some(SdkDiagnosticPathSegment::Field(field_id.clone()));
+        }
         output.insert(field_id.clone(), values);
     }
     Ok((output, present_fields))
@@ -1841,6 +1881,7 @@ fn validate_create_roles(
     model: &ModelProjection,
     mut supplied: BTreeMap<RoleId, Vec<ProjectedReference>>,
     budget: &mut ProjectedBudget,
+    unsupported_ordered_member: &mut Option<SdkDiagnosticPathSegment>,
 ) -> Result<PresentReferenceRoles, SdkExecutionDiagnostic> {
     let allowed = model.create().roles().keys().collect::<BTreeSet<_>>();
     if let Some(role_id) = supplied.keys().find(|role_id| !allowed.contains(role_id)) {
@@ -1920,6 +1961,12 @@ fn validate_create_roles(
                 first_index,
                 duplicate_index,
             ));
+        }
+        if unsupported_ordered_member.is_none()
+            && !references.is_empty()
+            && !token.multiplicity().collection_mode().is_unordered()
+        {
+            *unsupported_ordered_member = Some(SdkDiagnosticPathSegment::Role(role_id.clone()));
         }
         output.insert(role_id.clone(), references);
     }

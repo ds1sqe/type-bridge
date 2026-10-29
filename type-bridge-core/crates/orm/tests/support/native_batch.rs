@@ -206,7 +206,9 @@ pub fn item(source: &str, mut document: Value) -> AnswerItem {
             }
             for index in 0..32 {
                 let key = format!("_role_{index}_players");
-                if !source.contains(&format!("\"{key}\"")) {
+                let iid_key = format!("_role_{index}_iid");
+                let collected = source.contains(&format!("\"{key}\""));
+                if !collected && !source.contains(&format!("\"{iid_key}\"")) {
                     break;
                 }
                 let variable = format!("PlanFetchRole{index}");
@@ -216,10 +218,33 @@ pub fn item(source: &str, mut document: Value) -> AnswerItem {
                     .next()
                     .expect("role variable in native fetch");
                 let role = prefix.rsplit('(').next().expect("native role label").trim();
-                document[&key] = players.iter().filter(|player| player["role"].as_str().is_some_and(|name| name.rsplit(':').next() == Some(role))).map(|player| {
-                    let mut attributes_value = player["attributes"].clone(); attributes(&mut attributes_value);
-                    json!({"_iid":player["iid"], "_type":player["type_name"], "attributes":attributes_value})
-                }).collect::<Vec<_>>().into();
+                let selected = players
+                    .iter()
+                    .filter(|player| {
+                        player["role"]
+                            .as_str()
+                            .is_some_and(|name| name.rsplit(':').next() == Some(role))
+                    })
+                    .collect::<Vec<_>>();
+                if collected {
+                    document[&key] = selected.into_iter().map(|player| {
+                        let mut attributes_value = player["attributes"].clone(); attributes(&mut attributes_value);
+                        json!({"_iid":player["iid"], "_type":player["type_name"], "attributes":attributes_value})
+                    }).collect::<Vec<_>>().into();
+                } else {
+                    assert!(
+                        selected.len() <= 1,
+                        "uncollected role fixtures expand in separate documents"
+                    );
+                    let player = selected.first().copied();
+                    document[&iid_key] = player.map_or(Value::Null, |player| player["iid"].clone());
+                    document[format!("_role_{index}_type")] =
+                        player.map_or(Value::Null, |player| player["type_name"].clone());
+                    let mut attributes_value =
+                        player.map_or(Value::Null, |player| player["attributes"].clone());
+                    attributes(&mut attributes_value);
+                    document[format!("_role_{index}_attributes")] = attributes_value;
+                }
             }
         }
         if let Some(values) = document.get_mut("attributes") {

@@ -71,6 +71,46 @@ pub fn schema_with_ordered_role() -> DeclaredSchema {
 }
 
 #[allow(dead_code)]
+pub fn schema_with_ordered_collections() -> DeclaredSchema {
+    declare(
+        schema_facts()
+            .into_iter()
+            .map(|fact| match fact {
+                SchemaFact::Owns(field) => {
+                    SchemaFact::Owns(field.with_collection_mode(CollectionMode::OrderedList))
+                }
+                SchemaFact::Relates(role) => {
+                    SchemaFact::Relates(role.with_collection_mode(CollectionMode::OrderedList))
+                }
+                fact => fact,
+            })
+            .collect(),
+    )
+}
+
+#[allow(dead_code)]
+pub fn schema_with_ordered_and_unordered_roles() -> DeclaredSchema {
+    let mut facts = schema_facts()
+        .into_iter()
+        .map(|fact| match fact {
+            SchemaFact::Relates(role) => {
+                SchemaFact::Relates(role.with_collection_mode(CollectionMode::OrderedList))
+            }
+            fact => fact,
+        })
+        .collect::<Vec<_>>();
+    // This ordinary role sorts after the ordered role, testing the full completeness walk.
+    let tail = RoleId::new("membership", "z-tail").unwrap();
+    facts.push(SchemaFact::Relates(
+        RelatesFact::new(RelatesFactId::new(relation(), tail.clone()).unwrap(), None).unwrap(),
+    ));
+    facts.push(SchemaFact::Plays(PlaysFact::new(
+        PlaysFactId::new(entity("account"), tail).unwrap(),
+    )));
+    declare(facts)
+}
+
+#[allow(dead_code)]
 pub fn schema_with_subtype_role() -> DeclaredSchema {
     let mut facts = schema_facts();
     let child = TypeId::new(TypeKind::Relation, "child-membership").unwrap();

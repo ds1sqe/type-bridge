@@ -297,6 +297,13 @@ All notable changes to TypeBridge will be documented in this file.
   `VerifiedLegacyHead::{source_migration, schema_typeql}`. Adopt with 2.3.x
   first, then use canonical workspace histories.
 
+- In 2.3.3, ordered role players were written through scalar links without
+  list order. Nonempty ordered role and attribute writes now refuse before
+  provider IO with `query_plan_ordered_collection_unsupported`; use empty
+  lists until TypeDB implements list DML. Batch pre-hooks still observe the
+  attempted write before this refusal; post-hooks do not run. Populated
+  ordered roles from other clients remain refused at hydration.
+
 - `OrmError::ExecutionDiagnostic` carries canonical execution failures through
   native managers. Exhaustive matches must handle this variant; commit errors
   retain their transaction category and durability outcome.
@@ -316,6 +323,12 @@ All notable changes to TypeBridge will be documented in this file.
 - Policy-controlled exact entity and relation reads use the same native
   manager plans as ordinary reads, retaining bounded streaming, cancellation,
   deadlines, cumulative resource limits and caller-owned transaction reuse.
+- Empty ordered ownerships and roles now use native query plans. Nonempty
+  ordered writes fail before provider IO with
+  `query_plan_ordered_collection_unsupported`; TypeDB 3.12.3, 3.13.6 and
+  3.14.0 do not implement list DML. Complete authored write/fetch model
+  projections accept empty ordered roles and refuse populated ordered roles
+  during hydration before commit.
 
 - Generated C plan getters use `<model>_plan_<field>`, borrowed result views
   use `<model>_plan_view_t`, and nested player views use

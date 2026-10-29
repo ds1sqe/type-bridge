@@ -262,9 +262,13 @@ fn installed() -> InstalledRuntimeProjection {
 }
 
 fn installed_ordered() -> InstalledRuntimeProjection {
+    installed_ordered_with_schema(ORDERED_SCHEMA)
+}
+
+fn installed_ordered_with_schema(schema: &str) -> InstalledRuntimeProjection {
     let documents = SchemaDocumentSet::parse([(
         DocumentId::new("projected-crud-ordered.yaml").unwrap(),
-        ORDERED_SCHEMA,
+        schema,
     )])
     .unwrap();
     let resolved = resolve(
@@ -533,18 +537,9 @@ fn documents(values: Vec<serde_json::Value>) -> RecordingResponse {
 
 fn ordered_collaboration_document(iids: &[&str]) -> serde_json::Value {
     serde_json::json!({
-        "_iid": "0x20",
-        "_type": "collaboration",
-        "attributes": {},
-        "role_players": iids
-            .iter()
-            .map(|iid| serde_json::json!({
-                "role_name": "participant",
-                "player_iid": iid,
-                "player_type_name": "person",
-                "attributes": {"identifier": [{"value": format!("person-{iid}")}]}
-            }))
-            .collect::<Vec<_>>()
+        "_iid": "0x20", "_type": "collaboration", "attributes": {},
+        "_role_0_iid": iids[0], "_role_0_type": "person",
+        "_role_0_attributes": {"identifier": "person-key"}
     })
 }
 
@@ -598,111 +593,295 @@ async fn ordered_distinct_duplicates_fail_before_provider_io() {
 }
 
 #[tokio::test]
-async fn ordered_collection_order_survives_write_lowering_and_hydration() {
+async fn nonempty_ordered_collections_are_refused_before_provider_io() {
     let installed = installed_ordered();
-    let create = ordered_person_create(&installed, &["analyst", "mathematician"]).unwrap();
-    let (backend, state) = RecordingBackend::new(
-        vec![
-            insert_iid("0x10"),
-            documents(vec![serde_json::json!({
-                "_iid": "0x10",
-                "_type": "person",
-                "attributes": {
-                    "identifier": [{"value": "data-ada"}],
-                    "tag": [{"value": "analyst"}, {"value": "mathematician"}]
-                }
-            })]),
-        ],
-        CommitBehavior::Success,
-    );
-    let database = Database::with_backend(Box::new(backend), "test");
-
-    let thing = ProjectedCrudExecutor::new(&installed)
-        .insert_entity(&database, &create)
-        .await
-        .unwrap();
-
-    let person = type_id(TypeKind::Entity, "person");
-    let tags = thing.fields()[&field(&person, "tag")]
-        .iter()
-        .map(|value| match value.value() {
-            CanonicalValue::String(value) => value.as_str(),
-            other => panic!("ordered tag fixture changed domain: {other:?}"),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(tags, ["analyst", "mathematician"]);
-    let state = state.lock().unwrap();
-    let write = &state.queries[0];
-    assert!(write.find("analyst").unwrap() < write.find("mathematician").unwrap());
-    assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 2);
-    assert_eq!(state.commits, 1);
-    assert_eq!(state.rollbacks, 0);
+    for create in [
+        ordered_person_create(&installed, &["analyst", "mathematician"]).unwrap(),
+        ordered_collaboration_create(&installed).unwrap(),
+    ] {
+        let (backend, state) = RecordingBackend::new(vec![], CommitBehavior::Success);
+        let database = Database::with_backend(Box::new(backend), "test");
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let error = if create.type_id().kind() == TypeKind::Entity {
+            executor
+                .insert_entity(&database, &create)
+                .await
+                .unwrap_err()
+        } else {
+            executor
+                .insert_relation(&database, &create)
+                .await
+                .unwrap_err()
+        };
+        assert_eq!(
+            error.category(),
+            SdkDiagnosticCategory::UnsupportedCapability
+        );
+        assert_eq!(
+            error.code().as_str(),
+            "query_plan_ordered_collection_unsupported"
+        );
+        let state = state.lock().unwrap();
+        assert!(state.opens.is_empty());
+        assert!(state.queries.is_empty());
+        assert_eq!(state.commits, 0);
+    }
 }
 
 #[tokio::test]
-async fn ordered_role_order_survives_write_lowering_and_hydration() {
+async fn empty_ordered_ownership_insert_and_update_use_one_native_plan() {
     let installed = installed_ordered();
-    let create = ordered_collaboration_create(&installed).unwrap();
+    let create = ordered_person_create(&installed, &[]).unwrap();
+    let document = serde_json::json!({
+        "_iid": "0x10", "_type": "person",
+        "attributes": {"identifier": "data-ada"}
+    });
     let (backend, state) = RecordingBackend::new(
+        vec![documents(vec![document.clone()]), documents(vec![document])],
+        CommitBehavior::Success,
+    );
+    let database = Database::with_backend(Box::new(backend), "test");
+    let executor = ProjectedCrudExecutor::new(&installed);
+    let inserted = executor.insert_entity(&database, &create).await.unwrap();
+    assert!(inserted.fields()[&field(create.type_id(), "tag")].is_empty());
+    let updated = executor
+        .update_entity(&database, "0x10", &create)
+        .await
+        .unwrap();
+    assert!(updated.fields()[&field(create.type_id(), "tag")].is_empty());
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, [TxType::Write, TxType::Write]);
+    assert_eq!(state.queries.len(), 2);
+    assert!(
+        state
+            .queries
+            .iter()
+            .all(|query| query.contains("fetch") && !query.contains("has tag"))
+    );
+    assert_eq!(state.commits, 2);
+}
+
+#[tokio::test]
+async fn empty_ordered_role_insert_update_and_read_use_native_plans() {
+    let schema = ORDERED_SCHEMA
+        .replace(
+            "      participant:\n",
+            "      anchor: { card: { min: 0, max: 1 } }\n      participant:\n",
+        )
+        .replace(
+            "collaboration: [participant]",
+            "collaboration: [anchor, participant]",
+        );
+    let installed = installed_ordered_with_schema(&schema);
+    let player = ProjectedReference::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        Some("0x10".into()),
+        vec![],
+    )
+    .unwrap();
+    let relation = type_id(TypeKind::Relation, "collaboration");
+    let role = RoleId::new("collaboration", "participant").unwrap();
+    let create = ProjectedCreate::try_new(
+        &installed,
+        relation.clone(),
+        vec![],
         vec![
-            insert_iid("0x20"),
-            documents(
-                ["0x10", "0x11"]
-                    .map(|iid| {
-                        serde_json::json!({
-                            "_iid": "0x20",
-                            "_type": "collaboration",
-                            "attributes": {},
-                            "_role_0_iid": iid,
-                            "_role_0_type": "person",
-                            "_role_0_attributes": {"identifier": format!("person-{iid}")}
-                        })
-                    })
-                    .to_vec(),
+            (
+                RoleId::new("collaboration", "anchor").unwrap(),
+                vec![player],
             ),
+            (role.clone(), vec![]),
+        ],
+    )
+    .unwrap();
+    let document = serde_json::json!({"_iid": "0x20", "_type": "collaboration", "attributes": {},
+        "_role_0_iid": "0x10", "_role_0_type": "person", "_role_0_attributes": {"identifier": "ada"},
+        "_role_1_iid": null, "_role_1_type": null, "_role_1_attributes": null});
+    let (backend, state) = RecordingBackend::new(
+        vec![
+            documents(vec![document.clone()]),
+            documents(vec![document.clone()]),
+            documents(vec![document]),
         ],
         CommitBehavior::Success,
     );
     let database = Database::with_backend(Box::new(backend), "test");
-
-    let thing = ProjectedCrudExecutor::new(&installed)
-        .insert_relation(&database, &create)
+    let executor = ProjectedCrudExecutor::new(&installed);
+    let inserted = executor.insert_relation(&database, &create).await.unwrap();
+    assert!(inserted.roles()[&role].is_empty());
+    let updated = executor
+        .update_relation(&database, "0x20", &create)
         .await
         .unwrap();
-
-    let participant = RoleId::new("collaboration", "participant").unwrap();
-    assert_eq!(
-        thing.roles()[&participant]
-            .iter()
-            .map(|player| player.iid())
-            .collect::<Vec<_>>(),
-        ["0x10", "0x11"],
-    );
-    assert!(
-        thing.roles()[&participant]
-            .iter()
-            .all(|player| player.exact_form() == Some(ProjectedModelForm::Complete))
-    );
-    assert!(
-        thing.roles()[&participant].iter().all(|player| player
-            .fields()
-            .values()
-            .map(Vec::len)
-            .sum::<usize>()
-            == 1)
-    );
+    assert!(updated.roles()[&role].is_empty());
+    let fetched = executor
+        .get_relation_by_iid(&database, &relation, "0x20")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(fetched.roles()[&role].is_empty());
     let state = state.lock().unwrap();
-    let write = &state.queries[0];
-    assert!(write.find("iid 0x10").unwrap() < write.find("iid 0x11").unwrap());
-    assert_eq!(state.opens, [TxType::Write]);
-    assert_eq!(state.queries.len(), 2);
-    assert_eq!(state.commits, 1);
-    assert_eq!(state.rollbacks, 0);
+    assert_eq!(state.queries.len(), 3);
+    assert_eq!(state.query_modes, ["canonical"; 3]);
+    assert_eq!(state.commits, 2);
 }
 
 #[tokio::test]
-async fn ordered_distinct_provider_duplicates_fail_hydration() {
+async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transaction_failure() {
+    use type_bridge_orm::QueryExecutionResourceLimits;
+    use type_bridge_orm::session::backend::AnswerCancellation;
+    let schema = ORDERED_SCHEMA
+        .replace(
+            "  collaboration:\n    relates:\n",
+            "  collaboration:\n    owns:\n      identifier: { key: true }\n    relates:\n      anchor: { card: { min: 0, max: 1 } }\n",
+        )
+        .replace("collaboration: [participant]", "collaboration: [anchor, participant]");
+    let installed = installed_ordered_with_schema(&schema);
+    let relation = type_id(TypeKind::Relation, "collaboration");
+    let player = ProjectedReference::try_new(
+        &installed,
+        type_id(TypeKind::Entity, "person"),
+        Some("0x10".into()),
+        vec![],
+    )
+    .unwrap();
+    let create = ProjectedCreate::try_new(
+        &installed,
+        relation.clone(),
+        vec![(
+            field(&relation, "identifier"),
+            vec![string_value(&installed, "identifier", "team")],
+        )],
+        vec![
+            (
+                RoleId::new("collaboration", "anchor").unwrap(),
+                vec![player],
+            ),
+            (RoleId::new("collaboration", "participant").unwrap(), vec![]),
+        ],
+    )
+    .unwrap();
+    let document = serde_json::json!({
+        "_iid": "0x20", "_type": "collaboration", "attributes": {"identifier": "team"},
+        "_role_0_iid": "0x10", "_role_0_type": "person", "_role_0_attributes": {"identifier": "ada"},
+        "_role_1_iid": "0x11", "_role_1_type": "person", "_role_1_attributes": {"identifier": "bob"}
+    });
+    for operation in ["update", "controlled_update", "put", "delete_returning"] {
+        for borrowed in [false, true] {
+            let mut responses = Vec::new();
+            if operation == "put" {
+                responses.push(RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
+                    "root0": {"kind": "thing", "iid": "0x20", "type_id": {"kind": "relation", "label": "collaboration"}}
+                })])));
+            }
+            responses.push(documents(vec![document.clone()]));
+            if operation == "delete_returning" {
+                responses.push(RecordingResponse::Result(QueryResult::Ok));
+            }
+            let (mut backend, state) = RecordingBackend::new(responses, CommitBehavior::Success);
+            backend.given_enabled = true;
+            let database = Database::with_backend(Box::new(backend), "stale-ordered-role");
+            let executor = ProjectedCrudExecutor::new(&installed);
+            let failure = if borrowed {
+                let transaction = database.transaction_context(TxType::Write).await.unwrap();
+                let failure = match operation {
+                    "update" => executor
+                        .update_relation_in_transaction(&transaction, "0x20", &create)
+                        .await
+                        .map(|_| ()),
+                    "controlled_update" => executor
+                        .update_relation_in_transaction_controlled(
+                            &transaction,
+                            "0x20",
+                            &create,
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "put" => executor
+                        .put_relation_in_transaction(&transaction, &create)
+                        .await
+                        .map(|_| ()),
+                    _ => executor
+                        .delete_relation_by_iid_returning_in_transaction(
+                            &transaction,
+                            &relation,
+                            "0x20",
+                        )
+                        .await
+                        .map(|_| ()),
+                }
+                .unwrap_err();
+                assert_eq!(
+                    transaction.lifecycle_state().await,
+                    type_bridge_orm::session::TransactionContextState::RollbackOnly
+                );
+                {
+                    let state = state.lock().unwrap();
+                    assert_eq!((state.commits, state.rollbacks), (0, 0));
+                }
+                assert_eq!(
+                    transaction.commit_sdk().await.unwrap_err().code().as_str(),
+                    "transaction_rollback_only"
+                );
+                transaction.rollback().await.unwrap();
+                failure
+            } else {
+                match operation {
+                    "update" => executor
+                        .update_relation(&database, "0x20", &create)
+                        .await
+                        .map(|_| ()),
+                    "controlled_update" => executor
+                        .update_relation_controlled(
+                            &database,
+                            "0x20",
+                            &create,
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "put" => executor.put_relation(&database, &create).await.map(|_| ()),
+                    _ => executor
+                        .delete_relation_by_iid_returning(&database, &relation, "0x20")
+                        .await
+                        .map(|_| ()),
+                }
+                .unwrap_err()
+            };
+            assert_eq!(failure.category(), SdkDiagnosticCategory::Integrity);
+            assert_eq!(
+                failure.code().as_str(),
+                "query_plan_hydration_ordered_role",
+                "{operation} borrowed={borrowed}"
+            );
+            let state = state.lock().unwrap();
+            let calls = if matches!(operation, "put" | "delete_returning") {
+                2
+            } else {
+                1
+            };
+            assert_eq!(
+                state.queries.len(),
+                calls,
+                "{operation} borrowed={borrowed}"
+            );
+            let modes = match operation {
+                "put" => vec!["given", "canonical"],
+                "delete_returning" => vec!["given", "given"],
+                _ => vec!["canonical"],
+            };
+            assert_eq!(state.query_modes, modes, "{operation} borrowed={borrowed}");
+            assert_eq!((state.commits, state.rollbacks), (0, 1));
+        }
+    }
+}
+
+#[tokio::test]
+async fn populated_ordered_provider_role_is_refused_during_native_hydration() {
     let installed = installed_ordered();
     let (backend, state) = RecordingBackend::new(
         vec![documents(vec![ordered_collaboration_document(&[
@@ -722,7 +901,10 @@ async fn ordered_distinct_provider_duplicates_fail_hydration() {
         .unwrap_err();
 
     assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
-    assert_eq!(diagnostic.code().as_str(), "ordered_distinct_duplicate");
+    assert_eq!(
+        diagnostic.code().as_str(),
+        "query_plan_hydration_ordered_role"
+    );
     let state = state.lock().unwrap();
     assert_eq!(state.opens, [TxType::Read]);
     assert_eq!(state.queries.len(), 1);

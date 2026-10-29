@@ -951,7 +951,7 @@ function sdkQueriesReducers(
  */
 function modelPlanMark(name = ""): void {
   const path = process.env.TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL;
-  if (path !== undefined) writeFileSync(path, name ? `unkeyed_entity_iid_lifecycle.${name}` : "");
+  if (path !== undefined) writeFileSync(path, name.includes(".") ? name : name ? `unkeyed_entity_iid_lifecycle.${name}` : "");
 }
 
 function modelPlanIdentity(name: string, iid: string): void {
@@ -984,6 +984,61 @@ function sdkModelsCounterPlanLifecycle(generated: any, database: any): void {
   manager.deleteMany(values.map((value: any) => value.iid));
   modelPlanMark();
   assert.equal(manager.count(), before);
+}
+
+function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
+  const person = (nonempty = false) => g.Person.create({
+    identifier: g.Identifier.create("data-ada"),
+    aliases: nonempty ? [g.Aliases.create("unsupported")] : [],
+    score: g.Score.create(30n), valBool: g.ValBool.create(true),
+    valConstrained: g.ValConstrained.create(30n),
+    valDate: g.ValDate.create(new Date("2026-08-14T00:00:00Z")),
+    valDatetime: g.ValDatetime.create(new Date("2026-08-14T09:30:00Z")),
+    valDatetimeTz: g.ValDatetimeTz.create(new Date("2026-08-14T09:30:00Z")),
+    valDecimal: g.ValDecimal.create("30.5"), valDouble: g.ValDouble.create(30.5),
+    valDuration: g.ValDuration.create("PT30S"),
+  });
+  const people = g.Person.manager(database);
+  modelPlanMark("ordered_distinct_collections.entity_insert");
+  const ada = people.insert(person());
+  modelPlanMark();
+  modelPlanIdentity("data-ada", ada.iid);
+  assert.deepEqual(ada.aliases, []);
+  modelPlanMark("ordered_distinct_collections.entity_update");
+  people.update(ada.iid, person());
+  modelPlanMark();
+  modelPlanMark("ordered_distinct_collections.entity_read");
+  assert.deepEqual(people.getByIid(ada.iid).aliases, []);
+  modelPlanMark();
+  const links = g.NetworkLink.manager(database);
+  const linkInput = (nonempty = false) => g.NetworkLink.create({
+    identifier: g.Identifier.create("data-link-forward"), origin: ada, destination: ada,
+    participant: nonempty ? [ada] : [],
+  });
+  modelPlanMark("ordered_distinct_collections.role_insert");
+  const link = links.insert(linkInput());
+  modelPlanMark();
+  modelPlanIdentity("link-forward", link.iid);
+  assert.deepEqual(link.participant, []);
+  modelPlanMark("ordered_distinct_collections.role_update");
+  links.update(link.iid, linkInput());
+  modelPlanMark();
+  modelPlanMark("ordered_distinct_collections.role_read");
+  assert.deepEqual(links.getByIid(link.iid).participant, []);
+  modelPlanMark();
+  for (const [manager, value] of [[people, person(true)], [links, linkInput(true)]]) {
+    modelPlanMark("ordered_distinct_collections.refused_nonempty");
+    assert.throws(() => manager.insert(value), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      const diagnostic = JSON.parse(error.message);
+      assert.equal(diagnostic.code, "query_plan_ordered_collection_unsupported");
+      assert.equal(diagnostic.sdk_category, "unsupported_capability");
+      return true;
+    });
+    modelPlanMark();
+  }
+  links.delete(link.iid);
+  people.delete(ada.iid);
 }
 
 class FixturePlanWitness {
@@ -3212,6 +3267,7 @@ test(
       database.resetDatabase();
       defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
       sdkModelsCounterPlanLifecycle(generated, database);
+      sdkModelsEmptyOrderedLifecycle(generated, database);
 
       const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({
         identifier: Identifier.create(identifierValue),

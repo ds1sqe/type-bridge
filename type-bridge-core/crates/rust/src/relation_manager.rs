@@ -768,6 +768,9 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
+        create
+            .validate_native_write()
+            .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
         let executor = ProjectedCrudExecutor::new(installed);
         executor
             .preflight_relation_create_for_database_with_compatibility(self.db.inner_orm(), &create)

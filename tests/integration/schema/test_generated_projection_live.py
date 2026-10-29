@@ -2306,7 +2306,9 @@ def sdk_models_package(
 def _model_plan_mark(name: str = "") -> None:
     label = os.environ.get("TYPE_BRIDGE_TEST_PLAN_CAPTURE_LABEL")
     if label is not None:
-        Path(label).write_text("unkeyed_entity_iid_lifecycle." + name if name else "")
+        Path(label).write_text(
+            name if "." in name else "unkeyed_entity_iid_lifecycle." + name if name else ""
+        )
 
 
 def _model_plan_identity(name: str, iid: str) -> None:
@@ -2338,6 +2340,77 @@ def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database
     assert manager.count() == before
 
 
+def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Database) -> None:
+    def person(*, nonempty: bool = False) -> Any:
+        return generated.Person(
+            identifier=generated.Identifier("data-ada"),
+            aliases=[generated.Aliases("unsupported")] if nonempty else [],
+            score=generated.Score(30),
+            val_bool=generated.ValBool(True),
+            val_constrained=generated.ValConstrained(30),
+            val_date=generated.ValDate(date(2026, 8, 14)),
+            val_datetime=generated.ValDatetime(datetime(2026, 8, 14, 9, 30)),
+            val_datetime_tz=generated.ValDatetimeTz(datetime(2026, 8, 14, 9, 30, tzinfo=UTC)),
+            val_decimal=generated.ValDecimal(Decimal("30.5")),
+            val_double=generated.ValDouble(30.5),
+            val_duration=generated.ValDuration(timedelta(seconds=30)),
+        )
+
+    people = generated.Person.manager(database)
+    _model_plan_mark("ordered_distinct_collections.entity_insert")
+    ada = people.insert(person())
+    _model_plan_mark()
+    _model_plan_identity("data-ada", ada.iid)
+    assert ada.aliases == ()
+    _model_plan_mark("ordered_distinct_collections.entity_update")
+    people.update(ada)
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.entity_read")
+    assert people.get_by_iid(ada.iid).aliases == ()
+    _model_plan_mark()
+    links = generated.NetworkLink.manager(database)
+    _model_plan_mark("ordered_distinct_collections.role_insert")
+    link = links.insert(
+        generated.NetworkLink(
+            identifier=generated.Identifier("data-link-forward"),
+            origin=ada,
+            destination=ada,
+        )
+    )
+    _model_plan_mark()
+    _model_plan_identity("link-forward", link.iid)
+    assert link.participant == ()
+    _model_plan_mark("ordered_distinct_collections.role_update")
+    links.update(link)
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_read")
+    assert links.get_by_iid(link.iid).participant == ()
+    _model_plan_mark()
+    for manager, value in [
+        (people, person(nonempty=True)),
+        (
+            links,
+            generated.NetworkLink(
+                identifier=generated.Identifier("unsupported"),
+                origin=ada,
+                destination=ada,
+                participant=[ada],
+            ),
+        ),
+    ]:
+        _model_plan_mark("ordered_distinct_collections.refused_nonempty")
+        try:
+            manager.insert(value)
+        except Exception as error:
+            assert getattr(error, "code", None) == "query_plan_ordered_collection_unsupported"
+        else:
+            raise AssertionError("nonempty ordered write was accepted")
+        finally:
+            _model_plan_mark()
+    links.delete(link)
+    people.delete(ada)
+
+
 def sdk_models_data_model_runtime_live(
     clean_db: Database,
     sdk_models_package: ModuleType,
@@ -2351,6 +2424,7 @@ def sdk_models_data_model_runtime_live(
     )
 
     _sdk_models_counter_plan_lifecycle(generated, clean_db)
+    _sdk_models_empty_ordered_lifecycle(generated, clean_db)
 
     def person(identifier: str, score: int) -> Any:
         return _make_generated_person(generated, identifier, score)

@@ -1483,9 +1483,27 @@ impl ManagerPlans {
         if returning {
             pipeline.push(Stage::Fetch(ThingDocument::new(
                 root,
-                self.document_roles(&type_id)?
-                    .into_iter()
-                    .map(|role| DocumentRole::collected(role.role))
+                self.registry
+                    .installed_schema_authority()
+                    .expect("authority checked")
+                    .resolved()
+                    .types()
+                    .get(&type_id)
+                    .ok_or_else(|| {
+                        invalid(
+                            "manager_type_unknown",
+                            "The manager type is absent from schema authority",
+                        )
+                    })?
+                    .relates()
+                    .iter()
+                    .map(|(role, projection)| {
+                        if projection.collection_mode().is_unordered() {
+                            DocumentRole::collected(role.clone())
+                        } else {
+                            DocumentRole::new(role.clone(), false)
+                        }
+                    })
                     .collect(),
             )));
         }

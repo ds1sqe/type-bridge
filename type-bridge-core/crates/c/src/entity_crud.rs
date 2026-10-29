@@ -735,6 +735,75 @@ functions:
     }
 
     #[test]
+    fn nonempty_ordered_write_is_typed_and_zero_io_at_the_c_boundary() {
+        let package = ordered_package("orderedrefusal");
+        let person = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let token = model_token(&package, person.clone());
+        let base = person_create(&package);
+        let mut fields = base
+            .value
+            .fields()
+            .iter()
+            .map(|(field, values)| (field.clone(), values.clone()))
+            .collect::<Vec<_>>();
+        fields.retain(|(field, _)| field.attribute().label().as_str() != "department");
+        fields.push((
+            OwnsFactId::new(person.clone(), AttributeId::new("department").unwrap()).unwrap(),
+            vec![
+                ProjectedAttributeValue::try_new(
+                    &package.state.installed_projection,
+                    TypeId::new(TypeKind::Attribute, "department").unwrap(),
+                    CanonicalValue::String(CanonicalString::new("nonempty").unwrap()),
+                )
+                .unwrap(),
+            ],
+        ));
+        let create = TypeBridgeProjectedCreate {
+            package: Arc::clone(&package.state),
+            value: ProjectedCreate::try_new(
+                &package.state.installed_projection,
+                person,
+                fields,
+                vec![],
+            )
+            .unwrap(),
+        };
+        let state = FakeState::new(vec![], COMMIT_SUCCESS);
+        let database = TypeBridgeDatabase::from_test_database(
+            Arc::clone(&package.state),
+            crate::runtime::test_orm_database(
+                Box::new(FakeBackend {
+                    state: Arc::clone(&state),
+                }),
+                "ordered-refusal",
+                None,
+            ),
+        );
+        let mut thing = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: the test retains the package, database, create and writable output slots.
+        let status = unsafe {
+            type_bridge_database_entity_insert(
+                &database,
+                &token,
+                &create,
+                ptr::null(),
+                &mut thing,
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::Unsupported);
+        assert!(thing.is_null());
+        assert_eq!(
+            diagnostic(diagnostics).1,
+            "query_plan_ordered_collection_unsupported"
+        );
+        assert!(state.opened_transactions().is_empty());
+        assert_eq!(state.query_count(), 0);
+        close_diagnostics(&mut diagnostics);
+    }
+
+    #[test]
     fn database_owned_insert_rehydrates_then_commits_once() {
         let fixture = fixture(
             vec![documents(vec![person_document("0x10")])],

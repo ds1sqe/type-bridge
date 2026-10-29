@@ -4111,7 +4111,7 @@ impl NodeProjectedModelManager {
     fn validate_ordered_single_write(&self, instance: &ProjectedWire) -> napi::Result<()> {
         if projection_uses_ordered_collections(self.package.projection.projection()) {
             project_create_wire(self.package.as_ref(), &self.type_id, instance)
-                .map(|_| ())
+                .and_then(|create| create.validate_native_write())
                 .map_err(napi_sdk_diagnostic)?;
         }
         Ok(())
@@ -9288,6 +9288,30 @@ entities:
             assert_eq!(diagnostic["code"], "ordered_distinct_duplicate");
             assert_eq!(diagnostic["details"]["first_index"]["value"], "0");
             assert_eq!(diagnostic["details"]["duplicate_index"]["value"], "1");
+        }
+
+        let mut nonempty = duplicate.clone();
+        nonempty.values.insert(
+            "tag".into(),
+            Value::Array(vec![serde_json::to_value(&tag).unwrap()]),
+        );
+        for error in [
+            manager
+                .insert_json(serde_json::to_string(&nonempty).unwrap())
+                .unwrap_err(),
+            manager
+                .put_json(serde_json::to_string(&nonempty).unwrap())
+                .unwrap_err(),
+            manager
+                .update_json(String::new(), serde_json::to_string(&nonempty).unwrap())
+                .unwrap_err(),
+        ] {
+            let diagnostic: Value = serde_json::from_str(&error.reason).unwrap();
+            assert_eq!(diagnostic["sdk_category"], "unsupported_capability");
+            assert_eq!(
+                diagnostic["code"],
+                "query_plan_ordered_collection_unsupported"
+            );
         }
 
         let valid = ProjectedWire {

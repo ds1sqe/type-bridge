@@ -858,9 +858,15 @@ impl WriteTarget<'_> {
                 if transaction.context().is_none() {
                     return Err(CrudFailure::Diagnostic(kind.inactive_transaction()));
                 }
-                Ok(())
+                create
+                    .value
+                    .validate_native_write()
+                    .map_err(CrudFailure::Diagnostic)
             }
-            Self::Database(_) if kind != CrudKind::Relation => Ok(()),
+            Self::Database(_) if kind != CrudKind::Relation => create
+                .value
+                .validate_native_write()
+                .map_err(CrudFailure::Diagnostic),
             Self::Database(database) => {
                 let executor =
                     ProjectedCrudExecutor::new(&database.package_state().installed_projection);

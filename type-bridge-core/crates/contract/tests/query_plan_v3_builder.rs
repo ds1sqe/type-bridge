@@ -559,44 +559,78 @@ fn recording_query_policy_reaches_plan_validation_without_entering_wire_bytes() 
 }
 
 #[test]
-fn ordered_roles_allow_reads_and_count_writes_but_refuse_model_writes_at_build() {
+fn ordered_and_unordered_roles_allow_complete_authored_write_model_fetches() {
     use type_bridge_contract::query_plan::v3::DocumentRole;
-    let schema = schema_with_ordered_role();
-    let mut read = PlanBuilder::new();
-    let membership = read.exact(relation());
-    read.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
-    read.build_plans(
-        &schema,
-        semantics(),
-        false,
-        type_bridge_contract::split::SplitLimits::CANONICAL,
-    )
-    .unwrap()
-    .validate_model_projection()
-    .unwrap();
-    let mut write = PlanBuilder::new();
-    let membership = write.exact(relation());
-    write.delete(membership);
-    write
-        .build_plans(
-            &schema,
-            semantics(),
-            true,
-            type_bridge_contract::split::SplitLimits::CANONICAL,
-        )
-        .unwrap();
-    write.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
-    let built = write
-        .build_plans(
+    for schema in [schema(), schema_with_ordered_role()] {
+        let mut read = PlanBuilder::new();
+        let membership = read.exact(relation());
+        read.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
+        read.build_plans(
             &schema,
             semantics(),
             false,
             type_bridge_contract::split::SplitLimits::CANONICAL,
         )
+        .unwrap()
+        .validate_model_projection()
         .unwrap();
-    let error = built.validate_model_projection().unwrap_err();
-    assert_eq!(error.code().as_str(), "plan_returning_models_after_write");
-    assert!(!error.message().contains("membership"));
+        let mut write = PlanBuilder::new();
+        let membership = write.exact(relation());
+        write.delete(membership);
+        write
+            .build_plans(
+                &schema,
+                semantics(),
+                true,
+                type_bridge_contract::split::SplitLimits::CANONICAL,
+            )
+            .unwrap();
+        write.fetch_held(membership, vec![DocumentRole::new(role(), false)]);
+        write
+            .build_plans(
+                &schema,
+                semantics(),
+                false,
+                type_bridge_contract::split::SplitLimits::CANONICAL,
+            )
+            .unwrap()
+            .validate_model_projection()
+            .unwrap();
+    }
+}
+
+#[test]
+fn authored_write_model_fetch_checks_ordinary_roles_after_an_ordered_role() {
+    use type_bridge_contract::query_plan::v3::DocumentRole;
+    let schema = schema_with_ordered_and_unordered_roles();
+    for complete in [false, true] {
+        let mut write = PlanBuilder::new();
+        let membership = write.exact(relation());
+        write.delete(membership);
+        let mut roles = vec![DocumentRole::new(role(), false)];
+        if complete {
+            roles.push(DocumentRole::new(
+                RoleId::new("membership", "z-tail").unwrap(),
+                false,
+            ));
+        }
+        write.fetch_held(membership, roles);
+        let built = write
+            .build_plans(
+                &schema,
+                semantics(),
+                false,
+                type_bridge_contract::split::SplitLimits::CANONICAL,
+            )
+            .unwrap();
+        if complete {
+            built.validate_model_projection().unwrap();
+        } else {
+            let error = built.validate_model_projection().unwrap_err();
+            assert_eq!(error.code().as_str(), "plan_returning_models_after_write");
+            assert!(!error.message().contains("membership"));
+        }
+    }
 }
 
 #[test]

@@ -977,7 +977,8 @@ setup and event names.
 Model materialization coalesces fetch documents by root IID and rejects
 conflicting types, attributes or players before publishing a result. Relation
 fetches must list every effective role of the concrete model. Empty ordered
-roles can materialize; any populated ordered role is refused with
+roles can materialize in reads and complete authored write/fetch plans. Writes
+validate model evidence before commit. Any populated ordered role is refused with
 `query_plan_hydration_ordered_role`, because the current fetch shape carries
 neither stored order nor repeated-player ordinals. This limit lifts when a
 provider-admitted ordered fetch shape supplies those witnesses.

@@ -1123,6 +1123,18 @@ fn has_wide_strings(spec: &PlanSpec) -> bool {
         })
 }
 
+fn require_unordered_write(mode: crate::schema::CollectionMode) -> Result<(), Diagnostic> {
+    if mode.is_unordered() {
+        Ok(())
+    } else {
+        Err(failure(
+            DiagnosticCategory::UnsupportedCapability,
+            "query_plan_ordered_collection_unsupported",
+            "Supported TypeDB providers do not implement ordered list DML",
+        ))
+    }
+}
+
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     failure(DiagnosticCategory::InvalidContract, code, message)
 }
@@ -2074,15 +2086,14 @@ impl<'a> SchemaIndex<'a> {
         types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
         update: bool,
     ) -> Result<(), Diagnostic> {
-        if self
-            .schema
-            .fact(&SchemaFactId::Owns(field.clone()))
-            .is_none()
-        {
-            return Err(invalid(
-                "query_plan_undeclared_owns",
-                "write ownership is not declared",
-            ));
+        match self.schema.fact(&SchemaFactId::Owns(field.clone())) {
+            Some(SchemaFact::Owns(fact)) => require_unordered_write(fact.collection_mode())?,
+            _ => {
+                return Err(invalid(
+                    "query_plan_undeclared_owns",
+                    "write ownership is not declared",
+                ));
+            }
         }
         let candidates = types.get(&owner).ok_or_else(|| {
             invalid(
@@ -2182,11 +2193,14 @@ impl<'a> SchemaIndex<'a> {
     ) -> Result<(), Diagnostic> {
         let owner = TypeId::new(TypeKind::Relation, role.declaring_relation().as_str())?;
         let relates = RelatesFactId::new(owner.clone(), role.clone())?;
-        if self.schema.fact(&SchemaFactId::Relates(relates)).is_none() {
-            return Err(invalid(
-                "query_plan_undeclared_relates",
-                "write role is not declared",
-            ));
+        match self.schema.fact(&SchemaFactId::Relates(relates)) {
+            Some(SchemaFact::Relates(fact)) => require_unordered_write(fact.collection_mode())?,
+            _ => {
+                return Err(invalid(
+                    "query_plan_undeclared_relates",
+                    "write role is not declared",
+                ));
+            }
         }
         let relations = types.get(&relation).ok_or_else(|| {
             invalid(
@@ -2213,29 +2227,7 @@ impl<'a> SchemaIndex<'a> {
         player: BindingId,
         types: &BTreeMap<BindingId, BTreeSet<TypeId>>,
     ) -> Result<(), Diagnostic> {
-        let owner = TypeId::new(TypeKind::Relation, role.declaring_relation().as_str())?;
-        let relates = RelatesFactId::new(owner.clone(), role.clone())?;
-        if self.schema.fact(&SchemaFactId::Relates(relates)).is_none() {
-            return Err(invalid(
-                "query_plan_undeclared_relates",
-                "write role is not declared",
-            ));
-        }
-        let relations = types.get(&relation).ok_or_else(|| {
-            invalid(
-                "query_plan_write_untyped_target",
-                "relation has no schema type",
-            )
-        })?;
-        if relations
-            .iter()
-            .any(|id| !self.ancestors(id).contains(&owner))
-        {
-            return Err(invalid(
-                "query_plan_wrong_role_owner",
-                "role does not belong to the relation type",
-            ));
-        }
+        self.relation_role(relation, role, types)?;
         let players = types.get(&player).ok_or_else(|| {
             invalid(
                 "query_plan_write_untyped_target",

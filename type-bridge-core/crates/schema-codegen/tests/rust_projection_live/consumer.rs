@@ -6276,6 +6276,8 @@ fn model_plan_mark(name: &str) {
             path,
             if name.is_empty() {
                 String::new()
+            } else if name.contains('.') {
+                name.to_owned()
             } else {
                 format!("unkeyed_entity_iid_lifecycle.{name}")
             },
@@ -6336,6 +6338,100 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     assert_eq!(manager.count().await.unwrap(), before);
 }
 
+async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
+    let person = |nonempty| {
+        PersonCreate::try_new(
+            if nonempty {
+                vec![Aliases::new("unsupported").unwrap()]
+            } else {
+                vec![]
+            },
+            None,
+            Identifier::new("data-ada").unwrap(),
+            None,
+            Score::new(30).unwrap(),
+            None,
+            ValBool::new(true).unwrap(),
+            ValConstrained::new(30).unwrap(),
+            ValDate::new(Date::try_new("2026-08-14").unwrap()).unwrap(),
+            ValDatetime::new(DateTime::try_new("2026-08-14T09:30:00").unwrap()).unwrap(),
+            ValDatetimeTz::new(DateTimeTz::try_new("2026-08-14T09:30:00Z").unwrap()).unwrap(),
+            ValDecimal::new(Decimal::try_new("30.5").unwrap()).unwrap(),
+            ValDouble::new(CanonicalDouble::try_new(30.5).unwrap()).unwrap(),
+            ValDuration::new(Duration::try_new("PT30S").unwrap()).unwrap(),
+        )
+        .unwrap()
+    };
+    let people = db.entities::<Person>();
+    model_plan_mark("ordered_distinct_collections.entity_insert");
+    let ada = people.insert(person(false)).await.unwrap();
+    model_plan_mark("");
+    model_plan_identity("data-ada", ada.iid());
+    assert!(ada.aliases().is_empty());
+    model_plan_mark("ordered_distinct_collections.entity_update");
+    people.update(ada.iid(), person(false)).await.unwrap();
+    model_plan_mark("");
+    model_plan_mark("ordered_distinct_collections.entity_read");
+    assert!(
+        people
+            .get_by_iid(ada.iid())
+            .await
+            .unwrap()
+            .unwrap()
+            .aliases()
+            .is_empty()
+    );
+    model_plan_mark("");
+    let links = db.relations::<NetworkLink>();
+    let link_input = |nonempty| {
+        NetworkLinkCreate::new(
+            Identifier::new("data-link-forward").unwrap(),
+            None,
+            ada.reference(),
+            ada.reference(),
+            if nonempty {
+                vec![ada.reference()]
+            } else {
+                vec![]
+            },
+        )
+        .unwrap()
+    };
+    model_plan_mark("ordered_distinct_collections.role_insert");
+    let link = links.insert(link_input(false)).await.unwrap();
+    model_plan_mark("");
+    model_plan_identity("link-forward", link.iid());
+    assert!(link.participant().is_empty());
+    model_plan_mark("ordered_distinct_collections.role_update");
+    links.update(link.iid(), link_input(false)).await.unwrap();
+    model_plan_mark("");
+    model_plan_mark("ordered_distinct_collections.role_read");
+    assert!(
+        links
+            .get_by_iid(link.iid())
+            .await
+            .unwrap()
+            .unwrap()
+            .participant()
+            .is_empty()
+    );
+    model_plan_mark("");
+    model_plan_mark("ordered_distinct_collections.refused_nonempty");
+    let error = people.insert(person(true)).await.unwrap_err();
+    assert_eq!(
+        error.code(),
+        Some("query_plan_ordered_collection_unsupported")
+    );
+    let error = links.insert(link_input(true)).await.unwrap_err();
+    assert_eq!(
+        error.code(),
+        Some("query_plan_ordered_collection_unsupported")
+    );
+    model_plan_mark("");
+    links.delete(link.iid()).await.unwrap();
+    people.delete(ada.iid()).await.unwrap();
+}
+
 #[tokio::test]
 async fn sdk_models_data_model_runtime_live() {
     let Some(_) = env::var_os("TYPE_BRIDGE_SDK_MODELS_RUST_SUPPLEMENT") else {
@@ -6346,6 +6442,7 @@ async fn sdk_models_data_model_runtime_live() {
     require_sdk_server_version(&entry).await;
     let db = database().await;
     sdk_models_counter_plan_lifecycle(&db).await;
+    sdk_models_empty_ordered_lifecycle(&db).await;
 
     let (entity_batch_insert_put, entity_batch_update_delete_atomic, entity_observation) = async {
     let person_baseline = db.entities::<Person>().count().await.expect("person count");
@@ -7334,9 +7431,8 @@ async fn sdk_models_data_model_runtime_live() {
         .expect_err("borrowed provider failure poisons transaction");
     assert_eq!(first_cause.code(), Some("provider_operation_failed"));
     let limit = usize::try_from(DEFAULT_DIRECT_QUERY_ITEMS).expect("query item limit fits usize");
-    let excessive = (0..=limit)
-        .map(|index| ownership_edge_person_input(&format!("data-excessive-{index}"), &[], None))
-        .collect();
+    // Deliberate clones: row-count admission runs before duplicate-key validation.
+    let excessive = vec![ownership_edge_person_input("data-excessive", &[], None); limit + 1];
     let later_cause = poison_transaction
         .entities::<Person>()
         .insert_many(excessive)

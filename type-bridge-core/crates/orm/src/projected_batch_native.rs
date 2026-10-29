@@ -8,7 +8,9 @@ use crate::plan_builders::{
 use crate::query_plan_exec::{self, remote_value};
 use crate::session::backend::QueryResult;
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::query_plan::v3::{AttachItem, DeleteItem, InsertThing, Stage};
+use type_bridge_contract::query_plan::v3::{
+    AttachItem, DeleteItem, DocumentRole, InsertThing, Stage,
+};
 use type_bridge_contract::query_plan::{QueryOperand, QueryPattern, ReduceAssignment, Reducer};
 use type_bridge_contract::query_remote::RemoteValue;
 
@@ -199,6 +201,7 @@ impl BatchPlan<'_> {
             );
         }
         let mut pipeline = vec![Stage::Match { patterns }];
+        let mut writes = false;
         if matches!(
             operation,
             ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put
@@ -233,12 +236,19 @@ impl BatchPlan<'_> {
             } else {
                 Stage::Insert { things }
             });
+            writes = true;
         }
         if matches!(
             operation,
             ProjectedBatchOperation::Update | ProjectedBatchOperation::Put
         ) {
-            for field in self.model.complete_read().fields() {
+            for field in self
+                .model
+                .complete_read()
+                .fields()
+                .iter()
+                .filter(|field| field.multiplicity().collection_mode().is_unordered())
+            {
                 if operation == ProjectedBatchOperation::Put
                     && self
                         .model
@@ -254,18 +264,26 @@ impl BatchPlan<'_> {
                         field: self.declaring_field(field.token())?.clone(),
                     }],
                 });
+                writes = true;
                 pipeline.push(Stage::Select {
                     bindings: vec![ordinal, thing],
                 });
                 pipeline.push(Stage::Distinct);
             }
-            for role in self.model.complete_read().roles().keys() {
+            for (role, _) in self
+                .model
+                .complete_read()
+                .roles()
+                .iter()
+                .filter(|(_, role)| role.multiplicity().collection_mode().is_unordered())
+            {
                 pipeline.push(Stage::Delete {
                     items: vec![DeleteItem::Players {
                         relation: thing,
                         role: role.clone(),
                     }],
                 });
+                writes = true;
                 pipeline.push(Stage::Select {
                     bindings: vec![ordinal, thing],
                 });
@@ -295,7 +313,7 @@ impl BatchPlan<'_> {
                     .map_err(diagnostic)?
                     .as_ref(),
                 pipeline,
-                true,
+                writes,
                 vec![ordinal, thing],
             )
             .map_err(diagnostic)
@@ -364,7 +382,8 @@ impl BatchPlan<'_> {
             }
         }
         let mut pipeline = vec![Stage::Match { patterns }];
-        if !items.is_empty() {
+        let writes = !items.is_empty();
+        if writes {
             pipeline.push(Stage::Attach { items });
         }
         pipeline.push(Stage::Select {
@@ -382,7 +401,17 @@ impl BatchPlan<'_> {
             build::document(
                 thing,
                 ordinal,
-                self.model.complete_read().roles().keys().cloned(),
+                self.model
+                    .complete_read()
+                    .roles()
+                    .iter()
+                    .map(|(role, projection)| {
+                        if projection.multiplicity().collection_mode().is_unordered() {
+                            DocumentRole::collected(role.clone())
+                        } else {
+                            DocumentRole::new(role.clone(), false)
+                        }
+                    }),
             )
             .map_err(diagnostic)?,
         ));
@@ -393,7 +422,7 @@ impl BatchPlan<'_> {
                     .map_err(diagnostic)?
                     .as_ref(),
                 pipeline,
-                !snapshot,
+                writes,
                 vec![],
             )
             .map_err(diagnostic)
@@ -473,7 +502,7 @@ impl ProjectedBatchExecutor<'_> {
         plan: &mut BatchPlan<'_>,
         identity: &DatabaseExecutionIdentity,
     ) -> std::result::Result<ProjectedBatchResult, SdkExecutionDiagnostic> {
-        if plan.operation == ProjectedBatchOperation::Delete && plan.snapshot_source.is_some() {
+        if plan.operation == ProjectedBatchOperation::Delete && plan.return_deleted {
             let registry = plan.installed.manager_registry().map_err(|error| {
                 at_type(
                     lower_orm_error(&error, SdkProviderOperation::Read),
@@ -808,6 +837,22 @@ impl Consumer<'_> {
                     .expect("fetch shape");
                 let mut players = Vec::new();
                 for (index, role) in fetched.roles.iter().enumerate() {
+                    // Batch fetches leave only ordered roles uncollected.
+                    if !role.collect {
+                        let object = document.as_object_mut().expect("validated object");
+                        let iid = object.remove(&format!("_role_{index}_iid"));
+                        object.remove(&format!("_role_{index}_type"));
+                        object.remove(&format!("_role_{index}_attributes"));
+                        if iid.is_some_and(|value| !value.is_null()) {
+                            return Err(crate::match_request::MatchError::new(
+                                crate::match_request::MatchErrorCategory::ResultDecode,
+                                "query_plan_hydration_ordered_role",
+                                "populated ordered roles require provider fetch ordinals",
+                            )
+                            .into());
+                        }
+                        continue;
+                    }
                     let list = document
                         .as_object_mut()
                         .expect("validated object")
@@ -933,6 +978,7 @@ async fn dispatch(
     let mut query = lease
         .prepare_plan(plan.local())
         .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
+    preflight_statement_complexity(&query.typeql)?;
     let rows = query.rows.take().expect("native batch rows");
     ledger.charge_bytes(
         checked_add_u64(source_bytes(&query.typeql)?, given_rows_bytes(&rows)?)?,

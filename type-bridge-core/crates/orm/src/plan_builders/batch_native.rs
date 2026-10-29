@@ -4,7 +4,7 @@ use super::authority::PlanAuthority;
 use super::{BuiltPlan, PlanDraft, ValueTransport};
 use crate::session::backend::{GivenRowsSpec, GivenValue};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
-use type_bridge_contract::id::{RoleId, TypeId};
+use type_bridge_contract::id::TypeId;
 use type_bridge_contract::migration_assertion::{BindingId, QueryVariable, ValueComparator};
 use type_bridge_contract::query_plan::v3::{
     DocumentRole, DocumentScalar, Expr, Operation, Pattern, Stage, ThingDocument, WriteReturns,
@@ -115,9 +115,9 @@ pub(crate) fn literal(value: i64) -> QueryOperand {
 pub(crate) fn document(
     thing: BindingId,
     ordinal: BindingId,
-    roles: impl Iterator<Item = RoleId>,
+    roles: impl Iterator<Item = DocumentRole>,
 ) -> Result<ThingDocument, Diagnostic> {
-    let mut document = ThingDocument::new(thing, roles.map(DocumentRole::collected).collect());
+    let mut document = ThingDocument::new(thing, roles.collect());
     document.scalars.push(DocumentScalar {
         key: QueryVariable::new("ordinal")?,
         binding: ordinal,

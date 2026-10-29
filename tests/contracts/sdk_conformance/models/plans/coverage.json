@@ -38,8 +38,8 @@
     },
     "entity_batch_insert_put": {
       "calls": [],
-      "kind": "raw_remainder",
-      "reason": "The named Person/NetworkLink operations contain ordered fields or roles; their retained raw path is covered by the unchanged answer gate until milestone 06."
+      "kind": "answer_gate_auxiliary",
+      "reason": "The existing batch journey remains covered by the unchanged answer gate; ordered_distinct_collections pins the empty ordered single-write and read native plans."
     },
     "entity_batch_update_delete_atomic": {
       "calls": [],
@@ -80,9 +80,15 @@
       "kind": "native"
     },
     "ordered_distinct_collections": {
-      "calls": [],
-      "kind": "host_empty",
-      "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
+      "calls": [
+        "ordered_distinct_collections.entity_insert",
+        "ordered_distinct_collections.entity_update",
+        "ordered_distinct_collections.entity_read",
+        "ordered_distinct_collections.role_insert",
+        "ordered_distinct_collections.role_update",
+        "ordered_distinct_collections.role_read"
+      ],
+      "kind": "native"
     },
     "projected_constraint_validation": {
       "calls": [],
@@ -96,8 +102,8 @@
     },
     "relation_batch_insert_put": {
       "calls": [],
-      "kind": "raw_remainder",
-      "reason": "The named Person/NetworkLink operations contain ordered fields or roles; their retained raw path is covered by the unchanged answer gate until milestone 06."
+      "kind": "answer_gate_auxiliary",
+      "reason": "The existing batch journey remains covered by the unchanged answer gate; ordered_distinct_collections pins the empty ordered single-write and read native plans."
     },
     "relation_batch_update_delete_atomic": {
       "calls": [],
