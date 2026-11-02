@@ -527,3 +527,34 @@ fn iid_refs_accept_a_canonical_union_of_unrelated_player_types() {
         ]
     );
 }
+
+#[test]
+fn shared_builder_authors_the_same_iid_reference_as_the_contract_constructor() {
+    use type_bridge_contract::query_plan::v3::PlanBuilder;
+    let mut builder = PlanBuilder::new();
+    let input = builder.input("target_iid", ValueTypeTag::String, false);
+    let root = builder.exact(entity("account"));
+    builder.by_iid_input(root, input).returning(vec![root]);
+    let semantics = source().plan().managed_semantics().clone();
+    let rows = vec![InputRow::new(vec![None]); 3];
+    let refs = vec![reference(0, 0)];
+    let authored = builder
+        .build_staged(&schema(), semantics.clone(), rows.clone(), refs.clone())
+        .unwrap();
+    let ordinary = builder.build(&schema(), semantics).unwrap();
+    let manual = StagedPlanV3::new_with_result_refs(&ordinary, rows, refs, &schema()).unwrap();
+    assert_eq!(
+        authored.plan().canonical_bytes().unwrap(),
+        manual.plan().canonical_bytes().unwrap()
+    );
+    assert_eq!(authored.rows(), manual.rows());
+    assert_eq!(authored.result_refs(), manual.result_refs());
+    validate_staged_result_refs_v3(&[source(), authored.clone()], &schema()).unwrap();
+    let bound = authored
+        .bind_results(&[answer(&["0x10"])], &schema())
+        .unwrap();
+    assert_eq!(
+        bound.given_rows().unwrap(),
+        vec![InputRow::new(vec![iid("0x10")]); 3]
+    );
+}

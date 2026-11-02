@@ -1048,3 +1048,8 @@ capability and local admission refuses it as
 `query_plan_negated_given_iid_unsupported` before dispatch. The frozen
 `typedb-3.13.6/v1` profile admits it. Positive and optional IID predicates,
 and canonical literal IID filters used by managers, retain their lowering.
+
+The shared `PlanBuilder::by_iid_input` matches a thing using a declared IID
+input. `PlanBuilder::build_staged` finalizes the ordinary plan with invocation
+templates and `StagedResultRefV3` metadata. Referenced cells are absent in those
+templates; validating the complete stack proves their earlier source columns.

@@ -241,6 +241,19 @@ impl PlanBuilder {
         self
     }
 
+    /// Restrict a matched thing to an IID supplied by one invocation column.
+    /// The column can be authored as a staged result reference at finalization.
+    pub fn by_iid_input(&mut self, binding: BindingId, column: InputColumnId) -> &mut Self {
+        self.patterns.push(
+            QueryPattern::Iid {
+                binding,
+                iid: QueryOperand::Input { column },
+            }
+            .into(),
+        );
+        self
+    }
+
     /// Bind the value of `owner`'s `attribute` ownership. Owners without
     /// that ownership do not match.
     pub fn field(&mut self, owner: BindingId, attribute: AttributeId) -> BindingId {
@@ -776,6 +789,22 @@ impl PlanBuilder {
         semantics: ManagedSemanticSchemaFingerprint,
     ) -> Result<QueryPlanV3, Diagnostic> {
         self.build_selected(schema, semantics, BuildSelection::Recorded)
+    }
+
+    /// Build one staged entry through the ordinary plan validator.
+    ///
+    /// Reference columns contain `None` in the invocation template; their
+    /// future IID values are bound only by the staged transaction executor.
+    /// The complete stack validates source order and type compatibility.
+    pub fn build_staged(
+        &self,
+        schema: &DeclaredSchema,
+        semantics: ManagedSemanticSchemaFingerprint,
+        rows: Vec<InputRow>,
+        result_refs: Vec<crate::query_remote_v3::StagedResultRefV3>,
+    ) -> Result<crate::query_remote_v3::StagedPlanV3, Diagnostic> {
+        let plan = self.build(schema, semantics)?;
+        crate::query_remote_v3::StagedPlanV3::new_with_result_refs(&plan, rows, result_refs, schema)
     }
 
     /// Build one selected terminal without copying the recording first.
