@@ -12,7 +12,7 @@ pub mod readme_doctests {}
 pub mod config;
 /// Errors returned by the query pipeline and transports.
 pub mod error;
-/// Request, response, audit, and CRUD interceptor APIs.
+/// Host admission, response and audit interceptor APIs.
 pub mod interceptor;
 /// The transport-independent query execution pipeline.
 pub mod pipeline;
@@ -24,5 +24,5 @@ pub mod schema_source;
 pub mod transport;
 
 #[cfg(feature = "typedb")]
-/// TypeDB-backed query executor implementation.
+/// Captured TypeDB transport identity and runtime connection constructors.
 pub mod typedb;

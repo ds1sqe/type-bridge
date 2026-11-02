@@ -33,10 +33,7 @@ const SUPPORTED_INTERCEPTORS: &[&str] = &["audit-log"];
 /// provider connections, routers, or listeners exist. An operator request for
 /// authentication or rate limiting must never degrade into an unprotected
 /// server because a name was misspelled or the implementation is absent.
-fn validate_configured_interceptors(
-    enabled: &[String],
-    _staged_enabled: bool,
-) -> Result<(), String> {
+fn validate_configured_interceptors(enabled: &[String]) -> Result<(), String> {
     let unsupported = enabled
         .iter()
         .filter(|name| !SUPPORTED_INTERCEPTORS.contains(&name.as_str()))
@@ -59,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.staged.raw_enabled && !config.staged.enabled {
         return Err("staged.raw_enabled requires staged.enabled and its schema authority".into());
     }
-    validate_configured_interceptors(&config.interceptors.enabled, config.staged.enabled)
+    validate_configured_interceptors(&config.interceptors.enabled)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
 
     // Parse and cross-check inbound identity before any outbound provider I/O.
@@ -277,16 +274,15 @@ mod tests {
 
     #[test]
     fn audit_log_is_the_exact_supported_startup_name() {
-        validate_configured_interceptors(&["audit-log".to_owned()], true)
+        validate_configured_interceptors(&["audit-log".to_owned()])
             .expect("the implemented audit interceptor remains supported");
-        validate_configured_interceptors(&[], true)
-            .expect("an empty policy chain remains supported");
+        validate_configured_interceptors(&[]).expect("an empty policy chain remains supported");
     }
 
     #[test]
     fn staged_security_policy_names_and_typos_fail_closed_before_startup() {
         for name in ["auth", "rate-limiter", "custom", "audit_log"] {
-            let error = validate_configured_interceptors(&[name.to_owned()], true)
+            let error = validate_configured_interceptors(&[name.to_owned()])
                 .expect_err("an unimplemented policy must abort startup");
             assert!(error.contains(name), "{error}");
             assert!(error.contains("supports only: audit-log"), "{error}");
@@ -295,14 +291,11 @@ mod tests {
 
     #[test]
     fn every_unsupported_name_is_reported_in_one_startup_error() {
-        let error = validate_configured_interceptors(
-            &[
-                "audit-log".to_owned(),
-                "auth".to_owned(),
-                "custom".to_owned(),
-            ],
-            true,
-        )
+        let error = validate_configured_interceptors(&[
+            "audit-log".to_owned(),
+            "auth".to_owned(),
+            "custom".to_owned(),
+        ])
         .expect_err("mixed implemented and unimplemented policies must abort");
         assert!(error.contains("auth, custom"), "{error}");
     }
@@ -312,12 +305,12 @@ mod tests {
     {
         let source = include_str!("main.rs");
         let preflight = source
-            .find("validate_configured_interceptors(&config.interceptors.enabled, config.staged.enabled)")
+            .find("validate_configured_interceptors(&config.interceptors.enabled)")
             .expect("main calls the build-capability preflight");
         for operation in [
             "tls.load().await",
             "TypeDBClient::prepare_secure_transport",
-            "TypeDBClient::connect_prepared_secure",
+            "build_staged_state(&config,",
         ] {
             let operation = source
                 .find(operation)

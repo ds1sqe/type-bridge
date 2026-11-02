@@ -28,14 +28,6 @@ impl IntoResponse for PipelineError {
     }
 }
 
-#[cfg(feature = "typedb")]
-impl IntoResponse for crate::typedb::ExecuteError {
-    fn into_response(self) -> Response {
-        let failure = self.failure();
-        failure_response(self.into(), failure)
-    }
-}
-
 fn failure_response(
     error: PipelineError,
     failure: Option<type_bridge_contract::failure::Failure>,

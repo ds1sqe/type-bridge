@@ -99,6 +99,16 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed server `TypeDBClient::{connect,connect_secure,connect_prepared_secure,
+  execute,execute_classified,database_exists,create_database,delete_database,
+  reset_database,is_connected}`, `ExecuteError`, `CommitFailure`, and
+  `CommitCertainty`. Use staged plans for checked execution and the explicit
+  raw runtime entry point for unchecked TypeQL. Administrative operations
+  belong to the shared runtime. `TypeDBClient::prepare_secure_transport`
+  remains the captured transport constructor; its prepared identity provides
+  `connect_database` and `connect_raw_runtime`.
+
+
 - Server `V3CommitOutcome::kind()` now returns `TransactionKind` so raw
   schema commits are distinguishable from data writes; use its `Read`,
   `Write`, and `Schema` variants instead of `StagedKindV3`.

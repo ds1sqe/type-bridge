@@ -81,13 +81,3 @@ fn released_debug_trait_redacts_connection_credentials() {
     assert!(rendered.contains("test"));
 }
 
-#[cfg(feature = "typedb")]
-#[test]
-fn released_connect_signature_still_accepts_plaintext_section() {
-    fn assert_future(config: &TypeDBSection) {
-        let future = type_bridge_server::typedb::TypeDBClient::connect(config);
-        drop(future);
-    }
-
-    let _signature: for<'a> fn(&'a TypeDBSection) = assert_future;
-}
