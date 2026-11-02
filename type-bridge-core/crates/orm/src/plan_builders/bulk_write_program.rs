@@ -51,6 +51,13 @@ impl WriteProgram {
             {
                 Ok(Self::Static(Box::new(StaticProgram::new(program)?)))
             }
+            Self::Chain(mut programs) => {
+                for _ in 0..programs.len() {
+                    let program = programs.pop_front().expect("one existing program");
+                    programs.push_back(program.prepare_static()?);
+                }
+                Ok(Self::Chain(programs))
+            }
             program => Ok(program),
         }
     }
@@ -60,8 +67,13 @@ impl WriteProgram {
         step: &WriteStep,
         answer: &PlanAnswer,
     ) -> Result<(), Diagnostic> {
-        if let Self::Static(program) = self {
-            program.record_answer(step, answer)?;
+        match self {
+            Self::Static(program) => program.record_answer(step, answer)?,
+            Self::Chain(programs) => programs
+                .front_mut()
+                .ok_or_else(identity_error)?
+                .record_answer(step, answer)?,
+            _ => {}
         }
         Ok(())
     }

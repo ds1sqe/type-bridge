@@ -382,4 +382,103 @@ mod static_tests {
         }
         assert!(observed > 1);
     }
+    #[test]
+    fn sequential_static_groups_bind_their_own_source_answers() {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let key =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let authority = PlanAuthority::new(
+            crate::query_plan_exec::race::schema(),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"static-pieces",
+            )
+            .unwrap(),
+        );
+        let build = |name: &str| {
+            let fields = std::iter::once((
+                key.clone(),
+                CanonicalValue::String(CanonicalString::new(name).unwrap()),
+            ))
+            .chain((0..300).map(|value| (balance.clone(), CanonicalValue::Long(value))))
+            .collect::<Vec<_>>();
+            write_many(
+                &authority,
+                WriteKind::Insert,
+                WriteShape {
+                    references_see_prior_writes: true,
+                    type_id: &account,
+                    keys: std::slice::from_ref(&key),
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: true,
+                    return_documents: false,
+                },
+                &[WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                }],
+            )
+            .unwrap()
+        };
+        let first = build("first");
+        let count = first.statement_count();
+        let mut program = WriteProgram::Chain(VecDeque::from([first, build("second")]))
+            .prepare_static()
+            .unwrap();
+        let WriteProgram::Chain(groups) = &program else {
+            panic!("sequential groups")
+        };
+        assert!(
+            groups
+                .iter()
+                .all(|group| matches!(group, WriteProgram::Static(_)))
+        );
+        let mut observed = 0;
+        while let Some(step) = program.next().unwrap() {
+            let iid = if observed < count { "0x10" } else { "0x20" };
+            if observed % count != 0 {
+                let column = step
+                    .plan
+                    .local()
+                    .inputs()
+                    .iter()
+                    .position(|input| input.public_name().as_str() == "target_iid")
+                    .unwrap();
+                let expected = Some(CanonicalValue::String(CanonicalString::new(iid).unwrap()));
+                assert!(
+                    step.plan
+                        .local()
+                        .given_rows()
+                        .unwrap()
+                        .iter()
+                        .all(|row| row.values()[column] == expected)
+                );
+            }
+            let wire = StagedAnswerV3::Rows {
+                rows: vec![vec![
+                    RemoteValue::Value {
+                        value: CanonicalValue::Long(0),
+                    },
+                    RemoteValue::Thing {
+                        iid: iid.into(),
+                        type_id: account.clone(),
+                    },
+                ]],
+            };
+            let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
+            program.record_answer(&step, &answer).unwrap();
+            if !step.complete {
+                program
+                    .accept_identity(&step, step.identity(&answer).unwrap())
+                    .unwrap();
+            }
+            observed += 1;
+        }
+        assert_eq!(observed, count * 2);
+    }
 }
