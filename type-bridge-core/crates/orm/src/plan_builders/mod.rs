@@ -9,6 +9,7 @@
 pub(crate) mod authority;
 pub(crate) mod batch;
 pub(crate) mod batch_native;
+pub(crate) mod bulk_write;
 pub(crate) mod input;
 pub(crate) mod insert;
 pub(crate) mod manager;
@@ -214,6 +215,200 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn put_explain_records_matrix_or_sequential_input_strategy_and_canonical_cuts() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        let authority = authority();
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let key =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let first = vec![
+            (key.clone(), text("private-first")),
+            (balance.clone(), CanonicalValue::Long(1)),
+        ];
+        let second = vec![
+            (key.clone(), text("private-second")),
+            (balance.clone(), CanonicalValue::Long(2)),
+        ];
+        for duplicate in [false, true] {
+            let rows = [
+                WriteRow {
+                    iid: None,
+                    fields: &first,
+                    players: &[],
+                },
+                WriteRow {
+                    iid: None,
+                    fields: if duplicate { &first } else { &second },
+                    players: &[],
+                },
+            ];
+            let mut program = write_many(
+                &authority,
+                WriteKind::PartialPut,
+                WriteShape {
+                    type_id: &account,
+                    keys: std::slice::from_ref(&key),
+                    cleared_fields: std::slice::from_ref(&balance),
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: true,
+                    return_documents: false,
+                },
+                &rows,
+            )
+            .unwrap();
+            assert_eq!(program.statement_count(), 1);
+            let step = program.next().unwrap().unwrap();
+            let explanation = crate::plan_explain::explain(step.plan.local()).unwrap();
+            assert_eq!(explanation.statements.len(), 1);
+            assert_eq!(explanation.write_statements, 1);
+            assert_eq!(explanation.given.row_count, if duplicate { 1 } else { 2 });
+            assert_eq!(
+                step.plan
+                    .local()
+                    .pipeline()
+                    .iter()
+                    .filter(|stage| matches!(stage, super::Stage::Put { .. }))
+                    .count(),
+                if duplicate { 2 } else { 1 }
+            );
+            assert!(!explanation.statements[0].contains("private-first"));
+        }
+        let fields = (0..130)
+            .map(|index| {
+                vec![
+                    (key.clone(), text("same-private-key")),
+                    (balance.clone(), CanonicalValue::Long(index)),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let rows = fields
+            .iter()
+            .map(|fields| WriteRow {
+                iid: None,
+                fields,
+                players: &[],
+            })
+            .collect::<Vec<_>>();
+        let program = write_many(
+            &authority,
+            WriteKind::PartialPut,
+            WriteShape {
+                type_id: &account,
+                keys: std::slice::from_ref(&key),
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: true,
+                return_documents: false,
+            },
+            &rows,
+        )
+        .unwrap();
+        assert_eq!(program.statement_count(), 2);
+        let ordinals = program
+            .identity_layout()
+            .unwrap()
+            .into_iter()
+            .flatten()
+            .map(|(ordinal, _)| ordinal)
+            .collect::<Vec<_>>();
+        assert_eq!(ordinals, (0..130).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn bulk_writes_keep_one_input_row_per_thing_and_refuse_empty_relation_players() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        let authority = authority();
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let key =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let first = [(
+            key.clone(),
+            CanonicalValue::String(CanonicalString::new("first").unwrap()),
+        )];
+        let second = [(
+            key.clone(),
+            CanonicalValue::String(CanonicalString::new("second").unwrap()),
+        )];
+        let rows = [
+            WriteRow {
+                iid: None,
+                fields: &first,
+                players: &[],
+            },
+            WriteRow {
+                iid: None,
+                fields: &second,
+                players: &[],
+            },
+        ];
+        let plan = write_many(
+            &authority,
+            WriteKind::Insert,
+            WriteShape {
+                include_subtypes: false,
+                return_documents: true,
+                type_id: &account,
+                keys: &[key],
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+            },
+            &rows,
+        )
+        .unwrap();
+        assert_eq!(plan.statement_count(), 1);
+        let super::bulk_write::WriteProgram::Compact(plan) = plan else {
+            panic!("compact fixture")
+        };
+        let plan = &plan[0];
+        assert_eq!(plan.local().given_rows().unwrap().len(), 2);
+        let literal = crate::query_plan_exec::staged_literal_query(plan.local()).unwrap();
+        assert!(literal.rows.is_none());
+        assert!(!literal.typeql.contains("given "));
+        assert!(literal.typeql.contains("first") && literal.typeql.contains("second"));
+        let redacted = literal.redacted_typeql.as_deref().unwrap();
+        assert!(!redacted.contains("first") && !redacted.contains("second"));
+        tql::parse(&literal.typeql).unwrap();
+        assert_eq!(
+            plan.local()
+                .pipeline()
+                .iter()
+                .filter(|stage| matches!(
+                    stage,
+                    type_bridge_contract::query_plan::v3::Stage::Insert { .. }
+                ))
+                .count(),
+            1
+        );
+        let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let error = write_many(
+            &authority,
+            WriteKind::Insert,
+            WriteShape {
+                include_subtypes: false,
+                return_documents: true,
+                type_id: &relation,
+                keys: &[],
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+            },
+            &[WriteRow {
+                iid: None,
+                fields: &[],
+                players: &[],
+            }],
+        )
+        .err()
+        .expect("playerless relation refused");
+        assert_eq!(error.code().as_str(), "query_plan_insert_relation_players");
     }
 
     #[test]

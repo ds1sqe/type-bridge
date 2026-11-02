@@ -16,7 +16,7 @@ use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use type_bridge_schema::VerifiedSchemaAuthority;
 
 /// Declared schema and managed semantics a helper plan carries.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct PlanAuthority {
     declared: Arc<DeclaredSchema>,
     managed_semantics: ManagedSemanticSchemaFingerprint,
