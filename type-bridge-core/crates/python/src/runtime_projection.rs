@@ -11256,251 +11256,46 @@ class StructBase:
     }
 
     fn entity_batch_responses(operation: ProjectedBatchOperation) -> Vec<BatchResponse> {
-        let mut responses = Vec::new();
-        if operation == ProjectedBatchOperation::Put {
-            responses.push(BatchResponse::Documents(vec![]));
-        }
         if operation == ProjectedBatchOperation::Delete {
-            responses.push(BatchResponse::Documents(vec![
-                serde_json::json!({"ordinal": 1}),
-                serde_json::json!({"ordinal": 0}),
-            ]));
-            return responses;
+            vec![BatchResponse::Documents(vec![
+                serde_json::json!({"ordinal":1}),
+                serde_json::json!({"ordinal":0}),
+            ])]
+        } else {
+            vec![BatchResponse::Documents(vec![
+                batch_person_document(1, "0x21", "person-1", "normalized-1"),
+                batch_person_document(0, "0x20", "person-0", "normalized-0"),
+            ])]
         }
-        responses.push(BatchResponse::Documents(vec![
-            serde_json::json!({"ordinal": 1, "iid": "0x21"}),
-            serde_json::json!({"ordinal": 0, "iid": "0x20"}),
-        ]));
-        responses.push(BatchResponse::Documents(vec![
-            batch_person_document(1, "0x21", "person-1", "normalized-1"),
-            batch_person_document(0, "0x20", "person-0", "normalized-0"),
-        ]));
-        responses
     }
 
     fn entity_insert_responses(count: usize) -> Vec<BatchResponse> {
-        vec![
-            BatchResponse::Documents(
-                (0..count)
-                    .rev()
-                    .map(|ordinal| {
-                        serde_json::json!({
-                            "ordinal": ordinal,
-                            "iid": format!("0x2{ordinal}"),
-                        })
-                    })
-                    .collect(),
-            ),
-            BatchResponse::Documents(
-                (0..count)
-                    .rev()
-                    .map(|ordinal| {
-                        batch_person_document(
-                            ordinal,
-                            &format!("0x2{ordinal}"),
-                            &format!("person-{ordinal}"),
-                            &format!("normalized-{ordinal}"),
-                        )
-                    })
-                    .collect(),
-            ),
-        ]
+        vec![BatchResponse::Documents(
+            (0..count)
+                .rev()
+                .map(|ordinal| {
+                    batch_person_document(
+                        ordinal,
+                        &format!("0x2{ordinal}"),
+                        &format!("person-{ordinal}"),
+                        &format!("normalized-{ordinal}"),
+                    )
+                })
+                .collect(),
+        )]
     }
 
     fn relation_batch_responses(operation: ProjectedBatchOperation) -> Vec<BatchResponse> {
         if operation == ProjectedBatchOperation::Delete {
-            return vec![BatchResponse::Documents(vec![
-                serde_json::json!({"ordinal": 1}),
-                serde_json::json!({"ordinal": 0, "iid": "0x30"}),
-            ])];
-        }
-        vec![
-            BatchResponse::Documents(vec![
-                serde_json::json!({
-                    "kind": 1,
-                    "ordinal": 1,
-                    "reference_ordinal": 1,
-                    "iid": "0x11",
-                    "type": "person",
-                }),
-                serde_json::json!({
-                    "kind": 1,
-                    "ordinal": 0,
-                    "reference_ordinal": 0,
-                    "iid": "0x10",
-                    "type": "person",
-                }),
-            ]),
-            BatchResponse::Documents(vec![
-                serde_json::json!({"ordinal": 1, "iid": "0x31"}),
-                serde_json::json!({"ordinal": 0, "iid": "0x30"}),
-            ]),
-            BatchResponse::Documents(vec![
+            vec![BatchResponse::Documents(vec![
+                serde_json::json!({"ordinal":1}),
+                serde_json::json!({"ordinal":0}),
+            ])]
+        } else {
+            vec![BatchResponse::Documents(vec![
                 batch_membership_document(1, "0x31", "membership-1", "0x11", "player-1"),
                 batch_membership_document(0, "0x30", "membership-0", "0x10", "player-0"),
-            ]),
-        ]
-    }
-
-    fn assert_legacy_batch_route_fingerprint(
-        kind: TypeKind,
-        operation: ProjectedBatchOperation,
-        calls: &[(String, GivenRowsSpec)],
-    ) {
-        let label = if kind == TypeKind::Entity {
-            "person"
-        } else {
-            "membership"
-        };
-        let has_prerequisite = (kind == TypeKind::Relation
-            && operation != ProjectedBatchOperation::Delete)
-            || operation == ProjectedBatchOperation::Put;
-        let mutation_index = usize::from(has_prerequisite);
-        let (mutation, rows) = &calls[mutation_index];
-
-        match operation {
-            ProjectedBatchOperation::Insert => {
-                assert!(
-                    mutation.contains(&format!("insert\n$thing isa {label};")),
-                    "insert batch reached the wrong mutation compiler: {mutation}",
-                );
-                assert!(!mutation.contains("\nput\n"));
-                assert_eq!(rows.variables, ["ordinal"]);
-                assert_eq!(
-                    rows.rows,
-                    [vec![GivenValue::Integer(0)], vec![GivenValue::Integer(1)],],
-                );
-            }
-            ProjectedBatchOperation::Put => {
-                assert_eq!(mutation.matches("\nput\n").count(), 1);
-                assert!(mutation.contains(&format!("$thing isa {label}")));
-                assert!(mutation.contains("has identifier == $put-key-0"));
-                assert_eq!(rows.variables, ["ordinal", "put-key-0"]);
-                let prefix = if kind == TypeKind::Entity {
-                    "person"
-                } else {
-                    "membership"
-                };
-                assert_eq!(
-                    rows.rows,
-                    [
-                        vec![
-                            GivenValue::Integer(0),
-                            GivenValue::String(format!("{prefix}-0")),
-                        ],
-                        vec![
-                            GivenValue::Integer(1),
-                            GivenValue::String(format!("{prefix}-1")),
-                        ],
-                    ],
-                );
-            }
-            ProjectedBatchOperation::Update => {
-                assert!(mutation.contains(&format!("$thing isa! {label};")));
-                assert!(mutation.contains("$actual-iid == $target-iid;"));
-                assert!(mutation.contains("has $old-attribute-0 of $thing"));
-                assert!(!mutation.contains("\nput\n"));
-                if kind == TypeKind::Relation {
-                    assert!(
-                        mutation
-                            .contains("delete try { links (member: $old-player-0) of $thing; }",),
-                        "relation update did not clear the authored role: {mutation}",
-                    );
-                }
-                assert_eq!(rows.variables, ["ordinal", "target-iid"]);
-                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
-                assert_eq!(
-                    rows.rows,
-                    [
-                        vec![
-                            GivenValue::Integer(0),
-                            GivenValue::String(format!("0x{base:x}")),
-                        ],
-                        vec![
-                            GivenValue::Integer(1),
-                            GivenValue::String(format!("0x{:x}", base + 1)),
-                        ],
-                    ],
-                );
-            }
-            ProjectedBatchOperation::Delete => {
-                assert!(mutation.contains(&format!("$thing isa! {label};")));
-                assert!(mutation.contains("delete try { $thing; }"));
-                assert!(!mutation.contains("\nput\n"));
-                assert_eq!(rows.variables, ["ordinal", "target-iid"]);
-                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
-                assert_eq!(
-                    rows.rows,
-                    [
-                        vec![
-                            GivenValue::Integer(0),
-                            GivenValue::String(format!("0x{base:x}")),
-                        ],
-                        vec![
-                            GivenValue::Integer(1),
-                            GivenValue::String(format!("0x{:x}", base + 1)),
-                        ],
-                    ],
-                );
-            }
-        }
-
-        if has_prerequisite {
-            let (prerequisite, rows) = &calls[0];
-            assert_eq!(
-                &rows.variables[..5],
-                [
-                    "kind",
-                    "ordinal",
-                    "reference-ordinal",
-                    "route",
-                    "wanted-iid"
-                ],
-            );
-            if operation == ProjectedBatchOperation::Put {
-                assert!(prerequisite.contains("$kind == 0;"));
-                assert!(prerequisite.contains("has identifier == $put-key-0"));
-                assert_eq!(
-                    rows.rows
-                        .iter()
-                        .filter(|row| row[0] == GivenValue::Integer(0))
-                        .count(),
-                    2,
-                );
-            }
-            if kind == TypeKind::Relation {
-                assert!(prerequisite.contains("$kind == 1;"));
-                assert_eq!(
-                    rows.rows
-                        .iter()
-                        .filter(|row| row[0] == GivenValue::Integer(1))
-                        .count(),
-                    2,
-                );
-            }
-        }
-
-        if operation != ProjectedBatchOperation::Delete {
-            let (attach, rows) = calls.last().expect("non-delete batch has an attach stage");
-            assert!(attach.contains(&format!("$thing isa! {label};")));
-            assert_eq!(&rows.variables[..2], ["ordinal", "target-iid"]);
-            assert!(rows.rows.iter().any(|row| {
-                row[0] == GivenValue::Integer(0)
-                    && row[1]
-                        == GivenValue::String(if kind == TypeKind::Entity {
-                            "0x20".to_owned()
-                        } else {
-                            "0x30".to_owned()
-                        })
-            }));
-            if kind == TypeKind::Relation {
-                assert!(attach.contains("$thing links (member:"));
-                assert!(
-                    rows.variables
-                        .iter()
-                        .any(|variable| variable.starts_with("player-iid-")),
-                );
-            }
+            ])]
         }
     }
 
@@ -11509,199 +11304,57 @@ class StructBase:
         operation: ProjectedBatchOperation,
         calls: &[(String, GivenRowsSpec)],
     ) {
-        if calls.iter().any(|(source, _)| source.contains("$thing1")) {
-            assert_native_batch_route_fingerprint(kind, operation, calls);
-        } else {
-            assert_legacy_batch_route_fingerprint(kind, operation, calls);
-        }
-    }
-
-    fn assert_native_batch_route_fingerprint(
-        kind: TypeKind,
-        operation: ProjectedBatchOperation,
-        calls: &[(String, GivenRowsSpec)],
-    ) {
+        let [(source, rows)] = calls else {
+            panic!("one complete native batch statement: {calls:?}");
+        };
         let label = if kind == TypeKind::Entity {
             "person"
         } else {
             "membership"
         };
-        let has_prerequisite = (kind == TypeKind::Relation
-            && operation != ProjectedBatchOperation::Delete)
-            || operation == ProjectedBatchOperation::Put;
-        let mutation_index = usize::from(has_prerequisite);
-        let (mutation, rows) = &calls[mutation_index];
-
-        match operation {
-            ProjectedBatchOperation::Insert => {
-                assert!(
-                    mutation.contains(&format!("insert $thing1 isa {label}")),
-                    "insert batch reached the wrong mutation compiler: {mutation}",
-                );
-                assert!(!mutation.contains("put $thing1"));
-                assert_eq!(
-                    rows.variables,
-                    if kind == TypeKind::Entity {
-                        vec!["ordinal"]
-                    } else {
-                        vec!["ordinal", "first_iid"]
-                    }
-                );
-                assert_eq!(
-                    rows.rows,
-                    if kind == TypeKind::Entity {
-                        vec![vec![GivenValue::Integer(0)], vec![GivenValue::Integer(1)]]
-                    } else {
-                        vec![
-                            vec![GivenValue::Integer(0), GivenValue::String("0x10".into())],
-                            vec![GivenValue::Integer(1), GivenValue::String("0x11".into())],
-                        ]
-                    },
-                );
-            }
-            ProjectedBatchOperation::Put => {
+        assert_eq!(rows.rows.len(), 2);
+        for (ordinal, row) in rows.rows.iter().enumerate() {
+            assert_eq!(row[0], GivenValue::Integer(i64::try_from(ordinal).unwrap()));
+            if operation != ProjectedBatchOperation::Delete {
+                assert!(row.contains(&GivenValue::String(format!("{label}-{ordinal}"))));
                 if kind == TypeKind::Relation {
-                    assert!(
-                        mutation.contains("insert $thing1 isa membership, links (member: $first2)")
-                    );
-                    assert_eq!(rows.variables, ["ordinal", "first_iid"]);
-                    assert_eq!(
-                        rows.rows,
-                        vec![
-                            vec![GivenValue::Integer(0), GivenValue::String("0x10".into())],
-                            vec![GivenValue::Integer(1), GivenValue::String("0x11".into())]
-                        ]
-                    );
-                } else {
-                    assert_eq!(mutation.matches("put $thing1").count(), 1);
-                    assert!(mutation.contains(&format!("$thing1 isa! {label}")));
-                    assert!(mutation.contains("has identifier == $put_key_0"));
-                    assert_eq!(rows.variables, ["ordinal", "put_key_0"]);
-                    let prefix = if kind == TypeKind::Entity {
-                        "person"
-                    } else {
-                        "membership"
-                    };
-                    assert_eq!(
-                        rows.rows,
-                        [
-                            vec![
-                                GivenValue::Integer(0),
-                                GivenValue::String(format!("{prefix}-0")),
-                            ],
-                            vec![
-                                GivenValue::Integer(1),
-                                GivenValue::String(format!("{prefix}-1")),
-                            ],
-                        ],
-                    );
+                    assert!(row.contains(&GivenValue::String(format!("player-{ordinal}"))));
+                }
+                if kind == TypeKind::Entity {
+                    assert!(row.contains(&GivenValue::String(format!("authored-{ordinal}"))));
                 }
             }
-            ProjectedBatchOperation::Update => {
-                assert!(mutation.contains(&format!("$thing1 isa! {label};")));
-                assert!(mutation.contains("iid($thing1) == $target_iid;"));
-                assert!(mutation.contains("has $PlanHas1x0 of $thing1"));
-                assert!(!mutation.contains("\nput\n"));
-                if kind == TypeKind::Relation {
-                    assert!(
-                        mutation
-                            .contains("delete try { links (member: $PlanPlayers4x0) of $thing1; }",),
-                        "relation update did not clear the authored role: {mutation}",
-                    );
+            if matches!(
+                operation,
+                ProjectedBatchOperation::Update | ProjectedBatchOperation::Delete
+            ) {
+                let prefix = if kind == TypeKind::Entity { "2" } else { "3" };
+                assert!(row.contains(&GivenValue::String(format!("0x{prefix}{ordinal}"))));
+            }
+        }
+        if operation == ProjectedBatchOperation::Delete {
+            assert!(source.contains(&format!("$thing1 isa! {label};")));
+            assert!(source.contains("delete $thing1;"));
+            assert_eq!(rows.variables, ["ordinal", "target_iid"]);
+        } else {
+            assert!(source.contains("fetch"));
+            assert!(source.contains("\"ordinal\": $ordinal1"));
+            assert_eq!(rows.variables[0], "ordinal_input");
+            match operation {
+                ProjectedBatchOperation::Insert => {
+                    assert!(source.contains(&format!("insert $root0 isa {label}")))
                 }
-                assert_eq!(rows.variables, ["ordinal", "target_iid"]);
-                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
-                assert_eq!(
-                    rows.rows,
-                    [
-                        vec![
-                            GivenValue::Integer(0),
-                            GivenValue::String(format!("0x{base:x}")),
-                        ],
-                        vec![
-                            GivenValue::Integer(1),
-                            GivenValue::String(format!("0x{:x}", base + 1)),
-                        ],
-                    ],
-                );
-            }
-            ProjectedBatchOperation::Delete => {
-                assert!(mutation.contains(&format!("$thing1 isa! {label};")));
-                assert!(mutation.contains("delete $thing1;"));
-                assert!(!mutation.contains("\nput\n"));
-                assert_eq!(rows.variables, ["ordinal", "target_iid"]);
-                let base = if kind == TypeKind::Entity { 0x20 } else { 0x30 };
-                assert_eq!(
-                    rows.rows,
-                    [
-                        vec![
-                            GivenValue::Integer(0),
-                            GivenValue::String(format!("0x{base:x}")),
-                        ],
-                        vec![
-                            GivenValue::Integer(1),
-                            GivenValue::String(format!("0x{:x}", base + 1)),
-                        ],
-                    ],
-                );
-            }
-        }
-
-        if has_prerequisite {
-            let (prerequisite, rows) = &calls[0];
-            assert_eq!(
-                &rows.variables[..5],
-                [
-                    "kind",
-                    "ordinal",
-                    "reference_ordinal",
-                    "route",
-                    "wanted_iid"
-                ],
-            );
-            if operation == ProjectedBatchOperation::Put {
-                assert!(prerequisite.contains("$kind == 0;"));
-                assert!(prerequisite.contains("has identifier $key4;"));
-                assert_eq!(
-                    rows.rows
-                        .iter()
-                        .filter(|row| row[0] == GivenValue::Integer(0))
-                        .count(),
-                    2,
-                );
+                ProjectedBatchOperation::Put => {
+                    assert!(source.contains(&format!("put $root0 isa! {label}")))
+                }
+                ProjectedBatchOperation::Update => {
+                    assert!(source.contains("delete try"));
+                    assert!(rows.variables.iter().any(|name| name == "target_iid"));
+                }
+                ProjectedBatchOperation::Delete => unreachable!(),
             }
             if kind == TypeKind::Relation {
-                assert!(prerequisite.contains("$kind == 1;"));
-                assert_eq!(
-                    rows.rows
-                        .iter()
-                        .filter(|row| row[0] == GivenValue::Integer(1))
-                        .count(),
-                    2,
-                );
-            }
-        }
-
-        if operation != ProjectedBatchOperation::Delete {
-            let (attach, rows) = calls.last().expect("non-delete batch has an attach stage");
-            assert!(attach.contains(&format!("$thing1 isa! {label};")));
-            assert_eq!(&rows.variables[..2], ["ordinal", "target_iid"]);
-            assert!(rows.rows.iter().any(|row| {
-                row[0] == GivenValue::Integer(0)
-                    && row[1]
-                        == GivenValue::String(if kind == TypeKind::Entity {
-                            "0x20".to_owned()
-                        } else {
-                            "0x30".to_owned()
-                        })
-            }));
-            if kind == TypeKind::Relation {
-                assert!(attach.contains("$thing1 links (member:"));
-                assert!(
-                    rows.variables
-                        .iter()
-                        .any(|variable| variable.starts_with("player_iid_")),
-                );
+                assert!(source.contains("links (member:"));
             }
         }
     }
@@ -15388,12 +15041,7 @@ def failing_initialize(target, original):
                     assert_eq!(state.rollbacks, 0);
                     assert_eq!(state.legacy_commits, 0);
                     assert_eq!(state.commits, usize::from(!borrowed));
-                    let expected_calls = match operation {
-                        ProjectedBatchOperation::Put => 3,
-                        ProjectedBatchOperation::Delete => 1,
-                        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update => 2,
-                    };
-                    assert_eq!(state.calls.len(), expected_calls);
+                    assert_eq!(state.calls.len(), 1);
                     assert_successor_batch_route_fingerprint(
                         TypeKind::Entity,
                         operation,
@@ -15503,14 +15151,7 @@ def failing_initialize(target, original):
                     assert_eq!(state.rollbacks, 0);
                     assert_eq!(state.legacy_commits, 0);
                     assert_eq!(state.commits, usize::from(!borrowed));
-                    assert_eq!(
-                        state.calls.len(),
-                        if operation == ProjectedBatchOperation::Delete {
-                            1
-                        } else {
-                            3
-                        },
-                    );
+                    assert_eq!(state.calls.len(), 1);
                     assert_successor_batch_route_fingerprint(
                         TypeKind::Relation,
                         operation,
@@ -15854,45 +15495,16 @@ def failing_initialize(target, original):
                     ProjectedBatchOperation::Delete,
                 ] {
                     let (_, package) = install(py);
-                    let responses = match (kind, operation) {
-                        (TypeKind::Entity, ProjectedBatchOperation::Insert) => {
-                            vec![QueryResult::Documents(vec![serde_json::json!({
-                                "iid": "0x20",
-                            })])]
-                        }
-                        (TypeKind::Entity, ProjectedBatchOperation::Put) => vec![
-                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x20"})]),
-                        ],
-                        (TypeKind::Entity, ProjectedBatchOperation::Update) => vec![
-                            QueryResult::Rows(vec![serde_json::json!({})]),
-                            QueryResult::Documents(vec![legacy_person_document(
-                                "0x20",
-                                "legacy-person",
-                            )]),
-                        ],
-                        (TypeKind::Entity, ProjectedBatchOperation::Delete) => {
-                            vec![QueryResult::Rows(vec![serde_json::json!({})])]
-                        }
-                        (TypeKind::Relation, ProjectedBatchOperation::Insert) => {
-                            vec![QueryResult::Documents(vec![serde_json::json!({
-                                "iid": "0x30",
-                            })])]
-                        }
-                        (TypeKind::Relation, ProjectedBatchOperation::Put) => vec![
-                            QueryResult::Documents(vec![serde_json::json!({"iid": "0x30"})]),
-                        ],
-                        (TypeKind::Relation, ProjectedBatchOperation::Update) => vec![
-                            QueryResult::Rows(vec![serde_json::json!({})]),
-                            QueryResult::Documents(vec![native_membership_document(
-                                "0x30",
-                                "0x10",
-                                "legacy-player",
-                            )]),
-                        ],
-                        (TypeKind::Relation, ProjectedBatchOperation::Delete) => {
-                            vec![QueryResult::Rows(vec![serde_json::json!({})])]
-                        }
-                        _ => unreachable!(),
+                    let responses = if operation == ProjectedBatchOperation::Delete {
+                        vec![QueryResult::Rows(vec![serde_json::json!({})])]
+                    } else {
+                        let mut document = if kind == TypeKind::Entity {
+                            legacy_person_document("0x20", "legacy-person")
+                        } else {
+                            native_membership_document("0x30", "0x10", "legacy-player")
+                        };
+                        document["ordinal"] = serde_json::json!(0);
+                        vec![QueryResult::Documents(vec![document])]
                     };
                     let expected_queries = responses.len();
                     let (database, state) = LegacyBatchRecordingBackend::fixture(responses);
@@ -16146,7 +15758,7 @@ def failing_initialize(target, original):
                 let state = state.lock().unwrap();
                 assert!(state.responses.is_empty());
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.calls.len(), 2);
+                assert_eq!(state.calls.len(), 1);
                 assert_eq!(state.legacy_commits, 0);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, 0);
@@ -16263,14 +15875,7 @@ def failing_initialize(target, original):
                 assert_eq!(state.legacy_commits, 0);
                 assert_eq!(state.commits, 1);
                 assert_eq!(state.rollbacks, usize::from(rollback_first));
-                assert_eq!(
-                    state.calls.len(),
-                    if operation == ProjectedBatchOperation::Insert {
-                        2
-                    } else {
-                        1
-                    },
-                );
+                assert_eq!(state.calls.len(), 1);
             }
         });
     }
@@ -16878,7 +16483,7 @@ class BoundaryIterator:
             let state = state.lock().unwrap();
             assert!(state.responses.is_empty());
             assert_eq!(state.opens, [TxType::Write]);
-            assert_eq!(state.calls.len(), 2);
+            assert_eq!(state.calls.len(), 1);
             assert_eq!(state.legacy_commits, 0);
             assert_eq!(state.commits, 1);
             assert_eq!(state.rollbacks, 0);
@@ -17309,7 +16914,7 @@ class BoundaryIterator:
                     }
                     let state = state.lock().unwrap();
                     assert_eq!(state.opens, [TxType::Write]);
-                    assert_eq!(state.calls.len(), 2);
+                    assert_eq!(state.calls.len(), 1);
                     assert_eq!(state.legacy_commits, 0);
                     assert_eq!(state.commits, 0);
                     assert_eq!(state.rollbacks, usize::from(!borrowed));
@@ -17700,7 +17305,7 @@ class CyclicFinalizer:
                 }
                 let state = state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.calls.len(), 2);
+                assert_eq!(state.calls.len(), 1);
                 assert_eq!(state.legacy_commits, 0);
                 assert_eq!(state.commits, 0);
                 assert_eq!(state.rollbacks, usize::from(!borrowed));
