@@ -1,6 +1,6 @@
 use super::ExecuteError;
 use super::backend::{DriverBackend, QueryResultKind, TransactionType};
-#[cfg(feature = "v2-query")]
+
 use super::real_driver::sanitize_prepared_connect_error;
 use super::real_driver::{RealTypeDBBackend, prepare_secure_connect_options};
 use crate::config::{SecureTypeDBSection, TypeDBSection};
@@ -15,7 +15,7 @@ use type_bridge_typedb_runtime::PreparedSecureConnectOptions;
 #[doc(hidden)]
 pub struct PreparedSecureTypeDBConnection {
     address: String,
-    #[cfg(feature = "v2-query")]
+
     database: String,
     username: String,
     password: String,
@@ -24,7 +24,7 @@ pub struct PreparedSecureTypeDBConnection {
 
 impl PreparedSecureTypeDBConnection {
     /// Connect the V2 ORM authority through this exact prepared identity.
-    #[cfg(feature = "v2-query")]
+
     #[doc(hidden)]
     pub async fn connect_database(&self) -> Result<type_bridge_orm::Database, PipelineError> {
         type_bridge_orm::Database::connect_prepared_secure_with_options(
@@ -72,7 +72,7 @@ impl TypeDBClient {
         let connection = &config.connection;
         Ok(PreparedSecureTypeDBConnection {
             address: connection.address.clone(),
-            #[cfg(feature = "v2-query")]
+
             database: connection.database.clone(),
             username: connection.username.clone(),
             password: connection.password.clone(),
@@ -951,9 +951,6 @@ mod tests {
     // QueryExecutor trait impl tests
     // =============================================
 
-
-
-
     #[tokio::test]
     async fn prepared_first_and_v2_connections_never_expose_credentials_or_provider_identity() {
         const ADDRESS: &str = "admin:TB_ADDRESS_SECRET@provider.invalid:1729";
@@ -982,7 +979,6 @@ mod tests {
         }
         assert!(first.source().is_none());
 
-        #[cfg(feature = "v2-query")]
         {
             let second = match prepared.connect_database().await {
                 Ok(_) => panic!("malformed V2 provider address unexpectedly connected"),

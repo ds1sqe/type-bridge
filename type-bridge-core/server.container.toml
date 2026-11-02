@@ -24,5 +24,5 @@ file_path = ""
 level = "info"
 format = "json"
 
-[v2]
+[staged]
 enabled = false

@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use type_bridge_contract::capability::CapabilityId;
 use type_bridge_contract::fingerprint::SemanticProfileId;
-use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
 use type_bridge_orm::session::backend::AnswerLimits;
 use type_bridge_schema::{
     BUILTIN_SCHEMA_CAPABILITY_IDS, ManagedDeltaContext, decode_schema_authority,
@@ -135,14 +135,13 @@ async fn main() {
     let tls_mode = typedb_tls_mode();
 
     let authority_bytes = decode_b64(&env("SMOKE_AUTHORITY_B64"));
-    let mut available_capabilities = query_plan_v2_capability_vocabulary();
+    let mut available_capabilities = query_plan_v3_capability_vocabulary();
     for capability in BUILTIN_SCHEMA_CAPABILITY_IDS {
         available_capabilities.insert(CapabilityId::new(*capability).expect("built-in capability"));
     }
     let authority = decode_schema_authority(&authority_bytes, &available_capabilities)
         .expect("schema authority verifies without authoring sources");
     let declared = authority.declared_schema().clone();
-    let resolved = authority.resolved_schema().clone();
     let profile = authority.semantic_profile().id().clone();
     let managed = authority.managed_state().clone();
     let delta_context = ManagedDeltaContext::new(
@@ -189,7 +188,7 @@ async fn main() {
         "schema-authority profile must match the connected TypeDB server"
     );
 
-    let mut advertised = query_plan_v2_capability_vocabulary();
+    let mut advertised = query_plan_v3_capability_vocabulary();
     if database.supports_given_stage() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }
@@ -201,7 +200,6 @@ async fn main() {
             declared,
             delta_context,
             managed,
-            resolved,
         )
         .expect("executor advertisement is canonical")
         .with_unauthenticated_staged_writes(

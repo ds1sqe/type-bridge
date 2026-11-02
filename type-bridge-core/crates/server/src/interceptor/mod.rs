@@ -9,5 +9,5 @@ pub use chain::InterceptorChain;
 #[allow(unused_imports)] // re-exported for downstream use
 pub use traits::InterceptError;
 pub use traits::{Interceptor, RequestContext};
-#[cfg(feature = "v2-query")]
+
 pub use traits::{StagedWriteAuthority, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};

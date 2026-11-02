@@ -1,9 +1,9 @@
 #![allow(deprecated)] // Legacy node bridges are removed in 3.0.
-#[cfg(feature = "v2-query")]
+
 use futures::future::join_all;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
-#[cfg(feature = "v2-query")]
+
 use super::traits::{StagedWriteAuthority, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
 
 /// Ordered request interceptor chain with reverse-order response hooks.
@@ -20,7 +20,7 @@ impl InterceptorChain {
     /// Fail closed if any configured policy has not explicitly declared
     /// staged V3 coverage.
     ///
-    #[cfg(feature = "v2-query")]
+
     pub fn ensure_v3_coverage(&self) -> Result<(), InterceptError> {
         if let Some(interceptor) = self
             .interceptors
@@ -38,7 +38,7 @@ impl InterceptorChain {
     }
 
     /// Run header/identity policy before decoding an untrusted staged envelope.
-    #[cfg(feature = "v2-query")]
+
     pub async fn execute_v3_transport(
         &self,
         ctx: &mut RequestContext,
@@ -51,7 +51,7 @@ impl InterceptorChain {
 
     /// Admit a staged V3 write: any error refuses, at least one policy must
     /// vouch for the caller.
-    #[cfg(feature = "v2-query")]
+
     pub async fn execute_v3_write_authority(
         &self,
         ctx: &RequestContext,
@@ -66,7 +66,7 @@ impl InterceptorChain {
 
     /// Run staged plan policy in order; the first refusal wins. Each policy
     /// sees row values only if it asked for them.
-    #[cfg(feature = "v2-query")]
+
     pub async fn execute_v3_plan(
         &self,
         index: usize,
@@ -81,7 +81,7 @@ impl InterceptorChain {
     }
 
     /// Run every staged commit observer concurrently; errors are logged only.
-    #[cfg(feature = "v2-query")]
+
     pub async fn execute_v3_commit(&self, outcome: &V3CommitOutcome<'_>, ctx: &RequestContext) {
         let results = join_all(
             self.interceptors
@@ -101,7 +101,7 @@ impl InterceptorChain {
 
     /// Run every staged response hook even when one rejects, so audit evidence is
     /// not skipped by interceptor ordering. The first error remains decisive.
-    #[cfg(feature = "v2-query")]
+
     pub async fn execute_v3_response(
         &self,
         outcome: &V3PolicyOutcome<'_>,

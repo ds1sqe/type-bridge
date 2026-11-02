@@ -113,8 +113,8 @@ file_path = "/var/log/audit.jsonl"
 level = "info"        # default
 format = "json"       # default; "text" is also supported
 
-# Additive prepared staged routes; the default build includes v2-query.
-[v2]
+# Additive prepared staged routes; the default build includes the staged transport.
+[staged]
 enabled = true
 schema_authority_file = "schema-authority.json"
 authority_mode = "managed" # default; or the explicit "query_only"

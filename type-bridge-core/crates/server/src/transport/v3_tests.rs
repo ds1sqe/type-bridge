@@ -71,7 +71,6 @@ fn configured_v3_fixture(
         authority.declared,
         authority.delta_context,
         authority.managed,
-        authority.resolved,
     )
     .expect("executor advertisement is canonical")
     .with_unauthenticated_staged_writes(allow_unauthenticated_writes);
@@ -299,7 +298,7 @@ fn failure_code(reply: &VerifiedStagedReplyV3) -> &str {
 }
 
 #[tokio::test]
-async fn staged_capabilities_extend_without_changing_the_v2_advertisement() {
+async fn staged_capabilities_match_the_executor_authority() {
     let fixture = v3_fixture(default_pipeline(), false);
     let v3 = call(&fixture.router, "GET", "/v3/capabilities", Vec::new()).await;
     let v3 = RemoteCapabilities::decode(&v3).expect("staged advertisement");
@@ -317,7 +316,7 @@ async fn staged_capabilities_extend_without_changing_the_v2_advertisement() {
     }
     assert_eq!(v3.executor(), fixture.query.advertisement.executor());
     let v2 = fixture.query.advertisement.capabilities();
-    assert!(!v2.contains(&CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3).expect("capability")));
+    assert!(v2.contains(&CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3).expect("capability")));
 }
 
 #[tokio::test]

@@ -30,7 +30,7 @@ file_path = "/var/log/audit.jsonl"
 level = "info"
 format = "json"
 
-[v2]
+[staged]
 enabled = true
 schema_authority_file = "schema-authority.json"
 authority_mode = "managed"

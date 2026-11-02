@@ -3,13 +3,13 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
-#[cfg(feature = "v2-query")]
-use type_bridge_server::config::V2AuthorityMode;
+
+use type_bridge_server::config::StagedAuthorityMode;
 use type_bridge_server::config::{AuditLogConfig, RuntimeServerConfig};
 use type_bridge_server::interceptor::audit_log::AuditLogInterceptor;
 use type_bridge_server::pipeline::PipelineBuilder;
 use type_bridge_server::transport;
-#[cfg(feature = "v2-query")]
+
 use type_bridge_server::typedb::PreparedSecureTypeDBConnection;
 use type_bridge_server::typedb::TypeDBClient;
 
@@ -33,14 +33,10 @@ const SUPPORTED_INTERCEPTORS: &[&str] = &["audit-log"];
 /// provider connections, routers, or listeners exist. An operator request for
 /// authentication or rate limiting must never degrade into an unprotected
 /// server because a name was misspelled or the implementation is absent.
-fn validate_configured_interceptors(enabled: &[String], v2_enabled: bool) -> Result<(), String> {
-    // Released V1 startup warned and skipped unknown names. Preserve that
-    // behavior for existing configurations. The additive V2 surface is
-    // stricter because silently omitting a policy from typed-plan execution
-    // would create a new authorization gap.
-    if !v2_enabled {
-        return Ok(());
-    }
+fn validate_configured_interceptors(
+    enabled: &[String],
+    _staged_enabled: bool,
+) -> Result<(), String> {
     let unsupported = enabled
         .iter()
         .filter(|name| !SUPPORTED_INTERCEPTORS.contains(&name.as_str()))
@@ -56,25 +52,9 @@ fn validate_configured_interceptors(enabled: &[String], v2_enabled: bool) -> Res
     ))
 }
 
-fn validate_compiled_capabilities(v2_enabled: bool) -> Result<(), &'static str> {
-    #[cfg(feature = "v2-query")]
-    {
-        let _ = v2_enabled;
-        Ok(())
-    }
-    #[cfg(not(feature = "v2-query"))]
-    {
-        if v2_enabled {
-            Err("v2.enabled is set but this binary was built without the v2-query feature")
-        } else {
-            Ok(())
-        }
-    }
-}
-
-#[cfg(all(feature = "v2-query", test))]
+#[cfg(test)]
 fn redact_v2_schema_export_error<E>(_error: E) -> String {
-    "v2 live schema export failed [typedb_v2_schema_export_failed]; inspect provider logs"
+    "staged live schema export failed [typedb_v2_schema_export_failed]; inspect provider logs"
         .to_owned()
 }
 
@@ -82,9 +62,7 @@ fn redact_v2_schema_export_error<E>(_error: E) -> String {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let config = RuntimeServerConfig::from_file(&cli.config)?;
-    validate_configured_interceptors(&config.interceptors.enabled, config.v2.enabled)
-        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-    validate_compiled_capabilities(config.v2.enabled)
+    validate_configured_interceptors(&config.interceptors.enabled, config.staged.enabled)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
 
     // Parse and cross-check inbound identity before any outbound provider I/O.
@@ -95,9 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    // Resolve outbound trust exactly once. Both the released V1 pipeline and
-    // additive V2 authority clone this immutable snapshot; a CA rotation
-    // during startup cannot split their trust identities.
+    // Capture outbound trust once for the configured executor.
     let outbound_transport = TypeDBClient::prepare_secure_transport(&config.typedb)
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
@@ -143,42 +119,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 builder = builder.with_interceptor(interceptor);
                 tracing::info!("Enabled interceptor: audit-log");
             }
-            // V1 has always warned and skipped names this binary does not
-            // implement. V2 preflight above rejects the same name before any
-            // provider I/O, so this compatibility arm is reachable only for
-            // the released V1 surface.
-            other => tracing::warn!(name = other, "Unknown interceptor, skipping"),
+            other => return Err(format!("unsupported configured interceptor: {other}").into()),
         }
     }
 
     let pipeline = builder
         .build()
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
-    #[cfg(feature = "v2-query")]
-    if config.v2.enabled {
-        // V3 coverage does not gate startup, so V2-only policies keep
-        // serving V2; the staged routes refuse every request instead.
-        if let Err(error) = pipeline.validate_v3_coverage() {
-            tracing::warn!(%error, "staged V3 routes refuse every request");
-        }
+
+    if config.staged.enabled {
+        pipeline.validate_v3_coverage()?;
     }
 
-    // Build router and serve. The V2 surface is opt-in and fail-closed:
-    // an enabled [v2] section either produces working routes or aborts
-    // startup — it never degrades to silent 404s.
-    #[cfg(feature = "v2-query")]
-    let router = if config.v2.enabled {
-        let state = build_v2_state(&config, &outbound_transport).await?;
+    let router = if config.staged.enabled {
+        let state = build_staged_state(&config, &outbound_transport).await?;
         tracing::info!(
-            schema_authority = config.v2.schema_authority_file.as_str(),
-            "V2 query surface enabled: /v2/query, /v2/capabilities, /v3/staged, /v3/capabilities"
+            schema_authority = config.staged.schema_authority_file.as_str(),
+            "Staged query surface enabled: /v3/staged, /v3/capabilities"
         );
         transport::v3::create_v3_router(Arc::new(pipeline), Arc::new(state))
     } else {
         transport::http::create_health_router(false)
     };
-    #[cfg(not(feature = "v2-query"))]
-    let router = transport::http::create_health_router(false);
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()
@@ -198,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Construct the V2 executor state from the validated `[v2]` config section.
+/// Construct the staged executor state from the validated `[staged]` config section.
 ///
 /// Every failure is a startup error: missing authority, an unverifiable
 /// source-free envelope, a profile mismatch, or an unreachable database all
@@ -206,25 +168,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// declared schema, resolved semantics, and managed state come from one
 /// constructor-verified artifact; deployment configuration cannot repeat or
 /// override them.
-#[cfg(feature = "v2-query")]
-async fn build_v2_state(
+
+async fn build_staged_state(
     config: &RuntimeServerConfig,
     outbound_transport: &PreparedSecureTypeDBConnection,
 ) -> Result<transport::staged_state::StagedQueryState, Box<dyn std::error::Error>> {
     use type_bridge_contract::fingerprint::SemanticProfileId;
-    use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
+    use type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary;
     use type_bridge_orm::session::backend::AnswerLimits;
     use type_bridge_schema::{
         ManagedDeltaContext, decode_schema_authority, schema_authority_capability_vocabulary,
     };
 
-    if config.v2.schema_authority_file.is_empty() {
-        return Err("v2.enabled requires v2.schema_authority_file".into());
+    if config.staged.schema_authority_file.is_empty() {
+        return Err("staged.enabled requires staged.schema_authority_file".into());
     }
     let bytes = config
-        .v2_schema_authority_bytes()
-        .map_err(|error| format!("cannot use v2.schema_authority_file: {error}"))?
-        .ok_or("v2.schema_authority_file was not captured during configuration loading")?;
+        .staged_schema_authority_bytes()
+        .map_err(|error| format!("cannot use staged.schema_authority_file: {error}"))?
+        .ok_or("staged.schema_authority_file was not captured during configuration loading")?;
 
     // The generic server and every generated package reconstruct authority
     // through the same closed vocabulary. Operation surfaces continue to
@@ -232,12 +194,11 @@ async fn build_v2_state(
     let available_capabilities = schema_authority_capability_vocabulary();
     let authority = decode_schema_authority(bytes, &available_capabilities).map_err(|error| {
         format!(
-            "v2.schema_authority_file is not a verified schema authority ({:?})",
+            "staged.schema_authority_file is not a verified schema authority ({:?})",
             error.code()
         )
     })?;
     let declared = authority.declared_schema().clone();
-    let resolved = authority.resolved_schema().clone();
     let profile = authority.semantic_profile().id().clone();
     let managed = authority.managed_state().clone();
     let delta_context = ManagedDeltaContext::new(
@@ -248,10 +209,10 @@ async fn build_v2_state(
     let database = outbound_transport
         .connect_database()
         .await
-        .map_err(|e| format!("v2 database connection failed: {e}"))?;
+        .map_err(|e| format!("staged database connection failed: {e}"))?;
 
     let server_version = database.server_version().ok_or(
-        "v2 requires an exact server-version observation; configure a reachable HTTP probe or explicit server_version",
+        "staged requires an exact server-version observation; configure a reachable HTTP probe or explicit server_version",
     )?;
     let negotiated_profile = SemanticProfileId::new(
         type_bridge_core_lib::version::semantic_profile_id(&server_version).ok_or_else(|| {
@@ -266,58 +227,53 @@ async fn build_v2_state(
         .into());
     }
 
-    // The complete V2 vocabulary is executable through the validated low-level
-    // engine and the sole same-snapshot model compatibility executor. Exact
-    // `given` transport remains conditional on the negotiated provider.
-    let mut advertised = query_plan_v2_capability_vocabulary();
+    // Advertise only the native staged plan vocabulary.
+    let mut advertised = query_plan_v3_capability_vocabulary();
     if database.supports_given_stage() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }
 
-    let state = match config.v2.authority_mode {
-        V2AuthorityMode::Managed => transport::staged_state::StagedQueryState::new(
+    let state = match config.staged.authority_mode {
+        StagedAuthorityMode::Managed => transport::staged_state::StagedQueryState::new(
             advertised,
             AnswerLimits::default(),
             database,
             declared,
             delta_context,
             managed,
-            resolved,
         ),
-        V2AuthorityMode::QueryOnly => transport::staged_state::StagedQueryState::new_query_only(
-            advertised,
-            AnswerLimits::default(),
-            database,
-            declared,
-            delta_context,
-            managed,
-            resolved,
-        ),
+        StagedAuthorityMode::QueryOnly => {
+            transport::staged_state::StagedQueryState::new_query_only(
+                advertised,
+                AnswerLimits::default(),
+                database,
+                declared,
+                delta_context,
+                managed,
+            )
+        }
     }
-    .map_err(|error| format!("v2 executor advertisement rejected: {error:?}"))?
-    .with_query_limits(config.v2.resolved_query_limits()?)
-    .map_err(|error| format!("v2 query limits rejected: {error:?}"))?;
+    .map_err(|error| format!("staged executor advertisement rejected: {error:?}"))?
+    .with_query_limits(config.staged.resolved_query_limits()?)
+    .map_err(|error| format!("staged query limits rejected: {error:?}"))?;
     let state = state
-        .with_staged_query_limits(config.v2.resolved_staged_query_limits()?)
+        .with_staged_query_limits(config.staged.resolved_staged_query_limits()?)
         .map_err(|error| format!("staged query limits rejected: {error:?}"))?
-        .with_answer_limits(config.v2.resolved_answer_limits()?)
-        .map_err(|error| format!("v2 answer limits rejected: {error:?}"))?
-        .with_unauthenticated_staged_writes(config.v2.allow_unauthenticated_staged_writes);
+        .with_answer_limits(config.staged.resolved_answer_limits()?)
+        .map_err(|error| format!("staged answer limits rejected: {error:?}"))?
+        .with_unauthenticated_staged_writes(config.staged.allow_unauthenticated_staged_writes);
     state
         .verify_startup_authority()
         .await
-        .map_err(|error| format!("v2 startup authority rejected: {error:?}"))?;
+        .map_err(|error| format!("staged startup authority rejected: {error:?}"))?;
     Ok(state)
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "v2-query")]
+
     use super::redact_v2_schema_export_error;
-    use super::{
-        AuditLogConfig, AuditLogInterceptor, validate_compiled_capabilities,
-        validate_configured_interceptors,
-    };
+    use super::{AuditLogConfig, AuditLogInterceptor, validate_configured_interceptors};
 
     #[test]
     fn audit_log_is_the_exact_supported_startup_name() {
@@ -325,12 +281,6 @@ mod tests {
             .expect("the implemented audit interceptor remains supported");
         validate_configured_interceptors(&[], true)
             .expect("an empty policy chain remains supported");
-    }
-
-    #[test]
-    fn released_v1_unknown_interceptor_behavior_remains_permissive() {
-        validate_configured_interceptors(&["rate-limiter".to_owned(), "custom".to_owned()], false)
-            .expect("released V1 startup warns and skips unknown names");
     }
 
     #[test]
@@ -357,7 +307,6 @@ mod tests {
         assert!(error.contains("auth, custom"), "{error}");
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
     fn v2_schema_export_startup_error_drops_provider_text_and_source_chain() {
         #[derive(Debug)]
@@ -392,7 +341,7 @@ mod tests {
     {
         let source = include_str!("main.rs");
         let preflight = source
-            .find("validate_compiled_capabilities(config.v2.enabled)")
+            .find("validate_configured_interceptors(&config.interceptors.enabled, config.staged.enabled)")
             .expect("main calls the build-capability preflight");
         for operation in [
             "tls.load().await",
@@ -404,14 +353,8 @@ mod tests {
                 .expect("startup operation remains present");
             assert!(preflight < operation, "preflight must precede {operation}");
         }
-
-        #[cfg(feature = "v2-query")]
-        validate_compiled_capabilities(true).expect("this build includes V2");
-        #[cfg(not(feature = "v2-query"))]
-        assert!(validate_compiled_capabilities(true).is_err());
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
     fn supported_audit_log_declares_typed_v2_coverage() {
         use type_bridge_server::interceptor::Interceptor;
@@ -421,7 +364,6 @@ mod tests {
             file_path: String::new(),
         })
         .expect("audit interceptor");
-        assert!(interceptor.supports_v3());
         assert!(interceptor.supports_v3());
     }
 }

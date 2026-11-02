@@ -31,7 +31,7 @@ use type_bridge_orm::TxType;
 use type_bridge_orm::session::backend::{AnswerLimits, QueryResult};
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::ConnectOptions;
-use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
+use type_bridge_schema::{ManagedDeltaContext, managed_schema_state};
 use type_bridge_server::interceptor::{
     InterceptError, Interceptor, RequestContext, StagedWriteAuthority, V3CommitOutcome,
     V3PolicyOutcome, V3PolicyPlan,
@@ -288,7 +288,6 @@ pub async fn proxy_with_database(
             .expect("supported profile"),
     )
     .expect("profile");
-    let resolved = resolve(&declared, &profile).expect("resolved");
     let delta_context = ManagedDeltaContext::new(
         ManagedScopeId::new(scope).expect("scope"),
         profile,
@@ -303,7 +302,6 @@ pub async fn proxy_with_database(
             declared.clone(),
             delta_context,
             managed,
-            resolved,
         )
         .expect("executor advertisement")
         .with_query_limits(policy.query_limits.unwrap_or_default())

@@ -23,7 +23,7 @@ use type_bridge_core_lib::version as core_version;
 
 const MAX_TLS_MATERIAL_BYTES: u64 = 1024 * 1024;
 const MAX_SERVER_CONFIG_BYTES: u64 = 1024 * 1024;
-#[cfg(feature = "v2-query")]
+
 const MAX_SCHEMA_AUTHORITY_BYTES: usize = type_bridge_schema::MAX_SCHEMA_AUTHORITY_BYTES;
 
 #[derive(Clone, Copy)]
@@ -31,6 +31,7 @@ enum RuntimeConfigParseErrorKind {
     Syntax,
     ValueShape,
     UnknownSecurityKey,
+    RemovedSection,
 }
 
 struct RuntimeConfigParseError {
@@ -63,6 +64,7 @@ impl fmt::Display for RuntimeConfigParseError {
             RuntimeConfigParseErrorKind::Syntax => "TOML syntax",
             RuntimeConfigParseErrorKind::ValueShape => "value shape",
             RuntimeConfigParseErrorKind::UnknownSecurityKey => "unknown security-sensitive key",
+            RuntimeConfigParseErrorKind::RemovedSection => "removed [v2] section; use [staged]",
         };
         write!(formatter, "server configuration is invalid ({reason})")?;
         if let Some((line, column)) = self.location {
@@ -113,7 +115,7 @@ pub struct ServerConfig {
     pub logging: LoggingSection,
 }
 
-/// Standalone-server configuration with additive secure and V2 settings.
+/// Standalone-server configuration with additive secure and staged settings.
 ///
 /// [`ServerConfig`] remains the released plaintext configuration surface so
 /// downstream exhaustive struct literals and patterns keep compiling. The
@@ -133,8 +135,8 @@ pub struct RuntimeServerConfig {
     pub logging: LoggingSection,
     /// Prepared inbound TLS identity, when HTTPS is enabled.
     pub inbound_tls: Option<InboundTlsSection>,
-    /// Generated-authority-backed V2 query configuration.
-    pub v2: V2Section,
+    /// Generated-authority-backed staged query configuration.
+    pub staged: StagedSection,
 }
 
 /// TypeDB connection settings for the standalone server's secure entry point.
@@ -159,10 +161,9 @@ pub struct SecureTypeDBSection {
     // instead of reopening the diagnostic path below.
     #[cfg_attr(not(feature = "typedb"), allow(dead_code))]
     pub(crate) custom_root_ca_snapshot: Option<CapturedConfiguredMaterial>,
-    // Runtime-only storage avoids changing the public V2 configuration
+    // Runtime-only storage avoids changing the public staged configuration
     // projection while binding the declared schema to this exact load.
-    #[cfg(feature = "v2-query")]
-    pub(crate) v2_schema_authority_snapshot: Option<CapturedConfiguredMaterial>,
+    pub(crate) staged_schema_authority_snapshot: Option<CapturedConfiguredMaterial>,
 }
 
 impl fmt::Debug for RuntimeServerConfig {
@@ -175,7 +176,7 @@ impl fmt::Debug for RuntimeServerConfig {
             .field("interceptors", &self.interceptors)
             .field("logging", &self.logging)
             .field("inbound_tls", &self.inbound_tls)
-            .field("v2", &self.v2)
+            .field("staged", &self.staged)
             .finish()
     }
 }
@@ -205,8 +206,8 @@ impl SecureTypeDBSection {
             connection,
             tls_mode,
             custom_root_ca_snapshot: None,
-            #[cfg(feature = "v2-query")]
-            v2_schema_authority_snapshot: None,
+
+            staged_schema_authority_snapshot: None,
         }
     }
 
@@ -217,25 +218,21 @@ impl SecureTypeDBSection {
     }
 }
 
-/// Authority mode for the standalone V2 query executor.
+/// Authority mode for the standalone staged query executor.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
-pub enum V2AuthorityMode {
+pub enum StagedAuthorityMode {
     /// Require the complete managed migration-control partition and singleton.
     #[default]
     Managed,
-    /// Require no V2 or legacy migration controls and bind to this database.
+    /// Require no staged or legacy migration controls and bind to this database.
     QueryOnly,
 }
 
-/// Optional versioned V2 query surface served beside the V1 routes.
-///
-/// Requires a binary built with `--features v2-query`; enabling it on a
-/// build without the feature aborts startup instead of silently serving
-/// 404s.
+/// Staged query surface and its host-configured authority and limits.
 #[derive(Debug, Default, Deserialize)]
-pub struct V2Section {
-    /// Serve `/v2/query` and `/v2/capabilities`.
+pub struct StagedSection {
+    /// Serve `/v3/staged` and `/v3/capabilities`.
     #[serde(default)]
     pub enabled: bool,
     /// Path to the source-free authority emitted by `schema generate`.
@@ -243,7 +240,7 @@ pub struct V2Section {
     pub schema_authority_file: String,
     /// Exact authority contract; defaults to `managed`.
     #[serde(default)]
-    pub authority_mode: V2AuthorityMode,
+    pub authority_mode: StagedAuthorityMode,
     /// Query limits this executor advertises and enforces, by stable limit
     /// name. A limit left out keeps its canonical default.
     #[serde(default)]
@@ -260,12 +257,12 @@ pub struct V2Section {
     pub allow_unauthenticated_staged_writes: bool,
 }
 
-impl V2Section {
+impl StagedSection {
     /// Resolve the configured answer ceilings, refusing unknown names and
     /// values past a dimension's supported maximum. An unnamed dimension
     /// keeps the proxy (wire) default, so an unconfigured server advertises
     /// no answer limit.
-    #[cfg(feature = "v2-query")]
+
     pub fn resolved_answer_limits(
         &self,
     ) -> Result<type_bridge_orm::QueryExecutionResourceLimits, String> {
@@ -275,7 +272,7 @@ impl V2Section {
                 .iter()
                 .map(|(name, value)| (name.as_str(), *value)),
         )
-        .map_err(|error| format!("v2.answer_limits is rejected: {error}"))
+        .map_err(|error| format!("staged.answer_limits is rejected: {error}"))
     }
 
     /// Resolve the configured query limits, refusing unknown names and
@@ -288,10 +285,10 @@ impl V2Section {
                 .iter()
                 .map(|(name, value)| (name.as_str(), *value)),
         )
-        .map_err(|error| format!("v2.query_limits is rejected: {error}"))
+        .map_err(|error| format!("staged.query_limits is rejected: {error}"))
     }
-    /// Resolve V3 output columns without widening the released V2 policy.
-    #[cfg(feature = "v2-query")]
+    /// Resolve V3 output columns without widening the released staged policy.
+
     pub fn resolved_staged_query_limits(
         &self,
     ) -> Result<type_bridge_contract::limits::QueryLimits, String> {
@@ -585,7 +582,7 @@ struct RuntimeServerConfigWire {
     #[serde(default)]
     logging: RuntimeLoggingSectionWire,
     #[serde(default)]
-    v2: RuntimeV2SectionWire,
+    staged: RuntimeStagedSectionWire,
 }
 
 #[derive(Debug, Deserialize)]
@@ -673,13 +670,13 @@ impl Default for RuntimeLoggingSectionWire {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RuntimeV2SectionWire {
+struct RuntimeStagedSectionWire {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
     schema_authority_file: String,
     #[serde(default)]
-    authority_mode: V2AuthorityMode,
+    authority_mode: StagedAuthorityMode,
     #[serde(default)]
     query_limits: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
@@ -723,8 +720,8 @@ impl From<RuntimeLoggingSectionWire> for LoggingSection {
     }
 }
 
-impl From<RuntimeV2SectionWire> for V2Section {
-    fn from(wire: RuntimeV2SectionWire) -> Self {
+impl From<RuntimeStagedSectionWire> for StagedSection {
+    fn from(wire: RuntimeStagedSectionWire) -> Self {
         Self {
             enabled: wire.enabled,
             schema_authority_file: wire.schema_authority_file,
@@ -866,24 +863,24 @@ impl ServerConfig {
 }
 
 impl RuntimeServerConfig {
-    /// Load the standalone runtime projection, including secure and V2 TOML.
+    /// Load the standalone runtime projection, including secure and staged TOML.
     pub fn from_file(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         Self::from_file_with_env(path, |name| std::env::var(name).ok())
     }
 
-    /// Return the immutable V2 schema-authority bytes captured by [`Self::from_file`].
+    /// Return the immutable staged schema-authority bytes captured by [`Self::from_file`].
     ///
     /// A caller that mutates the public diagnostic path after loading must
     /// reload the complete configuration instead of pairing it with stale
     /// schema authority.
-    #[cfg(feature = "v2-query")]
-    pub fn v2_schema_authority_bytes(&self) -> Result<Option<&[u8]>, &'static str> {
-        let Some(material) = &self.typedb.v2_schema_authority_snapshot else {
+
+    pub fn staged_schema_authority_bytes(&self) -> Result<Option<&[u8]>, &'static str> {
+        let Some(material) = &self.typedb.staged_schema_authority_snapshot else {
             return Ok(None);
         };
-        if material.path != Path::new(&self.v2.schema_authority_file) {
+        if material.path != Path::new(&self.staged.schema_authority_file) {
             return Err(
-                "v2.schema_authority_file changed after its bytes were captured; reload the configuration",
+                "staged.schema_authority_file changed after its bytes were captured; reload the configuration",
             );
         }
         Ok(Some(material.bytes.as_ref()))
@@ -997,11 +994,10 @@ impl RuntimeServerConfig {
             }
         }
 
-        #[cfg(feature = "v2-query")]
-        let v2_schema_authority_snapshot = if wire.v2.enabled
-            && !wire.v2.schema_authority_file.is_empty()
+        let staged_schema_authority_snapshot = if wire.staged.enabled
+            && !wire.staged.schema_authority_file.is_empty()
         {
-            let configured_path = Path::new(&wire.v2.schema_authority_file);
+            let configured_path = Path::new(&wire.staged.schema_authority_file);
             Some(CapturedConfiguredMaterial {
                 path: configured_path.to_path_buf(),
                 bytes: capture_schema_authority_file(relative_authority.as_ref(), configured_path)?,
@@ -1026,14 +1022,14 @@ impl RuntimeServerConfig {
                 },
                 tls_mode,
                 custom_root_ca_snapshot,
-                #[cfg(feature = "v2-query")]
-                v2_schema_authority_snapshot,
+
+                staged_schema_authority_snapshot,
             },
             schema: wire.schema.into(),
             interceptors: wire.interceptors.into(),
             logging: wire.logging.into(),
             inbound_tls: wire.server.tls,
-            v2: wire.v2.into(),
+            staged: wire.staged.into(),
         })
     }
 }
@@ -1370,17 +1366,15 @@ impl RelativeConfigAuthority {
         })
     }
 
-    #[cfg(feature = "v2-query")]
     fn capture_relative_schema_authority(
         &self,
         path: &Path,
     ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
-        let file = self.open_relative_file_nofollow(path, "v2.schema_authority_file")?;
+        let file = self.open_relative_file_nofollow(path, "staged.schema_authority_file")?;
         capture_schema_authority_handle(file)
     }
 }
 
-#[cfg(feature = "v2-query")]
 fn capture_schema_authority_file(
     relative_authority: Option<&RelativeConfigAuthority>,
     path: &Path,
@@ -1390,16 +1384,15 @@ fn capture_schema_authority_file(
     }
     relative_authority
         .ok_or(
-            "cannot resolve relative v2.schema_authority_file without the configuration directory",
+            "cannot resolve relative staged.schema_authority_file without the configuration directory",
         )?
         .capture_relative_schema_authority(path)
 }
 
-#[cfg(feature = "v2-query")]
 fn capture_absolute_schema_authority_file(
     path: &Path,
 ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
-    let field = "v2.schema_authority_file";
+    let field = "staged.schema_authority_file";
     let anchor = path
         .ancestors()
         .last()
@@ -1444,11 +1437,10 @@ fn capture_absolute_schema_authority_file(
     capture_schema_authority_handle(file)
 }
 
-#[cfg(feature = "v2-query")]
 fn capture_schema_authority_handle(
     mut file: std::fs::File,
 ) -> Result<Arc<[u8]>, Box<dyn std::error::Error>> {
-    let field = "v2.schema_authority_file";
+    let field = "staged.schema_authority_file";
     let ceiling = u64::try_from(MAX_SCHEMA_AUTHORITY_BYTES)
         .map_err(|_| "canonical schema-authority byte ceiling is not representable")?;
     let metadata = file
@@ -1515,16 +1507,12 @@ fn wire_uses_relative_runtime_paths(wire: &RuntimeServerConfigWire) -> bool {
             .tls
             .as_ref()
             .is_some_and(|tls| !tls.cert_path.is_absolute() || !tls.key_path.is_absolute());
-    #[cfg(feature = "v2-query")]
+
     {
         uses_relative_tls_path
-            || (wire.v2.enabled
-                && !wire.v2.schema_authority_file.is_empty()
-                && !Path::new(&wire.v2.schema_authority_file).is_absolute())
-    }
-    #[cfg(not(feature = "v2-query"))]
-    {
-        uses_relative_tls_path
+            || (wire.staged.enabled
+                && !wire.staged.schema_authority_file.is_empty()
+                && !Path::new(&wire.staged.schema_authority_file).is_absolute())
     }
 }
 
@@ -1537,6 +1525,13 @@ fn reject_ambiguous_security_keys(content: &str) -> Result<(), Box<dyn std::erro
     let Some(root) = document.as_table() else {
         return Ok(());
     };
+    if root.contains_key("v2") {
+        return Err(RuntimeConfigParseError {
+            kind: RuntimeConfigParseErrorKind::RemovedSection,
+            location: None,
+        }
+        .into());
+    }
     for key in root.keys() {
         let path = [key.clone()];
         if security_shaped_key(key) && !documented_security_path(&path) {
@@ -1771,6 +1766,17 @@ database = "mydb"
     // --- from_file tests ---
 
     #[test]
+    fn removed_v2_section_is_refused_instead_of_silently_disabling_policies() {
+        let error =
+            parse_runtime_wire(&format!("{MINIMAL_CONFIG}\n[v2]\nenabled = true\n")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("removed [v2] section; use [staged]")
+        );
+    }
+
+    #[test]
     fn from_file_valid_full_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
@@ -1794,31 +1800,31 @@ database = "mydb"
     }
 
     #[test]
-    fn v2_section_defaults_to_disabled() {
+    fn staged_section_defaults_to_disabled() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
         std::fs::write(&path, MINIMAL_CONFIG).unwrap();
 
         let config =
             RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
-        assert!(!config.v2.enabled);
-        assert!(config.v2.schema_authority_file.is_empty());
-        assert_eq!(config.v2.authority_mode, V2AuthorityMode::Managed);
+        assert!(!config.staged.enabled);
+        assert!(config.staged.schema_authority_file.is_empty());
+        assert_eq!(config.staged.authority_mode, StagedAuthorityMode::Managed);
         assert_eq!(config.typedb.tls_mode, OutboundTlsMode::Disabled);
         assert!(config.inbound_tls.is_none());
     }
 
     #[test]
-    fn v2_section_parses_when_configured() {
+    fn staged_section_parses_when_configured() {
         let config_text = format!(
-            "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
+            "{MINIMAL_CONFIG}\n[staged]\nenabled = true\n\
              schema_authority_file = \"schema-authority.json\"\n\
              authority_mode = \"query_only\"\n"
         );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("server.toml");
         std::fs::write(&path, config_text).unwrap();
-        #[cfg(feature = "v2-query")]
+
         std::fs::write(
             dir.path().join("schema-authority.json"),
             "captured authority",
@@ -1827,13 +1833,13 @@ database = "mydb"
 
         let config =
             RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None).unwrap();
-        assert!(config.v2.enabled);
-        assert_eq!(config.v2.schema_authority_file, "schema-authority.json");
-        assert_eq!(config.v2.authority_mode, V2AuthorityMode::QueryOnly);
+        assert!(config.staged.enabled);
+        assert_eq!(config.staged.schema_authority_file, "schema-authority.json");
+        assert_eq!(config.staged.authority_mode, StagedAuthorityMode::QueryOnly);
     }
 
     #[test]
-    fn v2_section_rejects_removed_duplicate_authority_fields() {
+    fn staged_section_rejects_removed_duplicate_authority_fields() {
         for removed in [
             "declared_schema_file = \"declared-schema.json\"",
             "scope = \"prod\"",
@@ -1843,18 +1849,17 @@ database = "mydb"
             let path = dir.path().join("server.toml");
             std::fs::write(
                 &path,
-                format!("{MINIMAL_CONFIG}\n[v2]\nenabled = false\n{removed}\n"),
+                format!("{MINIMAL_CONFIG}\n[staged]\nenabled = false\n{removed}\n"),
             )
             .unwrap();
 
             RuntimeServerConfig::from_file_with_env(path.to_str().unwrap(), |_| None)
-                .expect_err("removed V2 authority fields must fail closed");
+                .expect_err("removed staged authority fields must fail closed");
         }
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
-    fn relative_v2_schema_authority_is_config_relative_and_snapshot_stable() {
+    fn relative_staged_schema_authority_is_config_relative_and_snapshot_stable() {
         let dir = tempfile::tempdir().unwrap();
         let schemas = dir.path().join("schemas");
         std::fs::create_dir(&schemas).unwrap();
@@ -1866,7 +1871,7 @@ database = "mydb"
             &config_path,
             format!(
                 "{MINIMAL_CONFIG}\n[schema]\nsource_file = \"released-schema.tql\"\n\
-                 [v2]\nenabled = true\nschema_authority_file = \"schemas/schema-authority.json\"\n"
+                 [staged]\nenabled = true\nschema_authority_file = \"schemas/schema-authority.json\"\n"
             ),
         )
         .unwrap();
@@ -1875,32 +1880,32 @@ database = "mydb"
             RuntimeServerConfig::from_file_with_env(config_path.to_str().unwrap(), |_| None)
                 .unwrap();
         assert_eq!(
-            config.v2.schema_authority_file,
+            config.staged.schema_authority_file,
             "schemas/schema-authority.json"
         );
         assert_eq!(config.schema.source_file, "released-schema.tql");
         assert_eq!(
-            config.v2_schema_authority_bytes().unwrap(),
+            config.staged_schema_authority_bytes().unwrap(),
             Some(original.as_slice())
         );
 
         std::fs::write(&authority_path, "ambient replacement").unwrap();
         assert_eq!(
-            config.v2_schema_authority_bytes().unwrap(),
+            config.staged_schema_authority_bytes().unwrap(),
             Some(original.as_slice()),
-            "post-load replacement must not change V2 schema authority"
+            "post-load replacement must not change staged schema authority"
         );
 
-        config.v2.schema_authority_file = "other.json".to_owned();
+        config.staged.schema_authority_file = "other.json".to_owned();
         let error = config
-            .v2_schema_authority_bytes()
+            .staged_schema_authority_bytes()
             .expect_err("a mutated public path must not detach the captured bytes");
         assert!(error.contains("changed after"), "{error}");
     }
 
-    #[cfg(all(feature = "v2-query", unix))]
+    #[cfg(all(feature = "staged-query", unix))]
     #[test]
-    fn relative_v2_schema_authority_uses_retained_base_after_ambient_parent_swap() {
+    fn relative_staged_schema_authority_uses_retained_base_after_ambient_parent_swap() {
         let dir = tempfile::tempdir().unwrap();
         let active = dir.path().join("active");
         let retained = dir.path().join("retained");
@@ -1908,7 +1913,7 @@ database = "mydb"
         let original = b"original schema authority";
         std::fs::write(active.join("schemas/schema-authority.json"), original).unwrap();
         let config_text = format!(
-            "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
+            "{MINIMAL_CONFIG}\n[staged]\nenabled = true\n\
              schema_authority_file = \"schemas/schema-authority.json\"\n"
         );
         let config_path = active.join("server.toml");
@@ -1934,7 +1939,7 @@ database = "mydb"
         .unwrap();
 
         assert_eq!(
-            config.v2_schema_authority_bytes().unwrap(),
+            config.staged_schema_authority_bytes().unwrap(),
             Some(original.as_slice()),
             "ambient parent replacement must not redirect the retained config authority"
         );
@@ -1944,9 +1949,9 @@ database = "mydb"
         );
     }
 
-    #[cfg(all(feature = "v2-query", unix))]
+    #[cfg(all(feature = "staged-query", unix))]
     #[test]
-    fn absolute_v2_schema_authority_symlink_is_rejected() {
+    fn absolute_staged_schema_authority_symlink_is_rejected() {
         use std::os::unix::fs::symlink;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1958,7 +1963,7 @@ database = "mydb"
         std::fs::write(
             &config_path,
             format!(
-                "{MINIMAL_CONFIG}\n[v2]\nenabled = true\nschema_authority_file = {:?}\n",
+                "{MINIMAL_CONFIG}\n[staged]\nenabled = true\nschema_authority_file = {:?}\n",
                 authority_path.to_str().unwrap()
             ),
         )
@@ -1966,23 +1971,22 @@ database = "mydb"
 
         let error =
             RuntimeServerConfig::from_file_with_env(config_path.to_str().unwrap(), |_| None)
-                .expect_err("the final V2 schema component must not follow symlinks");
+                .expect_err("the final staged schema component must not follow symlinks");
         assert!(
-            error.to_string().contains("v2.schema_authority_file"),
+            error.to_string().contains("staged.schema_authority_file"),
             "{error}"
         );
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
-    fn non_regular_v2_schema_authority_is_rejected() {
+    fn non_regular_staged_schema_authority_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("schema-authority.json")).unwrap();
         let config_path = dir.path().join("server.toml");
         std::fs::write(
             &config_path,
             format!(
-                "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
+                "{MINIMAL_CONFIG}\n[staged]\nenabled = true\n\
                  schema_authority_file = \"schema-authority.json\"\n"
             ),
         )
@@ -1990,13 +1994,12 @@ database = "mydb"
 
         let error =
             RuntimeServerConfig::from_file_with_env(config_path.to_str().unwrap(), |_| None)
-                .expect_err("a V2 schema directory must fail during config loading");
+                .expect_err("a staged schema directory must fail during config loading");
         assert!(error.to_string().contains("regular file"), "{error}");
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
-    fn oversized_v2_schema_authority_is_rejected_at_the_canonical_ceiling() {
+    fn oversized_staged_schema_authority_is_rejected_at_the_canonical_ceiling() {
         let dir = tempfile::tempdir().unwrap();
         let authority_path = dir.path().join("schema-authority.json");
         let file = std::fs::File::create(&authority_path).unwrap();
@@ -2010,7 +2013,7 @@ database = "mydb"
         std::fs::write(
             &config_path,
             format!(
-                "{MINIMAL_CONFIG}\n[v2]\nenabled = true\n\
+                "{MINIMAL_CONFIG}\n[staged]\nenabled = true\n\
                  schema_authority_file = \"schema-authority.json\"\n"
             ),
         )
@@ -2018,7 +2021,7 @@ database = "mydb"
 
         let error =
             RuntimeServerConfig::from_file_with_env(config_path.to_str().unwrap(), |_| None)
-                .expect_err("an oversized V2 schema must fail during config loading");
+                .expect_err("an oversized staged schema must fail during config loading");
         assert!(
             error.to_string().contains("no larger than 16 MiB"),
             "{error}"
@@ -2113,7 +2116,7 @@ log-level = "debug"
 [typedb]
 address = "localhost:1729"
 database = "db"
-[v2]
+[staged]
 enable = true
 "#,
             r#"[server]
@@ -3067,7 +3070,6 @@ database = "db"
         assert!(error.to_string().contains("regular file"), "{error}");
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
     fn non_regular_absolute_schema_authority_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -3438,15 +3440,15 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         );
     }
     #[test]
-    fn v2_query_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+    fn staged_query_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
         use type_bridge_contract::limits::QueryLimits;
 
-        let section = |entries: &[(&str, u64)]| V2Section {
+        let section = |entries: &[(&str, u64)]| StagedSection {
             query_limits: entries
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), *value))
                 .collect(),
-            ..V2Section::default()
+            ..StagedSection::default()
         };
         assert_eq!(
             section(&[]).resolved_query_limits().expect("defaults"),
@@ -3493,17 +3495,16 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         );
     }
 
-    #[cfg(feature = "v2-query")]
     #[test]
-    fn v2_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+    fn staged_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
         use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
 
-        let section = |entries: &[(&str, u64)]| V2Section {
+        let section = |entries: &[(&str, u64)]| StagedSection {
             answer_limits: entries
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), *value))
                 .collect(),
-            ..V2Section::default()
+            ..StagedSection::default()
         };
         let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         let defaults = section(&[]).resolved_answer_limits().expect("defaults");
@@ -3513,7 +3514,7 @@ enabled = ["audit-log", "rate-limiter", "custom"]
             "a default-configured server advertises an empty answer_limits map"
         );
         assert!(
-            V2Section::default()
+            StagedSection::default()
                 .resolved_answer_limits()
                 .expect("defaults")
                 .overrides()

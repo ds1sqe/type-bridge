@@ -93,6 +93,16 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed the server `v2-query` feature; default builds serve the staged
+  transport through `axum-transport`. Server `[v2]` becomes `[staged]`,
+  `RuntimeServerConfig::v2` becomes `staged`, `V2Section` becomes
+  `StagedSection`, `V2AuthorityMode` becomes `StagedAuthorityMode`, and
+  `v2_schema_authority_bytes` becomes `staged_schema_authority_bytes`.
+  Staged advertisements no longer include removed V2 capabilities.
+  `StagedQueryState::{new,new_query_only}` no longer take the unused
+  resolved-schema argument; authority is verified from the declared and
+  managed schema.
+
 - Removed server `Interceptor::{on_request,on_response,supports_v2,on_v2_request}`,
   `V2PolicyRequest`, `CrudInterceptor`, `CrudInterceptorAdapter`, `CrudInfo`,
   `CrudOperation`, `interceptor::TypeKind`, and `RequestContext::crud_info`.

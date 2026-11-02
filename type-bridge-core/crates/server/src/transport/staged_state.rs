@@ -16,9 +16,6 @@ use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, Diagnosti
 use type_bridge_contract::query_remote::{
     RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteExecutorBinding,
 };
-use type_bridge_contract::query_remote_v2::{
-    CAP_QUERY_REMOTE_STATEMENT_LIMIT, query_remote_v2_required_capabilities,
-};
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_orm::OwnedTransaction as Transaction;
@@ -30,7 +27,7 @@ use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
 use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
 use type_bridge_orm::session::backend::{AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION};
 use type_bridge_orm::session::database::Database;
-use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
+use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
 const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -177,7 +174,6 @@ pub struct StagedQueryState {
     pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     managed: ManagedSchemaState,
-    _resolved: ResolvedSchema,
     pub(super) execution_timeout: Duration,
     pub(super) replay_store: Arc<dyn RemoteReplayStore>,
     pub(super) signer: RemoteReplySigningKey,
@@ -200,7 +196,6 @@ impl StagedQueryState {
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
         managed: ManagedSchemaState,
-        resolved: ResolvedSchema,
     ) -> Result<Self, Diagnostic> {
         Self::new_with_control_policy(
             advertised,
@@ -209,7 +204,6 @@ impl StagedQueryState {
             declared,
             delta_context,
             managed,
-            resolved,
             StagedQueryControlPolicy::Managed,
         )
     }
@@ -225,7 +219,6 @@ impl StagedQueryState {
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
         managed: ManagedSchemaState,
-        resolved: ResolvedSchema,
     ) -> Result<Self, Diagnostic> {
         Self::new_with_control_policy(
             advertised,
@@ -234,36 +227,28 @@ impl StagedQueryState {
             declared,
             delta_context,
             managed,
-            resolved,
             StagedQueryControlPolicy::QueryOnly,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
     fn new_with_control_policy(
-        mut advertised: CapabilitySet,
+        advertised: CapabilitySet,
         ceilings: AnswerLimits,
         database: Database,
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
         managed: ManagedSchemaState,
-        resolved: ResolvedSchema,
         control_policy: StagedQueryControlPolicy,
     ) -> Result<Self, Diagnostic> {
-        // Model evidence is constructed by the sole same-snapshot
-        // compatibility executor. Its graph, attribute-value, and role-player
-        // ceilings are fixed at the canonical collection ceiling; request
-        // values may only tighten them during admission.
-        for capability in query_remote_v2_required_capabilities(false) {
-            advertised.insert(capability);
-        }
-        advertised.insert(
-            type_bridge_contract::capability::CapabilityId::new(CAP_QUERY_REMOTE_STATEMENT_LIMIT)
-                .expect("static remote statement-limit capability is canonical"),
-        );
         let executor = standalone_executor_binding();
         let signer = RemoteReplySigningKey::generate();
-        let advertisement = RemoteCapabilities::new(advertised, executor, signer.public_key());
+        let base = RemoteCapabilities::new(advertised, executor, signer.public_key());
+        let profile = database
+            .server_version()
+            .as_ref()
+            .and_then(type_bridge_core_lib::version::semantic_profile_id);
+        let advertisement = super::v3::staged_advertisement_for_profile(&base, profile)?;
         let advertisement_fingerprint = advertisement.fingerprint()?;
         Ok(Self {
             advertisement,
@@ -274,7 +259,6 @@ impl StagedQueryState {
             declared,
             delta_context,
             managed,
-            _resolved: resolved,
             execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
@@ -790,7 +774,7 @@ mod tests {
     use type_bridge_orm::session::backend::{
         BoxFuture, DriverBackend, QueryResult, SchemaFencedReadTransaction, TransactionOps, TxType,
     };
-    use type_bridge_schema::{managed_schema_state, resolve};
+    use type_bridge_schema::managed_schema_state;
 
     use crate::interceptor::{InterceptError, Interceptor};
     use crate::pipeline::{PipelineBuilder, QueryPipeline};
@@ -972,7 +956,6 @@ mod tests {
         declared: DeclaredSchema,
         delta_context: ManagedDeltaContext,
         managed: ManagedSchemaState,
-        resolved: ResolvedSchema,
     }
 
     fn authority_fixture(include_unexpected: bool) -> AuthorityFixture {
@@ -1018,7 +1001,6 @@ mod tests {
         let declared = DeclaredSchema::from_facts(FormatVersion::V1, CapabilitySet::new(), sourced)
             .expect("declared schema");
         let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
-        let resolved = resolve(&declared, &profile).expect("resolved schema");
         let delta_context = ManagedDeltaContext::new(
             ManagedScopeId::new("server-v2-route").expect("scope"),
             profile,
@@ -1029,7 +1011,6 @@ mod tests {
             declared,
             delta_context,
             managed,
-            resolved,
         }
     }
 

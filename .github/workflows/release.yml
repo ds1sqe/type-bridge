@@ -1054,14 +1054,14 @@ jobs:
         run: >-
           cargo build --manifest-path type-bridge-core/Cargo.toml
           --release -p type-bridge-server --no-default-features
-          --features band9,v2-query
-          --example v2_smoke_server
+          --features band9,axum-transport
+          --example staged_smoke_server
 
       - name: Upload immutable V2 smoke server
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: v2-smoke-server
-          path: type-bridge-core/target/release/examples/v2_smoke_server
+          path: type-bridge-core/target/release/examples/staged_smoke_server
           if-no-files-found: error
 
   # Build one immutable, daemon-importable OCI layout per supported platform.
@@ -1301,7 +1301,7 @@ jobs:
           production_binary_serves_v1_health_and_v2_query
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-server --no-default-features
-          --features band9,v2-query
+          --features band9,axum-transport
           --test v2_query_integration_tests
 
       - name: Run external generated Rust application through the exact image
@@ -1479,7 +1479,7 @@ jobs:
           )
           mapfile -t smoke_servers < <(
             find tmp/release-live-artifacts/server -maxdepth 1 -type f \
-              -name 'v2_smoke_server' -print
+              -name 'staged_smoke_server' -print
           )
           for count in \
             "core wheel:${#core_wheels[@]}" \

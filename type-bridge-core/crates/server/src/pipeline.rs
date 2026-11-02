@@ -1,6 +1,6 @@
 use crate::error::PipelineError;
 use crate::interceptor::{Interceptor, InterceptorChain, RequestContext};
-#[cfg(feature = "v2-query")]
+
 use crate::interceptor::{V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
 use std::collections::HashMap;
 
@@ -15,7 +15,7 @@ pub struct QueryPipeline {
 impl QueryPipeline {
     /// Construct one staged policy context after proving every configured
     /// interceptor explicitly supports typed plans.
-    #[cfg(feature = "v2-query")]
+
     pub fn v3_request_context(
         &self,
         metadata: HashMap<String, serde_json::Value>,
@@ -34,7 +34,7 @@ impl QueryPipeline {
     /// Prove every configured policy explicitly covers staged V3 requests.
     ///
     /// Request admission checks coverage before running any policy hooks.
-    #[cfg(feature = "v2-query")]
+
     pub fn validate_v3_coverage(&self) -> Result<(), PipelineError> {
         self.interceptor_chain
             .ensure_v3_coverage()
@@ -43,7 +43,7 @@ impl QueryPipeline {
 
     /// Authenticate and rate-limit staged transport metadata before envelope
     /// decoding or other attacker-controlled contract work.
-    #[cfg(feature = "v2-query")]
+
     pub async fn begin_v3_request(
         &self,
         context: &mut RequestContext,
@@ -56,7 +56,7 @@ impl QueryPipeline {
 
     /// Whether the configured policies admit a staged V3 write for this
     /// caller. An interceptor error refuses.
-    #[cfg(feature = "v2-query")]
+
     pub async fn authorize_v3_write(
         &self,
         context: &RequestContext,
@@ -69,7 +69,7 @@ impl QueryPipeline {
 
     /// Run the staged plan policies for plan `index`. An interceptor error
     /// refuses the request.
-    #[cfg(feature = "v2-query")]
+
     pub async fn authorize_v3_plan(
         &self,
         index: usize,
@@ -83,7 +83,7 @@ impl QueryPipeline {
     }
 
     /// Let every policy observe a staged transaction's outcome.
-    #[cfg(feature = "v2-query")]
+
     pub async fn observe_v3_commit(&self, outcome: &V3CommitOutcome<'_>, context: &RequestContext) {
         self.interceptor_chain
             .execute_v3_commit(outcome, context)
@@ -91,7 +91,7 @@ impl QueryPipeline {
     }
 
     /// Run configured response and audit policies for every staged outcome.
-    #[cfg(feature = "v2-query")]
+
     pub async fn finish_v3_request(
         &self,
         outcome: &V3PolicyOutcome<'_>,

@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-#[cfg(feature = "v2-query")]
 use super::traits::V3PolicyOutcome;
 use super::traits::{InterceptError, Interceptor, RequestContext};
 use crate::config::AuditLogConfig;
@@ -51,7 +50,6 @@ pub struct AuditLogInterceptor {
     writer: Arc<Mutex<AuditWriter>>,
 }
 
-#[cfg(feature = "v2-query")]
 #[derive(Debug, serde::Serialize)]
 struct V3AuditEntry {
     timestamp: String,
@@ -111,7 +109,6 @@ impl AuditLogInterceptor {
         }
     }
 
-    #[cfg(feature = "v2-query")]
     async fn write_v3_context(
         &self,
         ctx: &RequestContext,
@@ -148,12 +145,11 @@ impl Interceptor for AuditLogInterceptor {
 
     /// The audit log authorizes nothing; it observes V3 replies through
     /// [`Interceptor::on_v3_response`], which `/v3/staged` also runs.
-    #[cfg(feature = "v2-query")]
+
     fn supports_v3(&self) -> bool {
         true
     }
 
-    #[cfg(feature = "v2-query")]
     fn on_v3_response<'a>(
         &'a self,
         outcome: &'a V3PolicyOutcome<'a>,
@@ -262,7 +258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(feature = "v2-query")]
+
     async fn staged_failure_audit_records_only_redacted_deterministic_evidence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");

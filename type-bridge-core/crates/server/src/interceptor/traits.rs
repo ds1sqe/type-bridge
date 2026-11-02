@@ -4,19 +4,18 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
-#[cfg(feature = "v2-query")]
 use type_bridge_contract::capability::CapabilitySet;
-#[cfg(feature = "v2-query")]
+
 use type_bridge_contract::failure::Failure;
-#[cfg(feature = "v2-query")]
+
 use type_bridge_contract::id::TypeId;
-#[cfg(feature = "v2-query")]
+
 use type_bridge_contract::query_plan::v3::Operation;
-#[cfg(feature = "v2-query")]
+
 use type_bridge_contract::query_plan::{InputRow, QueryPlanV3};
-#[cfg(feature = "v2-query")]
+
 use type_bridge_contract::query_remote_v3::StagedKindV3;
-#[cfg(feature = "v2-query")]
+
 use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkExecutionDiagnostic};
 
 /// Metadata attached to each request flowing through the interceptor chain.
@@ -55,14 +54,13 @@ impl fmt::Debug for RequestContext {
 }
 
 /// Redacted staged result evidence presented to response and audit policies.
-#[cfg(feature = "v2-query")]
+
 pub struct V3PolicyOutcome<'a> {
     success: bool,
     code: &'a str,
     response_bytes: usize,
 }
 
-#[cfg(feature = "v2-query")]
 impl<'a> V3PolicyOutcome<'a> {
     /// Construct one redacted outcome without provider or query payload text.
     #[must_use]
@@ -99,7 +97,7 @@ impl<'a> V3PolicyOutcome<'a> {
 /// It exposes what the plan may do, never literal or input row values,
 /// unless the policy opts in through [`Interceptor::wants_v3_plan_rows`].
 /// Its `Debug` output never shows values either: rows appear as a count.
-#[cfg(feature = "v2-query")]
+
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct V3PolicyPlan<'a> {
@@ -108,7 +106,6 @@ pub struct V3PolicyPlan<'a> {
     rows_visible: bool,
 }
 
-#[cfg(feature = "v2-query")]
 impl<'a> V3PolicyPlan<'a> {
     pub(crate) const fn new(plan: &'a QueryPlanV3, types: &'a [TypeId]) -> Self {
         Self {
@@ -164,7 +161,6 @@ impl<'a> V3PolicyPlan<'a> {
     }
 }
 
-#[cfg(feature = "v2-query")]
 impl fmt::Debug for V3PolicyPlan<'_> {
     // Hand-written so literals and bound row values never reach logs.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -182,7 +178,7 @@ impl fmt::Debug for V3PolicyPlan<'_> {
 
 /// Redacted outcome of a staged V3 transaction presented to
 /// [`Interceptor::on_v3_commit`].
-#[cfg(feature = "v2-query")]
+
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct V3CommitOutcome<'a> {
@@ -190,7 +186,6 @@ pub struct V3CommitOutcome<'a> {
     failure: Option<&'a SdkExecutionDiagnostic>,
 }
 
-#[cfg(feature = "v2-query")]
 impl<'a> V3CommitOutcome<'a> {
     pub(crate) const fn new(
         kind: StagedKindV3,
@@ -265,7 +260,7 @@ pub enum InterceptError {
 ///
 /// The server has no built-in authentication. A policy that authenticated
 /// the caller in [`Interceptor::on_v3_transport`] vouches for writes here.
-#[cfg(feature = "v2-query")]
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum StagedWriteAuthority {
@@ -290,13 +285,13 @@ pub trait Interceptor: Send + Sync {
     ///
     /// The default is fail-closed: every configured policy must explicitly
     /// cover staged requests before transport admission can proceed.
-    #[cfg(feature = "v2-query")]
+
     fn supports_v3(&self) -> bool {
         false
     }
 
     /// Authenticate and rate-limit transport metadata before envelope decode.
-    #[cfg(feature = "v2-query")]
+
     fn on_v3_transport<'a>(
         &'a self,
         _ctx: &'a mut RequestContext,
@@ -310,7 +305,7 @@ pub trait Interceptor: Send + Sync {
     /// [`StagedWriteAuthority::Authenticated`] and none fails, or the server
     /// explicitly allows unauthenticated staged writes. Runs first among the
     /// V3 hooks, after the transport hook and before [`Self::on_v3_plan`].
-    #[cfg(feature = "v2-query")]
+
     fn on_v3_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
@@ -326,7 +321,7 @@ pub trait Interceptor: Send + Sync {
     /// view is computed from the decoded request alone. `index` is the
     /// plan's position in the request. An error refuses the whole request:
     /// later plans are not consulted, nothing is reserved and nothing opens.
-    #[cfg(feature = "v2-query")]
+
     fn on_v3_plan<'a>(
         &'a self,
         _index: usize,
@@ -337,7 +332,7 @@ pub trait Interceptor: Send + Sync {
     }
 
     /// Whether [`Self::on_v3_plan`] may see bound input row values.
-    #[cfg(feature = "v2-query")]
+
     fn wants_v3_plan_rows(&self) -> bool {
         false
     }
@@ -347,7 +342,7 @@ pub trait Interceptor: Send + Sync {
     /// Observe-only: errors are logged, never change the reply. Runs last
     /// among the V3 hooks, after reservation, staging and the commit, and
     /// before the response policies see the signed reply.
-    #[cfg(feature = "v2-query")]
+
     fn on_v3_commit<'a>(
         &'a self,
         _outcome: &'a V3CommitOutcome<'a>,
@@ -357,7 +352,7 @@ pub trait Interceptor: Send + Sync {
     }
 
     /// Observe one redacted success or failure outcome for audit/policy.
-    #[cfg(feature = "v2-query")]
+
     fn on_v3_response<'a>(
         &'a self,
         _outcome: &'a V3PolicyOutcome<'a>,

@@ -194,7 +194,7 @@ pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilitie
     staged_advertisement_for_profile(v2, Some("typedb-3.13.6/v1"))
 }
 
-fn staged_advertisement_for_profile(
+pub(super) fn staged_advertisement_for_profile(
     v2: &RemoteCapabilities,
     profile: Option<&str>,
 ) -> Result<RemoteCapabilities, Diagnostic> {
@@ -806,7 +806,6 @@ async fn admit_transport(
     let mut metadata = staged_request_metadata(headers, endpoint);
     metadata.insert("transport".to_owned(), serde_json::json!("v3"));
     metadata.insert("v3_endpoint".to_owned(), serde_json::json!(endpoint));
-    metadata.remove("v2_endpoint");
     // A policy that has not declared V3 coverage fails closed here, before
     // its transport hook runs, as V2 does for AST-only policies.
     let mut ctx = state
