@@ -4851,6 +4851,92 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
             assert_eq!(log.lock().unwrap().statements.len(), 2);
         }
     }
+    for literal in [false, true] {
+        for fail in [false, true] {
+            let (counted, log) = counted_connection(&database, literal).await;
+            log.lock().unwrap().fail_at = fail.then_some(2);
+            let transaction = counted.transaction_context(TxType::Write).await.unwrap();
+            let policy = QueryExecutionResourceLimits::default();
+            let answers = transaction
+                .execute_staged_plans(
+                    &stack,
+                    &declared,
+                    &policy,
+                    &AnswerCancellation::default(),
+                    type_bridge_orm::QueryExecutionDeadline::for_limits(policy),
+                )
+                .await;
+            if fail {
+                assert!(answers.is_err());
+                assert_eq!(
+                    transaction.lifecycle_state().await,
+                    type_bridge_orm::TransactionContextState::RollbackOnly
+                );
+                assert!(transaction.commit_sdk().await.is_err());
+                transaction.rollback().await.unwrap();
+            } else {
+                let answers = answers.unwrap();
+                assert_eq!(answers.len(), 2);
+                let StagedAnswerV3::Documents { documents } =
+                    answers[1].to_staged_v3(&target).unwrap()
+                else {
+                    panic!("borrowed final document")
+                };
+                let RemoteFieldValue::Document { fields } = &documents[0]["attributes"] else {
+                    panic!("borrowed attributes")
+                };
+                let RemoteFieldValue::List { values: actual } = &fields["reference-value"] else {
+                    panic!("borrowed values")
+                };
+                assert_eq!(
+                    actual
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    values.iter().cloned().collect()
+                );
+                transaction.commit_sdk().await.unwrap();
+            }
+            let QueryResult::Documents(roots) = database
+                .execute_raw(
+                    "match $root isa reference-note; fetch {\"iid\": iid($root)};",
+                    TxType::Read,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("borrowed roots")
+            };
+            assert_eq!(roots.len(), usize::from(!fail));
+            let counts = {
+                let log = log.lock().unwrap();
+                (
+                    log.commits,
+                    log.rollbacks,
+                    log.statements.len(),
+                    log.opened.clone(),
+                )
+            };
+            assert_eq!(
+                counts,
+                (
+                    usize::from(!fail),
+                    usize::from(fail),
+                    2,
+                    vec![TxType::Write]
+                )
+            );
+            if !fail {
+                database
+                    .execute_raw(
+                        "match $root isa reference-note; delete $root;",
+                        TxType::Write,
+                    )
+                    .await
+                    .unwrap();
+            }
+        }
+    }
     // A zero-row optional source is a static branch gate, without client IIDs.
     let note = TypeId::new(TypeKind::Entity, "reference-note").unwrap();
     let mut read = type_bridge_contract::query_plan::v3::PlanBuilder::new();

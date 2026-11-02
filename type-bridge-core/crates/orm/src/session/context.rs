@@ -814,9 +814,47 @@ impl TransactionContext {
     /// Execute read plans on Read, Write or Schema contexts, and write plans on
     /// Write or Schema contexts, under one answer policy and deadline.
     /// The caller retains transaction ownership.
-    pub fn execute_plans(
+    pub fn execute_plans<'a>(
+        &'a self,
+        plans: &'a [type_bridge_contract::query_plan::v3::QueryPlanV3],
+        limits: &'a QueryExecutionResourceLimits,
+        cancellation: &'a super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> + 'a
+    {
+        self.execute_plan_stack(
+            crate::query_plan_exec::PlanExecutionStack::Bound(plans),
+            limits,
+            cancellation,
+            deadline,
+        )
+    }
+
+    /// Execute a validated result-reference stack in this context's transaction.
+    /// Invocation IIDs bind to preceding answers without opening a nested
+    /// transaction. Any failure after write dispatch leaves the context rollback-only.
+    pub async fn execute_staged_plans(
         &self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        entries: &[type_bridge_contract::query_remote_v3::StagedPlanV3],
+        schema: &type_bridge_contract::schema::DeclaredSchema,
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
+        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(entries, schema)
+            .map_err(plan_diagnostic_error)?;
+        self.execute_plan_stack(
+            crate::query_plan_exec::PlanExecutionStack::Staged { entries, schema },
+            limits,
+            cancellation,
+            deadline,
+        )
+        .await
+    }
+
+    fn execute_plan_stack(
+        &self,
+        stack: crate::query_plan_exec::PlanExecutionStack<'_>,
         limits: &QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
@@ -830,7 +868,7 @@ impl TransactionContext {
         crate::execution_phases::observe_orm(
             deadline.started(),
             collect,
-            self.execute_plans_inner(plans, limits, cancellation, deadline),
+            self.execute_plan_stack_inner(stack, limits, cancellation, deadline),
         )
         .instrument(span)
     }
@@ -839,16 +877,16 @@ impl TransactionContext {
         clippy::manual_async_fn,
         reason = "avoid duplicate async argument captures in manager futures"
     )]
-    fn execute_plans_inner(
+    fn execute_plan_stack_inner(
         &self,
-        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        stack: crate::query_plan_exec::PlanExecutionStack<'_>,
         limits: &QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
     ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> {
         async move {
-            let writes = plans
-                .iter()
+            let writes = stack
+                .plans()
                 .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
             if self.tx_type == TxType::Read && writes {
                 return Err(crate::match_request::MatchError::new(
@@ -858,7 +896,7 @@ impl TransactionContext {
                 )
                 .into());
             }
-            for plan in plans {
+            for plan in stack.plans() {
                 crate::query_plan_exec::check_provider(plan, self.server_version)
                     .map_err(plan_diagnostic_error)?;
             }
@@ -888,30 +926,24 @@ impl TransactionContext {
                         server_version: self.server_version,
                     };
                     let given = lease.transaction()?.supports_given_rows();
-                    let mut queries = Vec::with_capacity(plans.len());
-                    for plan in plans {
-                        let query = if given {
-                            crate::query_plan_exec::staged_query(plan, true)
-                        } else {
-                            crate::query_plan_exec::staged_literal_query(plan)
-                        }
-                        .map_err(plan_diagnostic_error)?;
-                        queries.push(query);
-                    }
+                    let prepared = stack.prepare(given, || {
+                        super::backend::BoundedAnswerReader::new(limits.answer.clone())
+                            .check_before_read()
+                    })?;
                     // Arm before awaiting provider work; cancellation keeps the context
                     // rollback-only until the caller explicitly rolls it back.
                     lease.phase = MutationLeasePhase::PossibleEffect;
                     crate::execution_phases::record(
                         type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
                     );
-                    let result = crate::query_plan_exec::execute_plans_counted::<true>(
+                    let result = crate::query_plan_exec::execute_plan_stack_counted::<true>(
                         lease.transaction()?,
                         given,
-                        plans,
+                        stack,
                         policy,
                         cancellation,
                         deadline,
-                        Some(queries),
+                        Some(prepared),
                     )
                     .await;
                     match result {
@@ -944,10 +976,10 @@ impl TransactionContext {
                 type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
             );
             let supports_given = tx.supports_given_rows();
-            let result = crate::query_plan_exec::execute_plans_counted::<false>(
+            let result = crate::query_plan_exec::execute_plan_stack_counted::<false>(
                 tx,
                 supports_given,
-                plans,
+                stack,
                 policy,
                 cancellation,
                 deadline,
@@ -2183,6 +2215,58 @@ mod tests {
         assert!(context.commit().await.is_err());
         assert_eq!(calls.classified_commits.load(Ordering::SeqCst), 0);
         context.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_reference_graph_is_refused_before_borrowed_provider_io() {
+        use type_bridge_contract::id::{TypeId, TypeKind};
+        use type_bridge_contract::query_plan::v3::PlanBuilder;
+        use type_bridge_contract::query_plan::{InputColumnId, InputRow};
+        use type_bridge_contract::query_remote_v3::StagedResultRefV3;
+        use type_bridge_contract::value::ValueTypeTag;
+        let (context, calls) = active_context();
+        let schema = crate::query_plan_exec::race::schema();
+        let doctor = TypeId::new(TypeKind::Entity, "doctor").unwrap();
+        let mut builder = PlanBuilder::new();
+        let iid = builder.input("target_iid", ValueTypeTag::String, false);
+        let root = builder.exact(doctor.clone());
+        builder.by_iid_input(root, iid).returning(vec![root]);
+        let entry = builder
+            .build_staged(
+                &schema,
+                crate::query_plan_exec::race::touch()
+                    .managed_semantics()
+                    .clone(),
+                vec![InputRow::new(vec![None])],
+                vec![StagedResultRefV3 {
+                    input: InputColumnId::new(0),
+                    source_plan: 0,
+                    source_column: 0,
+                    expected_types: vec![doctor],
+                }],
+            )
+            .unwrap();
+        let policy = QueryExecutionResourceLimits::default();
+        let error = context
+            .execute_staged_plans(
+                &[entry],
+                &schema,
+                &policy,
+                &crate::AnswerCancellation::default(),
+                crate::QueryExecutionDeadline::for_limits(policy),
+            )
+            .await
+            .unwrap_err();
+        let OrmError::Match(error) = error else {
+            panic!("typed graph refusal")
+        };
+        assert_eq!(error.code().as_str(), "query_stage_result_ref_order");
+        assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
+        assert!(context.rollback_only_cause().await.is_none());
     }
 
     #[tokio::test]
