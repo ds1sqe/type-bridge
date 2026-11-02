@@ -546,6 +546,14 @@ timeout, and cancellation. With a caller-owned read `TransactionContext`, the
 terminal neither commits, rolls back, closes, nor consumes it. Every internal
 statement in the logical invocation uses that same transaction and snapshot.
 
+Rust core callers can use `TransactionContext::execute_plans`,
+`OwnedTransaction::execute_plans`, or `EagerTransaction::execute_plans` on a
+caller-owned Read, Write, or Schema transaction. Read transactions refuse
+write plans with `query_plan_read_only`. The stack shares one answer budget
+and deadline and leaves commit, rollback, and close to the caller. A failed
+or cancelled write makes the transaction rollback-only; a Schema transaction
+can combine native data plans with schema statements before one commit.
+
 Provider capability and schema-fingerprint checks happen before a data
 statement. Provider/session hard ceilings cover processed rows, collected
 concepts, response bytes, statement count, and transaction duration. A caller

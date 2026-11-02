@@ -227,31 +227,9 @@ pub(crate) fn check_provider(
     Ok(())
 }
 
-/// Run a read-only plan stack on one provider snapshot. The owned and
-/// borrowed entry points differ only in transaction lifecycle ownership.
-pub(crate) async fn execute_plans(
-    provider: &mut dyn crate::session::backend::TransactionOps,
-    supports_given: bool,
-    plans: &[QueryPlanV3],
-    policy: crate::QueryExecutionResourceLimits,
-    cancellation: &crate::session::backend::AnswerCancellation,
-    deadline: crate::QueryExecutionDeadline,
-) -> crate::error::Result<Vec<PlanAnswer>> {
-    execute_plans_counted(
-        provider,
-        supports_given,
-        plans,
-        policy,
-        cancellation,
-        deadline,
-        None,
-    )
-    .await
-    .map(|(answers, _)| answers)
-}
-
+/// Execute validated plans in a caller-owned transaction of the appropriate kind.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_plans_counted(
+pub(crate) async fn execute_plans_counted<const ALLOW_WRITES: bool>(
     provider: &mut dyn crate::session::backend::TransactionOps,
     supports_given: bool,
     plans: &[QueryPlanV3],
@@ -264,7 +242,7 @@ pub(crate) async fn execute_plans_counted(
     let limits = plan_answer_limits(policy, cancellation, deadline)?;
     let check = || BoundedAnswerReader::new(limits.answer.clone()).check_before_read();
     check()?;
-    if plans.iter().any(QueryPlanV3::writes) {
+    if !ALLOW_WRITES && plans.iter().any(QueryPlanV3::writes) {
         return Err(plan_execution_error(
             "query_plan_read_only",
             "one-shot plan execution requires read-only plans",
@@ -279,7 +257,9 @@ pub(crate) async fn execute_plans_counted(
         .into());
     }
     let queries = if let Some(queries) = prepared {
-        if queries.len() != plans.len() || queries.iter().any(|query| query.writes) {
+        if queries.len() != plans.len()
+            || (!ALLOW_WRITES && queries.iter().any(|query| query.writes))
+        {
             return Err(plan_execution_error(
                 "query_plan_read_only",
                 "Prepared captures must match the read-only plan stack",
@@ -294,6 +274,18 @@ pub(crate) async fn execute_plans_counted(
         }
         queries
     };
+    let statements = queries
+        .iter()
+        .map(|query| 1 + usize::from(query.snapshot.is_some()))
+        .sum::<usize>();
+    if statements > policy.statement_limit() as usize {
+        return Err(crate::match_request::MatchError::new(
+            crate::match_request::MatchErrorCategory::ResourceLimit,
+            "statement_count_limit",
+            "plan stack exceeds the provider-statement ceiling",
+        )
+        .into());
+    }
     let mut meter = crate::answer_meter::AnswerMeter::new(&limits.answer);
     let mut semantic = crate::answer_meter::PlanMeter::new(&limits);
     let mut answers = Vec::with_capacity(plans.len());
@@ -579,14 +571,18 @@ pub(crate) struct LoweredPlan {
 }
 
 pub(crate) fn lower(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
-    lower_inner(plan, false)
+    lower_inner(plan, false, false)
 }
 
 pub(crate) fn lower_redacted(plan: &QueryPlanV3) -> Result<LoweredPlan, Diagnostic> {
-    lower_inner(plan, true)
+    lower_inner(plan, true, false)
 }
 
-fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, Diagnostic> {
+fn lower_inner(
+    plan: &QueryPlanV3,
+    redact_inputs: bool,
+    inline_inputs: bool,
+) -> Result<LoweredPlan, Diagnostic> {
     // A lifted V2 plan keeps its released predicate and model terminal as
     // frozen compatibility evidence beside the pipeline. Only the pipeline
     // lowers here, so running such a plan would drop its filter and its
@@ -661,6 +657,68 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
                 row.push(GivenValue::String(input.iid.to_ascii_lowercase()));
             }
         }
+    }
+    if inline_inputs && let Some(rows) = given.take() {
+        let mut branches = Vec::with_capacity(rows.rows.len());
+        for row in rows.rows {
+            let mut branch = Vec::new();
+            for (column, value) in row.into_iter().enumerate() {
+                let value = crate::plan_builders::batch_native::canonical(value)?;
+                let present = value.is_some();
+                let domain = inputs
+                    .get(column)
+                    .map_or(ValueTypeTag::String, InputColumn::value_type);
+                let value = value.map_or_else(|| inline_placeholder(domain), Ok)?;
+                if matches!(&value, CanonicalValue::String(text) if text.as_str().chars().any(char::is_control))
+                {
+                    return Err(failure(
+                        DiagnosticCategory::InvalidContract,
+                        crate::plan_builders::LITERAL_CONTROL_CHARACTER,
+                        "a plan literal cannot carry a control character",
+                    ));
+                }
+                let value = if redact_inputs {
+                    inline_placeholder(domain)?
+                } else {
+                    value
+                };
+                branch.push(ast(tql::let_value(
+                    &[&format!("PlanLiteralCell{column}")],
+                    ast(tql::literal(&value))?,
+                    false,
+                ))?);
+                if inputs.get(column).is_some_and(InputColumn::optional) {
+                    branch.push(ast(tql::let_value(
+                        &[&format!("PlanLiteralPresent{column}")],
+                        ast(tql::literal(&CanonicalValue::Long(i64::from(present))))?,
+                        false,
+                    ))?);
+                }
+            }
+            branches.push(branch);
+        }
+        stages.push(tql::match_stage(vec![tql::or(branches)]));
+        let mut aliases = Vec::new();
+        for (column, name) in rows.variables.iter().enumerate() {
+            let assignment = ast(tql::let_value(
+                &[name.as_str()],
+                ast(tql::var(&format!("PlanLiteralCell{column}")))?,
+                false,
+            ))?;
+            aliases.push(if inputs.get(column).is_some_and(InputColumn::optional) {
+                tql::optional(vec![
+                    ast(tql::compare(
+                        ast(tql::var(&format!("PlanLiteralPresent{column}")))?,
+                        "==",
+                        ast(tql::literal(&CanonicalValue::Long(1)))?,
+                    ))?,
+                    assignment,
+                ])
+            } else {
+                assignment
+            });
+        }
+        stages.push(tql::match_stage(aliases));
     }
     if given.is_some() {
         if inputs.iter().any(InputColumn::optional) {
@@ -844,31 +902,58 @@ fn lower_inner(plan: &QueryPlanV3, redact_inputs: bool) -> Result<LoweredPlan, D
     let functions = lower_functions(inputs, plan.functions())?;
     Ok(LoweredPlan {
         query: tql::pipeline_with_functions(functions, stages),
-        value_bearing_inputs: given_regex_inputs(plan),
+        value_bearing_inputs: if inline_inputs {
+            inputs
+                .iter()
+                .map(|input| input.public_name().as_str().to_owned())
+                .collect()
+        } else {
+            given_regex_inputs(plan)
+        },
         snapshot,
         given,
     })
 }
 
 /// Lower, render and bound one plan as a staged provider query.
+fn inline_placeholder(domain: ValueTypeTag) -> Result<CanonicalValue, Diagnostic> {
+    use type_bridge_contract::value::{CanonicalDouble, CanonicalString, DecimalValue};
+    Ok(match domain {
+        ValueTypeTag::String => CanonicalValue::String(CanonicalString::new("<input>")?),
+        ValueTypeTag::Long => CanonicalValue::Long(0),
+        ValueTypeTag::Double => CanonicalValue::Double(CanonicalDouble::new(0.0)?),
+        ValueTypeTag::Boolean => CanonicalValue::Boolean(false),
+        ValueTypeTag::Date => CanonicalValue::Date("1970-01-01".parse()?),
+        ValueTypeTag::DateTime => CanonicalValue::DateTime("1970-01-01T00:00:00".parse()?),
+        ValueTypeTag::DateTimeTz => CanonicalValue::DateTimeTz("1970-01-01T00:00:00Z".parse()?),
+        ValueTypeTag::Decimal => CanonicalValue::Decimal(DecimalValue::new("0dec")?),
+        ValueTypeTag::Duration => CanonicalValue::Duration("P0D".parse()?),
+    })
+}
+
+pub(crate) fn staged_literal_query(plan: &QueryPlanV3) -> Result<StagedQuery, Diagnostic> {
+    staged_query_for_source(plan, false, None, true)
+}
+
 pub(crate) fn staged_query(
     plan: &QueryPlanV3,
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
-    staged_query_for_source(plan, supports_given_rows, None)
+    staged_query_for_source(plan, supports_given_rows, None, false)
 }
 
 pub(crate) fn staged_query_with_source(
     source: &PlanSource,
     supports_given_rows: bool,
 ) -> Result<StagedQuery, Diagnostic> {
-    staged_query_for_source(source.plan()?, supports_given_rows, Some(source))
+    staged_query_for_source(source.plan()?, supports_given_rows, Some(source), false)
 }
 
 fn staged_query_for_source(
     plan: &QueryPlanV3,
     supports_given_rows: bool,
     source: Option<&PlanSource>,
+    inline_inputs: bool,
 ) -> Result<StagedQuery, Diagnostic> {
     let _performance = tracing::info_span!("tb.query.compile").entered();
     let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.lower", fingerprint = tracing::field::Empty, stages = plan.pipeline().len(), writes = plan.writes(), statements = tracing::field::Empty, outcome = tracing::field::Empty, refusal = tracing::field::Empty);
@@ -880,7 +965,13 @@ fn staged_query_for_source(
         Some(fingerprint)
     };
     let _entered = span.enter();
-    let result = staged_query_inner(plan, supports_given_rows, fingerprint, source);
+    let result = staged_query_inner(
+        plan,
+        supports_given_rows,
+        fingerprint,
+        source,
+        inline_inputs,
+    );
     if result.is_ok() {
         #[cfg(type_bridge_test_plan_capture)]
         if !span.is_disabled() {
@@ -903,13 +994,18 @@ fn staged_query_inner(
     supports_given_rows: bool,
     fingerprint: Option<String>,
     source: Option<&PlanSource>,
+    inline_inputs: bool,
 ) -> Result<StagedQuery, Diagnostic> {
     let LoweredPlan {
         query,
         snapshot,
         given,
         value_bearing_inputs,
-    } = lower(plan)?;
+    } = if inline_inputs {
+        lower_inner(plan, false, true)?
+    } else {
+        lower(plan)?
+    };
     if given.is_some() && !supports_given_rows {
         return Err(failure(
             DiagnosticCategory::InvalidContract,
@@ -946,7 +1042,11 @@ fn staged_query_inner(
         ));
     }
     if !value_bearing_inputs.is_empty() {
-        let redacted = lower_redacted(plan)?;
+        let redacted = if inline_inputs {
+            lower_inner(plan, true, true)?
+        } else {
+            lower_redacted(plan)?
+        };
         staged.redacted_typeql = Some(ast(tql::render(&redacted.query))?);
         staged.redacted_snapshot = redacted
             .snapshot

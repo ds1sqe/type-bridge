@@ -22,6 +22,20 @@ impl OwnedTransaction {
         Self { inner }
     }
 
+    /// Execute read plans on Read, Write or Schema transactions, and write
+    /// plans on Write or Schema transactions, without changing ownership.
+    pub async fn execute_plans(
+        &mut self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        limits: &crate::QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<super::staged::PlanAnswer>> {
+        self.inner
+            .execute_plans(plans, limits, cancellation, deadline)
+            .await
+    }
+
     /// Execute a TypeQL query within this transaction.
     pub async fn query(&mut self, typeql: &str) -> Result<QueryResult> {
         self.inner.query(typeql).await

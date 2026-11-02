@@ -4,6 +4,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans` and
+  `EagerTransaction::execute_plans` accept write plans in caller-owned Write
+  and Schema transactions, sharing answer budgets and rollback-only latches.
+
 ### Changed
 
 - Typed Long SUM/MEAN share exact high/low partial aggregates, preventing

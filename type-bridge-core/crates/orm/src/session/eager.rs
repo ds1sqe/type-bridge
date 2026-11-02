@@ -19,6 +19,7 @@ pub struct EagerTransaction {
     tx_type: TxType,
     server_version: Option<Version>,
     never_commit: bool,
+    plan_rollback_only: bool,
 }
 
 impl EagerTransaction {
@@ -32,6 +33,7 @@ impl EagerTransaction {
             tx_type,
             server_version,
             never_commit: false,
+            plan_rollback_only: false,
         }
     }
 
@@ -72,8 +74,77 @@ impl EagerTransaction {
         Ok(transaction)
     }
 
+    fn check_plan_latch(&self) -> Result<()> {
+        if self.plan_rollback_only {
+            return Err(OrmError::Transaction("Transaction is rollback-only".into()));
+        }
+        Ok(())
+    }
+
+    /// Execute read plans on Read, Write or Schema transactions, and write
+    /// plans on Write or Schema transactions, without changing ownership.
+    pub async fn execute_plans(
+        &mut self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        policy: &crate::QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<super::staged::PlanAnswer>> {
+        self.check_plan_latch()?;
+        let writes = plans
+            .iter()
+            .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
+        if writes && self.tx_type == TxType::Read {
+            return Err(crate::match_request::MatchError::new(
+                crate::match_request::MatchErrorCategory::InvalidPlan,
+                "query_plan_read_only",
+                "one-shot plan execution requires read-only plans",
+            )
+            .into());
+        }
+        let limits = crate::query_plan_exec::plan_answer_limits(*policy, cancellation, deadline)?;
+        let provider = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| OrmError::Transaction("Transaction already consumed".into()))?;
+        let given = provider.supports_given_rows();
+        let mut queries = Vec::with_capacity(plans.len());
+        for plan in plans {
+            crate::query_plan_exec::check_provider(plan, self.server_version)
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+            queries.push(
+                if given {
+                    crate::query_plan_exec::staged_query(plan, true)
+                } else {
+                    crate::query_plan_exec::staged_literal_query(plan)
+                }
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?,
+            );
+        }
+        // This assignment survives a dropped execution future.
+        self.plan_rollback_only = writes;
+        let result = super::staged::bounded(
+            &limits.answer,
+            crate::query_plan_exec::execute_plans_counted::<true>(
+                provider.as_mut(),
+                given,
+                plans,
+                *policy,
+                cancellation,
+                deadline,
+                Some(queries),
+            ),
+        )
+        .await;
+        if result.is_ok() {
+            self.plan_rollback_only = false;
+        }
+        result.map(|(answers, _)| answers)
+    }
+
     /// Execute a TypeQL query within this transaction.
     pub async fn query(&mut self, typeql: &str) -> Result<QueryResult> {
+        self.check_plan_latch()?;
         self.check_schema_annotation_support(typeql)?;
         let tx = self
             .inner
@@ -84,6 +155,7 @@ impl EagerTransaction {
 
     /// Borrow the provider boundary without transferring transaction lifecycle ownership.
     pub(crate) fn provider_mut(&mut self) -> Result<&mut (dyn TransactionOps + 'static)> {
+        self.check_plan_latch()?;
         self.inner
             .as_mut()
             .map(Box::as_mut)
@@ -110,6 +182,7 @@ impl EagerTransaction {
         typeql: &str,
         rows: GivenRowsSpec,
     ) -> Result<QueryResult> {
+        self.check_plan_latch()?;
         self.check_schema_annotation_support(typeql)?;
         let tx = self
             .inner
@@ -198,6 +271,7 @@ impl EagerTransaction {
 
     /// Commit this transaction.
     pub async fn commit(&mut self) -> Result<()> {
+        self.check_plan_latch()?;
         if self.never_commit {
             return self.close().await;
         }
@@ -215,6 +289,8 @@ impl EagerTransaction {
     /// should continue to use [`Self::commit`], whose error surface is
     /// unchanged from the released API.
     pub async fn commit_classified(&mut self) -> std::result::Result<(), ClassifiedCommitError> {
+        self.check_plan_latch()
+            .map_err(ClassifiedCommitError::from)?;
         if self.never_commit {
             return self.close().await.map_err(Into::into);
         }
@@ -235,6 +311,7 @@ impl EagerTransaction {
         match tx.rollback().await {
             Ok(()) => {
                 self.inner = Some(tx);
+                self.plan_rollback_only = false;
                 Ok(())
             }
             Err(error) => {

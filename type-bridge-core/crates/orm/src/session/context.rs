@@ -166,7 +166,7 @@ impl TransactionContextMutationLease {
             crate::query_plan_exec::check_provider(plan, self.server_version)
                 .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
         }
-        crate::query_plan_exec::execute_plans_counted(
+        crate::query_plan_exec::execute_plans_counted::<false>(
             self.transaction()?,
             true,
             plans,
@@ -775,9 +775,9 @@ impl TransactionContext {
         Ok(())
     }
 
-    /// Execute read-only plans on this borrowed read transaction, under one
-    /// answer policy, cancellation owner and absolute deadline. Answers use the
-    /// staged representation; the caller retains transaction ownership.
+    /// Execute read plans on Read, Write or Schema contexts, and write plans on
+    /// Write or Schema contexts, under one answer policy and deadline.
+    /// The caller retains transaction ownership.
     pub async fn execute_plans(
         &self,
         plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
@@ -785,11 +785,14 @@ impl TransactionContext {
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
     ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
-        if self.tx_type != TxType::Read {
+        let writes = plans
+            .iter()
+            .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
+        if self.tx_type == TxType::Read && writes {
             return Err(crate::match_request::MatchError::new(
                 crate::match_request::MatchErrorCategory::InvalidPlan,
-                "borrowed_target_not_read_only",
-                "plan execution requires a borrowed read transaction",
+                "query_plan_read_only",
+                "one-shot plan execution requires read-only plans",
             )
             .into());
         }
@@ -805,19 +808,74 @@ impl TransactionContext {
             .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
         let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
         let limits = crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+        if writes {
+            return Box::pin(async move {
+                let mut inner = super::staged::bounded(&limits.answer, async {
+                    Ok(Arc::clone(&self.inner).lock_owned().await)
+                })
+                .await?;
+                active_transaction(&mut inner)?;
+                let mut lease = TransactionContextMutationLease {
+                    inner,
+                    phase: MutationLeasePhase::PreDispatch,
+                    exact_failure: None,
+                    server_version: self.server_version,
+                };
+                let given = lease.transaction()?.supports_given_rows();
+                let mut queries = Vec::with_capacity(plans.len());
+                for plan in plans {
+                    let query = if given {
+                        crate::query_plan_exec::staged_query(plan, true)
+                    } else {
+                        crate::query_plan_exec::staged_literal_query(plan)
+                    }
+                    .map_err(plan_diagnostic_error)?;
+                    queries.push(query);
+                }
+                // Arm before awaiting provider work; cancellation keeps the context
+                // rollback-only until the caller explicitly rolls it back.
+                lease.phase = MutationLeasePhase::PossibleEffect;
+                let result = crate::query_plan_exec::execute_plans_counted::<true>(
+                    lease.transaction()?,
+                    given,
+                    plans,
+                    policy,
+                    cancellation,
+                    deadline,
+                    Some(queries),
+                )
+                .await;
+                match result {
+                    Ok((answers, _)) => {
+                        lease.complete_success();
+                        Ok(answers)
+                    }
+                    Err(error) => {
+                        lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                            &error,
+                            SdkProviderOperation::Write,
+                        ));
+                        Err(error)
+                    }
+                }
+            })
+            .await;
+        }
         let mut guard =
             super::staged::bounded(&limits.answer, async { Ok(self.inner.lock().await) }).await?;
         let tx = active_transaction(&mut guard)?;
         let supports_given = tx.supports_given_rows();
-        crate::query_plan_exec::execute_plans(
+        crate::query_plan_exec::execute_plans_counted::<false>(
             tx,
             supports_given,
             plans,
             policy,
             cancellation,
             deadline,
+            None,
         )
         .await
+        .map(|(answers, _)| answers)
     }
 
     /// Execute one validated selected-row request without consuming this read context.
@@ -1193,6 +1251,212 @@ mod tests {
 
     fn active_context() -> (TransactionContext, Arc<Calls>) {
         new_context(CommitResult::Success, false, false, None, None, None)
+    }
+
+    struct PlanTransaction {
+        calls: Arc<Calls>,
+        malformed: bool,
+    }
+
+    impl TransactionOps for PlanTransaction {
+        fn query(&mut self, _: &str) -> BoxFuture<'_, Result<QueryResult>> {
+            self.calls.queries.fetch_add(1, Ordering::SeqCst);
+            let malformed = self.malformed;
+            Box::pin(async move {
+                Ok(if malformed {
+                    QueryResult::Ok
+                } else {
+                    QueryResult::Rows(vec![])
+                })
+            })
+        }
+        fn commit(&mut self) -> BoxFuture<'_, Result<()>> {
+            self.calls.commits.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn rollback(&mut self) -> BoxFuture<'_, Result<()>> {
+            self.calls.rollbacks.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+        fn close(&mut self) -> BoxFuture<'_, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn public_plan_execution_preserves_transaction_kind_ownership_and_poison() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            for malformed in [false, true] {
+                let calls = Arc::new(Calls::default());
+                let context = TransactionContext::new(
+                    super::super::eager::EagerTransaction::new(
+                        Box::new(PlanTransaction {
+                            calls: calls.clone(),
+                            malformed,
+                        }),
+                        kind,
+                        None,
+                    ),
+                    kind,
+                    CapabilitySet::new(),
+                    None,
+                    DatabaseExecutionIdentity::isolated("public-plan-context"),
+                    None,
+                );
+                if kind == TxType::Schema {
+                    context.query("define entity next-to-plan;").await.unwrap();
+                }
+                let policy = QueryExecutionResourceLimits::default();
+                let result = context
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &crate::AnswerCancellation::default(),
+                        crate::QueryExecutionDeadline::for_limits(policy),
+                    )
+                    .await;
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                if kind == TxType::Read {
+                    let error = result.unwrap_err();
+                    let OrmError::Match(error) = error else {
+                        panic!("typed refusal")
+                    };
+                    assert_eq!(error.code().as_str(), "query_plan_read_only");
+                    assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                } else if malformed {
+                    assert!(result.is_err());
+                    assert_eq!(
+                        context.lifecycle_state().await,
+                        TransactionContextState::RollbackOnly
+                    );
+                    assert!(context.commit().await.is_err());
+                    context.rollback().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                    assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+                } else {
+                    assert!(matches!(
+                        result.unwrap().as_slice(),
+                        [super::super::staged::PlanAnswer::Matched(0)]
+                    ));
+                    assert_eq!(
+                        context.lifecycle_state().await,
+                        TransactionContextState::Active
+                    );
+                    context.commit().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_plan_execution_preserves_transaction_kind_ownership_and_poison() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            for malformed in [false, true] {
+                let calls = Arc::new(Calls::default());
+                let mut transaction = super::super::transaction::OwnedTransaction::from_eager(
+                    super::super::eager::EagerTransaction::new(
+                        Box::new(PlanTransaction {
+                            calls: calls.clone(),
+                            malformed,
+                        }),
+                        kind,
+                        None,
+                    ),
+                );
+                if kind == TxType::Schema {
+                    transaction
+                        .query("define entity next-to-plan;")
+                        .await
+                        .unwrap();
+                }
+                let policy = QueryExecutionResourceLimits::default();
+                let result = transaction
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &crate::AnswerCancellation::default(),
+                        crate::QueryExecutionDeadline::for_limits(policy),
+                    )
+                    .await;
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                if kind == TxType::Read {
+                    let OrmError::Match(error) = result.unwrap_err() else {
+                        panic!("typed refusal")
+                    };
+                    assert_eq!(error.code().as_str(), "query_plan_read_only");
+                    assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                } else if malformed {
+                    assert!(result.is_err());
+                    assert!(transaction.commit().await.is_err());
+                    assert!(transaction.query("match $x isa entity;").await.is_err());
+                    transaction.rollback().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                    assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+                } else {
+                    assert!(matches!(
+                        result.unwrap().as_slice(),
+                        [super::super::staged::PlanAnswer::Matched(0)]
+                    ));
+                    transaction.commit().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn eager_plan_execution_preserves_transaction_kind_ownership_and_poison() {
+        for kind in [TxType::Read, TxType::Write, TxType::Schema] {
+            for malformed in [false, true] {
+                let calls = Arc::new(Calls::default());
+                let mut transaction = super::super::eager::EagerTransaction::new(
+                    Box::new(PlanTransaction {
+                        calls: calls.clone(),
+                        malformed,
+                    }),
+                    kind,
+                    None,
+                );
+                if kind == TxType::Schema {
+                    transaction
+                        .query("define entity next-to-plan;")
+                        .await
+                        .unwrap();
+                }
+                let policy = QueryExecutionResourceLimits::default();
+                let result = transaction
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &crate::AnswerCancellation::default(),
+                        crate::QueryExecutionDeadline::for_limits(policy),
+                    )
+                    .await;
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                if kind == TxType::Read {
+                    let OrmError::Match(error) = result.unwrap_err() else {
+                        panic!("typed refusal")
+                    };
+                    assert_eq!(error.code().as_str(), "query_plan_read_only");
+                    assert_eq!(calls.queries.load(Ordering::SeqCst), 0);
+                } else if malformed {
+                    assert!(result.is_err());
+                    assert!(transaction.commit_classified().await.is_err());
+                    assert!(transaction.query("match $x isa entity;").await.is_err());
+                    transaction.rollback().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                    assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 1);
+                } else {
+                    assert!(matches!(
+                        result.unwrap().as_slice(),
+                        [super::super::staged::PlanAnswer::Matched(0)]
+                    ));
+                    transaction.commit().await.unwrap();
+                    assert_eq!(calls.commits.load(Ordering::SeqCst), 1);
+                }
+            }
+        }
     }
 
     #[tokio::test]

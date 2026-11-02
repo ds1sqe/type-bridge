@@ -649,15 +649,17 @@ impl<'a> SelectedResultExecutor<'a> {
             .unwrap_or_else(|| QueryExecutionDeadline::for_limits(policy));
         let provider = transaction.provider_mut()?;
         let supports_given = provider.supports_given_rows();
-        let answers = crate::query_plan_exec::execute_plans(
+        let answers = crate::query_plan_exec::execute_plans_counted::<false>(
             provider,
             supports_given,
             &adapted.plans,
             policy,
             &self.limits.cancellation,
             deadline,
+            None,
         )
         .await
+        .map(|(answers, _)| answers)
         .map_err(plan_execution_error)?;
         validated_match_result_from_plan_stack(self.registry, released, adapted, &answers, policy)
             .map_err(OrmError::from)

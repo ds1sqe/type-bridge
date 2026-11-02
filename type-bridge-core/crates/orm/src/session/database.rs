@@ -578,15 +578,17 @@ impl Database {
             cancellation: cancellation.clone(),
         };
         let mut transaction = lifecycle.await_provider(self.read_transaction()).await?;
-        let result = catch_execution_unwind(crate::query_plan_exec::execute_plans(
-            transaction.provider_mut()?,
-            self.supports_given_stage(),
-            plans,
-            policy,
-            cancellation,
-            deadline,
-        ))
-        .await;
+        let result =
+            catch_execution_unwind(crate::query_plan_exec::execute_plans_counted::<false>(
+                transaction.provider_mut()?,
+                self.supports_given_stage(),
+                plans,
+                policy,
+                cancellation,
+                deadline,
+                None,
+            ))
+            .await;
         match result {
             Err(payload) => {
                 close_after_execution_panic(transaction).await;
@@ -598,7 +600,7 @@ impl Database {
                 }
                 Err(error)
             }
-            Ok(Ok(answers)) => {
+            Ok(Ok((answers, _))) => {
                 lifecycle.await_cleanup(transaction.close()).await?;
                 Ok(answers)
             }
