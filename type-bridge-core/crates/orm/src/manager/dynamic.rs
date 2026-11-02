@@ -1294,6 +1294,31 @@ impl<'db> DynamicEntityManager<'db> {
         iid: &str,
         attributes: &DynamicAttributeMap,
     ) -> Result<DynamicEntityRow> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.update_returning(&self.descriptor.type_name, iid, attributes, &[])?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    let PlanAnswer::Documents(documents) = answer else {
+                        return Err(snapshot_error(&self.descriptor.type_name));
+                    };
+                    if documents.is_empty() {
+                        return Err(OrmError::NotFound(format!(
+                            "Exact entity {} at IID {iid} was not found after update",
+                            self.descriptor.type_name
+                        )));
+                    }
+                    let [document] = documents.as_slice() else {
+                        return Err(snapshot_error(&self.descriptor.type_name));
+                    };
+                    let row = hydrate_dynamic_entity(&self.descriptor, document)?;
+                    if row.iid.as_deref() != Some(iid) {
+                        return Err(snapshot_error(&self.descriptor.type_name));
+                    }
+                    Ok(row)
+                })
+                .await;
+        }
         self.update_exact(iid, attributes).await?;
         self.get_by_iid_exact(iid).await?.ok_or_else(|| {
             OrmError::NotFound(format!(
@@ -2347,6 +2372,31 @@ impl<'db> DynamicRelationManager<'db> {
         attributes: &DynamicAttributeMap,
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<DynamicRelationRow> {
+        if let Some(plans) = &self.plans {
+            let plan = plans.update_returning(
+                &self.descriptor.type_name,
+                iid,
+                attributes,
+                role_players,
+            )?;
+            return self
+                .target
+                .write_plan(&plan, |answer| {
+                    let PlanAnswer::Documents(documents) = answer else {
+                        return Err(snapshot_error(&self.descriptor.type_name));
+                    };
+                    let rows = coalesce_dynamic_relation_by_iid(&self.descriptor, &documents, iid)?;
+                    match rows.as_slice() {
+                        [row] => Ok(row.clone()),
+                        [] => Err(OrmError::NotFound(format!(
+                            "Exact relation {} at IID {iid} was not found after update",
+                            self.descriptor.type_name
+                        ))),
+                        _ => Err(snapshot_error(&self.descriptor.type_name)),
+                    }
+                })
+                .await;
+        }
         self.update_exact_in_transaction(iid, attributes, role_players)
             .await?;
         match self.get_by_iid_exact(iid).await?.as_slice() {

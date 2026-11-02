@@ -1191,13 +1191,26 @@ impl ManagerPlans {
         Ok(ManagerRead::Aggregate { plan, keys })
     }
 
-    pub(crate) fn update(
+    pub(crate) fn update_returning(
+        &self,
+        name: &str,
+        iid: &str,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+    ) -> Result<BuiltPlan> {
+        self.update_with_output(name, Some(iid), attributes, players, true, true)?
+            .ok_or_else(|| invalid("manager_result_shape", "Returning update requires a plan"))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_with_output(
         &self,
         name: &str,
         iid: Option<&str>,
         attributes: &DynamicAttributeMap,
         players: &[DynamicRolePlayerInput],
         exact: bool,
+        returning: bool,
     ) -> Result<Option<BuiltPlan>> {
         let type_id = self.type_id(name)?;
         let mut draft = PlanDraft::new(self.transport);
@@ -1359,6 +1372,7 @@ impl ManagerPlans {
         if deleted.is_empty()
             && attached.is_empty()
             && players.is_empty()
+            && !returning
             && (iid.is_none() || type_id.kind() != TypeKind::Relation)
         {
             return Ok(None);
@@ -1381,14 +1395,26 @@ impl ManagerPlans {
             pipeline.push(Stage::Select { bindings: retained });
             pipeline.push(Stage::Distinct);
         }
+        if returning {
+            pipeline.push(Stage::Fetch(ThingDocument::new(
+                root,
+                self.document_roles(&type_id)?,
+            )));
+        }
         draft
             .finish(
                 self.authority()?,
                 pipeline,
                 if writes {
                     Operation::Write {
-                        returns: WriteReturns::Matched,
+                        returns: if returning {
+                            WriteReturns::Rows
+                        } else {
+                            WriteReturns::Matched
+                        },
                     }
+                } else if returning {
+                    Operation::Rows
                 } else {
                     Operation::Count
                 },
@@ -1396,6 +1422,17 @@ impl ManagerPlans {
             )
             .map(Some)
             .map_err(diagnostic)
+    }
+
+    pub(crate) fn update(
+        &self,
+        name: &str,
+        iid: Option<&str>,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+        exact: bool,
+    ) -> Result<Option<BuiltPlan>> {
+        self.update_with_output(name, iid, attributes, players, exact, false)
     }
 
     pub(crate) fn delete(
@@ -2015,6 +2052,15 @@ mod tests {
                     .unwrap()
                     .unwrap();
                 let stages = plan.local().pipeline();
+                let returning = plans
+                    .update_returning(name, "0x10", &attributes, &[])
+                    .unwrap();
+                let (fetch, prefix) = returning.local().pipeline().split_last().unwrap();
+                assert!(matches!(fetch, Stage::Fetch(_)));
+                assert_eq!(
+                    prefix, stages,
+                    "returning updates reuse the complete replacement pipeline"
+                );
                 let [
                     Stage::Match { .. },
                     Stage::Delete { .. },
