@@ -476,8 +476,7 @@ typedef struct type_bridge_query_limit_override_v1 {
 typedef struct type_bridge_query_execution_limits_v1 {
   uint32_t struct_size;
   uint32_t version;
-  /* Per-call timeout; zero or negative means no execution deadline. */
-  int64_t timeout_milliseconds;
+  uint64_t timeout_milliseconds;
   uint64_t items;
   uint64_t bytes;
   uint64_t graph_nodes;
@@ -485,8 +484,7 @@ typedef struct type_bridge_query_execution_limits_v1 {
   uint64_t collection_members;
   uint64_t role_players;
   uint32_t statements;
-  /* 0 disables collection, 1 collects phases without a subscriber. */
-  uint32_t collect_phase_timestamps;
+  uint32_t reserved0;
   uint64_t reserved[4];
 } type_bridge_query_execution_limits_v1_t;
 
@@ -873,36 +871,8 @@ typedef int32_t type_bridge_execution_diagnostic_detail_kind_t;
   ((type_bridge_execution_diagnostic_detail_kind_t)13)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_TEXT_LIST                      \
   ((type_bridge_execution_diagnostic_detail_kind_t)14)
-#define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_EXECUTION_TIMELINE ((type_bridge_execution_diagnostic_detail_kind_t)15)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_UNKNOWN                        \
   ((type_bridge_execution_diagnostic_detail_kind_t)255)
-
-/* Read-only diagnostic timeline. Phase text remains valid until diagnostics closes. */
-typedef struct type_bridge_execution_timeline_view_v1 {
-  uint32_t struct_size;
-  uint32_t reserved0;
-  uint64_t anchor_unix_milliseconds;
-  size_t stamp_count;
-} type_bridge_execution_timeline_view_v1_t;
-typedef struct type_bridge_execution_phase_view_v1 {
-  uint32_t struct_size;
-  uint32_t has_statement_index;
-  uint64_t offset_milliseconds;
-  uint32_t statement_index;
-  uint32_t reserved0;
-  type_bridge_byte_view_t phase;
-  type_bridge_byte_view_t failing_phase;
-} type_bridge_execution_phase_view_v1_t;
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_execution_diagnostics_timeline_get_v1(
-    const type_bridge_execution_diagnostics_t *diagnostics,
-    size_t diagnostic_index, size_t detail_index,
-    type_bridge_execution_timeline_view_v1_t *out_value);
-TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
-type_bridge_execution_diagnostics_phase_get_v1(
-    const type_bridge_execution_diagnostics_t *diagnostics,
-    size_t diagnostic_index, size_t detail_index, size_t stamp_index,
-    type_bridge_execution_phase_view_v1_t *out_value);
 
 typedef struct type_bridge_execution_diagnostic_view_v1 {
   uint32_t struct_size;
@@ -2461,8 +2431,6 @@ typedef struct type_bridge_proxy_connection_options_v1 {
   type_bridge_byte_view_t pinned_advertisement;
   const type_bridge_query_execution_limits_v1_t *connection_limits;
   const type_bridge_query_execution_limits_v1_t *answer_limits;
-  /* Finite delivery window; zero selects 60000 ms, independent of execution. */
-  uint64_t admission_window_milliseconds;
   uint64_t reserved[4];
 } type_bridge_proxy_connection_options_v1_t;
 

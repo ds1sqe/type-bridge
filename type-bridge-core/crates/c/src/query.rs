@@ -266,7 +266,7 @@ pub struct TypeBridgeQueryTerminalDescriptorV1 {
 pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub struct_size: u32,
     pub version: u32,
-    pub timeout_milliseconds: i64,
+    pub timeout_milliseconds: u64,
     pub items: u64,
     pub bytes: u64,
     pub graph_nodes: u64,
@@ -274,7 +274,7 @@ pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub collection_members: u64,
     pub role_players: u64,
     pub statements: u32,
-    pub collect_phase_timestamps: u32,
+    pub reserved0: u32,
     pub reserved: [u64; 4],
 }
 
@@ -9416,7 +9416,7 @@ mod tests {
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: DESCRIPTOR_VERSION,
-            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS as i64,
+            timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
             items: DEFAULT_PROXY_QUERY_ITEMS,
             bytes: DEFAULT_PROXY_QUERY_BYTES,
             graph_nodes: DEFAULT_PROXY_QUERY_GRAPH_NODES,
@@ -9424,7 +9424,7 @@ mod tests {
             collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
             role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
             statements: DEFAULT_PROXY_QUERY_STATEMENTS,
-            collect_phase_timestamps: 0,
+            reserved0: 0,
             reserved: [0; 4],
         }
     }
@@ -13359,7 +13359,7 @@ mod tests {
         // A dimension may be raised past its default and is kept as given.
         let raised = {
             let mut value = default_limits();
-            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS as i64 + 1;
+            value.timeout_milliseconds = DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1;
             value.items = DEFAULT_PROXY_QUERY_ITEMS + 1;
             value.bytes = DEFAULT_PROXY_QUERY_BYTES + 1;
             value.graph_nodes = DEFAULT_PROXY_QUERY_GRAPH_NODES + 1;
@@ -15103,7 +15103,6 @@ mod tests {
             },
             connection_limits: ptr::null(),
             answer_limits: ptr::null(),
-            admission_window_milliseconds: 0,
             reserved: [0; 4],
         }
     }

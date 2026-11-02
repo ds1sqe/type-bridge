@@ -698,7 +698,7 @@ exchanged only between peers that both raised the limit.
 
 Execution timeouts start when the call executes, not when its plan is built.
 Rust represents them with `QueryTimeout`, either no deadline or a positive
-millisecond duration. Python, Node and C accept signed 64-bit milliseconds;
+millisecond duration. Python and Node accept signed 64-bit milliseconds;
 zero and negative inputs select no deadline. A connection or server ceiling
 still tightens an unbounded request. Commit is never interrupted: a deadline
 observed before commit rolls back, and a dispatched commit runs to its outcome.
@@ -978,11 +978,11 @@ identity after admission.
 
 `QueryExecutionResourceLimits.collect_phase_timestamps` (Node:
 `collectPhaseTimestamps`) defaults to `false`. Set it to `true` to retain a
-full diagnostic phase timeline without a tracing subscriber. C uses the
-`collect_phase_timestamps` word in its query execution limits descriptor:
-0 disables collection, 1 enables it, and other values are refused. Rust
+full diagnostic phase timeline without a tracing subscriber. Rust
 transactions also expose `TransactionOptions::with_collect_phase_timestamps`.
-This is a diagnostic option, not another resource ceiling or deadline.
+The C ABI retains its unsigned fields and existing transaction options until
+the ABI 2.0 migration. This is a diagnostic option, not another resource ceiling
+or deadline.
 
 The option survives policy intersection when either side enables it. Proxy
 requests carry it as an optional Boolean; omission means disabled. Timelines

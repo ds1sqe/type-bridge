@@ -1696,9 +1696,7 @@ plays:
             timeout_milliseconds: limits
                 .timeout_milliseconds
                 .milliseconds()
-                .map_or(0, |value| {
-                    i64::try_from(value).expect("test timeout fits i64")
-                }),
+                .unwrap_or(0),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,
@@ -1706,7 +1704,7 @@ plays:
             collection_members: limits.collection_members,
             role_players: limits.role_players,
             statements: limits.statement_limit(),
-            collect_phase_timestamps: 0,
+            reserved0: 0,
             reserved: [0; 4],
         }
     }
