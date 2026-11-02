@@ -1550,6 +1550,7 @@ impl ManagerPlans {
             self.authority()?,
             kind,
             WriteShape {
+                references_see_prior_writes: true,
                 type_id: &type_id,
                 keys: &keys,
                 cleared_fields: &cleared_fields,

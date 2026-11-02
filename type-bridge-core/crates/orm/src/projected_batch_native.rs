@@ -150,6 +150,7 @@ impl BatchPlan<'_> {
             &authority,
             kind,
             WriteShape {
+                references_see_prior_writes: false,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: self.model.id(),

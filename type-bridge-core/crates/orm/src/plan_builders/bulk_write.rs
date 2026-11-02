@@ -53,6 +53,8 @@ pub(crate) struct WriteShape<'a> {
     pub(crate) document_roles: Vec<DocumentRole>,
     pub(crate) include_subtypes: bool,
     pub(crate) return_documents: bool,
+    /// Generic managers resolve players after earlier rows; explicit batches resolve at call start.
+    pub(crate) references_see_prior_writes: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -863,11 +865,12 @@ pub(crate) fn write_many(
     shape: WriteShape<'_>,
     rows: &[WriteRow<'_>],
 ) -> Result<WriteProgram, Diagnostic> {
-    if matches!(
+    let sequential_visibility = matches!(
         kind,
         WriteKind::PartialPut | WriteKind::MatchPut | WriteKind::PartialUpdate
-    ) && sequence::requires_sequence(authority, kind, &shape, rows)?
-    {
+    ) || (shape.references_see_prior_writes
+        && matches!(kind, WriteKind::Insert | WriteKind::Put));
+    if sequential_visibility && sequence::requires_sequence(authority, kind, &shape, rows)? {
         return sequence::build(authority, kind, shape, rows);
     }
     match build_many(authority, kind, shape.clone(), rows, true, 0) {

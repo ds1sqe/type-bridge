@@ -11,6 +11,29 @@ pub(super) fn requires_sequence(
     if rows.len() < 2 {
         return Ok(false);
     }
+    if matches!(kind, WriteKind::Insert | WriteKind::Put) {
+        if rows.iter().any(|row| {
+            row.players
+                .iter()
+                .any(|(_, reference)| reference.candidates.contains(shape.type_id))
+        }) {
+            return Ok(true);
+        }
+        if kind == WriteKind::Put && !shape.keys.is_empty() {
+            let mut identities = std::collections::BTreeSet::new();
+            for row in rows {
+                let keys = row
+                    .fields
+                    .iter()
+                    .filter(|(field, _)| shape.keys.contains(field))
+                    .collect::<Vec<_>>();
+                if !identities.insert(type_bridge_contract::codec::to_canonical_json(&keys)?) {
+                    return Ok(true);
+                }
+            }
+        }
+        return Ok(false);
+    }
     if kind == WriteKind::PartialUpdate {
         if rows.iter().all(|row| {
             row.fields
@@ -128,7 +151,11 @@ pub(super) fn requires_sequence(
     }
     debug_assert!(matches!(
         kind,
-        WriteKind::PartialPut | WriteKind::MatchPut | WriteKind::PartialUpdate
+        WriteKind::PartialPut
+            | WriteKind::MatchPut
+            | WriteKind::PartialUpdate
+            | WriteKind::Insert
+            | WriteKind::Put
     ));
     Ok(false)
 }
@@ -334,47 +361,114 @@ fn one(
                 pipeline.push(Stage::Match { patterns });
             }
         }
-        let keyed_partial = kind == WriteKind::PartialPut
-            && fields.iter().any(|(field, _)| shape.keys.contains(field));
-        let (seed, attached): (Vec<_>, Vec<_>) = fields.into_iter().partition(|(field, _)| {
-            !(keyed_partial || kind == WriteKind::PartialUpdate) || shape.keys.contains(field)
-        });
-        if kind != WriteKind::PartialUpdate {
-            pipeline.push(Stage::Put {
-                include_subtypes: true,
-                things: vec![InsertThing {
-                    binding: root,
-                    type_id: shape.type_id.clone(),
-                    fields: seed,
-                    players,
-                }],
-            });
-        }
-        if keyed_partial || kind == WriteKind::PartialUpdate {
-            let cleared = attached
-                .iter()
-                .map(|(field, _)| field.clone())
-                .collect::<std::collections::BTreeSet<_>>();
-            if !cleared.is_empty() {
-                pipeline.push(Stage::Delete {
-                    items: cleared
-                        .into_iter()
-                        .map(|field| DeleteItem::Has { owner: root, field })
-                        .collect(),
+        if matches!(kind, WriteKind::Insert | WriteKind::Put) {
+            let keyed_put = kind == WriteKind::Put && !shape.keys.is_empty();
+            if keyed_put {
+                let (keys, attached): (Vec<_>, Vec<_>) = fields
+                    .into_iter()
+                    .partition(|(field, _)| shape.keys.contains(field));
+                pipeline.push(Stage::Put {
+                    include_subtypes: false,
+                    things: vec![InsertThing {
+                        binding: root,
+                        type_id: shape.type_id.clone(),
+                        fields: keys,
+                        players: vec![],
+                    }],
+                });
+                let deleted = shape
+                    .cleared_fields
+                    .iter()
+                    .filter(|field| !shape.keys.contains(field))
+                    .map(|field| DeleteItem::Has {
+                        owner: root,
+                        field: field.clone(),
+                    })
+                    .chain(shape.cleared_roles.iter().map(|role| DeleteItem::Players {
+                        relation: root,
+                        role: role.clone(),
+                    }))
+                    .collect::<Vec<_>>();
+                if !deleted.is_empty() {
+                    pipeline.push(Stage::Delete { items: deleted });
+                    let mut visible = retained.clone();
+                    visible.push(root);
+                    visible.extend(players.iter().map(|(_, player)| *player));
+                    visible.sort_unstable();
+                    visible.dedup();
+                    pipeline.extend([Stage::Select { bindings: visible }, Stage::Distinct]);
+                }
+                let items = attached
+                    .into_iter()
+                    .map(|(field, operand)| AttachItem::Has {
+                        optional: false,
+                        owner: root,
+                        field,
+                        operand,
+                    })
+                    .chain(players.into_iter().map(|(role, player)| AttachItem::Links {
+                        optional: false,
+                        relation: root,
+                        role,
+                        player,
+                    }))
+                    .collect::<Vec<_>>();
+                if !items.is_empty() {
+                    pipeline.push(Stage::Attach { items });
+                }
+            } else {
+                pipeline.push(Stage::Insert {
+                    things: vec![InsertThing {
+                        binding: root,
+                        type_id: shape.type_id.clone(),
+                        fields,
+                        players,
+                    }],
                 });
             }
-            if !attached.is_empty() {
-                pipeline.push(Stage::Attach {
-                    items: attached
-                        .into_iter()
-                        .map(|(field, operand)| AttachItem::Has {
-                            optional: kind == WriteKind::PartialUpdate,
-                            owner: root,
-                            field,
-                            operand,
-                        })
-                        .collect(),
+        } else {
+            let keyed_partial = kind == WriteKind::PartialPut
+                && fields.iter().any(|(field, _)| shape.keys.contains(field));
+            let (seed, attached): (Vec<_>, Vec<_>) = fields.into_iter().partition(|(field, _)| {
+                !(keyed_partial || kind == WriteKind::PartialUpdate) || shape.keys.contains(field)
+            });
+            if kind != WriteKind::PartialUpdate {
+                pipeline.push(Stage::Put {
+                    include_subtypes: true,
+                    things: vec![InsertThing {
+                        binding: root,
+                        type_id: shape.type_id.clone(),
+                        fields: seed,
+                        players,
+                    }],
                 });
+            }
+            if keyed_partial || kind == WriteKind::PartialUpdate {
+                let cleared = attached
+                    .iter()
+                    .map(|(field, _)| field.clone())
+                    .collect::<std::collections::BTreeSet<_>>();
+                if !cleared.is_empty() {
+                    pipeline.push(Stage::Delete {
+                        items: cleared
+                            .into_iter()
+                            .map(|field| DeleteItem::Has { owner: root, field })
+                            .collect(),
+                    });
+                }
+                if !attached.is_empty() {
+                    pipeline.push(Stage::Attach {
+                        items: attached
+                            .into_iter()
+                            .map(|(field, operand)| AttachItem::Has {
+                                optional: kind == WriteKind::PartialUpdate,
+                                owner: root,
+                                field,
+                                operand,
+                            })
+                            .collect(),
+                    });
+                }
             }
         }
         retained.push(root);

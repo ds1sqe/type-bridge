@@ -3193,6 +3193,142 @@ plays:
             iid: None,
             key: Some(("seq-key".into(), AttributeValue::String(key.into()))),
         };
+        // Exact many calls must see relation rows written earlier in this call.
+        for put_exact in [false, true] {
+            let prefix = if put_exact {
+                "exact-chain"
+            } else {
+                "insert-chain"
+            };
+            let keys = (0..3)
+                .map(|index| format!("{prefix}-{index}"))
+                .collect::<Vec<_>>();
+            let inputs = vec![
+                (fields(&[("seq-key", &keys[0])]), vec![node.clone()]),
+                (fields(&[("seq-key", &keys[1])]), vec![prior(&keys[0])]),
+                (fields(&[("seq-key", &keys[2])]), vec![prior(&keys[1])]),
+            ];
+            let tx = database.transaction_context(TxType::Write).await.unwrap();
+            let looped = DynamicRelationManager::with_registry_transaction(
+                tx.clone(),
+                registry.clone(),
+                registry.relation("seq-edge").unwrap(),
+            );
+            let mut loop_ids = Vec::new();
+            for (fields, players) in &inputs {
+                loop_ids.push(if put_exact {
+                    looped.put_exact(fields, players).await.unwrap()
+                } else {
+                    looped.insert(fields, players).await.unwrap()
+                });
+            }
+            let mut expected = Vec::new();
+            for iid in &loop_ids {
+                let rows = looped.get_by_iid_exact(iid).await.unwrap();
+                let mut document = serde_json::to_value(&rows[0]).unwrap();
+                document["iid"] = serde_json::Value::Null;
+                for player in document["role_players"].as_array_mut().unwrap() {
+                    player["player_iid"] = serde_json::Value::Null;
+                }
+                expected.push(document);
+            }
+            tx.rollback().await.unwrap();
+            let (counted, log) = counted_connection(&database, literal).await;
+            let many = DynamicRelationManager::from_registry(
+                &counted,
+                registry.clone(),
+                registry.relation("seq-edge").unwrap(),
+            );
+            let ids = if put_exact {
+                many.put_many_exact(&inputs).await.unwrap()
+            } else {
+                many.insert_many(&inputs).await.unwrap()
+            };
+            let mut actual = Vec::new();
+            for (index, iid) in ids.iter().enumerate() {
+                let rows = edges.get_by_iid_exact(iid).await.unwrap();
+                if index > 0 {
+                    assert_eq!(
+                        rows[0].role_players[0].player_iid.as_deref(),
+                        Some(ids[index - 1].as_str())
+                    );
+                }
+                let mut document = serde_json::to_value(&rows[0]).unwrap();
+                document["iid"] = serde_json::Value::Null;
+                for player in document["role_players"].as_array_mut().unwrap() {
+                    player["player_iid"] = serde_json::Value::Null;
+                }
+                actual.push(document);
+            }
+            assert_eq!(
+                actual, expected,
+                "{prefix}: batched answers equal the old loop"
+            );
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 1);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            }
+            edges.delete_many_by_iid_exact(&ids).await.unwrap();
+            let anchor = edges
+                .put_exact(&fields(&[("seq-key", "explicit-anchor")]), &[node.clone()])
+                .await
+                .unwrap();
+            let relation = TypeId::new(TypeKind::Relation, "seq-edge").unwrap();
+            let key = AttributeId::new("seq-key").unwrap();
+            let prior_role = RoleId::new("seq-edge", "prior").unwrap();
+            let operation = if put_exact {
+                ProjectedBatchOperation::Put
+            } else {
+                ProjectedBatchOperation::Insert
+            };
+            let batch = ProjectedBatch::try_new(
+                &installed,
+                relation.clone(),
+                operation,
+                (0..2)
+                    .map(|index| {
+                        ProjectedBatchRow::Create(relation_create(
+                            &installed,
+                            &relation,
+                            prior_role.clone(),
+                            &key,
+                            &format!("projected-{prefix}-{index}"),
+                            vec![key_reference(
+                                &installed,
+                                &relation,
+                                &key,
+                                "explicit-anchor",
+                            )],
+                        ))
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            *log.lock().unwrap() = DispatchLog::default();
+            let written = things(
+                ProjectedBatchExecutor::new(&installed)
+                    .execute(&counted, &batch, control())
+                    .await
+                    .unwrap(),
+            );
+            for thing in &written {
+                assert_role_players(thing, &prior_role, &[(&relation, &anchor)]);
+            }
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 1);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            }
+            let mut cleanup = written
+                .iter()
+                .map(|thing| thing.iid().to_owned())
+                .collect::<Vec<_>>();
+            cleanup.push(anchor);
+            edges.delete_many_by_iid_exact(&cleanup).await.unwrap();
+        }
         let chain = vec![
             (fields(&[("seq-key", "a")]), vec![node.clone()]),
             (fields(&[("seq-key", "b")]), vec![prior("a")]),

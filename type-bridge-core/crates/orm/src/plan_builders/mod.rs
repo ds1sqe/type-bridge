@@ -218,6 +218,124 @@ mod tests {
     }
 
     #[test]
+    fn exact_relation_sequences_retain_players_and_batch_visibility_stays_explicit() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use type_bridge_contract::projection::{
+            BindingTarget, ProjectionConfig, ProjectionHandler,
+        };
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents, project, resolve};
+        let yaml = "format: typebridge.schema/v2\nattributes:\n  k: { value: string }\nentities:\n  p: {}\nrelations:\n  r:\n    owns:\n      k: { key: true }\n    relates:\n      anchor: { card: { min: 0, max: 1 } }\n      prior: { card: { min: 0, max: 1 } }\nplays:\n  p:\n    r: [anchor]\n  r:\n    r: [prior]\n";
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("visibility.yaml").unwrap(), yaml)])
+                .unwrap(),
+        )
+        .unwrap();
+        let resolved = resolve(
+            &declared,
+            &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        )
+        .unwrap();
+        let installed = crate::InstalledRuntimeProjection::try_new(
+            project(
+                &resolved,
+                BindingTarget::Rust,
+                &ProjectionConfig::rust(),
+                &[ProjectionHandler::rust_v1()],
+                &[],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let authority = installed.plan_authority().unwrap();
+        let relation = TypeId::new(TypeKind::Relation, "r").unwrap();
+        let key = OwnsFactId::new(relation.clone(), AttributeId::new("k").unwrap()).unwrap();
+        let first = vec![(key.clone(), text("a"))];
+        let second = vec![(key.clone(), text("b"))];
+        let people = [TypeId::new(TypeKind::Entity, "p").unwrap()];
+        let relations = [relation.clone()];
+        let anchor = RoleId::new("r", "anchor").unwrap();
+        let prior = RoleId::new("r", "prior").unwrap();
+        let roles = [anchor.clone(), prior.clone()];
+        let first_players = [(
+            anchor.clone(),
+            Reference {
+                candidates: &people,
+                identity: ReferenceIdentity::Iid("0x10"),
+            },
+        )];
+        let second_players = [(
+            prior.clone(),
+            Reference {
+                candidates: &relations,
+                identity: ReferenceIdentity::Key {
+                    attribute: key.attribute(),
+                    value: text("a"),
+                },
+            },
+        )];
+        let rows = [
+            WriteRow {
+                iid: None,
+                fields: &first,
+                players: &first_players,
+            },
+            WriteRow {
+                iid: None,
+                fields: &second,
+                players: &second_players,
+            },
+        ];
+        for kind in [WriteKind::Insert, WriteKind::Put] {
+            for earlier_writes in [false, true] {
+                let mut program = write_many(
+                    &authority,
+                    kind,
+                    WriteShape {
+                        references_see_prior_writes: earlier_writes,
+                        type_id: &relation,
+                        keys: std::slice::from_ref(&key),
+                        cleared_fields: std::slice::from_ref(&key),
+                        cleared_roles: &roles,
+                        document_roles: roles
+                            .iter()
+                            .cloned()
+                            .map(|role| {
+                                type_bridge_contract::query_plan::v3::DocumentRole::new(role, false)
+                            })
+                            .collect(),
+                        include_subtypes: false,
+                        return_documents: true,
+                    },
+                    &rows,
+                )
+                .unwrap();
+                assert_eq!(program.statement_count(), 1);
+                assert_eq!(program.identity_layout().is_some(), earlier_writes);
+                let step = program.next().unwrap().unwrap();
+                assert_eq!(
+                    step.plan.local().given_rows().unwrap().len(),
+                    if earlier_writes { 1 } else { 2 }
+                );
+                let allocations = step
+                    .plan
+                    .local()
+                    .pipeline()
+                    .iter()
+                    .filter(|stage| {
+                        matches!(
+                            stage,
+                            type_bridge_contract::query_plan::v3::Stage::Insert { .. }
+                                | type_bridge_contract::query_plan::v3::Stage::Put { .. }
+                        )
+                    })
+                    .count();
+                assert_eq!(allocations, if earlier_writes { 2 } else { 1 });
+            }
+        }
+    }
+
+    #[test]
     fn put_explain_records_matrix_or_sequential_input_strategy_and_canonical_cuts() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
         let authority = authority();
@@ -251,6 +369,7 @@ mod tests {
                 &authority,
                 WriteKind::PartialPut,
                 WriteShape {
+                    references_see_prior_writes: true,
                     type_id: &account,
                     keys: std::slice::from_ref(&key),
                     cleared_fields: std::slice::from_ref(&balance),
@@ -299,6 +418,7 @@ mod tests {
             &authority,
             WriteKind::PartialPut,
             WriteShape {
+                references_see_prior_writes: true,
                 type_id: &account,
                 keys: std::slice::from_ref(&key),
                 cleared_fields: &[],
@@ -352,6 +472,7 @@ mod tests {
             &authority,
             WriteKind::Insert,
             WriteShape {
+                references_see_prior_writes: true,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: &account,
@@ -392,6 +513,7 @@ mod tests {
             &authority,
             WriteKind::Insert,
             WriteShape {
+                references_see_prior_writes: true,
                 include_subtypes: false,
                 return_documents: true,
                 type_id: &relation,
