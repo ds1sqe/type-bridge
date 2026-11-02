@@ -32,7 +32,9 @@ async fn fixture() -> Option<(TypeDBRuntime, String)> {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let database = format!("tb_transaction_{}_{nonce}", std::process::id());
+    let prefix = std::env::var("TYPE_BRIDGE_TRANSACTION_LIVE_PREFIX")
+        .unwrap_or_else(|_| "tb_transaction_".into());
+    let database = format!("{prefix}{}_{nonce}", std::process::id());
     runtime.create_database(&database).await.unwrap();
     let mut schema = runtime
         .open_transaction(&database, TxType::Schema)
@@ -90,4 +92,78 @@ async fn server_transaction_deadline_closes_an_idle_transaction() {
         result.is_err(),
         "an idle transaction past its server deadline must be closed"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dispatch_observer_counts_sent_statements_and_skips_preflight_refusals() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use type_bridge_typedb_runtime::{RuntimeAnswerControl, RuntimeAnswerLimits};
+    static SENT: AtomicUsize = AtomicUsize::new(0);
+    fn observed() {
+        SENT.fetch_add(1, Ordering::SeqCst);
+    }
+    let Some((runtime, database)) = fixture().await else {
+        return;
+    };
+    let result = async {
+        let mut tx = runtime.open_transaction(&database, TxType::Read).await?;
+        let query = "match $m isa marker; select $m;";
+        tx.query(query).await?;
+        assert_eq!(
+            SENT.load(Ordering::SeqCst),
+            0,
+            "observer is absent by default"
+        );
+        tx.set_statement_dispatch_observer(Some(observed));
+        for sent in 1..=2 {
+            tx.query(query).await?;
+            assert_eq!(SENT.load(Ordering::SeqCst), sent);
+        }
+        let limits = RuntimeAnswerLimits {
+            max_items: u64::MAX,
+            max_bytes: u64::MAX,
+            deadline: None,
+            cancellation: Default::default(),
+        };
+        limits.cancellation.cancel();
+        let error = tx
+            .query_bounded(query, limits, &mut |_| Ok(RuntimeAnswerControl::Continue))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            type_bridge_typedb_runtime::RuntimeError::ResourceLimit {
+                code: "provider_cancelled",
+                ..
+            }
+        ));
+        assert_eq!(SENT.load(Ordering::SeqCst), 2);
+        let mut limits = RuntimeAnswerLimits {
+            max_items: u64::MAX,
+            max_bytes: u64::MAX,
+            deadline: None,
+            cancellation: Default::default(),
+        };
+        limits.deadline = Some(std::time::Instant::now());
+        let error = tx
+            .query_bounded(query, limits, &mut |_| Ok(RuntimeAnswerControl::Continue))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            type_bridge_typedb_runtime::RuntimeError::ResourceLimit {
+                code: "transaction_deadline_exceeded",
+                ..
+            }
+        ));
+        assert_eq!(SENT.load(Ordering::SeqCst), 2);
+        tx.set_statement_dispatch_observer(None);
+        tx.query(query).await?;
+        assert_eq!(SENT.load(Ordering::SeqCst), 2);
+        tx.close().await
+    }
+    .await;
+    runtime.delete_database(&database).await.unwrap();
+    runtime.force_close().unwrap();
+    result.unwrap();
 }

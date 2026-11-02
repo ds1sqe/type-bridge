@@ -2340,6 +2340,7 @@ impl TypeDBRuntime {
                     )
                     .map_err(TransactionOpenError::Runtime)?;
                     Ok(RuntimeTransaction {
+                        statement_dispatch_observer: None,
                         inner: RuntimeTransactionInner::B9(Some(transaction)),
                         driver_lease: Some(driver_lease),
                     })
@@ -2448,6 +2449,7 @@ enum RuntimeTransactionInner {
 
 /// Open TypeDB transaction owned by the shared runtime.
 pub struct RuntimeTransaction {
+    statement_dispatch_observer: Option<fn()>,
     inner: RuntimeTransactionInner,
     // Keep the selected driver alive until this transaction is released. Test
     // doubles use `None` because they contain no live upstream transaction.
@@ -2626,6 +2628,15 @@ fn materialize_runtime_answer(
 }
 
 impl RuntimeTransaction {
+    /// Observe each statement immediately before dispatch to the driver.
+    ///
+    /// The observer is absent by default. It runs only after runtime deadline,
+    /// cancellation and input preflight succeed, once per sent statement.
+    /// The callback must not panic or block; `None` removes it without allocation.
+    pub fn set_statement_dispatch_observer(&mut self, observer: Option<fn()>) {
+        self.statement_dispatch_observer = observer;
+    }
+
     fn ensure_driver_open(&self) -> Result<()> {
         match &self.driver_lease {
             Some(driver) => driver.ensure_open(),
@@ -2789,6 +2800,9 @@ impl RuntimeTransaction {
                                 driver_b9::QueryOptions::new()
                                     .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
+                            if let Some(observer) = self.statement_dispatch_observer {
+                                observer();
+                            }
                             tx.query_with_options(&tql, options)
                                 .await
                                 .map_err(band9_query_error)
@@ -2915,6 +2929,9 @@ impl RuntimeTransaction {
                                 driver_b9::QueryOptions::new()
                                     .prefetch_size(BOUNDED_QUERY_PREFETCH_SIZE)
                             };
+                            if let Some(observer) = self.statement_dispatch_observer {
+                                observer();
+                            }
                             tx.query_with_options_and_rows(&tql, options, Some(given_rows))
                                 .await
                                 .map_err(band9_query_error)
@@ -4597,11 +4614,13 @@ mod tests {
     #[test]
     fn band9_transaction_reports_given_row_transport_support() {
         let transaction = RuntimeTransaction {
+            statement_dispatch_observer: None,
             inner: RuntimeTransactionInner::B9(None),
             driver_lease: None,
         };
 
         assert!(transaction.supports_given_rows());
+        assert!(transaction.statement_dispatch_observer.is_none());
     }
 
     #[test]
