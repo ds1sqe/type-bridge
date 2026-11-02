@@ -40,6 +40,8 @@ pub mod debug;
 mod enum_spelling;
 pub mod error;
 mod execution_diagnostic;
+/// Invocation-local phase diagnostics and tracing for engine execution.
+pub mod execution_phases;
 pub mod expr;
 pub mod filter;
 pub mod hooks;

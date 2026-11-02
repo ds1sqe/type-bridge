@@ -640,6 +640,7 @@ pub trait TransactionOps: Send {
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits);
             reader.check_before_read()?;
+            crate::execution_phases::dispatched();
             match self.query_with_rows(typeql, rows).await? {
                 QueryResult::Ok => {}
                 QueryResult::Rows(rows) => {
@@ -677,6 +678,7 @@ pub trait TransactionOps: Send {
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits.answer);
             reader.check_before_read()?;
+            crate::execution_phases::dispatched();
             let result = match rows {
                 Some(rows) => self.query_with_rows(typeql, rows).await?,
                 None if canonical => self.query_canonical(typeql).await?,
@@ -716,6 +718,7 @@ pub trait TransactionOps: Send {
         Box::pin(async move {
             let mut reader = BoundedAnswerReader::new(limits);
             reader.check_before_read()?;
+            crate::execution_phases::dispatched();
             let result = self.query(typeql).await?;
             let items = match result {
                 QueryResult::Ok => Vec::new(),

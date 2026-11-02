@@ -15,6 +15,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::Instrument;
 use tracing::instrument::WithSubscriber;
 
 use axum::Router;
@@ -178,6 +179,8 @@ impl StagedExecutor {
 
     /// A request-bound signed failure; unbound only if it cannot be signed.
     fn failed(&self, request: &StagedRequestV3, diagnostic: SdkExecutionDiagnostic) -> Vec<u8> {
+        let diagnostic = type_bridge_orm::execution_phases::annotate(diagnostic);
+        type_bridge_orm::execution_phases::finish(false);
         self.signed(request, StagedOutcomeV3::Failed { diagnostic }, Vec::new())
             .unwrap_or_else(|error| self.unbound(&error))
     }
@@ -195,7 +198,10 @@ impl StagedExecutor {
             Some(request) => {
                 self.failed(request, lower_remote_query_diagnostic(diagnostic.clone()))
             }
-            None => self.unbound(diagnostic),
+            None => {
+                type_bridge_orm::execution_phases::finish(false);
+                self.unbound(diagnostic)
+            }
         }
     }
 }
@@ -377,6 +383,23 @@ async fn execute(
     deadline: Option<Instant>,
 ) -> StagedOutcome {
     let received_at = Instant::now();
+    let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "proxy_server");
+    type_bridge_orm::execution_phases::observe(received_at, false, async {
+        type_bridge_orm::execution_phases::received();
+        execute_inner(shared, ctx, body, deadline, received_at).await
+    })
+    .instrument(span)
+    .await
+    .0
+}
+
+async fn execute_inner(
+    shared: &Arc<StagedExecutor>,
+    ctx: RequestContext,
+    body: Bytes,
+    deadline: Option<Instant>,
+    received_at: Instant,
+) -> StagedOutcome {
     let state = shared.as_ref();
     tracing::debug!(target: "type_bridge.io", bytes_in = body.len(), "type_bridge.io.request");
     let permit = match await_before_deadline(
@@ -409,6 +432,9 @@ async fn execute(
         Some(Err(_)) => return refuse(state, deadline, &ctx, None, unavailable()).await,
         None => return refuse(state, deadline, &ctx, None, deadline_exceeded()).await,
     };
+    if staged.limits().collect_phase_timestamps {
+        type_bridge_orm::execution_phases::enable_collection();
+    }
     tracing::debug!(target: "type_bridge.io", decode = "ok", deadline_ms = ?deadline.map(|value| value.saturating_duration_since(Instant::now()).as_millis()), nonce = staged.nonce(), kind = ?staged.kind(), plans = staged.plans().len(), "type_bridge.io.request");
     let request = Some(&staged);
 
@@ -488,15 +514,20 @@ async fn execute(
 
     // From here the outcome is owned by a detached task: a client that goes
     // away mid-commit cannot drop the observers or leave the key in flight.
+    let phases = type_bridge_orm::execution_phases::snapshot();
     let task = tokio::spawn(
-        run_staged(
-            Arc::clone(shared),
-            ctx,
-            staged.clone(),
-            plans,
-            kind,
-            Window { deadline, expires },
+        type_bridge_orm::execution_phases::continue_with(
+            phases,
+            run_staged(
+                Arc::clone(shared),
+                ctx,
+                staged.clone(),
+                plans,
+                kind,
+                Window { deadline, expires },
+            ),
         )
+        .instrument(tracing::Span::current())
         .with_current_subscriber(),
     );
     match task.await {
@@ -586,6 +617,7 @@ async fn run_staged(
     }
 
     let executed = execute_staged(state, &staged, &plans, kind, deadline).await;
+    type_bridge_orm::execution_phases::finish(executed.is_ok());
     // Once a write committed, or may have, no reply may read as a
     // safe-to-retry refusal.
     let may_have_committed = kind == TransactionKind::Write

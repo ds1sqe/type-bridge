@@ -369,18 +369,35 @@ impl<'a> SelectedResultExecutor<'a> {
     /// Adapt under the registry's schema authority and execute the complete
     /// native plan stack on one read-only provider snapshot.
     pub(crate) async fn execute_compatible_owned(
-        &self,
+        mut self,
         database: &Database,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
-        self.check_lifecycle_budget()?;
-        let registry = self.registry.owned_registry_snapshot()?;
-        self.check_lifecycle_budget()?;
-        let fenced = self.with_registry(&registry);
-        fenced
-            .execute_compatible_owned_fenced(database, validated)
-            .await
-            .map_err(|error| self.limits.annotate_refusal(error))
+        use tracing::Instrument;
+        let deadline = self
+            .limits
+            .absolute_deadline
+            .unwrap_or_else(|| QueryExecutionDeadline::for_limits(self.limits.policy));
+        self.limits.absolute_deadline = Some(deadline);
+        let collect = self.limits.policy.collect_phase_timestamps;
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "direct");
+        let (result, phases) =
+            crate::execution_phases::observe_result(deadline.started(), collect, async {
+                self.check_lifecycle_budget()?;
+                let registry = self.registry.owned_registry_snapshot()?;
+                self.check_lifecycle_budget()?;
+                let fenced = self.with_registry(&registry);
+                fenced
+                    .execute_compatible_owned_fenced(database, validated)
+                    .await
+                    .map_err(|error| self.limits.annotate_refusal(error))
+            })
+            .instrument(span)
+            .await;
+        result.map_err(|error| match phases.as_ref() {
+            Some(phases) => phases.orm_error(error),
+            None => error,
+        })
     }
 
     async fn execute_compatible_owned_fenced(
@@ -461,18 +478,35 @@ impl<'a> SelectedResultExecutor<'a> {
 
     /// Borrowed counterpart of [`Self::execute_compatible_owned`].
     pub(crate) async fn execute_compatible_borrowed(
-        &self,
+        mut self,
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
     ) -> Result<ValidatedMatchResult, OrmError> {
-        self.check_lifecycle_budget()?;
-        let registry = self.registry.owned_registry_snapshot()?;
-        self.check_lifecycle_budget()?;
-        let fenced = self.with_registry(&registry);
-        fenced
-            .execute_compatible_borrowed_fenced(context, validated)
-            .await
-            .map_err(|error| self.limits.annotate_refusal(error))
+        use tracing::Instrument;
+        let deadline = self
+            .limits
+            .absolute_deadline
+            .unwrap_or_else(|| QueryExecutionDeadline::for_limits(self.limits.policy));
+        self.limits.absolute_deadline = Some(deadline);
+        let collect = self.limits.policy.collect_phase_timestamps;
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "borrowed");
+        let (result, phases) =
+            crate::execution_phases::observe_result(deadline.started(), collect, async {
+                self.check_lifecycle_budget()?;
+                let registry = self.registry.owned_registry_snapshot()?;
+                self.check_lifecycle_budget()?;
+                let fenced = self.with_registry(&registry);
+                fenced
+                    .execute_compatible_borrowed_fenced(context, validated)
+                    .await
+                    .map_err(|error| self.limits.annotate_refusal(error))
+            })
+            .instrument(span)
+            .await;
+        result.map_err(|error| match phases.as_ref() {
+            Some(phases) => phases.orm_error(error),
+            None => error,
+        })
     }
 
     async fn execute_compatible_borrowed_fenced(
@@ -591,6 +625,12 @@ impl<'a> SelectedResultExecutor<'a> {
                     .map_err(provider_transaction_open_error)
             })
             .await?;
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+        );
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+        );
         let execution = catch_execution_unwind(self.execute_adapted_transaction(
             &mut transaction,
             released,
@@ -615,6 +655,9 @@ impl<'a> SelectedResultExecutor<'a> {
             }
             Ok(Ok(result)) => result,
         };
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+        );
         let close = lifecycle
             .await_cleanup(async {
                 transaction
@@ -705,7 +748,7 @@ fn provider_transaction_open_error(_error: OrmError) -> OrmError {
 }
 
 fn provider_statement_error(error: OrmError) -> OrmError {
-    if error.failure().is_some() {
+    if matches!(error, OrmError::ExecutionDiagnostic(_)) || error.failure().is_some() {
         return error;
     }
     if let OrmError::Match(error) = error
@@ -1504,7 +1547,10 @@ mod tests {
     }
 
     fn match_code(error: &OrmError) -> &str {
-        match_error(error).code().as_str()
+        match error {
+            OrmError::ExecutionDiagnostic(diagnostic) => diagnostic.code().as_str(),
+            _ => match_error(error).code().as_str(),
+        }
     }
 
     fn match_error(error: &OrmError) -> &MatchError {
@@ -2023,10 +2069,17 @@ mod tests {
         assert!(execution.is_finished());
         let error = execution.await.unwrap().unwrap_err();
         assert_eq!(match_code(&error), "provider_cancelled");
-        assert_eq!(
-            match_error(&error).category(),
-            MatchErrorCategory::Cancelled
+        let diagnostic = crate::execution_diagnostic::lower_orm_error(
+            &error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
         );
+        assert_eq!(
+            diagnostic.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Cancelled
+        );
+        let host = serde_json::to_value(diagnostic.host_json()).unwrap();
+        assert_eq!(host["details"]["execution_phase"]["value"], "fired");
+        assert!(host["details"].get("elapsed_milliseconds").is_some());
         assert_eq!(state.opens.load(AtomicOrdering::SeqCst), 1);
         assert_eq!(state.closes.load(AtomicOrdering::SeqCst), 0);
     }
@@ -2203,7 +2256,18 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(execution.is_finished());
         let error = execution.await.unwrap().unwrap_err();
-        assert_eq!(match_code(&error), "provider_cancelled");
+        let diagnostic = crate::execution_diagnostic::lower_orm_error(
+            &error,
+            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+        );
+        assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
+        assert_eq!(
+            diagnostic.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Cancelled
+        );
+        let host = serde_json::to_value(diagnostic.host_json()).unwrap();
+        assert_eq!(host["details"]["execution_phase"]["value"], "db_write");
+        assert!(host["details"].get("elapsed_milliseconds").is_some());
 
         context.execute_match(&registry, &validated).await.unwrap();
         assert_eq!(state.statements.load(AtomicOrdering::SeqCst), 2);

@@ -24,13 +24,13 @@ pub(crate) fn lower_orm_error(
     provider_operation: SdkProviderOperation,
 ) -> SdkExecutionDiagnostic {
     if let OrmError::ExecutionDiagnostic(diagnostic) = error {
-        return (**diagnostic).clone();
+        return crate::execution_phases::annotate((**diagnostic).clone());
     }
     let base = lower_orm_error_base(error, provider_operation);
-    match error.failure() {
+    crate::execution_phases::annotate(match error.failure() {
         Some(failure) => base.with_failure(&failure, Default::default()),
         None => base,
-    }
+    })
 }
 
 fn lower_orm_error_base(

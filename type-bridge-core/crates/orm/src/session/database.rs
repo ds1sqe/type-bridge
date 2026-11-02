@@ -565,6 +565,32 @@ impl Database {
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
     ) -> Result<Vec<super::staged::PlanAnswer>> {
+        use tracing::Instrument;
+        let collect = limits.collect_phase_timestamps
+            || self
+                .answer_limits
+                .is_some_and(|policy| policy.collect_phase_timestamps);
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "direct");
+        let (result, phases) = crate::execution_phases::observe_result(
+            deadline.started(),
+            collect,
+            self.execute_plans_inner(plans, limits, cancellation, deadline),
+        )
+        .instrument(span)
+        .await;
+        result.map_err(|error| match phases.as_ref() {
+            Some(phases) => phases.orm_error(error),
+            None => error,
+        })
+    }
+
+    async fn execute_plans_inner(
+        &self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<Vec<super::staged::PlanAnswer>> {
         use crate::match_request::selected_result_executor::{
             ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
             dispatch_failed_execution_close,
@@ -587,6 +613,12 @@ impl Database {
             cancellation: cancellation.clone(),
         };
         let mut transaction = lifecycle.await_provider(self.read_transaction()).await?;
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+        );
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+        );
         let result =
             catch_execution_unwind(crate::query_plan_exec::execute_plans_counted::<false>(
                 transaction.provider_mut()?,
@@ -610,6 +642,9 @@ impl Database {
                 Err(error)
             }
             Ok(Ok((answers, _))) => {
+                crate::execution_phases::record(
+                    type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                );
                 lifecycle.await_cleanup(transaction.close()).await?;
                 Ok(answers)
             }

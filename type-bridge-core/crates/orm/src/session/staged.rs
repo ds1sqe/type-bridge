@@ -1640,7 +1640,27 @@ impl Transaction {
         use tracing::Instrument;
         let deadline = self.commit_deadline(deadline)?;
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.commit", plans = self.stack.0.len(), nonce = tracing::field::Empty, outcome = tracing::field::Empty);
-        let result = self.commit_inner(deadline).instrument(span.clone()).await;
+        let collect = self.options.collect_phase_timestamps
+            || self.stack.0.iter().any(|item| match &item.slot {
+                Slot::Program(program) => program
+                    .remote_limits()
+                    .is_some_and(|limits| limits.policy().collect_phase_timestamps),
+                _ => false,
+            });
+        let (mut result, phases) = crate::execution_phases::observe_result(
+            deadline.started(),
+            collect,
+            self.commit_inner(deadline),
+        )
+        .instrument(span.clone())
+        .await;
+        if let (Err(error), Some(phases)) = (&mut result, phases) {
+            let original = error.diagnostic();
+            let diagnostic = phases.diagnostic(original.clone());
+            if diagnostic != original {
+                error.remote = Some(Box::new(diagnostic));
+            }
+        }
         span.record("outcome", if result.is_ok() { "ok" } else { "error" });
         result
     }
@@ -1730,6 +1750,8 @@ impl Transaction {
             .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
             // A program borrows the provider as an owned transaction and
             // hands it back; `None` means it was consumed.
+            crate::execution_phases::record(type_bridge_contract::execution_timeline::ExecutionPhase::Accepted);
+            crate::execution_phases::record(type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted);
             let mut provider = Some(opened);
             let server_version = backend.server_version();
             let mut answers = Vec::with_capacity(execution.0.len());
@@ -1810,6 +1832,7 @@ impl Transaction {
             let provider = provider.as_mut().ok_or_else(|| {
                 CommitError::new(provider_consumed().into(), None, Default::default())
             })?;
+            crate::execution_phases::record(type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit);
             if let Err(error) = super::backend::BoundedAnswerReader::new(answer_limits.clone()).check_before_read() {
                 if kind != TransactionKind::Read { let _ = provider.rollback().await; }
                 let _ = provider.close().await;
@@ -2044,19 +2067,16 @@ impl Transaction {
         let Some(timeout) = self.commit_timeout() else {
             return Ok(given);
         };
-        let deadline = tokio::time::Instant::now()
-            .into_std()
-            .checked_add(timeout)
-            .ok_or_else(|| {
-                CommitError::lifecycle(PendingError::Failed {
-                    diagnostic: Box::new(SdkExecutionDiagnostic::internal_failure()),
-                    op_index: None,
-                    message: "Transaction deadline exceeds the supported range".into(),
-                    failure: None,
-                    context: Default::default(),
-                })
-            })?;
-        Ok(given.earliest(crate::QueryExecutionDeadline::from_instant(deadline)))
+        let deadline = given.started().checked_add(timeout).ok_or_else(|| {
+            CommitError::lifecycle(PendingError::Failed {
+                diagnostic: Box::new(SdkExecutionDiagnostic::internal_failure()),
+                op_index: None,
+                message: "Transaction deadline exceeds the supported range".into(),
+                failure: None,
+                context: Default::default(),
+            })
+        })?;
+        Ok(given.with_ceiling(deadline))
     }
 
     fn commit_timeout(&self) -> Option<Duration> {
@@ -3530,6 +3550,83 @@ mod tests {
         assert!(state.lock().unwrap().events.is_empty());
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn interrupted_write_diagnostics_keep_phases_and_roll_back() {
+        for collect in [false, true] {
+            for cancel in [false, true] {
+                let cancellation = super::super::backend::AnswerCancellation::default();
+                let trigger = cancellation.clone();
+                let (mut tx, state) = fixture(
+                    TransactionOptions::default()
+                        .with_timeout(crate::QueryTimeout::from_milliseconds(20))
+                        .with_collect_phase_timestamps(collect)
+                        .with_answer_limits(BoundedAnswerLimits {
+                            cancellation,
+                            ..Default::default()
+                        }),
+                );
+                let first = tx.stage(StagedQuery::new("earlier-write", true)).unwrap();
+                let stalled: Program<()> = Box::new(move |_, _| {
+                    if cancel {
+                        trigger.cancel();
+                    }
+                    Box::pin(std::future::pending::<Result<(), OrmError>>())
+                });
+                tx.stage_program(stalled).unwrap();
+                let error = tx.commit().await.unwrap_err();
+                let host = serde_json::to_value(error.diagnostic().host_json()).unwrap();
+                assert_eq!(
+                    host["code"],
+                    if cancel {
+                        "provider_cancelled"
+                    } else {
+                        "transaction_deadline_exceeded"
+                    }
+                );
+                assert_eq!(host["details"]["execution_phase"]["value"], "db_write");
+                assert_eq!(
+                    host["details"]["elapsed_milliseconds"]["value"],
+                    if cancel { "0" } else { "20" }
+                );
+                let timeline = host["details"].get("execution_timeline");
+                assert_eq!(timeline.is_some(), collect);
+                if let Some(timeline) = timeline {
+                    let stamps = timeline["value"]["stamps"].as_array().unwrap();
+                    assert_eq!(
+                        stamps
+                            .iter()
+                            .map(|stamp| stamp["phase"].as_str().unwrap())
+                            .collect::<Vec<_>>(),
+                        [
+                            "fired",
+                            "accepted",
+                            "execution_started",
+                            "db_write",
+                            "failed"
+                        ]
+                    );
+                    assert_eq!(stamps[3]["statement_index"], 0);
+                    assert_eq!(stamps[4]["failing_phase"], "db_write");
+                    assert_eq!(
+                        stamps[4]["offset_milliseconds"],
+                        if cancel { 0 } else { 20 }
+                    );
+                }
+                let pending = first.get().unwrap_err();
+                let pending_host =
+                    serde_json::to_value(pending.diagnostic().unwrap().host_json()).unwrap();
+                assert_eq!(
+                    pending_host["details"]["execution_phase"]["value"],
+                    "db_write"
+                );
+                let state = state.lock().unwrap();
+                assert_eq!(state.events, ["earlier-write", "rollback", "close"]);
+                assert_eq!(state.pending_writes, 0);
+                assert_eq!(state.visible_writes, 0);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn plan_trace_records_seams_and_metering_without_given_values() {
         use tracing::instrument::WithSubscriber;
@@ -3551,6 +3648,32 @@ mod tests {
         .with_subscriber(dispatch)
         .await;
         let records = records.lock().unwrap();
+        let phases = records
+            .iter()
+            .filter(|record| record.name == "type_bridge.plan.phase")
+            .collect::<Vec<_>>();
+        assert_eq!(phases.len(), 12);
+        for call in phases.chunks(6) {
+            assert_eq!(
+                call.iter()
+                    .map(|record| record.fields["phase"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                [
+                    "fired",
+                    "accepted",
+                    "execution_started",
+                    "db_write",
+                    "before_commit",
+                    "committed"
+                ]
+            );
+            assert_eq!(call[3].fields["statement_index"], serde_json::json!(0));
+            let offsets = call
+                .iter()
+                .map(|record| record.fields["offset_milliseconds"].as_u64().unwrap())
+                .collect::<Vec<_>>();
+            assert!(offsets.windows(2).all(|pair| pair[0] <= pair[1]));
+        }
         let expected = crate::query_plan_exec::race::purchase("TRACE_SECRET", "I1", "A1")
             .shape_fingerprint()
             .unwrap()

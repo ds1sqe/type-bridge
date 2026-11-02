@@ -796,6 +796,32 @@ impl TransactionContext {
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
     ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
+        use tracing::Instrument;
+        let collect = limits.collect_phase_timestamps
+            || self
+                .answer_limits
+                .is_some_and(|policy| policy.collect_phase_timestamps);
+        let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "borrowed");
+        let (result, phases) = crate::execution_phases::observe_result(
+            deadline.started(),
+            collect,
+            self.execute_plans_inner(plans, limits, cancellation, deadline),
+        )
+        .instrument(span)
+        .await;
+        result.map_err(|error| match phases.as_ref() {
+            Some(phases) => phases.orm_error(error),
+            None => error,
+        })
+    }
+
+    async fn execute_plans_inner(
+        &self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        limits: &QueryExecutionResourceLimits,
+        cancellation: &super::backend::AnswerCancellation,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
         let writes = plans
             .iter()
             .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
@@ -875,8 +901,14 @@ impl TransactionContext {
         let mut guard =
             super::staged::bounded(&limits.answer, async { Ok(self.inner.lock().await) }).await?;
         let tx = active_transaction(&mut guard)?;
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+        );
+        crate::execution_phases::record(
+            type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+        );
         let supports_given = tx.supports_given_rows();
-        crate::query_plan_exec::execute_plans_counted::<false>(
+        let result = crate::query_plan_exec::execute_plans_counted::<false>(
             tx,
             supports_given,
             plans,
@@ -886,7 +918,13 @@ impl TransactionContext {
             None,
         )
         .await
-        .map(|(answers, _)| answers)
+        .map(|(answers, _)| answers);
+        if result.is_ok() {
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+            );
+        }
+        result
     }
 
     /// Execute one validated selected-row request without consuming this read context.

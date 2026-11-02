@@ -483,10 +483,18 @@ async fn hanging_write_authority_times_out_before_anything_opens() {
         false,
         Some(Duration::from_millis(200)),
     );
-    let request = staged(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE);
+    let request = staged_with(&fixture, &[insert_plan(&fixture.declared)], TEST_NONCE,
+        StagedLimitsV3 { collect_phase_timestamps: true, ..Default::default() }, now_ms());
     let reply = verify(&fixture, &request, &post(&fixture, &request).await);
     assert!(!reply.committed());
     assert_eq!(failure_code(&reply), "transaction_deadline_exceeded");
+    let host = reply.diagnostic().unwrap().host_json().unwrap();
+    assert_eq!(host["details"]["execution_phase"]["value"], "accepted");
+    let stamps = host["details"]["execution_timeline"]["value"]["stamps"].as_array().unwrap();
+    assert_eq!(stamps.iter().map(|stamp| stamp["phase"].as_str().unwrap()).collect::<Vec<_>>(), ["fired", "accepted", "failed"]);
+    assert_eq!(stamps[1]["offset_milliseconds"], 0);
+    assert_eq!(stamps[2]["failing_phase"], "accepted");
+    assert!(stamps.iter().all(|stamp| stamp.get("statement_index").is_none()));
     assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.metrics.schema_exports.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 0);

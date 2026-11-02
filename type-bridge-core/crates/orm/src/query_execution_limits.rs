@@ -100,6 +100,7 @@ pub const MAX_QUERY_ROLE_PLAYERS: u64 = DEFAULT_PROXY_QUERY_ROLE_PLAYERS;
 /// restarting the caller's timeout.
 #[derive(Clone, Copy, Debug)]
 pub struct QueryExecutionDeadline {
+    started: Instant,
     deadline: Option<Instant>,
 }
 
@@ -107,8 +108,10 @@ impl QueryExecutionDeadline {
     /// An already elapsed deadline for an operation that must not start.
     #[must_use]
     pub fn expired() -> Self {
+        let started = tokio::time::Instant::now().into_std();
         Self {
-            deadline: Some(tokio::time::Instant::now().into_std()),
+            started,
+            deadline: Some(started),
         }
     }
 
@@ -122,12 +125,28 @@ impl QueryExecutionDeadline {
     /// Capture the configured timeout once at execution entry.
     #[must_use]
     pub fn from_timeout(timeout: QueryTimeout) -> Self {
+        let started = crate::execution_phases::started()
+            .unwrap_or_else(|| tokio::time::Instant::now().into_std());
         Self {
-            deadline: timeout.milliseconds().and_then(|milliseconds| {
-                tokio::time::Instant::now()
-                    .into_std()
-                    .checked_add(Duration::from_millis(milliseconds))
-            }),
+            started,
+            deadline: timeout
+                .milliseconds()
+                .and_then(|milliseconds| started.checked_add(Duration::from_millis(milliseconds))),
+        }
+    }
+
+    /// Monotonic invocation entry captured with this call's deadline.
+    pub const fn started(self) -> Instant {
+        self.started
+    }
+
+    pub(crate) fn with_ceiling(self, ceiling: Instant) -> Self {
+        Self {
+            started: self.started,
+            deadline: Some(
+                self.deadline
+                    .map_or(ceiling, |deadline| deadline.min(ceiling)),
+            ),
         }
     }
 
@@ -148,8 +167,10 @@ impl QueryExecutionDeadline {
 
     /// Reuse an already established monotonic deadline at an internal seam.
     #[must_use]
-    pub const fn from_instant(deadline: Instant) -> Self {
+    pub fn from_instant(deadline: Instant) -> Self {
         Self {
+            started: crate::execution_phases::started()
+                .unwrap_or_else(|| tokio::time::Instant::now().into_std()),
             deadline: Some(deadline),
         }
     }
@@ -158,6 +179,7 @@ impl QueryExecutionDeadline {
     #[must_use]
     pub fn earliest(self, other: Self) -> Self {
         Self {
+            started: self.started,
             deadline: match (self.deadline, other.deadline) {
                 (Some(left), Some(right)) => Some(left.min(right)),
                 (left, right) => left.or(right),

@@ -62,6 +62,12 @@ All notable changes to TypeBridge will be documented in this file.
   `admission_window_milliseconds` on the client and server (default 60,000 ms);
   the server ceiling wins and even unbounded calls retain finite replay expiry.
 
+- Plan calls report the failing execution phase and total elapsed time on
+  deadline and cancellation diagnostics. Enable `collect_phase_timestamps`
+  (Node: `collectPhaseTimestamps`) or a plan tracing subscriber for full
+  UTC-anchored monotonic timelines, including each dispatched statement.
+  Default execution retains scalar phase state without per-phase clock reads.
+
 ### Fixed
 
 - Server call deadlines remain absolute while plans are staged. Preparing a
