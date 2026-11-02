@@ -84,8 +84,8 @@ pub use semantic::{
     semantic_schema_fingerprint,
 };
 pub use timezone::{
-    TYPEDB_3_12_1_TEMPORAL_POLICY_ID, TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime_tz,
-    parse_provider_datetime_tz_evidence, resolve_provider_datetime_tz,
+    TYPEDB_3_12_1_TEMPORAL_POLICY_ID, TYPEDB_3_12_1_TIMEZONE_POLICY_ID, parse_provider_datetime,
+    parse_provider_datetime_tz, parse_provider_datetime_tz_evidence, resolve_provider_datetime_tz,
     validate_provider_datetime_tz, validate_provider_duration, validate_provider_temporal_literal,
     validate_provider_temporal_value,
 };

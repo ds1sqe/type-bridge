@@ -14,6 +14,33 @@ pub const TYPEDB_3_12_1_TIMEZONE_POLICY_ID: &str = "typedb-iana-2024a/v1";
 /// Exact temporal scalar domain accepted by the TypeDB 3.12.1 Rust driver.
 pub const TYPEDB_3_12_1_TEMPORAL_POLICY_ID: &str = "typedb-3.12.1-temporal/v1";
 
+/// Parse provider or legacy local datetime spelling without losing precision.
+/// Insignificant fractional zeros are normalized before strict canonical parsing.
+pub fn parse_provider_datetime(value: &str) -> Result<CanonicalDateTime, Diagnostic> {
+    if let Ok(canonical) = value.parse() {
+        return Ok(canonical);
+    }
+    let (seconds, fraction) = value.rsplit_once('.').ok_or_else(|| {
+        timezone_diagnostic(
+            "invalid_provider_datetime",
+            "provider datetime is outside its scalar grammar",
+        )
+    })?;
+    if fraction.is_empty()
+        || fraction.len() > 9
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return value.parse();
+    }
+    let significant = fraction.trim_end_matches('0');
+    let canonical = if significant.is_empty() {
+        seconds.to_owned()
+    } else {
+        format!("{seconds}.{significant}")
+    };
+    canonical.parse()
+}
+
 /// Parse a canonical timezone-aware scalar and resolve named zones under the
 /// exact TypeDB 3.12.1 timezone policy.
 pub fn parse_provider_datetime_tz(value: &str) -> Result<CanonicalDateTimeTz, Diagnostic> {
@@ -56,10 +83,13 @@ pub fn parse_provider_datetime_tz_evidence(value: &str) -> Result<CanonicalDateT
                 "named datetime-tz evidence must contain one non-empty bracketed IANA zone",
             ));
         }
-        if let Ok(fixed) = prefix.parse::<CanonicalDateTimeTz>() {
+        if let Ok(fixed) = prefix
+            .parse::<CanonicalDateTimeTz>()
+            .or_else(|error| parse_legacy_driver_fixed_datetime_tz(prefix).ok_or(error))
+        {
             return resolve_named_evidence(fixed.local(), name, fixed.effective_offset_seconds());
         }
-        let local = prefix.parse::<CanonicalDateTime>()?;
+        let local = parse_provider_datetime(prefix)?;
         return resolve_named(local, name);
     }
     if let Some((local, name)) = value.rsplit_once(' ')
@@ -86,23 +116,13 @@ pub fn parse_provider_datetime_tz_evidence(value: &str) -> Result<CanonicalDateT
     })
 }
 
-/// Parse the `%FT%T%.9f` local datetime emitted by every released driver band.
+/// Parse local datetime evidence emitted by released driver bands.
 ///
 /// This intentionally lives only on the provider-evidence compatibility path.
 /// Canonical V2 documents continue to reject insignificant trailing fractional
 /// zeroes rather than accepting and normalizing them.
 fn parse_legacy_driver_local_datetime(value: &str) -> Option<CanonicalDateTime> {
-    let (whole_seconds, fraction) = value.rsplit_once('.')?;
-    if fraction.len() != 9 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let significant = fraction.trim_end_matches('0');
-    let canonical = if significant.is_empty() {
-        whole_seconds.to_owned()
-    } else {
-        format!("{whole_seconds}.{significant}")
-    };
-    canonical.parse().ok()
+    parse_provider_datetime(value).ok()
 }
 
 /// Parse the `%FT%T%.9f%:z` fixed-zone display emitted by released drivers.
@@ -574,8 +594,15 @@ mod tests {
                 .is_err(),
             "the canonical V2 parser must not inherit legacy display normalization"
         );
+        let short_fraction =
+            parse_provider_datetime_tz_evidence("2024-01-02T03:04:05.00000000 Europe/Amsterdam")
+                .expect("provider fractions accept one through nine digits");
+        assert_eq!(short_fraction.local().to_string(), "2024-01-02T03:04:05");
+        assert_eq!(
+            short_fraction.zone(),
+            &TimeZoneDesignator::Named("Europe/Amsterdam".to_owned())
+        );
         for invalid in [
-            "2024-01-02T03:04:05.00000000 Europe/Amsterdam",
             "2024-01-02T03:04:05.0000000000 Europe/Amsterdam",
             "2024-01-02T03:04:05.00000000x Europe/Amsterdam",
             "2024-01-02T03:04:05.000000000  Europe/Amsterdam",
@@ -619,5 +646,40 @@ mod tests {
                 "provider_duration_out_of_range"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod local_ingress_tests {
+    use super::*;
+    #[test]
+    fn insignificant_fractional_zeros_preserve_nanosecond_precision() {
+        for (source, expected) in [
+            ("2026-08-14T10:30:00.000000000", "2026-08-14T10:30:00"),
+            ("2026-08-14T10:30:00.120000000", "2026-08-14T10:30:00.12"),
+            (
+                "2026-08-14T10:30:00.123456789",
+                "2026-08-14T10:30:00.123456789",
+            ),
+        ] {
+            assert_eq!(
+                parse_provider_datetime(source).unwrap().to_string(),
+                expected
+            );
+        }
+        for invalid in [
+            "2026-08-14T10:30.000",
+            "2026-08-14T10:30:00Z",
+            "2026-08-14T10:30:00.0000000000",
+            "2026-08-14T10:30:00.",
+            "2026-08-14T10:30:00.120000000Z",
+        ] {
+            assert!(parse_provider_datetime(invalid).is_err(), "{invalid}");
+        }
+        assert!(
+            "2026-08-14T10:30:00.120000000"
+                .parse::<CanonicalDateTime>()
+                .is_err()
+        );
     }
 }

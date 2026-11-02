@@ -26,7 +26,7 @@ use type_bridge_contract::query_plan::{
 use type_bridge_contract::query_remote::{RemoteFieldValue, RemoteValue};
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 use type_bridge_contract::sdk_diagnostic::FailureContext;
-use type_bridge_contract::value::ValueTypeTag;
+use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
 use crate::query_v2::{
     ast, failure, given_rows_spec, local_variable, lower_functions, lower_operand,
@@ -497,6 +497,11 @@ pub(crate) fn parse_plan_scalar(
     {
         type_bridge_contract::value::CanonicalString::new_with_limits(text, limits)
             .map(type_bridge_contract::value::CanonicalValue::String)
+    } else if domain == ValueTypeTag::DateTime
+        && let Some(text) = value.as_str()
+        && let Ok(datetime) = type_bridge_schema::parse_provider_datetime(text)
+    {
+        Ok(CanonicalValue::DateTime(datetime))
     } else {
         crate::migration_assertion::parse_provider_value(value, domain)
     }

@@ -92,6 +92,9 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Fixed
 
+- Provider datetime ingress accepts one through nine fractional digits and
+  normalizes insignificant trailing zeros without losing precision. Canonical
+  wire datetime parsing remains strict.
 - Refuse nonliteral IID predicates under negation on the TypeDB 3.12 profile
   before dispatch (`query_plan_negated_given_iid_unsupported`), avoiding a
   provider connection failure. Positive, optional, and literal IID filters
