@@ -90,6 +90,38 @@ fn keyed_relation_put_requires_a_later_mandatory_player_attachment() {
     let bare = QueryPlanV3::new(spec(vec![matched(), seed], vec![1]), &schema()).unwrap_err();
     assert_eq!(bare.code().as_str(), "query_plan_insert_relation_players");
 }
+
+#[test]
+fn relation_insert_seeds_require_a_later_player_attachment() {
+    let seed = Stage::Insert {
+        things: vec![InsertThing {
+            binding: id(1),
+            type_id: relation(),
+            fields: vec![],
+            players: vec![],
+        }],
+    };
+    let attach = Stage::Attach {
+        items: vec![AttachItem::Links {
+            optional: true,
+            relation: id(1),
+            role: role(),
+            player: id(0),
+        }],
+    };
+    QueryPlanV3::new(
+        spec(vec![matched(), seed.clone(), attach], vec![1]),
+        &schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        QueryPlanV3::new(spec(vec![matched(), seed], vec![1]), &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_insert_relation_players"
+    );
+}
 use type_bridge_contract::query_plan::{
     InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryOutput, QueryPattern,
     QueryPlan, ReadStage, ReduceAssignment, Reducer, decode_query_plan,

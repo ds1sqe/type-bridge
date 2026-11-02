@@ -1423,7 +1423,13 @@ fn validate_stages(
                                         if *relation == thing.binding && (!optional || spec.given_rows.as_ref().is_some_and(|rows| !rows.is_empty())))
                                 }))
                             });
-                        if !keyed_seed {
+                        let insert_seed = matches!(stage, Stage::Insert { .. })
+                            && spec.pipeline[stage_index + 1..].iter().any(|stage| {
+                                matches!(stage, Stage::Attach { items } if items.iter().any(|item| {
+                                    matches!(item, AttachItem::Links { relation, .. } if *relation == thing.binding)
+                                }))
+                            });
+                        if !keyed_seed && !insert_seed {
                             return Err(invalid(
                                 "query_plan_insert_relation_players",
                                 "relation insert and put require players, or a keyed put followed by player attachment",
