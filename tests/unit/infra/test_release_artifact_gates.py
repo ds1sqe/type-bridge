@@ -1070,10 +1070,10 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     acceptance = job_block(workflow, "accept-live-artifact-parity")
     build_python = job_block(workflow, "build-python")
     pack_node = job_block(workflow, "pack-node-package")
-    smoke_server = job_block(workflow, "build-v2-smoke-server")
+    smoke_server = job_block(workflow, "build-staged-smoke-server")
 
     assert needs_line(acceptance) == (
-        "    needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]"
+        "    needs: [build-core-wheels, build-python, pack-node-package, build-staged-smoke-server]"
     )
     assert "image: typedb/typedb:3.12.3" in acceptance
     assert 'python-version: "3.13.5"' in acceptance
@@ -1087,7 +1087,7 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
         "node-package",
         "generated-python-live-fixture",
         "generated-node-live-fixture",
-        "v2-smoke-server",
+        "staged-smoke-server",
     ):
         assert f"name: {artifact}" in acceptance
     for variable in (
@@ -1183,7 +1183,7 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
         "--features band9,axum-transport "
         "--example staged_smoke_server"
     ) in " ".join(smoke_server.split())
-    assert "name: v2-smoke-server" in smoke_server
+    assert "name: staged-smoke-server" in smoke_server
     assert "path: type-bridge-core/target/release/examples/staged_smoke_server" in smoke_server
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in smoke_server
     assert "npm publish" not in smoke_server

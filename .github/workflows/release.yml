@@ -1034,11 +1034,11 @@ jobs:
           npm run smoke:packed-package -- --artifact-directory
           "${{ github.workspace }}/tmp/release-node-package"
 
-  # Build the internal V2 smoke executor once from the exact candidate commit.
+  # Build the internal staged smoke executor once from the exact candidate commit.
   # Live artifact consumers use this immutable binary; it is test support, not
   # a release payload and is never published.
-  build-v2-smoke-server:
-    name: Build V2 smoke server
+  build-staged-smoke-server:
+    name: Build staged smoke server
     needs: validate-release-identity
     runs-on: ubuntu-latest
     steps:
@@ -1050,17 +1050,17 @@ jobs:
         with:
           toolchain: 1.94.1
 
-      - name: Build exact V2 smoke server
+      - name: Build exact staged smoke server
         run: >-
           cargo build --manifest-path type-bridge-core/Cargo.toml
           --release -p type-bridge-server --no-default-features
           --features band9,axum-transport
           --example staged_smoke_server
 
-      - name: Upload immutable V2 smoke server
+      - name: Upload immutable staged smoke server
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: v2-smoke-server
+          name: staged-smoke-server
           path: type-bridge-core/target/release/examples/staged_smoke_server
           if-no-files-found: error
 
@@ -1392,7 +1392,7 @@ jobs:
   # happened in producer jobs; this consumer performs no source build or repack.
   accept-live-artifact-parity:
     name: Accept generated live artifact parity
-    needs: [build-core-wheels, build-python, pack-node-package, build-v2-smoke-server]
+    needs: [build-core-wheels, build-python, pack-node-package, build-staged-smoke-server]
     runs-on: ubuntu-latest
     services:
       typedb:
@@ -1456,10 +1456,10 @@ jobs:
           name: generated-node-live-fixture
           path: tmp/release-live-artifacts/generated-node
 
-      - name: Download exact V2 smoke server
+      - name: Download exact staged smoke server
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: v2-smoke-server
+          name: staged-smoke-server
           path: tmp/release-live-artifacts/server
 
       - name: Export exact release candidate paths
