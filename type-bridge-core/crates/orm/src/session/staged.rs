@@ -1621,16 +1621,36 @@ impl Transaction {
     }
     /// Fire queued queries in order and expose their answers after success only.
     pub async fn commit(&mut self) -> Result<(), CommitError> {
+        self.commit_with_deadline(crate::QueryExecutionDeadline::from_timeout(
+            crate::QueryTimeout::NONE,
+        ))
+        .await
+    }
+
+    /// Commit within an already-running call's absolute deadline.
+    ///
+    /// Time spent preparing or staging after that deadline was captured counts
+    /// against the same call. The given deadline can tighten the transaction's
+    /// configured timeout but cannot extend it. A dispatched provider commit
+    /// always runs to its actual outcome.
+    pub async fn commit_with_deadline(
+        &mut self,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<(), CommitError> {
         use tracing::Instrument;
+        let deadline = self.commit_deadline(deadline)?;
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.commit", plans = self.stack.0.len(), nonce = tracing::field::Empty, outcome = tracing::field::Empty);
-        let result = self.commit_inner().instrument(span.clone()).await;
+        let result = self.commit_inner(deadline).instrument(span.clone()).await;
         span.record("outcome", if result.is_ok() { "ok" } else { "error" });
         result
     }
 
-    async fn commit_inner(&mut self) -> Result<(), CommitError> {
+    async fn commit_inner(
+        &mut self,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<(), CommitError> {
         let empty = std::mem::take(&mut self.empty);
-        let result = self.commit_work().await;
+        let result = self.commit_work(deadline).await;
         for (state, answer) in empty {
             *state.lock().unwrap() = match &result {
                 Ok(()) => Ok(answer),
@@ -1640,7 +1660,10 @@ impl Transaction {
         result
     }
 
-    async fn commit_work(&mut self) -> Result<(), CommitError> {
+    async fn commit_work(
+        &mut self,
+        deadline: crate::QueryExecutionDeadline,
+    ) -> Result<(), CommitError> {
         if self.closed {
             return Err(CommitError::lifecycle(PendingError::Closed));
         }
@@ -1684,7 +1707,11 @@ impl Transaction {
         }
         let backend = match &self.backend {
             Backend::Local(backend) => Arc::clone(backend),
-            Backend::Proxy(proxy) => return self.commit_proxy(Arc::clone(proxy), execution).await,
+            Backend::Proxy(proxy) => {
+                return self
+                    .commit_proxy(Arc::clone(proxy), execution, deadline)
+                    .await;
+            }
         };
         let kind = self.options.kind.unwrap_or_else(|| {
             if execution.0.iter().any(Item::writes) {
@@ -1693,22 +1720,9 @@ impl Transaction {
                 TransactionKind::Read
             }
         });
-        let timeout = self.commit_timeout();
         let mut answer_limits = self.options.answer_limits.answer.clone();
         let result = async {
-            answer_limits.deadline = timeout
-                .map(|timeout| {
-                    Instant::now().checked_add(timeout).ok_or_else(|| {
-                        CommitError::lifecycle(PendingError::Failed {
-                            diagnostic: Box::new(SdkExecutionDiagnostic::internal_failure()),
-                            op_index: None,
-                            message: "Transaction deadline exceeds the supported range".into(),
-                            failure: None,
-                            context: Default::default(),
-                        })
-                    })
-                })
-                .transpose()?;
+            answer_limits.deadline = deadline.instant();
             let opened = bounded(&answer_limits, async {
                 backend.open_with_options(&self.database, kind.into(), &self.options).await
             })
@@ -1835,6 +1849,7 @@ impl Transaction {
         &mut self,
         proxy: Arc<ProxyStaging>,
         mut execution: Execution,
+        deadline: crate::QueryExecutionDeadline,
     ) -> Result<(), CommitError> {
         let kind = self.options.kind.unwrap_or_else(|| {
             if execution.0.iter().any(|item| {
@@ -1847,7 +1862,9 @@ impl Transaction {
                 TransactionKind::Read
             }
         });
-        let timeout = self.commit_timeout();
+        let timeout = deadline.instant().map(|instant| {
+            instant.saturating_duration_since(tokio::time::Instant::now().into_std())
+        });
         let mut plans = Vec::new();
         let mut counts = Vec::with_capacity(execution.0.len());
         let mut policy = None;
@@ -1957,6 +1974,18 @@ impl Transaction {
             }
             policy = policy.map(|policy| policy.for_adapter_statements(need));
         }
+        if let Err(diagnostic) = deadline.check(&self.options.answer_limits.answer.cancellation) {
+            let error = CommitError::new(
+                OrmError::ExecutionDiagnostic(Box::new(diagnostic)).into(),
+                None,
+                Default::default(),
+            );
+            execution.fail(error.pending());
+            return Err(error);
+        }
+        let timeout = deadline.instant().map(|instant| {
+            instant.saturating_duration_since(tokio::time::Instant::now().into_std())
+        });
         let timeout = if policy.is_some() {
             let now = tokio::time::Instant::now().into_std();
             let program = execution
@@ -1977,8 +2006,11 @@ impl Transaction {
         } else {
             timeout
         };
-        let deadline_ms =
-            timeout.map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
+        let deadline_ms = timeout.map(|timeout| {
+            u64::try_from(timeout.as_millis())
+                .unwrap_or(u64::MAX)
+                .max(1)
+        });
         let built = proxy
             .request_with_policy(plans, kind, deadline_ms, policy)
             .and_then(|request| request.encode().map(|bytes| (request, bytes)));
@@ -2005,6 +2037,28 @@ impl Transaction {
         )
         .await
     }
+    fn commit_deadline(
+        &self,
+        given: crate::QueryExecutionDeadline,
+    ) -> Result<crate::QueryExecutionDeadline, CommitError> {
+        let Some(timeout) = self.commit_timeout() else {
+            return Ok(given);
+        };
+        let deadline = tokio::time::Instant::now()
+            .into_std()
+            .checked_add(timeout)
+            .ok_or_else(|| {
+                CommitError::lifecycle(PendingError::Failed {
+                    diagnostic: Box::new(SdkExecutionDiagnostic::internal_failure()),
+                    op_index: None,
+                    message: "Transaction deadline exceeds the supported range".into(),
+                    failure: None,
+                    context: Default::default(),
+                })
+            })?;
+        Ok(given.earliest(crate::QueryExecutionDeadline::from_instant(deadline)))
+    }
+
     fn commit_timeout(&self) -> Option<Duration> {
         let timeout = self
             .options
@@ -2692,6 +2746,58 @@ mod tests {
             })
         }
     }
+    #[tokio::test(start_paused = true)]
+    async fn absolute_commit_deadline_counts_time_spent_staging() {
+        let call = crate::QueryExecutionDeadline::from_timeout_milliseconds(10);
+        let (mut transaction, state) =
+            fixture(TransactionOptions::default().with_timeout(crate::QueryTimeout::NONE));
+        let pending = transaction.stage(StagedQuery::new("write", true)).unwrap();
+        tokio::time::advance(Duration::from_millis(11)).await;
+        let error = transaction.commit_with_deadline(call).await.unwrap_err();
+        assert_eq!(
+            error.diagnostic().code().as_str(),
+            "transaction_deadline_exceeded"
+        );
+        assert!(pending.get().is_err());
+        assert!(
+            state.lock().unwrap().events.is_empty(),
+            "expired call must not open or write"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn absolute_commit_deadline_only_tightens_and_none_is_unbounded() {
+        let now = tokio::time::Instant::now().into_std();
+        let (transaction, _) = fixture(
+            TransactionOptions::default().with_timeout(crate::QueryTimeout::from_milliseconds(10)),
+        );
+        let looser = crate::QueryExecutionDeadline::from_timeout_milliseconds(100);
+        assert_eq!(
+            transaction.commit_deadline(looser).unwrap().instant(),
+            Some(now + Duration::from_millis(10))
+        );
+        let tighter = crate::QueryExecutionDeadline::from_timeout_milliseconds(1);
+        assert_eq!(
+            transaction.commit_deadline(tighter).unwrap().instant(),
+            tighter.instant()
+        );
+        let none = crate::QueryExecutionDeadline::from_timeout(crate::QueryTimeout::NONE);
+        assert!(
+            transaction
+                .commit_deadline(none)
+                .unwrap()
+                .instant()
+                .is_some()
+        );
+        let (unbounded, _) =
+            fixture(TransactionOptions::default().with_timeout(crate::QueryTimeout::NONE));
+        assert_eq!(unbounded.commit_deadline(none).unwrap().instant(), None);
+        assert_eq!(
+            unbounded.commit_deadline(tighter).unwrap().instant(),
+            tighter.instant()
+        );
+    }
+
     fn fixture(options: TransactionOptions) -> (Transaction, Arc<Mutex<State>>) {
         let state = Arc::new(Mutex::new(State::default()));
         (

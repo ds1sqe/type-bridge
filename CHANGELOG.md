@@ -62,6 +62,11 @@ All notable changes to TypeBridge will be documented in this file.
   `admission_window_milliseconds` on the client and server (default 60,000 ms);
   the server ceiling wins and even unbounded calls retain finite replay expiry.
 
+### Fixed
+
+- Server call deadlines remain absolute while plans are staged. Preparing a
+  transaction no longer refreshes its remaining execution time before commit.
+
 ### Added
 
 - V3 `DocumentScalar` fetch fields accept bound entities and relations and

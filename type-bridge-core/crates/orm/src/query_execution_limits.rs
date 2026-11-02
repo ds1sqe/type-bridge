@@ -147,9 +147,8 @@ impl QueryExecutionDeadline {
     }
 
     /// Reuse an already established monotonic deadline at an internal seam.
-    #[doc(hidden)]
     #[must_use]
-    pub(crate) const fn from_instant(deadline: Instant) -> Self {
+    pub const fn from_instant(deadline: Instant) -> Self {
         Self {
             deadline: Some(deadline),
         }

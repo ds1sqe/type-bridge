@@ -738,7 +738,14 @@ async fn execute_staged(
     // The transaction checks the deadline before commit; a dispatched commit
     // must run to its actual outcome instead of being dropped by an outer timer.
     transaction
-        .commit()
+        .commit_with_deadline(deadline.map_or_else(
+            || {
+                type_bridge_orm::QueryExecutionDeadline::from_timeout(
+                    type_bridge_orm::QueryTimeout::NONE,
+                )
+            },
+            type_bridge_orm::QueryExecutionDeadline::from_instant,
+        ))
         .await
         .map_err(|error| error.diagnostic())?;
     // Plan answers resolved before the provider commit; only their reply
