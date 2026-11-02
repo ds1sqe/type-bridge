@@ -89,6 +89,19 @@ impl StagedProxyGuard {
 }
 
 impl TypeBridgeProxyConnection {
+    pub(super) fn new(
+        package: Arc<SchemaPackageState>,
+        connection: ProxyQueryConnection,
+        runtime: Arc<tokio::runtime::Runtime>,
+    ) -> Self {
+        Self {
+            expired_policy: crate::policy::ExpiredPolicy::from_limits(connection.answer_limits()),
+            package,
+            connection,
+            runtime,
+        }
+    }
+
     pub(crate) fn check_borrowed_ranges(
         &self,
         preflight: &DirectOutputPreflight,
@@ -582,27 +595,38 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
         if !Arc::ptr_eq(&proxy.package, &terminal.state.package) {
             return return_execution_error(package_mismatch(), out_diagnostics);
         }
-        if matches!(terminal.spec, TerminalSpec::Manager { .. }) {
-            return return_execution_error(manager_remote_unsupported(), out_diagnostics);
-        }
-        let request = match validate_terminal(&terminal.query, &terminal.spec) {
-            Ok(value) => value,
-            Err(error) => return return_execution_error(lower(error), out_diagnostics),
+        let request = match &terminal.spec {
+            TerminalSpec::Manager { .. } => None,
+            _ => match validate_terminal(&terminal.query, &terminal.spec) {
+                Ok(value) => Some(value),
+                Err(error) => return return_execution_error(lower(error), out_diagnostics),
+            },
         };
         let reservation = match ReservedBox::try_new(AllocationSite::QueryResultHandle) {
             Ok(value) => value,
             Err(_) => return return_execution_error(allocation_exhausted(), out_diagnostics),
         };
-        let outcome = catch_unwind(AssertUnwindSafe(|| {
-            proxy.runtime.block_on(execute_validated_on_target(
+        let outcome = catch_unwind(AssertUnwindSafe(|| match &terminal.spec {
+            TerminalSpec::Manager { operation, filter } => {
+                proxy.runtime.block_on(execute_manager_on_target(
+                    terminal,
+                    QueryTarget::Proxy(&proxy.connection),
+                    *operation,
+                    filter,
+                    parsed.resources,
+                    parsed.deadline,
+                    answer.clone(),
+                ))
+            }
+            _ => proxy.runtime.block_on(execute_validated_on_target(
                 QueryTarget::Proxy(&proxy.connection),
                 terminal,
-                request,
+                request.expect("non-manager terminal was validated"),
                 ProjectedQueryOrigin::remote_unbound(),
                 parsed.resources,
                 parsed.deadline,
                 &answer,
-            ))
+            )),
         }));
         let value = match outcome {
             Ok(Ok(value)) => value,

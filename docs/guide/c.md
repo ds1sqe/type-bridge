@@ -179,8 +179,10 @@ query sessions and terminals may close before commit. After commit, its result
 remains readable after the transaction closes; repeated result calls share the
 cached projection. A rollback or failed commit publishes no result.
 
-Generated manager terminals accept direct database and borrowed read targets
-only. Staging one fails with `c_query_manager_staged_unsupported` before I/O.
+Generated manager filter terminals accept direct databases, borrowed read
+contexts and proxy connections through the same execute-call shape. Proxy calls
+send one plan to `/v3/staged` and use the same result accessors. Staging one fails
+with `c_query_manager_staged_unsupported` before I/O.
 C schema packages always require canonical schema authority at admission;
 unlike registry-only managers in other bindings, C has no schema-less package
 mode.

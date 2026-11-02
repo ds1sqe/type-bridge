@@ -4561,7 +4561,7 @@ fn remote_response_limit() -> SdkExecutionDiagnostic {
 fn manager_remote_unsupported() -> SdkExecutionDiagnostic {
     invalid(
         "c_query_manager_terminal_remote_unsupported",
-        "Generated manager terminals support database and borrowed read-transaction execution only",
+        "Generated manager terminals require database, borrowed read or proxy connection execution",
     )
 }
 
@@ -15231,6 +15231,142 @@ mod tests {
         assert_ne!(status, TypeBridgeStatus::Ok);
         assert!(connection.is_null());
         assert!(!code.is_empty());
+    }
+
+    #[test]
+    fn manager_proxy_terminals_use_one_staged_exchange_and_common_readers() {
+        use type_bridge_orm::session::StagedTransport;
+        use type_bridge_orm::{ProxyQueryConnection, QueryTargetError};
+        struct Transport {
+            fixture: RemoteFixture,
+            calls: AtomicUsize,
+        }
+        impl StagedTransport for Transport {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                panic!("staged capabilities are pinned")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                bytes: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.calls.fetch_add(1, Ordering::Relaxed);
+                    let request = remote_envelope(bytes, &self.fixture);
+                    assert_eq!(request.plans().len(), 1);
+                    assert_eq!(
+                        request.kind(),
+                        type_bridge_contract::query_remote_v3::StagedKindV3::Read
+                    );
+                    Ok(remote_terminal_reply(bytes, &self.fixture))
+                })
+            }
+        }
+        let package = ordered_package("querymanagerproxy");
+        let mut fixture = remote_fixture(0x58);
+        fixture.schema = package.state()._authority.declared_schema().clone();
+        let advertisement = fixture.advertisement.clone();
+        let (authority, _) = remote_authority(package.state()).unwrap();
+        let transport = Arc::new(Transport {
+            fixture,
+            calls: 0.into(),
+        });
+        let connection = ProxyQueryConnection::with_exchange(
+            advertisement,
+            authority,
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap()
+        .with_staged_transport(transport.clone());
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let proxy =
+            TypeBridgeProxyConnection::new(Arc::clone(package.state()), connection, runtime);
+        for operation in [
+            ManagerTerminalKind::All,
+            ManagerTerminalKind::First,
+            ManagerTerminalKind::Count,
+            ManagerTerminalKind::Exists,
+        ] {
+            let mut built =
+                unsafe { BuiltQuery::open(&package, TERMINAL_COUNT, ROWS_BOUNDED_MANY) };
+            if matches!(operation, ManagerTerminalKind::First) {
+                unsafe { add_identifier_equality(&package, &mut built, b"Ada") };
+            }
+            let descriptor = manager_terminal_descriptor(&built, operation);
+            unsafe { replace_terminal(&mut built, &descriptor) };
+            let mut result = ptr::null_mut();
+            let mut diagnostics = ptr::null_mut();
+            let status = unsafe {
+                type_bridge_proxy_query_execute_v1(
+                    &proxy,
+                    built.terminal,
+                    descriptor.kind,
+                    ptr::null(),
+                    ptr::null(),
+                    &mut result,
+                    &mut diagnostics,
+                )
+            };
+            assert_eq!(
+                status,
+                TypeBridgeStatus::Ok,
+                "{operation:?}: {}",
+                if diagnostics.is_null() {
+                    String::new()
+                } else {
+                    unsafe { diagnostic_code(diagnostics) }
+                }
+            );
+            assert!(!result.is_null());
+            assert!(diagnostics.is_null());
+            drop(built);
+            match operation {
+                ManagerTerminalKind::All | ManagerTerminalKind::First => {
+                    let mut count = usize::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_row_count(
+                                result,
+                                RESULT_ROWS,
+                                &mut count,
+                                &mut diagnostics,
+                            )
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(count, 0);
+                }
+                ManagerTerminalKind::Count => {
+                    let mut count = u64::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_count(result, &mut count, &mut diagnostics)
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(count, 13);
+                }
+                ManagerTerminalKind::Exists => {
+                    let mut exists = u8::MAX;
+                    assert_eq!(
+                        unsafe {
+                            type_bridge_query_result_exists(result, &mut exists, &mut diagnostics)
+                        },
+                        TypeBridgeStatus::Ok
+                    );
+                    assert_eq!(exists, 1);
+                }
+            }
+            assert_eq!(
+                unsafe { type_bridge_query_result_close(&mut result) },
+                TypeBridgeStatus::Ok
+            );
+        }
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 4);
     }
 
     #[test]
