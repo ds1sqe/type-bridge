@@ -22,10 +22,8 @@ use crate::_descriptor::{EntityDescriptor, RelationDescriptor, RoleDescriptor};
 use crate::_dynamic::{
     DynamicAttributeMap, DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer,
 };
-use crate::_manager::hydration::{
-    coalesce_dynamic_relation_by_iid, extract_count, hydrate_dynamic_entity,
-};
-use crate::_manager::{DynamicEntityManager, DynamicRelationManager, query_builder};
+use crate::_manager::hydration::{coalesce_dynamic_relation_by_iid, hydrate_dynamic_entity};
+use crate::_manager::{DynamicEntityManager, DynamicRelationManager};
 use crate::execution_diagnostic::{lower_commit_error, lower_orm_error};
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::plan_builders::ValueTransport;
@@ -2917,12 +2915,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: &ProjectedCrudInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
-        let query = query_builder::build_dynamic_entity_count_exact(&prepared.descriptor, "$e")
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id))?;
         self.execute_controlled_count(
             transaction,
             &prepared.type_id,
-            &query,
             control,
             controlled_read_input_bytes(&prepared.type_id, None),
         )
@@ -2975,14 +2970,9 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: &ProjectedCrudInvocationControl,
     ) -> Result<u64, SdkExecutionDiagnostic> {
         control.check(&prepared.type_id)?;
-        let query = query_builder::build_dynamic_relation_count_exact(&prepared.descriptor, "$r")
-            .map_err(|error| {
-            orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-        })?;
         self.execute_controlled_count(
             transaction,
             &prepared.type_id,
-            &query,
             control,
             controlled_read_input_bytes(&prepared.type_id, None),
         )
@@ -3035,7 +3025,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 .execute_controlled_read_query(
                     transaction,
                     type_id,
-                    ControlledReadSource::Plan(&query),
+                    &query,
                     ControlledAnswerKind::Documents,
                     control,
                     ledger,
@@ -3083,16 +3073,40 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         type_id: &TypeId,
-        query: &str,
         control: &ProjectedCrudInvocationControl,
         input_bytes: u64,
     ) -> Result<u64, SdkExecutionDiagnostic> {
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let plans = ManagerPlans::new(registry);
+        let program = plans
+            .read(
+                type_id.label().as_str(),
+                true,
+                &[],
+                &[],
+                None,
+                None,
+                &[],
+                ReadTerminal::Count,
+            )
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let plan = &program.plans()[0];
+        let query = await_crud_controlled(
+            transaction.prepare_plan(plan),
+            control.deadline,
+            &control.cancellation,
+        )
+        .await
+        .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Read, type_id))?;
         let mut ledger = ControlledCrudLedger::try_new(control.limits, input_bytes)?;
         let answer = self
             .execute_controlled_read_query(
                 transaction,
                 type_id,
-                ControlledReadSource::Raw(query),
+                &query,
                 ControlledAnswerKind::Rows,
                 control,
                 &mut ledger,
@@ -3105,8 +3119,52 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 type_id,
             ));
         }
-        let count = extract_count(&answer)
+        let answer = TransactionContext::resolve_plan(plan, answer)
             .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
+            answer.to_staged_v3(plan).map_err(|error| {
+                orm_at_type(
+                    crate::plan_builders::manager::diagnostic(error),
+                    SdkProviderOperation::Read,
+                    type_id,
+                )
+            })?
+        else {
+            return Err(integrity_at_type(
+                "provider_count_cardinality_invalid",
+                "The provider count query did not return rows",
+                type_id,
+            ));
+        };
+        let count = match rows.as_slice() {
+            [row] => match row.as_slice() {
+                [
+                    type_bridge_contract::query_remote::RemoteValue::Value {
+                        value: CanonicalValue::Long(count),
+                    },
+                ] => u64::try_from(*count).map_err(|_| {
+                    integrity_at_type(
+                        "provider_count_cardinality_invalid",
+                        "The provider count is outside the count domain",
+                        type_id,
+                    )
+                })?,
+                _ => {
+                    return Err(integrity_at_type(
+                        "provider_count_cardinality_invalid",
+                        "The provider count query did not return one integer",
+                        type_id,
+                    ));
+                }
+            },
+            _ => {
+                return Err(integrity_at_type(
+                    "provider_count_cardinality_invalid",
+                    "The provider count query did not return one row",
+                    type_id,
+                ));
+            }
+        };
         ledger.charge_scalar_bytes(std::mem::size_of::<u64>() as u64)?;
         control.check(type_id)?;
         Ok(count)
@@ -3116,24 +3174,19 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         type_id: &TypeId,
-        query: ControlledReadSource<'_>,
+        query: &crate::session::staged::StagedQuery,
         expected: ControlledAnswerKind,
         control: &ProjectedCrudInvocationControl,
         ledger: &mut ControlledCrudLedger,
     ) -> Result<QueryResult, SdkExecutionDiagnostic> {
         control.check(type_id)?;
-        let (source, given_bytes) = match &query {
-            ControlledReadSource::Raw(source) => (*source, 0),
-            ControlledReadSource::Plan(query) => (
-                query.typeql.as_str(),
-                query
-                    .rows
-                    .as_ref()
-                    .map(crate::projected_batch_executor::given_rows_bytes)
-                    .transpose()?
-                    .unwrap_or(0),
-            ),
-        };
+        let source = query.typeql.as_str();
+        let given_bytes = query
+            .rows
+            .as_ref()
+            .map(crate::projected_batch_executor::given_rows_bytes)
+            .transpose()?
+            .unwrap_or(0);
         ledger.charge_statement(
             u64::try_from(source.len())
                 .unwrap_or(u64::MAX)
@@ -3151,20 +3204,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         };
         let mut collector = ControlledAnswerCollector::new(expected, type_id.label().as_str());
         let mut observed = LocallyBoundedCrudConsumer::new(&mut collector, limits.answer.clone());
-        let future = async {
-            match query {
-                ControlledReadSource::Raw(source) => {
-                    transaction
-                        .query_v2_bounded(source, limits, &mut observed)
-                        .await
-                }
-                ControlledReadSource::Plan(query) => {
-                    transaction
-                        .dispatch_read_plan_bounded(query, limits, &mut observed)
-                        .await
-                }
-            }
-        };
+        let future = transaction.dispatch_read_plan_bounded(query, limits, &mut observed);
         let mut provider = await_crud_controlled(future, control.deadline, &control.cancellation)
             .await
             .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Read, type_id))?;
@@ -4833,11 +4873,6 @@ fn controlled_crud_orm(
         ),
         CrudControlledAwaitError::Inner(error) => orm_at_type(error, operation, type_id),
     }
-}
-
-enum ControlledReadSource<'source> {
-    Raw(&'source str),
-    Plan(&'source crate::session::staged::StagedQuery),
 }
 
 #[derive(Clone, Copy)]
@@ -6816,7 +6851,9 @@ plays:
                 "_type": "person",
                 "attributes": {"identifier": [{"value": "key"}]}
             }))]),
-            ControlledProviderResponse::Items(vec![AnswerItem::Row(json!({"$count": 1}))]),
+            ControlledProviderResponse::Items(vec![AnswerItem::Row(
+                json!({"count1": {"kind": "value", "value": CanonicalValue::Long(1)}}),
+            )]),
         ]);
         let thing = executor
             .get_entity_by_iid_controlled(
@@ -6857,9 +6894,13 @@ plays:
                 "_type": "membership",
                 "attributes": {"identifier": [{"value": "key"}]}
             }))]),
-            ControlledProviderResponse::Items(vec![AnswerItem::Row(json!({"$count": 2}))]),
+            ControlledProviderResponse::Items(vec![AnswerItem::Row(
+                json!({"count1": {"kind": "value", "value": CanonicalValue::Long(2)}}),
+            )]),
             ControlledProviderResponse::Pending(Arc::clone(&entered)),
-            ControlledProviderResponse::Items(vec![AnswerItem::Row(json!({"$count": 1}))]),
+            ControlledProviderResponse::Items(vec![AnswerItem::Row(
+                json!({"count1": {"kind": "value", "value": CanonicalValue::Long(1)}}),
+            )]),
         ]);
         let transaction = database.transaction_context(TxType::Read).await.unwrap();
         let relation = executor
