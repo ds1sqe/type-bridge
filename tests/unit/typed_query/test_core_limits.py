@@ -133,7 +133,9 @@ def test_phase_collection_is_opt_in_and_survives_connection_policy() -> None:
     limits = QueryExecutionResourceLimits(collect_phase_timestamps=True)
     assert limits.collect_phase_timestamps is True
     connection = ProxyConnection.connect(
-        _authority(), _closed_endpoint(), advertisement=_advertisement(PLAN_CAPABILITIES),
+        _authority(),
+        _closed_endpoint(),
+        advertisement=_advertisement(PLAN_CAPABILITIES),
         answer_limits=limits,
     )
     assert connection.answer_limits.collect_phase_timestamps is True
