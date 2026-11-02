@@ -337,6 +337,58 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
     out_connection: *mut *mut TypeBridgeProxyConnection,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: unchanged version-1 options; the default override graph is empty.
+    unsafe {
+        proxy_connection_open_with_query_limits(
+            package,
+            options,
+            ptr::null(),
+            0,
+            cancellation,
+            out_connection,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open a proxy connection with independent named query-limit overrides.
+/// The server advertisement remains a tighten-only ceiling.
+/// # Safety
+/// Parent/options handles and named overrides are readable during the call;
+/// writable output slots cannot overlap any borrowed input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_proxy_connection_open_with_query_limits_v1(
+    package: *const TypeBridgeSchemaPackage,
+    options: *const TypeBridgeProxyConnectionOptionsV1,
+    query_limits: *const TypeBridgeQueryLimitOverrideV1,
+    query_limit_count: usize,
+    cancellation: *const TypeBridgeCancellation,
+    out_connection: *mut *mut TypeBridgeProxyConnection,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: the common constructor fences the complete borrowed graph.
+    unsafe {
+        proxy_connection_open_with_query_limits(
+            package,
+            options,
+            query_limits,
+            query_limit_count,
+            cancellation,
+            out_connection,
+            out_diagnostics,
+        )
+    }
+}
+
+unsafe fn proxy_connection_open_with_query_limits(
+    package: *const TypeBridgeSchemaPackage,
+    options: *const TypeBridgeProxyConnectionOptionsV1,
+    query_limits: *const TypeBridgeQueryLimitOverrideV1,
+    query_limit_count: usize,
+    cancellation: *const TypeBridgeCancellation,
+    out_connection: *mut *mut TypeBridgeProxyConnection,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let preflight = match preflight_outputs(out_connection, out_diagnostics) {
         Ok(value) => value,
         Err(status) => return status,
@@ -348,6 +400,8 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
         unsafe { preflight_handle(&preflight, options) },
         // SAFETY: only complete outer objects are inspected before initialization.
         unsafe { preflight_handle(&preflight, cancellation) },
+        // SAFETY: the override graph is caller-readable and fenced before output initialization.
+        unsafe { check_query_limit_override_ranges(&preflight, query_limits, query_limit_count) },
     ] {
         if let Err(status) = result {
             return status;
@@ -379,6 +433,12 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
         if package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
+        // SAFETY: every named override range passed the output-alias fence.
+        let query_limits = match unsafe { connection_query_limits(query_limits, query_limit_count) }
+        {
+            Ok(limits) => limits,
+            Err(error) => return return_execution_error(error, out_diagnostics),
+        };
         let Some(options) = options else {
             return return_execution_error(
                 options_invalid(
@@ -432,6 +492,15 @@ pub unsafe extern "C" fn type_bridge_proxy_connection_open_v1(
             Ok(Ok(value)) => value,
             Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
             Err(_) => return TypeBridgeStatus::Panic,
+        };
+        let connection = match query_limits {
+            Some(limits) => match connection.with_query_limits(limits) {
+                Ok(connection) => connection,
+                Err(_) => {
+                    unreachable!("connection query limits were validated before provider I/O")
+                }
+            },
+            None => connection,
         };
         let handle = reservation.initialize(TypeBridgeProxyConnection {
             expired_policy,
@@ -550,4 +619,83 @@ pub unsafe extern "C" fn type_bridge_proxy_query_execute_v1(
         unsafe { out_result.write_unaligned(Box::into_raw(result)) };
         TypeBridgeStatus::Ok
     })
+}
+
+#[cfg(test)]
+mod query_policy_tests {
+    use super::*;
+    use type_bridge_contract::capability::CapabilityId;
+    use type_bridge_contract::query_remote::{
+        RemoteCapabilities, RemoteExecutorBinding, RemoteSigningPublicKey,
+    };
+
+    #[test]
+    fn connection_query_limits_intersect_pinned_server_policy_without_io() {
+        let package = crate::entity_crud::tests::package("proxyquerypolicy");
+        let mut capabilities =
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        capabilities.insert(
+            CapabilityId::new(type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3)
+                .unwrap(),
+        );
+        let mut server = QueryLimits::V3;
+        server.structural.bindings = 768;
+        server.structural.boolean_terms = 300;
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("c-proxy-query-policy-tests", "epoch-00000000001").unwrap(),
+            RemoteSigningPublicKey::from_bytes([5; 32]),
+        )
+        .with_query_limits(server)
+        .unwrap()
+        .encode()
+        .unwrap();
+        let mut options = crate::query::tests::proxy_options("http://127.0.0.1:9");
+        options.pinned_advertisement = TypeBridgeByteView {
+            data: advertisement.as_ptr(),
+            length: advertisement.len(),
+        };
+        let overrides = [
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"bindings".as_ptr(),
+                name_length: 8,
+                value: 1024,
+            },
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"boolean_terms".as_ptr(),
+                name_length: 13,
+                value: 512,
+            },
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"input_rows".as_ptr(),
+                name_length: 10,
+                value: 13,
+            },
+        ];
+        let mut connection = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: retained descriptors and independent output slots.
+        let status = unsafe {
+            type_bridge_proxy_connection_open_with_query_limits_v1(
+                &package,
+                &options,
+                overrides.as_ptr(),
+                overrides.len(),
+                ptr::null(),
+                &mut connection,
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(diagnostics.is_null());
+        let limits = unsafe { &*connection }.connection.query_limits();
+        assert_eq!(limits.structural.bindings, 768);
+        assert_eq!(limits.structural.boolean_terms, 300);
+        assert_eq!(limits.structural.input_rows, 13);
+        assert_eq!(limits.structural.selected_slots, 16);
+        assert_eq!(
+            unsafe { type_bridge_proxy_connection_close(&mut connection) },
+            TypeBridgeStatus::Ok
+        );
+    }
 }

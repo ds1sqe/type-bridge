@@ -138,6 +138,18 @@ runs under its own limits constrained by it, and limit values are kept or
 refused, never clamped. Manager terminals run only on a database or a read
 transaction.
 
+Independent connection query limits use
+`type_bridge_database_open_with_query_limits_v2` or
+`type_bridge_proxy_connection_open_with_query_limits_v1`. Pass the existing
+transport configuration plus an array of `type_bridge_query_limit_override_v1_t`
+entries and its count. Names and values follow the shared `QueryLimits` policy:
+for example, `bindings = 1024` and `boolean_terms = 512` raise those dimensions
+independently. The binding default is 256, with a supported ceiling of 65,536.
+The constructor captures the values before provider I/O; override storage may
+be released after it returns. Proxy limits intersect the staged server ceiling.
+The original open functions keep their defaults and existing configuration
+layouts and reserved words retain their meanings.
+
 ABI 1.6 rollback consumes the write transaction and clears its owner slot,
 just like commit and close. Keep-open rollback requires the later ABI 1.7 API.
 

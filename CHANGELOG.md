@@ -18,6 +18,8 @@ All notable changes to TypeBridge will be documented in this file.
   unchanged dimension retains bounded pieces in the same transaction.
   Python and Node connection options and generated direct policies expose
   the same full policy. Proxy ceilings intersect the staged advertisement.
+  C adds direct/proxy open functions taking named query-limit overrides;
+  existing configuration layouts retain their meanings.
 
 - `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans` and
   `EagerTransaction::execute_plans` accept write plans in caller-owned Write

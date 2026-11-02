@@ -2441,6 +2441,16 @@ type_bridge_proxy_connection_open_v1(
     const type_bridge_cancellation_t *cancellation,
     type_bridge_proxy_connection_t **out_connection,
     type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Independent query limits; existing option layouts and reserved words are unchanged. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_proxy_connection_open_with_query_limits_v1(
+    const type_bridge_schema_package_t *package,
+    const type_bridge_proxy_connection_options_v1_t *options,
+    const type_bridge_query_limit_override_v1_t *query_limits,
+    size_t query_limit_count,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_proxy_connection_t **out_connection,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
 TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
 type_bridge_proxy_connection_close(type_bridge_proxy_connection_t **connection);
 /* ABI 1.7: a deferred transaction on the proxy. Open fetches the server's
@@ -3255,6 +3265,17 @@ type_bridge_database_open_v2(
     const type_bridge_runtime_t *runtime,
     const type_bridge_schema_package_t *package,
     const type_bridge_database_config_v2_t *config,
+    const type_bridge_cancellation_t *cancellation,
+    type_bridge_database_t **out_database,
+    type_bridge_execution_diagnostics_t **out_diagnostics);
+/* Independent query limits captured before provider I/O. */
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_database_open_with_query_limits_v2(
+    const type_bridge_runtime_t *runtime,
+    const type_bridge_schema_package_t *package,
+    const type_bridge_database_config_v2_t *config,
+    const type_bridge_query_limit_override_v1_t *query_limits,
+    size_t query_limit_count,
     const type_bridge_cancellation_t *cancellation,
     type_bridge_database_t **out_database,
     type_bridge_execution_diagnostics_t **out_diagnostics);

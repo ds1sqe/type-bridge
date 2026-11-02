@@ -1610,6 +1610,66 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
     out_database: *mut *mut TypeBridgeDatabase,
     out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
 ) -> TypeBridgeStatus {
+    // SAFETY: unchanged version-2 inputs; the default override graph is empty.
+    unsafe {
+        database_open_v2_with_query_limits(
+            runtime,
+            package,
+            config,
+            ptr::null(),
+            0,
+            cancellation,
+            out_database,
+            out_diagnostics,
+        )
+    }
+}
+
+/// Open through the version-2 transport policy with independent query limits.
+/// Existing configuration layouts and reserved words retain their meanings.
+/// # Safety
+/// Parent/configuration handles and named overrides are readable during the call;
+/// output slots are writable and cannot overlap any borrowed input.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn type_bridge_database_open_with_query_limits_v2(
+    runtime: *const TypeBridgeRuntime,
+    package: *const TypeBridgeSchemaPackage,
+    config: *const TypeBridgeDatabaseConfigV2,
+    query_limits: *const crate::query::TypeBridgeQueryLimitOverrideV1,
+    query_limit_count: usize,
+    cancellation: *const TypeBridgeCancellation,
+    out_database: *mut *mut TypeBridgeDatabase,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
+    // SAFETY: the common constructor fences the complete borrowed graph.
+    unsafe {
+        database_open_v2_with_query_limits(
+            runtime,
+            package,
+            config,
+            query_limits,
+            query_limit_count,
+            cancellation,
+            out_database,
+            out_diagnostics,
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the C constructor retains the stable transport layout and appends named overrides"
+)]
+unsafe fn database_open_v2_with_query_limits(
+    runtime: *const TypeBridgeRuntime,
+    package: *const TypeBridgeSchemaPackage,
+    config: *const TypeBridgeDatabaseConfigV2,
+    query_limits: *const crate::query::TypeBridgeQueryLimitOverrideV1,
+    query_limit_count: usize,
+    cancellation: *const TypeBridgeCancellation,
+    out_database: *mut *mut TypeBridgeDatabase,
+    out_diagnostics: *mut *mut TypeBridgeExecutionDiagnostics,
+) -> TypeBridgeStatus {
     let outputs = match direct_output_preflight(&[
         (out_database.cast(), size_of::<*mut TypeBridgeDatabase>()),
         (
@@ -1627,6 +1687,14 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
         // SAFETY: the complete configuration is checked before its nested views.
         unsafe { check_database_config_v2_ranges(&outputs, config) },
         check_preflight_object(&outputs, cancellation),
+        // SAFETY: the override array and names are checked before output initialization.
+        unsafe {
+            crate::query::check_query_limit_override_ranges(
+                &outputs,
+                query_limits,
+                query_limit_count,
+            )
+        },
     ] {
         if let Err(status) = result {
             return status;
@@ -1640,6 +1708,13 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
         if runtime.is_null() || package.is_null() {
             return TypeBridgeStatus::InvalidArgument;
         }
+        // SAFETY: the complete named override graph was fenced before output initialization.
+        let query_limits =
+            match unsafe { crate::query::connection_query_limits(query_limits, query_limit_count) }
+            {
+                Ok(limits) => limits,
+                Err(error) => return return_execution_error(error, out_diagnostics),
+            };
         // Capture the sole absolute connection deadline before trust preparation,
         // credential copying, or provider dispatch.
         // SAFETY: caller retains the configuration and its nested views.
@@ -1700,6 +1775,15 @@ pub(crate) unsafe extern "C" fn type_bridge_database_open_v2_impl(
                     return return_execution_error(diagnostic, out_diagnostics);
                 }
             };
+        let database = match query_limits {
+            Some(limits) => match database.with_query_limits(limits) {
+                Ok(database) => database,
+                Err(_) => {
+                    unreachable!("connection query limits were validated before provider I/O")
+                }
+            },
+            None => database,
+        };
         let Some(server_version) =
             admitted_server_version(database.server_version(), |version| release.admits(version))
         else {
@@ -4156,6 +4240,149 @@ entities:
             unsafe { type_bridge_schema_package_close(&mut package) },
             TypeBridgeStatus::Ok
         );
+    }
+
+    #[test]
+    fn connection_query_limits_validate_before_io_and_are_captured_by_the_database() {
+        use crate::query::TypeBridgeQueryLimitOverrideV1;
+        let state = Arc::new(FakeState::default());
+        state.supports_given_rows.store(true, Ordering::Release);
+        let mut runtime = runtime(Arc::clone(&state), Version::new(3, 13, 6));
+        let mut package = Box::into_raw(Box::new(package("typedb-3.13.6/v1", "querypolicy")));
+        let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
+        let mut overrides = [
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"bindings".as_ptr(),
+                name_length: 8,
+                value: 8,
+            },
+            TypeBridgeQueryLimitOverrideV1 {
+                name: b"boolean_terms".as_ptr(),
+                name_length: 13,
+                value: 512,
+            },
+        ];
+        let mut database = ptr::null_mut();
+        let mut diagnostics = ptr::null_mut();
+        // SAFETY: retained descriptors and independent owned output slots.
+        let status = unsafe {
+            type_bridge_database_open_with_query_limits_v2(
+                runtime,
+                package,
+                &fixture.config,
+                overrides.as_ptr(),
+                overrides.len(),
+                ptr::null(),
+                &mut database,
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+        assert!(database.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(
+            unsafe { diagnostic_code(diagnostics) },
+            "c_query_limits_invalid"
+        );
+        unsafe { close_diagnostics(&mut diagnostics) };
+        overrides[0].value = 1024;
+        let mut storage = vec![0u8; 1 + std::mem::size_of_val(&overrides)];
+        // SAFETY: storage has a complete array range after the one-byte offset.
+        let unaligned = unsafe {
+            storage
+                .as_mut_ptr()
+                .add(1)
+                .cast::<TypeBridgeQueryLimitOverrideV1>()
+        };
+        for (index, value) in overrides.iter().enumerate() {
+            // SAFETY: every destination is writable; descriptors deliberately lack alignment.
+            unsafe { unaligned.add(index).write_unaligned(*value) };
+        }
+        // SAFETY: the retained, deliberately unaligned descriptor graph holds valid limits.
+        let status = unsafe {
+            type_bridge_database_open_with_query_limits_v2(
+                runtime,
+                package,
+                &fixture.config,
+                unaligned,
+                overrides.len(),
+                ptr::null(),
+                &mut database,
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(diagnostics.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
+        let expected = type_bridge_contract::limits::QueryLimits::from_overrides([
+            ("bindings", 1024),
+            ("boolean_terms", 512),
+        ])
+        .unwrap();
+        assert_eq!(
+            unsafe { &*database }.state.database.query_limits(),
+            expected
+        );
+        assert_eq!(
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_runtime_close(&mut runtime, &mut diagnostics) },
+            TypeBridgeStatus::Ok
+        );
+        assert_eq!(
+            unsafe { type_bridge_schema_package_close(&mut package) },
+            TypeBridgeStatus::Ok
+        );
+    }
+
+    #[test]
+    fn connection_query_limit_arrays_and_names_cannot_overlap_outputs() {
+        use crate::query::TypeBridgeQueryLimitOverrideV1;
+        let mut overrides = [TypeBridgeQueryLimitOverrideV1 {
+            name: b"bindings".as_ptr(),
+            name_length: 8,
+            value: 1024,
+        }];
+        let before = overrides[0];
+        let sentinel = ptr::dangling_mut::<TypeBridgeExecutionDiagnostics>();
+        let mut diagnostics = sentinel;
+        // SAFETY: every range is readable/writable; overlap is the rejected condition.
+        let status = unsafe {
+            type_bridge_database_open_with_query_limits_v2(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                overrides.as_ptr(),
+                1,
+                ptr::null(),
+                overrides.as_mut_ptr().cast(),
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+        assert_eq!(overrides[0].name, before.name);
+        assert_eq!(overrides[0].value, before.value);
+        assert_eq!(diagnostics, sentinel);
+        let mut name = *b"bindings";
+        overrides[0].name = name.as_ptr();
+        // SAFETY: writable name storage overlaps the database output and must remain intact.
+        let status = unsafe {
+            type_bridge_database_open_with_query_limits_v2(
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                overrides.as_ptr(),
+                1,
+                ptr::null(),
+                name.as_mut_ptr().cast(),
+                &mut diagnostics,
+            )
+        };
+        assert_eq!(status, TypeBridgeStatus::InvalidArgument);
+        assert_eq!(&name, b"bindings");
+        assert_eq!(diagnostics, sentinel);
     }
 
     #[test]

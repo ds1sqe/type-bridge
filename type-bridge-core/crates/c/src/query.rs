@@ -1153,10 +1153,10 @@ pub(crate) unsafe fn query_limits_from_overrides(
     if overrides.is_null() || count > QueryLimits::FIELDS.len() {
         return None;
     }
-    // SAFETY: the caller guarantees `count` readable entries.
-    let entries = unsafe { std::slice::from_raw_parts(overrides, count) };
     let mut named = Vec::with_capacity(count);
-    for entry in entries {
+    for index in 0..count {
+        // SAFETY: the caller guarantees the array range; descriptors may be unaligned.
+        let entry = unsafe { overrides.add(index).read_unaligned() };
         if entry.name.is_null() {
             return None;
         }
@@ -1169,6 +1169,62 @@ pub(crate) unsafe fn query_limits_from_overrides(
         named.push((name, entry.value));
     }
     QueryLimits::from_overrides(named).ok()
+}
+
+/// Fence named limit overrides before any caller output is initialized.
+/// # Safety
+/// Each nonempty array/name is readable for its declared range.
+pub(crate) unsafe fn check_query_limit_override_ranges(
+    outputs: &DirectOutputPreflight,
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    count: usize,
+) -> Result<(), TypeBridgeStatus> {
+    if count > QueryLimits::FIELDS.len() {
+        return Err(TypeBridgeStatus::InvalidArgument);
+    }
+    let bytes = count
+        .checked_mul(size_of::<TypeBridgeQueryLimitOverrideV1>())
+        .ok_or(TypeBridgeStatus::InvalidArgument)?;
+    if bytes != 0 {
+        if overrides.is_null() {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        outputs.check_bytes(overrides.cast(), bytes)?;
+    }
+    for index in 0..count {
+        // SAFETY: the array was fenced and is caller-readable.
+        let entry = unsafe { overrides.add(index).read_unaligned() };
+        if entry.name.is_null()
+            || entry.name_length > type_bridge_contract::limits::MAX_CANONICAL_STRING_BYTES
+        {
+            return Err(TypeBridgeStatus::InvalidArgument);
+        }
+        outputs.check_bytes(entry.name.cast(), entry.name_length)?;
+    }
+    Ok(())
+}
+
+/// Capture a validated optional connection policy without changing default paths.
+/// # Safety
+/// The named override graph has passed output-alias preflight and is readable.
+pub(crate) unsafe fn connection_query_limits(
+    overrides: *const TypeBridgeQueryLimitOverrideV1,
+    count: usize,
+) -> Result<Option<QueryLimits>, SdkExecutionDiagnostic> {
+    if count == 0 {
+        return Ok(None);
+    }
+    // SAFETY: the caller fenced every borrowed input range.
+    unsafe { query_limits_from_overrides(overrides, count) }
+        .and_then(|limits| limits.validate_v3().ok())
+        .map(Some)
+        .ok_or_else(|| {
+            SdkExecutionDiagnostic::invalid_input(
+                SdkDiagnosticCode::new("c_query_limits_invalid").expect("static code"),
+                SdkDiagnosticMessage::new("Named connection query limits are invalid")
+                    .expect("static message"),
+            )
+        })
 }
 
 /// Close an immutable query-construction session handle.
@@ -15098,7 +15154,7 @@ mod tests {
         }
     }
 
-    fn proxy_options(endpoint: &'static str) -> TypeBridgeProxyConnectionOptionsV1 {
+    pub(super) fn proxy_options(endpoint: &'static str) -> TypeBridgeProxyConnectionOptionsV1 {
         TypeBridgeProxyConnectionOptionsV1 {
             struct_size: size_of::<TypeBridgeProxyConnectionOptionsV1>() as u32,
             version: 1,

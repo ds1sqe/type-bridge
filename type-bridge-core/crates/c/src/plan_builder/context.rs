@@ -39,28 +39,14 @@ impl TypeBridgePlanOptionsV1 {
         &self,
         outputs: &DirectOutputPreflight,
     ) -> Result<(), TypeBridgeStatus> {
-        if self.query_limit_count > QueryLimits::FIELDS.len() {
-            return Err(TypeBridgeStatus::InvalidArgument);
+        // SAFETY: the recording retains the same caller-readable override graph.
+        unsafe {
+            crate::query::check_query_limit_override_ranges(
+                outputs,
+                self.query_limits,
+                self.query_limit_count,
+            )
         }
-        let bytes = self
-            .query_limit_count
-            .checked_mul(size_of::<TypeBridgeQueryLimitOverrideV1>())
-            .ok_or(TypeBridgeStatus::InvalidArgument)?;
-        if bytes != 0 {
-            if self.query_limits.is_null() {
-                return Err(TypeBridgeStatus::InvalidArgument);
-            }
-            outputs.check_bytes(self.query_limits.cast(), bytes)?;
-        }
-        for index in 0..self.query_limit_count {
-            // SAFETY: the override array is fenced and caller-readable.
-            let entry = unsafe { self.query_limits.add(index).read_unaligned() };
-            if entry.name.is_null() || entry.name_length > MAX_CANONICAL_STRING_BYTES {
-                return Err(TypeBridgeStatus::InvalidArgument);
-            }
-            outputs.check_bytes(entry.name.cast(), entry.name_length)?;
-        }
-        Ok(())
     }
 }
 

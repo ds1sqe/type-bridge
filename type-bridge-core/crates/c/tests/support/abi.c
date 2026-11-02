@@ -113,6 +113,18 @@ typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_open_fn)(
     const type_bridge_database_config_v2_t *,
     const type_bridge_cancellation_t *, type_bridge_database_t **,
     type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *database_query_limits_open_fn)(
+    const type_bridge_runtime_t *, const type_bridge_schema_package_t *,
+    const type_bridge_database_config_v2_t *,
+    const type_bridge_query_limit_override_v1_t *, size_t,
+    const type_bridge_cancellation_t *, type_bridge_database_t **,
+    type_bridge_execution_diagnostics_t **);
+typedef type_bridge_status_t (TYPE_BRIDGE_CALL *proxy_query_limits_open_fn)(
+    const type_bridge_schema_package_t *,
+    const type_bridge_proxy_connection_options_v1_t *,
+    const type_bridge_query_limit_override_v1_t *, size_t,
+    const type_bridge_cancellation_t *, type_bridge_proxy_connection_t **,
+    type_bridge_execution_diagnostics_t **);
 typedef type_bridge_status_t (TYPE_BRIDGE_CALL *read_open_fn)(
     const type_bridge_database_t *,
     const type_bridge_query_execution_limits_v1_t *,
@@ -247,6 +259,8 @@ void type_bridge_abi_probe(void) {
   TAKE(schema_chunked_open_fn, type_bridge_schema_package_open_chunked_v2);
   TAKE(config_validate_fn, type_bridge_database_config_validate_v2);
   TAKE(database_open_fn, type_bridge_database_open_v2);
+  TAKE(database_query_limits_open_fn, type_bridge_database_open_with_query_limits_v2);
+  TAKE(proxy_query_limits_open_fn, type_bridge_proxy_connection_open_with_query_limits_v1);
   TAKE(read_open_fn, type_bridge_read_transaction_open_v2);
   TAKE(write_open_fn, type_bridge_write_transaction_open_v2);
   TAKE(write_commit_fn, type_bridge_write_transaction_commit_v2);
