@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 
-use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits, QueryLimitsError};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 
@@ -65,7 +65,42 @@ pub struct ProxyQueryConnection {
     admission_window_milliseconds: std::num::NonZeroU64,
     /// The staged (`/v3/capabilities`) advertisement, pinned or verified
     /// on first use against `advertisement`, then reused.
-    staged_advertisement: Mutex<Option<Arc<[u8]>>>,
+    staged_advertisement: Mutex<Option<StagedAdvertisement>>,
+    requested_query_limits: Option<Arc<QueryLimits>>,
+}
+
+struct StagedAdvertisement {
+    bytes: Arc<[u8]>,
+    advertised_limits: QueryLimits,
+    effective_limits: Option<Arc<QueryLimits>>,
+}
+
+impl StagedAdvertisement {
+    fn new(
+        bytes: Arc<[u8]>,
+        advertised_limits: QueryLimits,
+        requested: Option<&Arc<QueryLimits>>,
+    ) -> Self {
+        let mut value = Self {
+            bytes,
+            advertised_limits,
+            effective_limits: None,
+        };
+        value.apply_policy(requested);
+        value
+    }
+
+    fn apply_policy(&mut self, requested: Option<&Arc<QueryLimits>>) {
+        let effective = requested
+            .map_or(QueryLimits::V3, |limits| **limits)
+            .min(self.advertised_limits);
+        self.effective_limits = (effective != QueryLimits::V3).then(|| {
+            requested
+                .filter(|limits| ***limits == effective)
+                .cloned()
+                .unwrap_or_else(|| Arc::new(effective))
+        });
+    }
 }
 
 impl std::fmt::Debug for ProxyQueryConnection {
@@ -140,7 +175,9 @@ impl ProxyQueryConnection {
             .capabilities()
             .iter()
             .any(|capability| capability.as_str() == "query.plan.v3")
-            .then(|| Arc::clone(&advertisement));
+            .then(|| {
+                StagedAdvertisement::new(Arc::clone(&advertisement), decoded.query_limits(), None)
+            });
         Ok(Self {
             http,
             advertisement,
@@ -151,6 +188,7 @@ impl ProxyQueryConnection {
             )
             .unwrap(),
             staged_advertisement: Mutex::new(staged),
+            requested_query_limits: None,
         })
     }
 
@@ -183,18 +221,56 @@ impl ProxyQueryConnection {
         self,
         staged_advertisement: Vec<u8>,
     ) -> Result<Self, SdkExecutionDiagnostic> {
-        self.check_staged(&staged_advertisement)?;
-        *self.staged_cache() = Some(staged_advertisement.into());
+        let limits = self.check_staged(&staged_advertisement)?;
+        *self.staged_cache() = Some(StagedAdvertisement::new(
+            staged_advertisement.into(),
+            limits,
+            self.requested_query_limits.as_ref(),
+        ));
         Ok(self)
     }
 
     /// The staged advertisement pinned or verified on this connection.
     #[must_use]
     pub fn staged_advertisement(&self) -> Option<Arc<[u8]>> {
-        self.staged_cache().clone()
+        self.staged_cache()
+            .as_ref()
+            .map(|value| Arc::clone(&value.bytes))
     }
 
-    fn staged_cache(&self) -> std::sync::MutexGuard<'_, Option<Arc<[u8]>>> {
+    /// Select each query-limit dimension independently, constrained by the server.
+    ///
+    /// The staged advertisement supplies the receiver ceiling. The default path
+    /// retains no extra allocation; custom policies are shared by manager plans.
+    /// # Errors
+    /// Returns an unsupported limit before any provider I/O.
+    pub fn with_query_limits(mut self, limits: QueryLimits) -> Result<Self, QueryLimitsError> {
+        let limits = limits.validate_v3()?;
+        self.requested_query_limits = (limits != QueryLimits::V3).then(|| Arc::new(limits));
+        if let Some(staged) = self.staged_cache().as_mut() {
+            staged.apply_policy(self.requested_query_limits.as_ref());
+        }
+        Ok(self)
+    }
+
+    /// Query policy intersected with the pinned staged server ceiling.
+    /// Before a staged advertisement is fetched, returns the requested policy.
+    #[must_use]
+    pub fn query_limits(&self) -> QueryLimits {
+        self.shared_query_limits()
+            .as_deref()
+            .copied()
+            .unwrap_or(QueryLimits::V3)
+    }
+
+    pub(crate) fn shared_query_limits(&self) -> Option<Arc<QueryLimits>> {
+        match self.staged_cache().as_ref() {
+            Some(staged) => staged.effective_limits.clone(),
+            None => self.requested_query_limits.clone(),
+        }
+    }
+
+    fn staged_cache(&self) -> std::sync::MutexGuard<'_, Option<StagedAdvertisement>> {
         self.staged_advertisement
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -203,7 +279,7 @@ impl ProxyQueryConnection {
     /// A staged reply is trusted only under the signer and executor this
     /// connection already trusts: a fetched staged advertisement cannot
     /// substitute its own reply key.
-    fn check_staged(&self, staged: &[u8]) -> Result<(), SdkExecutionDiagnostic> {
+    fn check_staged(&self, staged: &[u8]) -> Result<QueryLimits, SdkExecutionDiagnostic> {
         let pinned = RemoteCapabilities::decode(&self.advertisement)
             .map_err(lower_remote_query_diagnostic)?;
         let staged = RemoteCapabilities::decode(staged).map_err(lower_remote_query_diagnostic)?;
@@ -218,7 +294,7 @@ impl ProxyQueryConnection {
                 "the staged advertisement's executor or reply key differs from the connection's",
             )));
         }
-        Ok(())
+        Ok(staged.query_limits())
     }
 
     /// The ceiling every terminal on this connection is constrained by.
@@ -263,9 +339,13 @@ impl ProxyQueryConnection {
         }
         let http = self.http.as_ref().ok_or_else(caller_owned_exchange)?;
         let fetched = http.staged_capabilities(deadline, cancellation).await?;
-        self.check_staged(&fetched)?;
+        let limits = self.check_staged(&fetched)?;
         let fetched: Arc<[u8]> = fetched.into();
-        *self.staged_cache() = Some(Arc::clone(&fetched));
+        *self.staged_cache() = Some(StagedAdvertisement::new(
+            Arc::clone(&fetched),
+            limits,
+            self.requested_query_limits.as_ref(),
+        ));
         Ok(fetched)
     }
 
@@ -284,9 +364,20 @@ impl ProxyQueryConnection {
         exchange: StagedExchangeFn,
         options: TransactionOptions,
     ) -> Result<Transaction, SdkExecutionDiagnostic> {
-        self.check_staged(staged_advertisement)?;
-        self.staged_cache()
-            .get_or_insert_with(|| staged_advertisement.into());
+        let limits = self.check_staged(staged_advertisement)?;
+        {
+            let mut cache = self.staged_cache();
+            if cache
+                .as_ref()
+                .is_none_or(|cached| cached.bytes.as_ref() != staged_advertisement)
+            {
+                *cache = Some(StagedAdvertisement::new(
+                    staged_advertisement.into(),
+                    limits,
+                    self.requested_query_limits.as_ref(),
+                ));
+            }
+        }
         self.staged(None, Some(exchange), staged_advertisement, options)
     }
 
@@ -312,7 +403,13 @@ impl ProxyQueryConnection {
             self.answer_limits,
         )
         .map_err(lower_remote_query_diagnostic)?
-        .with_admission_window_milliseconds(self.admission_window_milliseconds);
+        .with_admission_window_milliseconds(self.admission_window_milliseconds)
+        .with_query_limits(
+            self.requested_query_limits
+                .as_deref()
+                .copied()
+                .unwrap_or(QueryLimits::V3),
+        );
         Ok(Transaction::new_proxy(proxy, options))
     }
 
@@ -513,4 +610,100 @@ fn caller_owned_exchange() -> SdkExecutionDiagnostic {
         )
         .expect("static proxy diagnostic message is valid"),
     )
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use type_bridge_contract::query_remote::{RemoteExecutorBinding, RemoteSigningPublicKey};
+
+    fn advertisement(limits: QueryLimits) -> RemoteCapabilities {
+        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        caps.insert(
+            type_bridge_contract::capability::CapabilityId::new(
+                type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            )
+            .unwrap(),
+        );
+        RemoteCapabilities::new(
+            caps,
+            RemoteExecutorBinding::new("proxy-query-policy", "epoch-00000000001").unwrap(),
+            RemoteSigningPublicKey::from_bytes([7; 32]),
+        )
+        .with_query_limits(limits)
+        .unwrap()
+    }
+
+    fn connection(advertisement: RemoteCapabilities) -> ProxyQueryConnection {
+        let schema = crate::query_plan_exec::race::schema();
+        let authority = QueryAuthority::from_declared_bytes(
+            &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
+            "proxy-policy-tests",
+            "typedb-3.13.6/v1",
+        )
+        .unwrap();
+        ProxyQueryConnection::with_exchange(
+            advertisement.encode().unwrap(),
+            Arc::new(authority),
+            Default::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn proxy_query_policy_intersects_every_dimension_and_shares_custom_values() {
+        let default = connection(advertisement(QueryLimits::V3));
+        assert_eq!(default.query_limits(), QueryLimits::V3);
+        assert!(default.shared_query_limits().is_none());
+        let mut server = QueryLimits::V3;
+        server.structural.bindings = 768;
+        server.structural.boolean_terms = 300;
+        server.structural.predicate_depth = 16;
+        server.codec.max_bytes /= 2;
+        let mut client = QueryLimits::V3;
+        client.structural.bindings = 1024;
+        client.structural.boolean_terms = 512;
+        client.structural.predicate_depth = 32;
+        client.structural.input_rows /= 2;
+        let connection = connection(advertisement(server))
+            .with_query_limits(client)
+            .unwrap();
+        let effective = client.min(server);
+        assert_eq!(connection.query_limits(), effective);
+        for name in QueryLimits::FIELDS {
+            assert_eq!(
+                effective.get(name),
+                Some(client.get(name).unwrap().min(server.get(name).unwrap()))
+            );
+        }
+        let first = connection.shared_query_limits().unwrap();
+        let second = connection.shared_query_limits().unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        let connection = connection.with_query_limits(server).unwrap();
+        assert!(Arc::ptr_eq(
+            connection.requested_query_limits.as_ref().unwrap(),
+            &connection.shared_query_limits().unwrap()
+        ));
+    }
+
+    #[test]
+    fn staged_advertisement_recomputes_policy_and_invalid_values_are_refused() {
+        let mut requested = QueryLimits::V3;
+        requested.structural.bindings = 1024;
+        requested.structural.boolean_terms = 512;
+        let mut server = requested;
+        server.structural.bindings = 512;
+        server.structural.boolean_terms = 300;
+        let connection = connection(advertisement(QueryLimits::V3))
+            .with_query_limits(requested)
+            .unwrap();
+        assert_eq!(connection.query_limits(), QueryLimits::V3);
+        let connection = connection
+            .with_staged_advertisement(advertisement(server).encode().unwrap())
+            .unwrap();
+        assert_eq!(connection.query_limits(), requested.min(server));
+        let mut invalid = requested;
+        invalid.structural.bindings = 0;
+        assert!(connection.with_query_limits(invalid).is_err());
+    }
 }

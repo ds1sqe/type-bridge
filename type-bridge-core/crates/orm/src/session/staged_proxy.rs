@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rand_core::{OsRng, RngCore};
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES;
+use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::query_remote_v3::{
     StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
@@ -40,6 +40,7 @@ pub(crate) struct ProxyStaging {
     declared: DeclaredSchema,
     limits: QueryExecutionResourceLimits,
     admission_window_milliseconds: u64,
+    query_limits: QueryLimits,
 }
 
 impl ProxyStaging {
@@ -66,6 +67,7 @@ impl ProxyStaging {
             limits,
             admission_window_milliseconds:
                 type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            query_limits: QueryLimits::V3,
         })
     }
 
@@ -74,6 +76,11 @@ impl ProxyStaging {
         milliseconds: std::num::NonZeroU64,
     ) -> Self {
         self.admission_window_milliseconds = milliseconds.get();
+        self
+    }
+
+    pub(crate) fn with_query_limits(mut self, limits: QueryLimits) -> Self {
+        self.query_limits = limits.min(self.advertisement.query_limits());
         self
     }
 
@@ -118,7 +125,7 @@ impl ProxyStaging {
         let deadline_ms = crate::QueryTimeout::from_milliseconds(deadline_ms.unwrap_or(0))
             .constrained_by(self.match_limits()?.timeout_milliseconds)
             .milliseconds();
-        StagedRequestV3::new(
+        StagedRequestV3::new_with_limits(
             StagedRequestSpecV3 {
                 nonce,
                 kind: Some(kind),
@@ -154,6 +161,7 @@ impl ProxyStaging {
             },
             &self.declared,
             &self.advertisement,
+            self.query_limits,
         )
     }
 
@@ -277,5 +285,100 @@ mod tests {
             };
             assert_eq!(diagnostic.code().as_str(), "staged_proxy_unsupported");
         }
+    }
+}
+
+#[cfg(test)]
+mod query_policy_tests {
+    use super::*;
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::query_plan::v3::{Expr, PlanBuilder};
+    use type_bridge_contract::query_remote::{RemoteExecutorBinding, RemoteSigningPublicKey};
+    use type_bridge_contract::value::CanonicalValue;
+
+    #[test]
+    fn staged_requests_honor_raised_client_limits_and_tighter_server_limits() {
+        let schema = crate::query_plan_exec::race::schema();
+        let mut raised = QueryLimits::V3;
+        raised.structural.bindings = 1024;
+        raised.structural.boolean_terms = 512;
+        let mut builder = PlanBuilder::with_limits(raised);
+        for index in 0..300 {
+            builder.let_(
+                &format!("value_{index}"),
+                Expr::Operand(QueryOperand::Literal {
+                    value: CanonicalValue::Long(index),
+                }),
+            );
+        }
+        builder.count();
+        let plan = builder
+            .build(
+                &schema,
+                crate::query_plan_exec::race::touch()
+                    .managed_semantics()
+                    .clone(),
+            )
+            .unwrap();
+        let entry = StagedPlanV3::new(&plan, vec![], &schema).unwrap();
+        let mut caps = type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        caps.insert(
+            type_bridge_contract::capability::CapabilityId::new(
+                type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_STAGED_V3,
+            )
+            .unwrap(),
+        );
+        let advertisement = RemoteCapabilities::new(
+            caps,
+            RemoteExecutorBinding::new("staged-policy-tests", "epoch-00000000001").unwrap(),
+            RemoteSigningPublicKey::from_bytes([8; 32]),
+        )
+        .with_query_limits(raised)
+        .unwrap();
+        let make_proxy = |advertisement: &RemoteCapabilities| {
+            ProxyStaging::new(
+                None,
+                Some(Arc::new(|_| {
+                    Box::pin(async { panic!("request preparation cannot exchange") })
+                })),
+                &advertisement.encode().unwrap(),
+                schema.clone(),
+                Default::default(),
+            )
+            .unwrap()
+        };
+        let proxy = make_proxy(&advertisement);
+        assert!(
+            proxy
+                .request_with_policy(
+                    vec![entry.clone()],
+                    super::super::staged::TransactionKind::Read,
+                    None,
+                    None
+                )
+                .is_err()
+        );
+        let request = proxy
+            .with_query_limits(raised)
+            .request_with_policy(
+                vec![entry.clone()],
+                super::super::staged::TransactionKind::Read,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(request.plans()[0].plan().bindings().len(), 300);
+        let tighter = advertisement.with_query_limits(QueryLimits::V3).unwrap();
+        assert!(
+            make_proxy(&tighter)
+                .with_query_limits(raised)
+                .request_with_policy(
+                    vec![entry],
+                    super::super::staged::TransactionKind::Read,
+                    None,
+                    None
+                )
+                .is_err()
+        );
     }
 }
