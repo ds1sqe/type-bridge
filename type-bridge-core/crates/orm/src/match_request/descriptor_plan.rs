@@ -103,12 +103,7 @@ impl MatchRequestAdapterAuthority {
     pub(crate) fn from_query_authority(
         authority: &crate::query_v2_prepared::QueryAuthority,
     ) -> Self {
-        let context = authority.context();
-        Self(Arc::new(InstalledSchemaAuthority::new(
-            authority.declared().clone(),
-            context.resolved_schema().clone(),
-            context.managed_state().clone(),
-        )))
+        Self(authority.adapter_authority())
     }
 
     pub(crate) fn declared(&self) -> &type_bridge_contract::schema::DeclaredSchema {

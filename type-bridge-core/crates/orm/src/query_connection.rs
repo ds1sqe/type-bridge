@@ -67,6 +67,7 @@ pub struct ProxyQueryConnection {
     /// on first use against `advertisement`, then reused.
     staged_advertisement: Mutex<Option<StagedAdvertisement>>,
     requested_query_limits: Option<Arc<QueryLimits>>,
+    execution_identity: crate::session::database::DatabaseExecutionIdentity,
 }
 
 struct StagedAdvertisement {
@@ -170,6 +171,10 @@ impl ProxyQueryConnection {
     ) -> Result<Self, SdkExecutionDiagnostic> {
         let decoded =
             RemoteCapabilities::decode(&advertisement).map_err(lower_remote_query_diagnostic)?;
+        let execution_identity = crate::session::database::DatabaseExecutionIdentity::for_proxy(
+            &decoded,
+            authority.scope_id(),
+        );
         let advertisement: Arc<[u8]> = advertisement.into();
         let staged = decoded
             .capabilities()
@@ -189,6 +194,7 @@ impl ProxyQueryConnection {
             .unwrap(),
             staged_advertisement: Mutex::new(staged),
             requested_query_limits: None,
+            execution_identity,
         })
     }
 
@@ -207,6 +213,12 @@ impl ProxyQueryConnection {
     #[must_use]
     pub const fn admission_window_milliseconds(&self) -> u64 {
         self.admission_window_milliseconds.get()
+    }
+
+    pub(crate) fn execution_identity(
+        &self,
+    ) -> &crate::session::database::DatabaseExecutionIdentity {
+        &self.execution_identity
     }
 
     /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
@@ -633,10 +645,14 @@ mod policy_tests {
     }
 
     fn connection(advertisement: RemoteCapabilities) -> ProxyQueryConnection {
+        connection_in_scope(advertisement, "proxy-policy-tests")
+    }
+
+    fn connection_in_scope(advertisement: RemoteCapabilities, scope: &str) -> ProxyQueryConnection {
         let schema = crate::query_plan_exec::race::schema();
         let authority = QueryAuthority::from_declared_bytes(
             &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
-            "proxy-policy-tests",
+            scope,
             "typedb-3.13.6/v1",
         )
         .unwrap();
@@ -646,6 +662,42 @@ mod policy_tests {
             Default::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn proxy_origins_share_only_the_same_executor_key_epoch_and_scope() {
+        let base = advertisement(QueryLimits::V3);
+        let original = connection(base.clone());
+        let reopened = connection(base.clone());
+        assert_eq!(original.execution_identity(), reopened.execution_identity());
+        let mut limits = QueryLimits::V3;
+        limits.structural.bindings = 1024;
+        let policy_changed = connection(advertisement(limits));
+        assert_eq!(
+            original.execution_identity(),
+            policy_changed.execution_identity()
+        );
+        let scope_changed = connection_in_scope(base.clone(), "another-proxy-scope");
+        assert_ne!(
+            original.execution_identity(),
+            scope_changed.execution_identity()
+        );
+        for (identity, epoch, key) in [
+            ("another-executor", "epoch-00000000001", [7; 32]),
+            ("proxy-query-policy", "epoch-00000000002", [7; 32]),
+            ("proxy-query-policy", "epoch-00000000001", [8; 32]),
+        ] {
+            let changed = connection(RemoteCapabilities::new(
+                base.capabilities().clone(),
+                RemoteExecutorBinding::new(identity, epoch).unwrap(),
+                RemoteSigningPublicKey::from_bytes(key),
+            ));
+            assert_ne!(original.execution_identity(), changed.execution_identity());
+        }
+        assert_eq!(
+            format!("{:?}", original.execution_identity()),
+            "DatabaseExecutionIdentity([REDACTED])"
+        );
     }
 
     #[test]

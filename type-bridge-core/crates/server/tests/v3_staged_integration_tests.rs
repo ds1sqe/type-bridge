@@ -1808,3 +1808,215 @@ async fn explicitly_raised_string_limits_round_trip_large_values_direct_and_stag
     assert_eq!(reply.answers(), [direct.to_staged_v3(&plan).unwrap()]);
     drop_database(db).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live TypeDB (TYPEDB_ADDRESS / TYPEDB_HTTP_PORT)"]
+async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange() {
+    use std::sync::Mutex;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+    use type_bridge_contract::projection::{
+        BindingTarget, ProjectedTokenIdentity, ProjectionConfig, ProjectionHandler,
+    };
+    use type_bridge_contract::query_remote_v3::StagedKindV3;
+    use type_bridge_contract::schema::{DocumentId, OwnsFactId};
+    use type_bridge_orm::query_v2_prepared::QueryAuthority;
+    use type_bridge_orm::{
+        AnswerCancellation, InstalledRuntimeProjection, ProjectedAttributeValue,
+        ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+        ProjectedManagerFilterInvocationControl, ProxyEndpoint, ProxyQueryConnection,
+        QueryExecutionResourceLimits, QueryTarget,
+    };
+    let name = staged_live::live_database::name("manager_filter_proxy");
+    let database = staged_live::connect(&name).await;
+    database.create_database().await.unwrap();
+    database.execute_raw("define attribute filter-key, value string; entity filter-person, owns filter-key @key;", TxType::Schema).await.unwrap();
+    database.execute_raw("insert $a isa filter-person, has filter-key \"alice\"; $b isa filter-person, has filter-key \"bob\";", TxType::Write).await.unwrap();
+    let documents = type_bridge_schema::SchemaDocumentSet::parse([(
+        DocumentId::new("manager-filter-live.yaml").unwrap(),
+        "format: typebridge.schema/v2\nattributes:\n  filter-key: { value: string }\nentities:\n  filter-person:\n    owns:\n      filter-key: { key: true }\n",
+    )]).unwrap();
+    let declared = type_bridge_schema::normalize_documents(&documents).unwrap();
+    let profile =
+        SemanticProfileId::new(semantic_profile_id(&database.server_version().unwrap()).unwrap())
+            .unwrap();
+    let resolved = type_bridge_schema::resolve(&declared, &profile).unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        type_bridge_schema::project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let scope = format!("manager-filter-{name}");
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        type_bridge_contract::managed_scope::ManagedScopeId::new(&scope).unwrap(),
+        profile.clone(),
+        type_bridge_schema::schema_authority_capability_vocabulary(),
+    );
+    let verified = type_bridge_schema::build_schema_authority(
+        &declared,
+        declared.required_capabilities(),
+        &context,
+    )
+    .unwrap();
+    let installed = installed.with_schema_authority(&verified);
+
+    let mut proxy = staged_live::proxy_with(
+        &name,
+        LivePolicy::default(),
+        false,
+        declared.clone(),
+        &scope,
+    )
+    .await;
+    let requests = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+    let captured = Arc::clone(&requests);
+    proxy.router = proxy.router.clone().layer(axum::middleware::from_fn(
+        move |request: Request<Body>, next: axum::middleware::Next| {
+            let captured = Arc::clone(&captured);
+            async move {
+                if request.uri().path() == "/v3/staged" {
+                    let (parts, body) = request.into_parts();
+                    let bytes = body.collect().await.unwrap().to_bytes();
+                    captured.lock().unwrap().push(bytes.to_vec());
+                    next.run(Request::from_parts(parts, Body::from(bytes)))
+                        .await
+                } else {
+                    next.run(request).await
+                }
+            }
+        },
+    ));
+    let port = serve(&proxy).await;
+    let authority = Arc::new(
+        QueryAuthority::from_declared_bytes(
+            &type_bridge_contract::schema::encode_declared_schema(&declared).unwrap(),
+            &scope,
+            profile.as_str(),
+        )
+        .unwrap(),
+    );
+    let policy = QueryExecutionResourceLimits {
+        items: 100,
+        ..QueryExecutionResourceLimits::default()
+    };
+    let connection = ProxyQueryConnection::connect(
+        &ProxyEndpoint::new(format!("http://127.0.0.1:{port}")),
+        Some(proxy.advertisement.encode().unwrap()),
+        authority,
+        policy,
+        policy,
+        &AnswerCancellation::default(),
+    )
+    .await
+    .unwrap();
+    let control =
+        || ProjectedManagerFilterInvocationControl::capture(policy, AnswerCancellation::default());
+    let model = TypeId::new(TypeKind::Entity, "filter-person").unwrap();
+    let all = ProjectedManagerFilter::try_new(&installed, model.clone()).unwrap();
+    let key = OwnsFactId::new(model.clone(), AttributeId::new("filter-key").unwrap()).unwrap();
+    let by_key = |text: &str| {
+        let value = ProjectedAttributeValue::try_new(
+            &installed,
+            TypeId::new(TypeKind::Attribute, "filter-key").unwrap(),
+            CanonicalValue::String(CanonicalString::new(text).unwrap()),
+        )
+        .unwrap();
+        all.try_and(
+            &installed,
+            &ProjectedTokenIdentity::Field {
+                owner: model.clone(),
+                field: key.clone(),
+            },
+            ProjectedManagerComparison::Eq,
+            &value,
+        )
+        .unwrap()
+    };
+    let executor = ProjectedManagerFilterExecutor::new(&installed);
+    let direct = executor
+        .all_with_control(&database, &all, control())
+        .await
+        .unwrap();
+    let remote = executor
+        .all_on_target(QueryTarget::Proxy(&connection), &all, control())
+        .await
+        .unwrap();
+    assert_eq!(direct.len(), 2);
+    assert_eq!(remote.len(), 2);
+    for thing in &remote {
+        let expected = direct
+            .iter()
+            .find(|candidate| candidate.iid() == thing.iid())
+            .unwrap();
+        assert_eq!(thing.fields(), expected.fields());
+        assert!(thing.origin_carrier().is_some());
+    }
+    let direct = executor
+        .first_with_control(&database, &by_key("alice"), control())
+        .await
+        .unwrap()
+        .unwrap();
+    let remote = executor
+        .first_on_target(QueryTarget::Proxy(&connection), &by_key("alice"), control())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(remote.iid(), direct.iid());
+    assert_eq!(remote.fields(), direct.fields());
+    assert_eq!(
+        executor
+            .count_with_control(&database, &all, control())
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        executor
+            .count_on_target(QueryTarget::Proxy(&connection), &all, control())
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(
+        executor
+            .exists_with_control(&database, &all, control())
+            .await
+            .unwrap()
+    );
+    assert!(
+        executor
+            .exists_on_target(QueryTarget::Proxy(&connection), &all, control())
+            .await
+            .unwrap()
+    );
+    assert!(
+        executor
+            .first_on_target(
+                QueryTarget::Proxy(&connection),
+                &by_key("missing"),
+                control()
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    {
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 5);
+        for bytes in captured.iter() {
+            let request = StagedRequestV3::decode(bytes, &declared, &proxy.advertisement).unwrap();
+            assert_eq!(request.kind(), StagedKindV3::Read);
+            assert_eq!(request.plans().len(), 1);
+        }
+    }
+    assert_eq!(proxy.commits.lock().unwrap().len(), 5);
+    drop(connection);
+    drop(proxy);
+    drop_database(database).await;
+}

@@ -120,6 +120,18 @@ pub struct ProjectedQueryOrigin {
 }
 
 impl ProjectedQueryOrigin {
+    /// Bind materialized things to the connection target that authenticated them.
+    #[doc(hidden)]
+    pub fn for_target(target: &crate::QueryTarget<'_>) -> Result<Self, SdkExecutionDiagnostic> {
+        match target {
+            crate::QueryTarget::Database(database) => Ok(Self::for_database(database)),
+            crate::QueryTarget::Transaction(transaction) => Self::for_transaction(transaction),
+            crate::QueryTarget::Proxy(proxy) => Ok(Self {
+                database_identity: Some(proxy.execution_identity().clone()),
+            }),
+        }
+    }
+
     /// Bind materialized things to one direct database.
     #[doc(hidden)]
     #[must_use]

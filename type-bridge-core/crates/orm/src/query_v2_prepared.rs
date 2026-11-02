@@ -10,7 +10,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -106,6 +106,7 @@ pub struct QueryAuthority {
     managed: ManagedSchemaState,
     resolved: ResolvedSchema,
     control_policy: QueryAuthorityControlPolicy,
+    adapter_authority: OnceLock<Arc<crate::_registry::InstalledSchemaAuthority>>,
 }
 
 #[derive(Clone)]
@@ -115,6 +116,20 @@ enum QueryAuthorityControlPolicy {
 }
 
 impl QueryAuthority {
+    pub(crate) fn adapter_authority(&self) -> Arc<crate::_registry::InstalledSchemaAuthority> {
+        Arc::clone(self.adapter_authority.get_or_init(|| {
+            Arc::new(crate::_registry::InstalledSchemaAuthority::new(
+                self.declared.clone(),
+                self.resolved.clone(),
+                self.managed.clone(),
+            ))
+        }))
+    }
+
+    pub(crate) fn scope_id(&self) -> &ManagedScopeId {
+        self.delta_context.scope_id()
+    }
+
     /// The declared schema plans are decoded and validated against.
     #[must_use]
     pub fn declared(&self) -> &DeclaredSchema {
@@ -206,6 +221,7 @@ impl QueryAuthority {
             managed,
             resolved,
             control_policy,
+            adapter_authority: OnceLock::new(),
         })
     }
 
@@ -235,6 +251,7 @@ impl QueryAuthority {
             managed: self.managed.clone(),
             resolved: self.resolved.clone(),
             control_policy: self.control_policy.clone(),
+            adapter_authority: self.adapter_authority.clone(),
         }
     }
 

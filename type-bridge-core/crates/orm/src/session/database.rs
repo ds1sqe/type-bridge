@@ -82,6 +82,28 @@ pub(crate) struct DatabaseExecutionIdentity {
 }
 
 impl DatabaseExecutionIdentity {
+    pub(crate) fn for_proxy(
+        advertisement: &type_bridge_contract::query_remote::RemoteCapabilities,
+        scope: &type_bridge_contract::managed_scope::ManagedScopeId,
+    ) -> Self {
+        let mut digest = Sha256::new();
+        digest.update(b"typebridge.orm.proxy-connection-authority/v1\0");
+        for component in [
+            advertisement.executor().identity(),
+            advertisement.executor().epoch(),
+        ] {
+            digest.update((component.len() as u64).to_be_bytes());
+            digest.update(component.as_bytes());
+        }
+        digest.update(advertisement.reply_key().as_bytes());
+        Self {
+            connection_authority: DatabaseConnectionAuthority(
+                DatabaseConnectionAuthorityKind::Provider(digest.finalize().into()),
+            ),
+            database_name: scope.as_str().to_owned(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn isolated(database_name: impl Into<String>) -> Self {
         Self {
@@ -99,9 +121,9 @@ impl fmt::Debug for DatabaseExecutionIdentity {
 
 /// Opaque authority proving that database handles target one provider endpoint.
 ///
-/// Real connections derive this private token from the TypeDB address only;
+/// Direct connections derive this private token from the TypeDB address only;
 /// credentials, database names, TLS material, and connection options never
-/// contribute. Real handles compare equal only when that address has the exact
+/// contribute. Direct handles compare equal only when that address has the exact
 /// same spelling; DNS and loopback aliases intentionally fail closed. Custom
 /// backends receive an isolated token by default and must explicitly clone one
 /// token across handles that intentionally share a provider authority. The token
