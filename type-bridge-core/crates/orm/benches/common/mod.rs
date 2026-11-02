@@ -378,8 +378,15 @@ pub fn staged_commit() -> StagedCommit {
 impl StagedCommit {
     /// Stage every plan in one transaction and commit; return the answers.
     pub fn run(&self) -> usize {
+        self.run_with_phase_timestamps(false)
+    }
+
+    /// Measure the same commit with optional phase timestamp collection.
+    pub fn run_with_phase_timestamps(&self, collect: bool) -> usize {
         self.runtime.block_on(async {
-            let mut transaction = self.database.transaction(TransactionOptions::default());
+            let mut transaction = self
+                .database
+                .transaction(TransactionOptions::default().with_collect_phase_timestamps(collect));
             let pending = self
                 .plans
                 .iter()
