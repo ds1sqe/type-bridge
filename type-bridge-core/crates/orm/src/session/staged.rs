@@ -1184,6 +1184,9 @@ pub(crate) fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitErr
         && let Ok(typed) = projection.to_query_diagnostic()
     {
         for (name, value) in typed.details() {
+            if remote.details().contains_key(name) {
+                continue;
+            }
             **remote = remote
                 .as_ref()
                 .clone()
@@ -1216,6 +1219,10 @@ fn remote_refusal(code: &str, sdk_category: Option<&str>) -> Option<SdkExecution
         }
         Some("resource_limit") => SdkExecutionDiagnostic::resource_limit(code, message),
         Some("integrity") => SdkExecutionDiagnostic::integrity(code, message),
+        Some("cancelled") => SdkExecutionDiagnostic::query_failure(
+            type_bridge_contract::sdk_diagnostic::SdkQueryDiagnosticCategory::Cancelled,
+            code,
+        ),
         _ => SdkExecutionDiagnostic::transaction_failure(code, message),
     })
 }
@@ -2345,6 +2352,20 @@ mod tests {
         let json = serde_json::to_value(mapped.host_json()).unwrap();
         assert_eq!(json["details"]["execution_phase"]["value"], "accepted");
         assert_eq!(json["details"]["elapsed_milliseconds"]["value"], "7");
+    }
+
+    #[test]
+    fn proxy_cancellation_keeps_its_typed_category_and_code() {
+        use type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory;
+        let projection = signed(&SdkExecutionDiagnostic::data_operation_cancelled());
+        let commit = proxy_failure(&projection);
+        for diagnostic in [
+            commit.diagnostic(),
+            commit.pending().diagnostic().unwrap().clone(),
+        ] {
+            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Cancelled);
+            assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
+        }
     }
 
     #[test]

@@ -70,6 +70,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Fixed
 
+- Signed staged proxy cancellations retain their `cancelled` category and
+  original diagnostic code when surfaced to callers and pending answers.
 - Server call deadlines remain absolute while plans are staged. Preparing a
   transaction no longer refreshes its remaining execution time before commit.
 
