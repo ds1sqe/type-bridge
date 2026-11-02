@@ -18,6 +18,10 @@ mod entity_codec;
 mod entity_manager;
 pub mod error;
 /// Value-only provider failure vocabulary used by Error::failure.
+/// Diagnostic-only phase timestamps on one execution clock.
+pub use type_bridge_contract::execution_timeline::{
+    ExecutionPhase, ExecutionPhaseStamp, ExecutionTimeline,
+};
 pub use type_bridge_contract::failure;
 pub mod hooks;
 pub mod migration;

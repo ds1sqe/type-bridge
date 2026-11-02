@@ -2517,6 +2517,36 @@ mod tests {
     fn assert_send_sync<T: Send + Sync>() {}
 
     #[test]
+    fn execution_timeline_detail_is_preserved() {
+        let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+            serde_json::from_value(serde_json::json!({
+                "anchor_unix_milliseconds": 1000,
+                "stamps": [
+                    {"phase": "fired", "offset_milliseconds": 0},
+                    {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+                ]
+            }))
+            .unwrap();
+        let diagnostic = type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline").unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(timeline.clone()),
+            ).unwrap();
+        Python::initialize();
+        let expected = serde_json::to_value(diagnostic.host_json()).unwrap();
+        let error =
+            crate::orm_runtime::py_orm_error(OrmError::ExecutionDiagnostic(Box::new(diagnostic)));
+        Python::attach(|py| {
+            let details: serde_json::Value =
+                pythonize::depythonize(&error.value(py).getattr("details").unwrap()).unwrap();
+            assert_eq!(
+                details["execution_timeline"],
+                expected["details"]["execution_timeline"]
+            );
+        });
+    }
+
+    #[test]
     fn opaque_wrappers_are_narrow_and_thread_safe() {
         assert_eq!(
             size_of::<PyMatchBindingHandle>(),

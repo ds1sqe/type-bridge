@@ -1580,3 +1580,110 @@ fn admission_window_is_configurable_and_server_ceiling_wins() {
         17
     );
 }
+
+#[test]
+fn execution_timeline_is_diagnostic_only_and_round_trips() {
+    let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+        serde_json::from_value(serde_json::json!({
+            "anchor_unix_milliseconds": 1000,
+            "stamps": [
+                {"phase": "fired", "offset_milliseconds": 0},
+                {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+            ]
+        }))
+        .unwrap();
+    let diagnostic =
+        type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline")
+                    .unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(
+                    timeline.clone(),
+                ),
+            )
+            .unwrap();
+    let request = request();
+    let reply =
+        StagedReplyV3::new(&request, StagedOutcomeV3::Failed { diagnostic }, vec![]).unwrap();
+    let payload: Value = serde_json::from_slice(&reply.encode_payload().unwrap()).unwrap();
+    assert_eq!(payload["answers"], json!([]));
+    let keys = Keys::new();
+    let ad = advertisement();
+    let bytes = reply.encode_signed(&request, &ad, &keys).unwrap();
+    let decoded =
+        VerifiedStagedReplyV3::decode(&bytes, &request, &ad, keys.public_key(), &keys).unwrap();
+    assert_eq!(
+        decoded.encode_payload().unwrap(),
+        reply.encode_payload().unwrap()
+    );
+    let reconstructed = decoded.diagnostic().unwrap().to_query_diagnostic().unwrap();
+    assert_eq!(
+        serde_json::to_value(reconstructed.host_json()).unwrap()["details"]["execution_timeline"]["value"],
+        serde_json::to_value(timeline).unwrap()
+    );
+}
+
+#[test]
+fn maximum_execution_timeline_passes_signed_reply_admission() {
+    use type_bridge_contract::execution_timeline::{
+        ExecutionPhase, ExecutionPhaseStamp, ExecutionTimeline,
+    };
+    let maximum = type_bridge_contract::limits::MAX_STAGED_STATEMENTS_V3;
+    let request = mutate_request(|value| {
+        value["limits"]["max_read_statements"] = json!(maximum);
+        value["limits"]["max_write_statements"] = json!(maximum);
+    })
+    .unwrap();
+    let mut stamps = vec![];
+    for (offset, phase) in [
+        ExecutionPhase::Fired,
+        ExecutionPhase::Accepted,
+        ExecutionPhase::ExecutionStarted,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        stamps.push(ExecutionPhaseStamp {
+            phase,
+            offset_milliseconds: offset as u64,
+            statement_index: None,
+            failing_phase: None,
+        });
+    }
+    for index in 0..maximum * 2 {
+        stamps.push(ExecutionPhaseStamp {
+            phase: ExecutionPhase::DbWrite,
+            offset_milliseconds: 3 + u64::from(index),
+            statement_index: Some(index),
+            failing_phase: None,
+        });
+    }
+    stamps.push(ExecutionPhaseStamp {
+        phase: ExecutionPhase::Failed,
+        offset_milliseconds: 3 + u64::from(maximum * 2),
+        statement_index: None,
+        failing_phase: Some(ExecutionPhase::DbWrite),
+    });
+    let timeline = ExecutionTimeline::new(1000, stamps).unwrap();
+    let diagnostic = SdkExecutionDiagnostic::internal_failure()
+        .try_with_detail(
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline")
+                .unwrap(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(
+                timeline,
+            ),
+        )
+        .unwrap();
+    let reply =
+        StagedReplyV3::new(&request, StagedOutcomeV3::Failed { diagnostic }, vec![]).unwrap();
+    let keys = Keys::new();
+    let ad = advertisement();
+    let bytes = reply.encode_signed(&request, &ad, &keys).unwrap();
+    assert!(bytes.len() > type_bridge_contract::limits::MAX_DIAGNOSTIC_BYTES);
+    let decoded =
+        VerifiedStagedReplyV3::decode(&bytes, &request, &ad, keys.public_key(), &keys).unwrap();
+    assert_eq!(
+        decoded.encode_payload().unwrap(),
+        reply.encode_payload().unwrap()
+    );
+}

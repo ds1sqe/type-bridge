@@ -967,6 +967,9 @@ impl SdkDiagnosticProjectionV3 {
             let (kind, value) = tagged(detail)?;
             let value = value.ok_or_else(bad_diagnostic)?;
             let detail = match kind {
+                "execution_timeline" => SdkDiagnosticDetailValue::ExecutionTimeline(
+                    serde_json::from_value(value.clone()).map_err(|_| bad_diagnostic())?,
+                ),
                 "boolean" => {
                     SdkDiagnosticDetailValue::Boolean(value.as_bool().ok_or_else(bad_diagnostic)?)
                 }
@@ -1102,10 +1105,16 @@ impl SdkDiagnosticProjectionV3 {
         for (key, value) in &self.details {
             SdkDiagnosticName::new(key.clone()).map_err(|_| bad_diagnostic())?;
             validate_sdk_detail(value)?;
+            if tagged(value)?.0 == "execution_timeline" && key != "execution_timeline" {
+                return Err(bad_diagnostic());
+            }
         }
-        if to_canonical_json_with_limits(self, STAGED_REMOTE_CODEC_LIMITS_V3)?.len()
-            > crate::limits::MAX_DIAGNOSTIC_BYTES
-        {
+        let bytes = to_canonical_json_with_limits(self, STAGED_REMOTE_CODEC_LIMITS_V3)?;
+        preflight_diagnostic(
+            &bytes,
+            crate::limits::MAX_STAGED_STATEMENTS_V3.saturating_mul(2),
+        )?;
+        if bytes.len() > MAX_REMOTE_ENVELOPE_BYTES {
             return Err(limit(
                 "query_remote_v3_diagnostic_limit",
                 "SDK diagnostic exceeds its byte ceiling",
@@ -1206,6 +1215,9 @@ fn validate_sdk_detail(value: &serde_json::Value) -> Result<(), Diagnostic> {
     let (kind, payload) = tagged(value)?;
     let payload = payload.ok_or_else(bad_diagnostic)?;
     let valid = match kind {
+        "execution_timeline" => {
+            typed_identity::<crate::execution_timeline::ExecutionTimeline>(payload)
+        }
         "boolean" => payload.is_boolean(),
         "count" | "byte_count" => payload
             .as_str()
@@ -1413,6 +1425,27 @@ fn validate_reply(
     validate_reply_binding(&wire.format, &wire.nonce, &wire.request, request)?;
     if let OutcomeWire::Failed { diagnostic } = &wire.outcome {
         diagnostic.validate()?;
+        for detail in diagnostic.details.values() {
+            let (kind, value) = tagged(detail)?;
+            if kind == "execution_timeline" {
+                let timeline: crate::execution_timeline::ExecutionTimeline =
+                    serde_json::from_value(value.ok_or_else(bad_diagnostic)?.clone())
+                        .map_err(|_| bad_diagnostic())?;
+                timeline
+                    .validate(
+                        request
+                            .limits()
+                            .max_read_statements
+                            .saturating_add(request.limits().max_write_statements),
+                    )
+                    .map_err(|_| {
+                        limit(
+                            "query_remote_v3_execution_timeline_limit",
+                            "Execution timeline exceeds the request statement bound",
+                        )
+                    })?;
+            }
+        }
         return if wire.answers.is_empty() {
             Ok(vec![])
         } else {
@@ -1848,17 +1881,121 @@ fn preflight_reply_payload(
                     "staged failed reply is missing its diagnostic",
                 )
             })?;
-            if diagnostic.get().len() > crate::limits::MAX_DIAGNOSTIC_BYTES {
-                return Err(limit(
-                    "query_remote_v3_diagnostic_limit",
-                    "SDK diagnostic exceeds its byte ceiling",
-                ));
-            }
-            Ok(())
+            preflight_diagnostic(
+                diagnostic.get().as_bytes(),
+                request
+                    .limits()
+                    .max_read_statements
+                    .saturating_add(request.limits().max_write_statements),
+            )
         }
         _ => Err(invalid(
             "query_remote_v3_reply_shape",
             "staged reply has an unsupported outcome",
         )),
+    }
+}
+
+// Only the named timeline detail may exceed the ordinary diagnostic ceiling.
+// Borrowed framing and a streaming record visitor precede owned DTO decoding.
+fn preflight_diagnostic(bytes: &[u8], statement_limit: u32) -> Result<(), Diagnostic> {
+    #[derive(Deserialize)]
+    struct Details<'a> {
+        #[serde(borrow)]
+        execution_timeline: Option<&'a serde_json::value::RawValue>,
+    }
+    #[derive(Deserialize)]
+    struct Peek<'a> {
+        #[serde(borrow)]
+        details: Details<'a>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Timeline<'a> {
+        #[serde(borrow)]
+        kind: &'a str,
+        #[serde(borrow)]
+        value: &'a serde_json::value::RawValue,
+    }
+    let peek: Peek<'_> = serde_json::from_slice(bytes).map_err(|_| {
+        if bytes.len() > crate::limits::MAX_DIAGNOSTIC_BYTES {
+            limit(
+                "query_remote_v3_diagnostic_limit",
+                "SDK diagnostic exceeds its byte ceiling",
+            )
+        } else {
+            bad_diagnostic()
+        }
+    })?;
+    let mut ordinary_bytes = bytes.len();
+    if let Some(raw) = peek.details.execution_timeline {
+        let timeline: Timeline<'_> =
+            serde_json::from_str(raw.get()).map_err(|_| bad_diagnostic())?;
+        if timeline.kind != "execution_timeline" {
+            return Err(bad_diagnostic());
+        }
+        crate::execution_timeline::preflight_json(timeline.value.get(), statement_limit)?;
+        ordinary_bytes -= raw.get().len();
+    }
+    if ordinary_bytes > crate::limits::MAX_DIAGNOSTIC_BYTES {
+        return Err(limit(
+            "query_remote_v3_diagnostic_limit",
+            "SDK diagnostic exceeds its byte ceiling",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod execution_timeline_preflight_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn diagnostic(statements: u32) -> serde_json::Value {
+        let mut stamps = vec![
+            json!({"phase": "fired", "offset_milliseconds": 0}),
+            json!({"phase": "accepted", "offset_milliseconds": 1}),
+            json!({"phase": "execution_started", "offset_milliseconds": 2}),
+        ];
+        stamps.extend((0..statements).map(|index| json!({"phase": "db_write", "offset_milliseconds": 3 + u64::from(index), "statement_index": index})));
+        stamps.push(json!({"phase": "failed", "offset_milliseconds": 3 + u64::from(statements), "failing_phase": "db_write"}));
+        json!({"details": {"execution_timeline": {"kind": "execution_timeline", "value": {"anchor_unix_milliseconds": 1000, "stamps": stamps}}}})
+    }
+
+    #[test]
+    fn execution_timeline_streaming_preflight_preserves_ordinary_ceiling() {
+        let maximum = MAX_STAGED_STATEMENTS_V3 * 2;
+        let value = diagnostic(maximum);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(bytes.len() > crate::limits::MAX_DIAGNOSTIC_BYTES);
+        preflight_diagnostic(&bytes, maximum).unwrap();
+        let over = serde_json::to_vec(&diagnostic(maximum + 1)).unwrap();
+        assert_eq!(
+            preflight_diagnostic(&over, maximum)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_remote_v3_execution_timeline_limit"
+        );
+        let mut malformed = value.clone();
+        malformed["details"]["execution_timeline"]["value"]["stamps"][3]["statement_index"] =
+            json!(1);
+        assert_eq!(
+            preflight_diagnostic(&serde_json::to_vec(&malformed).unwrap(), maximum)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_remote_v3_execution_timeline"
+        );
+        let mut ordinary = value;
+        ordinary["details"]["ordinary"] =
+            json!({"kind": "text", "value": "x".repeat(crate::limits::MAX_DIAGNOSTIC_BYTES)});
+        assert_eq!(
+            preflight_diagnostic(&serde_json::to_vec(&ordinary).unwrap(), maximum)
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_remote_v3_diagnostic_limit"
+        );
     }
 }

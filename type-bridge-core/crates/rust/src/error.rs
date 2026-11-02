@@ -96,6 +96,8 @@ pub enum ModelValidationPhase {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorDetail {
+    /// One process clock and ordered execution phase timestamps.
+    ExecutionTimeline(type_bridge_contract::execution_timeline::ExecutionTimeline),
     /// Textual context.
     Text(String),
     /// A signed integer.
@@ -1229,6 +1231,9 @@ fn append_generated_path_segment(path: &mut Vec<ErrorPathSegment>, segment: &str
 
 fn flatten_sdk_detail(value: &SdkDiagnosticDetailValue) -> ErrorDetail {
     match value {
+        SdkDiagnosticDetailValue::ExecutionTimeline(value) => {
+            ErrorDetail::ExecutionTimeline(value.clone())
+        }
         SdkDiagnosticDetailValue::Boolean(value) => ErrorDetail::Boolean(*value),
         SdkDiagnosticDetailValue::Count(value) | SdkDiagnosticDetailValue::ByteCount(value) => {
             i64::try_from(*value)
@@ -1315,6 +1320,29 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_timeline_detail_is_preserved() {
+        let timeline: type_bridge_contract::execution_timeline::ExecutionTimeline =
+            serde_json::from_value(serde_json::json!({
+                "anchor_unix_milliseconds": 1000,
+                "stamps": [
+                    {"phase": "fired", "offset_milliseconds": 0},
+                    {"phase": "failed", "offset_milliseconds": 5, "failing_phase": "fired"}
+                ]
+            }))
+            .unwrap();
+        let diagnostic = type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()
+            .try_with_detail(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("execution_timeline").unwrap(),
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticDetailValue::ExecutionTimeline(timeline.clone()),
+            ).unwrap();
+        let error = Error::from_sdk_execution(diagnostic, ModelValidationPhase::Input);
+        assert_eq!(
+            error.details().unwrap().get("execution_timeline"),
+            Some(&ErrorDetail::ExecutionTimeline(timeline))
+        );
+    }
 
     #[test]
     fn orm_execution_diagnostic_keeps_commit_category_details_and_owned_message() {

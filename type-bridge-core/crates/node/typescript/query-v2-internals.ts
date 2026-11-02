@@ -261,8 +261,23 @@ export type QueryV2ErrorPathSegment =
     }>
   | Readonly<{ kind: "output_name"; value: string }>;
 
+/** Named execution boundary, recorded on one process clock. */
+export type ExecutionPhase = "fired" | "accepted" | "execution_started" | "db_write" | "before_commit" | "committed" | "failed";
+
+/** Diagnostic-only timestamps; server and client anchors remain separate. */
+export interface ExecutionTimeline {
+  readonly anchor_unix_milliseconds: number;
+  readonly stamps: readonly Readonly<{
+    phase: ExecutionPhase;
+    offset_milliseconds: number;
+    statement_index?: number;
+    failing_phase?: ExecutionPhase;
+  }>[];
+}
+
 /** One deterministic structured V2 diagnostic detail. */
 export type QueryV2ErrorDetail =
+  | Readonly<{ kind: "execution_timeline"; value: ExecutionTimeline }>
   | Readonly<{
       kind:
         | "text"

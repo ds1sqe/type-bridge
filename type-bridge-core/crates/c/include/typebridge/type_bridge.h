@@ -872,8 +872,36 @@ typedef int32_t type_bridge_execution_diagnostic_detail_kind_t;
   ((type_bridge_execution_diagnostic_detail_kind_t)13)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_TEXT_LIST                      \
   ((type_bridge_execution_diagnostic_detail_kind_t)14)
+#define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_EXECUTION_TIMELINE ((type_bridge_execution_diagnostic_detail_kind_t)15)
 #define TYPE_BRIDGE_EXECUTION_DIAGNOSTIC_DETAIL_UNKNOWN                        \
   ((type_bridge_execution_diagnostic_detail_kind_t)255)
+
+/* Read-only diagnostic timeline. Phase text remains valid until diagnostics closes. */
+typedef struct type_bridge_execution_timeline_view_v1 {
+  uint32_t struct_size;
+  uint32_t reserved0;
+  uint64_t anchor_unix_milliseconds;
+  size_t stamp_count;
+} type_bridge_execution_timeline_view_v1_t;
+typedef struct type_bridge_execution_phase_view_v1 {
+  uint32_t struct_size;
+  uint32_t has_statement_index;
+  uint64_t offset_milliseconds;
+  uint32_t statement_index;
+  uint32_t reserved0;
+  type_bridge_byte_view_t phase;
+  type_bridge_byte_view_t failing_phase;
+} type_bridge_execution_phase_view_v1_t;
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_execution_diagnostics_timeline_get_v1(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    size_t diagnostic_index, size_t detail_index,
+    type_bridge_execution_timeline_view_v1_t *out_value);
+TYPE_BRIDGE_API type_bridge_status_t TYPE_BRIDGE_CALL
+type_bridge_execution_diagnostics_phase_get_v1(
+    const type_bridge_execution_diagnostics_t *diagnostics,
+    size_t diagnostic_index, size_t detail_index, size_t stamp_index,
+    type_bridge_execution_phase_view_v1_t *out_value);
 
 typedef struct type_bridge_execution_diagnostic_view_v1 {
   uint32_t struct_size;
