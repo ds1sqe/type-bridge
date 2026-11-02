@@ -4,7 +4,7 @@ import type {
 } from "./native.js";
 import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
 import { ownedByteSnapshot } from "./owned-bytes.js";
-import { decodePlan, nativePlan, type Plan } from "./plan.js";
+import { decodePlan, nativePlan, type Plan, type StagedPlan } from "./plan.js";
 import { queryV2NativeCall, queryV2NativePromise } from "./query-v2-internals.js";
 
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
@@ -100,6 +100,11 @@ export class StagedTransaction {
   stage<R>(plan: Plan<R>): PendingPlanAnswer<R> {
     const native = nativePlan(plan);
     return new PendingPlanAnswer(queryV2NativeCall(() => this.#native.stage(native)), (answer, projection) => decodePlan(plan, answer, projection));
+  }
+
+  /** Queue a complete invocation stack with block-local IID references. */
+  stageStack(plans: readonly StagedPlan[]): PendingPlanAnswer[] {
+    return queryV2NativeCall(() => this.#native.stageStack(plans.map(plan => plan.nativeHandle()))).map(pending => new PendingPlanAnswer(pending));
   }
 
   /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */

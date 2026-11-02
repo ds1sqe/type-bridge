@@ -32,6 +32,7 @@ import type { AttributeValue, QueryV2Authority } from "./index.js";
 import { loadNative } from "./native.js";
 import type {
   NativePlan,
+  NativeStagedPlan,
   NativePlanBuilder,
   NativePlanOperand,
 } from "./native.js";
@@ -421,6 +422,23 @@ function literalParts(value: PlanLiteral, valueType?: PlanValueType): [string, u
   }
 }
 
+/** One template column reads an earlier selected thing IID. */
+export interface StagedResultRef {
+  readonly input: PlanInput<string>;
+  readonly sourcePlan: number;
+  readonly sourceColumn: number;
+  readonly expectedTypes: readonly PlanModelToken[];
+}
+
+/** An authored invocation template for StagedTransaction.stageStack. */
+export class StagedPlan {
+  readonly #native: NativeStagedPlan;
+  /** @internal */
+  constructor(native: NativeStagedPlan) { this.#native = native; Object.freeze(this); }
+  /** @internal */
+  nativeHandle(): NativeStagedPlan { return this.#native; }
+}
+
 /**
  * Builds one {@link Plan}. See the {@link "plan" | module documentation} for
  * the rules.
@@ -504,6 +522,11 @@ export class PlanBuilder {
 
   /** @internal Generated IID lookup. */
   byIid(thing: PlanThing, iid: string): void { this.#native.byIid(this.#index(thing), iid); }
+  /** Restrict a matched thing to an invocation IID column. */
+  byIidInput(thing: PlanThing, column: PlanInput<string>): this {
+    this.#native.byIidInput(this.#index(thing), this.#index(column));
+    return this;
+  }
 
   /** @internal Add a player without replacing existing role players. */
   link(relation: PlanThing, role: PlanRoleToken, player: PlanThing): void {
@@ -525,11 +548,15 @@ export class PlanBuilder {
   }
 
   /** Declare an input column named `name`; each {@link row} supplies a value. */
+  input(name: string, valueType: "string"): PlanInput<string>;
+  input(name: string, valueType: PlanValueType): PlanInput;
   input(name: string, valueType: PlanValueType): PlanInput {
     return this.#input(name, valueType, false);
   }
 
   /** Declare an optional input column; rows may give it {@link PlanInput.absent}. */
+  optionalInput(name: string, valueType: "string"): PlanInput<string>;
+  optionalInput(name: string, valueType: PlanValueType): PlanInput;
   optionalInput(name: string, valueType: PlanValueType): PlanInput {
     return this.#input(name, valueType, true);
   }
@@ -680,6 +707,21 @@ export class PlanBuilder {
     planBindings.set(plan, { builder: this, authority, encode: undefined });
     return plan;
   }
+  /** Finalize templates with absent reference cells for stageStack. */
+  buildStaged(authority: QueryV2Authority, rows: readonly (readonly PlanInputValue<unknown>[])[], references: readonly StagedResultRef[] = []): StagedPlan {
+    const native = queryV2AuthorityHandle(authority);
+    if (native === undefined) throw new TypeError("PlanBuilder.buildStaged requires a type-bridge QueryV2Authority");
+    const columns: number[][] = [];
+    const values: unknown[][] = [];
+    for (const row of rows) {
+      const cells = row.map(cell => { const value = inputValues.get(cell); if (value === undefined) throw new TypeError("expected a PlanInputValue"); return value; });
+      columns.push(cells.map(([input]) => this.#index(input)));
+      values.push(cells.map(([, value]) => value));
+    }
+    const refs = references.map(reference => ({ input: this.#index(reference.input), source_plan: reference.sourcePlan, source_column: reference.sourceColumn, expected_types: reference.expectedTypes.map(model => JSON.parse(model.typeKey) as unknown) }));
+    return new StagedPlan(queryV2NativeCall(() => this.#native.buildStaged(native, columns, values, JSON.stringify(refs))));
+  }
+
 }
 
 const plans = new WeakMap<object, NativePlan>();

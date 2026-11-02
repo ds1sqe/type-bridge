@@ -28,7 +28,7 @@
  * @module
  */
 import type { AttributeValue, QueryV2Authority } from "./index.js";
-import type { NativePlan } from "./native.js";
+import type { NativePlan, NativeStagedPlan } from "./native.js";
 import type { PlanAnswer } from "./staged-transaction.js";
 import { Value } from "./plan-values.js";
 import type { QueryLimits, InstalledRuntimeProjection, NativeAuthoredPlanResult } from "./runtime-projection.js";
@@ -196,6 +196,21 @@ export declare class PlanNewThing<Id extends string = string> {
     /** The new thing's handle. */
     thing(): PlanThing<Id>;
 }
+/** One template column reads an earlier selected thing IID. */
+export interface StagedResultRef {
+    readonly input: PlanInput<string>;
+    readonly sourcePlan: number;
+    readonly sourceColumn: number;
+    readonly expectedTypes: readonly PlanModelToken[];
+}
+/** An authored invocation template for StagedTransaction.stageStack. */
+export declare class StagedPlan {
+    #private;
+    /** @internal */
+    constructor(native: NativeStagedPlan);
+    /** @internal */
+    nativeHandle(): NativeStagedPlan;
+}
 /**
  * Builds one {@link Plan}. See the {@link "plan" | module documentation} for
  * the rules.
@@ -213,6 +228,8 @@ export declare class PlanBuilder {
     fieldValue(thing: PlanThing, token: PlanFieldToken): PlanValue;
     /** @internal Generated IID lookup. */
     byIid(thing: PlanThing, iid: string): void;
+    /** Restrict a matched thing to an invocation IID column. */
+    byIidInput(thing: PlanThing, column: PlanInput<string>): this;
     /** @internal Add a player without replacing existing role players. */
     link(relation: PlanThing, role: PlanRoleToken, player: PlanThing): void;
     /** @internal Lift a generated helper's caller value into given. */
@@ -220,8 +237,10 @@ export declare class PlanBuilder {
     /** @internal Name a generated assignment through the shared core. */
     letValue(thing: PlanThing, field: string, value: PlanExpr): PlanValue;
     /** Declare an input column named `name`; each {@link row} supplies a value. */
+    input(name: string, valueType: "string"): PlanInput<string>;
     input(name: string, valueType: PlanValueType): PlanInput;
     /** Declare an optional input column; rows may give it {@link PlanInput.absent}. */
+    optionalInput(name: string, valueType: "string"): PlanInput<string>;
     optionalInput(name: string, valueType: PlanValueType): PlanInput;
     /** @internal Strong input typing for explicit generated templates. */
     typedInput<K extends PlanValueType>(name: string, kind: K, optional: boolean): PlanInput<PlanHostTypes[K]>;
@@ -275,6 +294,8 @@ export declare class PlanBuilder {
      * rejects (for example a field the thing does not own, or a key update).
      */
     build(authority: QueryV2Authority): Plan;
+    /** Finalize templates with absent reference cells for stageStack. */
+    buildStaged(authority: QueryV2Authority, rows: readonly (readonly PlanInputValue<unknown>[])[], references?: readonly StagedResultRef[]): StagedPlan;
 }
 type ScalarEncoder = (kind: PlanValueType, value: unknown) => unknown;
 /** @internal The native program behind `plan`, for staging. */

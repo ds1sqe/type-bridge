@@ -19,12 +19,70 @@ use type_bridge_contract::query_plan::v3::{
     ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
     Site, ThingDocument,
 };
-use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
+use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 use type_bridge_orm::query_v2_builder::query_builder_value_type;
 
 use crate::query_v2_runtime::{NodeQueryV2Authority, napi_error};
+
+fn invocation_rows(
+    env: &Env,
+    inputs: &[InputColumn],
+    columns: Vec<Vec<u32>>,
+    rows: Vec<Vec<Unknown<'_>>>,
+) -> napi::Result<Vec<InputRow>> {
+    if columns.len() != rows.len() {
+        return Err(napi_error(&handle_error()));
+    }
+    let mut bound = Vec::with_capacity(rows.len());
+    for (columns, row) in columns.into_iter().zip(rows) {
+        if columns.len() != row.len() {
+            return Err(napi_error(&handle_error()));
+        }
+        let mut values = vec![None; inputs.len()];
+        let mut seen = std::collections::BTreeSet::new();
+        for (column, value) in columns.into_iter().zip(row) {
+            let column = usize::try_from(column).map_err(|_| napi_error(&handle_error()))?;
+            let input = inputs
+                .get(column)
+                .ok_or_else(|| napi_error(&handle_error()))?;
+            if !seen.insert(column) {
+                return Err(napi_error(&invalid(
+                    "plan_input_duplicate",
+                    "an input row gives one column twice",
+                )));
+            }
+            if value.get_type()? != napi::ValueType::Null {
+                values[column] = Some(crate::query_v2_builder_runtime::node_scalar(
+                    env,
+                    input.value_type(),
+                    value,
+                )?);
+            }
+        }
+        bound.push(InputRow::new(values));
+    }
+    Ok(bound)
+}
+
+/// One immutable invocation template authored by the shared builder.
+#[napi]
+pub struct NodeStagedPlan {
+    pub(crate) entry: StagedPlanV3,
+    pub(crate) authority: Arc<type_bridge_orm::query_v2_prepared::QueryAuthority>,
+}
+
+#[napi]
+impl NodeStagedPlan {
+    /// Dependency metadata, without future IID values.
+    #[napi]
+    pub fn result_refs_json(&self) -> napi::Result<String> {
+        serde_json::to_string(self.entry.result_refs())
+            .map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+}
 
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::new(
@@ -286,6 +344,20 @@ impl NodePlanBuilder {
     pub fn by_iid(&mut self, owner: u32, iid: String) {
         let owner = self.binding(owner);
         self.core.by_iid(owner, &iid);
+    }
+
+    /// Restrict a matched binding to an invocation IID column.
+    #[napi]
+    pub fn by_iid_input(&mut self, owner: u32, column: u32) {
+        let owner = self.binding(owner);
+        let Some(column) = self.check(
+            u16::try_from(column)
+                .map(InputColumnId::new)
+                .map_err(|_| handle_error()),
+        ) else {
+            return;
+        };
+        self.core.by_iid_input(owner, column);
     }
 
     /// Add a role player while preserving existing players.
@@ -731,6 +803,43 @@ impl NodePlanBuilder {
             models.unwrap_or(false),
         )
     }
+    /// Finalize an invocation template with earlier IID result references.
+    #[napi]
+    pub fn build_staged(
+        &self,
+        env: Env,
+        authority: &NodeQueryV2Authority,
+        columns: Vec<Vec<u32>>,
+        rows: Vec<Vec<Unknown<'_>>>,
+        references: String,
+    ) -> napi::Result<NodeStagedPlan> {
+        if let Some((status, reason)) = &self.error {
+            return Err(napi::Error::new(*status, reason.clone()));
+        }
+        let authority = authority.authority();
+        let rows = invocation_rows(&env, self.core.input_columns(), columns, rows)?;
+        let refs: Vec<StagedResultRefV3> = serde_json::from_str(&references).map_err(|_| {
+            napi_error(&invalid(
+                "query_stage_result_ref_input",
+                "result references are malformed",
+            ))
+        })?;
+        let entry = self
+            .core
+            .build_staged(
+                authority.declared(),
+                authority
+                    .context()
+                    .managed_state()
+                    .managed_semantic_schema()
+                    .clone(),
+                rows,
+                refs,
+            )
+            .map_err(|error| napi_error(&error))?;
+        Ok(NodeStagedPlan { entry, authority })
+    }
+
     /// Build one selected result without copying the recorder.
     #[napi]
     #[allow(clippy::too_many_arguments)] // napi forwards attributes to wrappers with different arities.
@@ -926,38 +1035,7 @@ impl NodePlan {
                 "binding requires the plan's schema authority",
             )));
         }
-        if columns.len() != rows.len() {
-            return Err(napi_error(&handle_error()));
-        }
-        let mut bound = Vec::with_capacity(rows.len());
-        for (columns, row) in columns.into_iter().zip(rows) {
-            if columns.len() != row.len() {
-                return Err(napi_error(&handle_error()));
-            }
-            let mut values = vec![None; plan.inputs().len()];
-            let mut seen = std::collections::BTreeSet::new();
-            for (column, value) in columns.into_iter().zip(row) {
-                let column = usize::try_from(column).map_err(|_| napi_error(&handle_error()))?;
-                let input = plan
-                    .inputs()
-                    .get(column)
-                    .ok_or_else(|| napi_error(&handle_error()))?;
-                if !seen.insert(column) {
-                    return Err(napi_error(&invalid(
-                        "plan_input_duplicate",
-                        "an input row gives one column twice",
-                    )));
-                }
-                if value.get_type()? != napi::ValueType::Null {
-                    values[column] = Some(crate::query_v2_builder_runtime::node_scalar(
-                        &env,
-                        input.value_type(),
-                        value,
-                    )?);
-                }
-            }
-            bound.push(type_bridge_contract::query_plan::InputRow::new(values));
-        }
+        let bound = invocation_rows(&env, plan.inputs(), columns, rows)?;
         let plan = plan
             .with_given_rows(bound, authority.declared())
             .map_err(|error| napi_error(&error))?;

@@ -29,7 +29,8 @@ Execution must compare it with the receiving authority before sending a query.
 | `required_capabilities` | Sorted duplicate-free array of derived strings |
 
 Binding IDs and input IDs are separate dense zero-based unsigned sequences.
-Bindings number at most 256. Variables and public names are unique identifiers matching
+Bindings default to at most 256; configured `QueryLimits` may raise this to
+65,536. Input columns use the same binding ceiling. Variables and public names are unique identifiers matching
 `[a-z][a-z0-9_]*`, at most 128 UTF-8 bytes. Array order and variable spelling
 are part of identity.
 
@@ -734,6 +735,53 @@ required input refuses with `query_stage_result_ref_missing`. Other row-count
 mismatches refuse with `query_stage_result_ref_rows`. Binding validates the
 resulting input rows under the plan's captured limits before that plan runs;
 a failure aborts the transaction. No cross product is implied.
+
+The SDK builders expose `build_staged` (Python/Rust) and `buildStaged`
+(TypeScript). They return immutable invocation templates for
+`Transaction.stage_stack` / `StagedTransaction.stageStack`. Build each earlier
+entry through that same method, with an empty reference list where appropriate.
+Source indexes are relative to the whole block, even when other work was queued
+on the transaction before it. All pending answers resolve after commit.
+
+For example, given an `earlier` entry selecting one `Item` IID in column zero,
+Python authors the later entry as follows:
+
+```python
+from type_bridge import PlanBuilder, StagedResultRef
+
+builder = PlanBuilder()
+iid = builder.input("target_iid", "string")
+item = builder.exact(Item)
+builder.by_iid_input(item, iid).returning([item])
+later = builder.build_staged(
+    authority,
+    [[iid.absent()]],
+    [StagedResultRef(iid, 0, 0, [Item])],
+)
+answers = tx.stage_stack([earlier, later])
+tx.commit()
+```
+
+TypeScript uses the same invocation template:
+
+```typescript
+const builder = new PlanBuilder();
+const iid = builder.input("target_iid", "string");
+const item = builder.exact(Item);
+builder.byIidInput(item, iid).returning([item]);
+const later = builder.buildStaged(authority, [[iid.absent()]], [
+  { input: iid, sourcePlan: 0, sourceColumn: 0, expectedTypes: [Item] },
+]);
+const answers = tx.stageStack([earlier, later]);
+await tx.commit();
+```
+
+Rust uses `builder.input::<String>("target_iid")`,
+`builder.by_iid_input::<Item>(iid)`, and
+`iid.result_ref::<Item>(0, 0)?` for the reference metadata. Its
+`builder.build_staged(&models::SCHEMA, vec![vec![iid.absent()]], vec![reference])?`
+returns a schema-branded `StagedPlan`; `tx.stage_stack(&[earlier, later])?`
+retains that schema brand. The C authoring surface accompanies ABI 2.0.
 
 Staged byte and item budgets default to 32 MiB and 65,536; explicit values may
 raise them to the shared answer-policy maxima, subject to the caller, session

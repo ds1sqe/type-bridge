@@ -1133,6 +1133,8 @@ export {
   type FieldToken,
   type PlanModelAuthoring,
   type PlanOptions,
+  StagedPlan,
+  type StagedResultRef,
 } from "./plan.js";
 
 /** Metadata from Rust plan execution; transported input values are omitted. */

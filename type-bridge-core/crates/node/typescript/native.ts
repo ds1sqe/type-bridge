@@ -435,6 +435,7 @@ export interface NativePendingPlanAnswer {
 }
 
 export interface NativeStagedTransaction {
+  stageStack(plans: NativeStagedPlan[]): NativePendingPlanAnswer[];
   stagePlan(planBytes: Uint8Array, schemaBytes: Uint8Array): NativePendingPlanAnswer;
   stage(plan: NativePlan): NativePendingPlanAnswer;
   commit(): Promise<void>;
@@ -450,6 +451,8 @@ export interface NativePlanOperand {
 }
 
 /** One validated `query-plan/v3` program. */
+export interface NativeStagedPlan { resultRefsJson(): string; }
+
 export interface NativePlan {
   explainJson(): string;
   bindRows(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][]): NativePlan;
@@ -467,6 +470,7 @@ export interface NativePlanBuilder {
   field(owner: number, ownsJson: string): number;
   fieldValue(owner: number, ownsJson: string): number;
   byIid(owner: number, iid: string): void;
+  byIidInput(owner: number, input: number): void;
   bindValue(owner: number, field: string, valueType: string, value: unknown): number;
   bindRows(columns: { owner: number; field: string; valueType: string }[], rows: number[][]): number[];
   letValue(owner: number, field: string, expr: number): number;
@@ -496,6 +500,7 @@ export interface NativePlanBuilder {
   count(): void;
   exists(): void;
   build(authority: NativeQueryV2Authority, matched?: boolean, models?: boolean): NativePlan;
+  buildStaged(authority: NativeQueryV2Authority, columns: number[][], rows: unknown[][], references: string): NativeStagedPlan;
   buildSelected(authority: NativeQueryV2Authority, kind: string, thing: number | null, roles: string[], required: boolean[], columns: number[], projection?: NativeProjectionHandle | null, declared?: string | null, modelBindings?: number[] | null, modelTypes?: string[] | null): NativePlan;
 }
 

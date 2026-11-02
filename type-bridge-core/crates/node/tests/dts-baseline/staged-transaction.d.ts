@@ -1,6 +1,6 @@
 import type { NativePendingPlanAnswer, NativeStagedTransaction } from "./native.js";
 import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./runtime-projection.js";
-import { type Plan } from "./plan.js";
+import { type Plan, type StagedPlan } from "./plan.js";
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
 /** Per-commit configuration. Omission keeps the 60000 ms default and collection off. */
@@ -69,6 +69,8 @@ export declare class StagedTransaction {
      * refuses every plan.
      */
     stage<R>(plan: Plan<R>): PendingPlanAnswer<R>;
+    /** Queue a complete invocation stack with block-local IID references. */
+    stageStack(plans: readonly StagedPlan[]): PendingPlanAnswer[];
     /** Stage one canonical `query-plan/v3` program validated under `declaredSchema`. */
     stagePlan(plan: Uint8Array, declaredSchema: Uint8Array): PendingPlanAnswer;
     /** Fire the staged stack; answers become visible only on success. */

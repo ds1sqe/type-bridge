@@ -291,3 +291,18 @@ test("explain returns the shared metadata without given values", () => {
   assert.equal(explanation.statements.length, 1);
   assert.ok(!JSON.stringify(explanation).includes("EXPLAIN_SECRET"));
 });
+
+test("staged builder keeps typed IID references and rejects authored reference values", () => {
+  const builder = new PlanBuilder();
+  const iid = builder.input("target_iid", "string");
+  const item = builder.exact(Item);
+  builder.byIidInput(item, iid).returning([item]);
+  const reference = { input: iid, sourcePlan: 0, sourceColumn: 0, expectedTypes: [Item] };
+  const staged = builder.buildStaged(authority(), [[iid.absent()], [iid.absent()]], [reference]);
+  assert.deepEqual(JSON.parse(staged.nativeHandle().resultRefsJson()), [
+    { input: 0, source_plan: 0, source_column: 0, expected_types: [{ kind: "entity", label: "item" }] },
+  ]);
+  assert.throws(() => builder.buildStaged(authority(), [[iid.value("0x10")]], [reference]), (error: unknown) => error instanceof QueryV2Error && error.code === "query_stage_result_ref_template");
+  const foreign = new PlanBuilder().input("foreign", "string");
+  assert.throws(() => builder.buildStaged(authority(), [[foreign.absent()]], [reference]), /does not belong|plan handle does not belong/);
+});

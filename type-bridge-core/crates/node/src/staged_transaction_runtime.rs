@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{Env, Object, Unknown};
+use napi::bindgen_prelude::{ClassInstance, Env, Object, Unknown};
 use napi_derive::napi;
 use tracing::Instrument as _;
 use type_bridge_contract::query_plan::v3::{BuiltPlans, decode_query_plan_v3};
@@ -18,7 +18,7 @@ use type_bridge_orm::session::staged::{
     merge_plan_answers,
 };
 
-use crate::plan_builder_runtime::{NodePlan, NodePlanProgram};
+use crate::plan_builder_runtime::{NodePlan, NodePlanProgram, NodeStagedPlan};
 use crate::proxy_connection_runtime::settle;
 use crate::query_v2_runtime::non_shared_buffer;
 
@@ -395,6 +395,39 @@ impl NodeStagedTransaction {
             },
             origin: self.origin.clone(),
         })
+    }
+
+    /// Queue a complete authored invocation stack with block-local IID references.
+    #[napi]
+    pub fn stage_stack(
+        &self,
+        plans: Vec<ClassInstance<'_, NodeStagedPlan>>,
+    ) -> napi::Result<Vec<NodePendingPlanAnswer>> {
+        let Some(first) = plans.first() else {
+            return Ok(vec![]);
+        };
+        let pending = self
+            .lock()?
+            .stage_plan_stack(
+                plans.iter().map(|plan| plan.entry.clone()).collect(),
+                Arc::new(first.authority.declared().clone()),
+            )
+            .map_err(|error| pending_error(&error))?;
+        Ok(plans
+            .iter()
+            .zip(pending)
+            .map(|(plan, pending)| NodePendingPlanAnswer {
+                source: PendingSource::Plans {
+                    inner: vec![pending],
+                    models: None,
+                    plans: Arc::new(NodePlanProgram::Raw(Box::new(BuiltPlans::single(
+                        plan.entry.plan().clone(),
+                    )))),
+                    projected: std::sync::OnceLock::new(),
+                },
+                origin: self.origin.clone(),
+            })
+            .collect())
     }
 
     /// Close without committing once any running commit settles; a closed
