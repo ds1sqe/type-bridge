@@ -10,7 +10,7 @@ use crate::codec::{FormatVersion, to_canonical_json};
 use crate::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 use crate::fingerprint::{CanonicalizationVersion, Fingerprint, FingerprintDomain};
 use crate::id::{AttributeId, RoleId, TypeId};
-use crate::limits::{MAX_BINDINGS, MAX_OUTPUT_NAME_BYTES, StructuralLimits};
+use crate::limits::{MAX_OUTPUT_NAME_BYTES, MAX_SUPPORTED_BINDINGS, StructuralLimits};
 use crate::schema_fingerprint::ManagedSemanticSchemaFingerprint;
 use crate::value::CanonicalValue;
 
@@ -51,15 +51,15 @@ pub fn migration_assertion_capability_vocabulary() -> CapabilitySet {
 pub struct BindingId(u16);
 
 impl BindingId {
-    /// Construct a binding ordinal within the canonical binding ceiling.
+    /// Construct an addressable binding ordinal. The owning plan enforces its configured limit.
     pub fn new(value: u16) -> Result<Self, Diagnostic> {
-        if usize::from(value) < MAX_BINDINGS {
+        if usize::from(value) < MAX_SUPPORTED_BINDINGS {
             Ok(Self(value))
         } else {
             Err(assertion_failure(
                 DiagnosticCategory::ResourceLimit,
                 "migration_assertion_binding_id_out_of_range",
-                "binding ID exceeds the canonical structural ceiling",
+                "binding ID exceeds the supported structural ceiling",
             ))
         }
     }

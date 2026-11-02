@@ -167,6 +167,14 @@ impl PlanBuilder {
     }
 
     fn declare(&mut self, name: String) -> BindingId {
+        if self.bindings.len() >= self.limits.structural.bindings {
+            self.fail(failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_plan_builder_binding_limit",
+                "the plan declares more bindings than its configured ceiling",
+            ));
+            return Self::placeholder();
+        }
         let id = u16::try_from(self.bindings.len())
             .map_err(|_| ())
             .and_then(|n| BindingId::new(n).map_err(|_| ()));

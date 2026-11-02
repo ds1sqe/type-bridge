@@ -1212,3 +1212,49 @@ fn model_bulk_split_honours_the_recordings_selected_query_limits() {
         }
     }
 }
+
+#[test]
+fn configured_binding_policy_owns_wide_authoring_and_wire_revalidation() {
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_contract::query_plan::v3::{
+        decode_query_plan_v3, decode_query_plan_v3_with_limits,
+    };
+    let mut limits = QueryLimits::V3;
+    limits.structural.bindings = 512;
+    limits.structural.boolean_terms = 512;
+    let mut builder = PlanBuilder::with_limits(limits);
+    for _ in 0..300 {
+        builder.exact(entity("account"));
+    }
+    builder.count();
+    let wide = builder.build(&schema(), semantics()).unwrap();
+    assert_eq!(wide.bindings().len(), 300);
+    let bytes = wide.canonical_bytes().unwrap();
+    assert_eq!(
+        decode_query_plan_v3_with_limits(&bytes, &schema(), limits)
+            .unwrap()
+            .canonical_bytes()
+            .unwrap(),
+        bytes
+    );
+    assert_eq!(
+        decode_query_plan_v3(&bytes, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_binding_limit"
+    );
+    let mut default = PlanBuilder::new();
+    for _ in 0..257 {
+        default.exact(entity("account"));
+    }
+    default.count();
+    assert_eq!(
+        default
+            .build(&schema(), semantics())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_builder_binding_limit"
+    );
+}
