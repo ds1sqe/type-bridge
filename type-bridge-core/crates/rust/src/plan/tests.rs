@@ -855,3 +855,60 @@ fn authored_string_conditions_equal_the_raw_core_comparisons() {
         raw.build(&package()).unwrap().canonical_bytes().unwrap()
     );
 }
+
+#[tokio::test]
+async fn authored_iid_stack_binds_inside_one_transaction_and_keeps_commit_visibility() {
+    use type_bridge_contract::query_remote::RemoteValue;
+    let (db, log) = database();
+    log.lock().unwrap().2 = Some(vec![serde_json::json!({"item": RemoteValue::Thing {
+        iid: "0x10".into(), type_id: super::type_id::<Item>().unwrap(),
+    }})]);
+    let mut source = Plan::<PlanAnswer, Shop>::builder();
+    let item = source.exact::<Item>();
+    source.returning([item]);
+    let source = source.build_staged(&package(), vec![], vec![]).unwrap();
+    let mut target = Plan::<PlanAnswer, Shop>::builder();
+    let iid = target.input::<String>("target_iid");
+    let item = target.by_iid_input::<Item>(iid);
+    target
+        .update(item, ItemType::stock, 7_i64)
+        .returning([item]);
+    let reference = iid.result_ref::<Item>(0, 0).unwrap();
+    let target = target
+        .build_staged(&package(), vec![vec![iid.absent()]; 3], vec![reference])
+        .unwrap();
+    assert_eq!(target.result_refs()[0].source_plan, 0);
+    let mut transaction = db.transaction(TransactionOptions::default());
+    let pending = transaction.stage_stack(&[source, target]).unwrap();
+    assert!(log.lock().unwrap().0.is_empty());
+    assert!(
+        pending
+            .iter()
+            .all(|answer| answer.get().unwrap_err() == PendingError::NotCommitted)
+    );
+    transaction.commit().await.unwrap();
+    assert!(pending.iter().all(
+        |answer| matches!(answer.get().unwrap().as_ref(), PlanAnswer::Rows(rows) if rows.len() == 1)
+    ));
+    let events = &log.lock().unwrap().0;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("open "))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("query "))
+            .count(),
+        2
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.starts_with("query ") && event.contains("0x10"))
+    );
+    assert_eq!(events.iter().filter(|event| *event == "commit").count(), 1);
+}

@@ -51,7 +51,9 @@ use type_bridge_contract::query_plan::v3::{
     ArithOp, BuiltPlans, Builtin, DocumentRole, Expr as CoreExpr, PlanBuilder as CoreBuilder,
     QueryPlanV3, Site,
 };
-use type_bridge_contract::query_plan::{InputColumnId, QueryOperand};
+use type_bridge_contract::query_plan::{InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_remote_v3::StagedPlanV3;
+pub use type_bridge_contract::query_remote_v3::StagedResultRefV3 as StagedResultRef;
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 
@@ -239,6 +241,24 @@ impl<V> Input<V> {
             column: self.column,
             value: Ok(None),
         }
+    }
+}
+
+impl Input<String> {
+    /// Read one selected IID column of an earlier entry in this staged stack.
+    /// # Errors
+    /// Returns an invalid generated model identity.
+    pub fn result_ref<M: ThingModel>(
+        self,
+        source_plan: u32,
+        source_column: u16,
+    ) -> Result<StagedResultRef> {
+        Ok(StagedResultRef {
+            input: self.column,
+            source_plan,
+            source_column,
+            expected_types: vec![type_id::<M>()?],
+        })
     }
 }
 
@@ -1030,6 +1050,40 @@ impl<R, S: Schema> Plan<R, S> {
     }
 }
 
+/// One authored staged invocation, including its future IID references.
+/// Queue the complete block with [`crate::staged::Transaction::stage_stack`].
+pub struct StagedPlan<S: Schema> {
+    entry: StagedPlanV3,
+    authority: Arc<type_bridge_schema::VerifiedSchemaAuthority>,
+    plan: Plan<PlanAnswer, S>,
+}
+
+impl<S: Schema> StagedPlan<S> {
+    /// Inspect authored dependency metadata; future IID values stay absent.
+    #[must_use]
+    pub fn result_refs(&self) -> &[StagedResultRef] {
+        self.entry.result_refs()
+    }
+
+    pub(crate) fn stage_stack(
+        plans: &[Self],
+        transaction: &mut type_bridge_orm::session::staged::Transaction,
+    ) -> std::result::Result<Vec<Pending<PlanAnswer>>, PendingError> {
+        let Some(first) = plans.first() else {
+            return Ok(vec![]);
+        };
+        let answers = transaction.stage_plan_stack(
+            plans.iter().map(|plan| plan.entry.clone()).collect(),
+            Arc::new(first.authority.declared_schema().clone()),
+        )?;
+        Ok(plans
+            .iter()
+            .zip(answers)
+            .map(|(plan, answer)| plan.plan.pending(answer))
+            .collect())
+    }
+}
+
 /// Builds one [`Plan`]. See the [module documentation](self) for the rules.
 ///
 /// Methods never fail; the first invalid call is returned by
@@ -1117,6 +1171,16 @@ impl<S: Schema> PlanBuilder<S> {
     pub fn by_iid<M: ThingModel<Schema = S>>(&mut self, iid: &str) -> Thing<M, Subtypes> {
         let thing = self.subtypes::<M>();
         self.core.by_iid(thing.binding, iid);
+        thing
+    }
+
+    /// Match a model by an invocation IID, including a staged result reference.
+    pub fn by_iid_input<M: ThingModel<Schema = S>>(
+        &mut self,
+        input: Input<String>,
+    ) -> Thing<M, Subtypes> {
+        let thing = self.subtypes::<M>();
+        self.core.by_iid_input(thing.binding, input.column);
         thing
     }
 
@@ -1439,6 +1503,54 @@ impl<S: Schema> PlanBuilder<S> {
     pub fn exists(&mut self) -> &mut Self {
         self.core.exists();
         self
+    }
+
+    /// Finalize one staged invocation with typed template cells and IID references.
+    ///
+    /// Use [`Input::absent`] for every referenced cell. Source indexes are relative
+    /// to the complete block passed to [`crate::staged::Transaction::stage_stack`].
+    /// # Errors
+    /// Returns the first builder error or an invalid template or reference.
+    pub fn build_staged(
+        self,
+        schema: &SchemaPackage<S>,
+        rows: Vec<Vec<InputValue>>,
+        result_refs: Vec<StagedResultRef>,
+    ) -> Result<StagedPlan<S>> {
+        if let Some(error) = self.error {
+            return Err(error);
+        }
+        let mut templates = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut values = vec![None; self.core.input_columns().len()];
+            let mut seen = std::collections::BTreeSet::new();
+            for cell in row {
+                let index = usize::from(cell.column.get());
+                let Some(value) = values.get_mut(index) else {
+                    return Err(identity_error("plan_builder_handle_unknown"));
+                };
+                if !seen.insert(index) {
+                    return Err(identity_error("plan_input_duplicate"));
+                }
+                *value = cell.value.map_err(literal_error)?;
+            }
+            templates.push(InputRow::new(values));
+        }
+        let authority = schema.plan_authority()?;
+        let entry = self
+            .core
+            .build_staged(
+                authority.declared_schema(),
+                authority.managed_state().managed_semantic_schema().clone(),
+                templates,
+                result_refs,
+            )
+            .map_err(Error::from_contract_diagnostic)?;
+        Ok(StagedPlan {
+            plan: Plan::from_core(entry.plan().clone()),
+            entry,
+            authority,
+        })
     }
 
     /// Validate the program against the generated schema package.

@@ -154,6 +154,17 @@ impl<S: Schema> Transaction<S> {
         plan.stage(&mut self.inner, self.origin.clone())
     }
 
+    /// Queue an authored stack whose later inputs reference earlier IID answers.
+    /// Source indexes are block-local; every answer resolves only after commit.
+    /// # Errors
+    /// Returns an invalid dependency graph or a transaction admission failure.
+    pub fn stage_stack(
+        &mut self,
+        plans: &[crate::plan::StagedPlan<S>],
+    ) -> Result<Vec<Pending<PlanAnswer>>, PendingError> {
+        crate::plan::StagedPlan::stage_stack(plans, &mut self.inner)
+    }
+
     /// Run every staged plan in order as one provider transaction and
     /// resolve their answers. An empty queue commits nothing.
     ///
