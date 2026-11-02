@@ -1626,6 +1626,8 @@ mod raw_tests {
         refuse: bool,
         unvouched: bool,
         transport_refuse: bool,
+        drop_commit_reply: bool,
+        durable_writes: AtomicUsize,
         gate: Option<Arc<tokio::sync::Semaphore>>,
     }
     impl RawQueryExecutor for Arc<RawHost> {
@@ -1634,6 +1636,10 @@ mod raw_tests {
             self.queries.lock().unwrap().push((query.to_owned(),kind));
             Box::pin(async move {
                 if let Some(gate) = &self.gate { gate.acquire().await.unwrap().forget(); }
+                if self.drop_commit_reply {
+                    self.durable_writes.fetch_add(1, Ordering::SeqCst);
+                    return Err(RawQueryError { code: "CONNECTION_CLOSED".into(), message: "commit connection dropped".into(), status: 503, commit_outcome: Some(type_bridge_typedb_runtime::CommitFailureCertainty::Unknown) });
+                }
                 Ok(br#"{ "queryType": "write", "answerType": "ok", "answers": null, "query": null, "warning": null }"#.to_vec()) })
         }
     }
@@ -1655,7 +1661,11 @@ mod raw_tests {
         }
         fn on_v3_commit<'a>(&'a self, outcome: &'a V3CommitOutcome<'a>, _ctx: &'a RequestContext)
             -> Pin<Box<dyn Future<Output=Result<(),InterceptError>> + Send + 'a>> {
-            assert!(outcome.committed());
+            if self.drop_commit_reply {
+                assert!(!outcome.committed());
+                assert_eq!(outcome.certainty(), Some(type_bridge_contract::sdk_diagnostic::SdkCommitFailureOutcome::Unknown));
+                assert_eq!(outcome.code(), "commit_outcome_unknown");
+            } else { assert!(outcome.committed()); }
             self.commits.lock().unwrap().push(outcome.kind());
             Box::pin(async { Ok(()) })
         }
@@ -1781,6 +1791,16 @@ mod raw_tests {
         let records: Vec<serde_json::Value> = records.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         assert_eq!(records.iter().map(|r|r["diagnostic_code"].as_str().unwrap()).collect::<Vec<_>>(), ["raw_request_invalid", "raw_request_expired", "ok", "query_remote_replay", "query_remote_replay_capacity", "query_remote_policy_rejected", "raw_disabled"]);
         assert_eq!(records[1]["compiled_typeql"], "expired text");
+    }
+    #[tokio::test]
+    async fn dropped_commit_reply_reports_and_observes_unknown_outcome() {
+        let host = Arc::new(RawHost { drop_commit_reply: true, ..Default::default() });
+        let fixture = fixture(Arc::clone(&host), None);
+        let (status, body) = raw(&fixture, request("insert committed;", "write", "raw-commit-lost-reply")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body, br#"{"error":"commit_outcome_unknown"}"#);
+        assert_eq!(host.durable_writes.load(Ordering::SeqCst), 1);
+        assert_eq!(*host.commits.lock().unwrap(), [TransactionKind::Write]);
     }
     #[tokio::test]
     async fn raw_replay_is_refused_before_a_second_transaction() {

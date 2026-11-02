@@ -20,6 +20,9 @@ pub struct RawQueryError {
     pub message: String,
     /// Suggested HTTP response status for the provider failure.
     pub status: u16,
+    /// Durability certainty when the provider rejected or lost a commit.
+    /// `None` means the error occurred before commit was sent.
+    pub commit_outcome: Option<crate::CommitFailureCertainty>,
 }
 
 impl RawQueryError {
@@ -33,7 +36,24 @@ impl RawQueryError {
             code: error.code().trim_matches(['[', ']']).to_owned(),
             message: error.message(),
             status,
+            commit_outcome: None,
         }
+    }
+
+    fn commit(error: typedb_driver::Error) -> Self {
+        let failure = crate::failure::classify_commit(
+            &error.code(),
+            &error.to_string(),
+            matches!(&error, typedb_driver::Error::Server(_)),
+        );
+        let certainty = if failure.retry_safe() {
+            crate::CommitFailureCertainty::DefinitelyAborted
+        } else {
+            crate::CommitFailureCertainty::Unknown
+        };
+        let mut error = Self::driver(error);
+        error.commit_outcome = Some(certainty);
+        error
     }
 
     fn runtime(error: crate::RuntimeError) -> Self {
@@ -41,6 +61,7 @@ impl RawQueryError {
             code: "runtime_error".into(),
             message: error.to_string(),
             status: 503,
+            commit_outcome: None,
         }
     }
 }
@@ -97,6 +118,7 @@ impl RuntimeTransaction {
             code: "transaction_closed".into(),
             message: "transaction already consumed".into(),
             status: 400,
+            commit_outcome: None,
         })?;
         let answer = transaction
             .query_with_options(
@@ -110,6 +132,7 @@ impl RuntimeTransaction {
             code: "raw_answer_encoding".into(),
             message: error.to_string(),
             status: 500,
+            commit_outcome: None,
         })
     }
 
@@ -120,8 +143,9 @@ impl RuntimeTransaction {
             code: "transaction_closed".into(),
             message: "transaction already consumed".into(),
             status: 400,
+            commit_outcome: None,
         })?;
-        transaction.commit().await.map_err(RawQueryError::driver)
+        transaction.commit().await.map_err(RawQueryError::commit)
     }
 }
 
@@ -205,6 +229,22 @@ mod tests {
     use std::sync::Arc;
     use typedb_driver::answer::concept_row::{ConceptRow, ConceptRowHeader};
     use typedb_driver::concept::{Entity, EntityType};
+
+    #[test]
+    fn connection_dropped_while_committing_keeps_unknown_durability() {
+        let driver = typedb_driver::Error::from(tonic::Status::unavailable(
+            "connection dropped after commit send",
+        ));
+        let code = driver.code();
+        let message = driver.message();
+        let error = RawQueryError::commit(driver);
+        assert_eq!(
+            error.commit_outcome,
+            Some(crate::CommitFailureCertainty::Unknown)
+        );
+        assert_eq!(error.code, code);
+        assert_eq!(error.message, message);
+    }
 
     #[tokio::test]
     async fn http_answer_matches_documented_shape_without_normalizing_concepts() {

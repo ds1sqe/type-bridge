@@ -13,7 +13,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkExecutionDiagnostic};
 use type_bridge_orm::session::staged::TransactionKind;
+use type_bridge_typedb_runtime::CommitFailureCertainty;
 use type_bridge_typedb_runtime::raw::RawQueryError;
 
 /// Raw execution at the provider boundary, shared by embedded and HTTP hosts.
@@ -312,8 +314,25 @@ pub(super) async fn handle_raw(
         let answer = executor
             .execute(state.query.database.database_name(), &request.query, kind)
             .await;
-        if answer.is_ok() && kind != TransactionKind::Read {
-            let outcome = V3CommitOutcome::new(kind, None);
+        let commit_failure = answer
+            .as_ref()
+            .err()
+            .and_then(|error| error.commit_outcome)
+            .map(|certainty| {
+                SdkExecutionDiagnostic::commit_failure(match certainty {
+                    CommitFailureCertainty::DefinitelyAborted => {
+                        SdkCommitFailureOutcome::DefinitelyAborted
+                    }
+                    CommitFailureCertainty::Unknown => SdkCommitFailureOutcome::Unknown,
+                })
+            });
+        let may_have_committed = kind != TransactionKind::Read
+            && (answer.is_ok()
+                || commit_failure.as_ref().is_some_and(|failure| {
+                    failure.commit_outcome() == Some(SdkCommitFailureOutcome::Unknown)
+                }));
+        if kind != TransactionKind::Read && (answer.is_ok() || commit_failure.is_some()) {
+            let outcome = V3CommitOutcome::new(kind, commit_failure.as_ref());
             let _ = await_before_deadline(
                 response_audit_deadline(deadline),
                 state.pipeline().observe_v3_commit(&outcome, &ctx),
@@ -334,6 +353,12 @@ pub(super) async fn handle_raw(
                     size,
                 )
             }
+            Err(error) if error.commit_outcome == Some(CommitFailureCertainty::Unknown) => (
+                refusal(StatusCode::SERVICE_UNAVAILABLE, "commit_outcome_unknown"),
+                false,
+                "commit_outcome_unknown",
+                0,
+            ),
             Err(error) => {
                 let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 ((status,axum::Json(serde_json::json!({"error":"typedb_error","typedb":{"code":error.code,"message":error.message}}))).into_response(),false,"typedb_error",0)
@@ -345,7 +370,7 @@ pub(super) async fn handle_raw(
             deadline,
             response,
             V3PolicyOutcome::new(success, code, size),
-            success && kind != TransactionKind::Read,
+            may_have_committed,
         )
         .await
     });
