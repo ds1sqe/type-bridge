@@ -3341,7 +3341,10 @@ plays:
             }
             edges.delete_many_by_iid_exact(&ids).await.unwrap();
             let anchor = edges
-                .put_exact(&fields(&[("seq-key", "explicit-anchor")]), &[node.clone()])
+                .put_exact(
+                    &fields(&[("seq-key", "explicit-anchor")]),
+                    std::slice::from_ref(&node),
+                )
                 .await
                 .unwrap();
             let relation = TypeId::new(TypeKind::Relation, "seq-edge").unwrap();
@@ -4129,11 +4132,12 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
                             .await
                             .unwrap_err();
                         assert_eq!(failure.code().as_str(), "transaction_state_invalid");
-                        let observed = log.lock().unwrap();
-                        assert_eq!(observed.statements.len(), statements);
-                        assert_eq!(observed.opened, [TxType::Write]);
-                        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
-                        drop(observed);
+                        {
+                            let observed = log.lock().unwrap();
+                            assert_eq!(observed.statements.len(), statements);
+                            assert_eq!(observed.opened, [TxType::Write]);
+                            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+                        }
                         let original = raw.get_by_iid(first.iid()).await.unwrap();
                         assert!(
                             original[0].attributes.iter().any(|(name, value)| name
@@ -4319,11 +4323,12 @@ async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live()
                     ..Default::default()
                 };
                 assert!(manager.update_many_and_get_exact(&items).await.is_err());
-                let observed = log.lock().unwrap();
-                assert_eq!(observed.statements.len(), 2);
-                assert_eq!(observed.opened, [TxType::Write]);
-                assert_eq!((observed.commits, observed.rollbacks), (0, 1));
-                drop(observed);
+                {
+                    let observed = log.lock().unwrap();
+                    assert_eq!(observed.statements.len(), 2);
+                    assert_eq!(observed.opened, [TxType::Write]);
+                    assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+                }
                 assert_eq!(
                     raw.get_by_iid(&first).await.unwrap()[0].attributes,
                     fields("old")
@@ -4343,11 +4348,12 @@ async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live()
             .await
             .unwrap();
         assert_eq!(committed.len(), 2);
-        let observed = log.lock().unwrap();
-        assert_eq!(observed.statements.len(), 2);
-        assert_eq!(observed.opened, [TxType::Write]);
-        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
-        drop(observed);
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 2);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        }
         raw.update_exact(&second, &fields("second"), &[anchor()])
             .await
             .unwrap();
@@ -4461,29 +4467,30 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
                 .collect::<std::collections::BTreeSet<_>>();
             assert_eq!(stored, expected_players(input));
         }
-        let observed = log.lock().unwrap();
-        let probes = observed
-            .statements
-            .iter()
-            .filter(|query| query.contains("select $root0;"))
-            .count();
-        assert_eq!(
-            probes, 4,
-            "two bounded player probes for each full-match row"
-        );
-        // Each row has two probes; a hit reads its IID, a miss fits one Insert.
-        assert_eq!(observed.statements.len(), 6);
-        assert_eq!(
-            observed
+        {
+            let observed = log.lock().unwrap();
+            let probes = observed
                 .statements
                 .iter()
-                .filter(|query| query.contains("insert"))
-                .count(),
-            1
-        );
-        assert_eq!(observed.opened, [TxType::Write]);
-        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
-        drop(observed);
+                .filter(|query| query.contains("select $root0;"))
+                .count();
+            assert_eq!(
+                probes, 4,
+                "two bounded player probes for each full-match row"
+            );
+            // Each row has two probes; a hit reads its IID, a miss fits one Insert.
+            assert_eq!(observed.statements.len(), 6);
+            assert_eq!(
+                observed
+                    .statements
+                    .iter()
+                    .filter(|query| query.contains("insert"))
+                    .count(),
+                1
+            );
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        }
         for iid in actual {
             raw.delete_by_iid(&iid).await.unwrap();
         }
