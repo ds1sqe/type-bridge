@@ -1,13 +1,10 @@
 #![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 #[cfg(feature = "v2-query")]
 use futures::future::join_all;
-use type_bridge_core_lib::ast::Clause;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};
 #[cfg(feature = "v2-query")]
-use super::traits::{
-    StagedWriteAuthority, V2PolicyOutcome, V2PolicyRequest, V3CommitOutcome, V3PolicyPlan,
-};
+use super::traits::{StagedWriteAuthority, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
 
 /// Ordered request interceptor chain with reverse-order response hooks.
 pub struct InterceptorChain {
@@ -20,55 +17,9 @@ impl InterceptorChain {
         Self { interceptors }
     }
 
-    /// Run all request interceptors in order. Each can transform or reject the query.
-    pub async fn execute_request(
-        &self,
-        mut clauses: Vec<Clause>,
-        ctx: &mut RequestContext,
-    ) -> Result<Vec<Clause>, InterceptError> {
-        for interceptor in &self.interceptors {
-            clauses = interceptor.on_request(clauses, ctx).await?;
-        }
-        Ok(clauses)
-    }
-
-    /// Run all response interceptors in reverse order (middleware pattern).
-    pub async fn execute_response(
-        &self,
-        result: &serde_json::Value,
-        ctx: &RequestContext,
-    ) -> Result<(), InterceptError> {
-        for interceptor in self.interceptors.iter().rev() {
-            interceptor.on_response(result, ctx).await?;
-        }
-        Ok(())
-    }
-
-    /// Fail closed if any configured legacy-AST policy has not explicitly
-    /// declared typed V2 coverage.
-    #[cfg(feature = "v2-query")]
-    pub fn ensure_v2_coverage(&self) -> Result<(), InterceptError> {
-        if let Some(interceptor) = self
-            .interceptors
-            .iter()
-            .find(|interceptor| !interceptor.supports_v2())
-        {
-            return Err(InterceptError::ValidationFailed {
-                reason: format!(
-                    "interceptor {:?} does not declare typed V2 coverage",
-                    interceptor.name(),
-                ),
-            });
-        }
-        Ok(())
-    }
-
     /// Fail closed if any configured policy has not explicitly declared
     /// staged V3 coverage.
     ///
-    /// V3 is served only beside V2, whose admission already requires every
-    /// policy to declare V2 coverage, so this requires every V2-participating
-    /// policy to also cover V3.
     #[cfg(feature = "v2-query")]
     pub fn ensure_v3_coverage(&self) -> Result<(), InterceptError> {
         if let Some(interceptor) = self
@@ -86,27 +37,14 @@ impl InterceptorChain {
         Ok(())
     }
 
-    /// Run header/identity policy before decoding an untrusted V2 envelope.
+    /// Run header/identity policy before decoding an untrusted staged envelope.
     #[cfg(feature = "v2-query")]
-    pub async fn execute_v2_transport(
+    pub async fn execute_v3_transport(
         &self,
         ctx: &mut RequestContext,
     ) -> Result<(), InterceptError> {
         for interceptor in &self.interceptors {
-            interceptor.on_v2_transport(ctx).await?;
-        }
-        Ok(())
-    }
-
-    /// Run typed plan policy after validation and before replay/provider work.
-    #[cfg(feature = "v2-query")]
-    pub async fn execute_v2_request(
-        &self,
-        request: &V2PolicyRequest<'_>,
-        ctx: &mut RequestContext,
-    ) -> Result<(), InterceptError> {
-        for interceptor in &self.interceptors {
-            interceptor.on_v2_request(request, ctx).await?;
+            interceptor.on_v3_transport(ctx).await?;
         }
         Ok(())
     }
@@ -161,12 +99,12 @@ impl InterceptorChain {
         }
     }
 
-    /// Run every V2 response hook even when one rejects, so audit evidence is
+    /// Run every staged response hook even when one rejects, so audit evidence is
     /// not skipped by interceptor ordering. The first error remains decisive.
     #[cfg(feature = "v2-query")]
-    pub async fn execute_v2_response(
+    pub async fn execute_v3_response(
         &self,
-        outcome: &V2PolicyOutcome<'_>,
+        outcome: &V3PolicyOutcome<'_>,
         ctx: &RequestContext,
     ) -> Result<(), InterceptError> {
         // Poll every hook concurrently. A stuck policy can still consume the
@@ -176,7 +114,7 @@ impl InterceptorChain {
             self.interceptors
                 .iter()
                 .rev()
-                .map(|interceptor| interceptor.on_v2_response(outcome, ctx)),
+                .map(|interceptor| interceptor.on_v3_response(outcome, ctx)),
         )
         .await;
         results
@@ -188,460 +126,5 @@ impl InterceptorChain {
     /// Return configured interceptor names in request order.
     pub fn interceptor_names(&self) -> Vec<&str> {
         self.interceptors.iter().map(|i| i.name()).collect()
-    }
-}
-
-#[cfg(test)]
-#[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
-    use std::collections::HashMap;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use super::*;
-
-    fn make_ctx() -> RequestContext {
-        RequestContext {
-            request_id: "test-req".into(),
-            client_id: "test-client".into(),
-            database: "test-db".into(),
-            transaction_type: "read".into(),
-            metadata: HashMap::new(),
-            timestamp: chrono::Utc::now(),
-            crud_info: None,
-        }
-    }
-
-    /// Passes through clauses unchanged, increments a counter.
-    struct CountingInterceptor {
-        name: String,
-        request_count: Arc<AtomicUsize>,
-        response_count: Arc<AtomicUsize>,
-    }
-
-    impl CountingInterceptor {
-        fn new(name: &str) -> Self {
-            Self {
-                name: name.to_string(),
-                request_count: Arc::new(AtomicUsize::new(0)),
-                response_count: Arc::new(AtomicUsize::new(0)),
-            }
-        }
-    }
-
-    impl Interceptor for CountingInterceptor {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn on_request<'a>(
-            &'a self,
-            clauses: Vec<Clause>,
-            _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-        {
-            Box::pin(async move {
-                self.request_count.fetch_add(1, Ordering::SeqCst);
-                Ok(clauses)
-            })
-        }
-
-        fn on_response<'a>(
-            &'a self,
-            _result: &'a serde_json::Value,
-            _ctx: &'a RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-            Box::pin(async move {
-                self.response_count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
-        }
-    }
-
-    /// Rejects on_request with the given error.
-    struct RejectingInterceptor {
-        name: String,
-    }
-
-    impl Interceptor for RejectingInterceptor {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn on_request<'a>(
-            &'a self,
-            _clauses: Vec<Clause>,
-            _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-        {
-            Box::pin(async {
-                Err(InterceptError::AccessDenied {
-                    reason: "rejected".into(),
-                })
-            })
-        }
-
-        fn on_response<'a>(
-            &'a self,
-            _result: &'a serde_json::Value,
-            _ctx: &'a RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-            Box::pin(async { Err(InterceptError::Internal("response rejected".into())) })
-        }
-    }
-
-    /// Adds a metadata entry on request.
-    struct MetadataInterceptor;
-
-    impl Interceptor for MetadataInterceptor {
-        fn name(&self) -> &str {
-            "metadata"
-        }
-
-        fn on_request<'a>(
-            &'a self,
-            clauses: Vec<Clause>,
-            ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-        {
-            Box::pin(async move {
-                ctx.metadata
-                    .insert("marker".into(), serde_json::json!("set"));
-                Ok(clauses)
-            })
-        }
-    }
-
-    /// Records the order it was called in a shared vec.
-    struct OrderTrackingInterceptor {
-        name: String,
-        order: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    impl Interceptor for OrderTrackingInterceptor {
-        fn name(&self) -> &str {
-            &self.name
-        }
-
-        fn on_request<'a>(
-            &'a self,
-            clauses: Vec<Clause>,
-            _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-        {
-            Box::pin(async move {
-                self.order
-                    .lock()
-                    .unwrap()
-                    .push(format!("req:{}", self.name));
-                Ok(clauses)
-            })
-        }
-
-        fn on_response<'a>(
-            &'a self,
-            _result: &'a serde_json::Value,
-            _ctx: &'a RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-            Box::pin(async move {
-                self.order
-                    .lock()
-                    .unwrap()
-                    .push(format!("resp:{}", self.name));
-                Ok(())
-            })
-        }
-    }
-
-    #[cfg(feature = "v2-query")]
-    struct V2ResponseInterceptor {
-        count: Arc<AtomicUsize>,
-        hangs: bool,
-        name: &'static str,
-    }
-
-    #[cfg(feature = "v2-query")]
-    impl Interceptor for V2ResponseInterceptor {
-        fn name(&self) -> &str {
-            self.name
-        }
-
-        fn on_request<'a>(
-            &'a self,
-            clauses: Vec<Clause>,
-            _ctx: &'a mut RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-        {
-            Box::pin(async move { Ok(clauses) })
-        }
-
-        fn supports_v2(&self) -> bool {
-            true
-        }
-
-        fn on_v2_response<'a>(
-            &'a self,
-            _outcome: &'a V2PolicyOutcome<'a>,
-            _ctx: &'a RequestContext,
-        ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-            Box::pin(async move {
-                self.count.fetch_add(1, Ordering::SeqCst);
-                if self.hangs {
-                    std::future::pending::<()>().await;
-                }
-                Ok(())
-            })
-        }
-    }
-
-    // --- execute_request tests ---
-
-    #[tokio::test]
-    async fn empty_chain_execute_request_passes_through() {
-        let chain = InterceptorChain::new(vec![]);
-        let mut ctx = make_ctx();
-        let clauses: Vec<Clause> = vec![];
-        let result = chain.execute_request(clauses, &mut ctx).await.unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[tokio::test]
-    async fn single_interceptor_request_passes() {
-        let interceptor = CountingInterceptor::new("counter");
-        let req_count = interceptor.request_count.clone();
-        let chain = InterceptorChain::new(vec![Box::new(interceptor)]);
-
-        let mut ctx = make_ctx();
-        chain.execute_request(vec![], &mut ctx).await.unwrap();
-        assert_eq!(req_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn single_interceptor_request_rejects() {
-        let chain = InterceptorChain::new(vec![Box::new(RejectingInterceptor {
-            name: "rejector".into(),
-        })]);
-        assert_eq!(chain.interceptor_names(), vec!["rejector"]);
-        let mut ctx = make_ctx();
-        let result = chain.execute_request(vec![], &mut ctx).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn multiple_interceptors_request_chain_order() {
-        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let chain = InterceptorChain::new(vec![
-            Box::new(OrderTrackingInterceptor {
-                name: "first".into(),
-                order: order.clone(),
-            }),
-            Box::new(OrderTrackingInterceptor {
-                name: "second".into(),
-                order: order.clone(),
-            }),
-            Box::new(OrderTrackingInterceptor {
-                name: "third".into(),
-                order: order.clone(),
-            }),
-        ]);
-        assert_eq!(chain.interceptor_names(), vec!["first", "second", "third"]);
-        let mut ctx = make_ctx();
-        chain.execute_request(vec![], &mut ctx).await.unwrap();
-
-        let calls = order.lock().unwrap();
-        assert_eq!(*calls, vec!["req:first", "req:second", "req:third"]);
-    }
-
-    #[tokio::test]
-    async fn first_interceptor_rejects_second_never_runs() {
-        let second = CountingInterceptor::new("second");
-        let second_count = second.request_count.clone();
-
-        let chain = InterceptorChain::new(vec![
-            Box::new(RejectingInterceptor {
-                name: "rejector".into(),
-            }),
-            Box::new(second),
-        ]);
-        let mut ctx = make_ctx();
-        let result = chain.execute_request(vec![], &mut ctx).await;
-        assert!(result.is_err());
-        assert_eq!(second_count.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn second_interceptor_rejects() {
-        let first = CountingInterceptor::new("first");
-        let first_count = first.request_count.clone();
-
-        let chain = InterceptorChain::new(vec![
-            Box::new(first),
-            Box::new(RejectingInterceptor {
-                name: "rejector".into(),
-            }),
-        ]);
-        let mut ctx = make_ctx();
-        let result = chain.execute_request(vec![], &mut ctx).await;
-        assert!(result.is_err());
-        assert_eq!(first_count.load(Ordering::SeqCst), 1); // first did run
-    }
-
-    #[tokio::test]
-    async fn request_interceptor_can_modify_context() {
-        let chain = InterceptorChain::new(vec![Box::new(MetadataInterceptor)]);
-        assert_eq!(chain.interceptor_names(), vec!["metadata"]);
-        let mut ctx = make_ctx();
-        chain.execute_request(vec![], &mut ctx).await.unwrap();
-        assert_eq!(
-            ctx.metadata.get("marker").unwrap(),
-            &serde_json::json!("set")
-        );
-    }
-
-    // --- execute_response tests ---
-
-    #[tokio::test]
-    async fn empty_chain_execute_response_passes_through() {
-        let chain = InterceptorChain::new(vec![]);
-        let ctx = make_ctx();
-        let result = chain.execute_response(&serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn single_interceptor_response_success() {
-        let interceptor = CountingInterceptor::new("counter");
-        let resp_count = interceptor.response_count.clone();
-        let chain = InterceptorChain::new(vec![Box::new(interceptor)]);
-
-        let ctx = make_ctx();
-        chain
-            .execute_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(resp_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn single_interceptor_response_failure() {
-        let chain = InterceptorChain::new(vec![Box::new(RejectingInterceptor {
-            name: "rejector".into(),
-        })]);
-        let ctx = make_ctx();
-        let result = chain.execute_response(&serde_json::json!({}), &ctx).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn multiple_interceptors_response_reverse_order() {
-        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let chain = InterceptorChain::new(vec![
-            Box::new(OrderTrackingInterceptor {
-                name: "first".into(),
-                order: order.clone(),
-            }),
-            Box::new(OrderTrackingInterceptor {
-                name: "second".into(),
-                order: order.clone(),
-            }),
-            Box::new(OrderTrackingInterceptor {
-                name: "third".into(),
-                order: order.clone(),
-            }),
-        ]);
-        let ctx = make_ctx();
-        chain
-            .execute_response(&serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
-
-        let calls = order.lock().unwrap();
-        assert_eq!(*calls, vec!["resp:third", "resp:second", "resp:first"]);
-    }
-
-    #[tokio::test]
-    async fn response_last_in_reverse_fails_others_skipped() {
-        // "third" is first in reverse order — if it fails, "second" and "first" don't run
-        let first = CountingInterceptor::new("first");
-        let first_resp = first.response_count.clone();
-        let second = CountingInterceptor::new("second");
-        let second_resp = second.response_count.clone();
-
-        let chain = InterceptorChain::new(vec![
-            Box::new(first),
-            Box::new(second),
-            Box::new(RejectingInterceptor {
-                name: "third".into(),
-            }),
-        ]);
-        let ctx = make_ctx();
-        let result = chain.execute_response(&serde_json::json!({}), &ctx).await;
-        assert!(result.is_err());
-        // "third" is last added but first in reverse — it fails, so "second" and "first" never run
-        assert_eq!(first_resp.load(Ordering::SeqCst), 0);
-        assert_eq!(second_resp.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    #[cfg(feature = "v2-query")]
-    async fn hanging_v2_response_hook_does_not_starve_other_auditors() {
-        let hanging_count = Arc::new(AtomicUsize::new(0));
-        let audit_count = Arc::new(AtomicUsize::new(0));
-        let chain = InterceptorChain::new(vec![
-            Box::new(V2ResponseInterceptor {
-                count: Arc::clone(&audit_count),
-                hangs: false,
-                name: "audit",
-            }),
-            Box::new(V2ResponseInterceptor {
-                count: Arc::clone(&hanging_count),
-                hangs: true,
-                name: "hanging",
-            }),
-        ]);
-        let context = make_ctx();
-        let outcome = V2PolicyOutcome::new(false, "transaction_deadline_exceeded", 0);
-        assert!(
-            tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                chain.execute_v2_response(&outcome, &context),
-            )
-            .await
-            .is_err(),
-            "the test hanging hook must consume the external audit bound",
-        );
-        assert_eq!(hanging_count.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            audit_count.load(Ordering::SeqCst),
-            1,
-            "the later auditor must be invoked despite a hanging peer",
-        );
-    }
-
-    // --- interceptor_names tests ---
-
-    #[test]
-    fn interceptor_names_empty() {
-        let chain = InterceptorChain::new(vec![]);
-        assert!(chain.interceptor_names().is_empty());
-    }
-
-    #[test]
-    fn interceptor_names_single() {
-        let chain =
-            InterceptorChain::new(vec![Box::new(CountingInterceptor::new("my-interceptor"))]);
-        assert_eq!(chain.interceptor_names(), vec!["my-interceptor"]);
-    }
-
-    #[test]
-    fn interceptor_names_multiple() {
-        let chain = InterceptorChain::new(vec![
-            Box::new(CountingInterceptor::new("alpha")),
-            Box::new(CountingInterceptor::new("beta")),
-            Box::new(CountingInterceptor::new("gamma")),
-        ]);
-        assert_eq!(chain.interceptor_names(), vec!["alpha", "beta", "gamma"]);
     }
 }

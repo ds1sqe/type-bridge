@@ -93,6 +93,20 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed server `Interceptor::{on_request,on_response,supports_v2,on_v2_request}`,
+  `V2PolicyRequest`, `CrudInterceptor`, `CrudInterceptorAdapter`, `CrudInfo`,
+  `CrudOperation`, `interceptor::TypeKind`, and `RequestContext::crud_info`.
+  Use staged `on_v3_plan` / `on_v3_commit` policies.
+  `on_v2_transport` / `on_v2_response` become `on_v3_transport` /
+  `on_v3_response`; `V2PolicyOutcome` becomes `V3PolicyOutcome`.
+  Pipeline `v2_request_context`, `begin_v2_request`, and `finish_v2_request`
+  become their `v3_` equivalents; `validate_v2_coverage` /
+  `authorize_v2_request` are replaced by `validate_v3_coverage` /
+  `authorize_v3_plan`. `InterceptorChain::execute_request`,
+  `execute_response`, `ensure_v2_coverage`, and `execute_v2_request` are
+  replaced by the staged chain hooks; `execute_v2_transport` and
+  `execute_v2_response` become their `v3_` equivalents.
+
 - Removed server `QueryExecutor`, `QueryInput`, `QueryOutput`,
   `ValidateInput`, `ValidateOutput`, `ValidationErrorDetail`,
   `QueryPipeline::{execute_query,validate,schema,is_connected,default_database}`,

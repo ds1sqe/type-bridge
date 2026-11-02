@@ -33,8 +33,8 @@ use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::ConnectOptions;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
 use type_bridge_server::interceptor::{
-    InterceptError, Interceptor, RequestContext, StagedWriteAuthority, V2PolicyOutcome,
-    V3CommitOutcome, V3PolicyPlan,
+    InterceptError, Interceptor, RequestContext, StagedWriteAuthority, V3CommitOutcome,
+    V3PolicyOutcome, V3PolicyPlan,
 };
 use type_bridge_server::pipeline::PipelineBuilder;
 use type_bridge_server::transport::staged_state::StagedQueryState;
@@ -67,30 +67,12 @@ impl Interceptor for LivePolicy {
         "live-staged-policy"
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
-
-    fn supports_v2(&self) -> bool {
-        true
-    }
-
     fn supports_v3(&self) -> bool {
         true
     }
 
     /// A vouching policy authenticates its caller.
-    fn on_v2_transport<'a>(
+    fn on_v3_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -133,9 +115,9 @@ impl Interceptor for LivePolicy {
         })
     }
 
-    fn on_v2_response<'a>(
+    fn on_v3_response<'a>(
         &'a self,
-        _outcome: &'a V2PolicyOutcome<'a>,
+        _outcome: &'a V3PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         let withhold = self.withhold_next_reply.swap(false, Ordering::SeqCst);
@@ -257,7 +239,7 @@ impl Proxy {
         ]);
         let mut ctx = pipeline.v3_request_context(metadata).expect("v3 context");
         pipeline
-            .begin_v2_request(&mut ctx)
+            .begin_v3_request(&mut ctx)
             .await
             .expect("transport admission");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

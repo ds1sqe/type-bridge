@@ -26,4 +26,3 @@ pub mod transport;
 #[cfg(feature = "typedb")]
 /// TypeDB-backed query executor implementation.
 pub mod typedb;
-

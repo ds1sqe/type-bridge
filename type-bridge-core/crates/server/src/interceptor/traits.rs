@@ -13,14 +13,11 @@ use type_bridge_contract::id::TypeId;
 #[cfg(feature = "v2-query")]
 use type_bridge_contract::query_plan::v3::Operation;
 #[cfg(feature = "v2-query")]
-use type_bridge_contract::query_plan::{InputRow, QueryInvocation, QueryPlan, QueryPlanV3};
+use type_bridge_contract::query_plan::{InputRow, QueryPlanV3};
 #[cfg(feature = "v2-query")]
 use type_bridge_contract::query_remote_v3::StagedKindV3;
 #[cfg(feature = "v2-query")]
 use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkExecutionDiagnostic};
-use type_bridge_core_lib::ast::Clause;
-
-use super::crud_info::CrudInfo;
 
 /// Metadata attached to each request flowing through the interceptor chain.
 #[derive(Clone)]
@@ -37,8 +34,6 @@ pub struct RequestContext {
     pub metadata: HashMap<String, serde_json::Value>,
     /// UTC time at which the context was constructed.
     pub timestamp: chrono::DateTime<chrono::Utc>,
-    /// CRUD analysis produced by the adapter, when available.
-    pub crud_info: Option<CrudInfo>,
 }
 
 impl fmt::Debug for RequestContext {
@@ -50,53 +45,25 @@ impl fmt::Debug for RequestContext {
             .field("client_id", &self.client_id)
             .field("database", &self.database)
             .field("transaction_type", &self.transaction_type)
-            // V2 transport policy metadata deliberately contains raw HTTP
+            // Staged transport policy metadata deliberately contains raw HTTP
             // credentials. Keep explicit interceptor access while making the
             // ordinary whole-context debug path value-blind.
             .field("metadata_keys", &metadata_keys)
             .field("timestamp", &self.timestamp)
-            .field("crud_info", &self.crud_info)
             .finish()
     }
 }
 
-/// Immutable typed V2 contract presented to authorization policies after
-/// provider-independent validation and before replay/provider admission.
+/// Redacted staged result evidence presented to response and audit policies.
 #[cfg(feature = "v2-query")]
-pub struct V2PolicyRequest<'a> {
-    plan: &'a QueryPlan,
-    invocation: &'a QueryInvocation,
-}
-
-#[cfg(feature = "v2-query")]
-impl<'a> V2PolicyRequest<'a> {
-    pub(crate) const fn new(plan: &'a QueryPlan, invocation: &'a QueryInvocation) -> Self {
-        Self { plan, invocation }
-    }
-
-    /// Return the exact schema-bound plan admitted by contract validation.
-    #[must_use]
-    pub const fn plan(&self) -> &'a QueryPlan {
-        self.plan
-    }
-
-    /// Return the exact operation and input rows bound into the request.
-    #[must_use]
-    pub const fn invocation(&self) -> &'a QueryInvocation {
-        self.invocation
-    }
-}
-
-/// Redacted V2 result evidence presented to response and audit policies.
-#[cfg(feature = "v2-query")]
-pub struct V2PolicyOutcome<'a> {
+pub struct V3PolicyOutcome<'a> {
     success: bool,
     code: &'a str,
     response_bytes: usize,
 }
 
 #[cfg(feature = "v2-query")]
-impl<'a> V2PolicyOutcome<'a> {
+impl<'a> V3PolicyOutcome<'a> {
     /// Construct one redacted outcome without provider or query payload text.
     #[must_use]
     pub const fn new(success: bool, code: &'a str, response_bytes: usize) -> Self {
@@ -297,7 +264,7 @@ pub enum InterceptError {
 /// One policy's write admission for a staged V3 request.
 ///
 /// The server has no built-in authentication. A policy that authenticated
-/// the caller in [`Interceptor::on_v2_transport`] vouches for writes here.
+/// the caller in [`Interceptor::on_v3_transport`] vouches for writes here.
 #[cfg(feature = "v2-query")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -319,29 +286,10 @@ pub trait Interceptor: Send + Sync {
     /// Human-readable name for logging.
     fn name(&self) -> &str;
 
-    /// Called before the query is compiled and sent to TypeDB.
-    /// Returns the (possibly transformed) clauses.
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<Clause>,
-        ctx: &'a mut RequestContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>;
-
-    /// Declare that this policy intentionally covers the typed V2 lifecycle.
-    ///
-    /// The default is fail-closed: an AST policy cannot silently receive an
-    /// empty legacy query and accidentally authorize a V2 plan it never saw.
-    #[cfg(feature = "v2-query")]
-    fn supports_v2(&self) -> bool {
-        false
-    }
-
     /// Declare that this policy intentionally covers staged V3 requests.
     ///
-    /// The default is fail-closed: `/v3/staged` never calls
-    /// [`Self::on_v2_request`], so a V2 policy that authorizes typed plans
-    /// there would be bypassed. While any configured policy leaves this
-    /// `false`, every V3 request is refused at transport admission.
+    /// The default is fail-closed: every configured policy must explicitly
+    /// cover staged requests before transport admission can proceed.
     #[cfg(feature = "v2-query")]
     fn supports_v3(&self) -> bool {
         false
@@ -349,18 +297,8 @@ pub trait Interceptor: Send + Sync {
 
     /// Authenticate and rate-limit transport metadata before envelope decode.
     #[cfg(feature = "v2-query")]
-    fn on_v2_transport<'a>(
+    fn on_v3_transport<'a>(
         &'a self,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Authorize the exact validated plan and invocation before replay or I/O.
-    #[cfg(feature = "v2-query")]
-    fn on_v2_request<'a>(
-        &'a self,
-        _request: &'a V2PolicyRequest<'a>,
         _ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
@@ -420,19 +358,9 @@ pub trait Interceptor: Send + Sync {
 
     /// Observe one redacted success or failure outcome for audit/policy.
     #[cfg(feature = "v2-query")]
-    fn on_v2_response<'a>(
+    fn on_v3_response<'a>(
         &'a self,
-        _outcome: &'a V2PolicyOutcome<'a>,
-        _ctx: &'a RequestContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Called after query execution, before response is sent to client.
-    /// Default implementation is a no-op pass-through.
-    fn on_response<'a>(
-        &'a self,
-        _result: &'a serde_json::Value,
+        _outcome: &'a V3PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
@@ -483,7 +411,6 @@ mod tests {
             transaction_type: "read".into(),
             metadata: HashMap::new(),
             timestamp: chrono::Utc::now(),
-            crud_info: None,
         };
         let cloned = ctx.clone();
         assert_eq!(cloned.request_id, "req-1");
@@ -509,7 +436,6 @@ mod tests {
             transaction_type: "read".into(),
             metadata,
             timestamp: chrono::Utc::now(),
-            crud_info: None,
         };
         let debug = format!("{:?}", ctx);
         assert!(debug.contains("req-1"));
@@ -519,76 +445,5 @@ mod tests {
         assert!(!debug.contains("private-tenant"));
         assert!(!debug.contains("authorization"));
         assert!(!debug.contains("cookie"));
-    }
-
-    #[tokio::test]
-    async fn default_on_response_returns_ok() {
-        struct MinimalInterceptor;
-
-        impl Interceptor for MinimalInterceptor {
-            fn name(&self) -> &str {
-                "minimal"
-            }
-            fn on_request<'a>(
-                &'a self,
-                clauses: Vec<Clause>,
-                _ctx: &'a mut RequestContext,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-            {
-                Box::pin(async move { Ok(clauses) })
-            }
-            // on_response uses default impl
-        }
-
-        let interceptor = MinimalInterceptor;
-
-        assert_eq!(interceptor.name(), "minimal");
-        let mut ctx = RequestContext {
-            request_id: "req-1".into(),
-            client_id: "client-1".into(),
-            database: "db".into(),
-            transaction_type: "read".into(),
-            metadata: HashMap::new(),
-            timestamp: chrono::Utc::now(),
-            crud_info: None,
-        };
-        let req_result = interceptor.on_request(vec![], &mut ctx).await;
-        assert!(req_result.is_ok());
-
-        let result = interceptor.on_response(&serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn interceptor_trait_object_safety() {
-        struct DummyInterceptor;
-
-        impl Interceptor for DummyInterceptor {
-            fn name(&self) -> &str {
-                "dummy"
-            }
-            fn on_request<'a>(
-                &'a self,
-                clauses: Vec<Clause>,
-                _ctx: &'a mut RequestContext,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Clause>, InterceptError>> + Send + 'a>>
-            {
-                Box::pin(async move { Ok(clauses) })
-            }
-        }
-
-        let boxed: Box<dyn Interceptor> = Box::new(DummyInterceptor);
-        assert_eq!(boxed.name(), "dummy");
-        let mut ctx = RequestContext {
-            request_id: "req-1".into(),
-            client_id: "client-1".into(),
-            database: "db".into(),
-            transaction_type: "read".into(),
-            metadata: HashMap::new(),
-            timestamp: chrono::Utc::now(),
-            crud_info: None,
-        };
-        let result = boxed.on_request(vec![], &mut ctx).await;
-        assert!(result.unwrap().is_empty());
     }
 }

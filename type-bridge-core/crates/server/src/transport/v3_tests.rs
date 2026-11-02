@@ -101,13 +101,13 @@ fn configured_v3_fixture(
 async fn direct(fixture: &V3Fixture, request: &StagedRequestV3) -> StagedOutcome {
     let body = request.encode().expect("request bytes");
     let pipeline = fixture.executor.pipeline();
-    let mut metadata = v2_request_metadata(&HeaderMap::new(), "staged");
+    let mut metadata = staged_request_metadata(&HeaderMap::new(), "staged");
     metadata.insert("transport".to_owned(), serde_json::json!("v3"));
     let mut ctx = pipeline
         .v3_request_context(metadata)
         .expect("v3 request context");
     pipeline
-        .begin_v2_request(&mut ctx)
+        .begin_v3_request(&mut ctx)
         .await
         .expect("transport admission");
     let deadline = Instant::now() + fixture.query.execution_timeout;
@@ -128,7 +128,7 @@ impl Interceptor for VouchingPolicy {
         "vouching-policy"
     }
 
-    fn on_v2_transport<'a>(
+    fn on_v3_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -136,23 +136,7 @@ impl Interceptor for VouchingPolicy {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
 
-    fn supports_v2(&self) -> bool {
-        true
-    }
 
     fn supports_v3(&self) -> bool {
         true
@@ -410,29 +394,13 @@ impl Interceptor for Arc<StagedGate> {
         "staged-gate"
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
 
-    fn supports_v2(&self) -> bool {
-        true
-    }
 
     fn supports_v3(&self) -> bool {
         self.supports_v3
     }
 
-    fn on_v2_transport<'a>(
+    fn on_v3_transport<'a>(
         &'a self,
         _ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -440,17 +408,6 @@ impl Interceptor for Arc<StagedGate> {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_v2_request<'a>(
-        &'a self,
-        _request: &'a V2PolicyRequest<'a>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(InterceptError::AccessDenied {
-                reason: "typed V2 plans are refused".into(),
-            })
-        })
-    }
 
     fn on_v3_write_authority<'a>(
         &'a self,
@@ -618,31 +575,15 @@ impl Interceptor for Arc<WithholdsReplies> {
         "withholds-replies"
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
 
-    fn supports_v2(&self) -> bool {
-        true
-    }
 
     fn supports_v3(&self) -> bool {
         true
     }
 
-    fn on_v2_response<'a>(
+    fn on_v3_response<'a>(
         &'a self,
-        outcome: &'a V2PolicyOutcome<'a>,
+        outcome: &'a V3PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         self.audited
@@ -821,7 +762,7 @@ impl Interceptor for Arc<HookPolicy> {
         "hook-policy"
     }
 
-    fn on_v2_transport<'a>(
+    fn on_v3_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -829,23 +770,7 @@ impl Interceptor for Arc<HookPolicy> {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
 
-    fn supports_v2(&self) -> bool {
-        true
-    }
 
     fn supports_v3(&self) -> bool {
         true
@@ -1482,7 +1407,7 @@ impl Interceptor for Arc<OrderPolicy> {
         "order-policy"
     }
 
-    fn on_v2_transport<'a>(
+    fn on_v3_transport<'a>(
         &'a self,
         ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
@@ -1491,23 +1416,7 @@ impl Interceptor for Arc<OrderPolicy> {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_request<'a>(
-        &'a self,
-        clauses: Vec<type_bridge_core_lib::ast::Clause>,
-        _ctx: &'a mut RequestContext,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<Vec<type_bridge_core_lib::ast::Clause>, InterceptError>>
-                + Send
-                + 'a,
-        >,
-    > {
-        Box::pin(async move { Ok(clauses) })
-    }
 
-    fn supports_v2(&self) -> bool {
-        true
-    }
 
     fn supports_v3(&self) -> bool {
         true
@@ -1544,9 +1453,9 @@ impl Interceptor for Arc<OrderPolicy> {
         Box::pin(async { Ok(()) })
     }
 
-    fn on_v2_response<'a>(
+    fn on_v3_response<'a>(
         &'a self,
-        outcome: &'a V2PolicyOutcome<'a>,
+        outcome: &'a V3PolicyOutcome<'a>,
         _ctx: &'a RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         self.events

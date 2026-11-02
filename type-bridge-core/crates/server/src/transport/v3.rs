@@ -48,12 +48,12 @@ use type_bridge_orm::query_v2_remote::encode_unbound_remote_failure_v2;
 use type_bridge_orm::session::staged::{PendingError, TransactionKind, TransactionOptions};
 
 use super::staged_state::{
-    ReplayStoreError, StagedQueryState, V2_PREFLIGHT_SLOTS, await_before_deadline, body_oversized,
-    deadline_exceeded, declared_v2_body_oversized, envelope_response, policy_rejected,
-    replay_capacity, replay_unavailable, replayed, response_audit_deadline, unavailable,
-    v2_request_metadata,
+    ReplayStoreError, STAGED_PREFLIGHT_SLOTS, StagedQueryState, await_before_deadline,
+    body_oversized, deadline_exceeded, declared_staged_body_oversized, envelope_response,
+    policy_rejected, replay_capacity, replay_unavailable, replayed, response_audit_deadline,
+    staged_request_metadata, unavailable,
 };
-use crate::interceptor::{RequestContext, V2PolicyOutcome, V3CommitOutcome, V3PolicyPlan};
+use crate::interceptor::{RequestContext, V3CommitOutcome, V3PolicyOutcome, V3PolicyPlan};
 use crate::pipeline::QueryPipeline;
 
 /// Code of the signed failure refusing a staged write no policy admitted.
@@ -288,7 +288,7 @@ async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Re
         Ok(ctx) => ctx,
         Err(response) => return *response,
     };
-    if declared_v2_body_oversized(request.headers(), state.query.body_limit_bytes()) {
+    if declared_staged_body_oversized(request.headers(), state.query.body_limit_bytes()) {
         let outcome = refuse(state, deadline, &ctx, None, body_oversized()).await;
         return envelope_response(outcome.reply);
     }
@@ -317,7 +317,7 @@ impl StagedExecutor {
     ///
     /// `ctx` is the caller the transport admitted: build it with
     /// [`QueryPipeline::v3_request_context`] and
-    /// [`QueryPipeline::begin_v2_request`], as the router does. `deadline`
+    /// [`QueryPipeline::begin_v3_request`], as the router does. `deadline`
     /// is the server's execution deadline; the request's own lifetime
     /// tightens it.
     ///
@@ -354,7 +354,7 @@ async fn execute(
     tracing::debug!(target: "type_bridge.io", bytes_in = body.len(), "type_bridge.io.request");
     let permit = match await_before_deadline(
         deadline,
-        Arc::clone(&V2_PREFLIGHT_SLOTS).acquire_owned(),
+        Arc::clone(&STAGED_PREFLIGHT_SLOTS).acquire_owned(),
     )
     .await
     {
@@ -803,7 +803,7 @@ async fn admit_transport(
     endpoint: &'static str,
     deadline: Instant,
 ) -> Result<RequestContext, Box<Response>> {
-    let mut metadata = v2_request_metadata(headers, endpoint);
+    let mut metadata = staged_request_metadata(headers, endpoint);
     metadata.insert("transport".to_owned(), serde_json::json!("v3"));
     metadata.insert("v3_endpoint".to_owned(), serde_json::json!(endpoint));
     metadata.remove("v2_endpoint");
@@ -813,7 +813,7 @@ async fn admit_transport(
         .pipeline
         .v3_request_context(metadata)
         .map_err(|_| Box::new(envelope_response(state.unbound(&policy_rejected()))))?;
-    match await_before_deadline(deadline, state.pipeline.begin_v2_request(&mut ctx)).await {
+    match await_before_deadline(deadline, state.pipeline.begin_v3_request(&mut ctx)).await {
         Some(Ok(())) => Ok(ctx),
         Some(Err(_)) => Err(Box::new(envelope_response(
             refuse(state, deadline, &ctx, None, policy_rejected())
@@ -901,10 +901,10 @@ async fn police(
     code: &str,
     len: usize,
 ) -> Option<Diagnostic> {
-    let outcome = V2PolicyOutcome::new(success, code, len);
+    let outcome = V3PolicyOutcome::new(success, code, len);
     match await_before_deadline(
         response_audit_deadline(deadline),
-        state.pipeline.finish_v2_request(&outcome, ctx),
+        state.pipeline.finish_v3_request(&outcome, ctx),
     )
     .await
     {

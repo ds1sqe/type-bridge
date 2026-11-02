@@ -156,9 +156,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
     #[cfg(feature = "v2-query")]
     if config.v2.enabled {
-        pipeline
-            .validate_v2_coverage()
-            .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
         // V3 coverage does not gate startup, so V2-only policies keep
         // serving V2; the staged routes refuse every request instead.
         if let Err(error) = pipeline.validate_v3_coverage() {
@@ -424,7 +421,7 @@ mod tests {
             file_path: String::new(),
         })
         .expect("audit interceptor");
-        assert!(interceptor.supports_v2());
+        assert!(interceptor.supports_v3());
         assert!(interceptor.supports_v3());
     }
 }

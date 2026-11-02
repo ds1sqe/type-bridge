@@ -8,7 +8,6 @@ use std::pin::Pin;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::Router;
 use axum::http::HeaderMap;
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
@@ -28,7 +27,7 @@ use type_bridge_orm::query_v2_prepared::{
 };
 #[cfg(test)]
 use type_bridge_orm::query_v2_remote::Ed25519RemoteReplyVerifier;
-use type_bridge_orm::query_v2_remote::{RemoteReplySigningKey, encode_unbound_remote_failure_v2};
+use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
 use type_bridge_orm::session::backend::{AnswerLimits, MAX_QUERY_V2_SCHEMA_FENCE_DURATION};
 use type_bridge_orm::session::database::Database;
 use type_bridge_schema::{ManagedDeltaContext, ResolvedSchema};
@@ -38,14 +37,14 @@ const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_REPLAY_CAPACITY: usize = 100_000;
 const RESPONSE_AUDIT_GRACE: Duration = Duration::from_millis(100);
 const TRANSACTION_CLOSE_GRACE: Duration = Duration::from_secs(1);
-const V2_PREFLIGHT_CONCURRENCY: usize = 4;
+const STAGED_PREFLIGHT_CONCURRENCY: usize = 4;
 
-fn new_v2_preflight_slots() -> Arc<tokio::sync::Semaphore> {
-    Arc::new(tokio::sync::Semaphore::new(V2_PREFLIGHT_CONCURRENCY))
+fn new_staged_preflight_slots() -> Arc<tokio::sync::Semaphore> {
+    Arc::new(tokio::sync::Semaphore::new(STAGED_PREFLIGHT_CONCURRENCY))
 }
 
-pub(super) static V2_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
-    LazyLock::new(new_v2_preflight_slots);
+pub(super) static STAGED_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(new_staged_preflight_slots);
 
 pub(super) async fn await_before_deadline<F>(deadline: Instant, future: F) -> Option<F::Output>
 where
@@ -56,7 +55,7 @@ where
         .ok()
 }
 
-pub(super) async fn close_v2_transaction(transaction: &mut Transaction) -> Result<(), ()> {
+pub(super) async fn close_staged_transaction(transaction: &mut Transaction) -> Result<(), ()> {
     match tokio::time::timeout(TRANSACTION_CLOSE_GRACE, transaction.close()).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) | Err(_) => Err(()),
@@ -178,7 +177,7 @@ pub struct StagedQueryState {
     pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     managed: ManagedSchemaState,
-    resolved: ResolvedSchema,
+    _resolved: ResolvedSchema,
     pub(super) execution_timeout: Duration,
     pub(super) replay_store: Arc<dyn RemoteReplayStore>,
     pub(super) signer: RemoteReplySigningKey,
@@ -275,7 +274,7 @@ impl StagedQueryState {
             declared,
             delta_context,
             managed,
-            resolved,
+            _resolved: resolved,
             execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
@@ -383,7 +382,7 @@ impl StagedQueryState {
         self.advertisement
             .query_limits()
             .remote_request_bytes
-            .saturating_add(V2_BODY_FRAMING_SLACK_BYTES)
+            .saturating_add(STAGED_BODY_FRAMING_SLACK_BYTES)
     }
 
     /// Admit staged write transactions that no interceptor vouches for.
@@ -401,15 +400,6 @@ impl StagedQueryState {
     pub fn with_execution_timeout(mut self, timeout: Duration) -> Self {
         self.execution_timeout = timeout;
         self
-    }
-
-    fn unbound_failure(&self, diagnostic: &Diagnostic) -> Vec<u8> {
-        encode_unbound_remote_failure_v2(
-            None,
-            diagnostic,
-            &self.advertisement_fingerprint,
-            &self.signer,
-        )
     }
 
     pub(super) async fn verify_live_authority(&self) -> Result<(), Diagnostic> {
@@ -627,7 +617,7 @@ impl StagedQueryState {
             Ok::<(), Diagnostic>(())
         }
         .await;
-        let closed = close_v2_transaction(&mut transaction).await;
+        let closed = close_staged_transaction(&mut transaction).await;
         verified?;
         if closed.is_err() {
             return Err(diagnostic(
@@ -648,9 +638,9 @@ fn standalone_executor_binding() -> RemoteExecutorBinding {
 }
 
 /// Framing slack the HTTP body collector allows beyond the request budget.
-pub(super) const V2_BODY_FRAMING_SLACK_BYTES: usize = 64 * 1024;
+pub(super) const STAGED_BODY_FRAMING_SLACK_BYTES: usize = 64 * 1024;
 
-pub(super) fn declared_v2_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
+pub(super) fn declared_staged_body_oversized(headers: &HeaderMap, limit_bytes: usize) -> bool {
     let Ok(limit) = u64::try_from(limit_bytes) else {
         return false;
     };
@@ -669,7 +659,7 @@ pub(super) fn response_audit_deadline(request_deadline: Instant) -> Instant {
         .unwrap_or(request_deadline)
 }
 
-pub(super) fn v2_request_metadata(
+pub(super) fn staged_request_metadata(
     headers: &HeaderMap,
     endpoint: &'static str,
 ) -> HashMap<String, serde_json::Value> {
@@ -691,8 +681,8 @@ pub(super) fn v2_request_metadata(
         }
     }
     HashMap::from([
-        ("transport".to_owned(), serde_json::json!("v2")),
-        ("v2_endpoint".to_owned(), serde_json::json!(endpoint)),
+        ("transport".to_owned(), serde_json::json!("v3")),
+        ("v3_endpoint".to_owned(), serde_json::json!(endpoint)),
         ("query_format".to_owned(), serde_json::json!("typed-plan")),
         ("http_headers".to_owned(), serde_json::Value::Object(values)),
     ])
@@ -775,7 +765,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use crate::interceptor::{RequestContext, V2PolicyOutcome, V2PolicyRequest};
+    use crate::interceptor::{RequestContext, V3PolicyOutcome};
+    use axum::Router;
     use axum::body::Body;
     use axum::extract::Request;
     use axum::http::StatusCode;
@@ -807,7 +798,6 @@ mod tests {
     use super::*;
 
     const CURRENT_SCHEMA: &str = "define\nattribute transport-name, value string;\nentity transport-person, owns transport-name;";
-    const STALE_SCHEMA: &str = "define\nattribute transport-name, value string;\nentity transport-person, owns transport-name;\nentity transport-unexpected;";
     const TEST_NONCE: &str = "server-route-nonce-000001";
 
     #[derive(Default)]
@@ -852,14 +842,6 @@ mod tests {
                 ),
                 server_version: type_bridge_core_lib::version::Version::new(3, 12, 1),
             }
-        }
-
-        fn with_server_version(
-            mut self,
-            server_version: type_bridge_core_lib::version::Version,
-        ) -> Self {
-            self.server_version = server_version;
-            self
         }
     }
 
