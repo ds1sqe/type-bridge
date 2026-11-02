@@ -1296,6 +1296,234 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_write_plan_execution_cannot_admit_an_unproven_optional_relation_seed() {
+        use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+        use type_bridge_contract::migration_assertion::{
+            AssertionBinding, BindingId, QueryVariable, ValueComparator,
+        };
+        use type_bridge_contract::query_plan::v3::{
+            AttachItem, InsertThing, Operation, Pattern, PlanSpec, QueryPlanV3, Stage, WriteReturns,
+        };
+        use type_bridge_contract::query_plan::{
+            InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
+        };
+        use type_bridge_contract::schema::OwnsFactId;
+        use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+        let id = |value| BindingId::new(value).unwrap();
+        let schema = type_bridge_schema::normalize_documents(&type_bridge_schema::SchemaDocumentSet::parse([(
+            type_bridge_contract::schema::DocumentId::new("public-seed.yaml").unwrap(),
+            "format: typebridge.schema/v2\nattributes:\n  order-id: { value: string }\nentities:\n  account: {}\nrelations:\n  purchase:\n    owns:\n      order-id: { key: true }\n    relates:\n      buyer: { card: { min: 0, max: 1 } }\nplays:\n  account:\n    purchase: [buyer]\n",
+        )]).unwrap()).unwrap();
+        let operand = QueryOperand::Input {
+            column: InputColumnId::new(0),
+        };
+        let lookup = |binding| {
+            vec![
+                QueryPattern::Isa {
+                    binding: id(binding),
+                    type_id: TypeId::new(TypeKind::Entity, "account").unwrap(),
+                    include_subtypes: false,
+                },
+                QueryPattern::Iid {
+                    binding: id(binding),
+                    iid: operand.clone(),
+                },
+            ]
+        };
+        let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        for put in [false, true] {
+            for case in [
+                "guarded",
+                "no_rows",
+                "all_null",
+                "unguarded",
+                "mismatched_guard",
+                "deleted_alias",
+            ] {
+                let thing = InsertThing {
+                    binding: id(1),
+                    type_id: relation.clone(),
+                    fields: vec![(
+                        OwnsFactId::new(relation.clone(), AttributeId::new("order-id").unwrap())
+                            .unwrap(),
+                        QueryOperand::Literal {
+                            value: CanonicalValue::String(CanonicalString::new("seed").unwrap()),
+                        },
+                    )],
+                    players: vec![],
+                };
+                let mut patterns = vec![Pattern::Read(QueryPattern::Try {
+                    patterns: lookup(0),
+                })];
+                if case != "unguarded" {
+                    patterns.push(
+                        QueryPattern::Or {
+                            branches: vec![
+                                vec![QueryPattern::Not {
+                                    patterns: vec![QueryPattern::Value {
+                                        comparator: ValueComparator::Equal,
+                                        left: operand.clone(),
+                                        right: operand.clone(),
+                                    }],
+                                }],
+                                lookup(2),
+                            ],
+                        }
+                        .into(),
+                    );
+                }
+                let mut spec = PlanSpec {
+                    bindings: ["player", "seed", "witness"]
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            AssertionBinding::new(
+                                id(u16::try_from(index).unwrap()),
+                                QueryVariable::new(*name).unwrap(),
+                            )
+                        })
+                        .collect(),
+                    inputs: vec![InputColumn::new(
+                        InputColumnId::new(0),
+                        QueryVariable::new("player_iid").unwrap(),
+                        ValueTypeTag::String,
+                        true,
+                    )],
+                    given_rows: if case == "no_rows" {
+                        None
+                    } else {
+                        Some(vec![InputRow::new(vec![if case == "all_null" {
+                            None
+                        } else {
+                            Some(CanonicalValue::String(
+                                CanonicalString::new("0x01").unwrap(),
+                            ))
+                        }])])
+                    },
+                    operation: Operation::Write {
+                        returns: WriteReturns::Rows,
+                    },
+                    pipeline: vec![
+                        Stage::Match { patterns },
+                        if put {
+                            Stage::Put {
+                                include_subtypes: false,
+                                things: vec![thing],
+                            }
+                        } else {
+                            Stage::Insert {
+                                things: vec![thing],
+                            }
+                        },
+                        Stage::Attach {
+                            items: vec![AttachItem::Links {
+                                optional: true,
+                                relation: id(1),
+                                role: RoleId::new("purchase", "buyer").unwrap(),
+                                player: id(0),
+                            }],
+                        },
+                    ],
+                    output: QueryOutput::Rows {
+                        columns: vec![id(1)],
+                    },
+                    managed_semantics: crate::query_plan_exec::race::touch()
+                        .managed_semantics()
+                        .clone(),
+                    compatibility: None,
+                    functions: vec![],
+                };
+                if case == "mismatched_guard" {
+                    let Stage::Match { patterns } = &mut spec.pipeline[0] else {
+                        unreachable!()
+                    };
+                    let Pattern::Read(QueryPattern::Or { branches }) = &mut patterns[1] else {
+                        unreachable!()
+                    };
+                    let QueryPattern::Iid { iid, .. } = &mut branches[1][1] else {
+                        unreachable!()
+                    };
+                    *iid = QueryOperand::Literal {
+                        value: CanonicalValue::String(CanonicalString::new("0x02").unwrap()),
+                    };
+                }
+                if case == "deleted_alias" {
+                    spec.bindings.push(AssertionBinding::new(
+                        id(3),
+                        QueryVariable::new("deleted_alias").unwrap(),
+                    ));
+                    let Stage::Match { patterns } = &mut spec.pipeline[0] else {
+                        unreachable!()
+                    };
+                    patterns.extend(lookup(3).into_iter().map(Into::into));
+                    spec.pipeline.insert(
+                        1,
+                        Stage::Delete {
+                            items: vec![type_bridge_contract::query_plan::v3::DeleteItem::Thing {
+                                binding: id(3),
+                            }],
+                        },
+                    );
+                }
+                let calls = Arc::new(Calls::default());
+                let context = TransactionContext::new(
+                    super::super::eager::EagerTransaction::new(
+                        Box::new(PlanTransaction {
+                            calls: calls.clone(),
+                            malformed: false,
+                        }),
+                        TxType::Write,
+                        None,
+                    ),
+                    TxType::Write,
+                    CapabilitySet::new(),
+                    None,
+                    DatabaseExecutionIdentity::isolated("public-seed"),
+                    None,
+                );
+                let policy = QueryExecutionResourceLimits::default();
+                let result = async {
+                    // Public execution consumes validated plans; constructing an
+                    // unsafe plan must fail before it can reach that write seam.
+                    let plan = QueryPlanV3::new(spec, &schema)
+                        .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+                    context
+                        .execute_plans(
+                            &[plan],
+                            &policy,
+                            &crate::AnswerCancellation::default(),
+                            crate::QueryExecutionDeadline::for_limits(policy),
+                        )
+                        .await
+                }
+                .await;
+                if case == "guarded" {
+                    assert!(result.is_ok(), "{result:?}");
+                } else {
+                    let OrmError::Match(error) = result.unwrap_err() else {
+                        panic!("typed seed refusal")
+                    };
+                    assert_eq!(
+                        error.code().as_str(),
+                        "query_plan_insert_relation_players",
+                        "{case}"
+                    );
+                }
+                assert_eq!(
+                    calls.queries.load(Ordering::SeqCst),
+                    usize::from(case == "guarded")
+                );
+                assert_eq!(calls.commits.load(Ordering::SeqCst), 0);
+                assert_eq!(calls.rollbacks.load(Ordering::SeqCst), 0);
+                assert_eq!(
+                    context.lifecycle_state().await,
+                    TransactionContextState::Active
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn public_plan_execution_preserves_transaction_kind_ownership_and_poison() {
         for kind in [TxType::Read, TxType::Write, TxType::Schema] {
             for malformed in [false, true] {

@@ -13,7 +13,7 @@ use type_bridge_contract::query_plan::v3::{
 };
 
 #[test]
-fn keyed_relation_put_requires_a_later_mandatory_player_attachment() {
+fn keyed_relation_put_requires_a_player_bound_before_allocation() {
     use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
     use type_bridge_contract::schema::OwnsFactId;
     let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
@@ -44,10 +44,7 @@ fn keyed_relation_put_requires_a_later_mandatory_player_attachment() {
         ];
         let plan = QueryPlanV3::new(spec(stages, vec![1]), &schema());
         if optional {
-            assert_eq!(
-                plan.unwrap_err().code().as_str(),
-                "query_plan_insert_relation_players"
-            );
+            plan.unwrap();
             let mut request = spec(
                 vec![
                     matched(),
@@ -134,6 +131,166 @@ fn optional_fetch_roles_may_belong_to_a_subset_of_candidates() {
                 "query_plan_wrong_role_owner"
             );
         }
+    }
+}
+
+#[test]
+fn deferred_optional_seed_players_require_nonnull_rows_and_matching_existence_guards() {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::migration_assertion::{QueryVariable, ValueComparator};
+    use type_bridge_contract::query_plan::QueryOperand;
+    use type_bridge_contract::schema::OwnsFactId;
+    use type_bridge_contract::value::{CanonicalString, CanonicalValue, ValueTypeTag};
+    let column = InputColumnId::new(0);
+    let operand = QueryOperand::Input { column };
+    let lookup = |owner| {
+        vec![
+            QueryPattern::Isa {
+                binding: id(owner),
+                type_id: entity("account"),
+                include_subtypes: false,
+            },
+            QueryPattern::Iid {
+                binding: id(owner),
+                iid: operand.clone(),
+            },
+        ]
+    };
+    let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+    let allocated = InsertThing {
+        binding: id(1),
+        type_id: relation.clone(),
+        fields: vec![(
+            OwnsFactId::new(relation, AttributeId::new("purchase-id").unwrap()).unwrap(),
+            string("seed"),
+        )],
+        players: vec![],
+    };
+    for put in [false, true] {
+        let allocation = if put {
+            Stage::Put {
+                include_subtypes: false,
+                things: vec![allocated.clone()],
+            }
+        } else {
+            Stage::Insert {
+                things: vec![allocated.clone()],
+            }
+        };
+        let mut request = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Try {
+                            patterns: lookup(0),
+                        }
+                        .into(),
+                        QueryPattern::Or {
+                            branches: vec![
+                                vec![QueryPattern::Not {
+                                    patterns: vec![QueryPattern::Value {
+                                        comparator: ValueComparator::Equal,
+                                        left: operand.clone(),
+                                        right: operand.clone(),
+                                    }],
+                                }],
+                                lookup(2),
+                            ],
+                        }
+                        .into(),
+                    ],
+                },
+                allocation,
+                Stage::Attach {
+                    items: vec![AttachItem::Links {
+                        optional: true,
+                        relation: id(1),
+                        role: RoleId::new("purchase", "buyer").unwrap(),
+                        player: id(0),
+                    }],
+                },
+            ],
+            vec![1],
+        );
+        request.inputs = vec![InputColumn::new(
+            column,
+            QueryVariable::new("player").unwrap(),
+            ValueTypeTag::String,
+            true,
+        )];
+        request.given_rows = Some(vec![InputRow::new(vec![Some(CanonicalValue::String(
+            CanonicalString::new("0x01").unwrap(),
+        ))])]);
+        let valid = QueryPlanV3::new(request.clone(), &schema()).unwrap();
+        let mut null = request.clone();
+        null.given_rows = Some(vec![InputRow::new(vec![None])]);
+        let mut unguarded = request.clone();
+        let Stage::Match { patterns } = &mut unguarded.pipeline[0] else {
+            unreachable!()
+        };
+        patterns.pop();
+        let mut mismatched = request.clone();
+        let Stage::Match { patterns } = &mut mismatched.pipeline[0] else {
+            unreachable!()
+        };
+        let type_bridge_contract::query_plan::v3::Pattern::Read(QueryPattern::Or { branches }) =
+            &mut patterns[1]
+        else {
+            unreachable!()
+        };
+        let QueryPattern::Iid { iid, .. } = &mut branches[1][1] else {
+            unreachable!()
+        };
+        *iid = string("0x02");
+        let mut deleted_alias = request.clone();
+        deleted_alias.bindings.push(binding(3, "deleted_alias"));
+        let Stage::Match { patterns } = &mut deleted_alias.pipeline[0] else {
+            unreachable!()
+        };
+        patterns.extend(lookup(3).into_iter().map(Into::into));
+        deleted_alias.pipeline.insert(
+            1,
+            Stage::Delete {
+                items: vec![DeleteItem::Thing { binding: id(3) }],
+            },
+        );
+        let mut no_rows = request.clone();
+        no_rows.given_rows = None;
+        let mut empty = request.clone();
+        empty.given_rows = Some(vec![]);
+        for (unsafe_request, code) in [
+            (null, "query_plan_insert_relation_players"),
+            (unguarded, "query_plan_insert_relation_players"),
+            (mismatched, "query_plan_insert_relation_players"),
+            (deleted_alias, "query_plan_insert_relation_players"),
+            (no_rows, "query_plan_insert_relation_players"),
+            (empty, "query_invocation_missing_inputs"),
+        ] {
+            assert_eq!(
+                QueryPlanV3::new(unsafe_request, &schema())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                code
+            );
+        }
+        assert_eq!(
+            valid
+                .with_given_rows(vec![InputRow::new(vec![None])], &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_insert_relation_players"
+        );
+        let mut wire: Value = serde_json::from_slice(&to_canonical_json(&valid).unwrap()).unwrap();
+        wire["given_rows"] = json!([[null]]);
+        assert_eq!(
+            decode_query_plan_v3(&to_canonical_json(&wire).unwrap(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_insert_relation_players"
+        );
     }
 }
 

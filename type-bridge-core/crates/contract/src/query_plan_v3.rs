@@ -45,6 +45,8 @@ pub const CAP_QUERY_INPUT_WIDE_STRINGS: &str = "query.input.wide-strings";
 mod document;
 #[path = "query_plan_v3_expr.rs"]
 mod expression;
+#[path = "query_plan_v3_seed.rs"]
+mod seed;
 pub use document::FetchDocumentShape;
 pub use expression::{ArithOp, Builtin, Expr};
 use expression::{ExprWire, operand_type};
@@ -1412,23 +1414,23 @@ fn validate_stages(
                         ));
                     }
                     if thing.type_id.kind() == TypeKind::Relation && thing.players.is_empty() {
+                        let deferred_players = seed::players_proven(
+                            spec,
+                            stage_index,
+                            thing.binding,
+                            &mandatory,
+                            &optional,
+                        );
                         let keyed_seed = matches!(stage, Stage::Put { .. })
                             && !thing.fields.is_empty()
-                            && thing.fields.iter().all(|(field, _)| index.annotation(
-                                AnnotationSubjectId::Owns(field.clone()), AnnotationKindId::Key,
-                            ))
-                            && spec.pipeline[stage_index + 1..].iter().any(|stage| {
-                                matches!(stage, Stage::Attach { items } if items.iter().any(|item| {
-                                    matches!(item, AttachItem::Links { relation, optional, .. }
-                                        if *relation == thing.binding && (!optional || spec.given_rows.as_ref().is_some_and(|rows| !rows.is_empty())))
-                                }))
-                            });
-                        let insert_seed = matches!(stage, Stage::Insert { .. })
-                            && spec.pipeline[stage_index + 1..].iter().any(|stage| {
-                                matches!(stage, Stage::Attach { items } if items.iter().any(|item| {
-                                    matches!(item, AttachItem::Links { relation, .. } if *relation == thing.binding)
-                                }))
-                            });
+                            && thing.fields.iter().all(|(field, _)| {
+                                index.annotation(
+                                    AnnotationSubjectId::Owns(field.clone()),
+                                    AnnotationKindId::Key,
+                                )
+                            })
+                            && deferred_players;
+                        let insert_seed = matches!(stage, Stage::Insert { .. }) && deferred_players;
                         if !keyed_seed && !insert_seed {
                             return Err(invalid(
                                 "query_plan_insert_relation_players",
