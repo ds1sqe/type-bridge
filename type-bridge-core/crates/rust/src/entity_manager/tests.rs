@@ -904,63 +904,29 @@ impl SubtypeRootModel for Leaf {
     }
 }
 
-#[tokio::test]
-async fn public_leaf_subtypes_reject_wrong_identity_before_materializer() {
-    LEAF_MATERIALIZE_CALLS.store(0, Ordering::SeqCst);
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"outside"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
-        ])),
-    ]);
-    let error = db.entities::<Leaf>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "wrong_concrete_model_type");
-    assert_eq!(path, &["type_id"]);
-    assert_eq!(message, "type_id: wrong_concrete_model_type");
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<ValidationError>());
-    assert_eq!(source.to_string(), "type_id: wrong_concrete_model_type");
-    assert_eq!(LEAF_MATERIALIZE_CALLS.load(Ordering::SeqCst), 0);
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    for needle in ["$root0 isa record", "select $root0;", "distinct;"] {
-        assert!(root.contains(needle));
+fn subtype_document(iid: &str, name: &str, text: &str) -> serde_json::Value {
+    serde_json::json!({"_iid":iid,"_type":"record","attributes":{"name":[name],"text":[text]}})
+}
+
+fn assert_subtype_fetch_query(query: &str) {
+    for needle in [
+        "$root0 isa base",
+        "select $root0;",
+        "distinct;",
+        "fetch",
+        "attributes",
+    ] {
+        assert!(query.contains(needle), "{query}");
     }
-    assert!(!root.contains("attributes") && !root.contains("isa! record"));
-    assert!(child.contains("isa! outside") && child.contains("iid 0x1") && child.contains("fetch"));
+    assert!(!query.contains("$root0 isa! base"));
 }
 
 #[tokio::test]
-async fn public_subtypes_all_rehydrates_concrete_children_in_discovery_order() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x2","_type":"record"}),
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        fetch("0x2", "n2", "second"),
-        fetch("0x1", "n1", "first"),
-    ]);
+async fn public_subtypes_all_fetches_concrete_children_in_one_plan() {
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        subtype_document("0x2", "n2", "second"),
+        subtype_document("0x1", "n1", "first"),
+    ]))]);
     let rows = db.entities::<Base>().subtypes().all().await.unwrap();
     assert_eq!(
         rows.iter()
@@ -975,105 +941,126 @@ async fn public_subtypes_all_rehydrates_concrete_children_in_discovery_order() {
         vec![("0x2", "n2", "second"), ("0x1", "n1", "first")]
     );
     let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(discovery),
-        Event::Query(child2),
-        Event::Query(child1),
-        Event::Close,
-    ] = guard.events.as_slice()
+    let [Event::Open(TxType::Read), Event::Query(query), Event::Close] = guard.events.as_slice()
     else {
-        panic!("unexpected events: {:?}", guard.events)
+        panic!("unexpected events: {:?}", guard.events);
     };
-    for needle in ["$root0 isa base", "select $root0;", "distinct;"] {
-        assert!(discovery.contains(needle));
-    }
-    assert!(!discovery.contains("attributes") && !discovery.contains("isa! base"));
-    for (query, iid) in [(child2, "0x2"), (child1, "0x1")] {
-        assert!(query.contains("isa! record") && query.contains(iid) && query.contains("fetch"));
-    }
+    assert_subtype_fetch_query(query);
 }
 
 #[tokio::test]
-async fn public_subtypes_get_by_iid_zero_closes_one_read_context() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
-    assert!(
-        db.entities::<Base>()
+async fn public_subtypes_get_by_iid_fetches_or_omits_in_one_plan() {
+    for present in [false, true] {
+        let documents = if present {
+            vec![subtype_document("0x1", "n1", "child")]
+        } else {
+            vec![]
+        };
+        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(documents))]);
+        let result = db
+            .entities::<Base>()
             .subtypes()
             .get_by_iid("0x1")
             .await
-            .unwrap()
-            .is_none()
-    );
+            .unwrap();
+        if present {
+            let Some(BaseFamily::Record(row)) = result else {
+                panic!("expected child");
+            };
+            assert_eq!(
+                (row.iid.as_str(), row.name.as_str(), row.value.as_str()),
+                ("0x1", "n1", "child")
+            );
+        } else {
+            assert!(result.is_none());
+        }
+        let guard = state.lock().unwrap();
+        let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
+            guard.events.as_slice()
+        else {
+            panic!("unexpected events: {:?}", guard.events);
+        };
+        assert_subtype_fetch_query(query);
+        assert!(query.contains("iid 0x1"));
+    }
+}
+
+#[tokio::test]
+async fn public_subtypes_reject_invalid_evidence_before_materialization() {
+    let row = subtype_document("0x1", "n1", "v");
+    let mut conflicting = row.clone();
+    conflicting["attributes"]["text"] = serde_json::json!(["different"]);
+    for (documents, code) in [
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"unknown","attributes":{}})],
+            "query_remote_v3_document_type",
+        ),
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"base","attributes":{}})],
+            "query_remote_v3_document_type",
+        ),
+        (
+            vec![
+                serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
+            ],
+            "query_remote_v3_answer_kind",
+        ),
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"]}})],
+            "query_remote_v3_document_value",
+        ),
+        (vec![row, conflicting], "query_plan_hydration_conflict"),
+    ] {
+        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(documents))]);
+        let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
+        assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+        assert_eq!(error.sdk_category(), Some("integrity"));
+        assert_eq!(error.code(), Some(code));
+        assert_eq!(
+            error.path(),
+            Some(
+                if code == "query_plan_hydration_conflict" {
+                    vec!["result".to_owned()]
+                } else {
+                    vec![]
+                }
+                .as_slice()
+            )
+        );
+        let source = std::error::Error::source(&error).unwrap();
+        assert!(source.is::<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>());
+        let guard = state.lock().unwrap();
+        let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
+            guard.events.as_slice()
+        else {
+            panic!("unexpected events: {:?}", guard.events);
+        };
+        assert_subtype_fetch_query(query);
+    }
+}
+
+#[tokio::test]
+async fn public_leaf_subtypes_reject_wrong_identity_before_materializer() {
+    LEAF_MATERIALIZE_CALLS.store(0, Ordering::SeqCst);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
+    ]))]);
+    let error = db.entities::<Leaf>().subtypes().all().await.unwrap_err();
+    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
+    assert_eq!(error.sdk_category(), Some("integrity"));
+    assert_eq!(LEAF_MATERIALIZE_CALLS.load(Ordering::SeqCst), 0);
     let guard = state.lock().unwrap();
     let [Event::Open(TxType::Read), Event::Query(query), Event::Close] = guard.events.as_slice()
     else {
-        panic!("unexpected events")
+        panic!("unexpected events: {:?}", guard.events);
     };
-    assert!(
-        query.contains("$root0 isa base")
-            && query.contains("select $root0;")
-            && query.contains("distinct;")
-            && query.contains("$root0")
-            && query.contains("iid 0x1")
-    );
-    assert!(!query.contains("attributes"));
+    assert!(query.contains("$root0 isa record") && query.contains("attributes"));
 }
 
 #[tokio::test]
-async fn public_subtypes_get_by_iid_one_rehydrates_concrete_child() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        fetch("0x1", "n1", "child"),
-    ]);
-    let Some(BaseFamily::Record(row)) = db
-        .entities::<Base>()
-        .subtypes()
-        .get_by_iid("0x1")
-        .await
-        .unwrap()
-    else {
-        panic!("expected child")
-    };
-    assert_eq!(
-        (row.iid.as_str(), row.name.as_str(), row.value.as_str()),
-        ("0x1", "n1", "child")
-    );
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert!(
-        root.contains("$root0 isa base")
-            && root.contains("select $root0;")
-            && root.contains("distinct;")
-            && root.contains("$root0")
-            && root.contains("iid 0x1")
-    );
-    assert!(!root.contains("attributes") && !root.contains("isa! base"));
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
-#[tokio::test]
-async fn public_subtypes_get_by_iid_duplicate_discovery_closes_without_child_fetch() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"record"}),
-        serde_json::json!({"_iid":"0x1","_type":"record"}),
-    ]))]);
-    let error = db
-        .entities::<Base>()
-        .subtypes()
-        .get_by_iid("0x1")
-        .await
-        .unwrap_err();
+async fn public_subtypes_all_generated_materializer_rejection_fails_closed() {
+    let (db, state) = test_db(vec![fetch("0x1", "n1", "reject-materialize")]);
+    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
     let crate::Error::ModelValidation {
         phase,
         code,
@@ -1082,24 +1069,21 @@ async fn public_subtypes_get_by_iid_duplicate_discovery_closes_without_child_fet
         ..
     } = &error
     else {
-        panic!("wrong error: {error:?}")
+        panic!("wrong error: {error:?}");
     };
     assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "invalid_provider_evidence");
-    assert!(path.is_empty());
-    assert_eq!(
-        message,
-        "Hydration error for type 'base': Deletion snapshot has invalid exact identity evidence"
-    );
+    assert_eq!(code, "rejected_materialization");
+    assert_eq!(path, &["text"]);
+    assert_eq!(message, "text: rejected_materialization");
     let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<type_bridge_orm::OrmError>());
-    assert_eq!(source.to_string(), message.as_str());
+    assert!(source.is::<ValidationError>());
+    assert_eq!(source.to_string(), "text: rejected_materialization");
     let guard = state.lock().unwrap();
     let [Event::Open(TxType::Read), Event::Query(query), Event::Close] = guard.events.as_slice()
     else {
-        panic!("unexpected events")
+        panic!("unexpected events: {:?}", guard.events);
     };
-    assert!(query.contains("$root0 isa base") && query.contains("iid 0x1"));
+    assert_subtype_fetch_query(query);
 }
 
 #[tokio::test]
@@ -1143,285 +1127,6 @@ async fn public_subtypes_invalid_iid_is_zero_io() {
     assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
 }
 
-fn assert_subtype_discovery_query(query: &str) {
-    for needle in ["$root0 isa base", "select $root0;", "distinct;"] {
-        assert!(query.contains(needle));
-    }
-    assert!(!query.contains("attributes") && !query.contains("$e isa! base"));
-}
-
-#[tokio::test]
-async fn public_subtypes_all_unknown_discovered_type_fails_closed() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"unknown"}),
-    ]))]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "model_not_projected");
-    assert_eq!(path, &["type"]);
-    assert_eq!(
-        message,
-        "the selected entity is absent from the installed Rust projection"
-    );
-    assert!(std::error::Error::source(&error).is_none());
-    let guard = state.lock().unwrap();
-    let [Event::Open(TxType::Read), Event::Query(root), Event::Close] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-}
-
-#[tokio::test]
-async fn public_subtypes_all_abstract_discovered_type_fails_closed() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
-        serde_json::json!({"_iid":"0x1","_type":"base"}),
-    ]))]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "model_not_constructible");
-    assert_eq!(path, &["type"]);
-    assert_eq!(message, "the selected entity is not constructible");
-    assert!(std::error::Error::source(&error).is_none());
-    let guard = state.lock().unwrap();
-    let [Event::Open(TxType::Read), Event::Query(root), Event::Close] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-}
-
-#[tokio::test]
-async fn public_subtypes_all_out_of_closure_type_fails_generated_dispatch() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"outside"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
-        ])),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "wrong_concrete_model_type");
-    assert_eq!(path, &["type_id"]);
-    assert_eq!(message, "type_id: wrong_concrete_model_type");
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<ValidationError>());
-    assert_eq!(source.to_string(), "type_id: wrong_concrete_model_type");
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! outside") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
-#[tokio::test]
-async fn public_subtypes_all_missing_concrete_row_fails_closed() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        Response::Result(QueryResult::Documents(Vec::new())),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "missing_concrete_row");
-    assert_eq!(path, &["iid"]);
-    assert_eq!(message, "discovered entity row is missing");
-    assert!(std::error::Error::source(&error).is_none());
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
-#[tokio::test]
-async fn public_subtypes_all_conflicting_concrete_rows_fails_closed() {
-    let row = serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["v"]}});
-    let mut conflicting = row.clone();
-    conflicting["attributes"]["text"] = serde_json::json!(["different"]);
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![row, conflicting])),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
-    assert_eq!(error.code(), Some("query_plan_hydration_conflict"));
-    assert_eq!(error.path(), Some(["result".to_owned()].as_slice()));
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
-#[tokio::test]
-async fn public_subtypes_all_wrong_returned_concrete_type_fails_closed() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"outside","attributes":{"name":["n1"],"text":["v"]}}),
-        ])),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
-    assert_eq!(error.sdk_category(), Some("integrity"));
-    assert_eq!(error.code(), Some("query_remote_v3_answer_kind"));
-    assert_eq!(error.path(), Some([].as_slice()));
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>());
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
-#[tokio::test]
-async fn public_subtypes_all_missing_required_child_field_fails_closed() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"]}}),
-        ])),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
-    assert_eq!(error.sdk_category(), Some("integrity"));
-    assert_eq!(error.code(), Some("query_remote_v3_document_value"));
-    assert_eq!(error.path(), Some([].as_slice()));
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic>());
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
-#[tokio::test]
-async fn public_subtypes_all_generated_materializer_rejection_fails_closed() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        fetch("0x1", "n1", "reject-materialize"),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::ModelValidation {
-        phase,
-        code,
-        path,
-        message,
-        ..
-    } = &error
-    else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(*phase, crate::error::ModelValidationPhase::Hydration);
-    assert_eq!(code, "rejected_materialization");
-    assert_eq!(path, &["text"]);
-    assert_eq!(message, "text: rejected_materialization");
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<ValidationError>());
-    assert_eq!(source.to_string(), "text: rejected_materialization");
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
-}
-
 #[tokio::test]
 async fn public_subtypes_all_discovery_provider_failure_closes_and_preserves_primary() {
     let (db, state) = test_db(vec![Response::Error("discovery failed".into())]);
@@ -1438,47 +1143,8 @@ async fn public_subtypes_all_discovery_provider_failure_closes_and_preserves_pri
     else {
         panic!("unexpected events")
     };
-    assert_subtype_discovery_query(root);
+    assert_subtype_fetch_query(root);
 }
-
-#[tokio::test]
-async fn public_subtypes_all_later_child_fetch_failure_returns_no_partial_vector() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-            serde_json::json!({"_iid":"0x2","_type":"record"}),
-        ])),
-        fetch("0x1", "n1", "first"),
-        Response::Error("second child fetch failed".into()),
-    ]);
-    let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
-    let crate::Error::QueryExecution { message, .. } = &error else {
-        panic!("wrong error: {error:?}")
-    };
-    assert_eq!(message, "Query execution error: second child fetch failed");
-    let source = std::error::Error::source(&error).unwrap();
-    assert!(source.is::<type_bridge_orm::OrmError>());
-    assert_eq!(source.to_string(), message.as_str());
-    let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child1),
-        Event::Query(child2),
-        Event::Close,
-    ] = guard.events.as_slice()
-    else {
-        panic!("unexpected events")
-    };
-    assert_subtype_discovery_query(root);
-    assert!(
-        child1.contains("isa! record") && child1.contains("iid 0x1") && child1.contains("fetch")
-    );
-    assert!(
-        child2.contains("isa! record") && child2.contains("iid 0x2") && child2.contains("fetch")
-    );
-}
-
 fn assert_authority_error(error: crate::Error, code: &str) {
     let crate::Error::ModelValidation {
         phase,
@@ -1803,16 +1469,7 @@ async fn public_insert_many_and_put_many_preserve_order() {
 }
 #[tokio::test]
 async fn public_subtypes_all_successful_read_reports_close_failure() {
-    let (db, state) = test_db_with_failures(
-        vec![
-            Response::Result(QueryResult::Documents(vec![
-                serde_json::json!({"_iid":"0x1","_type":"record"}),
-            ])),
-            fetch("0x1", "n1", "v"),
-        ],
-        false,
-        true,
-    );
+    let (db, state) = test_db_with_failures(vec![fetch("0x1", "n1", "v")], false, true);
     let error = db.entities::<Base>().subtypes().all().await.unwrap_err();
     let crate::Error::Transaction { message, .. } = &error else {
         panic!("wrong error: {error:?}")
@@ -1822,17 +1479,11 @@ async fn public_subtypes_all_successful_read_reports_close_failure() {
     assert!(source.is::<type_bridge_orm::OrmError>());
     assert_eq!(source.to_string(), message.as_str());
     let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(root),
-        Event::Query(child),
-        Event::Close,
-    ] = guard.events.as_slice()
+    let [Event::Open(TxType::Read), Event::Query(root), Event::Close] = guard.events.as_slice()
     else {
         panic!("unexpected events")
     };
-    assert_subtype_discovery_query(root);
-    assert!(child.contains("isa! record") && child.contains("iid 0x1") && child.contains("fetch"));
+    assert_subtype_fetch_query(root);
 }
 
 #[tokio::test]
@@ -1856,7 +1507,7 @@ async fn public_subtypes_all_provider_error_survives_close_failure() {
     else {
         panic!("unexpected events")
     };
-    assert_subtype_discovery_query(root);
+    assert_subtype_fetch_query(root);
 }
 
 impl TransactionOps for Tx {
@@ -1951,12 +1602,10 @@ impl Tx {
 #[tokio::test]
 async fn public_subtypes_all_coalesces_identical_native_documents() {
     let row = serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["v"]}});
-    let (db, _) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"_iid":"0x1","_type":"record"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![row.clone(), row])),
-    ]);
+    let (db, _) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        row.clone(),
+        row,
+    ]))]);
     let rows = db.entities::<Base>().subtypes().all().await.unwrap();
     let [BaseFamily::Record(record)] = rows.as_slice() else {
         panic!("expected one coalesced model")

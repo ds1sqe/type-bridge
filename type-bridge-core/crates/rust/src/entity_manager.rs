@@ -86,71 +86,28 @@ where
         } else {
             manager.literal_values()
         };
-        let identity = match manager.discover_by_iid(_iid).await {
-            Ok(v) => v,
-            Err(e) => {
+        let result = async {
+            let Some(row) = manager.get_by_iid(_iid).await.map_err(Error::from_orm)? else {
+                return Ok(None);
+            };
+            let (child_id, _) =
+                resolve_discovered_entity(row.type_name.as_deref().unwrap_or_default(), installed)?;
+            let hydrated = hydrate_entity(row, &child_id, installed)?;
+            M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new())
+                .map(Some)
+                .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
+        }
+        .await;
+        match result {
+            Ok(value) => {
+                tx.close().await.map_err(Error::from_orm)?;
+                Ok(value)
+            }
+            Err(error) => {
                 let _ = tx.close().await;
-                return Err(Error::from_orm(e));
+                Err(error)
             }
-        };
-        let out = match identity {
-            None => None,
-            Some(identity) => {
-                let (child_id, child_descriptor) =
-                    match resolve_discovered_entity(&identity.type_name, installed) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            let _ = tx.close().await;
-                            return Err(e);
-                        }
-                    };
-                let child = DynamicEntityManager::with_registry_transaction(
-                    tx.clone(),
-                    installed.manager_registry().map_err(Error::from_orm)?,
-                    Arc::new(child_descriptor),
-                );
-                let child = if self.db.inner_orm().supports_given_stage() {
-                    child
-                } else {
-                    child.literal_values()
-                };
-                let row = match child.get_by_iid_exact(&identity.iid).await {
-                    Ok(Some(v)) => v,
-                    Ok(None) => {
-                        let _ = tx.close().await;
-                        return Err(Error::model_validation(
-                            ModelValidationPhase::Hydration,
-                            "missing_concrete_row",
-                            vec!["iid".into()],
-                            "discovered entity row is missing",
-                            None,
-                        ));
-                    }
-                    Err(e) => {
-                        let _ = tx.close().await;
-                        return Err(Error::from_orm(e));
-                    }
-                };
-                let h = match hydrate_entity(row, &child_id, installed) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = tx.close().await;
-                        return Err(e);
-                    }
-                };
-                Some(
-                    match M::__tb_dispatch_subtype(&h, &HydrationCapability::new()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            let _ = tx.close().await;
-                            return Err(map_validation_error(e, ModelValidationPhase::Hydration));
-                        }
-                    },
-                )
-            }
-        };
-        tx.close().await.map_err(Error::from_orm)?;
-        Ok(out)
+        }
     }
     /// Reads all root/descendant models in application result order, materialized as the
     /// generated leaf or family result. Validation, database, hydration, and close errors
@@ -179,70 +136,32 @@ where
         } else {
             manager.literal_values()
         };
-        let identities = match manager.discover_all().await {
-            Ok(v) => v,
-            Err(e) => {
-                let _ = tx.close().await;
-                return Err(Error::from_orm(e));
-            }
-        };
-        let mut out = Vec::with_capacity(identities.len());
-        for identity in identities {
-            let type_json = identity.type_name;
-            let (child_id, child_descriptor) =
-                match resolve_discovered_entity(&type_json, installed) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = tx.close().await;
-                        return Err(e);
-                    }
-                };
-            let child = DynamicEntityManager::with_registry_transaction(
-                tx.clone(),
-                installed.manager_registry().map_err(Error::from_orm)?,
-                Arc::new(child_descriptor),
-            );
-            let child = if self.db.inner_orm().supports_given_stage() {
-                child
-            } else {
-                child.literal_values()
-            };
-            let row = match child.get_by_iid_exact(&identity.iid).await {
-                Ok(Some(v)) => v,
-                Ok(None) => {
-                    let _ = tx.close().await;
-                    return Err(Error::model_validation(
-                        ModelValidationPhase::Hydration,
-                        "missing_concrete_row",
-                        vec!["iid".into()],
-                        "discovered entity row is missing",
-                        None,
-                    ));
-                }
-                Err(e) => {
-                    let _ = tx.close().await;
-                    return Err(Error::from_orm(e));
-                }
-            };
-            let h = match hydrate_entity(row, &child_id, installed) {
-                Ok(v) => v,
-                Err(e) => {
-                    let _ = tx.close().await;
-                    return Err(e);
-                }
-            };
-            out.push(
-                match M::__tb_dispatch_subtype(&h, &HydrationCapability::new()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = tx.close().await;
-                        return Err(map_validation_error(e, ModelValidationPhase::Hydration));
-                    }
-                },
-            );
+        let result = async {
+            let rows = manager.all().await.map_err(Error::from_orm)?;
+            rows.into_iter()
+                .map(|row| {
+                    let (child_id, _) = resolve_discovered_entity(
+                        row.type_name.as_deref().unwrap_or_default(),
+                        installed,
+                    )?;
+                    let hydrated = hydrate_entity(row, &child_id, installed)?;
+                    M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(
+                        |error| map_validation_error(error, ModelValidationPhase::Hydration),
+                    )
+                })
+                .collect()
         }
-        tx.close().await.map_err(Error::from_orm)?;
-        Ok(out)
+        .await;
+        match result {
+            Ok(value) => {
+                tx.close().await.map_err(Error::from_orm)?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = tx.close().await;
+                Err(error)
+            }
+        }
     }
     /// Counts the root and all concrete descendants using the inclusive subtype scope.
     pub async fn count(&self) -> Result<u64> {

@@ -1122,20 +1122,25 @@ impl __codegen::SubtypeRootModel for Engagement {
     }
 }
 
-fn identity_doc(iid: &str, type_name: &str) -> serde_json::Value {
-    serde_json::json!({"_iid": iid, "_type": type_name})
+fn assert_subtype_fetch_query(query: &str) {
+    for needle in [
+        "$root0 isa engagement",
+        "select $root0;",
+        "distinct;",
+        "fetch",
+        "attributes",
+    ] {
+        assert!(query.contains(needle), "{query}");
+    }
+    assert!(!query.contains("isa! engagement"));
 }
 
 #[tokio::test]
-async fn public_relation_subtypes_all_rehydrates_concrete_children_in_discovery_order() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            identity_doc("0x2", "assignment"),
-            identity_doc("0x1", "assignment"),
-        ])),
-        fetch("0x2", "second", "0x9", "alice"),
-        fetch("0x1", "first", "0x8", "bob"),
-    ]);
+async fn public_relation_subtypes_all_fetches_complete_children_in_one_plan() {
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        fetch_doc("0x2", "second", "0x9", "alice"),
+        fetch_doc("0x1", "first", "0x8", "bob"),
+    ]))]);
     let values = db.relations::<Engagement>().subtypes().all().await.unwrap();
     assert_eq!(
         values
@@ -1152,113 +1157,103 @@ async fn public_relation_subtypes_all_rehydrates_concrete_children_in_discovery_
         vec![("0x2", "second", "0x9"), ("0x1", "first", "0x8")]
     );
     let guard = state.lock().unwrap();
-    let [
-        Event::Open(TxType::Read),
-        Event::Query(discovery),
-        Event::Query(child2),
-        Event::Query(child1),
-        Event::Close,
-    ] = guard.events.as_slice()
+    let [Event::Open(TxType::Read), Event::Query(query), Event::Close] = guard.events.as_slice()
     else {
-        panic!("unexpected events: {:?}", guard.events)
+        panic!("unexpected events: {:?}", guard.events);
     };
-    assert!(discovery.contains("$root0 isa engagement"));
-    assert!(discovery.contains("select $root0;") && discovery.contains("distinct;"));
-    for (query, iid) in [(child2, "0x2"), (child1, "0x1")] {
-        assert!(query.contains("assignment") && query.contains(iid) && query.contains("fetch"));
-    }
-    assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
+    assert_subtype_fetch_query(query);
+    assert_eq!(guard.query_modes, vec!["canonical"]);
 }
 
 #[tokio::test]
 async fn public_relation_subtypes_get_by_iid_zero_and_one() {
-    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(Vec::new()))]);
-    assert!(
-        db.relations::<Engagement>()
+    for present in [false, true] {
+        let rows = if present {
+            vec![fetch_doc("0x1", "captain", "0x9", "alice")]
+        } else {
+            vec![]
+        };
+        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);
+        let value = db
+            .relations::<Engagement>()
             .subtypes()
             .get_by_iid("0x1")
             .await
-            .unwrap()
-            .is_none()
-    );
-    {
+            .unwrap();
+        if present {
+            let Some(EngagementFamily::Assignment(assignment)) = value else {
+                panic!("expected child");
+            };
+            assert_assignment(&assignment, "0x1", "captain", "0x9");
+        } else {
+            assert!(value.is_none());
+        }
         let guard = state.lock().unwrap();
         let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
             guard.events.as_slice()
         else {
-            panic!("unexpected events: {:?}", guard.events)
+            panic!("unexpected events: {:?}", guard.events);
         };
-        assert!(query.contains("$root0 isa engagement") && query.contains("iid 0x1"));
+        assert_subtype_fetch_query(query);
+        assert!(query.contains("iid 0x1"));
     }
-    let (db, _state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![identity_doc(
-            "0x1",
-            "assignment",
-        )])),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
-    let value = db
-        .relations::<Engagement>()
-        .subtypes()
-        .get_by_iid("0x1")
-        .await
-        .unwrap()
-        .expect("expected family member");
-    let EngagementFamily::Assignment(assignment) = value;
-    assert_assignment(&assignment, "0x1", "captain", "0x9");
 }
 
 #[tokio::test]
-async fn public_relation_subtypes_reject_foreign_concrete_type() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![identity_doc(
-            "0x1", "sidework",
-        )])),
-        Response::Result(QueryResult::Documents(vec![serde_json::json!({
-            "_iid": "0x1",
-            "_type": "sidework",
-            "attributes": {}
-        })])),
-    ]);
-    let error = db
-        .relations::<Engagement>()
-        .subtypes()
-        .all()
-        .await
-        .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "wrong_concrete_model_type",
-        &["type_id"],
-    );
-    let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Close)));
+async fn public_relation_subtypes_reject_invalid_evidence_before_materialization() {
+    let valid = fetch_doc("0x1", "captain", "0x9", "alice");
+    let mut missing = valid.clone();
+    missing["attributes"] = serde_json::json!({});
+    let mut conflicting = valid.clone();
+    conflicting["attributes"]["position"] = serde_json::json!("different");
+    for (rows, code) in [
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"unknown","attributes":{}})],
+            "query_remote_v3_document_type",
+        ),
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"engagement","attributes":{}})],
+            "query_remote_v3_document_type",
+        ),
+        (
+            vec![serde_json::json!({"_iid":"0x1","_type":"sidework","attributes":{}})],
+            "query_remote_v3_document_type",
+        ),
+        (vec![missing], "query_remote_v3_document_value"),
+        (vec![valid, conflicting], "query_plan_hydration_conflict"),
+    ] {
+        let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(rows))]);
+        let error = db
+            .relations::<Engagement>()
+            .subtypes()
+            .all()
+            .await
+            .unwrap_err();
+        assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+        assert_eq!(error.sdk_category(), Some("integrity"));
+        assert_eq!(error.code(), Some(code));
+        let guard = state.lock().unwrap();
+        let [Event::Open(TxType::Read), Event::Query(query), Event::Close] =
+            guard.events.as_slice()
+        else {
+            panic!("unexpected events: {:?}", guard.events);
+        };
+        assert_subtype_fetch_query(query);
+    }
 }
 
 #[tokio::test]
-async fn public_relation_subtypes_missing_concrete_row_closes_context() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![identity_doc(
-            "0x1",
-            "assignment",
-        )])),
-        Response::Result(QueryResult::Documents(Vec::new())),
-    ]);
-    let error = db
-        .relations::<Engagement>()
-        .subtypes()
-        .all()
-        .await
-        .unwrap_err();
-    assert_model_error(
-        error,
-        crate::error::ModelValidationPhase::Hydration,
-        "missing_concrete_row",
-        &["iid"],
-    );
-    let guard = state.lock().unwrap();
-    assert!(matches!(guard.events.last(), Some(Event::Close)));
+async fn public_relation_subtypes_all_coalesces_identical_native_documents() {
+    let row = fetch_doc("0x1", "captain", "0x9", "alice");
+    let (db, _) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        row.clone(),
+        row,
+    ]))]);
+    let values = db.relations::<Engagement>().subtypes().all().await.unwrap();
+    let [EngagementFamily::Assignment(assignment)] = values.as_slice() else {
+        panic!("expected one child");
+    };
+    assert_assignment(assignment, "0x1", "captain", "0x9");
 }
 
 #[tokio::test]

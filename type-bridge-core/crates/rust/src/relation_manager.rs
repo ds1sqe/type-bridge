@@ -770,39 +770,12 @@ where
     S: Schema,
     M: SubtypeRootModel<Schema = S> + RelationModel<Schema = S>,
 {
-    fn missing_concrete_row() -> Error {
-        Error::model_validation(
-            ModelValidationPhase::Hydration,
-            "missing_concrete_row",
-            vec!["iid".into()],
-            "discovered relation row is missing",
-            None,
-        )
-    }
-
-    async fn rehydrate_discovered(
-        &self,
-        tx: &type_bridge_orm::session::context::TransactionContext,
-        identity: &type_bridge_orm::DynamicRelationIdentity,
+    fn materialize_subtype(
+        row: DynamicRelationRow,
         installed: &type_bridge_orm::InstalledRuntimeProjection,
     ) -> Result<M::Subtypes> {
-        let (child_id, child_descriptor) =
-            resolve_discovered_relation(&identity.type_name, installed)?;
-        let child = DynamicRelationManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(child_descriptor),
-        );
-        let child = if self.db.inner_orm().supports_given_stage() {
-            child
-        } else {
-            child.literal_values()
-        };
-        let rows = child
-            .get_by_iid_exact(&identity.iid)
-            .await
-            .map_err(Error::from_orm)?;
-        let row = one_coalesced_row(rows)?.ok_or_else(Self::missing_concrete_row)?;
+        let (child_id, _) =
+            resolve_discovered_relation(row.type_name.as_deref().unwrap_or_default(), installed)?;
         let hydrated = hydrate_relation(row, &child_id, installed)?;
         M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
             crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
@@ -838,25 +811,22 @@ where
         } else {
             manager.literal_values()
         };
-        let identity = match manager.discover_by_iid(iid).await {
-            Ok(value) => value,
+        let result = async {
+            one_coalesced_row(manager.get_by_iid(iid).await.map_err(Error::from_orm)?)?
+                .map(|row| Self::materialize_subtype(row, installed))
+                .transpose()
+        }
+        .await;
+        match result {
+            Ok(value) => {
+                tx.close().await.map_err(Error::from_orm)?;
+                Ok(value)
+            }
             Err(error) => {
                 let _ = tx.close().await;
-                return Err(Error::from_orm(error));
+                Err(error)
             }
-        };
-        let out = match identity {
-            None => None,
-            Some(identity) => match self.rehydrate_discovered(&tx, &identity, installed).await {
-                Ok(value) => Some(value),
-                Err(error) => {
-                    let _ = tx.close().await;
-                    return Err(error);
-                }
-            },
-        };
-        tx.close().await.map_err(Error::from_orm)?;
-        Ok(out)
+        }
     }
 
     /// Reads all root/descendant relations in application result order, materialized as the
@@ -886,25 +856,26 @@ where
         } else {
             manager.literal_values()
         };
-        let identities = match manager.discover_all().await {
-            Ok(value) => value,
+        let result = async {
+            manager
+                .all()
+                .await
+                .map_err(Error::from_orm)?
+                .into_iter()
+                .map(|row| Self::materialize_subtype(row, installed))
+                .collect()
+        }
+        .await;
+        match result {
+            Ok(value) => {
+                tx.close().await.map_err(Error::from_orm)?;
+                Ok(value)
+            }
             Err(error) => {
                 let _ = tx.close().await;
-                return Err(Error::from_orm(error));
-            }
-        };
-        let mut out = Vec::with_capacity(identities.len());
-        for identity in identities {
-            match self.rehydrate_discovered(&tx, &identity, installed).await {
-                Ok(value) => out.push(value),
-                Err(error) => {
-                    let _ = tx.close().await;
-                    return Err(error);
-                }
+                Err(error)
             }
         }
-        tx.close().await.map_err(Error::from_orm)?;
-        Ok(out)
     }
 
     /// Counts the root and all concrete descendants using the inclusive subtype scope.
