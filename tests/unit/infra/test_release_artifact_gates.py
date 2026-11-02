@@ -1012,9 +1012,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     assert documented not in rust_integration
     # The same live job gates two recovery probes, generated Rust, generated C,
     # and C runtime; the retired-server live probe was removed with its lane.
-    assert (
-        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 9
-    )
+    assert rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 9
     assert "unsupported_server_apply_creates_neither_database_live" not in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration
     assert "control_schema_and_fenced_lease_round_trip_on_3_12_3" in rust_integration

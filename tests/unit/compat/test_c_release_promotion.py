@@ -123,9 +123,19 @@ def test_selected_policy_matches_every_current_ci_step_and_workflow() -> None:
         assert frozen_steps.items() - current_steps.items() == retired.items()
         assert (frozen_steps.items() - retired.items()) < current_steps.items()
     # V1/V2 server probes are replaced by the staged binary and raw gates.
-    assert selected["ci_jobs"]["Rust integration (typedb/typedb:3.12.3)"]["Run production staged server live smoke"] == "success"
+    assert (
+        selected["ci_jobs"]["Rust integration (typedb/typedb:3.12.3)"][
+            "Run production staged server live smoke"
+        ]
+        == "success"
+    )
     for server in ("3.13.6", "3.14.0"):
-        assert selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"]["Run raw TypeQL HTTP parity and host policy"] == "success"
+        assert (
+            selected["ci_jobs"][f"Staged plans live (typedb/typedb:{server})"][
+                "Run raw TypeQL HTTP parity and host policy"
+            ]
+            == "success"
+        )
     assert len(selected["ci_jobs"]) == 52
     for server in ("3.13.6", "3.14.0"):
         assert (

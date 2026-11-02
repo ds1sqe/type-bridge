@@ -322,7 +322,9 @@ def test_server_feature_probes_are_isolated(
     }
 
     if accepted:
-        validator.validate_server_features(metadata, version="2.3.2", expected_transport=expected_transport)
+        validator.validate_server_features(
+            metadata, version="2.3.2", expected_transport=expected_transport
+        )
     else:
         with pytest.raises(validator.ExternalConsumerError):
             validator.validate_server_features(

@@ -458,7 +458,9 @@ def validate(args: argparse.Namespace) -> dict[str, Any]:
                 f"container example config contains forbidden credential marker {forbidden_text!r}"
             )
     if "[staged]\nenabled = false\nraw_enabled = false" not in example:
-        raise ValidationError("container example config must leave staged and raw execution explicitly disabled")
+        raise ValidationError(
+            "container example config must leave staged and raw execution explicitly disabled"
+        )
 
     binary = _required_regular_payload(entries, "usr/local/bin/type-bridge-server")
     if not binary.startswith(b"\x7fELF"):
