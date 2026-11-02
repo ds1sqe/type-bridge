@@ -4851,4 +4851,155 @@ async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live()
             assert_eq!(log.lock().unwrap().statements.len(), 2);
         }
     }
+    // A zero-row optional source is a static branch gate, without client IIDs.
+    let note = TypeId::new(TypeKind::Entity, "reference-note").unwrap();
+    let mut read = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+    let selected = read.exact(note.clone());
+    read.returning(vec![selected]);
+    let read = read
+        .build(&declared, managed.managed_semantic_schema().clone())
+        .unwrap();
+    let ordinal = BindingId::new(1).unwrap();
+    let gate = QueryPlanV3::new(
+        PlanSpec {
+            bindings: vec![
+                AssertionBinding::new(root, QueryVariable::new("root").unwrap()),
+                AssertionBinding::new(ordinal, QueryVariable::new("ordinal").unwrap()),
+            ],
+            inputs: vec![
+                InputColumn::new(
+                    InputColumnId::new(0),
+                    QueryVariable::new("candidate_iid").unwrap(),
+                    ValueTypeTag::String,
+                    true,
+                ),
+                InputColumn::new(
+                    InputColumnId::new(1),
+                    QueryVariable::new("input_ordinal").unwrap(),
+                    ValueTypeTag::Long,
+                    false,
+                ),
+            ],
+            given_rows: None,
+            operation: Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            pipeline: vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Not {
+                            patterns: vec![QueryPattern::Value {
+                    comparator: type_bridge_contract::migration_assertion::ValueComparator::Equal,
+                    left: QueryOperand::Input { column: InputColumnId::new(0) },
+                    right: QueryOperand::Input { column: InputColumnId::new(0) },
+                }],
+                        }
+                        .into(),
+                        type_bridge_contract::query_plan::v3::Pattern::Let {
+                            binding: ordinal,
+                            expr: type_bridge_contract::query_plan::v3::Expr::Operand(
+                                QueryOperand::Input {
+                                    column: InputColumnId::new(1),
+                                },
+                            ),
+                        },
+                    ],
+                },
+                Stage::Insert {
+                    things: vec![InsertThing {
+                        binding: root,
+                        type_id: note.clone(),
+                        fields: vec![],
+                        players: vec![],
+                    }],
+                },
+            ],
+            output: QueryOutput::Rows {
+                columns: vec![root, ordinal],
+            },
+            managed_semantics: managed.managed_semantic_schema().clone(),
+            compatibility: None,
+            functions: vec![],
+        },
+        &declared,
+    )
+    .unwrap();
+    let mut present = type_bridge_contract::query_plan::v3::PlanBuilder::new();
+    let candidate = present.input("candidate_iid", ValueTypeTag::String, true);
+    let selected = present.exact(note.clone());
+    present
+        .by_iid_input(selected, candidate)
+        .returning(vec![selected]);
+    let present = present
+        .build(&declared, managed.managed_semantic_schema().clone())
+        .unwrap();
+    let reference = StagedResultRefV3 {
+        input: InputColumnId::new(0),
+        source_plan: 0,
+        source_column: 0,
+        expected_types: vec![note.clone()],
+    };
+    let gates = vec![
+        StagedPlanV3::new(&read, vec![], &declared).unwrap(),
+        StagedPlanV3::new_with_result_refs(
+            &gate,
+            vec![InputRow::new(vec![None, Some(CanonicalValue::Long(0))])],
+            vec![reference.clone()],
+            &declared,
+        )
+        .unwrap(),
+        StagedPlanV3::new_with_result_refs(
+            &present,
+            vec![InputRow::new(vec![None])],
+            vec![reference],
+            &declared,
+        )
+        .unwrap(),
+    ];
+    for literal in [false, true] {
+        for existing in [false, true] {
+            let (counted, log) = counted_connection(&database, literal).await;
+            let mut transaction = counted.transaction(TransactionOptions::default());
+            let pending = transaction
+                .stage_plan_stack(gates.clone(), Arc::clone(&declared))
+                .unwrap();
+            transaction.commit().await.unwrap();
+            let StagedAnswerV3::Rows { rows } =
+                pending[1].get().unwrap().to_staged_v3(&gate).unwrap()
+            else {
+                panic!("conditional allocation rows")
+            };
+            assert_eq!(rows.len(), usize::from(!existing));
+            // Matching the captured IID cannot observe the root allocated on a miss.
+            let StagedAnswerV3::Rows { rows } =
+                pending[2].get().unwrap().to_staged_v3(&present).unwrap()
+            else {
+                panic!("captured present rows")
+            };
+            assert_eq!(rows.len(), usize::from(existing));
+            let QueryResult::Documents(roots) = database
+                .execute_raw(
+                    "match $root isa reference-note; fetch {\"iid\": iid($root)};",
+                    TxType::Read,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("conditional roots")
+            };
+            assert_eq!(roots.len(), 1);
+            let counts = {
+                let log = log.lock().unwrap();
+                (log.commits, log.statements.len(), log.opened.clone())
+            };
+            assert_eq!(counts, (1, 3, vec![TxType::Write]));
+        }
+        database
+            .execute_raw(
+                "match $root isa reference-note; delete $root;",
+                TxType::Write,
+            )
+            .await
+            .unwrap();
+    }
 }
