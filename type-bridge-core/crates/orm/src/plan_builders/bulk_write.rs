@@ -275,7 +275,7 @@ pub(crate) fn build_many(
         }
         matrices.push((fields, players));
     }
-    let mut draft = PlanDraft::new(ValueTransport::Given);
+    let mut draft = authority.draft(ValueTransport::Given);
     let root = draft.bind("root")?;
     let ordinal = draft.bind("ordinal")?;
     let fixed_columns = field_widths
@@ -294,7 +294,8 @@ pub(crate) fn build_many(
                 | WriteKind::Delete
                 | WriteKind::DeleteReturning
         ));
-    let constant_ordinal = !complete && fixed_columns >= type_bridge_contract::limits::MAX_BINDINGS;
+    let constant_ordinal =
+        !complete && fixed_columns >= authority.query_limits().structural.bindings;
     let ordinal_input = if constant_ordinal {
         QueryOperand::Literal {
             value: CanonicalValue::Long(i64::try_from(ordinal_offset).map_err(|_| {
@@ -654,7 +655,7 @@ pub(crate) fn build_many(
             }
         }
     }
-    let patterns = if patterns.len() > type_bridge_contract::limits::MAX_BOOLEAN_TERMS {
+    let patterns = if patterns.len() > authority.query_limits().structural.boolean_terms {
         let mut scalar = Vec::new();
         let mut reads = Vec::new();
         for pattern in patterns {
@@ -665,7 +666,7 @@ pub(crate) fn build_many(
         }
         scalar.extend(
             reads
-                .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
+                .chunks(authority.query_limits().structural.boolean_terms)
                 .map(|patterns| {
                     Pattern::from(QueryPattern::Or {
                         branches: vec![patterns.to_vec()],
@@ -737,7 +738,7 @@ pub(crate) fn build_many(
         if !items.is_empty() {
             pipeline.extend(
                 items
-                    .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
+                    .chunks(authority.query_limits().structural.boolean_terms)
                     .map(|items| Stage::Delete {
                         items: items.to_vec(),
                     }),
@@ -747,7 +748,7 @@ pub(crate) fn build_many(
     if !deleted_fields.is_empty() {
         pipeline.extend(
             deleted_fields
-                .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
+                .chunks(authority.query_limits().structural.boolean_terms)
                 .map(|items| Stage::Delete {
                     items: items.to_vec(),
                 }),
@@ -761,7 +762,7 @@ pub(crate) fn build_many(
     if !attached.is_empty() {
         pipeline.extend(
             attached
-                .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
+                .chunks(authority.query_limits().structural.boolean_terms)
                 .map(|items| Stage::Attach {
                     items: items.to_vec(),
                 }),

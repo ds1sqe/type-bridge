@@ -4496,3 +4496,111 @@ async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live() {
+    use type_bridge_contract::limits::QueryLimits;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  configured-tag: { value: string }\nentities:\n  configured-note:\n    owns:\n      configured-tag: { card: { min: 0 } }\n";
+    let docs =
+        SchemaDocumentSet::parse([(DocumentId::new("configured-slots.yaml").unwrap(), yaml)])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&docs).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute configured-tag, value string; entity configured-note, owns configured-tag @card(0..);", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let descriptor = registry.entity("configured-note").unwrap();
+    let raw = DynamicEntityManager::new(&database, descriptor.clone());
+    for literal in [false, true] {
+        for (bindings, terms) in [(256, 256), (1024, 256), (256, 512), (1024, 512)] {
+            // Reuse identical values so deleted fixtures do not accumulate
+            // distinct orphan attributes between policy cases.
+            let mut limits = QueryLimits::V3;
+            limits.structural.bindings = bindings;
+            limits.structural.boolean_terms = terms;
+            let (counted, log) = counted_connection(&database, literal).await;
+            let counted = counted.with_query_limits(limits).unwrap();
+            assert_eq!(counted.query_limits(), limits);
+            let inherited = counted.transaction_context(TxType::Write).await.unwrap();
+            assert_eq!(inherited.query_limits(), limits);
+            inherited.rollback().await.unwrap();
+            let manager =
+                DynamicEntityManager::from_registry(&counted, registry.clone(), descriptor.clone());
+            let fields = (0..300)
+                .map(|index| {
+                    (
+                        "configured-tag".into(),
+                        type_bridge_orm::AttributeValue::String(format!("value-{index}")),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let hit = raw.insert(&fields).await.unwrap();
+            *log.lock().unwrap() = DispatchLog::default();
+            eprintln!("query policy literal={literal} bindings={bindings} terms={terms}: full hit");
+            let actual = manager
+                .put_many(std::slice::from_ref(&fields))
+                .await
+                .unwrap();
+            assert_eq!(actual, [hit.clone()]);
+            let expected = if bindings > 256 && terms > 256 { 1 } else { 4 };
+            assert_eq!(log.lock().unwrap().statements.len(), expected);
+            assert_eq!(log.lock().unwrap().commits, 1);
+            let mut near = fields.clone();
+            near[299].1 = type_bridge_orm::AttributeValue::String("near".into());
+            *log.lock().unwrap() = DispatchLog::default();
+            eprintln!(
+                "query policy literal={literal} bindings={bindings} terms={terms}: near miss"
+            );
+            let created = manager
+                .put_many(std::slice::from_ref(&near))
+                .await
+                .unwrap()
+                .remove(0);
+            assert_ne!(created, hit);
+            let expected = if bindings > 256 {
+                if terms > 256 { 1 } else { 4 }
+            } else {
+                5
+            };
+            assert_eq!(log.lock().unwrap().statements.len(), expected);
+            assert_eq!(log.lock().unwrap().opened, [TxType::Write]);
+            assert_eq!(log.lock().unwrap().commits, 1);
+            let actual = raw
+                .get_by_iid(&created)
+                .await
+                .unwrap()
+                .unwrap()
+                .attributes
+                .into_iter()
+                .map(|(name, value)| format!("{name}={value:?}"))
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                actual,
+                near.into_iter()
+                    .map(|(name, value)| format!("{name}={value:?}"))
+                    .collect()
+            );
+            raw.delete_by_iid(&hit).await.unwrap();
+            raw.delete_by_iid(&created).await.unwrap();
+        }
+    }
+}

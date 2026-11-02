@@ -77,7 +77,11 @@ impl ProjectedCrudExecutor<'_> {
             WriteTarget::Database(database) => database.server_version(),
             WriteTarget::Transaction(transaction) => transaction.server_version(),
         })?;
-        let Some(single) = self.prepare_controlled_write(batch, &identity)? else {
+        let query_limits = match target {
+            WriteTarget::Database(database) => database.shared_query_limits(),
+            WriteTarget::Transaction(transaction) => transaction.shared_query_limits(),
+        };
+        let Some(single) = self.prepare_controlled_write(batch, &identity, query_limits)? else {
             return Box::pin(self.execute_forced_single_write(target, batch, prepared)).await;
         };
         let query = if given {
@@ -171,6 +175,7 @@ impl ProjectedCrudExecutor<'_> {
         &self,
         batch: &ProjectedBatch,
         identity: &DatabaseExecutionIdentity,
+        query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
     ) -> Result<Option<SingleWrite>, SdkExecutionDiagnostic> {
         let replacement = match batch.row_at(0) {
             Some((_, ProjectedBatchRow::Update { replacement, .. })) => replacement,
@@ -189,7 +194,7 @@ impl ProjectedCrudExecutor<'_> {
             .expect("one validated write row")])?;
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(query_limits)
             .map_err(|error| plan_build_failure(&error, batch.model()))?;
         let model = match batch.model().kind() {
             TypeKind::Entity => WriteModel::Entity(self.prepare_entity_create(replacement)?),
@@ -343,6 +348,7 @@ impl ProjectedCrudExecutor<'_> {
                             prepared,
                             ledger,
                             transaction.execution_identity(),
+                            transaction.shared_query_limits(),
                         )
                         .await
                 {
@@ -636,9 +642,25 @@ mod tests {
                 .prepare_controlled_write(
                     &batch,
                     &DatabaseExecutionIdentity::isolated("single-wide"),
+                    None,
                 )
                 .unwrap();
             assert_eq!(prepared.is_none(), cut, "count={count} bytes={bytes}");
+            if count == 300 {
+                let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+                limits.structural.bindings = 1024;
+                limits.structural.boolean_terms = 512;
+                let limits = Arc::new(limits);
+                let raised = executor
+                    .prepare_controlled_write(
+                        &batch,
+                        &DatabaseExecutionIdentity::isolated("single-wide"),
+                        Some(&limits),
+                    )
+                    .unwrap()
+                    .expect("raised query dimensions keep the full write in one plan");
+                assert_eq!(raised.plan.local().limits(), *limits);
+            }
             let carried = PreparedProjectedBatchInvocation::try_new(&installed, &batch, control)
                 .unwrap()
                 .into_control();
@@ -721,6 +743,7 @@ mod tests {
                 .prepare_controlled_write(
                     &batch,
                     &DatabaseExecutionIdentity::isolated("single-update"),
+                    None,
                 )
                 .unwrap()
                 .expect("ordinary input stays one plan");
@@ -771,6 +794,7 @@ mod tests {
                 .prepare_controlled_write(
                     &insert_batch,
                     &DatabaseExecutionIdentity::isolated("single-insert"),
+                    None,
                 )
                 .unwrap()
                 .expect("ordinary input stays one plan");

@@ -20,7 +20,7 @@ use type_bridge_contract::value::CanonicalValue;
 
 use super::authority::PlanAuthority;
 use super::reference::{Reference, reference_binding};
-use super::{BuiltPlan, PlanDraft, ValueTransport};
+use super::{BuiltPlan, ValueTransport};
 
 /// One keyed entity put: `keys` and single-valued `fields` are given
 /// values; `cleared` are the non-key ownerships to empty (omitted, or
@@ -67,7 +67,7 @@ fn keyed_put(
     put: &KeyedPut<'_>,
     relation: Option<RelationPut<'_>>,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(transport);
+    let mut draft = authority.draft(transport);
     let thing = draft.bind("thing")?;
     let mut patterns = Vec::new();
     let mut links = Vec::new();

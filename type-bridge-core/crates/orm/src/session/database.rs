@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 
 use super::backend::AnswerCancellation;
 #[cfg(test)]
@@ -53,6 +54,7 @@ pub struct Database {
     connection_authority: DatabaseConnectionAuthority,
     database_name: String,
     answer_limits: Option<QueryExecutionResourceLimits>,
+    query_limits: Option<Arc<QueryLimits>>,
 }
 
 /// Normalized outcome of creating the one database bound to a connection.
@@ -218,6 +220,33 @@ impl fmt::Debug for DatabaseConnectionAuthority {
 }
 
 impl Database {
+    /// Select the immutable query policy for this connection and inherited transactions.
+    ///
+    /// Defaults remain the native V3 limits. Every dimension is independently configurable.
+    /// # Errors
+    /// Returns an unsupported query-limit value before any provider I/O.
+    pub fn with_query_limits(
+        mut self,
+        limits: QueryLimits,
+    ) -> std::result::Result<Self, QueryLimitsError> {
+        let limits = limits.validate_v3()?;
+        self.query_limits = (limits != QueryLimits::V3).then(|| Arc::new(limits));
+        Ok(self)
+    }
+
+    /// Effective query policy captured by this connection.
+    #[must_use]
+    pub fn query_limits(&self) -> QueryLimits {
+        self.query_limits
+            .as_deref()
+            .copied()
+            .unwrap_or(QueryLimits::V3)
+    }
+
+    pub(crate) fn shared_query_limits(&self) -> Option<&Arc<QueryLimits>> {
+        self.query_limits.as_ref()
+    }
+
     /// Connect one verified generated package through the canonical bounded
     /// direct-connection policy.
     #[cfg(feature = "typedb")]
@@ -243,6 +272,10 @@ impl Database {
         )
         .await
         .map_err(super::direct_connection::lower_secure_connection)
+        .map(|mut database| {
+            database.query_limits = prepared.query_limits;
+            database
+        })
     }
 
     /// Create a Database with a custom backend (for testing).
@@ -270,6 +303,7 @@ impl Database {
             connection_authority,
             database_name: database_name.into(),
             answer_limits: None,
+            query_limits: None,
         }
     }
 
@@ -329,6 +363,7 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
+            query_limits: None,
         })
     }
 
@@ -353,6 +388,7 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
+            query_limits: None,
         })
     }
 
@@ -375,6 +411,7 @@ impl Database {
             connection_authority: DatabaseConnectionAuthority::for_typedb_address(address),
             database_name: database.to_string(),
             answer_limits: None,
+            query_limits: None,
         })
     }
 
@@ -552,7 +589,8 @@ impl Database {
             self.server_version(),
             self.execution_identity(),
             answer_limits,
-        ))
+        )
+        .with_query_limits(self.query_limits.clone()))
     }
 
     /// Execute read-only plans in one read transaction, then close without
@@ -699,6 +737,7 @@ impl Database {
                 type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX
             ),
             answer_limits: self.answer_limits,
+            query_limits: self.query_limits.clone(),
         }
     }
 

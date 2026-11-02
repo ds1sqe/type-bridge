@@ -34,6 +34,7 @@ use super::{BuiltPlan, PlanDraft, ValueTransport};
 pub(crate) struct ManagerPlans {
     pub(crate) registry: Arc<DescriptorRegistry>,
     pub(crate) transport: ValueTransport,
+    authority: Option<Arc<PlanAuthority>>,
 }
 
 pub(crate) fn invalid(code: &'static str, message: &'static str) -> OrmError {
@@ -63,10 +64,31 @@ impl ManagerPlans {
         Self {
             registry,
             transport: ValueTransport::Given,
+            authority: None,
         }
     }
 
+    pub(crate) fn with_query_limits(
+        mut self,
+        limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
+    ) -> Self {
+        if let (Some(limits), Some(installed)) =
+            (limits, self.registry.installed_schema_authority())
+        {
+            self.authority = Some(Arc::new(
+                installed
+                    .plan_authority()
+                    .clone()
+                    .with_query_limits(Arc::clone(limits)),
+            ));
+        }
+        self
+    }
+
     pub(crate) fn authority(&self) -> Result<&PlanAuthority> {
+        if let Some(authority) = &self.authority {
+            return Ok(authority);
+        }
         let installed = self.registry.installed_schema_authority().ok_or_else(|| {
             invalid(
                 "manager_plan_authority_unavailable",
@@ -392,7 +414,7 @@ impl ManagerPlans {
         terminal: ReadTerminal,
     ) -> Result<ManagerRead> {
         let type_id = self.type_id(name)?;
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut patterns = vec![Pattern::Read(QueryPattern::Isa {
             binding: root,
@@ -659,7 +681,7 @@ impl ManagerPlans {
         exact_players: bool,
     ) -> Result<BuiltPlan> {
         let type_id = self.type_id(name)?;
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut patterns = Vec::new();
         let links =
@@ -876,7 +898,7 @@ impl ManagerPlans {
                 "Deletion requires an IID, key attributes, or role players",
             ));
         }
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut patterns = vec![
             QueryPattern::Isa {
@@ -926,7 +948,7 @@ impl ManagerPlans {
         aggregates: &[DynamicAggregate],
     ) -> Result<ManagerRead> {
         let type_id = self.type_id(name)?;
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut patterns = vec![Pattern::Read(QueryPattern::Isa {
             binding: root,
@@ -1038,7 +1060,7 @@ impl ManagerPlans {
         returning: bool,
     ) -> Result<Option<BuiltPlan>> {
         let type_id = self.type_id(name)?;
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut retained = vec![root];
         let mut patterns: Vec<Pattern> = vec![
@@ -1268,7 +1290,7 @@ impl ManagerPlans {
         returning: bool,
     ) -> Result<BuiltPlan> {
         let type_id = self.type_id(name)?;
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let mut pipeline = vec![Stage::Match {
             patterns: vec![
@@ -1592,7 +1614,7 @@ impl ManagerPlans {
                 .types()[&type_id]
                 .subtypes()
                 .is_empty();
-        let mut draft = PlanDraft::new(self.transport);
+        let mut draft = self.authority()?.draft(self.transport);
         let root = draft.bind("root").map_err(diagnostic)?;
         let iid = draft.bind("identity").map_err(diagnostic)?;
         let values = iids

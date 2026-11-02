@@ -15,7 +15,7 @@ use type_bridge_contract::value::CanonicalValue;
 
 use super::authority::PlanAuthority;
 use super::reference::{Reference, reference_binding};
-use super::{BuiltPlan, PlanDraft, ValueTransport};
+use super::{BuiltPlan, ValueTransport};
 
 const ROWS: Operation = Operation::Write {
     returns: WriteReturns::Rows,
@@ -34,7 +34,7 @@ pub(crate) fn entity_insert(
     type_id: &TypeId,
     fields: &[(OwnsFactId, CanonicalValue)],
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(transport);
+    let mut draft = authority.draft(transport);
     let thing = draft.bind("thing")?;
     let fields = fields
         .iter()
@@ -78,7 +78,7 @@ pub(crate) fn update_by_iid(
     transport: ValueTransport,
     update: ThingUpdate<'_>,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(transport);
+    let mut draft = authority.draft(transport);
     let thing = draft.bind("thing")?;
     let mut patterns: Vec<Pattern> = vec![
         QueryPattern::Isa {
@@ -177,7 +177,7 @@ fn delete_plan(
     iid: &str,
     roles: Option<Vec<DocumentRole>>,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(ValueTransport::Literal);
+    let mut draft = authority.draft(ValueTransport::Literal);
     let thing = draft.bind("thing")?;
     let mut pipeline = vec![Stage::Match {
         patterns: vec![

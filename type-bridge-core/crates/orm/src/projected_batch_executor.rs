@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::Arc;
 
 use serde_json::Value;
 use type_bridge_contract::id::{RoleId, TypeId, TypeKind, is_canonical_thing_iid};
@@ -187,7 +188,13 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         prepared.check_control()?;
         require_native_provider(database.server_version())?;
         let identity = database.execution_identity();
-        let plan = BatchPlan::compile(self.installed, &prepared, &identity, self.return_deleted)?;
+        let plan = BatchPlan::compile(
+            self.installed,
+            &prepared,
+            &identity,
+            self.return_deleted,
+            database.shared_query_limits(),
+        )?;
         prepared.check_control()?;
 
         let transaction = await_controlled(
@@ -299,7 +306,13 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         prepared.check_control()?;
         require_native_provider(transaction.server_version())?;
         let identity = transaction.execution_identity().clone();
-        let plan = BatchPlan::compile(self.installed, &prepared, &identity, self.return_deleted)?;
+        let plan = BatchPlan::compile(
+            self.installed,
+            &prepared,
+            &identity,
+            self.return_deleted,
+            transaction.shared_query_limits(),
+        )?;
         prepared.check_control()?;
         match self
             .execute_prepared_in_transaction(transaction, &prepared, plan, &identity, mapper)
@@ -365,9 +378,15 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
         prepared: &PreparedProjectedBatchInvocation<'_>,
         ledger: &mut ExecutionLedger,
         identity: &DatabaseExecutionIdentity,
+        query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
     ) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        let mut plan =
-            BatchPlan::compile_for_diagnosis::<true>(self.installed, prepared, identity, false)?;
+        let mut plan = BatchPlan::compile_for_diagnosis::<true>(
+            self.installed,
+            prepared,
+            identity,
+            false,
+            query_limits,
+        )?;
         let prerequisite = plan.prerequisite.take();
         let mut resolved = ResolvedPrerequisites::new(&plan)?;
         if let Some(statement) = prerequisite {
@@ -541,6 +560,7 @@ struct RoleReference<'a> {
 
 struct BatchPlan<'a> {
     installed: &'a InstalledRuntimeProjection,
+    authority: Arc<crate::plan_builders::authority::PlanAuthority>,
     model: &'a ModelProjection,
     operation: ProjectedBatchOperation,
     rows: Vec<(usize, &'a ProjectedBatchRow)>,
@@ -566,8 +586,15 @@ impl<'a> BatchPlan<'a> {
         prepared: &PreparedProjectedBatchInvocation<'a>,
         identity: &DatabaseExecutionIdentity,
         return_deleted: bool,
+        query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
     ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
-        Self::compile_for_diagnosis::<false>(installed, prepared, identity, return_deleted)
+        Self::compile_for_diagnosis::<false>(
+            installed,
+            prepared,
+            identity,
+            return_deleted,
+            query_limits,
+        )
     }
 
     fn compile_for_diagnosis<const DIAGNOSIS: bool>(
@@ -575,6 +602,7 @@ impl<'a> BatchPlan<'a> {
         prepared: &PreparedProjectedBatchInvocation<'a>,
         identity: &DatabaseExecutionIdentity,
         return_deleted: bool,
+        query_limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
     ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
         let batch = prepared.batch();
         if return_deleted && batch.operation() != ProjectedBatchOperation::Delete {
@@ -617,6 +645,14 @@ impl<'a> BatchPlan<'a> {
             &reference_routes,
             &role_references,
         )?;
+        let authority = installed
+            .plan_authority_with_query_limits(query_limits)
+            .map_err(|error| {
+                lower_orm_error(
+                    &crate::plan_builders::manager::diagnostic(error),
+                    SdkProviderOperation::Write,
+                )
+            })?;
         if !DIAGNOSIS && batch.operation() != ProjectedBatchOperation::Delete {
             let capture_role_snapshots = batch.operation() == ProjectedBatchOperation::Update
                 && role_references.iter().any(|reference| {
@@ -625,6 +661,7 @@ impl<'a> BatchPlan<'a> {
                 });
             let mut plan = Self {
                 installed,
+                authority,
                 model,
                 operation: batch.operation(),
                 rows,
@@ -692,6 +729,7 @@ impl<'a> BatchPlan<'a> {
         };
         Ok(Self {
             installed,
+            authority,
             model,
             operation: batch.operation(),
             rows,
@@ -3349,7 +3387,7 @@ fn checked_add_u64(left: u64, right: u64) -> std::result::Result<u64, SdkExecuti
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
 
     use serde_json::json;
     use type_bridge_contract::fingerprint::SemanticProfileId;

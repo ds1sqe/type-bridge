@@ -143,6 +143,22 @@ impl InstalledRuntimeProjection {
         Ok(Arc::clone(self.plan_authority.get_or_init(|| built)))
     }
 
+    pub(crate) fn plan_authority_with_query_limits(
+        &self,
+        limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
+    ) -> std::result::Result<Arc<PlanAuthority>, Diagnostic> {
+        let authority = self.plan_authority()?;
+        Ok(match limits {
+            Some(limits) => Arc::new(
+                authority
+                    .as_ref()
+                    .clone()
+                    .with_query_limits(Arc::clone(limits)),
+            ),
+            None => authority,
+        })
+    }
+
     /// Return the trusted source projection.
     pub fn projection(&self) -> &Arc<RuntimeProjection> {
         &self.projection

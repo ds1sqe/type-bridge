@@ -81,6 +81,7 @@ pub struct TransactionContext {
     server_version: Option<Version>,
     execution_identity: DatabaseExecutionIdentity,
     answer_limits: Option<QueryExecutionResourceLimits>,
+    query_limits: Option<Arc<type_bridge_contract::limits::QueryLimits>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -320,7 +321,31 @@ impl TransactionContext {
             server_version,
             execution_identity,
             answer_limits,
+            query_limits: None,
         }
+    }
+
+    pub(super) fn with_query_limits(
+        mut self,
+        limits: Option<Arc<type_bridge_contract::limits::QueryLimits>>,
+    ) -> Self {
+        self.query_limits = limits;
+        self
+    }
+
+    /// Immutable query policy inherited from the connection.
+    #[must_use]
+    pub fn query_limits(&self) -> type_bridge_contract::limits::QueryLimits {
+        self.query_limits
+            .as_deref()
+            .copied()
+            .unwrap_or(type_bridge_contract::limits::QueryLimits::V3)
+    }
+
+    pub(crate) fn shared_query_limits(
+        &self,
+    ) -> Option<&Arc<type_bridge_contract::limits::QueryLimits>> {
+        self.query_limits.as_ref()
     }
 
     pub(crate) const fn execution_identity(&self) -> &DatabaseExecutionIdentity {
@@ -1117,6 +1142,7 @@ impl Clone for TransactionContext {
             server_version: self.server_version,
             execution_identity: self.execution_identity.clone(),
             answer_limits: self.answer_limits,
+            query_limits: self.query_limits.clone(),
         }
     }
 }

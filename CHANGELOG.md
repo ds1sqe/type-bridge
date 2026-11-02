@@ -6,6 +6,11 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Direct manager connections accept independently configured `QueryLimits`;
+  borrowed transactions and projected single/batch writes inherit them.
+  Raising every needed dimension keeps wide rows in one statement; an
+  unchanged dimension retains bounded pieces in the same transaction.
+
 - `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans` and
   `EagerTransaction::execute_plans` accept write plans in caller-owned Write
   and Schema transactions, sharing answer budgets and rollback-only latches.

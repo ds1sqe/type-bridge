@@ -3640,7 +3640,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let type_id = &prepared.type_id;
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, type_id))?;
         let transport = plan_transport(transaction, type_id, mode).await?;
         let plan = entity_insert(&authority, transport, type_id, &write.created)
@@ -3663,7 +3663,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         };
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         self.put_entity_by_plan(transaction, prepared, put, &authority, mode)
             .await
@@ -3712,7 +3712,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let type_id = &prepared.type_id;
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, type_id))?;
         let transport = plan_transport(transaction, type_id, mode).await?;
         let plan = update_by_iid(
@@ -3795,7 +3795,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         let roles = if returning { Some(Vec::new()) } else { None };
         let documents = execute_delete_plan(
@@ -3858,7 +3858,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         self.insert_relation_by_plan(transaction, prepared, &authority, mode)
             .await
@@ -4099,7 +4099,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         let Some(put) = self.lower_keyed_put(input)? else {
             return self
@@ -4197,7 +4197,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         self.update_relation_by_plan(
             transaction,
@@ -4264,7 +4264,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let authority = self
             .installed
-            .plan_authority()
+            .plan_authority_with_query_limits(transaction.shared_query_limits())
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
         let roles = if returning {
             Some(self.document_roles_for(&prepared.type_id, &prepared.descriptor)?)

@@ -26,7 +26,7 @@ impl BatchPlan<'_> {
     {
         use crate::plan_builders::bulk_write::{WriteKind, WriteRow, WriteShape};
         use crate::plan_builders::reference::{Reference, ReferenceIdentity};
-        let authority = self.installed.plan_authority().map_err(diagnostic)?;
+        let authority = self.authority.as_ref();
         let fields = self
             .rows
             .iter()
@@ -147,7 +147,7 @@ impl BatchPlan<'_> {
             }
         };
         crate::plan_builders::bulk_write::write_many(
-            &authority,
+            authority,
             kind,
             WriteShape {
                 references_see_prior_writes: false,
@@ -203,7 +203,7 @@ impl BatchPlan<'_> {
                 columns.push((self.domain(field)?, true));
             }
         }
-        let mut draft = BatchDraft::new(rows, &columns).map_err(diagnostic)?;
+        let mut draft = BatchDraft::new(&self.authority, rows, &columns).map_err(diagnostic)?;
         let mut patterns = Vec::new();
         let kind = draft
             .bind_input(0, "kind", &mut patterns)
@@ -278,10 +278,7 @@ impl BatchPlan<'_> {
         patterns.push(QueryPattern::Or { branches }.into());
         draft
             .finish(
-                self.installed
-                    .plan_authority()
-                    .map_err(diagnostic)?
-                    .as_ref(),
+                self.authority.as_ref(),
                 vec![Stage::Match { patterns }],
                 false,
                 vec![kind, ordinal, reference, thing],
@@ -294,7 +291,7 @@ impl BatchPlan<'_> {
         rows: GivenRowsSpec,
     ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
         let columns = [(ValueTypeTag::Long, false), (ValueTypeTag::String, false)];
-        let mut draft = BatchDraft::new(rows, &columns).map_err(diagnostic)?;
+        let mut draft = BatchDraft::new(&self.authority, rows, &columns).map_err(diagnostic)?;
         let mut patterns = Vec::new();
         let ordinal = draft
             .bind_input(0, "ordinal", &mut patterns)
@@ -310,10 +307,7 @@ impl BatchPlan<'_> {
         );
         draft
             .finish(
-                self.installed
-                    .plan_authority()
-                    .map_err(diagnostic)?
-                    .as_ref(),
+                self.authority.as_ref(),
                 vec![
                     Stage::Match { patterns },
                     Stage::Delete {
@@ -429,7 +423,7 @@ impl ProjectedBatchExecutor<'_> {
                 .write_program
                 .take()
                 .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-            let authority = plan.installed.plan_authority().map_err(diagnostic)?;
+            let authority = Arc::clone(&plan.authority);
             let mut consumer = HydrationConsumer::new(self, plan, identity)?;
             for (_, row) in &plan.rows {
                 consumer
@@ -675,7 +669,7 @@ impl ProjectedBatchExecutor<'_> {
             prepared.check_control()?;
             return Ok(ProjectedBatchResult::Things(things));
         }
-        let authority = plan.installed.plan_authority().map_err(diagnostic)?;
+        let authority = Arc::clone(&plan.authority);
         let mut ledger = ExecutionLedger::new(
             prepared.limits(),
             prepared.batch().resource_measure().bytes(),

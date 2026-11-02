@@ -42,7 +42,7 @@ impl<'db> DynamicEntityManager<'db> {
         registry: Arc<DescriptorRegistry>,
         descriptor: Arc<EntityDescriptor>,
     ) -> Self {
-        let mut plans = ManagerPlans::new(registry);
+        let mut plans = ManagerPlans::new(registry).with_query_limits(db.shared_query_limits());
         if !db.supports_given_stage() {
             plans.transport = crate::plan_builders::ValueTransport::Literal;
         }
@@ -60,9 +60,9 @@ impl<'db> DynamicEntityManager<'db> {
         descriptor: Arc<EntityDescriptor>,
     ) -> Self {
         Self {
+            plans: Some(ManagerPlans::new(registry).with_query_limits(tx.shared_query_limits())),
             target: DynamicExecutionTarget::Transaction(tx),
             descriptor,
-            plans: Some(ManagerPlans::new(registry)),
         }
     }
 
@@ -1586,7 +1586,7 @@ impl<'db> DynamicRelationManager<'db> {
         registry: Arc<DescriptorRegistry>,
         descriptor: Arc<RelationDescriptor>,
     ) -> Self {
-        let mut plans = ManagerPlans::new(registry);
+        let mut plans = ManagerPlans::new(registry).with_query_limits(db.shared_query_limits());
         if !db.supports_given_stage() {
             plans.transport = crate::plan_builders::ValueTransport::Literal;
         }
@@ -1604,9 +1604,9 @@ impl<'db> DynamicRelationManager<'db> {
         descriptor: Arc<RelationDescriptor>,
     ) -> Self {
         Self {
+            plans: Some(ManagerPlans::new(registry).with_query_limits(tx.shared_query_limits())),
             target: DynamicExecutionTarget::Transaction(tx),
             descriptor,
-            plans: Some(ManagerPlans::new(registry)),
         }
     }
 

@@ -91,8 +91,8 @@ impl MatchProgram {
     }
 }
 
-fn group_reads(mut patterns: Vec<Pattern>) -> Result<Vec<Pattern>, Diagnostic> {
-    if patterns.len() > type_bridge_contract::limits::MAX_BOOLEAN_TERMS {
+fn group_reads(mut patterns: Vec<Pattern>, terms: usize) -> Result<Vec<Pattern>, Diagnostic> {
+    if patterns.len() > terms {
         let reads = patterns
             .into_iter()
             .map(|pattern| match pattern {
@@ -107,7 +107,7 @@ fn group_reads(mut patterns: Vec<Pattern>) -> Result<Vec<Pattern>, Diagnostic> {
             })
             .collect::<Result<Vec<_>, Diagnostic>>()?;
         patterns = reads
-            .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
+            .chunks(terms)
             .map(|chunk| {
                 QueryPattern::Or {
                     branches: vec![chunk.to_vec()],
@@ -124,7 +124,7 @@ fn probe(
     shape: &WriteShape<'_>,
     row: &Row,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(ValueTransport::Given);
+    let mut draft = authority.draft(ValueTransport::Given);
     let root = draft.bind("root")?;
     let mut patterns = vec![
         QueryPattern::Isa {
@@ -181,13 +181,21 @@ fn probe(
     }
     // Given columns and concept bindings both become provider variables.
     // Apply the same canonical binding ceiling to their combined width.
-    if draft.bindings.len() + draft.inputs.len() > type_bridge_contract::limits::MAX_BINDINGS {
+    if draft.bindings.len() + draft.inputs.len() > authority.query_limits().structural.bindings {
         return Err(invalid(
             "query_plan_binding_limit",
             "Match predicate variables exceed the canonical binding ceiling",
         ));
     }
-    let patterns = group_reads(patterns)?;
+    let terms = authority.query_limits().structural.boolean_terms;
+    // Split wide scalar conjunctions before they become one expensive provider join.
+    if row.fields.len().saturating_mul(2).saturating_add(1) > terms {
+        return Err(invalid(
+            "query_plan_pattern_limit",
+            "Match scalar predicates exceed the configured Boolean-term ceiling",
+        ));
+    }
+    let patterns = group_reads(patterns, terms)?;
     draft.finish(
         authority,
         vec![
@@ -241,7 +249,7 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
         )?);
         remaining.drain(low);
     }
-    let mut draft = PlanDraft::new(ValueTransport::Given);
+    let mut draft = authority.draft(ValueTransport::Given);
     let root = draft.bind("root")?;
     let ordinal_binding = draft.bind("ordinal")?;
     let target = draft.value(super::iid("0x00")?)?;

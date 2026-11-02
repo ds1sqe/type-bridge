@@ -19,13 +19,14 @@ pub(crate) struct BatchDraft {
 
 impl BatchDraft {
     pub(crate) fn new(
+        authority: &PlanAuthority,
         rows: GivenRowsSpec,
         columns: &[(ValueTypeTag, bool)],
     ) -> Result<Self, Diagnostic> {
         if rows.variables.len() != columns.len() {
             return Err(invalid());
         }
-        let mut draft = PlanDraft::new(ValueTransport::Given);
+        let mut draft = authority.draft(ValueTransport::Given);
         let inputs = rows
             .variables
             .iter()

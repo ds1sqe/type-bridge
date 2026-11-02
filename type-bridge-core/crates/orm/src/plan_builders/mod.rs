@@ -42,22 +42,42 @@ pub(crate) struct PlanDraft {
     bindings: Vec<AssertionBinding>,
     inputs: Vec<InputColumn>,
     row: Vec<Option<CanonicalValue>>,
+    slot_limit: usize,
 }
 
 impl PlanDraft {
+    #[cfg(test)]
     pub(crate) const fn new(transport: ValueTransport) -> Self {
+        Self::with_slot_limit(transport, type_bridge_contract::limits::MAX_BINDINGS)
+    }
+
+    const fn with_slot_limit(transport: ValueTransport, slot_limit: usize) -> Self {
         Self {
             transport,
             bindings: Vec::new(),
             inputs: Vec::new(),
             row: Vec::new(),
+            slot_limit,
         }
     }
 
     /// Declare the next binding. Names are `<stem><ordinal>`, so they never
     /// collide with each other or with the `in<ordinal>` input columns.
     pub(crate) fn bind(&mut self, stem: &str) -> Result<BindingId, Diagnostic> {
-        let ordinal = u16::try_from(self.bindings.len()).unwrap_or(u16::MAX);
+        if self.bindings.len() >= self.slot_limit {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_binding_limit").expect("static plan limit code"),
+                "plan binding count exceeds its configured ceiling",
+            ));
+        }
+        let ordinal = u16::try_from(self.bindings.len()).map_err(|_| {
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_binding_limit").expect("static plan limit code"),
+                "plan binding identity exceeds the supported range",
+            )
+        })?;
         let id = BindingId::new(ordinal)?;
         self.bindings.push(AssertionBinding::new(
             id,
@@ -73,7 +93,20 @@ impl PlanDraft {
         domain: type_bridge_contract::value::ValueTypeTag,
         nullable: bool,
     ) -> Result<QueryOperand, Diagnostic> {
-        let column = InputColumnId::new(u16::try_from(self.inputs.len()).unwrap_or(u16::MAX));
+        if self.inputs.len() >= self.slot_limit {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_input_limit").expect("static plan limit code"),
+                "plan input count exceeds its configured ceiling",
+            ));
+        }
+        let column = InputColumnId::new(u16::try_from(self.inputs.len()).map_err(|_| {
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_input_limit").expect("static plan limit code"),
+                "plan input identity exceeds the supported range",
+            )
+        })?);
         self.inputs.push(InputColumn::new(
             column,
             QueryVariable::new(name)?,
@@ -101,7 +134,20 @@ impl PlanDraft {
             }
             return Ok(QueryOperand::Literal { value });
         }
-        let ordinal = u16::try_from(self.inputs.len()).unwrap_or(u16::MAX);
+        if self.inputs.len() >= self.slot_limit {
+            return Err(Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_input_limit").expect("static plan limit code"),
+                "plan input count exceeds its configured ceiling",
+            ));
+        }
+        let ordinal = u16::try_from(self.inputs.len()).map_err(|_| {
+            Diagnostic::new(
+                DiagnosticCategory::ResourceLimit,
+                DiagnosticCode::new("query_plan_input_limit").expect("static plan limit code"),
+                "plan input identity exceeds the supported range",
+            )
+        })?;
         let column = InputColumnId::new(ordinal);
         self.inputs.push(InputColumn::new(
             column,
@@ -134,7 +180,7 @@ impl PlanDraft {
         output: QueryOutput,
         given_rows: Option<Vec<InputRow>>,
     ) -> Result<BuiltPlan, Diagnostic> {
-        let plan = QueryPlanV3::new(
+        let plan = QueryPlanV3::new_with_limits(
             PlanSpec {
                 bindings: self.bindings,
                 inputs: self.inputs,
@@ -147,6 +193,7 @@ impl PlanDraft {
                 functions: Vec::new(),
             },
             authority.declared(),
+            authority.query_limits(),
         )?;
         Ok(BuiltPlan {
             plan,
@@ -215,6 +262,61 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn independent_query_dimensions_choose_a_full_put_or_bounded_scalar_pieces() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use std::sync::Arc;
+        use type_bridge_contract::limits::QueryLimits;
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|value| (balance.clone(), CanonicalValue::Long(value)))
+            .collect::<Vec<_>>();
+        for (bindings, terms, expected) in
+            [(256, 256, 5), (1024, 256, 4), (256, 512, 5), (1024, 512, 1)]
+        {
+            let mut limits = QueryLimits::V3;
+            limits.structural.bindings = bindings;
+            limits.structural.boolean_terms = terms;
+            let authority = authority().with_query_limits(Arc::new(limits));
+            let mut program = write_many(
+                &authority,
+                WriteKind::MatchPut,
+                WriteShape {
+                    references_see_prior_writes: true,
+                    type_id: &account,
+                    keys: &[],
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: true,
+                    return_documents: false,
+                },
+                &[WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                }],
+            )
+            .unwrap();
+            assert_eq!(program.statement_count(), expected);
+            let mut statements = 0;
+            while let Some(step) = program.next().unwrap() {
+                statements += 1;
+                assert_eq!(step.plan.local().limits(), limits);
+                if step.candidate_filter {
+                    program
+                        .accept_candidates(&step, &crate::query_plan_exec::PlanAnswer::Rows(vec![]))
+                        .unwrap();
+                } else if !step.complete {
+                    program.accept_identity(&step, Some("0x10".into())).unwrap();
+                }
+            }
+            assert_eq!(statements, expected);
+        }
     }
 
     #[test]

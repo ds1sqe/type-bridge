@@ -218,7 +218,7 @@ fn one(
     shape: &WriteShape<'_>,
     rows: &[WriteRow<'_>],
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(ValueTransport::Given);
+    let mut draft = authority.draft(ValueTransport::Given);
     let mut initial = Vec::new();
     let mut retained = Vec::new();
     let mut prepared = Vec::new();

@@ -132,6 +132,23 @@ impl TransactionOps for RecordingTransaction {
         Box::pin(async { panic!("projected batch used a materializing Given seam") })
     }
 
+    fn query_bounded<'a>(
+        &'a mut self,
+        typeql: &'a str,
+        limits: BoundedAnswerLimits,
+        consumer: &'a mut dyn AnswerConsumer,
+    ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.query_with_rows_bounded(
+            typeql,
+            GivenRowsSpec {
+                variables: vec![],
+                rows: vec![],
+            },
+            limits,
+            consumer,
+        )
+    }
+
     fn query_with_rows_bounded<'a>(
         &'a mut self,
         typeql: &'a str,
@@ -2897,6 +2914,80 @@ async fn key_changing_self_updates_verify_source_iids_without_an_extra_statement
                 (state.commits, state.rollbacks),
                 if accepted { (1, 0) } else { (0, 1) }
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn raised_query_dimensions_keep_wide_projected_batches_in_one_statement() {
+    let installed = installed();
+    let person = type_id(TypeKind::Entity, "person");
+    let tag = field(&person, "tag");
+    let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+    limits.structural.bindings = 1024;
+    limits.structural.boolean_terms = 512;
+    for given in [false, true] {
+        for operation in [
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchOperation::Put,
+            ProjectedBatchOperation::Update,
+        ] {
+            let create = ProjectedCreate::try_new(
+                &installed,
+                person.clone(),
+                vec![
+                    (
+                        field(&person, "identifier"),
+                        vec![string_value(&installed, "identifier", "wide")],
+                    ),
+                    (
+                        tag.clone(),
+                        (0..300)
+                            .map(|index| string_value(&installed, "tag", &format!("v-{index:04}")))
+                            .collect(),
+                    ),
+                ],
+                vec![],
+            )
+            .unwrap();
+            let row = if operation == ProjectedBatchOperation::Update {
+                ProjectedBatchRow::Update {
+                    iid: "0x10".into(),
+                    replacement: create,
+                }
+            } else {
+                ProjectedBatchRow::Create(create)
+            };
+            let batch =
+                ProjectedBatch::try_new(&installed, person.clone(), operation, vec![row]).unwrap();
+            let mut document = person_document(0, "0x10", "wide");
+            document["attributes"]["tag"] = (0..300)
+                .map(|index| json!({"value":format!("v-{index:04}")}))
+                .collect::<Vec<_>>()
+                .into();
+            let (database, state) = fixture(
+                vec![Response::Documents(vec![document])],
+                Version::new(3, 13, 6),
+                given,
+                CommitBehavior::Success,
+            );
+            let database = database.with_query_limits(limits).unwrap();
+            let ProjectedBatchResult::Things(things) = ProjectedBatchExecutor::new(&installed)
+                .execute(&database, &batch, control())
+                .await
+                .unwrap()
+            else {
+                panic!("write result")
+            };
+            assert_eq!(things[0].fields()[&tag].len(), 300);
+            let state = state.lock().unwrap();
+            assert_eq!(state.opens, [TxType::Write]);
+            assert_eq!(
+                state.calls.len(),
+                1,
+                "operation={operation:?} given={given}"
+            );
+            assert_eq!((state.commits, state.rollbacks), (1, 0));
         }
     }
 }

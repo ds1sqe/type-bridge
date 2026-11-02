@@ -23,6 +23,7 @@ pub(crate) struct PlanAuthority {
     /// Whether the declarations come from a verified package authority.
     /// Plans built from projection-rebuilt declarations run locally only.
     verified: bool,
+    query_limits: Option<Arc<type_bridge_contract::limits::QueryLimits>>,
 }
 
 impl PlanAuthority {
@@ -31,6 +32,7 @@ impl PlanAuthority {
             declared: authority.shared_declared(),
             managed_semantics: authority.managed().managed_semantic_schema().clone(),
             verified: true,
+            query_limits: None,
         }
     }
 
@@ -40,6 +42,7 @@ impl PlanAuthority {
             declared: Arc::new(authority.declared_schema().clone()),
             managed_semantics: authority.managed_state().managed_semantic_schema().clone(),
             verified: true,
+            query_limits: None,
         }
     }
 
@@ -168,6 +171,7 @@ impl PlanAuthority {
             declared: Arc::new(declared),
             managed_semantics,
             verified: false,
+            query_limits: None,
         })
     }
 
@@ -180,6 +184,7 @@ impl PlanAuthority {
             declared: Arc::new(declared),
             managed_semantics,
             verified: true,
+            query_limits: None,
         }
     }
 
@@ -187,6 +192,25 @@ impl PlanAuthority {
     pub(crate) const fn unverified(mut self) -> Self {
         self.verified = false;
         self
+    }
+
+    pub(crate) fn with_query_limits(
+        mut self,
+        limits: Arc<type_bridge_contract::limits::QueryLimits>,
+    ) -> Self {
+        self.query_limits = Some(limits);
+        self
+    }
+
+    pub(crate) fn query_limits(&self) -> type_bridge_contract::limits::QueryLimits {
+        self.query_limits
+            .as_deref()
+            .copied()
+            .unwrap_or(type_bridge_contract::limits::QueryLimits::V3)
+    }
+
+    pub(crate) fn draft(&self, transport: super::ValueTransport) -> super::PlanDraft {
+        super::PlanDraft::with_slot_limit(transport, self.query_limits().structural.bindings)
     }
 
     pub(crate) const fn verified(&self) -> bool {

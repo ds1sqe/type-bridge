@@ -414,6 +414,25 @@ ceiling, on either transport. With nothing configured, a session runs under
 its transport's defaults: the 2.2 executor defaults direct, the wire limits
 (65,536 items, 32 MiB) through a proxy.
 
+Direct manager connections also accept the full `QueryLimits` through
+`DirectConnectionPolicy::query_limits`. Transactions inherit that policy.
+Each dimension is independent: a 300-value full-match put needs both the
+binding and Boolean-term ceilings raised to keep one statement. Leaving a
+needed dimension at its default uses bounded pieces in the same transaction.
+
+```rust
+let mut limits = type_bridge::QueryLimits::V3;
+limits.structural.bindings = 1024;
+limits.structural.boolean_terms = 512;
+let policy = type_bridge::DirectConnectionPolicy::new(
+    "localhost:1729", "app", "admin", "password",
+).query_limits(limits)?;
+```
+
+The binding default is 256 and the supported ceiling is 65,536. Raising
+bindings preserves the other dimensions' defaults. Custom direct backends
+can capture the same policy with `Database::with_query_limits`.
+
 A proxy connection fetches the server's signed `/v2/capabilities`
 advertisement when it connects, or uses the exact bytes pinned with
 `.advertisement(bytes)`. Fetch it only over TLS you trust, or pin it: the

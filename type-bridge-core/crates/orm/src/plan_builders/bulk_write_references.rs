@@ -372,7 +372,7 @@ fn lookup(
     route: &LookupRoute,
     rows: Vec<InputRow>,
 ) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = PlanDraft::new(ValueTransport::Given);
+    let mut draft = authority.draft(ValueTransport::Given);
     let root = draft.bind("root")?;
     let ordinal = draft.bind("ordinal")?;
     let position = draft.input("reference_ordinal", ValueTypeTag::Long, false)?;

@@ -204,6 +204,7 @@ pub(crate) fn forces_pieces(error: &Diagnostic) -> bool {
         error.code().as_str(),
         "query_plan_binding_limit"
             | "query_plan_write_term_limit"
+            | "query_plan_pattern_limit"
             | "migration_assertion_binding_id_out_of_range"
             | "query_plan_input_limit"
             | "projected_batch_input_unit_byte_limit"
