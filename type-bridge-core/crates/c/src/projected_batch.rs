@@ -1856,36 +1856,17 @@ plays:
     }
 
     fn responses(kind: TypeKind, operation: ProjectedBatchOperation) -> Vec<Response> {
-        let mut responses = Vec::new();
-        if operation == ProjectedBatchOperation::Put
-            || (kind == TypeKind::Relation && operation != ProjectedBatchOperation::Delete)
-        {
-            let prerequisites = if kind == TypeKind::Relation {
-                vec![
-                    json!({"kind": 1, "ordinal": 1, "reference_ordinal": 1, "iid": "0x10", "type": "person"}),
-                    json!({"kind": 1, "ordinal": 0, "reference_ordinal": 0, "iid": "0x10", "type": "person"}),
-                ]
-            } else {
-                vec![]
-            };
-            responses.push(Response::Documents(prerequisites));
-        }
         if operation == ProjectedBatchOperation::Delete {
-            responses.push(Response::Documents(vec![
+            vec![Response::Documents(vec![
                 json!({"ordinal": 1}),
                 json!({"ordinal": 0, "iid": target_iid(kind, 0)}),
-            ]));
+            ])]
         } else {
-            responses.push(Response::Documents(vec![
-                json!({"ordinal": 1, "iid": target_iid(kind, 1)}),
-                json!({"ordinal": 0, "iid": target_iid(kind, 0)}),
-            ]));
-            responses.push(Response::Documents(vec![
+            vec![Response::Documents(vec![
                 hydration(kind, 1),
                 hydration(kind, 0),
-            ]));
+            ])]
         }
-        responses
     }
 
     fn diagnostic_code(diagnostics: *mut TypeBridgeExecutionDiagnostics) -> String {
@@ -2328,22 +2309,19 @@ plays:
                     assert!(state.responses.is_empty());
                     assert_eq!(state.commits, 1);
                     assert_eq!(state.rollbacks, 0);
-                    let mutation_index = usize::from(
-                        operation == ProjectedBatchOperation::Put
-                            || (kind == TypeKind::Relation
-                                && operation != ProjectedBatchOperation::Delete),
-                    );
-                    let mutation = &state.calls[mutation_index];
+                    let [mutation] = state.calls.as_slice() else {
+                        panic!("one native batch statement");
+                    };
                     assert_eq!(mutation.1.rows.len(), 2);
                     match operation {
                         ProjectedBatchOperation::Insert => {
-                            assert!(mutation.0.contains("insert $thing1 isa "));
+                            assert!(mutation.0.contains("insert $root0 isa "));
                         }
                         ProjectedBatchOperation::Put => {
                             assert!(mutation.0.contains(if kind == TypeKind::Entity {
-                                "put $thing1 isa! person"
+                                "put $root0 isa! person"
                             } else {
-                                "insert $thing1 isa membership"
+                                "put $root0 isa! membership"
                             }));
                         }
                         ProjectedBatchOperation::Update => {
@@ -2607,7 +2585,7 @@ plays:
         }
 
         let tight = QueryExecutionResourceLimits {
-            statements: Some(1),
+            statements: Some(0),
             ..QueryExecutionResourceLimits::default()
         };
         for (target_ceiling, call_limits) in
@@ -2637,7 +2615,9 @@ plays:
             assert!(result.is_null());
             assert_eq!(diagnostic_code(diagnostics), "batch_statement_limit");
             close_diagnostics(&mut diagnostics);
-            assert!(state.lock().unwrap().calls.is_empty());
+            let state = state.lock().unwrap();
+            assert!(state.opens.is_empty());
+            assert!(state.calls.is_empty());
         }
 
         let mut cancellation = ptr::null_mut();
@@ -2735,16 +2715,10 @@ plays:
             ProjectedBatchOperation::Insert,
             &creates,
         );
-        let mutation = || {
-            Response::Documents(vec![
-                json!({"ordinal": 1, "iid": "0x21"}),
-                json!({"ordinal": 0, "iid": "0x20"}),
-            ])
-        };
 
         let (database, state) = make_database(
             &package,
-            vec![mutation(), Response::Error],
+            vec![Response::Error],
             CommitBehavior::Success,
             None,
         );
@@ -2765,17 +2739,18 @@ plays:
             TypeBridgeStatus::ExecutionFailed
         );
         assert!(result.is_null());
+        assert_eq!(diagnostic_code(diagnostics), "provider_operation_failed");
         close_diagnostics(&mut diagnostics);
         {
             let state = state.lock().unwrap();
-            assert_eq!(state.calls.len(), 2);
+            assert_eq!(state.calls.len(), 1);
             assert_eq!(state.commits, 0);
             assert_eq!(state.rollbacks, 1);
         }
 
         let (database, state) = make_database(
             &package,
-            vec![mutation(), Response::Error],
+            vec![Response::Error],
             CommitBehavior::Success,
             None,
         );
@@ -2800,6 +2775,7 @@ plays:
             TypeBridgeStatus::ExecutionFailed
         );
         assert!(result.is_null());
+        assert_eq!(diagnostic_code(diagnostics), "provider_operation_failed");
         close_diagnostics(&mut diagnostics);
         // SAFETY: the test exclusively owns this live transaction handle.
         let transaction_ref = unsafe { &*transaction };
@@ -2809,7 +2785,7 @@ plays:
         );
         {
             let state = state.lock().unwrap();
-            assert_eq!(state.calls.len(), 2);
+            assert_eq!(state.calls.len(), 1);
             assert_eq!(state.commits, 0);
             assert_eq!(state.rollbacks, 0);
         }
