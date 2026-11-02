@@ -2780,10 +2780,8 @@ test(`generated package round-trips exact models on TypeDB ${TYPEDB_VERSION}`, {
             "--quiet",
             "-p",
             "type-bridge-server",
-            "--features",
-            "v2-query",
             "--example",
-            "v2_smoke_server",
+            "staged_smoke_server",
           ]
         : [],
       {
@@ -3686,7 +3684,7 @@ test(
       server = spawn(
         suppliedServer ?? "cargo",
         suppliedServer === undefined
-          ? ["run", "--quiet", "-p", "type-bridge-server", "--features", "v2-query", "--example", "v2_smoke_server"]
+          ? ["run", "--quiet", "-p", "type-bridge-server", "--example", "staged_smoke_server"]
           : [],
         {
           cwd: CORE,

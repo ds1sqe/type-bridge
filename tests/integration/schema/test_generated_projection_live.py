@@ -2951,10 +2951,8 @@ def test_sdk_serialization_live(
             "--quiet",
             "-p",
             "type-bridge-server",
-            "--features",
-            "v2-query",
             "--example",
-            "v2_smoke_server",
+            "staged_smoke_server",
         ],
         cwd=CORE,
         env={
@@ -4529,10 +4527,8 @@ def test_generated_projection_round_trips_live_models(
             "--quiet",
             "-p",
             "type-bridge-server",
-            "--features",
-            "v2-query",
             "--example",
-            "v2_smoke_server",
+            "staged_smoke_server",
         ]
         server_cwd = CORE
     else:

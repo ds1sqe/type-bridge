@@ -628,7 +628,7 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                  [typedb]\naddress = {}\ndatabase = {}\nusername = {}\npassword = {}\n\
                  http_port = {http_port}\ntls = false\n\
                  [logging]\nlevel = \"info\"\nformat = \"text\"\n\
-                 [v2]\nenabled = true\nschema_authority_file = {}\n\
+                 [staged]\nenabled = true\nschema_authority_file = {}\n\
                  authority_mode = \"query_only\"\nallow_unauthenticated_staged_writes = true\n",
                 toml_string(&address),
                 toml_string(&database),

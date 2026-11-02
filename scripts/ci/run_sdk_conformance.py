@@ -1167,8 +1167,6 @@ def writes_fixture(
         str(CORE / "Cargo.toml"),
         "-p",
         "type-bridge-server",
-        "--features",
-        "v2-query",
         "--test",
         "v3_staged_integration_tests",
     ]

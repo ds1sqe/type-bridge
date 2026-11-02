@@ -211,9 +211,9 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
         features=(),
     )
     v2_only = validator.write_server_consumer(
-        tmp_path / "server-v2-only",
+        tmp_path / "server-transport-only",
         version=inventory.release_version,
-        features=("v2-query",),
+        features=("axum-transport",),
     )
     assert tomllib.loads(no_default.read_text())["dependencies"]["type-bridge-server"] == {
         "version": "=2.3.2",
@@ -222,7 +222,7 @@ def test_generated_consumers_have_only_exact_registry_declarations(tmp_path: Pat
     assert tomllib.loads(v2_only.read_text())["dependencies"]["type-bridge-server"] == {
         "version": "=2.3.2",
         "default-features": False,
-        "features": ["v2-query"],
+        "features": ["axum-transport"],
     }
 
 
@@ -298,16 +298,16 @@ def test_metadata_rejects_source_tree_or_non_registry_resolution(tmp_path: Path)
 
 
 @pytest.mark.parametrize(
-    ("features", "expected_v2", "accepted"),
+    ("features", "expected_transport", "accepted"),
     (
         ([], False, True),
-        (["v2-query", "axum-transport"], True, True),
-        (["default", "band9", "typedb", "v2-query"], True, False),
+        (["axum-transport", "axum-transport"], True, True),
+        (["default", "band9", "typedb", "axum-transport"], True, False),
         ([], True, False),
     ),
 )
 def test_server_feature_probes_are_isolated(
-    features: list[str], expected_v2: bool, accepted: bool
+    features: list[str], expected_transport: bool, accepted: bool
 ) -> None:
     package_id = "path+file:///server#type-bridge-server@2.3.2"
     metadata = {
@@ -322,13 +322,13 @@ def test_server_feature_probes_are_isolated(
     }
 
     if accepted:
-        validator.validate_server_features(metadata, version="2.3.2", expected_v2=expected_v2)
+        validator.validate_server_features(metadata, version="2.3.2", expected_transport=expected_transport)
     else:
         with pytest.raises(validator.ExternalConsumerError):
             validator.validate_server_features(
                 metadata,
                 version="2.3.2",
-                expected_v2=expected_v2,
+                expected_transport=expected_transport,
             )
 
 

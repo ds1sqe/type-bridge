@@ -630,10 +630,8 @@ def live_journey(
                     str(ROOT / "type-bridge-core/Cargo.toml"),
                     "-p",
                     "type-bridge-server",
-                    "--features",
-                    "v2-query",
                     "--example",
-                    "v2_smoke_server",
+                    "staged_smoke_server",
                 ],
                 env={**os.environ, "CARGO_TARGET_DIR": str(infra_target)},
             )
@@ -649,7 +647,7 @@ def live_journey(
                 "SMOKE_PORT": str(port),
             }
             server = subprocess.Popen(
-                [str(infra_target / "debug/examples/v2_smoke_server")],
+                [str(infra_target / "debug/examples/staged_smoke_server")],
                 env=server_environment,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
