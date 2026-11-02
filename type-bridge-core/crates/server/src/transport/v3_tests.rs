@@ -1627,15 +1627,24 @@ mod raw_tests {
         unvouched: bool,
         transport_refuse: bool,
         drop_commit_reply: bool,
+        oversized_answer: bool,
+        precommit_refusal: Option<&'static str>,
         durable_writes: AtomicUsize,
+        raw_authorizations: AtomicUsize,
         gate: Option<Arc<tokio::sync::Semaphore>>,
     }
     impl RawQueryExecutor for Arc<RawHost> {
-        fn execute<'a>(&'a self, _database: &'a str, query: &'a str, kind: TransactionKind)
+        fn execute<'a>(&'a self, _database: &'a str, query: &'a str, kind: TransactionKind, options: type_bridge_typedb_runtime::raw::RawExecutionOptions)
             -> Pin<Box<dyn Future<Output=Result<Vec<u8>,RawQueryError>> + Send + 'a>> {
+            assert!(options.deadline.is_some());
+            assert_eq!(options.max_answer_bytes, Some(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES));
             self.queries.lock().unwrap().push((query.to_owned(),kind));
             Box::pin(async move {
                 if let Some(gate) = &self.gate { gate.acquire().await.unwrap().forget(); }
+                if let Some(code) = self.precommit_refusal {
+                    return Err(RawQueryError { code: code.into(), message: "host bound refused before commit".into(), status: if code == "raw_answer_byte_limit" { 413 } else { 504 }, commit_outcome: None });
+                }
+                if self.oversized_answer { return Ok(vec![b' '; type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES + 1]); }
                 if self.drop_commit_reply {
                     self.durable_writes.fetch_add(1, Ordering::SeqCst);
                     return Err(RawQueryError { code: "CONNECTION_CLOSED".into(), message: "commit connection dropped".into(), status: 503, commit_outcome: Some(type_bridge_typedb_runtime::CommitFailureCertainty::Unknown) });
@@ -1657,6 +1666,7 @@ mod raw_tests {
         }
         fn on_v3_raw<'a>(&'a self, _query: &'a str, _kind: TransactionKind, _ctx: &'a mut RequestContext)
             -> Pin<Box<dyn Future<Output=Result<(),InterceptError>> + Send + 'a>> {
+            self.raw_authorizations.fetch_add(1, Ordering::SeqCst);
             Box::pin(async move { if self.refuse { Err(InterceptError::Refused { code:"host_raw_refused" }) } else { Ok(()) } })
         }
         fn on_v3_commit<'a>(&'a self, outcome: &'a V3CommitOutcome<'a>, _ctx: &'a RequestContext)
@@ -1766,6 +1776,7 @@ mod raw_tests {
         }
         assert!(host.queries.lock().unwrap().is_empty());
         assert!(host.commits.lock().unwrap().is_empty());
+        assert_eq!(host.raw_authorizations.load(Ordering::SeqCst), 0);
         assert_eq!(raw(&fixture, request("read", "read", "raw-unvouched-read")).await.0, StatusCode::OK);
     }
     #[tokio::test]
@@ -1801,6 +1812,39 @@ mod raw_tests {
         assert_eq!(body, br#"{"error":"commit_outcome_unknown"}"#);
         assert_eq!(host.durable_writes.load(Ordering::SeqCst), 1);
         assert_eq!(*host.commits.lock().unwrap(), [TransactionKind::Write]);
+    }
+    #[tokio::test]
+    async fn oversized_raw_answers_are_refused_without_publishing_partial_bytes() {
+        let host = Arc::new(RawHost { oversized_answer: true, ..Default::default() });
+        let fixture = fixture(host, None);
+        let (status, body) = raw(&fixture, request("read huge", "read", "raw-answer-too-large")).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body, br#"{"error":"raw_answer_byte_limit"}"#);
+    }
+    #[tokio::test]
+    async fn raw_deadline_does_not_interrupt_a_commit_already_sent() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let host = Arc::new(RawHost { gate: Some(Arc::clone(&gate)), ..Default::default() });
+        let fixture = fixture_with_query(Arc::clone(&host), None, |query| query.with_execution_timeout(Duration::from_millis(20)));
+        let handler = tokio::spawn(async move { raw(&fixture, request("insert commit sent;", "write", "raw-commit-past-deadline")).await });
+        tokio::time::timeout(Duration::from_secs(2), async { while host.queries.lock().unwrap().is_empty() { tokio::task::yield_now().await; } }).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(!handler.is_finished());
+        gate.add_permits(1);
+        assert_eq!(handler.await.unwrap().0, StatusCode::OK);
+        assert_eq!(*host.commits.lock().unwrap(), [TransactionKind::Write]);
+    }
+    #[tokio::test]
+    async fn raw_execution_bounds_have_typed_refusals_without_commit_observation() {
+        for (code, status) in [("raw_answer_byte_limit", StatusCode::PAYLOAD_TOO_LARGE), ("transaction_deadline_exceeded", StatusCode::GATEWAY_TIMEOUT)] {
+            let host = Arc::new(RawHost { precommit_refusal: Some(code), ..Default::default() });
+            let fixture = fixture(Arc::clone(&host), None);
+            let (actual, body) = raw(&fixture, request("write rolled back", "write", "raw-bounded-precommit")).await;
+            assert_eq!(actual, status);
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), serde_json::json!({"error": code}));
+            assert!(host.commits.lock().unwrap().is_empty());
+            assert_eq!(host.durable_writes.load(Ordering::SeqCst), 0);
+        }
     }
     #[tokio::test]
     async fn raw_replay_is_refused_before_a_second_transaction() {

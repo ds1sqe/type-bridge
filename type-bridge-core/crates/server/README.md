@@ -189,13 +189,16 @@ staged requests. Nonces share the executor's atomic replay store.
 
 Raw, unchecked TypeQL: the escape hatch. Sends the TypeQL text to TypeDB
 as written and returns the driver's answer unchanged. TypeBridge does not
-parse, validate, rewrite, limit or hydrate it, and makes no promise about
+parse, validate, rewrite or hydrate it, and makes no promise about
 it: it can run any query in any transaction kind, including schema changes
 that break your generated models. Use a typed call or a V3 plan for
 anything TypeBridge should check. Proxy hosts still control admission:
 `on_v3_transport` authenticates, `on_v3_raw` receives the exact text and
-transaction kind before dispatch, and `on_v3_commit` observes committed
-write and schema transactions. `AuditLogInterceptor` records the raw text.
+transaction kind before dispatch. Write and schema requests also need
+`on_v3_write_authority` vouching, unless the host explicitly sets
+`allow_unauthenticated_staged_writes`. `on_v3_commit` observes committed and
+uncertain write/schema outcomes. `AuditLogInterceptor` records raw text and
+every refusal; transport policies see `query_format = "raw-typeql"`.
 Raw policies all run even after a refusal so auditing is preserved; the
 first refusal decides the response.
 
@@ -206,5 +209,14 @@ queries. Write and schema transactions commit once; read transactions close.
 Host `InterceptError::Refused { code }` decisions return HTTP 403 with that
 code. Malformed/admission-expired requests return HTTP 400. Provider errors
 return `{"error":"typedb_error","typedb":{"code":...,"message":...}}`.
-A write whose response policy withholds its answer reports
-`commit_outcome_unknown`; reconcile before retrying.
+The server execution deadline covers transaction opening and query work;
+pre-commit timeout closes without committing. A commit already sent is
+awaited without cancellation. Answers have no item-count bound, but their
+complete JSON must fit the 32 MiB remote-envelope byte ceiling. Oversized
+answers refuse as `raw_answer_byte_limit` before commit, without truncation.
+A lost commit reply or a committed write whose response policy withholds its
+answer reports `commit_outcome_unknown`; reconcile before retrying.
+
+Embedded raw providers receive these bounds in `RawExecutionOptions` through
+`RawQueryExecutor::execute`. The direct runtime's `execute_raw` remains
+unbounded; hosts use `execute_raw_with_options` to apply explicit bounds.

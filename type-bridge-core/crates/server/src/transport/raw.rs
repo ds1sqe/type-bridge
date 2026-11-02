@@ -16,16 +16,20 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkExecutionDiagnostic};
 use type_bridge_orm::session::staged::TransactionKind;
 use type_bridge_typedb_runtime::CommitFailureCertainty;
-use type_bridge_typedb_runtime::raw::RawQueryError;
+use type_bridge_typedb_runtime::raw::{RawExecutionOptions, RawQueryError};
 
 /// Raw execution at the provider boundary, shared by embedded and HTTP hosts.
 pub trait RawQueryExecutor: Send + Sync {
     /// Return the exact TypeDB HTTP query-answer JSON bytes for one transaction.
+    /// Honor the deadline and complete-answer byte bound before committing;
+    /// a refusal closes without a commit. Never cancel a commit already sent,
+    /// and retain its durability certainty in any returned error.
     fn execute<'a>(
         &'a self,
         database: &'a str,
         query: &'a str,
         kind: TransactionKind,
+        options: RawExecutionOptions,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, RawQueryError>> + Send + 'a>>;
 }
 
@@ -35,13 +39,14 @@ impl RawQueryExecutor for type_bridge_typedb_runtime::TypeDBRuntime {
         database: &'a str,
         query: &'a str,
         kind: TransactionKind,
+        options: RawExecutionOptions,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, RawQueryError>> + Send + 'a>> {
         let kind = match kind {
             TransactionKind::Read => type_bridge_typedb_runtime::TxType::Read,
             TransactionKind::Write => type_bridge_typedb_runtime::TxType::Write,
             TransactionKind::Schema => type_bridge_typedb_runtime::TxType::Schema,
         };
-        Box::pin(self.execute_raw(database, query, kind))
+        Box::pin(self.execute_raw_with_options(database, query, kind, options))
     }
 }
 
@@ -196,29 +201,6 @@ pub(super) async fn handle_raw(
         .await;
     };
     ctx.transaction_type = request.kind;
-    match await_before_deadline(
-        deadline,
-        state
-            .pipeline()
-            .authorize_v3_raw(&request.query, kind, &mut ctx),
-    )
-    .await
-    {
-        Some(Ok(())) => {}
-        Some(Err(error)) => {
-            return refuse(&state, &ctx, deadline, StatusCode::FORBIDDEN, error.code()).await;
-        }
-        None => {
-            return refuse(
-                &state,
-                &ctx,
-                deadline,
-                StatusCode::GATEWAY_TIMEOUT,
-                "transaction_deadline_exceeded",
-            )
-            .await;
-        }
-    }
     if kind != TransactionKind::Read && !state.query.allow_unauthenticated_staged_writes {
         match await_before_deadline(deadline, state.pipeline().authorize_v3_write(&ctx)).await {
             Some(Ok(true)) => {}
@@ -252,6 +234,29 @@ pub(super) async fn handle_raw(
                 )
                 .await;
             }
+        }
+    }
+    match await_before_deadline(
+        deadline,
+        state
+            .pipeline()
+            .authorize_v3_raw(&request.query, kind, &mut ctx),
+    )
+    .await
+    {
+        Some(Ok(())) => {}
+        Some(Err(error)) => {
+            return refuse(&state, &ctx, deadline, StatusCode::FORBIDDEN, error.code()).await;
+        }
+        None => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::GATEWAY_TIMEOUT,
+                "transaction_deadline_exceeded",
+            )
+            .await;
         }
     }
     if Instant::now() >= retain_until {
@@ -312,7 +317,15 @@ pub(super) async fn handle_raw(
     let finish_ctx = ctx.clone();
     let task = tokio::spawn(async move {
         let answer = executor
-            .execute(state.query.database.database_name(), &request.query, kind)
+            .execute(
+                state.query.database.database_name(),
+                &request.query,
+                kind,
+                RawExecutionOptions {
+                    deadline: Some(deadline),
+                    max_answer_bytes: Some(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES),
+                },
+            )
             .await;
         let commit_failure = answer
             .as_ref()
@@ -340,6 +353,26 @@ pub(super) async fn handle_raw(
             .await;
         }
         let (response, success, code, size) = match answer {
+            Ok(bytes) if bytes.len() > type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES => {
+                let code = if may_have_committed {
+                    "commit_outcome_unknown"
+                } else {
+                    "raw_answer_byte_limit"
+                };
+                (
+                    refusal(
+                        if may_have_committed {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        } else {
+                            StatusCode::PAYLOAD_TOO_LARGE
+                        },
+                        code,
+                    ),
+                    false,
+                    code,
+                    0,
+                )
+            }
             Ok(bytes) => {
                 let size = bytes.len();
                 (
@@ -359,6 +392,21 @@ pub(super) async fn handle_raw(
                 "commit_outcome_unknown",
                 0,
             ),
+            Err(error)
+                if matches!(
+                    error.code.as_str(),
+                    "transaction_deadline_exceeded" | "raw_answer_byte_limit"
+                ) =>
+            {
+                let code = if error.code == "raw_answer_byte_limit" {
+                    "raw_answer_byte_limit"
+                } else {
+                    "transaction_deadline_exceeded"
+                };
+                let status =
+                    StatusCode::from_u16(error.status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+                (refusal(status, code), false, code, 0)
+            }
             Err(error) => {
                 let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
                 ((status,axum::Json(serde_json::json!({"error":"typedb_error","typedb":{"code":error.code,"message":error.message}}))).into_response(),false,"typedb_error",0)

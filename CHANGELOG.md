@@ -48,7 +48,11 @@ All notable changes to TypeBridge will be documented in this file.
   default), with `query.remote.raw` discovery, finite nonce admission,
   host `on_v3_raw` authorization and raw-text auditing. Shared runtime
   `execute_raw` / `query_raw` return TypeDB HTTP query-answer JSON for
-  unchecked TypeQL without generated-model admission or hydration.
+  unchecked TypeQL without generated-model admission or hydration. Raw
+  write/schema requests use staged write vouching; every refusal is audited.
+  `execute_raw_with_options` accepts host deadline and answer-byte bounds;
+  remote raw answers fit the remote-envelope ceiling without truncation.
+  `RawQueryError::commit_outcome` preserves uncertain commit durability.
 
 - Generated plan idioms in Python, TypeScript, Rust, and C bind caller values
   as typed given inputs and retain the shared builder's canonical bytes.

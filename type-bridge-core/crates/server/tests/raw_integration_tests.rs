@@ -236,6 +236,56 @@ async fn raw_answers_match_typedb_http_and_host_refusal_writes_nothing() {
             json!({"error":"staged_write_not_authorized"})
         );
     }
+    let bounded = direct
+        .execute_raw_with_options(
+            &name,
+            "insert $p isa raw-person, has raw-name \"byte-limit-rolled-back\";",
+            TxType::Write,
+            type_bridge_typedb_runtime::raw::RawExecutionOptions {
+                deadline: Some(std::time::Instant::now() + Duration::from_secs(2)),
+                max_answer_bytes: Some(1),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(bounded.code, "raw_answer_byte_limit");
+    assert_eq!(bounded.commit_outcome, None);
+    let mut held = direct
+        .open_transaction(&name, TxType::Schema)
+        .await
+        .unwrap();
+    held.query_raw("define entity raw-lock-holder;")
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let timed = direct
+        .execute_raw_with_options(
+            &name,
+            "insert $p isa raw-person, has raw-name \"deadline-rolled-back\";",
+            TxType::Write,
+            type_bridge_typedb_runtime::raw::RawExecutionOptions {
+                deadline: Some(started + Duration::from_millis(25)),
+                max_answer_bytes: Some(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "raw open ignored its deadline"
+    );
+    assert_eq!(timed.commit_outcome, None);
+    // The provider's millisecond timeout can win the same absolute deadline.
+    // Preserve its TXN1 diagnostic instead of rewriting it as a local timeout.
+    assert!(
+        matches!(
+            timed.code.as_str(),
+            "transaction_deadline_exceeded" | "TXN1"
+        ),
+        "unexpected timeout diagnostic: {timed}"
+    );
+    println!("bounded raw open refused with {}", timed.code);
+    held.close().await.unwrap();
     let unchanged = direct
         .execute_raw(
             &name,
