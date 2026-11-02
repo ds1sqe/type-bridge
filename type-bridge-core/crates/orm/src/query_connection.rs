@@ -450,6 +450,25 @@ impl ProxyQueryConnection {
         self.staged(Route::Exchange(exchange), staged_advertisement, options)
     }
 
+    fn staging(
+        &self,
+        route: Route,
+        advertisement: &[u8],
+    ) -> Result<ProxyStaging, SdkExecutionDiagnostic> {
+        let proxy = ProxyStaging::with_route(
+            route,
+            advertisement,
+            self.authority.adapter_authority().shared_declared(),
+            self.answer_limits,
+        )
+        .map_err(lower_remote_query_diagnostic)?
+        .with_admission_window_milliseconds(self.admission_window_milliseconds);
+        Ok(match self.requested_query_limits.as_deref() {
+            Some(limits) => proxy.with_query_limits(*limits),
+            None => proxy,
+        })
+    }
+
     fn staged(
         &self,
         route: Route,
@@ -463,19 +482,97 @@ impl ProxyQueryConnection {
                 .unwrap_or(self.answer_limits.timeout_milliseconds)
                 .constrained_by(self.answer_limits.timeout_milliseconds),
         );
-        let proxy = ProxyStaging::with_route(
-            route,
-            advertisement,
-            self.authority.declared().clone(),
-            self.answer_limits,
-        )
-        .map_err(lower_remote_query_diagnostic)?
-        .with_admission_window_milliseconds(self.admission_window_milliseconds);
-        let proxy = match self.requested_query_limits.as_deref() {
-            Some(limits) => proxy.with_query_limits(*limits),
-            None => proxy,
-        };
-        Ok(Transaction::new_proxy(proxy, options))
+        Ok(Transaction::new_proxy(
+            self.staging(route, advertisement)?,
+            options,
+        ))
+    }
+
+    pub(crate) async fn execute_read_plans(
+        &self,
+        plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
+        resources: QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<Vec<crate::query_plan_exec::PlanAnswer>, QueryTargetError> {
+        use type_bridge_contract::query_remote_v3::StagedPlanV3;
+        let (resources, deadline) = QueryTarget::Proxy(self).budget(resources, deadline);
+        deadline.check(cancellation)?;
+        if plans
+            .iter()
+            .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes)
+        {
+            return Err(QueryTargetError::Direct(
+                crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::InvalidPlan,
+                    "query_plan_read_only",
+                    "manager reads require read-only plans",
+                )
+                .into(),
+            ));
+        }
+        if plans.is_empty() {
+            return Ok(vec![]);
+        }
+        let route = self.route.as_ref().ok_or_else(caller_owned_exchange)?;
+        let advertisement = self
+            .ensure_staged_advertisement(deadline, cancellation)
+            .await?;
+        let staging = self.staging(route.clone(), &advertisement)?;
+        let resources = resources
+            .for_adapter_statements(plans.len())
+            .constrained_by(
+                staging
+                    .match_limits()
+                    .map_err(lower_remote_query_diagnostic)?,
+            );
+        let entries = plans
+            .iter()
+            .map(|plan| {
+                StagedPlanV3::new(
+                    plan,
+                    plan.given_rows().unwrap_or_default().to_vec(),
+                    staging.declared(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(lower_remote_query_diagnostic)?;
+        let timeout = deadline.remaining_milliseconds();
+        let request = staging
+            .request_with_policy(
+                entries,
+                crate::session::staged::TransactionKind::Read,
+                timeout,
+                Some(resources),
+            )
+            .map_err(lower_remote_query_diagnostic)?;
+        let bytes = request.encode().map_err(lower_remote_query_diagnostic)?;
+        deadline.check(cancellation)?;
+        let response = route
+            .exchange(std::borrow::Cow::Borrowed(&bytes), deadline, cancellation)
+            .await?;
+        let verified = staging
+            .verify(&response, &request)
+            .map_err(|error| QueryTargetError::Reply(error.into()))?;
+        deadline.check(cancellation)?;
+        if let Some(diagnostic) = verified.diagnostic() {
+            return Err(QueryTargetError::Reply(
+                crate::RemoteModelQueryV2Error::Execution(
+                    diagnostic
+                        .to_query_diagnostic()
+                        .map_err(|error| QueryTargetError::Reply(error.into()))?,
+                ),
+            ));
+        }
+        verified
+            .answers()
+            .iter()
+            .zip(plans)
+            .map(|(answer, plan)| {
+                crate::query_plan_exec::PlanAnswer::from_staged_v3(answer, plan)
+                    .map_err(|error| QueryTargetError::Reply(error.into()))
+            })
+            .collect()
     }
 
     /// Whether terminals reach the server through the built-in HTTP route.
@@ -696,6 +793,53 @@ mod policy_tests {
         )
         .with_query_limits(limits)
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn native_read_stacks_refuse_writes_before_transport() {
+        let connection = connection(advertisement(QueryLimits::V3));
+        let limits = QueryExecutionResourceLimits::default();
+        let cancellation = AnswerCancellation::default();
+        let deadline = QueryExecutionDeadline::for_limits(limits);
+        let error = connection
+            .execute_read_plans(
+                &[crate::query_plan_exec::race::purchase("O1", "I1", "A1")],
+                limits,
+                &cancellation,
+                deadline,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .into_diagnostic(SdkProviderOperation::Read)
+                .code()
+                .as_str(),
+            "query_plan_read_only"
+        );
+        assert!(
+            connection
+                .execute_read_plans(&[], limits, &cancellation, deadline)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn staged_connections_share_the_cached_declared_schema() {
+        let connection = connection(advertisement(QueryLimits::V3));
+        let authority = connection.authority.adapter_authority();
+        let advertisement = connection.staged_advertisement().unwrap();
+        for _ in 0..2 {
+            let staging = connection
+                .staging(
+                    Route::Exchange(Arc::new(|_| Box::pin(async { Ok(vec![]) }))),
+                    &advertisement,
+                )
+                .unwrap();
+            assert!(std::ptr::eq(staging.declared(), authority.declared()));
+        }
     }
 
     fn connection(advertisement: RemoteCapabilities) -> ProxyQueryConnection {

@@ -107,7 +107,7 @@ impl Route {
 pub(crate) struct ProxyStaging {
     route: Route,
     advertisement: RemoteCapabilities,
-    declared: DeclaredSchema,
+    declared: Arc<DeclaredSchema>,
     limits: QueryExecutionResourceLimits,
     admission_window_milliseconds: u64,
     query_limits: QueryLimits,
@@ -130,13 +130,13 @@ impl ProxyStaging {
                 ));
             }
         };
-        Self::with_route(route, advertisement, declared, limits)
+        Self::with_route(route, advertisement, Arc::new(declared), limits)
     }
 
     pub(crate) fn with_route(
         route: Route,
         advertisement: &[u8],
-        declared: DeclaredSchema,
+        declared: Arc<DeclaredSchema>,
         limits: QueryExecutionResourceLimits,
     ) -> Result<Self, Diagnostic> {
         Ok(Self {

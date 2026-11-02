@@ -1820,21 +1820,22 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
     };
     use type_bridge_contract::query_remote_v3::StagedKindV3;
     use type_bridge_contract::schema::{DocumentId, OwnsFactId};
+    use type_bridge_orm::projected_crud::ProjectedCrudInvocationControl;
     use type_bridge_orm::query_v2_prepared::QueryAuthority;
     use type_bridge_orm::{
         AnswerCancellation, InstalledRuntimeProjection, ProjectedAttributeValue,
-        ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-        ProjectedManagerFilterInvocationControl, ProxyEndpoint, ProxyQueryConnection,
-        QueryExecutionResourceLimits, QueryTarget,
+        ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
+        ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, ProxyEndpoint,
+        ProxyQueryConnection, QueryExecutionResourceLimits, QueryTarget,
     };
     let name = staged_live::live_database::name("manager_filter_proxy");
     let database = staged_live::connect(&name).await;
     database.create_database().await.unwrap();
-    database.execute_raw("define attribute filter-key, value string; entity filter-person, owns filter-key @key;", TxType::Schema).await.unwrap();
-    database.execute_raw("insert $a isa filter-person, has filter-key \"alice\"; $b isa filter-person, has filter-key \"bob\";", TxType::Write).await.unwrap();
+    database.execute_raw("define attribute filter-key, value string; entity filter-person, owns filter-key @key, plays filter-edge:member; relation filter-edge, owns filter-key @key, relates member @card(0..2);", TxType::Schema).await.unwrap();
+    database.execute_raw("insert $a isa filter-person, has filter-key \"alice\"; $b isa filter-person, has filter-key \"bob\"; $e isa filter-edge, has filter-key \"pair\", links (member: $a, member: $b);", TxType::Write).await.unwrap();
     let documents = type_bridge_schema::SchemaDocumentSet::parse([(
         DocumentId::new("manager-filter-live.yaml").unwrap(),
-        "format: typebridge.schema/v2\nattributes:\n  filter-key: { value: string }\nentities:\n  filter-person:\n    owns:\n      filter-key: { key: true }\n",
+        "format: typebridge.schema/v2\nattributes:\n  filter-key: { value: string }\nentities:\n  filter-person:\n    owns:\n      filter-key: { key: true }\nrelations:\n  filter-edge:\n    owns:\n      filter-key: { key: true }\n    relates:\n      member: { card: { min: 0, max: 2 } }\nplays:\n  filter-person:\n    filter-edge: [member]\n",
     )]).unwrap();
     let declared = type_bridge_schema::normalize_documents(&documents).unwrap();
     let profile =
@@ -2006,16 +2007,85 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
             .unwrap()
             .is_none()
     );
+    let crud = ProjectedCrudExecutor::new(&installed);
+    let crud_control =
+        || ProjectedCrudInvocationControl::capture(policy, AnswerCancellation::default());
+    let edge_model = TypeId::new(TypeKind::Relation, "filter-edge").unwrap();
+    let edges = executor
+        .all_with_control(
+            &database,
+            &ProjectedManagerFilter::try_new(&installed, edge_model.clone()).unwrap(),
+            control(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(edges.len(), 1);
+    for (model, iid, expected_count) in
+        [(&model, direct.iid(), 2), (&edge_model, edges[0].iid(), 1)]
+    {
+        let direct_thing = crud
+            .get_by_iid_on_target(QueryTarget::Database(&database), model, iid, crud_control())
+            .await
+            .unwrap()
+            .unwrap();
+        let remote_thing = crud
+            .get_by_iid_on_target(QueryTarget::Proxy(&connection), model, iid, crud_control())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(remote_thing.iid(), direct_thing.iid());
+        assert_eq!(remote_thing.fields(), direct_thing.fields());
+        assert!(remote_thing.origin_carrier().is_some());
+        if model.kind() == TypeKind::Relation {
+            let direct_players = direct_thing
+                .roles()
+                .values()
+                .flatten()
+                .map(|player| player.iid())
+                .collect::<Vec<_>>();
+            let remote_players = remote_thing
+                .roles()
+                .values()
+                .flatten()
+                .map(|player| player.iid())
+                .collect::<Vec<_>>();
+            assert_eq!(remote_players, direct_players);
+            assert_eq!(remote_players.len(), 2);
+        }
+        assert_eq!(
+            crud.count_on_target(QueryTarget::Database(&database), model, crud_control())
+                .await
+                .unwrap(),
+            expected_count
+        );
+        assert_eq!(
+            crud.count_on_target(QueryTarget::Proxy(&connection), model, crud_control())
+                .await
+                .unwrap(),
+            expected_count
+        );
+        assert!(
+            crud.get_by_iid_on_target(
+                QueryTarget::Proxy(&connection),
+                model,
+                "0xffff",
+                crud_control()
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+    }
     {
         let captured = requests.lock().unwrap();
-        assert_eq!(captured.len(), 5);
+        assert_eq!(captured.len(), 11);
         for bytes in captured.iter() {
             let request = StagedRequestV3::decode(bytes, &declared, &proxy.advertisement).unwrap();
             assert_eq!(request.kind(), StagedKindV3::Read);
             assert_eq!(request.plans().len(), 1);
         }
     }
-    assert_eq!(proxy.commits.lock().unwrap().len(), 5);
+    assert_eq!(proxy.commits.lock().unwrap().len(), 11);
     drop(connection);
     drop(proxy);
     drop_database(database).await;

@@ -24,6 +24,7 @@ use crate::_dynamic::{
 };
 use crate::_manager::hydration::{coalesce_dynamic_relation_by_iid, hydrate_dynamic_entity};
 use crate::_manager::{DynamicEntityManager, DynamicRelationManager};
+use crate::_registry::DescriptorRegistry;
 use crate::execution_diagnostic::{lower_commit_error, lower_orm_error};
 use crate::match_request::{MatchError, MatchErrorCategory, MatchErrorPathSegment};
 use crate::plan_builders::ValueTransport;
@@ -235,6 +236,250 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     #[must_use]
     pub const fn new(installed: &'projection InstalledRuntimeProjection) -> Self {
         Self { installed }
+    }
+
+    /// Run one policy-aware exact IID read on the connection target.
+    #[doc(hidden)]
+    pub async fn get_by_iid_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        type_id: &TypeId,
+        iid: &str,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<Option<ProjectedThing>, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
+        match (type_id.kind(), target) {
+            (TypeKind::Entity, crate::QueryTarget::Database(database)) => self
+                .get_entity_by_iid_controlled_with_control(database, type_id, iid, control)
+                .await
+                .map_err(Into::into),
+            (TypeKind::Relation, crate::QueryTarget::Database(database)) => self
+                .get_relation_by_iid_controlled_with_control(database, type_id, iid, control)
+                .await
+                .map_err(Into::into),
+            (TypeKind::Entity, crate::QueryTarget::Transaction(transaction)) => self
+                .get_entity_by_iid_in_transaction_controlled_with_control(
+                    transaction,
+                    type_id,
+                    iid,
+                    control,
+                )
+                .await
+                .map_err(Into::into),
+            (TypeKind::Relation, crate::QueryTarget::Transaction(transaction)) => self
+                .get_relation_by_iid_in_transaction_controlled_with_control(
+                    transaction,
+                    type_id,
+                    iid,
+                    control,
+                )
+                .await
+                .map_err(Into::into),
+            (TypeKind::Entity | TypeKind::Relation, crate::QueryTarget::Proxy(proxy)) => {
+                match type_id.kind() {
+                    TypeKind::Entity => {
+                        self.prepare_entity_identity(type_id, iid)?;
+                    }
+                    _ => {
+                        self.prepare_relation_identity(type_id, iid)?;
+                    }
+                }
+                control.check(type_id)?;
+                self.require_remote_read_authority(type_id)?;
+                let mut ledger = ControlledCrudLedger::try_new(
+                    control.limits,
+                    controlled_read_input_bytes(type_id, Some(iid)),
+                )?;
+                let limits = proxy.shared_query_limits();
+                let (registry, program) = self.manager_read_program(
+                    type_id,
+                    Some(iid),
+                    ReadTerminal::Fetch,
+                    limits.as_ref(),
+                )?;
+                let ManagerRead::Fetch(stack) = program else {
+                    unreachable!("exact model fetch")
+                };
+                let answers = proxy
+                    .execute_read_plans(
+                        stack.plans(),
+                        control.limits,
+                        &control.cancellation,
+                        control.deadline,
+                    )
+                    .await?;
+                let identity = proxy.execution_identity();
+                let thing = if type_id.kind() == TypeKind::Entity {
+                    if stack.plans().len() == 1
+                        && matches!(answers.first(), Some(PlanAnswer::Documents(documents)) if documents.len() > 1)
+                    {
+                        return Err(integrity_at_type(
+                            "entity_iid_cardinality_invalid",
+                            "The provider returned multiple exact entities for one IID",
+                            type_id,
+                        )
+                        .into());
+                    }
+                    let mut rows = self.resolve_exact_read(
+                        &registry,
+                        &stack,
+                        &answers,
+                        type_id,
+                        &control,
+                        crate::_manager::dynamic::plan_entity_row,
+                    )?;
+                    match rows.len() {
+                        0 => None,
+                        1 => Some(self.hydrate_entity(
+                            rows.pop().expect("one exact entity"),
+                            type_id,
+                            iid,
+                            identity,
+                            ExecutionMode::default(),
+                        )?),
+                        _ => {
+                            return Err(integrity_at_type(
+                                "entity_iid_cardinality_invalid",
+                                "The provider returned multiple exact entities for one IID",
+                                type_id,
+                            )
+                            .into());
+                        }
+                    }
+                } else {
+                    let mut rows = self.resolve_exact_read(
+                        &registry,
+                        &stack,
+                        &answers,
+                        type_id,
+                        &control,
+                        crate::_manager::dynamic::plan_relation_row,
+                    )?;
+                    match rows.len() {
+                        0 => None,
+                        1 => Some(self.hydrate_relation(
+                            rows.pop().expect("one exact relation"),
+                            type_id,
+                            iid,
+                            identity,
+                            ExecutionMode::default(),
+                        )?),
+                        _ => return Err(relation_ambiguity(type_id).into()),
+                    }
+                };
+                if let Some(thing) = &thing {
+                    ledger.charge_projected(thing)?;
+                }
+                control.check(type_id)?;
+                Ok(thing)
+            }
+            _ => Err(invalid_input_at_type(
+                "wrong_model_kind",
+                "Exact CRUD requires an entity or relation",
+                type_id,
+            )
+            .into()),
+        }
+    }
+
+    /// Run one policy-aware exact model count on the connection target.
+    #[doc(hidden)]
+    pub async fn count_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        type_id: &TypeId,
+        control: ProjectedCrudInvocationControl,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let control = control.constrained_by(target.answer_limits());
+        match (type_id.kind(), target) {
+            (TypeKind::Entity, crate::QueryTarget::Database(database)) => self
+                .count_entities_controlled_with_control(database, type_id, control)
+                .await
+                .map_err(Into::into),
+            (TypeKind::Relation, crate::QueryTarget::Database(database)) => self
+                .count_relations_controlled_with_control(database, type_id, control)
+                .await
+                .map_err(Into::into),
+            (TypeKind::Entity, crate::QueryTarget::Transaction(transaction)) => self
+                .count_entities_in_transaction_controlled_with_control(
+                    transaction,
+                    type_id,
+                    control,
+                )
+                .await
+                .map_err(Into::into),
+            (TypeKind::Relation, crate::QueryTarget::Transaction(transaction)) => self
+                .count_relations_in_transaction_controlled_with_control(
+                    transaction,
+                    type_id,
+                    control,
+                )
+                .await
+                .map_err(Into::into),
+            (TypeKind::Entity | TypeKind::Relation, crate::QueryTarget::Proxy(proxy)) => {
+                self.require_exact_model(type_id, type_id.kind())?;
+                control.check(type_id)?;
+                self.require_remote_read_authority(type_id)?;
+                let mut ledger = ControlledCrudLedger::try_new(
+                    control.limits,
+                    controlled_read_input_bytes(type_id, None),
+                )?;
+                let limits = proxy.shared_query_limits();
+                let (_, program) =
+                    self.manager_read_program(type_id, None, ReadTerminal::Count, limits.as_ref())?;
+                let answers = proxy
+                    .execute_read_plans(
+                        program.plans(),
+                        control.limits,
+                        &control.cancellation,
+                        control.deadline,
+                    )
+                    .await?;
+                let [answer] = answers.as_slice() else {
+                    return Err(integrity_at_type(
+                        "provider_count_cardinality_invalid",
+                        "The provider count query did not return exactly one answer",
+                        type_id,
+                    )
+                    .into());
+                };
+                let count = self.resolve_exact_count(&program.plans()[0], answer, type_id)?;
+                ledger.charge_scalar_bytes(std::mem::size_of::<u64>() as u64)?;
+                control.check(type_id)?;
+                Ok(count)
+            }
+            _ => Err(invalid_input_at_type(
+                "wrong_model_kind",
+                "Exact CRUD requires an entity or relation",
+                type_id,
+            )
+            .into()),
+        }
+    }
+
+    fn require_remote_read_authority(
+        &self,
+        type_id: &TypeId,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        if self
+            .installed
+            .plan_authority()
+            .map_err(|error| {
+                orm_at_type(
+                    crate::plan_builders::manager::diagnostic(error),
+                    SdkProviderOperation::Read,
+                    type_id,
+                )
+            })?
+            .verified()
+        {
+            return Ok(());
+        }
+        Err(invalid_input_at_type(
+            "write_plan_authority_unverified",
+            "A remotely staged manager plan requires verified schema authority",
+            type_id,
+        ))
     }
 
     /// Validate one projected relation create against a database identity
@@ -2947,24 +3192,13 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             &crate::match_request::HydratedThing,
         ) -> crate::Result<T>,
     ) -> Result<Vec<T>, SdkExecutionDiagnostic> {
-        let registry = self
-            .installed
-            .manager_registry()
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
-        let plans = ManagerPlans::new(Arc::clone(&registry));
-        let ManagerRead::Fetch(stack) = plans
-            .read(
-                type_id.label().as_str(),
-                true,
-                &[crate::_dynamic::DynamicExpr::Iid { iid: iid.into() }],
-                &[],
-                None,
-                None,
-                &[],
-                ReadTerminal::Fetch,
-            )
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?
-        else {
+        let (registry, program) = self.manager_read_program(
+            type_id,
+            Some(iid),
+            ReadTerminal::Fetch,
+            transaction.shared_query_limits(),
+        )?;
+        let ManagerRead::Fetch(stack) = program else {
             unreachable!("exact model fetch")
         };
         let mut answers = Vec::with_capacity(stack.plans().len());
@@ -3002,8 +3236,23 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                     .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?,
             );
         }
+        self.resolve_exact_read(&registry, &stack, &answers, type_id, control, map)
+    }
+
+    fn resolve_exact_read<T>(
+        &self,
+        registry: &crate::_registry::DescriptorRegistry,
+        stack: &crate::match_request::PlanFetchStack,
+        answers: &[PlanAnswer],
+        type_id: &TypeId,
+        control: &ProjectedCrudInvocationControl,
+        map: impl Fn(
+            &crate::_registry::DescriptorRegistry,
+            &crate::match_request::HydratedThing,
+        ) -> crate::Result<T>,
+    ) -> Result<Vec<T>, SdkExecutionDiagnostic> {
         let proof = stack
-            .resolve(&registry, &answers, stack.execution_limits(control.limits))
+            .resolve(registry, answers, stack.execution_limits(control.limits))
             .map_err(|error| orm_at_type(error.into(), SdkProviderOperation::Read, type_id))?;
         let crate::match_request::MatchResult::Rows { rows } = proof
             .result()
@@ -3014,7 +3263,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         };
         rows.iter()
             .map(|row| match row.slots() {
-                [crate::match_request::SlotValue::One(thing)] => map(&registry, thing)
+                [crate::match_request::SlotValue::One(thing)] => map(registry, thing)
                     .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id)),
                 _ => Err(integrity_at_type(
                     "manager_result_shape",
@@ -3032,23 +3281,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         control: &ProjectedCrudInvocationControl,
         input_bytes: u64,
     ) -> Result<u64, SdkExecutionDiagnostic> {
-        let registry = self
-            .installed
-            .manager_registry()
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
-        let plans = ManagerPlans::new(registry);
-        let program = plans
-            .read(
-                type_id.label().as_str(),
-                true,
-                &[],
-                &[],
-                None,
-                None,
-                &[],
-                ReadTerminal::Count,
-            )
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let (_, program) = self.manager_read_program(
+            type_id,
+            None,
+            ReadTerminal::Count,
+            transaction.shared_query_limits(),
+        )?;
         let plan = &program.plans()[0];
         let query = await_crud_controlled(
             transaction.prepare_plan(plan),
@@ -3077,6 +3315,46 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         }
         let answer = TransactionContext::resolve_plan(plan, answer)
             .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let count = self.resolve_exact_count(plan, &answer, type_id)?;
+        ledger.charge_scalar_bytes(std::mem::size_of::<u64>() as u64)?;
+        control.check(type_id)?;
+        Ok(count)
+    }
+
+    fn manager_read_program(
+        &self,
+        type_id: &TypeId,
+        iid: Option<&str>,
+        terminal: ReadTerminal,
+        limits: Option<&Arc<type_bridge_contract::limits::QueryLimits>>,
+    ) -> Result<(Arc<DescriptorRegistry>, ManagerRead), SdkExecutionDiagnostic> {
+        let registry = self
+            .installed
+            .manager_registry()
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        let plans = ManagerPlans::new(Arc::clone(&registry)).with_query_limits(limits);
+        let expressions = iid.map(|iid| crate::_dynamic::DynamicExpr::Iid { iid: iid.into() });
+        let program = plans
+            .read(
+                type_id.label().as_str(),
+                true,
+                expressions.as_slice(),
+                &[],
+                None,
+                None,
+                &[],
+                terminal,
+            )
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+        Ok((registry, program))
+    }
+
+    fn resolve_exact_count(
+        &self,
+        plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+        answer: &PlanAnswer,
+        type_id: &TypeId,
+    ) -> Result<u64, SdkExecutionDiagnostic> {
         let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
             answer.to_staged_v3(plan).map_err(|error| {
                 orm_at_type(
@@ -3121,8 +3399,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
                 ));
             }
         };
-        ledger.charge_scalar_bytes(std::mem::size_of::<u64>() as u64)?;
-        control.check(type_id)?;
         Ok(count)
     }
 
@@ -4767,6 +5043,16 @@ impl ProjectedCrudInvocationControl {
             deadline: QueryExecutionDeadline::for_limits(limits),
             cancellation,
         }
+    }
+
+    fn constrained_by(mut self, ceiling: Option<QueryExecutionResourceLimits>) -> Self {
+        if let Some(ceiling) = ceiling {
+            self.limits = self.limits.constrained_by(ceiling);
+            self.deadline = self
+                .deadline
+                .earliest(QueryExecutionDeadline::for_limits(ceiling));
+        }
+        self
     }
 
     /// Recheck the captured cancellation owner and deadline at one type path.
@@ -6893,6 +7179,277 @@ plays:
         }
         transaction.close().await.unwrap();
         assert_eq!(state.lock().unwrap().closes, 1);
+    }
+
+    #[tokio::test]
+    async fn controlled_counts_apply_the_connection_query_limits_before_dispatch() {
+        let installed = controlled_installed();
+        let (database, state) = controlled_database(vec![]);
+        let database = database
+            .with_query_limits(
+                type_bridge_contract::limits::QueryLimits::from_overrides([
+                    ("bindings", 1),
+                    ("selected_slots", 1),
+                ])
+                .unwrap(),
+            )
+            .unwrap();
+        let error = ProjectedCrudExecutor::new(&installed)
+            .count_on_target(
+                crate::QueryTarget::Database(&database),
+                &controlled_type(TypeKind::Entity),
+                ProjectedCrudInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .into_diagnostic(SdkProviderOperation::Read)
+                .code()
+                .as_str(),
+            "query_plan_binding_limit"
+        );
+        let state = state.lock().unwrap();
+        assert!(state.queries.is_empty());
+        assert_eq!(state.bounded_reads, 0);
+        assert_eq!(state.unbounded_queries, 0);
+        assert_eq!(state.closes, 1);
+    }
+
+    #[tokio::test]
+    async fn proxy_exact_reads_keep_native_plan_bytes_and_application_errors() {
+        use crate::query_v2_prepared::QueryAuthority;
+        use crate::query_v2_remote::RemoteReplySigningKey;
+        use crate::session::StagedTransport;
+        use crate::{ProxyQueryConnection, QueryTarget, QueryTargetError};
+        use type_bridge_contract::capability::CapabilityId;
+        use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+        use type_bridge_contract::query_remote_v2::CAP_QUERY_REMOTE_STATEMENT_LIMIT;
+        use type_bridge_contract::query_remote_v3::{
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS, CAP_QUERY_REMOTE_STAGED_V3, StagedAnswerV3,
+            StagedKindV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
+        };
+
+        struct Transport {
+            schema: type_bridge_contract::schema::DeclaredSchema,
+            advertisement: RemoteCapabilities,
+            signer: RemoteReplySigningKey,
+            expected: Mutex<VecDeque<Vec<u8>>>,
+            calls: std::sync::atomic::AtomicUsize,
+            fail: std::sync::atomic::AtomicBool,
+        }
+        impl StagedTransport for Transport {
+            fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, QueryTargetError>> {
+                panic!("the staged advertisement is pinned")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                bytes: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, QueryTargetError>> {
+                Box::pin(async move {
+                    self.calls
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if self.fail.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(QueryTargetError::Callback(Box::new(std::io::Error::other(
+                            "application cause",
+                        ))));
+                    }
+                    let request =
+                        StagedRequestV3::decode(bytes, &self.schema, &self.advertisement).unwrap();
+                    assert_eq!(request.kind(), StagedKindV3::Read);
+                    assert_eq!(request.plans().len(), 1);
+                    let plan = request.plans()[0].plan();
+                    assert_eq!(
+                        plan.canonical_bytes().unwrap(),
+                        self.expected.lock().unwrap().pop_front().unwrap()
+                    );
+                    let answer = if matches!(
+                        plan.pipeline().last(),
+                        Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                    ) {
+                        StagedAnswerV3::Documents { documents: vec![] }
+                    } else {
+                        StagedAnswerV3::Rows {
+                            rows: vec![vec![RemoteValue::Value {
+                                value: CanonicalValue::Long(2),
+                            }]],
+                        }
+                    };
+                    Ok(
+                        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, vec![answer])
+                            .unwrap()
+                            .encode_signed(&request, &self.advertisement, &self.signer)
+                            .unwrap(),
+                    )
+                })
+            }
+        }
+        let installed = controlled_installed();
+        let schema = installed.plan_authority().unwrap().declared().clone();
+        let context = type_bridge_schema::ManagedDeltaContext::new(
+            type_bridge_contract::managed_scope::ManagedScopeId::new("crud-read-target-tests")
+                .unwrap(),
+            SemanticProfileId::new("typedb-3.12.1/v1").unwrap(),
+            type_bridge_schema::schema_authority_capability_vocabulary(),
+        );
+        let verified = type_bridge_schema::build_schema_authority(
+            &schema,
+            schema.required_capabilities(),
+            &context,
+        )
+        .unwrap();
+        let unverified = installed;
+        let installed = controlled_installed().with_schema_authority(&verified);
+        let executor = ProjectedCrudExecutor::new(&installed);
+        let authority = Arc::new(
+            QueryAuthority::from_declared_bytes(
+                &type_bridge_contract::schema::encode_declared_schema(&schema).unwrap(),
+                "crud-read-target-tests",
+                "typedb-3.12.1/v1",
+            )
+            .unwrap(),
+        );
+        let signer = RemoteReplySigningKey::from_secret_bytes([73; 32]);
+        let mut capabilities =
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+        for capability in [
+            CAP_QUERY_REMOTE_STAGED_V3,
+            CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
+            CAP_QUERY_REMOTE_STATEMENT_LIMIT,
+        ] {
+            capabilities.insert(CapabilityId::new(capability).unwrap());
+        }
+        let advertisement = RemoteCapabilities::new(
+            capabilities,
+            RemoteExecutorBinding::new("crud-read-target-tests", "crud-read-target-epoch").unwrap(),
+            signer.public_key(),
+        );
+        let mut expected = VecDeque::new();
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            let model = controlled_type(kind);
+            for (iid, terminal) in [
+                (None, ReadTerminal::Count),
+                (Some("0xffff"), ReadTerminal::Fetch),
+            ] {
+                let (_, program) = executor
+                    .manager_read_program(&model, iid, terminal, None)
+                    .unwrap();
+                assert_eq!(program.plans().len(), 1);
+                expected.push_back(program.plans()[0].canonical_bytes().unwrap());
+            }
+        }
+        let bytes = advertisement.encode().unwrap();
+        let transport = Arc::new(Transport {
+            schema,
+            advertisement,
+            signer,
+            expected: Mutex::new(expected),
+            calls: 0.into(),
+            fail: false.into(),
+        });
+        let connection = ProxyQueryConnection::with_exchange(
+            bytes,
+            authority,
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap()
+        .with_staged_transport(transport.clone());
+        let control = || {
+            ProjectedCrudInvocationControl::capture(
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+        };
+        for kind in [TypeKind::Entity, TypeKind::Relation] {
+            let model = controlled_type(kind);
+            assert_eq!(
+                executor
+                    .count_on_target(QueryTarget::Proxy(&connection), &model, control())
+                    .await
+                    .unwrap(),
+                2
+            );
+            assert!(
+                executor
+                    .get_by_iid_on_target(
+                        QueryTarget::Proxy(&connection),
+                        &model,
+                        "0xffff",
+                        control()
+                    )
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(transport.expected.lock().unwrap().is_empty());
+        assert_eq!(
+            transport.calls.load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+        let cancellation = AnswerCancellation::default();
+        cancellation.cancel();
+        let error = executor
+            .count_on_target(
+                QueryTarget::Proxy(&connection),
+                &controlled_type(TypeKind::Entity),
+                ProjectedCrudInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    cancellation,
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .into_diagnostic(SdkProviderOperation::Read)
+                .code()
+                .as_str(),
+            "provider_cancelled"
+        );
+        assert_eq!(
+            transport.calls.load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+        let error = ProjectedCrudExecutor::new(&unverified)
+            .count_on_target(
+                QueryTarget::Proxy(&connection),
+                &controlled_type(TypeKind::Entity),
+                control(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error
+                .into_diagnostic(SdkProviderOperation::Read)
+                .code()
+                .as_str(),
+            "write_plan_authority_unverified"
+        );
+        assert_eq!(
+            transport.calls.load(std::sync::atomic::Ordering::Relaxed),
+            4
+        );
+        transport
+            .fail
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let error = executor
+            .count_on_target(
+                QueryTarget::Proxy(&connection),
+                &controlled_type(TypeKind::Entity),
+                control(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(format!("{error:?}"), "Callback([REDACTED])");
+        let QueryTargetError::Callback(source) = error else {
+            panic!("application-owned cause")
+        };
+        assert_eq!(source.to_string(), "application cause");
     }
 
     #[test]
