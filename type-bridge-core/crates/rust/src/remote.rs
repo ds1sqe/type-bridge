@@ -7,6 +7,7 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
@@ -84,6 +85,7 @@ pub struct ProxyConnectionPolicy {
     advertisement: Option<Vec<u8>>,
     staged_advertisement: Option<Vec<u8>>,
     admission_window_milliseconds: std::num::NonZeroU64,
+    query_limits: Option<Arc<QueryLimits>>,
 }
 
 impl std::fmt::Debug for ProxyConnectionPolicy {
@@ -118,6 +120,7 @@ impl ProxyConnectionPolicy {
                 type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
             )
             .unwrap(),
+            query_limits: None,
         }
     }
 
@@ -130,6 +133,15 @@ impl ProxyConnectionPolicy {
     ) -> Self {
         self.admission_window_milliseconds = milliseconds;
         self
+    }
+
+    /// Select independent query limits, tightened by the server advertisement.
+    /// # Errors
+    /// Returns unsupported limits before any connection I/O.
+    pub fn query_limits(mut self, limits: QueryLimits) -> Result<Self> {
+        let limits = limits.validate_v3().map_err(query_limits_error)?;
+        self.query_limits = (limits != QueryLimits::V3).then(|| Arc::new(limits));
+        Ok(self)
     }
 
     /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
@@ -175,6 +187,16 @@ impl ProxyConnectionPolicy {
         self.semantic_profile = Some(semantic_profile.into());
         self
     }
+}
+
+fn query_limits_error(error: QueryLimitsError) -> Error {
+    Error::model_validation(
+        crate::ModelValidationPhase::Input,
+        "query_limits_invalid",
+        vec![],
+        error.to_string(),
+        None,
+    )
 }
 
 struct RemoteRuntime {
@@ -329,6 +351,12 @@ impl ProxyDatabase<Unbound> {
         )
         .map_err(connect_error)?
         .with_admission_window_milliseconds(options.admission_window_milliseconds);
+        let connection = match options.query_limits {
+            Some(limits) => connection
+                .with_query_limits(*limits)
+                .map_err(query_limits_error)?,
+            None => connection,
+        };
         let connection = match options.staged_advertisement {
             Some(staged) => connection
                 .with_staged_advertisement(staged)
@@ -616,6 +644,24 @@ mod tests {
             proxy,
             QueryExecutionResourceLimits::default(),
             "a proxy connection does not inherit the looser direct defaults"
+        );
+    }
+
+    #[test]
+    fn proxy_connection_policy_admits_independent_query_limits_before_connecting() {
+        let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
+        assert!(policy.query_limits.is_none());
+        let mut limits = crate::QueryLimits::V3;
+        limits.structural.bindings = 1024;
+        limits.structural.boolean_terms = 512;
+        let policy = policy.query_limits(limits).unwrap();
+        assert_eq!(policy.query_limits.as_deref(), Some(&limits));
+        let policy = policy.query_limits(crate::QueryLimits::V3).unwrap();
+        assert!(policy.query_limits.is_none());
+        limits.structural.bindings = 0;
+        assert_eq!(
+            policy.query_limits(limits).unwrap_err().code(),
+            Some("query_limits_invalid")
         );
     }
 

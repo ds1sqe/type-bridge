@@ -433,6 +433,11 @@ The binding default is 256 and the supported ceiling is 65,536. Raising
 bindings preserves the other dimensions' defaults. Custom direct backends
 can capture the same policy with `Database::with_query_limits`.
 
+`ProxyConnectionPolicy::query_limits` accepts the same full policy. Each
+dimension is tightened by the staged server advertisement; requesting a higher
+ceiling retains the server's value. Unconfigured proxy transactions keep the
+default policy path.
+
 A proxy connection fetches the server's signed `/v2/capabilities`
 advertisement when it connects, or uses the exact bytes pinned with
 `.advertisement(bytes)`. Fetch it only over TLS you trust, or pin it: the

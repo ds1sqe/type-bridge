@@ -403,13 +403,11 @@ impl ProxyQueryConnection {
             self.answer_limits,
         )
         .map_err(lower_remote_query_diagnostic)?
-        .with_admission_window_milliseconds(self.admission_window_milliseconds)
-        .with_query_limits(
-            self.requested_query_limits
-                .as_deref()
-                .copied()
-                .unwrap_or(QueryLimits::V3),
-        );
+        .with_admission_window_milliseconds(self.admission_window_milliseconds);
+        let proxy = match self.requested_query_limits.as_deref() {
+            Some(limits) => proxy.with_query_limits(*limits),
+            None => proxy,
+        };
         Ok(Transaction::new_proxy(proxy, options))
     }
 
