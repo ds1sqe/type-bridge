@@ -2804,6 +2804,72 @@ select $root; distinct;
                     && value == &AttributeValue::String(email.into()))
         );
     }
+    for literal in [false, true] {
+        let (wide_counted, wide_log) = counted_connection(&database, literal).await;
+        let wide_typed =
+            type_bridge_orm::_manager::EntityManager::<PartialUpdateEntity>::from_registry(
+                &wide_counted,
+                registry.clone(),
+            )
+            .unwrap();
+        let wide_updates = vec![
+            PartialUpdateEntity {
+                iid: Some("0xffff".into()),
+                fields: (0..300)
+                    .map(|index| {
+                        (
+                            "partial-tag",
+                            AttributeValue::String(format!("missing-wide-{index}")),
+                        )
+                    })
+                    .collect(),
+            },
+            PartialUpdateEntity {
+                iid: Some(iids[0].clone()),
+                fields: vec![(
+                    "partial-name",
+                    AttributeValue::String("after-wide-missing".into()),
+                )],
+            },
+        ];
+        let tx = database.transaction_context(TxType::Write).await.unwrap();
+        let looped =
+            DynamicEntityManager::with_transaction(tx.clone(), registry.entity(&person).unwrap());
+        for update in &wide_updates {
+            let fields = update
+                .fields
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect();
+            looped.update(update.iid.as_deref(), &fields).await.unwrap();
+        }
+        let expected = looped
+            .get_by_iid_exact(&iids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .attributes;
+        tx.rollback().await.unwrap();
+        wide_typed.update_many(&wide_updates).await.unwrap();
+        assert_eq!(
+            manager
+                .get_by_iid_exact(&iids[0])
+                .await
+                .unwrap()
+                .unwrap()
+                .attributes,
+            expected
+        );
+        assert!(manager.get_by_iid_exact("0xffff").await.unwrap().is_none());
+        let observed = wide_log.lock().unwrap();
+        assert_eq!(
+            observed.statements.len(),
+            2,
+            "the absent seed skips its attach piece and the later row still runs"
+        );
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+    }
     *log.lock().unwrap() = DispatchLog::default();
     typed.delete_many(&updates).await.unwrap();
     {

@@ -218,6 +218,78 @@ mod tests {
     }
 
     #[test]
+    fn missing_wide_partial_update_skips_pieces_and_keeps_later_rows() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use type_bridge_contract::query_plan::QueryOutput;
+        let authority = authority();
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let wide = (0..300)
+            .map(|value| (balance.clone(), CanonicalValue::Long(value)))
+            .collect::<Vec<_>>();
+        let later = vec![(balance.clone(), CanonicalValue::Long(7))];
+        let mut program = write_many(
+            &authority,
+            WriteKind::PartialUpdate,
+            WriteShape {
+                references_see_prior_writes: true,
+                type_id: &account,
+                keys: &[],
+                cleared_fields: std::slice::from_ref(&balance),
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: true,
+                return_documents: false,
+            },
+            &[
+                WriteRow {
+                    iid: Some("0xffff"),
+                    fields: &wide,
+                    players: &[],
+                },
+                WriteRow {
+                    iid: Some("0x02"),
+                    fields: &later,
+                    players: &[],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(program.statement_count(), 3);
+        let seed = program.next().unwrap().unwrap();
+        assert!(!seed.complete);
+        assert!(seed.missing_iid_noop);
+        assert!(seed.plan.local().pipeline().iter().any(|stage| matches!(stage, type_bridge_contract::query_plan::v3::Stage::Match { patterns } if patterns.iter().any(|pattern| matches!(pattern, type_bridge_contract::query_plan::v3::Pattern::Read(type_bridge_contract::query_plan::QueryPattern::Try { .. }))))));
+        let QueryOutput::Rows { columns } = seed.plan.local().output() else {
+            panic!("seed identities");
+        };
+        let ordinal = seed.plan.local().bindings()[usize::from(columns[0].get())]
+            .variable()
+            .as_str();
+        let root = seed.plan.local().bindings()[usize::from(columns[1].get())]
+            .variable()
+            .as_str();
+        let mut row = serde_json::Map::new();
+        row.insert(
+            ordinal.to_owned(),
+            serde_json::json!({"kind":"value", "value":CanonicalValue::Long(0)}),
+        );
+        row.insert(root.to_owned(), serde_json::json!({"kind":"absent"}));
+        let missing = seed
+            .identity(&crate::query_plan_exec::PlanAnswer::Rows(vec![
+                serde_json::Value::Object(row),
+            ]))
+            .unwrap();
+        assert!(missing.is_none());
+        program.accept_identity(&seed, missing).unwrap();
+        let later = program.next().unwrap().unwrap();
+        assert!(later.complete);
+        assert_eq!(later.ordinal, 1);
+        assert!(program.next().unwrap().is_none());
+    }
+
+    #[test]
     fn exact_relation_sequences_retain_players_and_batch_visibility_stays_explicit() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
         use type_bridge_contract::projection::{

@@ -407,11 +407,44 @@ pub(crate) fn build_many(
     }
     let mut deleted_fields = Vec::new();
     if let Some(target) = &target {
-        patterns.extend(
-            identity_patterns(&mut draft, root, shape.type_id, target, &identity_keys)?
-                .into_iter()
-                .map(Pattern::Read),
-        );
+        if kind == WriteKind::PartialUpdate && !complete {
+            // Forced seeds contain one row, so their lookup needs no nullable
+            // route disjunction. Keep the ordinal even when the target is absent.
+            let mut lookup = vec![QueryPattern::Isa {
+                binding: root,
+                type_id: shape.type_id.clone(),
+                include_subtypes: true,
+            }];
+            if rows[0].iid.is_some() {
+                lookup.push(QueryPattern::Iid {
+                    binding: root,
+                    iid: target.clone(),
+                });
+            } else {
+                for (field, input) in &identity_keys {
+                    let attribute = draft.bind("identity_key")?;
+                    lookup.extend([
+                        QueryPattern::Has {
+                            attribute,
+                            owner: root,
+                            attribute_id: field.attribute().clone(),
+                        },
+                        QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: QueryOperand::Binding { binding: attribute },
+                            right: input.clone(),
+                        },
+                    ]);
+                }
+            }
+            patterns.push(QueryPattern::Try { patterns: lookup }.into());
+        } else {
+            patterns.extend(
+                identity_patterns(&mut draft, root, shape.type_id, target, &identity_keys)?
+                    .into_iter()
+                    .map(Pattern::Read),
+            );
+        }
         for (field, input) in &conditional_deleted {
             for (route_index, route) in identity_routes.iter().enumerate() {
                 let owner = draft.bind("field_owner")?;

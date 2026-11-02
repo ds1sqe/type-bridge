@@ -447,8 +447,14 @@ impl ProjectedBatchExecutor<'_> {
                         };
                         let ordinal = document_index(&document, "ordinal", plan.row_count)
                             .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
-                        let iid = document_string(&document, "iid")
-                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        let iid =
+                            if step.missing_iid_noop && document.get("iid").is_none() {
+                                None
+                            } else {
+                                Some(document_string(&document, "iid").map_err(|error| {
+                                    OrmError::ExecutionDiagnostic(Box::new(error))
+                                })?)
+                            };
                         if ordinal != step.ordinal || returned.is_some() {
                             return Err(OrmError::ExecutionDiagnostic(Box::new(integrity_at_row(
                                 "provider_identity_mismatch",
@@ -457,7 +463,9 @@ impl ProjectedBatchExecutor<'_> {
                                 step.ordinal,
                             ))));
                         }
-                        step.check_identity(&iid).map_err(evidence)?;
+                        if let Some(iid) = &iid {
+                            step.check_identity(iid).map_err(evidence)?;
+                        }
                         returned = Some(iid);
                         Ok(AnswerControl::Continue)
                     };

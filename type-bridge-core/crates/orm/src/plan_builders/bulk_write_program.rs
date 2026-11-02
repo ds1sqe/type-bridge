@@ -28,12 +28,14 @@ impl WriteProgram {
                 complete: true,
                 ordinal: 0,
                 expected_iid: None,
+                missing_iid_noop: false,
             })),
             Self::Sequential(plans) => Ok((!plans.is_empty()).then(|| WriteStep {
                 plan: plans.remove(0).0,
                 complete: true,
                 ordinal: 0,
                 expected_iid: None,
+                missing_iid_noop: false,
             })),
             Self::Split(program) => program.next(),
         }
@@ -85,7 +87,7 @@ impl WriteProgram {
     pub(crate) fn accept_identity(
         &mut self,
         step: &WriteStep,
-        iid: String,
+        iid: Option<String>,
     ) -> Result<(), Diagnostic> {
         match self {
             Self::Split(program) => program.accept_identity(step, iid),
@@ -110,9 +112,10 @@ pub(crate) struct WriteStep {
     pub(crate) complete: bool,
     pub(crate) ordinal: usize,
     expected_iid: Option<String>,
+    pub(crate) missing_iid_noop: bool,
 }
 impl WriteStep {
-    pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<String, Diagnostic> {
+    pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
         let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
             return Err(identity_error());
         };
@@ -123,7 +126,7 @@ impl WriteStep {
             RemoteValue::Value {
                 value: CanonicalValue::Long(ordinal),
             },
-            RemoteValue::Thing { iid, .. },
+            identity,
         ] = row.as_slice()
         else {
             return Err(identity_error());
@@ -131,9 +134,16 @@ impl WriteStep {
         if usize::try_from(*ordinal).ok() != Some(self.ordinal) {
             return Err(identity_error());
         }
-        self.check_identity(iid)?;
-        Ok(iid.clone())
+        match identity {
+            RemoteValue::Thing { iid, .. } => {
+                self.check_identity(iid)?;
+                Ok(Some(iid.clone()))
+            }
+            RemoteValue::Absent if self.missing_iid_noop => Ok(None),
+            _ => Err(identity_error()),
+        }
     }
+
     pub(crate) fn check_identity(&self, iid: &str) -> Result<(), Diagnostic> {
         if !type_bridge_contract::id::is_canonical_thing_iid(iid)
             || self
@@ -205,6 +215,7 @@ impl SplitProgram {
                     complete,
                     ordinal,
                     expected_iid: Some(iid.to_owned()),
+                    missing_iid_noop: false,
                 }
             }
         }))
@@ -212,10 +223,22 @@ impl SplitProgram {
     pub(crate) fn accept_identity(
         &mut self,
         step: &WriteStep,
-        iid: String,
+        iid: Option<String>,
     ) -> Result<(), Diagnostic> {
-        step.check_identity(&iid)?;
-        self.identity = Some(iid);
+        if let Some(iid) = iid {
+            step.check_identity(&iid)?;
+            self.identity = Some(iid);
+        } else {
+            if !step.missing_iid_noop {
+                return Err(identity_error());
+            }
+            while self.steps.front().is_some_and(
+                |next| matches!(next, Step::Target { ordinal, .. } if *ordinal == step.ordinal),
+            ) {
+                self.steps.pop_front();
+            }
+            self.identity = None;
+        }
         Ok(())
     }
 }
@@ -410,6 +433,7 @@ pub(super) fn split(
                         complete: true,
                         ordinal,
                         expected_iid: None,
+                        missing_iid_noop: false,
                     }));
                 }
                 ordinal += low;
@@ -456,6 +480,7 @@ pub(super) fn split(
             complete: false,
             ordinal,
             expected_iid: row.iid,
+            missing_iid_noop: kind == WriteKind::PartialUpdate,
         }));
         let mut attach_shape = shape.clone();
         attach_shape.cleared_fields = &[];
