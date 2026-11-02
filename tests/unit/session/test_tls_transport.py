@@ -815,3 +815,37 @@ def test_pristine_database_pickle_and_legacy_state_restore_tls_defaults() -> Non
     assert legacy.tls_root_ca is None
     assert legacy._current_connection_identity().address == "legacy.example:1729"
     legacy.close()
+
+
+def test_rust_database_captures_full_query_policy_in_prepared_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import type_bridge._native as rust_runtime
+
+    limits = type_bridge_core.QueryLimits(bindings=1024, boolean_terms=512)
+    calls: list[dict[str, object]] = []
+
+    class FakeRustDatabase:
+        @staticmethod
+        def connect(*args: object, **kwargs: object) -> object:
+            calls.append(kwargs)
+            return _CurrentRustDatabaseHandle()
+
+    monkeypatch.setattr(
+        rust_runtime, "core_module", lambda: SimpleNamespace(PyDatabase=FakeRustDatabase)
+    )
+    database = Database(query_limits=limits)
+    rust_runtime.core_database_for(database)
+    assert calls[0]["query_limits"] is limits
+    assert database._prepared_connection_options().identity.query_limits is limits
+    database.query_limits = type_bridge_core.QueryLimits(bindings=512)
+    with pytest.raises(ValueError, match="settings changed"):
+        database._prepared_connection_options()
+
+
+def test_pristine_database_pickle_preserves_independent_query_policy() -> None:
+    limits = type_bridge_core.QueryLimits(bindings=1024, boolean_terms=512)
+    restored = pickle.loads(pickle.dumps(Database(query_limits=limits)))
+    assert restored.query_limits.get("bindings") == 1024
+    assert restored.query_limits.get("boolean_terms") == 512
+    assert restored.query_limits.get("selected_slots") == limits.get("selected_slots")

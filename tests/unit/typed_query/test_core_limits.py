@@ -139,3 +139,46 @@ def test_phase_collection_is_opt_in_and_survives_connection_policy() -> None:
         answer_limits=limits,
     )
     assert connection.answer_limits.collect_phase_timestamps is True
+
+
+def test_proxy_query_limits_intersect_independent_advertised_dimensions() -> None:
+    import json
+
+    from type_bridge_core import QueryLimits
+
+    from tests.unit.query.test_query_v2_remote_runtime import _canonical
+
+    raw = json.loads(_advertisement(PLAN_CAPABILITIES))
+    raw["capabilities"] = sorted(
+        {*raw["capabilities"], "query.plan.v3", "query.remote.envelope-v3"}
+    )
+    raw["query_limits"] = {"bindings": 768, "boolean_terms": 300, "selected_slots": 256}
+    connection = ProxyConnection.connect(
+        _authority(),
+        _closed_endpoint(),
+        advertisement=_canonical(raw),
+        query_limits=QueryLimits(bindings=1024, boolean_terms=512, input_rows=13),
+    )
+    effective = connection.query_limits
+    assert effective.get("bindings") == 768
+    assert effective.get("boolean_terms") == 300
+    assert effective.get("input_rows") == 13
+    assert effective.get("selected_slots") == 16
+
+
+def test_invalid_v3_query_limits_are_refused_before_proxy_io() -> None:
+    import pytest
+    from type_bridge_core import QueryLimits
+
+    with pytest.raises(ValueError, match="selected_slots"):
+        ProxyConnection.connect(
+            _authority(), _closed_endpoint(), query_limits=QueryLimits(bindings=8)
+        )
+
+
+def test_invalid_v3_query_limits_are_refused_before_direct_io() -> None:
+    import pytest
+    from type_bridge_core import PyDatabase, QueryLimits
+
+    with pytest.raises(ValueError, match="selected_slots"):
+        PyDatabase.connect("127.0.0.1:1", "app", query_limits=QueryLimits(bindings=8))

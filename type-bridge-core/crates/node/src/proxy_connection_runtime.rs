@@ -18,7 +18,7 @@ use type_bridge_orm::{
 
 use crate::match_runtime::{
     NodeMatchBindingHandle, NodeMatchFieldHandle, NodeMatchQueryHandle, NodeQueryCancellation,
-    NodeQueryExecutionResources, napi_sdk_diagnostic, napi_target_error,
+    NodeQueryExecutionResources, NodeQueryLimits, napi_sdk_diagnostic, napi_target_error,
 };
 use crate::query_v2_model_remote_runtime::{
     count_request, exists_request, owned_advertisement, page_request, reduce_by_field_request,
@@ -64,7 +64,9 @@ impl NodeProxyConnection {
         cancellation: Option<&NodeQueryCancellation>,
         staged_advertisement: Option<Unknown>,
         admission_window_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<Object<'static>> {
+        let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
         if header_names.len() != header_values.len() {
             return Err(napi::Error::new(
                 napi::Status::InvalidArg,
@@ -116,6 +118,10 @@ impl NodeProxyConnection {
             .await
             .map_err(napi_sdk_diagnostic)?
             .with_admission_window_milliseconds(admission_window_milliseconds);
+            let connection = match query_limits {
+                Some(limits) => connection.with_query_limits(limits).map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?,
+                None => connection,
+            };
             // A pinned staged advertisement must name the connection's
             // executor and reply key.
             let connection = match staged_advertisement {
@@ -162,6 +168,12 @@ impl NodeProxyConnection {
     #[napi(getter)]
     pub fn answer_limits(&self) -> NodeQueryExecutionResources {
         NodeQueryExecutionResources::from_inner(self.connection.answer_limits())
+    }
+
+    /// Query policy tightened by the currently pinned staged server ceiling.
+    #[napi(getter)]
+    pub fn query_limits(&self) -> NodeQueryLimits {
+        NodeQueryLimits::from_inner(self.connection.query_limits())
     }
 
     /// Run a selected-row or exactly-one query.

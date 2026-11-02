@@ -214,7 +214,7 @@ export interface NativeProjectedManagerFilter {
 /** @internal Preserve structured SDK diagnostics from generated-manager N-API calls. */
 export declare function projectedManagerNativeCall<Result>(operation: () => Result): Result;
 export interface NativeProjectionHandle {
-    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation): NativeRustDatabase;
+    connectDirect(endpoint: string, database: string, username: string, password: string, httpPort: number, tlsMode: string, tlsRootCa?: string, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, queryLimits?: NativeQueryLimits): NativeRustDatabase;
     managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
     managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
     matchSessionWithResources(resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, queryLimits?: NativeQueryLimits | null): RuntimeProjectionMatchSession;
@@ -276,6 +276,7 @@ export declare class InstalledRuntimeProjection {
         connectionLimits?: QueryExecutionResourceLimits;
         answerLimits?: QueryExecutionResourceLimits;
         cancellation?: QueryCancellation;
+        queryLimits?: QueryLimits;
     }): Database;
     /** @internal Bind one generated token without exposing its native handle. */
     manager(typeKey: string, connection: RuntimeProjectionConnection): NativeProjectedManager;
@@ -380,6 +381,8 @@ export interface ProxyConnectionOptions {
     readonly answerLimits?: QueryExecutionResourceLimits;
     /** Cancels connecting. */
     readonly cancellation?: QueryCancellation;
+    /** Independent query policy, tightened by the staged server advertisement. */
+    readonly queryLimits?: QueryLimits;
 }
 /**
  * A verified connection to a TypeBridge server over the built-in HTTP route.
@@ -403,6 +406,8 @@ export declare class ProxyConnection implements RuntimeProjectionRemote {
     transaction(kind?: StagedTransactionKind, options?: {
         readonly cancellation?: QueryCancellation;
     }): Promise<StagedTransaction>;
+    /** Query policy tightened by the currently pinned staged server ceiling. */
+    get queryLimits(): QueryLimits;
     /** The ceiling every terminal on this connection is constrained by. */
     get answerLimits(): QueryExecutionResourceLimits;
     rows(query: RuntimeProjectionMatchQuery, orders: RuntimeProjectionMatchOrder[], offset: bigint, limit: bigint, cardinality: "exactly_one" | "bounded_many"): Promise<RuntimeProjectionMatchResult>;

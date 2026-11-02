@@ -540,6 +540,7 @@ class PyDatabase:
         server_version: str | None = ...,
         tls: bool | None = ...,
         tls_root_ca: str | PathLike[str] | None = ...,
+        query_limits: QueryLimits | None = ...,
     ) -> PyDatabase: ...
     def close(self) -> None: ...
     def database_exists(self) -> bool: ...
@@ -1185,6 +1186,7 @@ class PyRuntimeProjection:
         connection_limits: QueryExecutionResourceLimits | None = ...,
         answer_limits: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
+        query_limits: QueryLimits | None = ...,
     ) -> PyDatabase: ...
     def manager_for_database(
         self,
@@ -1323,11 +1325,14 @@ class ProxyConnection:
         cancellation: QueryCancellation | None = ...,
         staged_advertisement: bytes | bytearray | None = ...,
         admission_window_milliseconds: int = ...,
+        query_limits: QueryLimits | None = ...,
     ) -> ProxyConnection: ...
     @property
     def admission_window_milliseconds(self) -> int: ...
     @property
     def answer_limits(self) -> QueryExecutionResourceLimits: ...
+    @property
+    def query_limits(self) -> QueryLimits: ...
     def transaction(
         self,
         kind: Literal["read", "write", "schema"] | None = None,

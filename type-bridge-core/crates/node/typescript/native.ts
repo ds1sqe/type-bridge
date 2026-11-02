@@ -512,6 +512,7 @@ interface NativePlanBuilderModule {
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
   readonly admissionWindowMilliseconds: bigint;
+  readonly queryLimits: NativeQueryLimits;
   readonly answerLimits: NativeQueryExecutionResources;
   transaction(
     kind?: string,
@@ -578,6 +579,7 @@ interface NativeProxyConnectionModule {
       cancellation?: NativeQueryCancellation,
       stagedAdvertisement?: Uint8Array,
       admissionWindowMilliseconds?: bigint,
+      queryLimits?: NativeQueryLimits,
     ): Promise<NativeProxyConnection>;
   };
 }

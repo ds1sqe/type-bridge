@@ -1629,6 +1629,7 @@ impl PyRuntimeProjection {
         connection_limits=None,
         answer_limits=None,
         cancellation=None,
+        query_limits=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect_direct(
@@ -1644,6 +1645,7 @@ impl PyRuntimeProjection {
         connection_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
+        query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<PyDatabase> {
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let mut policy =
@@ -1655,6 +1657,9 @@ impl PyRuntimeProjection {
         }
         if let Some(limits) = answer_limits {
             policy = policy.answer_limits(limits.inner());
+        }
+        if let Some(limits) = query_limits {
+            policy = policy.query_limits(limits.inner()).map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         }
         let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(

@@ -204,3 +204,37 @@ test("admission window defaults and round-trips independently of execution", asy
   assert.equal(configured.admissionWindowMilliseconds, 1234n);
   await assert.rejects(ProxyConnection.connect(authority(), endpoint, { admissionWindowMilliseconds: 0n }));
 });
+
+test("query policy intersects independent staged server ceilings", async () => {
+  const { QueryLimits } = await import("../../typescript/runtime-projection.js");
+  const raw = JSON.parse(Buffer.from(advertisement()).toString("utf8"));
+  const { reply_key, reply_key_id, ...prefix } = raw;
+  prefix.capabilities = [...new Set([...prefix.capabilities, "query.plan.v3", "query.remote.envelope-v3"])].sort();
+  const pinned = Buffer.from(JSON.stringify({ ...prefix,
+    query_limits: { bindings: 768, boolean_terms: 300, selected_slots: 256 },
+    reply_key, reply_key_id,
+  }));
+  const connection = await ProxyConnection.connect(authority(), await closedEndpoint(), {
+    advertisement: pinned,
+    queryLimits: new QueryLimits({ bindings: 1024n, boolean_terms: 512n, input_rows: 13n }),
+  });
+  assert.equal(connection.queryLimits.get("bindings"), 768n);
+  assert.equal(connection.queryLimits.get("boolean_terms"), 300n);
+  assert.equal(connection.queryLimits.get("input_rows"), 13n);
+  assert.equal(connection.queryLimits.get("selected_slots"), 16n);
+});
+
+test("invalid V3 query policy is refused before proxy I/O", async () => {
+  const { QueryLimits } = await import("../../typescript/runtime-projection.js");
+  await assert.rejects(ProxyConnection.connect(authority(), await closedEndpoint(), {
+    queryLimits: new QueryLimits({ bindings: 8n }),
+  }), /selected_slots/);
+});
+
+test("invalid V3 query policy is refused before direct I/O", async () => {
+  const { QueryLimits } = await import("../../typescript/runtime-projection.js");
+  const { Database } = await import("../../typescript/index.js");
+  assert.throws(() => Database.connect("127.0.0.1:1", "app", {
+    queryLimits: new QueryLimits({ bindings: 8n }),
+  }), /selected_slots/);
+});

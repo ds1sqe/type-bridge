@@ -657,7 +657,9 @@ pub fn connect_rust_database(
     server_version: Option<String>,
     tls_enabled: Option<bool>,
     tls_root_ca: Option<String>,
+    query_limits: Option<&match_runtime::NodeQueryLimits>,
 ) -> Result<NodeRustDatabase> {
+    let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
     let options = napi_secure_connect_options(http_port, server_version, tls_enabled, tls_root_ca)?;
     let prepared = options
         .prepare_transport()
@@ -677,6 +679,11 @@ pub fn connect_rust_database(
             ),
         )
         .map_err(napi_secure_connect_error)?;
+
+    let db = match query_limits {
+        Some(limits) => db.with_query_limits(limits).map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+        None => db,
+    };
 
     Ok(NodeRustDatabase {
         db: Arc::new(db),

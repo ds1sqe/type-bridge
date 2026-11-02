@@ -17,7 +17,7 @@ use type_bridge_orm::{
 };
 
 use crate::match_runtime::{
-    PyQueryCancellation, PyQueryExecutionResourceLimits, py_sdk_diagnostic,
+    PyQueryCancellation, PyQueryExecutionResourceLimits, PyQueryLimits, py_sdk_diagnostic,
 };
 use crate::orm_runtime::provider_block_on;
 use crate::query_v2_runtime::{PyQueryV2Authority, PythonBytes};
@@ -65,6 +65,7 @@ impl PyProxyConnection {
         cancellation=None,
         staged_advertisement=None,
         admission_window_milliseconds=std::num::NonZeroU64::new(60_000).unwrap(),
+        query_limits=None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect(
@@ -80,7 +81,9 @@ impl PyProxyConnection {
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
         staged_advertisement: Option<&Bound<'_, PyAny>>,
         admission_window_milliseconds: std::num::NonZeroU64,
+        query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
+        let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let endpoint = headers.into_iter().flatten().fold(
             ProxyEndpoint::new(endpoint).tls(tls),
@@ -131,6 +134,10 @@ impl PyProxyConnection {
         )
         .map_err(py_sdk_diagnostic)?
         .with_admission_window_milliseconds(admission_window_milliseconds);
+        let connection = match query_limits {
+            Some(limits) => connection.with_query_limits(limits).map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
+            None => connection,
+        };
         // A pinned staged advertisement must name the same executor and
         // reply key as the connection's advertisement.
         let connection = match staged_advertisement {
@@ -182,6 +189,12 @@ impl PyProxyConnection {
             Some(Arc::clone(&self.authority)),
             commit_on_exit,
         ))
+    }
+
+    /// Query policy tightened by the currently pinned staged server ceiling.
+    #[getter]
+    fn query_limits(&self) -> PyQueryLimits {
+        PyQueryLimits::from_inner(self.connection.query_limits())
     }
 
     /// The ceiling every terminal on this connection is constrained by.

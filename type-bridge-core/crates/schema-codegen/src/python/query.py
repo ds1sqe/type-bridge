@@ -931,6 +931,7 @@ def connect_proxy(
     advertisement: bytes | None = None,
     connection_limits: QueryExecutionResourceLimits | None = None,
     answer_limits: QueryExecutionResourceLimits | None = None,
+    query_limits: QueryLimits | None = None,
     cancellation: QueryCancellation | None = None,
 ) -> ProxyConnection:
     """Open a connection to a TypeBridge server's HTTP routes for this package.
@@ -949,6 +950,7 @@ def connect_proxy(
         advertisement=advertisement,
         connection_limits=connection_limits,
         answer_limits=answer_limits,
+        query_limits=query_limits,
         cancellation=cancellation,
     )
 

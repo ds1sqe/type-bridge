@@ -2447,6 +2447,7 @@ export interface DirectConnectionPolicyOptions {
   readonly tlsRootCa?: string;
   readonly connectionLimits?: QueryExecutionResourceLimits;
   readonly answerLimits?: QueryExecutionResourceLimits;
+  readonly queryLimits?: QueryLimits;
 }
 
 /** Immutable package-owned direct connection policy with redacted credentials. */
@@ -2460,6 +2461,7 @@ export class DirectConnectionPolicy {
   readonly #tlsRootCa: string | undefined;
   readonly #connectionLimits: QueryExecutionResourceLimits | undefined;
   readonly #answerLimits: QueryExecutionResourceLimits | undefined;
+  readonly #queryLimits: QueryLimits | undefined;
 
   constructor(
     endpoint: string,
@@ -2475,6 +2477,7 @@ export class DirectConnectionPolicy {
     this.#tlsRootCa = options.tlsRootCa;
     this.#connectionLimits = options.connectionLimits;
     this.#answerLimits = options.answerLimits;
+    this.#queryLimits = options.queryLimits;
     Object.freeze(this);
   }
 
@@ -2497,6 +2500,7 @@ export class DirectConnectionPolicy {
       ...(this.#answerLimits === undefined
         ? {}
         : { answerLimits: this.#answerLimits }),
+      ...(this.#queryLimits === undefined ? {} : { queryLimits: this.#queryLimits }),
       ...(cancellation === undefined ? {} : { cancellation }),
     });
   }

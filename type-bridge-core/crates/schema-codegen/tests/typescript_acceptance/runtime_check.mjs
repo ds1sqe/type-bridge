@@ -96,6 +96,11 @@ assert.throws(
   /connect requires this generated package's DirectConnectionPolicy/,
 );
 
+assert.throws(
+  () => orderedConnect(new OrderedDirectConnectionPolicy("127.0.0.1:1", "app", { queryLimits: new QueryLimits({ bindings: 8n }) })),
+  /selected_slots/,
+);
+
 function captureNativeDiagnostic(operation) {
   try {
     operation();

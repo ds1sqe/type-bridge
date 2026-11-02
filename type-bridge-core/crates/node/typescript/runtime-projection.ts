@@ -460,6 +460,7 @@ export interface NativeProjectionHandle {
     connectionLimits?: NativeQueryExecutionResources,
     answerLimits?: NativeQueryExecutionResources,
     cancellation?: NativeQueryCancellation,
+    queryLimits?: NativeQueryLimits,
   ): NativeRustDatabase;
   managerForDatabase(typeKey: string, database: NativeRustDatabase): NativeProjectedManager;
   managerForTransaction(typeKey: string, transaction: NativeRustTransactionContext): NativeProjectedManager;
@@ -574,6 +575,7 @@ export class InstalledRuntimeProjection {
     connectionLimits?: QueryExecutionResourceLimits;
     answerLimits?: QueryExecutionResourceLimits;
     cancellation?: QueryCancellation;
+    queryLimits?: QueryLimits;
   }): Database {
     return createRustDatabaseFromNative(this.#native.connectDirect(
       input.endpoint,
@@ -586,6 +588,7 @@ export class InstalledRuntimeProjection {
       input.connectionLimits?.nativeHandle(),
       input.answerLimits?.nativeHandle(),
       input.cancellation?.nativeHandle(),
+      input.queryLimits?.nativeHandle(),
     ));
   }
 
@@ -1277,6 +1280,8 @@ export interface ProxyConnectionOptions {
   readonly answerLimits?: QueryExecutionResourceLimits;
   /** Cancels connecting. */
   readonly cancellation?: QueryCancellation;
+  /** Independent query policy, tightened by the staged server advertisement. */
+  readonly queryLimits?: QueryLimits;
 }
 
 /**
@@ -1343,6 +1348,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
         options.cancellation?.nativeHandle(),
         stagedAdvertisement,
         options.admissionWindowMilliseconds,
+        options.queryLimits?.nativeHandle(),
       )
     ));
     return new ProxyConnection(native);
@@ -1362,6 +1368,12 @@ export class ProxyConnection implements RuntimeProjectionRemote {
       this.#native.transaction(kind, options.cancellation?.nativeHandle())
     ));
     return new StagedTransaction(native);
+  }
+
+  /** Query policy tightened by the currently pinned staged server ceiling. */
+  get queryLimits(): QueryLimits {
+    const limits = this.#native.queryLimits;
+    return new QueryLimits(Object.fromEntries(limits.names().map(name => [name, limits.get(name)])));
   }
 
   /** The ceiling every terminal on this connection is constrained by. */

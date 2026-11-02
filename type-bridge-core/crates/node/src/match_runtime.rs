@@ -215,6 +215,8 @@ pub struct NodeQueryLimits {
 }
 
 impl NodeQueryLimits {
+    pub(crate) const fn from_inner(inner: QueryLimits) -> Self { Self { inner } }
+
     pub(crate) const fn inner(&self) -> QueryLimits {
         self.inner
     }

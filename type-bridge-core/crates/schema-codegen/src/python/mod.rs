@@ -29,7 +29,7 @@ const ORDERED_RUNTIME_SOURCE_SUFFIX: &[u8] = br#"
 _TYPE_BRIDGE_ORDERED_COLLECTION_RESOURCE_VERSION = 3
 
 from dataclasses import dataclass, field
-from type_bridge_core import QueryCancellation, QueryExecutionResourceLimits
+from type_bridge_core import QueryCancellation, QueryExecutionResourceLimits, QueryLimits
 
 
 class DirectTlsMode(StrEnum):
@@ -49,6 +49,7 @@ class DirectConnectionPolicy:
     tls_root_ca: str | None = None
     connection_limits: QueryExecutionResourceLimits | None = None
     answer_limits: QueryExecutionResourceLimits | None = None
+    query_limits: QueryLimits | None = None
 
     def __repr__(self) -> str:
         return "DirectConnectionPolicy([REDACTED])"
@@ -76,10 +77,11 @@ def connect(
         policy.connection_limits,
         policy.answer_limits,
         cancellation,
+        policy.query_limits,
     )
     from type_bridge._native import database_from_core
 
-    return database_from_core(policy.endpoint, policy.database, native)
+    return database_from_core(policy.endpoint, policy.database, native, query_limits=policy.query_limits)
 
 
 def _install_runtime_projection_with_authority(
@@ -195,7 +197,7 @@ globals()["ProjectedModelManager"] = _WholeCreateProjectedModelManager
 const ORDERED_RUNTIME_STUB_SUFFIX: &[u8] = br#"
 
 from dataclasses import dataclass
-from type_bridge_core import QueryCancellation, QueryExecutionResourceLimits
+from type_bridge_core import QueryCancellation, QueryExecutionResourceLimits, QueryLimits
 
 class DirectTlsMode(StrEnum):
     DISABLED = "disabled"
@@ -213,6 +215,7 @@ class DirectConnectionPolicy:
     tls_root_ca: str | None = ...
     connection_limits: QueryExecutionResourceLimits | None = ...
     answer_limits: QueryExecutionResourceLimits | None = ...
+    query_limits: QueryLimits | None = ...
 
 def connect(
     policy: DirectConnectionPolicy,

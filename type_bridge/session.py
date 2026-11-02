@@ -21,6 +21,7 @@ from type_bridge.typedb_driver import (
 )
 
 if TYPE_CHECKING:
+    from type_bridge_core import QueryLimits
     from type_bridge_core import Transaction as StagedTransaction
     from typedb.driver import Driver
 
@@ -92,6 +93,7 @@ class _ConnectionIdentity:
     tls_enabled: bool
     tls_argument: bool | None
     configured_tls_root_ca: str | None
+    query_limits: QueryLimits | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +137,7 @@ class Database:
         server_version: str | None = None,
         tls: bool | None = None,
         tls_root_ca: str | os.PathLike[str] | None = None,
+        query_limits: QueryLimits | None = None,
     ):
         """Initialize database connection.
 
@@ -156,6 +159,8 @@ class Database:
                 lowercase ``https://`` address-prefix inference.
             tls_root_ca: PEM root-CA path for an explicitly enabled TLS
                 connection. A root path never enables TLS implicitly.
+            query_limits: Independent Rust query policy inherited by managers
+                and transactions. Omission keeps the native defaults.
         """
         # Establish destructor-safe ownership state before any validation can
         # raise. Python may invoke ``__del__`` for an object whose ``__init__``
@@ -180,6 +185,7 @@ class Database:
         self.server_version = server_version
         self.tls = tls
         self.tls_root_ca = normalized_tls_root_ca
+        self.query_limits = query_limits
 
     def _resolved_transport_options(self) -> tuple[str, bool, str | None]:
         return _resolve_transport_options(self.address, self.tls, self.tls_root_ca)
@@ -207,6 +213,7 @@ class Database:
                 tls_enabled if self.tls is not None or self.address.startswith("https://") else None
             ),
             configured_tls_root_ca=tls_root_ca,
+            query_limits=self.query_limits,
         )
 
     def _prepared_connection_options(self) -> _PreparedConnection:
@@ -456,10 +463,19 @@ class Database:
             if self._prepared_connection is not None:
                 raise TypeError("a Database with prepared transport cannot be pickled")
             state = self.__dict__.copy()
+            if self.query_limits is not None:
+                state["query_limits"] = {
+                    name: self.query_limits.get(name) for name in self.query_limits.names()
+                }
             state.pop("_transport_lock", None)
             return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
+        limits = state.setdefault("query_limits", None)
+        if isinstance(limits, dict):
+            from type_bridge_core import QueryLimits
+
+            state["query_limits"] = QueryLimits(**limits)
         state.setdefault("tls", None)
         state.setdefault("tls_root_ca", None)
         state.setdefault("_tls_root_ca_snapshot", None)

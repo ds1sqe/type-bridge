@@ -783,6 +783,17 @@ Rust uses `builder.input::<String>("target_iid")`,
 returns a schema-branded `StagedPlan`; `tx.stage_stack(&[earlier, later])?`
 retains that schema brand. The C authoring surface accompanies ABI 2.0.
 
+Connection options accept the full existing `QueryLimits`, with independent
+binding, Boolean-term, input-row, codec, and other ceilings. Python uses
+`Database(query_limits=limits)`, generated `DirectConnectionPolicy(query_limits=limits)`,
+and `connect_proxy(..., query_limits=limits)`. TypeScript uses `queryLimits` in
+`Database.connect`, generated `DirectConnectionPolicy`, and
+`ProxyConnection.connect` options. Rust policies expose `.query_limits(limits)?`.
+Proxy connections intersect every dimension with the staged advertisement;
+Python `connection.query_limits` and TypeScript `connection.queryLimits` report
+that effective policy after the staged advertisement is pinned or fetched.
+Before a staged advertisement is available, they report the requested policy.
+
 Staged byte and item budgets default to 32 MiB and 65,536; explicit values may
 raise them to the shared answer-policy maxima, subject to the caller, session
 and advertised ceilings. Canonical envelope and collection hard caps still apply

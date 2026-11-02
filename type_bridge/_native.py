@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from type_bridge_core import PyDatabase, PyTransactionContext
+    from type_bridge_core import PyDatabase, PyTransactionContext, QueryLimits
 
 
 def core_module() -> Any:
@@ -65,6 +65,9 @@ def core_database_for(connection: Any) -> PyDatabase:
             if prepared.tls_root_ca_snapshot is not None:
                 connect_kwargs["tls_root_ca"] = prepared.tls_root_ca_snapshot
 
+            if identity.query_limits is not None:
+                connect_kwargs["query_limits"] = identity.query_limits
+
             native_db = core_module().PyDatabase.connect(
                 identity.address,
                 identity.database,
@@ -84,11 +87,12 @@ def database_from_core(
     endpoint: str,
     database_name: str,
     native_database: PyDatabase,
+    query_limits: QueryLimits | None = None,
 ) -> Any:
     """Wrap one package-owned native database without reconnecting."""
     from type_bridge.session import Database
 
-    database = Database(address=endpoint, database=database_name)
+    database = Database(address=endpoint, database=database_name, query_limits=query_limits)
     setattr(database, "_native_database", native_database)
     database._transport_committed = True
     return database

@@ -4657,6 +4657,7 @@ def connect_proxy(
     advertisement: bytes | None = ...,
     connection_limits: QueryExecutionResourceLimits | None = ...,
     answer_limits: QueryExecutionResourceLimits | None = ...,
+    query_limits: QueryLimits | None = ...,
     cancellation: QueryCancellation | None = ...,
 ) -> ProxyConnection: ...
 

@@ -1,5 +1,5 @@
 import type { QueryLimits } from "./runtime-projection.js";
-import type { NativeStagedTransaction } from "./native.js";
+import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
 import { StagedTransaction, type StagedTransactionKind } from "./staged-transaction.js";
 import { type NativeQueryV2Authority, type NativeQueryV2BuilderRuntime } from "./query-v2-internals.js";
 export { QueryV2Error } from "./query-v2-internals.js";
@@ -287,7 +287,7 @@ export interface NativeRuntime {
     NodeMigrationExecutionResources: new (transactionGroups: number, backfillObservations: number) => NativeMigrationExecutionResources;
     openMigrationCatalog(schemaAuthority: Uint8Array, historyBundle: Uint8Array): NativeMigrationCatalog;
     ensureRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): void;
-    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null): NativeRustDatabase;
+    connectRustDatabase(address: string, database: string, username?: string | null, password?: string | null, httpPort?: number | null, serverVersion?: string | null, tlsEnabled?: boolean | null, tlsRootCa?: string | null, queryLimits?: NativeQueryLimits | null): NativeRustDatabase;
 }
 /** Package-private native contract used by retained runtime entry points. */
 export interface NativeModule extends NativeRuntime, NativeQueryV2Runtime, NativeQueryV2BuilderRuntime {
@@ -299,6 +299,7 @@ export interface DatabaseConnectOptions {
     serverVersion?: string | null;
     tlsEnabled?: boolean;
     tlsRootCa?: string;
+    queryLimits?: QueryLimits;
 }
 export interface EnsureDatabaseOptions extends DatabaseConnectOptions {
 }

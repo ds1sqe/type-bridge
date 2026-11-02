@@ -1,6 +1,6 @@
 import { loadNative } from "./native.js";
 import type { QueryLimits } from "./runtime-projection.js";
-import type { NativeStagedTransaction } from "./native.js";
+import type { NativeStagedTransaction, NativeQueryLimits } from "./native.js";
 import {
   StagedTransaction,
   type StagedTransactionKind,
@@ -468,6 +468,7 @@ export interface NativeRuntime {
     serverVersion?: string | null,
     tlsEnabled?: boolean | null,
     tlsRootCa?: string | null,
+    queryLimits?: NativeQueryLimits | null,
   ): NativeRustDatabase;
 }
 
@@ -484,6 +485,7 @@ export interface DatabaseConnectOptions {
   serverVersion?: string | null;
   tlsEnabled?: boolean;
   tlsRootCa?: string;
+  queryLimits?: QueryLimits;
 }
 
 export interface EnsureDatabaseOptions extends DatabaseConnectOptions {}
@@ -883,6 +885,7 @@ export class Database {
       options.serverVersion ?? null,
       options.tlsEnabled ?? null,
       options.tlsRootCa ?? null,
+      options.queryLimits?.nativeHandle(),
     );
     return new Database(native);
   }

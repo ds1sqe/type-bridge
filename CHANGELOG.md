@@ -16,6 +16,8 @@ All notable changes to TypeBridge will be documented in this file.
   borrowed transactions and projected single/batch writes inherit them.
   Raising every needed dimension keeps wide rows in one statement; an
   unchanged dimension retains bounded pieces in the same transaction.
+  Python and Node connection options and generated direct policies expose
+  the same full policy. Proxy ceilings intersect the staged advertisement.
 
 - `TransactionContext::execute_plans`, `OwnedTransaction::execute_plans` and
   `EagerTransaction::execute_plans` accept write plans in caller-owned Write

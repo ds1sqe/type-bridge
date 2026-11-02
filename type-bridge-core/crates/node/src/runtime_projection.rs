@@ -2217,6 +2217,7 @@ impl NodeRuntimeProjection {
         connection_limits: Option<&NodeQueryExecutionResources>,
         answer_limits: Option<&NodeQueryExecutionResources>,
         cancellation: Option<&NodeQueryCancellation>,
+        query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<NodeRustDatabase> {
         let tls = direct_tls_from_node(&tls_mode, tls_root_ca)?;
         let mut policy =
@@ -2228,6 +2229,9 @@ impl NodeRuntimeProjection {
         }
         if let Some(limits) = answer_limits {
             policy = policy.answer_limits(limits.inner());
+        }
+        if let Some(limits) = query_limits {
+            policy = policy.query_limits(limits.inner()).map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
         }
         let runtime = ProviderRuntimeOwner::new()
             .map(Arc::new)

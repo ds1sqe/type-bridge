@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::match_runtime::py_sdk_diagnostic;
+use crate::match_runtime::{PyQueryLimits, py_sdk_diagnostic};
 use crate::migration_catalog_runtime::PyMigrationCancellation;
 use crate::version::VersionError;
 use pyo3::prelude::*;
@@ -621,7 +621,7 @@ fn py_administration_error(error: type_bridge_contract::diagnostic::Diagnostic) 
 impl PyDatabase {
     /// Connect to TypeDB using the shared Rust ORM session layer.
     #[staticmethod]
-    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None, tls=None, tls_root_ca=None))]
+    #[pyo3(signature = (address, database, username=None, password=None, http_port=core_version::DEFAULT_HTTP_PORT, server_version=None, tls=None, tls_root_ca=None, query_limits=None))]
     #[allow(
         clippy::too_many_arguments,
         reason = "the stable Python function keeps the released connection parameters and appends optional TLS controls"
@@ -636,7 +636,9 @@ impl PyDatabase {
         server_version: Option<&str>,
         tls: Option<Bound<'_, PyAny>>,
         tls_root_ca: Option<PathBuf>,
+        query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
+        let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         // Resolve every caller-controlled configuration value before creating
         // a runtime or allowing the connection path to perform network I/O.
         let tls_mode = python_tls_mode(exact_optional_tls(tls)?, tls_root_ca)?;
@@ -668,6 +670,11 @@ impl PyDatabase {
             ),
         )
         .map_err(py_secure_connect_error)?;
+
+        let db = match query_limits {
+            Some(limits) => db.with_query_limits(limits).map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
+            None => db,
+        };
 
         Ok(Self {
             db: Arc::new(db),
