@@ -87,12 +87,13 @@ pub(crate) fn parse_common_limits(
     };
     if value.struct_size as usize != size_of::<TypeBridgeQueryExecutionLimitsV1>()
         || value.version != LIMITS_VERSION
-        || value.reserved0 != 0
+        || value.collect_phase_timestamps > 1
         || value.reserved != [0; 4]
     {
         return Err(invalid_limits());
     }
     QueryExecutionResourceLimits {
+        collect_phase_timestamps: value.collect_phase_timestamps == 1,
         timeout_milliseconds: type_bridge_orm::QueryTimeout::from_signed_milliseconds(
             value.timeout_milliseconds,
         ),
@@ -129,6 +130,37 @@ mod tests {
     use std::mem::{offset_of, size_of};
 
     use super::*;
+
+    #[test]
+    fn phase_collection_flag_is_exact_and_round_trips() {
+        let mut value = TypeBridgeQueryExecutionLimitsV1 {
+            struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
+            version: LIMITS_VERSION,
+            timeout_milliseconds: 60_000,
+            items: 1,
+            bytes: 1,
+            graph_nodes: 1,
+            attribute_values: 1,
+            collection_members: 1,
+            role_players: 1,
+            statements: 1,
+            collect_phase_timestamps: 0,
+            reserved: [0; 4],
+        };
+        assert!(
+            !parse_common_limits(Some(value), AnswerTransport::Direct)
+                .unwrap()
+                .collect_phase_timestamps
+        );
+        value.collect_phase_timestamps = 1;
+        assert!(
+            parse_common_limits(Some(value), AnswerTransport::Direct)
+                .unwrap()
+                .collect_phase_timestamps
+        );
+        value.collect_phase_timestamps = 2;
+        assert!(parse_common_limits(Some(value), AnswerTransport::Direct).is_err());
+    }
 
     #[test]
     fn a_missing_descriptor_takes_its_transports_defaults() {

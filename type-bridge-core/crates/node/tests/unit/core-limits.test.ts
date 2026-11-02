@@ -104,3 +104,9 @@ test("raised byte and item limits retain the shared integer boundary", () => {
     assert.throws(() => new QueryExecutionResourceLimits({ [name]: maximum + 1n }), new RegExp(name));
   }
 });
+
+
+test("phase collection is opt in", () => {
+  assert.equal(new QueryExecutionResourceLimits().collectPhaseTimestamps, false);
+  assert.equal(new QueryExecutionResourceLimits({ collectPhaseTimestamps: true }).collectPhaseTimestamps, true);
+});

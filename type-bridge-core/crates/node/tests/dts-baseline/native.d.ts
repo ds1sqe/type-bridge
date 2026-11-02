@@ -165,6 +165,7 @@ export interface NativeQueryLimits {
     get(name: string): bigint;
 }
 export interface NativeQueryExecutionResources {
+    readonly collectPhaseTimestamps: boolean;
     readonly timeoutMilliseconds: bigint;
     readonly items: bigint;
     readonly bytes: bigint;
@@ -311,7 +312,7 @@ interface NativeEnumSpellingModule {
 }
 interface NativeRemoteModelQueryModule {
     /** An omitted dimension takes the core default. */
-    NodeQueryExecutionResources: new (timeoutMilliseconds?: bigint, items?: bigint, bytes?: bigint, graphNodes?: bigint, attributeValues?: bigint, collectionMembers?: bigint, rolePlayers?: bigint, statements?: bigint) => NativeQueryExecutionResources;
+    NodeQueryExecutionResources: new (timeoutMilliseconds?: bigint, items?: bigint, bytes?: bigint, graphNodes?: bigint, attributeValues?: bigint, collectionMembers?: bigint, rolePlayers?: bigint, statements?: bigint, collectPhaseTimestamps?: boolean) => NativeQueryExecutionResources;
     NodeQueryCancellation: new () => NativeQueryCancellation;
     NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;
     queryV2RemoteModelContextWithResources(authority: ReturnType<NativeModule["queryV2Authority"]>, advertisement: Uint8Array, resources: NativeQueryExecutionResources, cancellation: NativeQueryCancellation, answerLimits?: NativeQueryExecutionResources): NativeRemoteModelQueryContext;

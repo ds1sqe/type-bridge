@@ -110,6 +110,9 @@ pub enum StagedKindV3 {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StagedLimitsV3 {
+    /// Collect diagnostic phase records without requiring a tracing subscriber.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub collect_phase_timestamps: bool,
     /// Execution deadline; null means unbounded, a positive integer is milliseconds.
     pub deadline_ms: Option<u64>,
     /// Finite delivery window from issue to admission, independent of execution.
@@ -141,6 +144,9 @@ pub struct StagedLimitsV3 {
     /// Independent write provider-statement budget.
     pub max_write_statements: u32,
 }
+fn is_false(value: &bool) -> bool {
+    !value
+}
 fn default_admission_window() -> u64 {
     DEFAULT_ADMISSION_WINDOW_MILLISECONDS
 }
@@ -150,6 +156,7 @@ fn is_default_admission_window(value: &u64) -> bool {
 impl Default for StagedLimitsV3 {
     fn default() -> Self {
         Self {
+            collect_phase_timestamps: false,
             deadline_ms: Some(60_000),
             admission_window_milliseconds: DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
             max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,

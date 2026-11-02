@@ -101,7 +101,7 @@ mod tests {
         use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
 
         let resources =
-            NodeQueryExecutionResources::new(None, None, None, None, None, None, None, None)
+            NodeQueryExecutionResources::new(None, None, None, None, None, None, None, None, None)
                 .expect("the core defaults are valid")
                 .inner();
         assert_eq!(resources, QueryExecutionResourceLimits::default());

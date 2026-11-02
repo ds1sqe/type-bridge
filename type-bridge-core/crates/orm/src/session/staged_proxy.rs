@@ -124,11 +124,14 @@ impl ProxyStaging {
                 kind: Some(kind),
                 limits: policy.map_or_else(
                     || StagedLimitsV3 {
+                        collect_phase_timestamps: self.limits.collect_phase_timestamps,
                         deadline_ms,
                         admission_window_milliseconds: self.admission_window_milliseconds,
                         ..Default::default()
                     },
                     |policy| StagedLimitsV3 {
+                        collect_phase_timestamps: self.limits.collect_phase_timestamps
+                            || policy.collect_phase_timestamps,
                         deadline_ms: crate::QueryTimeout::from_milliseconds(
                             deadline_ms.unwrap_or(0),
                         )

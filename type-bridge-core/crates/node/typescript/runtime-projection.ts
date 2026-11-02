@@ -99,6 +99,8 @@ export interface GeneratedSchemaAuthorityInstall {
  * dimension takes the core default; a given one may tighten or raise it.
  */
 export interface QueryExecutionResourceLimitOptions {
+  /** Collect a diagnostic timeline without a tracing subscriber. Defaults to false. */
+  readonly collectPhaseTimestamps?: boolean;
   readonly timeoutMilliseconds?: bigint;
   readonly items?: bigint;
   readonly bytes?: bigint;
@@ -124,10 +126,12 @@ export class QueryExecutionResourceLimits {
       options.collectionMembers,
       options.rolePlayers,
       options.statements,
+      options.collectPhaseTimestamps,
     );
     Object.freeze(this);
   }
 
+  get collectPhaseTimestamps(): boolean { return this.#native.collectPhaseTimestamps; }
   get timeoutMilliseconds(): bigint { return this.#native.timeoutMilliseconds; }
   get items(): bigint { return this.#native.items; }
   get bytes(): bigint { return this.#native.bytes; }
@@ -1372,6 +1376,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
       collectionMembers: limits.collectionMembers,
       rolePlayers: limits.rolePlayers,
       statements: limits.statements ?? undefined,
+      collectPhaseTimestamps: limits.collectPhaseTimestamps,
     });
   }
 

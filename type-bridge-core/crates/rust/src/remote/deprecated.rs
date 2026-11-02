@@ -111,6 +111,7 @@ impl RemoteQueryLimits {
     ) -> Self {
         Self {
             resources: QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
                     DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
                 ),
@@ -194,6 +195,7 @@ mod tests {
         assert_eq!(
             resources,
             QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(30_000),
                 items: 100,
                 bytes: 8 << 20,

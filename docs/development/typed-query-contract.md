@@ -973,3 +973,21 @@ requires one complete model-only fetch or fails with
 `plan_returning_models_after_write`. Shared staged plan carriers retain the
 original canonical Arc allocation and refuse a source that changes its plan
 identity after admission.
+
+### Optional execution timelines
+
+`QueryExecutionResourceLimits.collect_phase_timestamps` (Node:
+`collectPhaseTimestamps`) defaults to `false`. Set it to `true` to retain a
+full diagnostic phase timeline without a tracing subscriber. C uses the
+`collect_phase_timestamps` word in its query execution limits descriptor:
+0 disables collection, 1 enables it, and other values are refused. Rust
+transactions also expose `TransactionOptions::with_collect_phase_timestamps`.
+This is a diagnostic option, not another resource ceiling or deadline.
+
+The option survives policy intersection when either side enables it. Proxy
+requests carry it as an optional Boolean; omission means disabled. Timelines
+contain one UTC anchor and monotonic offsets on that process's clock, with
+statement indices and the failing phase. They remain diagnostic data and
+never become answer content. Ordinary diagnostic details keep their existing
+byte ceiling; timeline records use the request's existing statement bound
+and the reply envelope ceiling.

@@ -92,6 +92,7 @@ fn remote_query_limits_convert_to_resource_limits() {
     assert_eq!(
         type_bridge::QueryExecutionResourceLimits::from(limits),
         type_bridge::QueryExecutionResourceLimits {
+            collect_phase_timestamps: false,
             timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(5),
             items: 100,
             bytes: 8 << 20,

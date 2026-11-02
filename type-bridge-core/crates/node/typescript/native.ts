@@ -405,6 +405,7 @@ export interface NativeQueryLimits {
 }
 
 export interface NativeQueryExecutionResources {
+  readonly collectPhaseTimestamps: boolean;
   readonly timeoutMilliseconds: bigint;
   readonly items: bigint;
   readonly bytes: bigint;
@@ -619,6 +620,7 @@ interface NativeRemoteModelQueryModule {
     collectionMembers?: bigint,
     rolePlayers?: bigint,
     statements?: bigint,
+    collectPhaseTimestamps?: boolean,
   ) => NativeQueryExecutionResources;
   NodeQueryCancellation: new () => NativeQueryCancellation;
   NodeQueryLimits: new (names: string[], values: bigint[]) => NativeQueryLimits;

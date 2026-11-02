@@ -1687,3 +1687,22 @@ fn maximum_execution_timeline_passes_signed_reply_admission() {
         reply.encode_payload().unwrap()
     );
 }
+
+#[test]
+fn phase_collection_is_optional_in_the_request_wire() {
+    let plain: Value = serde_json::from_slice(&request().encode().unwrap()).unwrap();
+    assert!(plain["limits"].get("collect_phase_timestamps").is_none());
+    let enabled =
+        mutate_request(|value| value["limits"]["collect_phase_timestamps"] = json!(true)).unwrap();
+    assert!(enabled.limits().collect_phase_timestamps);
+    let decoded = StagedRequestV3::decode(
+        &enabled.encode().unwrap(),
+        &support::schema(),
+        &advertisement(),
+    )
+    .unwrap();
+    assert!(decoded.limits().collect_phase_timestamps);
+    assert!(
+        mutate_request(|value| value["limits"]["collect_phase_timestamps"] = json!(1)).is_err()
+    );
+}

@@ -727,6 +727,7 @@ async fn execute_staged(
     };
     let options = TransactionOptions::default()
         .with_timeout(type_bridge_orm::QueryTimeout::NONE)
+        .with_collect_phase_timestamps(requested.collect_phase_timestamps)
         .with_kind(kind)
         .with_answer_limits(limits);
     let mut transaction = state.query.database.transaction(options);

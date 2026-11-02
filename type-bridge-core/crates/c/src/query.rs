@@ -274,7 +274,7 @@ pub struct TypeBridgeQueryExecutionLimitsV1 {
     pub collection_members: u64,
     pub role_players: u64,
     pub statements: u32,
-    pub reserved0: u32,
+    pub collect_phase_timestamps: u32,
     pub reserved: [u64; 4],
 }
 
@@ -9424,7 +9424,7 @@ mod tests {
             collection_members: DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
             role_players: DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
             statements: DEFAULT_PROXY_QUERY_STATEMENTS,
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }
@@ -13372,6 +13372,7 @@ mod tests {
             parse_common_limits(Some(raised), type_bridge_orm::AnswerTransport::Direct)
                 .expect("a raised policy is admitted"),
             QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
                     DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS + 1
                 ),

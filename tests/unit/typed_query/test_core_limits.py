@@ -126,3 +126,14 @@ def test_raised_byte_and_item_limits_refuse_values_outside_the_shared_integer_do
     for name in ("bytes", "items"):
         with pytest.raises(ValueError, match=name):
             QueryExecutionResourceLimits(**{name: maximum + 1})
+
+
+def test_phase_collection_is_opt_in_and_survives_connection_policy() -> None:
+    assert QueryExecutionResourceLimits().collect_phase_timestamps is False
+    limits = QueryExecutionResourceLimits(collect_phase_timestamps=True)
+    assert limits.collect_phase_timestamps is True
+    connection = ProxyConnection.connect(
+        _authority(), _closed_endpoint(), advertisement=_advertisement(PLAN_CAPABILITIES),
+        answer_limits=limits,
+    )
+    assert connection.answer_limits.collect_phase_timestamps is True

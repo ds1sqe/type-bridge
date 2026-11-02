@@ -318,6 +318,8 @@ pub enum AnswerTransport {
 /// ([`Self::constrained_by`]).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryExecutionResourceLimits {
+    /// Collect a diagnostic timeline without a tracing subscriber; defaults to false.
+    pub collect_phase_timestamps: bool,
     /// Execution timeout in milliseconds.
     pub timeout_milliseconds: QueryTimeout,
     /// Provider/result item ceiling.
@@ -359,6 +361,7 @@ impl QueryExecutionResourceLimits {
     pub const fn default_for(transport: AnswerTransport) -> Self {
         match transport {
             AnswerTransport::Direct => Self {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: QueryTimeout::from_milliseconds(
                     DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
                 ),
@@ -371,6 +374,7 @@ impl QueryExecutionResourceLimits {
                 statements: None,
             },
             AnswerTransport::Proxy => Self {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: QueryTimeout::from_milliseconds(
                     DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
                 ),
@@ -457,6 +461,7 @@ impl QueryExecutionResourceLimits {
         statements: u32,
     ) -> Self {
         Self {
+            collect_phase_timestamps: false,
             timeout_milliseconds: QueryTimeout::from_milliseconds(timeout_milliseconds)
                 .constrained_by(QueryTimeout::from_milliseconds(
                     DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS,
@@ -496,6 +501,7 @@ impl QueryExecutionResourceLimits {
     #[must_use]
     pub fn from_remote(limits: RemoteLimitsV2) -> Self {
         Self {
+            collect_phase_timestamps: false,
             timeout_milliseconds: QueryTimeout::from_milliseconds(
                 limits
                     .deadline_ms
@@ -600,6 +606,8 @@ impl QueryExecutionResourceLimits {
         let this = self.effective();
         let ceiling = ceiling.effective();
         Self {
+            collect_phase_timestamps: this.collect_phase_timestamps
+                || ceiling.collect_phase_timestamps,
             timeout_milliseconds: this
                 .timeout_milliseconds
                 .constrained_by(ceiling.timeout_milliseconds),
@@ -712,6 +720,19 @@ mod tests {
     }
 
     #[test]
+    fn phase_collection_survives_policy_intersection() {
+        let defaults = QueryExecutionResourceLimits::default();
+        assert!(!defaults.collect_phase_timestamps);
+        let enabled = QueryExecutionResourceLimits {
+            collect_phase_timestamps: true,
+            ..defaults
+        };
+        assert!(enabled.constrained_by(defaults).collect_phase_timestamps);
+        assert!(defaults.constrained_by(enabled).collect_phase_timestamps);
+        assert!(enabled.validate().unwrap().collect_phase_timestamps);
+    }
+
+    #[test]
     fn an_explicitly_expired_deadline_refuses_execution() {
         let deadline = QueryExecutionDeadline::expired();
         assert!(deadline.is_expired());
@@ -813,6 +834,7 @@ mod tests {
         );
 
         let literal = QueryExecutionResourceLimits {
+            collect_phase_timestamps: false,
             timeout_milliseconds: QueryTimeout::from_milliseconds(u64::MAX),
             items: u64::MAX,
             bytes: u64::MAX,
@@ -900,6 +922,7 @@ mod tests {
         assert_eq!(
             direct,
             QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: QueryTimeout::from_milliseconds(60_000),
                 items: 100_000,
                 bytes: 64 * 1024 * 1024,
@@ -917,6 +940,7 @@ mod tests {
         assert_eq!(
             proxy,
             QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: QueryTimeout::from_milliseconds(60_000),
                 items: 65_536,
                 bytes: 32 * 1024 * 1024,

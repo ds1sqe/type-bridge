@@ -297,6 +297,7 @@ impl ProxyQueryConnection {
         advertisement: &[u8],
         mut options: TransactionOptions,
     ) -> Result<Transaction, SdkExecutionDiagnostic> {
+        options.collect_phase_timestamps |= self.answer_limits.collect_phase_timestamps;
         options.timeout = Some(
             options
                 .timeout

@@ -299,6 +299,7 @@ impl NodeQueryExecutionResources {
         collection_members: Option<BigInt>,
         role_players: Option<BigInt>,
         statements: Option<BigInt>,
+        collect_phase_timestamps: Option<bool>,
     ) -> Result<Self> {
         let defaults = QueryExecutionResourceLimits::default();
         let dimension = |value: Option<BigInt>, default: u64, name: &str| {
@@ -309,6 +310,7 @@ impl NodeQueryExecutionResources {
             .transpose()?
             .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
+            collect_phase_timestamps: collect_phase_timestamps.unwrap_or(false),
             timeout_milliseconds: match timeout_milliseconds {
                 None => defaults.timeout_milliseconds,
                 Some(value) => {
@@ -340,6 +342,11 @@ impl NodeQueryExecutionResources {
         .validate()
         .map_err(|refusal| invalid_arg(refusal.to_string()))?;
         Ok(Self { inner })
+    }
+
+    #[napi(getter, js_name = "collectPhaseTimestamps")]
+    pub fn collect_phase_timestamps(&self) -> bool {
+        self.inner.collect_phase_timestamps
     }
 
     #[napi(getter, js_name = "timeoutMilliseconds")]
@@ -3909,12 +3916,14 @@ plays:
             wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS + 1),
             wide(type_bridge_orm::DEFAULT_DIRECT_QUERY_ROLE_PLAYERS + 1),
             wide(u64::from(type_bridge_orm::DEFAULT_DIRECT_QUERY_STATEMENTS)),
+            None,
         )
         .unwrap();
         let default = QueryExecutionResourceLimits::default();
         assert_eq!(
             resources.inner(),
             QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
                     default.timeout_milliseconds.milliseconds().unwrap() + 1
                 ),
@@ -3938,6 +3947,7 @@ plays:
                 None,
                 None,
                 wide(statements),
+                None,
             )
             .map(|_| ())
             .map_err(|error| error.reason.clone())
@@ -3956,6 +3966,7 @@ plays:
             zero(),
             zero(),
             zero(),
+            None,
         )
         .unwrap();
         assert_eq!(

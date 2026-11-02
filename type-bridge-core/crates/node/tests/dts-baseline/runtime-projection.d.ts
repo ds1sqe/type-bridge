@@ -50,6 +50,8 @@ export interface GeneratedSchemaAuthorityInstall {
  * dimension takes the core default; a given one may tighten or raise it.
  */
 export interface QueryExecutionResourceLimitOptions {
+    /** Collect a diagnostic timeline without a tracing subscriber. Defaults to false. */
+    readonly collectPhaseTimestamps?: boolean;
     readonly timeoutMilliseconds?: bigint;
     readonly items?: bigint;
     readonly bytes?: bigint;
@@ -63,6 +65,7 @@ export interface QueryExecutionResourceLimitOptions {
 export declare class QueryExecutionResourceLimits {
     #private;
     constructor(options?: QueryExecutionResourceLimitOptions);
+    get collectPhaseTimestamps(): boolean;
     get timeoutMilliseconds(): bigint;
     get items(): bigint;
     get bytes(): bigint;

@@ -1073,7 +1073,7 @@ mod tests {
             collection_members: limits.collection_members,
             role_players: limits.role_players,
             statements: limits.statement_limit(),
-            reserved0: 0,
+            collect_phase_timestamps: 0,
             reserved: [0; 4],
         }
     }

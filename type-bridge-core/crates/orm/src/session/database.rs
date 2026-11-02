@@ -430,6 +430,7 @@ impl Database {
         mut options: super::staged::TransactionOptions,
     ) -> super::staged::Transaction {
         if let Some(ceiling) = self.answer_limits {
+            options.collect_phase_timestamps |= ceiling.collect_phase_timestamps;
             options.timeout = Some(
                 options
                     .timeout

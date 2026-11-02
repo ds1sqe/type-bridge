@@ -246,7 +246,8 @@ impl PyQueryExecutionResourceLimits {
         attribute_values=None,
         collection_members=None,
         role_players=None,
-        statements=None
+        statements=None,
+        collect_phase_timestamps=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -258,6 +259,7 @@ impl PyQueryExecutionResourceLimits {
         collection_members: Option<&Bound<'_, PyAny>>,
         role_players: Option<&Bound<'_, PyAny>>,
         statements: Option<&Bound<'_, PyAny>>,
+        collect_phase_timestamps: bool,
     ) -> PyResult<Self> {
         let defaults = QueryExecutionResourceLimits::default();
         let statements = statements
@@ -265,6 +267,7 @@ impl PyQueryExecutionResourceLimits {
             .transpose()?
             .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
+            collect_phase_timestamps,
             timeout_milliseconds: match timeout_milliseconds {
                 None => defaults.timeout_milliseconds,
                 Some(value) => type_bridge_orm::QueryTimeout::from_signed_milliseconds(
@@ -303,6 +306,11 @@ impl PyQueryExecutionResourceLimits {
         .validate()
         .map_err(|refusal| PyValueError::new_err(refusal.to_string()))?;
         Ok(Self { inner })
+    }
+
+    #[getter]
+    const fn collect_phase_timestamps(&self) -> bool {
+        self.inner.collect_phase_timestamps
     }
 
     #[getter]

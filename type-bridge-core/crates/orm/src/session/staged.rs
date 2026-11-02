@@ -60,6 +60,8 @@ impl From<TxType> for TransactionKind {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct TransactionOptions {
+    /// Collect diagnostic phase timestamps without a tracing subscriber.
+    pub collect_phase_timestamps: bool,
     /// Explicit provider kind, or infer from the staged queries.
     pub kind: Option<TransactionKind>,
     /// Limits enforced while reading each answer. An absolute deadline supplied
@@ -76,6 +78,12 @@ pub struct TransactionOptions {
     pub timeout: Option<crate::QueryTimeout>,
 }
 impl TransactionOptions {
+    /// Enable diagnostic timeline collection for each commit.
+    pub fn with_collect_phase_timestamps(mut self, collect: bool) -> Self {
+        self.collect_phase_timestamps = collect;
+        self
+    }
+
     /// Configure execution duration independently of plan construction.
     pub fn with_timeout(mut self, timeout: crate::QueryTimeout) -> Self {
         self.timeout = Some(timeout);
@@ -1903,6 +1911,7 @@ impl Transaction {
             constrain_match_policy(&mut policy, &mut origins, connection, "connection", None);
             let bounds = &self.options.answer_limits;
             let transaction = crate::QueryExecutionResourceLimits {
+                collect_phase_timestamps: false,
                 timeout_milliseconds: timeout.map_or(crate::QueryTimeout::NONE, |value| {
                     crate::QueryTimeout::from_milliseconds(
                         u64::try_from(value.as_millis()).unwrap_or(u64::MAX),

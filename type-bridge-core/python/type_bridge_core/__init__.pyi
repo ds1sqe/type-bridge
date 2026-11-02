@@ -694,7 +694,10 @@ class QueryExecutionResourceLimits:
         collection_members: int | None = ...,
         role_players: int | None = ...,
         statements: int | None = ...,
+        collect_phase_timestamps: bool = False,
     ) -> None: ...
+    @property
+    def collect_phase_timestamps(self) -> bool: ...
     @property
     def timeout_milliseconds(self) -> int: ...
     @property

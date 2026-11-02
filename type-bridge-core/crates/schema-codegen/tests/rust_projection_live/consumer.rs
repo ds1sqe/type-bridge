@@ -2275,6 +2275,7 @@ fn sdk_queries_resource_limit_base() -> Value {
     // Every dimension but the statement count may be raised past its default
     // and is kept as given.
     let raised = QueryExecutionResourceLimits {
+            collect_phase_timestamps: false,
         timeout_milliseconds: type_bridge::QueryTimeout::from_milliseconds(hard.timeout_milliseconds.milliseconds().unwrap() + 1),
         items: hard.items + 1,
         bytes: hard.bytes + 1,

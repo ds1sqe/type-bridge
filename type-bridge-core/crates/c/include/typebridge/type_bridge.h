@@ -485,7 +485,8 @@ typedef struct type_bridge_query_execution_limits_v1 {
   uint64_t collection_members;
   uint64_t role_players;
   uint32_t statements;
-  uint32_t reserved0;
+  /* 0 disables collection, 1 collects phases without a subscriber. */
+  uint32_t collect_phase_timestamps;
   uint64_t reserved[4];
 } type_bridge_query_execution_limits_v1_t;
 

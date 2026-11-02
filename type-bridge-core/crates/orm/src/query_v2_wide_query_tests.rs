@@ -443,6 +443,7 @@ fn prepares_and_is_admitted(evidence: bool) {
     let request = common_definitions(&registry, evidence);
     let matched = request.request().plan.bindings.len();
     let policy = QueryExecutionResourceLimits {
+        collect_phase_timestamps: false,
         timeout_milliseconds: crate::QueryTimeout::from_milliseconds(30_000),
         bytes: 1 << 22,
         items: 500,
@@ -561,6 +562,7 @@ fn a_request_budget_is_held_to_the_advertised_answer_ceilings() {
     let registry = automotive_registry();
     let authority = authority(&registry);
     let wanted = QueryExecutionResourceLimits {
+        collect_phase_timestamps: false,
         timeout_milliseconds: crate::QueryTimeout::from_milliseconds(30_000),
         bytes: 1 << 31,
         items: 2_000_000,

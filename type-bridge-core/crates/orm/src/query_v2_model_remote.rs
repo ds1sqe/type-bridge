@@ -503,6 +503,7 @@ pub(crate) fn prepare_remote_model_query_with_policy(
             nonce: nonce.iter().map(|byte| format!("{byte:02x}")).collect(),
             kind: Some(StagedKindV3::Read),
             limits: StagedLimitsV3 {
+                collect_phase_timestamps: held.collect_phase_timestamps,
                 admission_window_milliseconds,
                 deadline_ms: deadline
                     .earliest(QueryExecutionDeadline::for_limits(held))

@@ -43,7 +43,7 @@ fn expected_layout() -> Vec<usize> {
         offset_of!(TypeBridgeQueryExecutionLimitsV1, collection_members),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, role_players),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, statements),
-        offset_of!(TypeBridgeQueryExecutionLimitsV1, reserved0),
+        offset_of!(TypeBridgeQueryExecutionLimitsV1, collect_phase_timestamps),
         offset_of!(TypeBridgeQueryExecutionLimitsV1, reserved),
         size_of::<TypeBridgeExecutionDiagnosticViewV1>(),
         align_of::<TypeBridgeExecutionDiagnosticViewV1>(),
@@ -355,7 +355,7 @@ int main(void) {
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, collection_members));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, role_players));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, statements));
-  PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, reserved0));
+  PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, collect_phase_timestamps));
   PRINT_VALUE(offsetof(type_bridge_query_execution_limits_v1_t, reserved));
   PRINT_VALUE(sizeof(type_bridge_execution_diagnostic_view_v1_t));
   PRINT_VALUE(TYPE_BRIDGE_ALIGNOF(type_bridge_execution_diagnostic_view_v1_t));
