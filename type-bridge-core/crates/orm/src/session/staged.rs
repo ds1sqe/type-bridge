@@ -227,13 +227,17 @@ impl StagedQuery {
                 limits.clone(),
                 meter.as_mut().expect("counted meter"),
                 validation.map_or(!self.writes, |plan| {
-                    matches!(
-                        plan.output(),
-                        type_bridge_contract::query_plan::QueryOutput::Documents { .. }
-                    ) || matches!(
-                        plan.pipeline().last(),
-                        Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
-                    )
+                    // A separated pre-delete capture keeps the deletion plan's
+                    // trusted fetch shape, but runs as a read-only statement.
+                    (!self.writes && plan.fetch_document_shape().is_some())
+                        || matches!(
+                            plan.output(),
+                            type_bridge_contract::query_plan::QueryOutput::Documents { .. }
+                        )
+                        || matches!(
+                            plan.pipeline().last(),
+                            Some(type_bridge_contract::query_plan::v3::Stage::Fetch(_))
+                        )
                 }),
                 validation,
             )

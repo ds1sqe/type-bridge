@@ -167,6 +167,29 @@ impl<'db> DynamicEntityManager<'db> {
         self.target.write_plan(&plan, |_| Ok(())).await
     }
 
+    pub(crate) async fn delete_identity_snapshots<T>(
+        &self,
+        items: &[(Option<String>, DynamicAttributeMap)],
+        materialize: impl FnOnce(Vec<DynamicEntityRow>) -> Result<T>,
+    ) -> Result<T> {
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        self.target
+            .returning(
+                plans,
+                &self.descriptor.type_name,
+                super::returning::DeleteSelection::Entities(items),
+                false,
+                |registry, things, _, _| {
+                    things
+                        .iter()
+                        .map(|thing| plan_entity_row(registry, thing))
+                        .collect::<Result<Vec<_>>>()
+                        .and_then(materialize)
+                },
+            )
+            .await
+    }
+
     pub(crate) async fn delete_snapshots<T>(
         &self,
         iids: &[String],
@@ -204,7 +227,7 @@ impl<'db> DynamicEntityManager<'db> {
             .returning(
                 plans,
                 &self.descriptor.type_name,
-                iids,
+                super::returning::DeleteSelection::Iids(iids),
                 exact,
                 |registry, things, _, _| {
                     things
@@ -1168,7 +1191,7 @@ impl<'db> DynamicEntityManager<'db> {
                 .returning(
                     plans,
                     &self.descriptor.type_name,
-                    iids,
+                    super::returning::DeleteSelection::Iids(iids),
                     true,
                     |_, things, documents, _| snapshot_documents(things, documents),
                 )
@@ -1673,6 +1696,33 @@ impl<'db> DynamicRelationManager<'db> {
         self.target.write_plan(&plan, |_| Ok(())).await
     }
 
+    pub(crate) async fn delete_identity_snapshots<T>(
+        &self,
+        items: &[(
+            Option<String>,
+            DynamicAttributeMap,
+            Vec<DynamicRolePlayerInput>,
+        )],
+        materialize: impl FnOnce(Vec<DynamicRelationRow>) -> Result<T>,
+    ) -> Result<T> {
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        self.target
+            .returning(
+                plans,
+                &self.descriptor.type_name,
+                super::returning::DeleteSelection::Relations(items),
+                false,
+                |registry, things, _, _| {
+                    things
+                        .iter()
+                        .map(|thing| plan_relation_row(registry, thing))
+                        .collect::<Result<Vec<_>>>()
+                        .and_then(materialize)
+                },
+            )
+            .await
+    }
+
     pub(crate) async fn delete_snapshots<T>(
         &self,
         iids: &[String],
@@ -1710,7 +1760,7 @@ impl<'db> DynamicRelationManager<'db> {
             .returning(
                 plans,
                 &self.descriptor.type_name,
-                iids,
+                super::returning::DeleteSelection::Iids(iids),
                 exact,
                 |registry, things, _, _| {
                     things
@@ -2805,7 +2855,7 @@ impl<'db> DynamicRelationManager<'db> {
                 return Ok(Vec::new());
             }
             validate_delete_iids(iids)?;
-            return self.target.returning(plans, &self.descriptor.type_name, iids, true, |registry, things, documents, _| {
+            return self.target.returning(plans, &self.descriptor.type_name, super::returning::DeleteSelection::Iids(iids), true, |registry, things, documents, _| {
                 let mut documents = snapshot_documents(things, documents)?;
                 for (document, thing) in documents.iter_mut().zip(things) {
                     let row = plan_relation_row(registry, thing)?;
@@ -2823,6 +2873,7 @@ impl<'db> DynamicRelationManager<'db> {
         }
         let templates =
             query_builder::build_dynamic_relation_delete_returning(&capture_descriptor)?;
+        // raw remainder: no registry authority; removed in 06
         self.target
             .delete_captured(&templates, iids, |index, documents| {
                 relation_snapshot_document(&self.descriptor, &iids[index], documents)
@@ -3446,7 +3497,7 @@ impl DynamicExecutionTarget<'_> {
         &self,
         plans: &ManagerPlans,
         name: &str,
-        iids: &[String],
+        selection: super::returning::DeleteSelection<'_>,
         exact: bool,
         materialize: impl FnOnce(
             &DescriptorRegistry,
@@ -3474,7 +3525,7 @@ impl DynamicExecutionTarget<'_> {
             &mut lease,
             plans,
             name,
-            iids,
+            selection,
             exact,
             policy,
             &cancellation,
@@ -4126,7 +4177,7 @@ fn snapshot_error(type_name: &str) -> OrmError {
     }
 }
 
-fn validate_delete_iids(iids: &[String]) -> Result<()> {
+pub(super) fn validate_delete_iids(iids: &[String]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     for iid in iids {
         if !type_bridge_contract::id::is_canonical_thing_iid(iid) {

@@ -319,39 +319,51 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
         let tx = self.db.transaction_context(TxType::Write).await?;
         let manager = manager.in_transaction(tx.clone());
         let result = async {
-            let mut iids = Vec::with_capacity(relations.len());
-            for relation in relations {
-                if let Some(iid) = manager
-                    .resolve_iid(
-                        relation.iid(),
-                        &relation
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                        &relation
-                            .to_role_player_refs()
-                            .into_iter()
-                            .map(|player| crate::_dynamic::DynamicRolePlayerInput {
-                                role_name: player.role.into(),
-                                player_type_name: player.entity_type_name.into(),
-                                iid: player.iid,
-                                key: player.key.map(|(name, value)| (name.into(), value)),
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .await?
-                {
-                    iids.push(iid);
-                }
+            let materialize = |rows: Vec<crate::_dynamic::DynamicRelationRow>| {
+                rows.into_iter()
+                    .map(materialize_relation_row::<R>)
+                    .collect::<Result<Vec<_>>>()
+            };
+            if let Some(iids) = relations
+                .iter()
+                .map(|relation| relation.iid().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+            {
+                manager.delete_snapshots(&iids, materialize).await
+            } else {
+                let items = relations
+                    .iter()
+                    .map(|relation| {
+                        (
+                            relation.iid().map(str::to_owned),
+                            if relation.iid().is_some() {
+                                vec![]
+                            } else {
+                                relation
+                                    .to_attribute_values()
+                                    .into_iter()
+                                    .map(|(name, value)| (name.into(), value))
+                                    .collect::<DynamicAttributeMap>()
+                            },
+                            if relation.iid().is_some() {
+                                vec![]
+                            } else {
+                                relation
+                                    .to_role_player_refs()
+                                    .into_iter()
+                                    .map(|player| crate::_dynamic::DynamicRolePlayerInput {
+                                        role_name: player.role.into(),
+                                        player_type_name: player.entity_type_name.into(),
+                                        iid: player.iid,
+                                        key: player.key.map(|(name, value)| (name.into(), value)),
+                                    })
+                                    .collect()
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                manager.delete_identity_snapshots(&items, materialize).await
             }
-            manager
-                .delete_snapshots(&iids, |rows| {
-                    rows.into_iter()
-                        .map(materialize_relation_row::<R>)
-                        .collect::<Result<Vec<_>>>()
-                })
-                .await
         }
         .await;
         let snapshots = match result {

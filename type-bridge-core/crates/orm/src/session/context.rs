@@ -109,8 +109,19 @@ impl TransactionContextMutationLease {
         plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     ) -> Result<super::staged::StagedQuery> {
         self.check_plan_provider(plan)?;
-        crate::query_plan_exec::staged_query(plan, true)
-            .map_err(crate::query_plan_exec::plan_diagnostic_error)
+        let given = self.server_version.is_some_and(|version| {
+            type_bridge_core_lib::version::check_feature_supported(
+                type_bridge_core_lib::version::Feature::GivenStage,
+                &version,
+            )
+            .is_ok()
+        }) && active_transaction_ref(&self.inner)?.supports_given_rows();
+        if given {
+            crate::query_plan_exec::staged_query(plan, true)
+        } else {
+            crate::query_plan_exec::staged_literal_query(plan)
+        }
+        .map_err(crate::query_plan_exec::plan_diagnostic_error)
     }
 
     pub(crate) fn check_plan_provider(
@@ -415,8 +426,12 @@ impl TransactionContext {
         crate::query_plan_exec::check_provider(plan, self.server_version)
             .map_err(plan_diagnostic_error)?;
         let supports_given = self.supports_given_stage().await?;
-        let query = crate::query_plan_exec::staged_query(plan, supports_given)
-            .map_err(plan_diagnostic_error)?;
+        let query = if supports_given {
+            crate::query_plan_exec::staged_query(plan, true)
+        } else {
+            crate::query_plan_exec::staged_literal_query(plan)
+        }
+        .map_err(plan_diagnostic_error)?;
         self.check_schema_annotation_support(&query.typeql)?;
         Ok(query)
     }

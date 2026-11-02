@@ -5,19 +5,151 @@ use crate::error::Result;
 use crate::match_request::{
     HydratedThing, MatchResult, SlotValue, validated_match_result_from_plan,
 };
-use crate::plan_builders::manager::{ManagerPlans, ManagerRead, invalid};
+use crate::plan_builders::manager::{ManagerPlans, invalid};
 use crate::query_plan_exec::{self, PlanAnswer};
 use crate::session::backend::AnswerCancellation;
 use crate::session::context::TransactionContextMutationLease;
 use crate::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use std::collections::HashMap;
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "single-plan returning deletes avoid an allocation"
+)]
+enum DeletionPlans {
+    One(crate::plan_builders::BuiltPlan),
+    Many(Vec<crate::plan_builders::BuiltPlan>),
+}
+impl DeletionPlans {
+    fn from_vec(mut plans: Vec<crate::plan_builders::BuiltPlan>) -> Self {
+        if plans.len() == 1 {
+            Self::One(plans.pop().expect("one deletion plan"))
+        } else {
+            Self::Many(plans)
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(plans) => plans.len(),
+        }
+    }
+}
+
+pub(crate) enum DeleteSelection<'a> {
+    Iids(&'a [String]),
+    Entities(&'a [(Option<String>, crate::_dynamic::DynamicAttributeMap)]),
+    Relations(
+        &'a [(
+            Option<String>,
+            crate::_dynamic::DynamicAttributeMap,
+            Vec<crate::_dynamic::DynamicRolePlayerInput>,
+        )],
+    ),
+}
+
+impl DeleteSelection<'_> {
+    fn plans(&self, plans: &ManagerPlans, name: &str, exact: bool) -> Result<DeletionPlans> {
+        match self {
+            Self::Iids(iids) if iids.len() <= type_bridge_contract::limits::MAX_INPUT_ROWS => plans
+                .delete_many(name, iids, exact, true)
+                .map(DeletionPlans::One),
+            Self::Iids(iids) => iids
+                .chunks(type_bridge_contract::limits::MAX_INPUT_ROWS)
+                .map(|iids| plans.delete_many(name, iids, exact, true))
+                .collect::<Result<Vec<_>>>()
+                .map(DeletionPlans::Many),
+            Self::Entities(items) => plans
+                .write_many(
+                    name,
+                    crate::plan_builders::bulk_write::WriteKind::DeleteReturning,
+                    &items
+                        .iter()
+                        .map(|(iid, fields)| (iid.as_deref(), fields, &[][..]))
+                        .collect::<Vec<_>>(),
+                )?
+                .into_static()
+                .map(DeletionPlans::from_vec)
+                .map_err(crate::plan_builders::manager::diagnostic),
+            Self::Relations(items) => plans
+                .write_many(
+                    name,
+                    crate::plan_builders::bulk_write::WriteKind::DeleteReturning,
+                    &items
+                        .iter()
+                        .map(|(iid, fields, players)| {
+                            (
+                                iid.as_deref(),
+                                fields,
+                                if iid.is_some() {
+                                    &[][..]
+                                } else {
+                                    players.as_slice()
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+                .into_static()
+                .map(DeletionPlans::from_vec)
+                .map_err(crate::plan_builders::manager::diagnostic),
+        }
+    }
+    fn ordered_iids<'a>(
+        &'a self,
+        documents: &[serde_json::Value],
+    ) -> Result<std::borrow::Cow<'a, [String]>> {
+        let count = match self {
+            Self::Iids(iids) => return Ok(std::borrow::Cow::Borrowed(iids)),
+            Self::Entities(items) => items.len(),
+            Self::Relations(items) => items.len(),
+        };
+        let mut ordered = vec![None; count];
+        for document in documents {
+            let ordinal = document
+                .get("ordinal")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| {
+                    invalid(
+                        "manager_result_shape",
+                        "Deletion capture requires its input ordinal",
+                    )
+                })?;
+            let iid = document
+                .get("_iid")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    invalid(
+                        "manager_result_shape",
+                        "Deletion capture requires a model identity",
+                    )
+                })?;
+            let target = ordered.get_mut(ordinal).ok_or_else(|| {
+                invalid(
+                    "manager_result_shape",
+                    "Deletion capture returned an unknown ordinal",
+                )
+            })?;
+            if target.replace(iid.to_owned()).is_some() {
+                return Err(invalid(
+                    "manager_result_shape",
+                    "Deletion selector matched multiple models",
+                ));
+            }
+        }
+        let ordered = ordered.into_iter().flatten().collect::<Vec<_>>();
+        super::dynamic::validate_delete_iids(&ordered)?;
+        Ok(std::borrow::Cow::Owned(ordered))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn delete_on_lease<T>(
     lease: &mut TransactionContextMutationLease,
     plans: &ManagerPlans,
     name: &str,
-    iids: &[String],
+    selection: DeleteSelection<'_>,
     exact: bool,
     policy: QueryExecutionResourceLimits,
     cancellation: &AnswerCancellation,
@@ -41,215 +173,49 @@ pub(crate) async fn delete_on_lease<T>(
         .installed_schema_authority()
         .expect("authority checked");
     let exact = exact || authority.resolved().types()[&type_id].subtypes().is_empty();
-    let caller_policy = policy;
-    let policy = policy.for_adapter_statements(2);
-    if policy.statement_limit() < 2 {
+    let deletion_plans = selection.plans(plans, name, exact)?;
+    let statement_count = deletion_plans.len().saturating_mul(2);
+    let policy = policy.for_adapter_statements(statement_count);
+    if statement_count > policy.statement_limit() as usize {
         return Err(crate::match_request::MatchError::new(
             crate::match_request::MatchErrorCategory::ResourceLimit,
             "projected_batch_statement_limit",
-            "Returning deletion requires capture and delete statements",
+            "Returning deletion exceeds the provider statement ceiling",
         )
         .into());
     }
+    let deletion = match deletion_plans {
+        DeletionPlans::One(deletion) => deletion,
+        DeletionPlans::Many(deletion_plans) => {
+            // Keep forced-chunk frames out of ordinary manager futures.
+            return Box::pin(delete_chunks_on_lease(
+                lease,
+                plans,
+                &descriptor,
+                deletion_plans,
+                selection,
+                policy,
+                cancellation,
+                deadline,
+                materialize,
+            ))
+            .await;
+        }
+    };
     let mut remaining = policy;
-    let polymorphic_roles =
-        !exact && type_id.kind() == type_bridge_contract::id::TypeKind::Relation;
-    if polymorphic_roles {
-        let mut captures = Vec::new();
-        let mut statement_count = 0_usize;
-        for iids in iids.chunks(type_bridge_contract::limits::MAX_INPUT_ROWS) {
-            let ManagerRead::Fetch(stack) = plans.read_iids(name, iids)? else {
-                unreachable!("model capture stack");
-            };
-            let mut queries = Vec::with_capacity(stack.plans().len());
-            for plan in stack.plans() {
-                let query = lease.prepare_plan(plan)?;
-                charge_request(&query, &mut remaining)?;
-                queries.push(query);
-            }
-            let deletion = plans.delete_many(name, iids, false, false)?;
-            let query = lease.prepare_plan(deletion.local())?;
-            charge_request(&query, &mut remaining)?;
-            statement_count += stack.plans().len() + 1;
-            captures.push((stack, queries, query));
-        }
-        let capture_policy = caller_policy.for_adapter_statements(statement_count);
-        if statement_count > capture_policy.statement_limit() as usize {
-            return Err(crate::match_request::MatchError::new(
-                crate::match_request::MatchErrorCategory::ResourceLimit,
-                "projected_batch_statement_limit",
-                "Returning deletion exceeds the provider statement ceiling",
-            )
-            .into());
-        }
-        let mut frames = Vec::with_capacity(captures.len());
-        let mut deletions = Vec::with_capacity(captures.len());
-        let mut semantic = crate::answer_meter::PlanMeter::new(
-            &query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?,
-        );
-        let multiple_chunks = captures.len() > 1;
-        for (stack, queries, deletion) in captures {
-            let capture_limits = QueryExecutionResourceLimits {
-                bytes: remaining.bytes,
-                items: remaining.items,
-                ..capture_policy
-            };
-            let (answers, stats) = lease
-                .execute_plans(
-                    stack.plans(),
-                    capture_limits,
-                    cancellation,
-                    deadline,
-                    Some(queries),
-                )
-                .await?;
-            if multiple_chunks {
-                for (answer, plan) in answers.iter().zip(stack.plans()) {
-                    semantic.accept(
-                        &answer
-                            .to_staged_v3(plan)
-                            .map_err(query_plan_exec::plan_diagnostic_error)?,
-                    )?;
-                }
-            }
-            remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
-            remaining.items = remaining.items.saturating_sub(stats.processed_items);
-            frames.push((stack, answers));
-            deletions.push(deletion);
-        }
-        let proofs = frames
-            .iter()
-            .map(|(stack, answers)| stack.resolve(&plans.registry, answers, capture_policy))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut rows = Vec::with_capacity(proofs.len());
-        for proof in &proofs {
-            let MatchResult::Rows { rows: chunk } = proof.result().for_request(proof.request())?
-            else {
-                return Err(invalid(
-                    "manager_result_shape",
-                    "Deletion capture requires model rows",
-                ));
-            };
-            rows.push(chunk.as_slice());
-        }
-        for query in deletions {
-            let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
-            let (_, stats) = lease.dispatch_plan_counted(query, limits, None).await?;
-            remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
-            remaining.items = remaining.items.saturating_sub(stats.processed_items);
-        }
-        return materialize_ordered(
-            &plans.registry,
-            rows.into_iter().flatten(),
-            iids,
-            Vec::new(),
-            remaining,
-            materialize,
-        );
-    }
-    if iids.len() > type_bridge_contract::limits::MAX_INPUT_ROWS {
-        let statements = iids
-            .len()
-            .div_ceil(type_bridge_contract::limits::MAX_INPUT_ROWS)
-            * 2;
-        if statements
-            > caller_policy
-                .for_adapter_statements(statements)
-                .statement_limit() as usize
-        {
-            return Err(crate::match_request::MatchError::new(
-                crate::match_request::MatchErrorCategory::ResourceLimit,
-                "projected_batch_statement_limit",
-                "Returning deletion exceeds the provider statement ceiling",
-            )
-            .into());
-        }
-        let mut chunks = Vec::new();
-        for iids in iids.chunks(type_bridge_contract::limits::MAX_INPUT_ROWS) {
-            let capture = plans.capture_many(name, iids, exact)?;
-            let deletion = plans.delete_many(name, iids, exact, false)?;
-            let capture_query = lease.prepare_plan(capture.local())?;
-            let deletion_query = lease.prepare_plan(deletion.local())?;
-            charge_request(&capture_query, &mut remaining)?;
-            charge_request(&deletion_query, &mut remaining)?;
-            chunks.push((capture, capture_query, deletion_query));
-        }
-        let mut semantic = crate::answer_meter::PlanMeter::new(
-            &query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?,
-        );
-        let mut frames = Vec::with_capacity(chunks.len());
-        let mut deletions = Vec::with_capacity(chunks.len());
-        for (capture, query, deletion) in chunks {
-            let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
-            let (answer, stats) = lease
-                .dispatch_plan_counted(query, limits, Some(capture.local()))
-                .await?;
-            remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
-            remaining.items = remaining.items.saturating_sub(stats.processed_items);
-            let answer = query_plan_exec::resolve_plan(capture.local(), answer)
-                .map_err(query_plan_exec::plan_diagnostic_error)?;
-            semantic.accept(
-                &answer
-                    .to_staged_v3(capture.local())
-                    .map_err(query_plan_exec::plan_diagnostic_error)?,
-            )?;
-            let PlanAnswer::Documents(documents) = answer else {
-                return Err(invalid(
-                    "manager_result_shape",
-                    "Deletion capture requires documents",
-                ));
-            };
-            frames.push((capture, documents));
-            deletions.push(deletion);
-        }
-        let proofs = frames
-            .iter()
-            .map(|(capture, documents)| {
-                validated_match_result_from_plan(
-                    &plans.registry,
-                    capture.local(),
-                    documents,
-                    &descriptor,
-                    policy,
-                )
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut rows = Vec::with_capacity(proofs.len());
-        for (request, proof) in &proofs {
-            let MatchResult::Rows { rows: chunk } = proof.for_request(request)? else {
-                return Err(invalid(
-                    "manager_result_shape",
-                    "Deletion capture requires model rows",
-                ));
-            };
-            rows.push(chunk.as_slice());
-        }
-        for query in deletions {
-            let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
-            let (_, stats) = lease.dispatch_plan_counted(query, limits, None).await?;
-            remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
-            remaining.items = remaining.items.saturating_sub(stats.processed_items);
-        }
-        let documents = frames
-            .into_iter()
-            .flat_map(|(_, documents)| documents)
-            .collect();
-        return materialize_ordered(
-            &plans.registry,
-            rows.into_iter().flatten(),
-            iids,
-            documents,
-            remaining,
-            materialize,
-        );
-    }
-    let deletion = plans.delete_many(name, iids, exact, true)?;
-    let query = lease.prepare_plan(deletion.local())?;
+    let mut query = lease.prepare_plan(deletion.local())?;
     charge_request(&query, &mut remaining)?;
+    let (source, _) = query.snapshot.take().expect("returning deletion snapshot");
+    let mut capture = query.clone();
+    capture.typeql = source;
+    capture.writes = false;
+    capture.redacted_typeql = query.redacted_snapshot.take();
     let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
     let (answer, stats) = lease
-        .dispatch_plan_counted(query, limits, Some(deletion.local()))
+        .dispatch_plan_counted(capture, limits, Some(deletion.local()))
         .await?;
+    remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+    remaining.items = remaining.items.saturating_sub(stats.processed_items);
     let PlanAnswer::Documents(documents) = query_plan_exec::resolve_plan(deletion.local(), answer)
         .map_err(query_plan_exec::plan_diagnostic_error)?
     else {
@@ -258,39 +224,34 @@ pub(crate) async fn delete_on_lease<T>(
             "Deletion capture requires documents",
         ));
     };
-    let (request, result) = validated_match_result_from_plan(
+    let rows = capture_rows(
         &plans.registry,
         deletion.local(),
         &documents,
         &descriptor,
         policy,
     )?;
-    let MatchResult::Rows { rows } = result.for_request(&request)? else {
-        return Err(invalid(
-            "manager_result_shape",
-            "Deletion capture requires model rows",
-        ));
-    };
-    materialize_ordered(
-        &plans.registry,
-        rows,
-        iids,
-        documents,
-        QueryExecutionResourceLimits {
-            bytes: remaining.bytes.saturating_sub(stats.response_bytes),
-            items: remaining.items.saturating_sub(stats.processed_items),
-            ..remaining
-        },
-        materialize,
-    )
+    drop(deletion);
+    let iids = selection.ordered_iids(&documents)?;
+    let ordered = ordered_things(&rows, &iids)?;
+    drop(iids);
+    let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
+    let (_, stats) = lease.dispatch_plan_counted(query, limits, None).await?;
+    remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+    remaining.items = remaining.items.saturating_sub(stats.processed_items);
+    materialize(&plans.registry, &ordered, documents, remaining)
 }
 
-fn materialize_ordered<'row, T>(
-    registry: &DescriptorRegistry,
-    rows: impl IntoIterator<Item = &'row crate::match_request::MatchRow>,
-    iids: &[String],
-    documents: Vec<serde_json::Value>,
-    remaining: QueryExecutionResourceLimits,
+#[allow(clippy::too_many_arguments)]
+async fn delete_chunks_on_lease<T>(
+    lease: &mut TransactionContextMutationLease,
+    plans: &ManagerPlans,
+    descriptor: &crate::match_request::DescriptorId,
+    deletion_plans: Vec<crate::plan_builders::BuiltPlan>,
+    selection: DeleteSelection<'_>,
+    policy: QueryExecutionResourceLimits,
+    cancellation: &AnswerCancellation,
+    deadline: QueryExecutionDeadline,
     materialize: impl FnOnce(
         &DescriptorRegistry,
         &[&HydratedThing],
@@ -298,6 +259,101 @@ fn materialize_ordered<'row, T>(
         QueryExecutionResourceLimits,
     ) -> Result<T>,
 ) -> Result<T> {
+    let mut remaining = policy;
+    let mut chunks = Vec::with_capacity(deletion_plans.len());
+    for deletion in deletion_plans {
+        let mut deletion_query = lease.prepare_plan(deletion.local())?;
+        charge_request(&deletion_query, &mut remaining)?;
+        let (source, _) = deletion_query
+            .snapshot
+            .take()
+            .expect("returning deletion snapshot");
+        let mut capture_query = deletion_query.clone();
+        capture_query.typeql = source;
+        capture_query.writes = false;
+        capture_query.redacted_typeql = deletion_query.redacted_snapshot.take();
+        chunks.push((deletion, capture_query, deletion_query));
+    }
+    let mut semantic = crate::answer_meter::PlanMeter::new(&query_plan_exec::plan_answer_limits(
+        policy,
+        cancellation,
+        deadline,
+    )?);
+    let mut frames = Vec::with_capacity(chunks.len());
+    let mut deletions = Vec::with_capacity(chunks.len());
+    for (capture, query, deletion) in chunks {
+        let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
+        let (answer, stats) = lease
+            .dispatch_plan_counted(query, limits, Some(capture.local()))
+            .await?;
+        remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+        remaining.items = remaining.items.saturating_sub(stats.processed_items);
+        let answer = query_plan_exec::resolve_plan(capture.local(), answer)
+            .map_err(query_plan_exec::plan_diagnostic_error)?;
+        semantic.accept(
+            &answer
+                .to_staged_v3(capture.local())
+                .map_err(query_plan_exec::plan_diagnostic_error)?,
+        )?;
+        let PlanAnswer::Documents(documents) = answer else {
+            return Err(invalid(
+                "manager_result_shape",
+                "Deletion capture requires documents",
+            ));
+        };
+        frames.push((capture, documents));
+        deletions.push(deletion);
+    }
+    let rows = frames
+        .iter()
+        .map(|(capture, documents)| {
+            capture_rows(
+                &plans.registry,
+                capture.local(),
+                documents,
+                descriptor,
+                policy,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let documents = frames
+        .into_iter()
+        .flat_map(|(_, documents)| documents)
+        .collect::<Vec<_>>();
+    let iids = selection.ordered_iids(&documents)?;
+    let ordered = ordered_things(rows.iter().flatten(), &iids)?;
+    for query in deletions {
+        let limits = query_plan_exec::plan_answer_limits(remaining, cancellation, deadline)?;
+        let (_, stats) = lease.dispatch_plan_counted(query, limits, None).await?;
+        remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+        remaining.items = remaining.items.saturating_sub(stats.processed_items);
+    }
+    materialize(&plans.registry, &ordered, documents, remaining)
+}
+
+fn capture_rows(
+    registry: &DescriptorRegistry,
+    plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
+    documents: &[serde_json::Value],
+    descriptor: &crate::match_request::DescriptorId,
+    policy: QueryExecutionResourceLimits,
+) -> Result<Vec<crate::match_request::MatchRow>> {
+    let (request, result) =
+        validated_match_result_from_plan(registry, plan, documents, descriptor, policy)?;
+    result.for_request(&request)?;
+    let MatchResult::Rows { rows } = result.into_result() else {
+        return Err(invalid(
+            "manager_result_shape",
+            "Deletion capture requires model rows",
+        ));
+    };
+    Ok(rows)
+}
+
+fn ordered_things<'row>(
+    rows: impl IntoIterator<Item = &'row crate::match_request::MatchRow>,
+    iids: &[String],
+) -> Result<Vec<&'row HydratedThing>> {
     let rows = rows.into_iter();
     let mut by_iid = HashMap::with_capacity(rows.size_hint().0);
     for row in rows {
@@ -329,7 +385,7 @@ fn materialize_ordered<'row, T>(
             "Deletion capture returned an unrequested identity",
         ));
     }
-    materialize(registry, &ordered, documents, remaining)
+    Ok(ordered)
 }
 
 fn charge_request(
@@ -377,4 +433,23 @@ pub(crate) async fn commit(transaction: &crate::TransactionContext) -> Result<()
         .commit_sdk()
         .await
         .map_err(|diagnostic| crate::OrmError::ExecutionDiagnostic(Box::new(diagnostic)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_selector_aliases_refuse_repeated_targets_before_deletion() {
+        let selectors = vec![(None, vec![]), (None, vec![])];
+        let selection = DeleteSelection::Entities(&selectors);
+        let documents = vec![
+            serde_json::json!({"ordinal":0,"_iid":"0x01"}),
+            serde_json::json!({"ordinal":1,"_iid":"0x01"}),
+        ];
+        let crate::OrmError::Match(error) = selection.ordered_iids(&documents).unwrap_err() else {
+            panic!("resolved aliases require the shared duplicate-target refusal")
+        };
+        assert_eq!(error.code().as_str(), "duplicate_batch_target");
+    }
 }

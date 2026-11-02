@@ -531,7 +531,7 @@ impl ProjectedBatchExecutor<'_> {
                 lease,
                 &plans,
                 plan.model.id().label().as_str(),
-                &iids,
+                crate::_manager::returning::DeleteSelection::Iids(&iids),
                 true,
                 deletion_policy,
                 prepared.cancellation(),

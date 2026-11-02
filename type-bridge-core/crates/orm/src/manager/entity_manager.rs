@@ -307,29 +307,37 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
         let tx = self.db.transaction_context(TxType::Write).await?;
         let manager = manager.in_transaction(tx.clone());
         let result = async {
-            let mut iids = Vec::with_capacity(entities.len());
-            for entity in entities {
-                if let Some(iid) = manager
-                    .resolve_iid(
-                        entity.iid(),
-                        &entity
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                    )
-                    .await?
-                {
-                    iids.push(iid);
-                }
+            let materialize = |rows: Vec<crate::_dynamic::DynamicEntityRow>| {
+                rows.into_iter()
+                    .map(materialize_entity_row::<T>)
+                    .collect::<Result<Vec<_>>>()
+            };
+            if let Some(iids) = entities
+                .iter()
+                .map(|entity| entity.iid().map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+            {
+                manager.delete_snapshots(&iids, materialize).await
+            } else {
+                let items = entities
+                    .iter()
+                    .map(|entity| {
+                        (
+                            entity.iid().map(str::to_owned),
+                            if entity.iid().is_some() {
+                                vec![]
+                            } else {
+                                entity
+                                    .to_attribute_values()
+                                    .into_iter()
+                                    .map(|(name, value)| (name.into(), value))
+                                    .collect::<DynamicAttributeMap>()
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                manager.delete_identity_snapshots(&items, materialize).await
             }
-            manager
-                .delete_snapshots(&iids, |rows| {
-                    rows.into_iter()
-                        .map(materialize_entity_row::<T>)
-                        .collect::<Result<Vec<_>>>()
-                })
-                .await
         }
         .await;
         let snapshots = match result {

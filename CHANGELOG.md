@@ -101,6 +101,9 @@ All notable changes to TypeBridge will be documented in this file.
 - Provider datetime ingress accepts one through nine fractional digits and
   normalizes insignificant trailing zeros without losing precision. Canonical
   wire datetime parsing remains strict.
+- Polymorphic relation `delete_returning` and `delete_many_returning` now
+  capture complete subtype snapshots in one plan, preserving optional roles
+  instead of refusing with `plan_returning_models_given_window`.
 - Refuse nonliteral IID predicates under negation on the TypeDB 3.12 profile
   before dispatch (`query_plan_negated_given_iid_unsupported`), avoiding a
   provider connection failure. Positive, optional, and literal IID filters

@@ -1380,13 +1380,258 @@ impl ManagerPlans {
         self.identity_batch(name, iids, exact, returning, true)
     }
 
-    pub(crate) fn capture_many(
+    fn returning_roles(&self, type_id: &TypeId, exact: bool) -> Result<Vec<DocumentRole>> {
+        let resolved = self
+            .registry
+            .installed_schema_authority()
+            .expect("authority checked")
+            .resolved();
+        let model = resolved.types().get(type_id).ok_or_else(|| {
+            invalid(
+                "manager_type_unknown",
+                "The manager type is absent from schema authority",
+            )
+        })?;
+        let mut roles = model.relates().clone();
+        if !exact {
+            for child in model.subtypes() {
+                roles.extend(resolved.types()[child].relates().clone());
+            }
+        }
+        Ok(roles
+            .into_iter()
+            .map(|(role, projection)| {
+                if projection.collection_mode().is_unordered() {
+                    DocumentRole::collected(role)
+                } else {
+                    DocumentRole::new(role, false)
+                }
+            })
+            .collect())
+    }
+
+    pub(crate) fn write_many(
         &self,
         name: &str,
-        iids: &[String],
-        exact: bool,
-    ) -> Result<BuiltPlan> {
-        self.identity_batch(name, iids, exact, true, false)
+        mut kind: super::bulk_write::WriteKind,
+        items: &[(
+            Option<&str>,
+            &DynamicAttributeMap,
+            &[DynamicRolePlayerInput],
+        )],
+    ) -> Result<super::bulk_write::WriteProgram> {
+        use super::bulk_write::{WriteRow, WriteShape};
+        let type_id = self.type_id(name)?;
+        let keys = self
+            .attributes(&type_id)?
+            .owned_attributes()
+            .iter()
+            .filter(|field| field.is_key())
+            .map(|field| self.ownership(&type_id, &field.attr_name))
+            .collect::<Result<Vec<_>>>()?;
+        let fields = items
+            .iter()
+            .map(|(iid, attributes, _)| {
+                if matches!(
+                    kind,
+                    super::bulk_write::WriteKind::Delete
+                        | super::bulk_write::WriteKind::DeleteReturning
+                ) {
+                    if iid.is_some() {
+                        return Ok(Vec::new());
+                    }
+                    return self
+                        .attributes(&type_id)?
+                        .owned_attributes()
+                        .iter()
+                        .filter(|field| field.is_key())
+                        .filter_map(|field| {
+                            attributes
+                                .iter()
+                                .find(|(name, _)| {
+                                    name == &field.attr_name || name == &field.field_name
+                                })
+                                .map(|(_, value)| (field, value))
+                        })
+                        .map(|(field, value)| {
+                            Ok((
+                                self.ownership(&type_id, &field.attr_name)?,
+                                canonical(value)?,
+                            ))
+                        })
+                        .collect();
+                }
+                let mut fields = self.fields(&type_id, attributes)?;
+                if kind == super::bulk_write::WriteKind::Update {
+                    fields.retain(|(field, _)| !keys.contains(field));
+                }
+                Ok(fields)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let supplied_keys = fields
+            .iter()
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter(|(field, _)| keys.contains(field))
+                    .map(|(field, _)| field.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        if kind == super::bulk_write::WriteKind::PartialPut
+            && supplied_keys.iter().all(Vec::is_empty)
+        {
+            kind = super::bulk_write::WriteKind::MatchPut;
+        }
+        let candidates = items
+            .iter()
+            .map(|(_, _, players)| {
+                players
+                    .iter()
+                    .map(|player| {
+                        self.type_id(&player.player_type_name).map(|id| {
+                            let mut candidates = vec![id.clone()];
+                            if matches!(
+                                kind,
+                                super::bulk_write::WriteKind::MatchPut
+                                    | super::bulk_write::WriteKind::Insert
+                                    | super::bulk_write::WriteKind::Delete
+                                    | super::bulk_write::WriteKind::DeleteReturning
+                            ) {
+                                candidates.extend(
+                                    self.registry
+                                        .installed_schema_authority()
+                                        .expect("checked authority")
+                                        .resolved()
+                                        .types()[&id]
+                                        .subtypes()
+                                        .iter()
+                                        .cloned(),
+                                );
+                            }
+                            candidates
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let key_attributes = items
+            .iter()
+            .zip(&candidates)
+            .map(|((_, _, players), candidates)| {
+                players
+                    .iter()
+                    .zip(candidates)
+                    .map(|(player, types)| {
+                        player
+                            .key
+                            .as_ref()
+                            .map(|(name, _)| self.attribute(&types[0], name))
+                            .transpose()
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let references = items
+            .iter()
+            .zip(&candidates)
+            .zip(&key_attributes)
+            .map(|(((_, _, players), candidates), attributes)| {
+                players
+                    .iter()
+                    .zip(candidates)
+                    .zip(attributes)
+                    .map(|((player, candidates), attribute)| {
+                        let identity = match (&player.iid, &player.key, attribute) {
+                            (Some(iid), _, _) => ReferenceIdentity::Iid(iid),
+                            (None, Some((_, value)), Some(attribute)) => ReferenceIdentity::Key {
+                                attribute,
+                                value: canonical(value)?,
+                            },
+                            _ => {
+                                return Err(invalid(
+                                    "manager_player_identity_missing",
+                                    "A role player requires an IID or key",
+                                ));
+                            }
+                        };
+                        Ok((
+                            self.role(&type_id, &player.role_name)?,
+                            Reference {
+                                candidates,
+                                identity,
+                            },
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let rows = items
+            .iter()
+            .zip(&fields)
+            .zip(&references)
+            .map(|(((iid, _, _), fields), players)| WriteRow {
+                iid: *iid,
+                fields,
+                players,
+            })
+            .collect::<Vec<_>>();
+        let descriptor = self.attributes(&type_id)?;
+        let keys = descriptor
+            .owned_attributes()
+            .iter()
+            .filter(|field| field.is_key())
+            .map(|field| self.ownership(&type_id, &field.attr_name))
+            .collect::<Result<Vec<_>>>()?;
+        let keys = if kind == super::bulk_write::WriteKind::PartialPut
+            && supplied_keys.windows(2).all(|pair| pair[0] == pair[1])
+        {
+            supplied_keys.first().cloned().unwrap_or(keys)
+        } else {
+            keys
+        };
+        let cleared_fields = descriptor
+            .owned_attributes()
+            .iter()
+            .filter(|field| !field.is_key() && !field.is_ordered)
+            .map(|field| self.ownership(&type_id, &field.attr_name))
+            .collect::<Result<Vec<_>>>()?;
+        let document_roles = if kind == super::bulk_write::WriteKind::DeleteReturning {
+            self.returning_roles(&type_id, false)?
+        } else {
+            self.document_roles(&type_id)?
+        };
+        let cleared_roles = document_roles
+            .iter()
+            .map(|role| role.role.clone())
+            .collect::<Vec<_>>();
+        super::bulk_write::write_many(
+            self.authority()?,
+            kind,
+            WriteShape {
+                type_id: &type_id,
+                keys: &keys,
+                cleared_fields: &cleared_fields,
+                cleared_roles: &cleared_roles,
+                document_roles,
+                include_subtypes: matches!(
+                    kind,
+                    super::bulk_write::WriteKind::PartialPut
+                        | super::bulk_write::WriteKind::PartialUpdate
+                ),
+                return_documents: !matches!(
+                    kind,
+                    super::bulk_write::WriteKind::PartialPut
+                        | super::bulk_write::WriteKind::MatchPut
+                        | super::bulk_write::WriteKind::PartialUpdate
+                        | super::bulk_write::WriteKind::Delete
+                ),
+            },
+            &rows,
+        )
+        .map_err(diagnostic)
     }
 
     fn identity_batch(
@@ -1483,28 +1728,7 @@ impl ManagerPlans {
         if returning {
             pipeline.push(Stage::Fetch(ThingDocument::new(
                 root,
-                self.registry
-                    .installed_schema_authority()
-                    .expect("authority checked")
-                    .resolved()
-                    .types()
-                    .get(&type_id)
-                    .ok_or_else(|| {
-                        invalid(
-                            "manager_type_unknown",
-                            "The manager type is absent from schema authority",
-                        )
-                    })?
-                    .relates()
-                    .iter()
-                    .map(|(role, projection)| {
-                        if projection.collection_mode().is_unordered() {
-                            DocumentRole::collected(role.clone())
-                        } else {
-                            DocumentRole::new(role.clone(), false)
-                        }
-                    })
-                    .collect(),
+                self.returning_roles(&type_id, exact)?,
             )));
         }
         if delete {
