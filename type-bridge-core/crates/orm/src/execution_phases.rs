@@ -23,7 +23,8 @@ pub struct ExecutionPhases {
     current: ExecutionPhase,
     statements: u32,
     finished: bool,
-    timeline: Option<(u64, Vec<ExecutionPhaseStamp>)>,
+    // Keep opt-in timeline storage out of every default manager future.
+    timeline: Option<Box<(u64, Vec<ExecutionPhaseStamp>)>>,
 }
 
 impl ExecutionPhases {
@@ -71,7 +72,7 @@ impl ExecutionPhases {
             });
             tracing::debug!(target: "type_bridge.plan", phase = "accepted", offset_milliseconds = 0_u64, anchor_unix_milliseconds = anchor, "type_bridge.plan.phase");
         }
-        self.timeline = Some((anchor, stamps));
+        self.timeline = Some(Box::new((anchor, stamps)));
     }
 
     /// Record a lifecycle boundary. Nested execution cannot restart earlier phases.
@@ -91,7 +92,7 @@ impl ExecutionPhases {
         if index.is_some() {
             self.statements = self.statements.saturating_add(1);
         }
-        if let Some((anchor, stamps)) = &mut self.timeline {
+        if let Some((anchor, stamps)) = self.timeline.as_deref_mut() {
             let offset = u64::try_from(
                 tokio::time::Instant::now()
                     .into_std()
@@ -164,7 +165,7 @@ impl ExecutionPhases {
                 SdkDiagnosticDetailValue::Count(elapsed),
             ),
         ];
-        if let Some((anchor, stamps)) = &self.timeline {
+        if let Some((anchor, stamps)) = self.timeline.as_deref() {
             let mut stamps = stamps.clone();
             if !self.finished {
                 stamps.push(ExecutionPhaseStamp {
@@ -200,15 +201,16 @@ enum ObservationScope {
     Nested,
 }
 
-struct Observation<F: Future, C> {
+struct Observation<F: Future, S, C> {
     future: F,
     scope: ObservationScope,
-    outcome: fn(&F::Output) -> Option<bool>,
+    outcome: S,
     complete: C,
 }
 
-impl<F: Future, C, O> Future for Observation<F, C>
+impl<F: Future, S, C, O> Future for Observation<F, S, C>
 where
+    S: Fn(&F::Output) -> Option<bool>,
     C: FnMut(F::Output, Option<ExecutionPhases>) -> O,
 {
     type Output = O;
@@ -267,13 +269,13 @@ where
     }
 }
 
-fn observation<F: Future, C>(
+fn observation<F: Future, S: Fn(&F::Output) -> Option<bool>, C>(
     started: Instant,
     collect: bool,
     future: F,
-    outcome: fn(&F::Output) -> Option<bool>,
+    outcome: S,
     complete: C,
-) -> Observation<F, C> {
+) -> Observation<F, S, C> {
     Observation {
         future,
         scope: ObservationScope::Unstarted { started, collect },
@@ -375,7 +377,7 @@ pub fn received() {
     let _ = PHASES.try_with(|cell| {
         if let Some(phases) = cell.borrow_mut().as_mut() {
             phases.current = ExecutionPhase::Accepted;
-            if let Some((anchor, stamps)) = &mut phases.timeline {
+            if let Some((anchor, stamps)) = phases.timeline.as_deref_mut() {
                 stamps.push(ExecutionPhaseStamp { phase: ExecutionPhase::Accepted, offset_milliseconds: 0, statement_index: None, failing_phase: None });
                 tracing::debug!(target: "type_bridge.plan", phase = "accepted", offset_milliseconds = 0_u64, anchor_unix_milliseconds = *anchor, "type_bridge.plan.phase");
             }

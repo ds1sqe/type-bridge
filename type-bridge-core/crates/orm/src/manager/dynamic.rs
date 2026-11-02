@@ -3679,47 +3679,56 @@ impl DynamicExecutionTarget<'_> {
         }
     }
 
-    async fn read_plan(&self, program: &ManagerRead) -> Result<Vec<PlanAnswer>> {
-        let limits = match program {
-            ManagerRead::Fetch(stack) => {
-                stack.execution_limits(QueryExecutionResourceLimits::default())
-            }
-            ManagerRead::Scalar { .. } | ManagerRead::Aggregate { .. } => {
-                QueryExecutionResourceLimits::default()
-            }
-        };
-        let cancellation = AnswerCancellation::default();
-        let deadline = QueryExecutionDeadline::for_limits(limits);
-        match self {
-            Self::Database(db) | Self::CanonicalDatabase(db) => {
-                db.execute_plans(program.plans(), &limits, &cancellation, deadline)
-                    .await
-            }
-            Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
-                if tx.tx_type() == TxType::Read {
-                    return tx
-                        .execute_plans(program.plans(), &limits, &cancellation, deadline)
-                        .await;
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "avoid duplicate async argument captures in manager futures"
+    )]
+    fn read_plan(
+        &self,
+        program: &ManagerRead,
+    ) -> impl std::future::Future<Output = Result<Vec<PlanAnswer>>> {
+        async move {
+            let limits = match program {
+                ManagerRead::Fetch(stack) => {
+                    stack.execution_limits(QueryExecutionResourceLimits::default())
                 }
-                ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                let limits = tx
-                    .answer_limits()
-                    .map_or(limits, |ceiling| limits.constrained_by(ceiling));
-                let mut lease = tx.acquire_mutation_lease().await?;
-                let result = lease
-                    .execute_plans(program.plans(), limits, &cancellation, deadline, None)
-                    .await;
-                match result {
-                    Ok((answers, _)) => {
-                        lease.complete_success();
-                        Ok(answers)
+                ManagerRead::Scalar { .. } | ManagerRead::Aggregate { .. } => {
+                    QueryExecutionResourceLimits::default()
+                }
+            };
+            let cancellation = AnswerCancellation::default();
+            let deadline = QueryExecutionDeadline::for_limits(limits);
+            match self {
+                Self::Database(db) | Self::CanonicalDatabase(db) => {
+                    db.execute_plans(program.plans(), &limits, &cancellation, deadline)
+                        .await
+                }
+                Self::Transaction(tx) | Self::CanonicalTransaction(tx) => {
+                    if tx.tx_type() == TxType::Read {
+                        return tx
+                            .execute_plans(program.plans(), &limits, &cancellation, deadline)
+                            .await;
                     }
-                    Err(error) => {
-                        lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
-                            &error,
-                            type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
-                        ));
-                        Err(error)
+                    ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
+                    let limits = tx
+                        .answer_limits()
+                        .map_or(limits, |ceiling| limits.constrained_by(ceiling));
+                    let mut lease = tx.acquire_mutation_lease().await?;
+                    let result = lease
+                        .execute_plans(program.plans(), limits, &cancellation, deadline, None)
+                        .await;
+                    match result {
+                        Ok((answers, _)) => {
+                            lease.complete_success();
+                            Ok(answers)
+                        }
+                        Err(error) => {
+                            lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                                &error,
+                                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                            ));
+                            Err(error)
+                        }
                     }
                 }
             }
@@ -4065,30 +4074,36 @@ pub(crate) fn plan_relation_row(
     })
 }
 
-async fn plan_fetch<T>(
+#[allow(
+    clippy::manual_async_fn,
+    reason = "avoid duplicate async argument captures in manager futures"
+)]
+fn plan_fetch<T>(
     target: &DynamicExecutionTarget<'_>,
     plans: &ManagerPlans,
     program: ManagerRead,
     map: impl Fn(&DescriptorRegistry, &HydratedThing) -> Result<T>,
-) -> Result<Vec<T>> {
-    let answers = target.read_plan(&program).await?;
-    let ManagerRead::Fetch(stack) = program else {
-        unreachable!("model fetch program")
-    };
-    let limits = stack.execution_limits(QueryExecutionResourceLimits::default());
-    let proof = stack.resolve(&plans.registry, &answers, limits)?;
-    let MatchResult::Rows { rows } = proof.result().for_request(proof.request())? else {
-        unreachable!("model fetch rows")
-    };
-    rows.iter()
-        .map(|row| match row.slots() {
-            [SlotValue::One(thing)] => map(&plans.registry, thing),
-            _ => Err(crate::plan_builders::manager::invalid(
-                "manager_result_shape",
-                "A manager fetch requires one model slot",
-            )),
-        })
-        .collect()
+) -> impl std::future::Future<Output = Result<Vec<T>>> {
+    async move {
+        let answers = target.read_plan(&program).await?;
+        let ManagerRead::Fetch(stack) = program else {
+            unreachable!("model fetch program")
+        };
+        let limits = stack.execution_limits(QueryExecutionResourceLimits::default());
+        let proof = stack.resolve(&plans.registry, &answers, limits)?;
+        let MatchResult::Rows { rows } = proof.result().for_request(proof.request())? else {
+            unreachable!("model fetch rows")
+        };
+        rows.iter()
+            .map(|row| match row.slots() {
+                [SlotValue::One(thing)] => map(&plans.registry, thing),
+                _ => Err(crate::plan_builders::manager::invalid(
+                    "manager_result_shape",
+                    "A manager fetch requires one model slot",
+                )),
+            })
+            .collect()
+    }
 }
 
 fn equality_expressions(filters: &[Filter]) -> Vec<DynamicExpr> {
@@ -4102,41 +4117,47 @@ fn equality_expressions(filters: &[Filter]) -> Vec<DynamicExpr> {
         .collect()
 }
 
-async fn plan_read_count(
+#[allow(
+    clippy::manual_async_fn,
+    reason = "avoid duplicate async argument captures in manager futures"
+)]
+fn plan_read_count(
     target: &DynamicExecutionTarget<'_>,
     plans: &ManagerPlans,
     name: &str,
     exact: bool,
     expressions: &[DynamicExpr],
-) -> Result<u64> {
-    let program = plans.read(
-        name,
-        exact,
-        expressions,
-        &[],
-        None,
-        None,
-        &[],
-        ReadTerminal::Count,
-    )?;
-    let mut answers = target.read_plan(&program).await?;
-    let answer = answers.pop().ok_or_else(|| snapshot_error(name))?;
-    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
-        .to_staged_v3(&program.plans()[0])
-        .map_err(crate::plan_builders::manager::diagnostic)?
-    else {
-        return Err(snapshot_error(name));
-    };
-    match rows.as_slice() {
-        [row] => match row.as_slice() {
-            [
-                type_bridge_contract::query_remote::RemoteValue::Value {
-                    value: type_bridge_contract::value::CanonicalValue::Long(count),
-                },
-            ] => u64::try_from(*count).map_err(|_| snapshot_error(name)),
+) -> impl std::future::Future<Output = Result<u64>> {
+    async move {
+        let program = plans.read(
+            name,
+            exact,
+            expressions,
+            &[],
+            None,
+            None,
+            &[],
+            ReadTerminal::Count,
+        )?;
+        let mut answers = target.read_plan(&program).await?;
+        let answer = answers.pop().ok_or_else(|| snapshot_error(name))?;
+        let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } = answer
+            .to_staged_v3(&program.plans()[0])
+            .map_err(crate::plan_builders::manager::diagnostic)?
+        else {
+            return Err(snapshot_error(name));
+        };
+        match rows.as_slice() {
+            [row] => match row.as_slice() {
+                [
+                    type_bridge_contract::query_remote::RemoteValue::Value {
+                        value: type_bridge_contract::value::CanonicalValue::Long(count),
+                    },
+                ] => u64::try_from(*count).map_err(|_| snapshot_error(name)),
+                _ => Err(snapshot_error(name)),
+            },
             _ => Err(snapshot_error(name)),
-        },
-        _ => Err(snapshot_error(name)),
+        }
     }
 }
 

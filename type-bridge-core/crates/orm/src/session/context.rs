@@ -810,125 +810,133 @@ impl TransactionContext {
         .instrument(span)
     }
 
-    async fn execute_plans_inner(
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "avoid duplicate async argument captures in manager futures"
+    )]
+    fn execute_plans_inner(
         &self,
         plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
         limits: &QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
-    ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
-        let writes = plans
-            .iter()
-            .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
-        if self.tx_type == TxType::Read && writes {
-            return Err(crate::match_request::MatchError::new(
-                crate::match_request::MatchErrorCategory::InvalidPlan,
-                "query_plan_read_only",
-                "one-shot plan execution requires read-only plans",
-            )
-            .into());
-        }
-        for plan in plans {
-            crate::query_plan_exec::check_provider(plan, self.server_version)
-                .map_err(plan_diagnostic_error)?;
-        }
-        limits
-            .validate()
-            .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
-        let policy = self
-            .answer_limits
-            .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
-        let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
-        let limits = crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
-        if writes {
-            return Box::pin(async move {
-                let mut inner = super::staged::bounded(&limits.answer, async {
-                    Ok(Arc::clone(&self.inner).lock_owned().await)
-                })
-                .await?;
-                active_transaction(&mut inner)?;
-                crate::execution_phases::record(
-                    type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
-                );
-                let mut lease = TransactionContextMutationLease {
-                    inner,
-                    phase: MutationLeasePhase::PreDispatch,
-                    exact_failure: None,
-                    server_version: self.server_version,
-                };
-                let given = lease.transaction()?.supports_given_rows();
-                let mut queries = Vec::with_capacity(plans.len());
-                for plan in plans {
-                    let query = if given {
-                        crate::query_plan_exec::staged_query(plan, true)
-                    } else {
-                        crate::query_plan_exec::staged_literal_query(plan)
-                    }
-                    .map_err(plan_diagnostic_error)?;
-                    queries.push(query);
-                }
-                // Arm before awaiting provider work; cancellation keeps the context
-                // rollback-only until the caller explicitly rolls it back.
-                lease.phase = MutationLeasePhase::PossibleEffect;
-                crate::execution_phases::record(
-                    type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
-                );
-                let result = crate::query_plan_exec::execute_plans_counted::<true>(
-                    lease.transaction()?,
-                    given,
-                    plans,
-                    policy,
-                    cancellation,
-                    deadline,
-                    Some(queries),
+    ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> {
+        async move {
+            let writes = plans
+                .iter()
+                .any(type_bridge_contract::query_plan::v3::QueryPlanV3::writes);
+            if self.tx_type == TxType::Read && writes {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::InvalidPlan,
+                    "query_plan_read_only",
+                    "one-shot plan execution requires read-only plans",
                 )
-                .await;
-                match result {
-                    Ok((answers, _)) => {
-                        crate::execution_phases::record(
+                .into());
+            }
+            for plan in plans {
+                crate::query_plan_exec::check_provider(plan, self.server_version)
+                    .map_err(plan_diagnostic_error)?;
+            }
+            limits
+                .validate()
+                .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
+            let policy = self
+                .answer_limits
+                .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
+            let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
+            let limits =
+                crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+            if writes {
+                return Box::pin(async move {
+                    let mut inner = super::staged::bounded(&limits.answer, async {
+                        Ok(Arc::clone(&self.inner).lock_owned().await)
+                    })
+                    .await?;
+                    active_transaction(&mut inner)?;
+                    crate::execution_phases::record(
+                        type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+                    );
+                    let mut lease = TransactionContextMutationLease {
+                        inner,
+                        phase: MutationLeasePhase::PreDispatch,
+                        exact_failure: None,
+                        server_version: self.server_version,
+                    };
+                    let given = lease.transaction()?.supports_given_rows();
+                    let mut queries = Vec::with_capacity(plans.len());
+                    for plan in plans {
+                        let query = if given {
+                            crate::query_plan_exec::staged_query(plan, true)
+                        } else {
+                            crate::query_plan_exec::staged_literal_query(plan)
+                        }
+                        .map_err(plan_diagnostic_error)?;
+                        queries.push(query);
+                    }
+                    // Arm before awaiting provider work; cancellation keeps the context
+                    // rollback-only until the caller explicitly rolls it back.
+                    lease.phase = MutationLeasePhase::PossibleEffect;
+                    crate::execution_phases::record(
+                        type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+                    );
+                    let result = crate::query_plan_exec::execute_plans_counted::<true>(
+                        lease.transaction()?,
+                        given,
+                        plans,
+                        policy,
+                        cancellation,
+                        deadline,
+                        Some(queries),
+                    )
+                    .await;
+                    match result {
+                        Ok((answers, _)) => {
+                            crate::execution_phases::record(
                             type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
                         );
-                        lease.complete_success();
-                        Ok(answers)
+                            lease.complete_success();
+                            Ok(answers)
+                        }
+                        Err(error) => {
+                            lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                                &error,
+                                SdkProviderOperation::Write,
+                            ));
+                            Err(error)
+                        }
                     }
-                    Err(error) => {
-                        lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
-                            &error,
-                            SdkProviderOperation::Write,
-                        ));
-                        Err(error)
-                    }
-                }
-            })
-            .await;
-        }
-        let mut guard =
-            super::staged::bounded(&limits.answer, async { Ok(self.inner.lock().await) }).await?;
-        let tx = active_transaction(&mut guard)?;
-        crate::execution_phases::record(
-            type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
-        );
-        crate::execution_phases::record(
-            type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
-        );
-        let supports_given = tx.supports_given_rows();
-        let result = crate::query_plan_exec::execute_plans_counted::<false>(
-            tx,
-            supports_given,
-            plans,
-            policy,
-            cancellation,
-            deadline,
-            None,
-        )
-        .await
-        .map(|(answers, _)| answers);
-        if result.is_ok() {
+                })
+                .await;
+            }
+            let mut guard =
+                super::staged::bounded(&limits.answer, async { Ok(self.inner.lock().await) })
+                    .await?;
+            let tx = active_transaction(&mut guard)?;
             crate::execution_phases::record(
-                type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
             );
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+            );
+            let supports_given = tx.supports_given_rows();
+            let result = crate::query_plan_exec::execute_plans_counted::<false>(
+                tx,
+                supports_given,
+                plans,
+                policy,
+                cancellation,
+                deadline,
+                None,
+            )
+            .await
+            .map(|(answers, _)| answers);
+            if result.is_ok() {
+                crate::execution_phases::record(
+                    type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                );
+            }
+            result
         }
-        result
     }
 
     /// Execute one validated selected-row request without consuming this read context.

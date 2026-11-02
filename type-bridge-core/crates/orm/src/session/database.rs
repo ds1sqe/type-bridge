@@ -579,69 +579,78 @@ impl Database {
         .instrument(span)
     }
 
-    async fn execute_plans_inner(
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "avoid duplicate async argument captures in manager futures"
+    )]
+    fn execute_plans_inner(
         &self,
         plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
         limits: &QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
-    ) -> Result<Vec<super::staged::PlanAnswer>> {
-        use crate::match_request::selected_result_executor::{
-            ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
-            dispatch_failed_execution_close,
-        };
-        for plan in plans {
-            crate::query_plan_exec::check_provider(plan, self.server_version())
-                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
-        }
-        limits
-            .validate()
-            .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
-        let policy = self
-            .answer_limits
-            .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
-        let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
-        let limits = crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
-        super::backend::BoundedAnswerReader::new(limits.answer.clone()).check_before_read()?;
-        let lifecycle = ExecutionBudget {
-            deadline: limits.answer.deadline,
-            cancellation: cancellation.clone(),
-        };
-        let mut transaction = lifecycle.await_provider(self.read_transaction()).await?;
-        crate::execution_phases::record(
-            type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
-        );
-        crate::execution_phases::record(
-            type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
-        );
-        let result =
-            catch_execution_unwind(crate::query_plan_exec::execute_plans_counted::<false>(
-                transaction.provider_mut()?,
-                self.supports_given_stage(),
-                plans,
-                policy,
-                cancellation,
-                deadline,
-                None,
-            ))
-            .await;
-        match result {
-            Err(payload) => {
-                close_after_execution_panic(transaction).await;
-                std::panic::resume_unwind(payload)
+    ) -> impl std::future::Future<Output = Result<Vec<super::staged::PlanAnswer>>> {
+        async move {
+            use crate::match_request::selected_result_executor::{
+                ExecutionBudget, catch_execution_unwind, close_after_execution_panic,
+                dispatch_failed_execution_close,
+            };
+            for plan in plans {
+                crate::query_plan_exec::check_provider(plan, self.server_version())
+                    .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
             }
-            Ok(Err(error)) => {
-                if let Some(Err(close_error)) = dispatch_failed_execution_close(transaction).await {
-                    tracing::warn!(%close_error, "plan execution transaction cleanup failed");
+            limits
+                .validate()
+                .map_err(|_| crate::query_plan_exec::invalid_answer_limits())?;
+            let policy = self
+                .answer_limits
+                .map_or(*limits, |ceiling| limits.constrained_by(ceiling));
+            let deadline = deadline.earliest(crate::QueryExecutionDeadline::for_limits(policy));
+            let limits =
+                crate::query_plan_exec::plan_answer_limits(policy, cancellation, deadline)?;
+            super::backend::BoundedAnswerReader::new(limits.answer.clone()).check_before_read()?;
+            let lifecycle = ExecutionBudget {
+                deadline: limits.answer.deadline,
+                cancellation: cancellation.clone(),
+            };
+            let mut transaction = lifecycle.await_provider(self.read_transaction()).await?;
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+            );
+            crate::execution_phases::record(
+                type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+            );
+            let result =
+                catch_execution_unwind(crate::query_plan_exec::execute_plans_counted::<false>(
+                    transaction.provider_mut()?,
+                    self.supports_given_stage(),
+                    plans,
+                    policy,
+                    cancellation,
+                    deadline,
+                    None,
+                ))
+                .await;
+            match result {
+                Err(payload) => {
+                    close_after_execution_panic(transaction).await;
+                    std::panic::resume_unwind(payload)
                 }
-                Err(error)
-            }
-            Ok(Ok((answers, _))) => {
-                crate::execution_phases::record(
-                    type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
-                );
-                lifecycle.await_cleanup(transaction.close()).await?;
-                Ok(answers)
+                Ok(Err(error)) => {
+                    if let Some(Err(close_error)) =
+                        dispatch_failed_execution_close(transaction).await
+                    {
+                        tracing::warn!(%close_error, "plan execution transaction cleanup failed");
+                    }
+                    Err(error)
+                }
+                Ok(Ok((answers, _))) => {
+                    crate::execution_phases::record(
+                        type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                    );
+                    lifecycle.await_cleanup(transaction.close()).await?;
+                    Ok(answers)
+                }
             }
         }
     }

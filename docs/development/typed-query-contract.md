@@ -988,6 +988,10 @@ timeout disables the deadline. The C ABI retains its existing unsigned fields
 and staged transaction defaults; its signed timeout, admission and timeline
 options are part of the ABI 2.0 migration.
 This is a diagnostic option, not another resource ceiling or deadline.
+With collection disabled and no enabled plan tracing span, phase observation
+adds no heap allocation or per-phase clock reads. Full collection allocates
+timeline storage and its growing stamp vector; its storage uses one additional
+allocation to keep default manager futures small.
 
 The option survives policy intersection when either side enables it. Proxy
 requests carry it as an optional Boolean; omission means disabled. Timelines
