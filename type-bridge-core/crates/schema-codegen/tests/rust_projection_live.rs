@@ -680,10 +680,8 @@ tokio = {{ version = "1", features = ["macros", "rt-multi-thread"] }}
                 "--quiet",
                 "-p",
                 "type-bridge-server",
-                "--features",
-                "v2-query",
                 "--example",
-                "v2_smoke_server",
+                "staged_smoke_server",
             ])
             .current_dir(core_dir)
             .env("CARGO_TARGET_DIR", &target_dir)

@@ -73,7 +73,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 rustix = { version = "1", features = ["fs"] }
 
 [[example]]
-name = "v2_smoke_server"
+name = "staged_smoke_server"
 required-features = ["typedb", "v2-query"]
 
 [[test]]
@@ -87,10 +87,6 @@ required-features = ["v2-query"]
 [[test]]
 name = "tls_transport_tests"
 required-features = ["axum-transport"]
-
-[[test]]
-name = "v2_query_integration_tests"
-required-features = ["typedb", "v2-query"]
 
 [[test]]
 name = "v3_staged_integration_tests"

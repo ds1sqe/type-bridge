@@ -189,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             schema_authority = config.v2.schema_authority_file.as_str(),
             "V2 query surface enabled: /v2/query, /v2/capabilities, /v3/staged, /v3/capabilities"
         );
-        transport::v2::create_router_with_v2(Arc::new(pipeline), Arc::new(state))
+        transport::v3::create_v3_router(Arc::new(pipeline), Arc::new(state))
     } else {
         transport::http::create_router(Arc::new(pipeline))
     };
@@ -226,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn build_v2_state(
     config: &RuntimeServerConfig,
     outbound_transport: &PreparedSecureTypeDBConnection,
-) -> Result<transport::v2::V2QueryState, Box<dyn std::error::Error>> {
+) -> Result<transport::staged_state::StagedQueryState, Box<dyn std::error::Error>> {
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary;
     use type_bridge_orm::session::backend::AnswerLimits;
@@ -291,7 +291,7 @@ async fn build_v2_state(
     }
 
     let state = match config.v2.authority_mode {
-        V2AuthorityMode::Managed => transport::v2::V2QueryState::new(
+        V2AuthorityMode::Managed => transport::staged_state::StagedQueryState::new(
             advertised,
             AnswerLimits::default(),
             database,
@@ -300,7 +300,7 @@ async fn build_v2_state(
             managed,
             resolved,
         ),
-        V2AuthorityMode::QueryOnly => transport::v2::V2QueryState::new_query_only(
+        V2AuthorityMode::QueryOnly => transport::staged_state::StagedQueryState::new_query_only(
             advertised,
             AnswerLimits::default(),
             database,

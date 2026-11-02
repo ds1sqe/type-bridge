@@ -4,9 +4,9 @@ pub mod http;
 pub mod types;
 
 #[cfg(feature = "v2-query")]
-/// Generated-authority-backed V2 query routes and handlers.
-pub mod v2;
+/// Shared staged executor state and replay protection.
+pub mod staged_state;
 
 #[cfg(feature = "v2-query")]
-/// Staged V3 transactions over the V2 executor identity.
+/// Staged V3 transactions over one executor identity.
 pub mod v3;

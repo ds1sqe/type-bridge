@@ -47,8 +47,8 @@ use type_bridge_orm::lower_remote_query_diagnostic;
 use type_bridge_orm::query_v2_remote::encode_unbound_remote_failure_v2;
 use type_bridge_orm::session::staged::{PendingError, TransactionKind, TransactionOptions};
 
-use super::v2::{
-    ReplayStoreError, V2_PREFLIGHT_SLOTS, V2QueryState, await_before_deadline, body_oversized,
+use super::staged_state::{
+    ReplayStoreError, StagedQueryState, V2_PREFLIGHT_SLOTS, await_before_deadline, body_oversized,
     deadline_exceeded, declared_v2_body_oversized, envelope_response, policy_rejected,
     replay_capacity, replay_unavailable, replayed, response_audit_deadline, unavailable,
     v2_request_metadata,
@@ -67,7 +67,7 @@ pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
 /// calls `StagedExecutor::execute_staged_request` directly.
 pub struct StagedExecutor {
     pipeline: Arc<QueryPipeline>,
-    query: Arc<V2QueryState>,
+    query: Arc<StagedQueryState>,
     advertisement: RemoteCapabilities,
     fingerprint: RemoteCapabilitiesFingerprint,
 }
@@ -112,7 +112,7 @@ impl StagedOutcome {
 impl StagedExecutor {
     /// Bind the executor to one pipeline and query state; the staged
     /// advertisement re-states the validated V2 one.
-    pub fn new(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Self {
+    pub fn new(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Self {
         // The V2 advertisement's limits were validated when it was built, so
         // re-stating them under a wider capability set cannot fail.
         let profile = query
@@ -232,7 +232,7 @@ fn staged_advertisement_for_profile(
 }
 
 /// Build `POST /v3/staged` and `GET /v3/capabilities` over one V2 executor.
-pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<V2QueryState>) -> Router {
+pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Router {
     let state = Arc::new(StagedExecutor::new(pipeline, query));
     Router::new()
         .route("/v3/staged", post(handle_v3_staged))

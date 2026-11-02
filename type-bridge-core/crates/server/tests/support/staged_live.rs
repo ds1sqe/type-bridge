@@ -39,7 +39,8 @@ use type_bridge_server::interceptor::{
     V3CommitOutcome, V3PolicyPlan,
 };
 use type_bridge_server::pipeline::PipelineBuilder;
-use type_bridge_server::transport::v2::{V2QueryState, create_router_with_v2};
+use type_bridge_server::transport::staged_state::StagedQueryState;
+use type_bridge_server::transport::v3::create_v3_router;
 use type_bridge_server::transport::v3::{StagedExecutor, StagedOutcome};
 
 pub static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -167,7 +168,7 @@ impl Interceptor for LivePolicy {
 }
 
 /// The v1 executor behind the pipeline; the staged routes run on the
-/// `V2QueryState` database instead, so it only reports a connection.
+/// `StagedQueryState` database instead, so it only reports a connection.
 struct UnusedV1Executor;
 
 impl QueryExecutor for UnusedV1Executor {
@@ -338,7 +339,7 @@ pub async fn proxy_with_database(
     );
     let managed = managed_schema_state(&declared, &delta_context).expect("managed");
     let state = Arc::new(
-        V2QueryState::new_query_only(
+        StagedQueryState::new_query_only(
             CapabilitySet::new(),
             AnswerLimits::default(),
             database,
@@ -363,7 +364,7 @@ pub async fn proxy_with_database(
         Arc::clone(&pipeline),
         Arc::clone(&state),
     ));
-    let router = create_router_with_v2(pipeline, state);
+    let router = create_v3_router(pipeline, state);
     let bytes = call(&router, "GET", "/v3/capabilities", Vec::new()).await;
     let advertisement = RemoteCapabilities::decode(&bytes).expect("v3 advertisement");
     Proxy {

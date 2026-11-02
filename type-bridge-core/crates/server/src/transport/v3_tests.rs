@@ -19,7 +19,7 @@ use type_bridge_contract::value::{CanonicalString, CanonicalValue};
 use super::*;
 use crate::interceptor::{StagedWriteAuthority, V3CommitOutcome, V3PolicyPlan};
 use crate::transport::v3::{
-    STAGED_WRITE_NOT_AUTHORIZED, StagedExecutor, StagedOutcome, StagedOutcomeKind,
+    create_v3_router, STAGED_WRITE_NOT_AUTHORIZED, StagedExecutor, StagedOutcome, StagedOutcomeKind,
 };
 use type_bridge_orm::session::backend::BoundedAnswerLimits;
 
@@ -27,7 +27,7 @@ struct V3Fixture {
     advertisement: RemoteCapabilities,
     declared: DeclaredSchema,
     metrics: Arc<BackendMetrics>,
-    query: Arc<V2QueryState>,
+    query: Arc<StagedQueryState>,
     router: Router,
     /// The library entry over the same pipeline and query state as the router.
     executor: Arc<StagedExecutor>,
@@ -64,7 +64,7 @@ fn configured_v3_fixture(
         Box::new(CountingBackend::new([], Arc::clone(&metrics))),
         "server-v3-route",
     );
-    let query = V2QueryState::new_query_only(
+    let query = StagedQueryState::new_query_only(
         CapabilitySet::new(),
         ceilings,
         database,
@@ -85,7 +85,7 @@ fn configured_v3_fixture(
         Arc::clone(&query),
     ));
     let advertisement = executor.advertisement().clone();
-    let router = create_router_with_v2(pipeline, Arc::clone(&query));
+    let router = create_v3_router(pipeline, Arc::clone(&query));
     V3Fixture {
         advertisement,
         declared,

@@ -1,8 +1,8 @@
-//! Minimal V2 envelope server for cross-binding smoke tests.
+//! Minimal staged plan server for cross-binding smoke tests.
 //!
 //! Reads its whole configuration from the environment, builds one
-//! [`V2QueryState`] from a verified source-free schema authority, and serves the
-//! versioned V2 routes until killed. Requires `--features v2-query`.
+//! [`StagedQueryState`] from a verified source-free schema authority, and serves the
+//! staged routes until killed.
 //!
 //! Environment:
 //! - `SMOKE_TYPEDB_ADDRESS` (e.g. `localhost:1729`)
@@ -32,7 +32,8 @@ use type_bridge_server::config::{
     InboundTlsSection, OutboundTlsMode, SecureTypeDBSection, TypeDBSection,
 };
 use type_bridge_server::pipeline::PipelineBuilder;
-use type_bridge_server::transport::v2::{V2QueryState, create_v2_router};
+use type_bridge_server::transport::staged_state::StagedQueryState;
+use type_bridge_server::transport::v3::create_v3_router;
 use type_bridge_server::typedb::TypeDBClient;
 
 fn env(name: &str) -> String {
@@ -193,7 +194,7 @@ async fn main() {
         advertised.insert(type_bridge_contract::query_given_rows_capability());
     }
     let state = Arc::new(
-        V2QueryState::new_query_only(
+        StagedQueryState::new_query_only(
             advertised,
             AnswerLimits::default(),
             database,
@@ -216,7 +217,7 @@ async fn main() {
             .build()
             .expect("policy pipeline builds"),
     );
-    let router = create_v2_router(pipeline, state);
+    let router = create_v3_router(pipeline, state);
     let address = SocketAddr::from((
         [127, 0, 0, 1],
         env("SMOKE_PORT").parse::<u16>().expect("port"),

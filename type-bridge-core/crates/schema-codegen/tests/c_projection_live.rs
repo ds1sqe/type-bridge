@@ -1679,10 +1679,8 @@ fn live_c17_generated_person_and_membership_crud_round_trips_on_profile_server()
                 "--quiet",
                 "-p",
                 "type-bridge-server",
-                "--features",
-                "v2-query",
                 "--example",
-                "v2_smoke_server",
+                "staged_smoke_server",
             ])
             .current_dir(core)
             .env("CARGO_TARGET_DIR", &isolated.target);
