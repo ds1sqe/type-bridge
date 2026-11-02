@@ -438,20 +438,21 @@ dimension is tightened by the staged server advertisement; requesting a higher
 ceiling retains the server's value. Unconfigured proxy transactions keep the
 default policy path.
 
-A proxy connection fetches the server's signed `/v2/capabilities`
+A proxy connection fetches the server's `/v3/capabilities`
 advertisement when it connects, or uses the exact bytes pinned with
 `.advertisement(bytes)`. Fetch it only over TLS you trust, or pin it: the
 advertisement carries the key every reply is verified with. Each terminal
-then performs exactly one `POST /v2/query`. The SDK binds the scope and
+then performs exactly one `POST /v3/staged`. The SDK binds the scope and
 semantic profile embedded in `SCHEMA`, the nonce, request fingerprint,
 deadline, limits, and reply identity before it materializes the same model
 types as a direct connection.
 
 A host that routes or authenticates requests itself implements
-`ProxyExchange` (`capabilities()` and `exchange()`) and passes it to
-`ProxyConnectionPolicy::with_exchange`. `Connection::Direct` also gives the
-`Database` with CRUD managers and transactions, which a proxy connection
-does not offer.
+`ProxyExchange` and passes it to `ProxyConnectionPolicy::with_exchange`.
+Native terminals and transactions call `staged_capabilities()` and
+`exchange_staged()`; their defaults delegate to `capabilities()` and
+`exchange()`. Both use the connection's staged route and advertisement cache.
+A staged transaction sends its complete plan stack in one exchange at commit.
 
 ## Classified errors
 

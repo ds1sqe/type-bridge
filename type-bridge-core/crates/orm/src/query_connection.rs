@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
 
-use type_bridge_contract::limits::{MAX_REMOTE_ENVELOPE_BYTES, QueryLimits, QueryLimitsError};
+use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic;
 
@@ -24,14 +24,14 @@ use crate::query_v2_model_remote::{
 use crate::query_v2_prepared::QueryAuthority;
 use crate::session::backend::AnswerCancellation;
 use crate::session::staged::{Transaction, TransactionOptions};
-use crate::session::staged_proxy::ProxyStaging;
+use crate::session::staged_proxy::{ProxyStaging, Route, StagedTransport};
 use crate::session::{
     Database, ProxyEndpoint, ProxyHttpTransport, StagedExchangeFn, TransactionContext,
 };
 use type_bridge_contract::sdk_diagnostic::SdkProviderOperation;
 
 /// Why a terminal failed on its target.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum QueryTargetError {
     /// The direct executor refused or failed.
     #[error(transparent)]
@@ -46,6 +46,41 @@ pub enum QueryTargetError {
     /// time.
     #[error("{0:?}")]
     Interrupted(SdkExecutionDiagnostic),
+    /// An application-owned transport failure retained for its owning binding.
+    #[error("caller-owned proxy transport failed")]
+    Callback(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl std::fmt::Debug for QueryTargetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct(error) => formatter.debug_tuple("Direct").field(error).finish(),
+            Self::Prepare(error) => formatter.debug_tuple("Prepare").field(error).finish(),
+            Self::Reply(error) => formatter.debug_tuple("Reply").field(error).finish(),
+            Self::Interrupted(error) => formatter.debug_tuple("Interrupted").field(error).finish(),
+            Self::Callback(_) => formatter.write_str("Callback([REDACTED])"),
+        }
+    }
+}
+
+impl QueryTargetError {
+    /// Lower a target failure for a boundary that accepts only common diagnostics.
+    /// An application-owned cause remains opaque and becomes a provider failure.
+    #[doc(hidden)]
+    pub fn into_diagnostic(self, operation: SdkProviderOperation) -> SdkExecutionDiagnostic {
+        match self {
+            Self::Direct(error) => crate::execution_diagnostic::lower_orm_error(&error, operation),
+            Self::Prepare(error) | Self::Reply(error) => match error {
+                RemoteModelQueryV2Error::Diagnostic(error) => lower_remote_query_diagnostic(error),
+                RemoteModelQueryV2Error::Match(error) => {
+                    crate::execution_diagnostic::lower_match_error(&error)
+                }
+                RemoteModelQueryV2Error::Execution(error) => error,
+            },
+            Self::Interrupted(error) => error,
+            Self::Callback(_) => SdkExecutionDiagnostic::provider_failure(operation),
+        }
+    }
 }
 
 impl From<SdkExecutionDiagnostic> for QueryTargetError {
@@ -58,7 +93,7 @@ impl From<SdkExecutionDiagnostic> for QueryTargetError {
 /// schema authority requests are prepared under, the answer-limit ceiling,
 /// and the built-in HTTP route unless the caller owns the exchange.
 pub struct ProxyQueryConnection {
-    http: Option<ProxyHttpTransport>,
+    route: Option<Route>,
     advertisement: Arc<[u8]>,
     authority: Arc<QueryAuthority>,
     answer_limits: QueryExecutionResourceLimits,
@@ -108,7 +143,7 @@ impl std::fmt::Debug for ProxyQueryConnection {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ProxyQueryConnection")
-            .field("built_in_route", &self.http.is_some())
+            .field("built_in_route", &self.has_built_in_route())
             .finish_non_exhaustive()
     }
 }
@@ -184,7 +219,7 @@ impl ProxyQueryConnection {
                 StagedAdvertisement::new(Arc::clone(&advertisement), decoded.query_limits(), None)
             });
         Ok(Self {
-            http,
+            route: http.map(Route::Http),
             advertisement,
             authority,
             answer_limits: answer_limits.effective(),
@@ -213,6 +248,15 @@ impl ProxyQueryConnection {
     #[must_use]
     pub const fn admission_window_milliseconds(&self) -> u64 {
         self.admission_window_milliseconds.get()
+    }
+
+    /// Attach a caller-owned staged transport to this connection target.
+    /// Advertisements are checked against the existing executor and reply key;
+    /// terminals and staged commits share this route and advertisement cache.
+    #[must_use]
+    pub fn with_staged_transport(mut self, transport: Arc<dyn StagedTransport>) -> Self {
+        self.route = Some(Route::Transport(transport));
+        self
     }
 
     pub(crate) fn execution_identity(
@@ -316,20 +360,32 @@ impl ProxyQueryConnection {
     }
 
     /// Open a staged transaction whose commit is one signed
-    /// `query-remote/v3` exchange through the built-in route. The staged
+    /// `query-remote/v3` exchange through this connection's route. The staged
     /// advertisement is fetched from `/v3/capabilities` now; nothing else
     /// is sent until commit.
     ///
     /// # Errors
     ///
-    /// Returns the provider failure when the connection has no built-in
-    /// route or the advertisement cannot be fetched or decoded.
+    /// Returns the provider failure when the connection has no transport,
+    /// or the advertisement cannot be fetched or decoded.
     pub async fn staged_transaction(
         &self,
         options: TransactionOptions,
         cancellation: &AnswerCancellation,
     ) -> Result<Transaction, SdkExecutionDiagnostic> {
-        let http = self.http.clone().ok_or_else(|| {
+        self.staged_transaction_on_target(options, cancellation)
+            .await
+            .map_err(|error| error.into_diagnostic(SdkProviderOperation::Connect))
+    }
+
+    /// Open a staged transaction while retaining application-owned transport failures.
+    #[doc(hidden)]
+    pub async fn staged_transaction_on_target(
+        &self,
+        options: TransactionOptions,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Transaction, QueryTargetError> {
+        let route = self.route.clone().ok_or_else(|| {
             SdkExecutionDiagnostic::provider_failure(SdkProviderOperation::Connect)
         })?;
         let advertisement = self
@@ -338,19 +394,20 @@ impl ProxyQueryConnection {
                 cancellation,
             )
             .await?;
-        self.staged(Some(http), None, &advertisement, options)
+        self.staged(route, &advertisement, options)
+            .map_err(Into::into)
     }
 
     async fn ensure_staged_advertisement(
         &self,
         deadline: QueryExecutionDeadline,
         cancellation: &AnswerCancellation,
-    ) -> Result<Arc<[u8]>, SdkExecutionDiagnostic> {
+    ) -> Result<Arc<[u8]>, QueryTargetError> {
         if let Some(advertisement) = self.staged_advertisement() {
             return Ok(advertisement);
         }
-        let http = self.http.as_ref().ok_or_else(caller_owned_exchange)?;
-        let fetched = http.staged_capabilities(deadline, cancellation).await?;
+        let route = self.route.as_ref().ok_or_else(caller_owned_exchange)?;
+        let fetched = route.capabilities(deadline, cancellation).await?;
         let limits = self.check_staged(&fetched)?;
         let fetched: Arc<[u8]> = fetched.into();
         *self.staged_cache() = Some(StagedAdvertisement::new(
@@ -390,13 +447,12 @@ impl ProxyQueryConnection {
                 ));
             }
         }
-        self.staged(None, Some(exchange), staged_advertisement, options)
+        self.staged(Route::Exchange(exchange), staged_advertisement, options)
     }
 
     fn staged(
         &self,
-        http: Option<ProxyHttpTransport>,
-        exchange: Option<StagedExchangeFn>,
+        route: Route,
         advertisement: &[u8],
         mut options: TransactionOptions,
     ) -> Result<Transaction, SdkExecutionDiagnostic> {
@@ -407,9 +463,8 @@ impl ProxyQueryConnection {
                 .unwrap_or(self.answer_limits.timeout_milliseconds)
                 .constrained_by(self.answer_limits.timeout_milliseconds),
         );
-        let proxy = ProxyStaging::new(
-            http,
-            exchange,
+        let proxy = ProxyStaging::with_route(
+            route,
             advertisement,
             self.authority.declared().clone(),
             self.answer_limits,
@@ -426,7 +481,7 @@ impl ProxyQueryConnection {
     /// Whether terminals reach the server through the built-in HTTP route.
     #[must_use]
     pub const fn has_built_in_route(&self) -> bool {
-        self.http.is_some()
+        matches!(&self.route, Some(Route::Http(_)))
     }
 
     /// Prepare one request for a caller-owned exchange, with `resources`
@@ -589,7 +644,7 @@ impl QueryTarget<'_> {
                 Ok((validated, result))
             }
             Self::Proxy(proxy) => {
-                let Some(http) = &proxy.http else {
+                let Some(route) = &proxy.route else {
                     return Err(caller_owned_exchange().into());
                 };
                 proxy
@@ -597,10 +652,9 @@ impl QueryTarget<'_> {
                     .await?;
                 let pending =
                     proxy.prepare(registry, validated, resources, cancellation, deadline)?;
-                let response = http
-                    .exchange_staged(
-                        pending.request_bytes().to_vec(),
-                        MAX_REMOTE_ENVELOPE_BYTES,
+                let response = route
+                    .exchange(
+                        std::borrow::Cow::Borrowed(pending.request_bytes()),
                         deadline,
                         cancellation,
                     )
@@ -662,6 +716,60 @@ mod policy_tests {
             Default::default(),
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn staged_fetch_keeps_application_errors_and_sdk_boundary_redacts_them() {
+        struct Fails;
+        impl StagedTransport for Fails {
+            fn staged_capabilities(
+                &self,
+            ) -> crate::session::backend::BoxFuture<'_, Result<Vec<u8>, QueryTargetError>>
+            {
+                Box::pin(async {
+                    Err(QueryTargetError::Callback(Box::new(std::io::Error::other(
+                        "application cause",
+                    ))))
+                })
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                _: &'a [u8],
+            ) -> crate::session::backend::BoxFuture<'a, Result<Vec<u8>, QueryTargetError>>
+            {
+                panic!("advertisement failure prevents dispatch")
+            }
+        }
+        let legacy = RemoteCapabilities::new(
+            type_bridge_contract::query_plan::query_plan_v2_capability_vocabulary(),
+            RemoteExecutorBinding::new("proxy-transport-test", "epoch-transport-test").unwrap(),
+            RemoteSigningPublicKey::from_bytes([7; 32]),
+        );
+        let connection = connection(legacy).with_staged_transport(Arc::new(Fails));
+        assert!(connection.staged_advertisement().is_none());
+        let error = connection
+            .staged_transaction_on_target(
+                TransactionOptions::default(),
+                &AnswerCancellation::default(),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(format!("{error:?}"), "Callback([REDACTED])");
+        let QueryTargetError::Callback(source) = error else {
+            panic!("application-owned error")
+        };
+        assert_eq!(source.to_string(), "application cause");
+        let error = connection
+            .staged_transaction(
+                TransactionOptions::default(),
+                &AnswerCancellation::default(),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code().as_str(), "provider_operation_failed");
+        assert!(!format!("{error:?}").contains("application cause"));
     }
 
     #[test]

@@ -4387,6 +4387,9 @@ fn lower_target(error: type_bridge_orm::QueryTargetError) -> SdkExecutionDiagnos
         type_bridge_orm::QueryTargetError::Prepare(error)
         | type_bridge_orm::QueryTargetError::Reply(error) => lower_remote(error),
         type_bridge_orm::QueryTargetError::Interrupted(error) => error,
+        error @ type_bridge_orm::QueryTargetError::Callback(_) => {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        }
     }
 }
 

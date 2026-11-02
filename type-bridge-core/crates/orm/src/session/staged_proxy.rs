@@ -1,6 +1,7 @@
 //! The proxy route of a staged [`super::staged::Transaction`]: commit sends
 //! the stack as one signed `query-remote/v3` exchange.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -24,13 +25,82 @@ pub type StagedExchangeFn = Arc<
     dyn Fn(Vec<u8>) -> BoxFuture<'static, Result<Vec<u8>, SdkExecutionDiagnostic>> + Send + Sync,
 >;
 
+/// Caller-owned asynchronous transport for the staged proxy protocol.
+/// Reply authentication and execution deadlines remain with the connection.
+pub trait StagedTransport: Send + Sync + 'static {
+    /// Fetch the exact `/v3/capabilities` advertisement.
+    fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, crate::QueryTargetError>>;
+    /// Exchange the exact `/v3/staged` request for its exact reply bytes.
+    fn exchange_staged<'a>(
+        &'a self,
+        request: &'a [u8],
+    ) -> BoxFuture<'a, Result<Vec<u8>, crate::QueryTargetError>>;
+}
+
 /// How long the built-in route waits past the commit deadline for the
 /// server's own deadline reply.
 const SEND_GRACE: Duration = Duration::from_secs(5);
 
-enum Route {
+#[derive(Clone)]
+pub(crate) enum Route {
     Http(ProxyHttpTransport),
     Exchange(StagedExchangeFn),
+    Transport(Arc<dyn StagedTransport>),
+}
+impl Route {
+    pub(crate) async fn capabilities(
+        &self,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Vec<u8>, crate::QueryTargetError> {
+        match self {
+            Self::Http(http) => http
+                .staged_capabilities(deadline, cancellation)
+                .await
+                .map_err(Into::into),
+            Self::Transport(transport) => {
+                super::proxy_connection::bounded_exchange(deadline, cancellation, async {
+                    transport.staged_capabilities().await
+                })
+                .await
+            }
+            Self::Exchange(_) => Err(SdkExecutionDiagnostic::provider_failure(
+                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Connect,
+            )
+            .into()),
+        }
+    }
+
+    pub(crate) async fn exchange(
+        &self,
+        bytes: Cow<'_, [u8]>,
+        deadline: QueryExecutionDeadline,
+        cancellation: &AnswerCancellation,
+    ) -> Result<Vec<u8>, crate::QueryTargetError> {
+        match self {
+            Self::Http(http) => http
+                .exchange_staged(
+                    bytes.into_owned(),
+                    MAX_REMOTE_ENVELOPE_BYTES,
+                    deadline,
+                    cancellation,
+                )
+                .await
+                .map_err(Into::into),
+            Self::Exchange(exchange) => {
+                super::proxy_connection::bounded_exchange(deadline, cancellation, async {
+                    exchange(bytes.into_owned()).await.map_err(Into::into)
+                })
+                .await
+            }
+            Self::Transport(transport) => {
+                super::proxy_connection::bounded_exchange(deadline, cancellation, async {
+                    transport.exchange_staged(bytes.as_ref()).await
+                })
+                .await
+            }
+        }
+    }
 }
 
 /// What a proxy-backed transaction needs to send and verify one commit.
@@ -60,6 +130,15 @@ impl ProxyStaging {
                 ));
             }
         };
+        Self::with_route(route, advertisement, declared, limits)
+    }
+
+    pub(crate) fn with_route(
+        route: Route,
+        advertisement: &[u8],
+        declared: DeclaredSchema,
+        limits: QueryExecutionResourceLimits,
+    ) -> Result<Self, Diagnostic> {
         Ok(Self {
             route,
             advertisement: RemoteCapabilities::decode(advertisement)?,
@@ -176,21 +255,24 @@ impl ProxyStaging {
         bytes: Vec<u8>,
         timeout: Option<Duration>,
     ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
-        match &self.route {
-            Route::Exchange(exchange) => exchange(bytes).await,
-            Route::Http(http) => {
-                let cancellation = AnswerCancellation::default();
-                let deadline = match timeout {
-                    Some(timeout) => QueryExecutionDeadline::from_timeout_milliseconds(
-                        u64::try_from(timeout.saturating_add(SEND_GRACE).as_millis())
-                            .unwrap_or(u64::MAX),
-                    ),
-                    None => QueryExecutionDeadline::for_limits(self.limits.effective()),
-                };
-                http.exchange_staged(bytes, MAX_REMOTE_ENVELOPE_BYTES, deadline, &cancellation)
-                    .await
-            }
+        if let Route::Exchange(exchange) = &self.route {
+            return exchange(bytes).await;
         }
+        let cancellation = AnswerCancellation::default();
+        let deadline = match timeout {
+            Some(timeout) => QueryExecutionDeadline::from_timeout_milliseconds(
+                u64::try_from(timeout.saturating_add(SEND_GRACE).as_millis()).unwrap_or(u64::MAX),
+            ),
+            None => QueryExecutionDeadline::for_limits(self.limits.effective()),
+        };
+        self.route
+            .exchange(Cow::Owned(bytes), deadline, &cancellation)
+            .await
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                )
+            })
     }
 
     pub(crate) fn verify(
@@ -380,5 +462,72 @@ mod query_policy_tests {
                 )
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountCalls(Arc<AtomicUsize>);
+    impl StagedTransport for CountCalls {
+        fn staged_capabilities(&self) -> BoxFuture<'_, Result<Vec<u8>, crate::QueryTargetError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }
+        fn exchange_staged<'a>(
+            &'a self,
+            _: &'a [u8],
+        ) -> BoxFuture<'a, Result<Vec<u8>, crate::QueryTargetError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(std::future::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_or_expired_routes_do_not_invoke_caller_transports() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let route = Route::Transport(Arc::new(CountCalls(Arc::clone(&calls))));
+        for cancelled in [true, false] {
+            let signal = AnswerCancellation::default();
+            let timeout = if cancelled {
+                signal.cancel();
+                30_000
+            } else {
+                0
+            };
+            let deadline = QueryExecutionDeadline::from_timeout_milliseconds(timeout);
+            let code = if cancelled {
+                "provider_cancelled"
+            } else {
+                "transaction_deadline_exceeded"
+            };
+            assert_eq!(
+                route
+                    .capabilities(deadline, &signal)
+                    .await
+                    .unwrap_err()
+                    .into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read
+                    )
+                    .code()
+                    .as_str(),
+                code
+            );
+            assert_eq!(
+                route
+                    .exchange(Cow::Borrowed(b"request"), deadline, &signal)
+                    .await
+                    .unwrap_err()
+                    .into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read
+                    )
+                    .code()
+                    .as_str(),
+                code
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

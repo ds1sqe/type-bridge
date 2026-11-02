@@ -691,6 +691,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
         self.all_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
+            .map_err(|error| lower_target_error(error, None))
     }
 
     /// Run this terminal on the connection's direct, borrowed or proxy target.
@@ -700,7 +701,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         target: crate::QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
-    ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, ManagerTerminal::all(&control))?;
@@ -712,16 +713,16 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 &control.cancellation,
                 control.deadline,
             )
-            .await
-            .map_err(|error| lower_target_error(error, None))?;
-        let roots = manager_roots(&request, &result)?;
+            .await?;
+        let roots = manager_roots(&request, &result).map_err(reply_error)?;
         self.materialize_roots(
             &registry,
-            ProjectedQueryOrigin::for_target(&target)?,
+            ProjectedQueryOrigin::for_target(&target).map_err(reply_error)?,
             filter,
             &roots,
             &control,
         )
+        .map_err(reply_error)
     }
 
     /// Return all matches without consuming one caller-owned read transaction.
@@ -754,6 +755,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             control,
         )
         .await
+        .map_err(|error| lower_target_error(error, None))
     }
 
     /// Return the optional identity-proven first match in an owned read transaction.
@@ -782,6 +784,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
         self.first_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
+            .map_err(|error| lower_target_error(error, Some(filter.model())))
     }
 
     /// Run this terminal on the connection's direct, borrowed or proxy target.
@@ -791,7 +794,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         target: crate::QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
-    ) -> Result<Option<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, true)?;
         let (registry, request) = self.build_request(filter, ManagerTerminal::first())?;
@@ -804,15 +807,20 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 control.deadline,
             )
             .await
-            .map_err(|error| lower_target_error(error, Some(filter.model())))?;
-        let roots = manager_roots(&request, &result)?;
-        let mut projected = self.materialize_roots(
-            &registry,
-            ProjectedQueryOrigin::for_target(&target)?,
-            filter,
-            &roots,
-            &control,
-        )?;
+            .map_err(|error| match error {
+                crate::QueryTargetError::Callback(_) => error,
+                error => reply_error(lower_target_error(error, Some(filter.model()))),
+            })?;
+        let roots = manager_roots(&request, &result).map_err(reply_error)?;
+        let mut projected = self
+            .materialize_roots(
+                &registry,
+                ProjectedQueryOrigin::for_target(&target).map_err(reply_error)?,
+                filter,
+                &roots,
+                &control,
+            )
+            .map_err(reply_error)?;
         Ok(projected.pop())
     }
 
@@ -846,6 +854,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             control,
         )
         .await
+        .map_err(|error| lower_target_error(error, Some(filter.model())))
     }
 
     /// Count all distinct exact-model matches in an owned read transaction.
@@ -874,6 +883,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<u64, SdkExecutionDiagnostic> {
         self.count_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
+            .map_err(|error| lower_target_error(error, None))
     }
 
     /// Run this terminal on the connection's direct, borrowed or proxy target.
@@ -883,7 +893,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         target: crate::QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
-    ) -> Result<u64, SdkExecutionDiagnostic> {
+    ) -> Result<u64, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, ManagerTerminal::Count)?;
@@ -895,13 +905,12 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 &control.cancellation,
                 control.deadline,
             )
-            .await
-            .map_err(|error| lower_target_error(error, None))?;
-        let canonical = result
-            .for_request(&request)
-            .map_err(|error| lower_match_error(&error))?;
+            .await?;
+        let canonical = result.for_request(&request).map_err(|error| {
+            crate::QueryTargetError::Reply(crate::RemoteModelQueryV2Error::Match(error))
+        })?;
         let crate::match_request::MatchResult::Count { value, .. } = canonical else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
+            return Err(reply_error(SdkExecutionDiagnostic::internal_failure()));
         };
         Ok(*value)
     }
@@ -936,6 +945,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             control,
         )
         .await
+        .map_err(|error| lower_target_error(error, None))
     }
 
     /// Test whether any exact-model match exists in an owned read transaction.
@@ -964,6 +974,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
     ) -> Result<bool, SdkExecutionDiagnostic> {
         self.exists_on_target(crate::QueryTarget::Database(database), filter, control)
             .await
+            .map_err(|error| lower_target_error(error, None))
     }
 
     /// Run this terminal on the connection's direct, borrowed or proxy target.
@@ -973,7 +984,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         target: crate::QueryTarget<'_>,
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
-    ) -> Result<bool, SdkExecutionDiagnostic> {
+    ) -> Result<bool, crate::QueryTargetError> {
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
         let (registry, request) = self.build_request(filter, ManagerTerminal::Exists)?;
@@ -985,13 +996,12 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 &control.cancellation,
                 control.deadline,
             )
-            .await
-            .map_err(|error| lower_target_error(error, None))?;
-        let canonical = result
-            .for_request(&request)
-            .map_err(|error| lower_match_error(&error))?;
+            .await?;
+        let canonical = result.for_request(&request).map_err(|error| {
+            crate::QueryTargetError::Reply(crate::RemoteModelQueryV2Error::Match(error))
+        })?;
         let crate::match_request::MatchResult::Exists { value, .. } = canonical else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
+            return Err(reply_error(SdkExecutionDiagnostic::internal_failure()));
         };
         Ok(*value)
     }
@@ -1026,6 +1036,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             control,
         )
         .await
+        .map_err(|error| lower_target_error(error, None))
     }
 
     fn preflight(
@@ -1204,6 +1215,10 @@ fn manager_roots<'result>(
     Ok(roots)
 }
 
+fn reply_error(error: SdkExecutionDiagnostic) -> crate::QueryTargetError {
+    crate::QueryTargetError::Reply(crate::RemoteModelQueryV2Error::Execution(error))
+}
+
 fn lower_target_error(
     error: crate::QueryTargetError,
     first: Option<&TypeId>,
@@ -1225,6 +1240,7 @@ fn lower_target_error(
             RemoteModelQueryV2Error::Execution(error) => error,
         },
         QueryTargetError::Interrupted(error) => error,
+        error @ QueryTargetError::Callback(_) => error.into_diagnostic(SdkProviderOperation::Read),
     }
 }
 

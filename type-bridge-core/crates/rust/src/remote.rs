@@ -11,7 +11,7 @@ use type_bridge_contract::limits::{QueryLimits, QueryLimitsError};
 use type_bridge_contract::query_remote::RemoteCapabilities;
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::query_v2_prepared::QueryAuthority;
-use type_bridge_orm::session::StagedExchangeFn;
+use type_bridge_orm::session::StagedTransport;
 use type_bridge_orm::session::staged::TransactionOptions;
 use type_bridge_orm::{
     AnswerCancellation, AnswerTransport, InstalledRuntimeProjection, ProxyEndpoint,
@@ -201,8 +201,38 @@ fn query_limits_error(error: QueryLimitsError) -> Error {
 
 struct RemoteRuntime {
     connection: ProxyQueryConnection,
-    // `None` when the built-in route performs the exchange.
-    exchange: Option<Arc<dyn ProxyExchange>>,
+}
+
+struct ExchangeTransport(Arc<dyn ProxyExchange>);
+impl StagedTransport for ExchangeTransport {
+    fn staged_capabilities(
+        &self,
+    ) -> type_bridge_orm::session::backend::BoxFuture<
+        '_,
+        std::result::Result<Vec<u8>, QueryTargetError>,
+    > {
+        Box::pin(async move {
+            self.0
+                .staged_capabilities()
+                .await
+                .map_err(|error| QueryTargetError::Callback(Box::new(error)))
+        })
+    }
+
+    fn exchange_staged<'a>(
+        &'a self,
+        bytes: &'a [u8],
+    ) -> type_bridge_orm::session::backend::BoxFuture<
+        'a,
+        std::result::Result<Vec<u8>, QueryTargetError>,
+    > {
+        Box::pin(async move {
+            self.0
+                .exchange_staged(bytes)
+                .await
+                .map_err(|error| QueryTargetError::Callback(Box::new(error)))
+        })
+    }
 }
 
 /// A proxy connection branded by schema `S`. Each generated query terminal
@@ -250,7 +280,7 @@ impl ProxyDatabase<Unbound> {
                 .await
                 .map_err(connect_error)?,
             (None, ProxyRoute::Exchange(exchange)) => {
-                await_proxy(exchange.capabilities(), &cancellation, deadline).await?
+                await_proxy(exchange.staged_capabilities(), &cancellation, deadline).await?
             }
             (None, ProxyRoute::Endpoint(_)) => unreachable!("the endpoint was opened above"),
         };
@@ -363,10 +393,13 @@ impl ProxyDatabase<Unbound> {
                 .map_err(connect_error)?,
             None => connection,
         };
-        let runtime = Arc::new(RemoteRuntime {
-            connection,
-            exchange,
-        });
+        let connection = match exchange {
+            Some(exchange) => {
+                connection.with_staged_transport(Arc::new(ExchangeTransport(exchange)))
+            }
+            None => connection,
+        };
+        let runtime = Arc::new(RemoteRuntime { connection });
         Ok(ProxyDatabase {
             options: None,
             runtime: Some(runtime),
@@ -397,47 +430,15 @@ impl<S: Schema> ProxyDatabase<S> {
     pub async fn transaction(&self, options: TransactionOptions) -> Result<Transaction<S>> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
         let cancellation = AnswerCancellation::default();
-        let Some(exchange) = &runtime.exchange else {
-            return runtime
-                .connection
-                .staged_transaction(options, &cancellation)
-                .await
-                .map(|inner| {
-                    Transaction::new(inner)
-                        .with_query_schema(self.installed.clone(), self.registry.clone())
-                })
-                .map_err(connect_error);
-        };
-        // A fetched staged advertisement is checked against the connection's
-        // executor and reply key before it is trusted, then reused.
-        let advertisement = match runtime.connection.staged_advertisement() {
-            Some(advertisement) => advertisement.to_vec(),
-            None => {
-                let deadline =
-                    QueryExecutionDeadline::for_limits(runtime.connection.answer_limits());
-                await_proxy(exchange.staged_capabilities(), &cancellation, deadline).await?
-            }
-        };
-        let exchange = Arc::clone(exchange);
-        let send: StagedExchangeFn = Arc::new(move |bytes| {
-            let exchange = Arc::clone(&exchange);
-            Box::pin(async move {
-                // Any exchange error leaves the outcome unknown.
-                exchange.exchange_staged(&bytes).await.map_err(|_| {
-                    type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::provider_failure(
-                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                    )
-                })
-            })
-        });
         runtime
             .connection
-            .staged_transaction_with_exchange(&advertisement, send, options)
+            .staged_transaction_on_target(options, &cancellation)
+            .await
             .map(|inner| {
                 Transaction::new(inner)
                     .with_query_schema(self.installed.clone(), self.registry.clone())
             })
-            .map_err(connect_error)
+            .map_err(target_error)
     }
 
     /// Start one owner-branded query session over this proxy connection.
@@ -482,23 +483,9 @@ impl<S: Schema> ProxyDatabase<S> {
         deadline: QueryExecutionDeadline,
     ) -> Result<(ValidatedMatchRequest, ValidatedMatchResult)> {
         let runtime = self.runtime.as_ref().ok_or_else(remote_not_bound)?;
-        let Some(exchange) = &runtime.exchange else {
-            return QueryTarget::Proxy(&runtime.connection)
-                .execute(registry, validated, resources, &cancellation, deadline)
-                .await
-                .map_err(target_error);
-        };
-        let pending = runtime
-            .connection
-            .prepare(registry, validated, resources, &cancellation, deadline)
-            .map_err(target_error)?;
-        let response = await_proxy(
-            exchange.exchange(pending.request_bytes()),
-            &cancellation,
-            deadline,
-        )
-        .await?;
-        ProxyQueryConnection::finish(&pending, &response, &cancellation, deadline)
+        QueryTarget::Proxy(&runtime.connection)
+            .execute(registry, validated, resources, &cancellation, deadline)
+            .await
             .map_err(target_error)
     }
 }
@@ -571,6 +558,14 @@ pub(crate) fn target_error(error: QueryTargetError) -> Error {
         QueryTargetError::Direct(error) => Error::from_orm_hydration(error),
         QueryTargetError::Prepare(error) => remote_model_input_error(error),
         QueryTargetError::Reply(error) => remote_model_hydration_error(error),
+        QueryTargetError::Callback(error) => match error.downcast::<Error>() {
+            Ok(error) => *error,
+            Err(source) => Error::remote(
+                "proxy_transport_failure",
+                "Caller-owned proxy transport failed",
+                Some(source),
+            ),
+        },
         QueryTargetError::Interrupted(error) => {
             Error::from_sdk_execution(error, crate::ModelValidationPhase::Input)
         }
@@ -717,6 +712,7 @@ mod tests {
     struct TestSchema;
     impl sealed::Sealed for TestSchema {}
     impl Schema for TestSchema {}
+    impl crate::plan::StageSchema<TestSchema> for TestSchema {}
 
     #[derive(Debug)]
     struct Person;
@@ -1190,6 +1186,7 @@ mod tests {
                         .any(|entry| entry.plan().fetch_document_shape().is_some());
                     let answers = request.plans().iter().map(|entry| {
                         let plan=entry.plan();
+                        if plan.operation() == Operation::Count { return StagedAnswerV3::Count {value:7}; }
                         if plan.operation() == Operation::Exists { return StagedAnswerV3::Exists {value:true}; }
                         if plan.fetch_document_shape().is_some() {return StagedAnswerV3::Documents {documents:vec![]};}
                         let rows = if plan.pipeline().iter().any(|stage| matches!(stage, Stage::Reduce {..})) {
@@ -1267,6 +1264,131 @@ mod tests {
                 std::future::pending().await
             })
         }
+    }
+
+    struct StagedOnlyTransport(Transport);
+    impl ProxyExchange for StagedOnlyTransport {
+        fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+            panic!("native proxy connections use the staged advertisement route")
+        }
+        fn exchange<'a>(
+            &'a self,
+            _: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            panic!("native proxy terminals use the staged exchange route")
+        }
+        fn staged_capabilities(
+            &self,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+            self.0.capabilities()
+        }
+        fn exchange_staged<'a>(
+            &'a self,
+            bytes: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            self.0.exchange(bytes)
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_owned_queries_and_transactions_share_the_staged_transport() {
+        let (transport, exchanges) = sdk_queries_transport(0x79);
+        let capabilities = Arc::clone(&transport.capabilities);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
+            StagedOnlyTransport(transport),
+        ))
+        .await
+        .unwrap()
+        .with_schema(package())
+        .unwrap();
+        let mut session = remote.query().unwrap();
+        let person = session.exact::<Person>().unwrap();
+        assert_eq!(session.query(person).unwrap().count().await.unwrap(), 7);
+        let mut builder = crate::plan::PlanBuilder::<TestSchema>::new();
+        let _person = builder.exact::<Person>();
+        builder.count();
+        let plan = builder.build(&package()).unwrap();
+        let mut transaction = remote
+            .transaction(TransactionOptions::default())
+            .await
+            .unwrap();
+        let pending = transaction.stage(&plan).unwrap();
+        transaction.commit().await.unwrap();
+        assert!(matches!(
+            pending.get().unwrap().as_ref(),
+            crate::staged::PlanAnswer::Count(7)
+        ));
+        assert_eq!(*capabilities.lock().unwrap(), 1);
+        assert_eq!(exchanges.lock().unwrap().len(), 2);
+    }
+
+    struct FailingStagedTransport(Transport);
+    impl ProxyExchange for FailingStagedTransport {
+        fn capabilities(&self) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + '_>> {
+            self.0.capabilities()
+        }
+        fn exchange<'a>(
+            &'a self,
+            _: &'a [u8],
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            Box::pin(async {
+                Err(Error::remote(
+                    "application_transport_down",
+                    "Application transport is unavailable",
+                    Some(Box::new(std::io::Error::other("application cause"))),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_transport_preserves_application_error_codes_and_sources() {
+        let (transport, _) = sdk_queries_transport(0x7a);
+        let remote = ProxyDatabase::connect(ProxyConnectionPolicy::with_exchange(
+            FailingStagedTransport(transport),
+        ))
+        .await
+        .unwrap()
+        .with_schema(package())
+        .unwrap();
+        let mut session = remote.query().unwrap();
+        let person = session.exact::<Person>().unwrap();
+        let error = session.query(person).unwrap().count().await.unwrap_err();
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("application_transport_down"));
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "application cause"
+        );
+        let installed = remote.installed.as_ref().unwrap();
+        let filter = type_bridge_orm::ProjectedManagerFilter::try_new(
+            installed,
+            type_bridge_contract::id::TypeId::new(
+                type_bridge_contract::id::TypeKind::Entity,
+                "person",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let error = type_bridge_orm::ProjectedManagerFilterExecutor::new(installed)
+            .count_on_target(
+                QueryTarget::Proxy(&remote.runtime.as_ref().unwrap().connection),
+                &filter,
+                type_bridge_orm::ProjectedManagerFilterInvocationControl::capture(
+                    QueryExecutionResourceLimits::default(),
+                    AnswerCancellation::default(),
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(format!("{error:?}"), "Callback([REDACTED])");
+        let error = target_error(error);
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("application_transport_down"));
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "application cause"
+        );
     }
 
     fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {

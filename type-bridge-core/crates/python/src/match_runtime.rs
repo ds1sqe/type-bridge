@@ -400,7 +400,9 @@ pub(crate) struct PyQueryLimits {
 }
 
 impl PyQueryLimits {
-    pub(crate) const fn from_inner(inner: QueryLimits) -> Self { Self { inner } }
+    pub(crate) const fn from_inner(inner: QueryLimits) -> Self {
+        Self { inner }
+    }
 
     pub(crate) const fn inner(&self) -> QueryLimits {
         self.inner
@@ -1916,6 +1918,9 @@ pub(crate) fn py_query_target_error(error: QueryTargetError) -> PyErr {
             py_remote_model_error(error)
         }
         QueryTargetError::Interrupted(diagnostic) => py_sdk_diagnostic(diagnostic),
+        error @ QueryTargetError::Callback(_) => py_sdk_diagnostic(
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
+        ),
     }
 }
 

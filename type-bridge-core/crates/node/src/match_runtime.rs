@@ -47,6 +47,9 @@ pub(crate) fn napi_target_error(error: QueryTargetError) -> napi::Error {
             crate::query_v2_model_remote_runtime::remote_model_error(error)
         }
         QueryTargetError::Interrupted(diagnostic) => napi_sdk_diagnostic(diagnostic),
+        error @ QueryTargetError::Callback(_) => napi_sdk_diagnostic(
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
+        ),
     }
 }
 
@@ -215,7 +218,9 @@ pub struct NodeQueryLimits {
 }
 
 impl NodeQueryLimits {
-    pub(crate) const fn from_inner(inner: QueryLimits) -> Self { Self { inner } }
+    pub(crate) const fn from_inner(inner: QueryLimits) -> Self {
+        Self { inner }
+    }
 
     pub(crate) const fn inner(&self) -> QueryLimits {
         self.inner

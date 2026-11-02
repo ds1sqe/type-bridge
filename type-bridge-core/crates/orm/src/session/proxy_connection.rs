@@ -195,28 +195,31 @@ async fn run(
     operation: SdkProviderOperation,
     call: impl FnOnce(Option<Duration>) -> Result<Vec<u8>, ProxyHttpError> + Send + 'static,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
-    deadline.check(cancellation)?;
-    // The blocking call gets the remaining budget, plus a grace period so the
-    // deadline below always fires first and reports the interruption, as its
-    // own timeout: the worker thread does not outlive an abandoned
-    // invocation by long.
-    let timeout = deadline
-        .remaining_milliseconds()
-        .map(|remaining| Duration::from_millis(remaining).saturating_add(BLOCKING_GRACE));
-    let blocking = tokio::task::spawn_blocking(move || call(timeout));
+    bounded_exchange(deadline, cancellation, async move {
+        // The blocking worker gets a grace period; the invocation deadline wins.
+        let timeout = deadline.remaining_milliseconds().map(|remaining| Duration::from_millis(remaining).saturating_add(BLOCKING_GRACE));
+        match tokio::task::spawn_blocking(move || call(timeout)).await {
+            Ok(result) => result.map_err(|error| lower(error, operation)),
+            Err(_) => Err(SdkExecutionDiagnostic::internal_failure()),
+        }
+    })
+    .await
+}
+
+pub(crate) async fn bounded_exchange<E: From<SdkExecutionDiagnostic>>(
+    deadline: QueryExecutionDeadline,
+    cancellation: &AnswerCancellation,
+    exchange: impl std::future::Future<Output = Result<Vec<u8>, E>>,
+) -> Result<Vec<u8>, E> {
+    deadline.check(cancellation).map_err(E::from)?;
     let result = tokio::select! {
         biased;
         () = cancellation.cancelled() => None,
         () = deadline.elapsed() => None,
-        joined = blocking => Some(joined),
+        result = exchange => Some(result),
     };
-    deadline.check(cancellation)?;
-    match result {
-        Some(Ok(result)) => result.map_err(|error| lower(error, operation)),
-        Some(Err(_)) => Err(SdkExecutionDiagnostic::internal_failure()),
-        // Unreachable: the check above reports the interruption.
-        None => Err(SdkExecutionDiagnostic::internal_failure()),
-    }
+    deadline.check(cancellation).map_err(E::from)?;
+    result.unwrap_or_else(|| Err(SdkExecutionDiagnostic::internal_failure().into()))
 }
 
 fn lower(error: ProxyHttpError, operation: SdkProviderOperation) -> SdkExecutionDiagnostic {

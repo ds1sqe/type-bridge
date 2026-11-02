@@ -190,12 +190,10 @@ pub async fn given_rows_supported(test: &str) -> bool {
 /// The declared authority carries no key or cardinality facts, so the live
 /// schema omits those annotations to keep the live-authority check exact.
 pub async fn seeded(test: &str) -> (String, Database) {
-    let name = format!(
-        "{}{test}_{}_{}",
-        std::env::var("TB_STAGED_DATABASE_PREFIX").unwrap_or_else(|_| "tb_server_v3_".into()),
-        std::process::id(),
-        SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = match std::env::var("TB_STAGED_DATABASE_PREFIX") {
+        Ok(prefix) => format!("{prefix}{test}_{}_{}", std::process::id(), SEQUENCE.fetch_add(1, Ordering::Relaxed)),
+        Err(_) => live_database::name(&format!("server_v3_{test}")),
+    };
     let db = connect(&name).await;
     db.create_database().await.expect("database created");
     let schema = race::SCHEMA_TYPEQL
