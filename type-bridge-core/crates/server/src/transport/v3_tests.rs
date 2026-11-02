@@ -1624,12 +1624,15 @@ mod raw_tests {
         queries: Mutex<Vec<(String, TransactionKind)>>,
         commits: Mutex<Vec<TransactionKind>>,
         refuse: bool,
+        gate: Option<Arc<tokio::sync::Semaphore>>,
     }
     impl RawQueryExecutor for Arc<RawHost> {
         fn execute<'a>(&'a self, _database: &'a str, query: &'a str, kind: TransactionKind)
             -> Pin<Box<dyn Future<Output=Result<Vec<u8>,RawQueryError>> + Send + 'a>> {
             self.queries.lock().unwrap().push((query.to_owned(),kind));
-            Box::pin(async { Ok(br#"{ "queryType": "write", "answerType": "ok", "answers": null, "query": null, "warning": null }"#.to_vec()) })
+            Box::pin(async move {
+                if let Some(gate) = &self.gate { gate.acquire().await.unwrap().forget(); }
+                Ok(br#"{ "queryType": "write", "answerType": "ok", "answers": null, "query": null, "warning": null }"#.to_vec()) })
         }
     }
     impl Interceptor for Arc<RawHost> {
@@ -1708,6 +1711,25 @@ mod raw_tests {
             assert_eq!(raw(&fixture,invalid).await.0,StatusCode::BAD_REQUEST);
         }
         assert!(host.queries.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn raw_disconnect_preserves_commit_and_observation() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let host = Arc::new(RawHost { gate: Some(Arc::clone(&gate)), ..Default::default() });
+        let fixture = fixture(Arc::clone(&host), None);
+        let handler = tokio::spawn(async move {
+            raw(&fixture, request("insert unchecked;", "write", "raw-disconnect-0001")).await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while host.queries.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        handler.abort();
+        assert!(handler.await.unwrap_err().is_cancelled());
+        gate.add_permits(1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while host.commits.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        assert_eq!(*host.commits.lock().unwrap(), [TransactionKind::Write]);
     }
     #[tokio::test]
     async fn raw_replay_is_refused_before_a_second_transaction() {

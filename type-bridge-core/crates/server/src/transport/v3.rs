@@ -115,18 +115,18 @@ impl StagedExecutor {
             .server_version()
             .as_ref()
             .and_then(type_bridge_core_lib::version::semantic_profile_id);
-        let mut advertisement = staged_advertisement_for_profile(&query.advertisement, profile)
+        let advertisement = staged_advertisement_for_profile(&query.advertisement, profile)
             .and_then(|advertisement| match query.staged_query_limits {
                 Some(limits) => advertisement.with_query_limits(limits),
                 None => Ok(advertisement),
             })
             .expect("validated advertisement re-states under the staged capabilities");
         #[cfg(feature = "typedb")]
-        if query.raw_executor.is_some() {
+        let advertisement = if query.raw_executor.is_some() {
             let mut capabilities = advertisement.capabilities().clone();
             capabilities
                 .insert(CapabilityId::new("query.remote.raw").expect("static raw capability"));
-            advertisement = RemoteCapabilities::new(
+            RemoteCapabilities::new(
                 capabilities,
                 advertisement.executor().clone(),
                 advertisement.reply_key(),
@@ -134,8 +134,10 @@ impl StagedExecutor {
             .with_query_limits(advertisement.query_limits())
             .expect("validated limits")
             .with_answer_limits(advertisement.answer_limits().clone())
-            .expect("validated limits");
-        }
+            .expect("validated limits")
+        } else {
+            advertisement
+        };
         let fingerprint = advertisement
             .fingerprint()
             .expect("staged advertisement fingerprints");

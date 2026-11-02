@@ -60,7 +60,7 @@ pub(super) async fn handle_raw(
     State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
-    let Some(executor) = &state.query.raw_executor else {
+    let Some(executor) = state.query.raw_executor.clone() else {
         return refusal(StatusCode::FORBIDDEN, "raw_disabled");
     };
     let Some(deadline) = Instant::now().checked_add(state.query.execution_timeout) else {
@@ -177,53 +177,57 @@ pub(super) async fn handle_raw(
     }
     // Never cancel a commit: once dispatch starts the provider completes its
     // one transaction, and the host observes the actual durability outcome.
-    let answer = executor
-        .execute(state.query.database.database_name(), &request.query, kind)
-        .await;
-    if answer.is_ok() && kind != TransactionKind::Read {
-        let outcome = V3CommitOutcome::new(kind, None);
-        let _ = await_before_deadline(
-            response_audit_deadline(deadline),
-            state.pipeline().observe_v3_commit(&outcome, &ctx),
-        )
-        .await;
-    }
-    let (response, success, code, size) = match answer {
-        Ok(bytes) => {
-            let size = bytes.len();
-            (
-                (
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    bytes,
-                )
-                    .into_response(),
-                true,
-                "ok",
-                size,
+    let task = tokio::spawn(async move {
+        let answer = executor
+            .execute(state.query.database.database_name(), &request.query, kind)
+            .await;
+        if answer.is_ok() && kind != TransactionKind::Read {
+            let outcome = V3CommitOutcome::new(kind, None);
+            let _ = await_before_deadline(
+                response_audit_deadline(deadline),
+                state.pipeline().observe_v3_commit(&outcome, &ctx),
             )
+            .await;
         }
-        Err(error) => {
-            let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
-            ((status,axum::Json(serde_json::json!({"error":"typedb_error","typedb":{"code":error.code,"message":error.message}}))).into_response(),false,"typedb_error",0)
+        let (response, success, code, size) = match answer {
+            Ok(bytes) => {
+                let size = bytes.len();
+                (
+                    (
+                        [(axum::http::header::CONTENT_TYPE, "application/json")],
+                        bytes,
+                    )
+                        .into_response(),
+                    true,
+                    "ok",
+                    size,
+                )
+            }
+            Err(error) => {
+                let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::BAD_GATEWAY);
+                ((status,axum::Json(serde_json::json!({"error":"typedb_error","typedb":{"code":error.code,"message":error.message}}))).into_response(),false,"typedb_error",0)
+            }
+        };
+        let outcome = V3PolicyOutcome::new(success, code, size);
+        if !matches!(
+            await_before_deadline(
+                response_audit_deadline(deadline),
+                state.pipeline().finish_v3_request(&outcome, &ctx)
+            )
+            .await,
+            Some(Ok(()))
+        ) {
+            return refusal(
+                StatusCode::SERVICE_UNAVAILABLE,
+                if success && kind != TransactionKind::Read {
+                    "commit_outcome_unknown"
+                } else {
+                    "query_remote_policy_rejected"
+                },
+            );
         }
-    };
-    let outcome = V3PolicyOutcome::new(success, code, size);
-    if !matches!(
-        await_before_deadline(
-            response_audit_deadline(deadline),
-            state.pipeline().finish_v3_request(&outcome, &ctx)
-        )
-        .await,
-        Some(Ok(()))
-    ) {
-        return refusal(
-            StatusCode::SERVICE_UNAVAILABLE,
-            if success && kind != TransactionKind::Read {
-                "commit_outcome_unknown"
-            } else {
-                "query_remote_policy_rejected"
-            },
-        );
-    }
-    response
+        response
+    });
+    task.await
+        .unwrap_or_else(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "commit_outcome_unknown"))
 }
