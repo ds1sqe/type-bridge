@@ -77,10 +77,6 @@ name = "staged_smoke_server"
 required-features = ["typedb", "v2-query"]
 
 [[test]]
-name = "http_integration_tests"
-required-features = ["axum-transport"]
-
-[[test]]
 name = "runtime_config_documentation"
 required-features = ["v2-query"]
 

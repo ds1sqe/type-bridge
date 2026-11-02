@@ -8,7 +8,6 @@ use type_bridge_server::config::V2AuthorityMode;
 use type_bridge_server::config::{AuditLogConfig, RuntimeServerConfig};
 use type_bridge_server::interceptor::audit_log::AuditLogInterceptor;
 use type_bridge_server::pipeline::PipelineBuilder;
-use type_bridge_server::schema_source::FileSchemaSource;
 use type_bridge_server::transport;
 #[cfg(feature = "v2-query")]
 use type_bridge_server::typedb::PreparedSecureTypeDBConnection;
@@ -125,19 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Starting type-bridge-server"
     );
 
-    // Connect to TypeDB
-    let client = TypeDBClient::connect_prepared_secure(&outbound_transport)
-        .await
-        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
-    tracing::info!("TypeDB driver connected successfully");
-
-    // Build pipeline
-    let mut builder = PipelineBuilder::new(client).with_default_database(config.typedb.database());
-
-    if !config.schema.source_file.is_empty() {
-        builder = builder.with_schema_source(FileSchemaSource::new(&config.schema.source_file));
-        tracing::info!(file = config.schema.source_file.as_str(), "Loading schema");
-    }
+    let mut builder = PipelineBuilder::new().with_default_database(config.typedb.database());
 
     for name in &config.interceptors.enabled {
         match name.as_str() {
@@ -191,10 +178,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         transport::v3::create_v3_router(Arc::new(pipeline), Arc::new(state))
     } else {
-        transport::http::create_router(Arc::new(pipeline))
+        transport::http::create_health_router(false)
     };
     #[cfg(not(feature = "v2-query"))]
-    let router = transport::http::create_router(Arc::new(pipeline));
+    let router = transport::http::create_health_router(false);
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)
         .parse()

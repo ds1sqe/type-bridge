@@ -93,6 +93,19 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Breaking
 
+- Removed server `QueryExecutor`, `QueryInput`, `QueryOutput`,
+  `ValidateInput`, `ValidateOutput`, `ValidationErrorDetail`,
+  `QueryPipeline::{execute_query,validate,schema,is_connected,default_database}`,
+  and `PipelineBuilder::{with_schema_source,with_crud_interceptor,with_skip_validation}`.
+  Use `StagedExecutor` and staged plans; `PipelineBuilder::new()` now builds
+  only the policy chain and takes no executor argument.
+- Removed `transport::http::create_router` and all V1 transport models
+  (`QueryRequest`, `RawQueryRequest`, `ValidateRequest`, `QueryResponse`,
+  `ResponseMetadata`, `ValidateResponse`, `HealthResponse`); use
+  `transport::v3::create_v3_router` and the staged request/reply types.
+  `/health` keeps its body; removed query/schema routes return the
+  `route_removed` 404 body naming `/v3/staged`.
+
 - Removed server `transport::v2`, `create_v2_router`,
   `create_router_with_v2`, `/v2/query`, `/v2/capabilities`, and the
   `v2_smoke_server` example; use `transport::v3::create_v3_router` and

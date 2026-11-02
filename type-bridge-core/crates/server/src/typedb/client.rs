@@ -5,7 +5,6 @@ use super::real_driver::sanitize_prepared_connect_error;
 use super::real_driver::{RealTypeDBBackend, prepare_secure_connect_options};
 use crate::config::{SecureTypeDBSection, TypeDBSection};
 use crate::error::PipelineError;
-use crate::executor::QueryExecutor;
 use type_bridge_typedb_runtime::PreparedSecureConnectOptions;
 
 /// One immutable server connection identity bound to one prepared transport.
@@ -186,24 +185,6 @@ impl TypeDBClient {
     }
 }
 
-impl QueryExecutor for TypeDBClient {
-    fn execute<'a>(
-        &'a self,
-        database: &'a str,
-        typeql: &'a str,
-        transaction_type: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<serde_json::Value, PipelineError>> + Send + 'a>,
-    > {
-        Box::pin(async move { self.execute(database, typeql, transaction_type).await })
-    }
-
-    fn is_connected(&self) -> bool {
-        self.is_connected()
-    }
-}
-
-/// Parse a transaction type string into a TypeDB TransactionType.
 pub(crate) fn parse_transaction_type(tx_type: &str) -> Result<TransactionType, PipelineError> {
     match tx_type {
         "read" => Ok(TransactionType::Read),
@@ -970,34 +951,8 @@ mod tests {
     // QueryExecutor trait impl tests
     // =============================================
 
-    #[test]
-    fn type_db_client_implements_query_executor() {
-        fn assert_executor<T: QueryExecutor>() {}
-        assert_executor::<TypeDBClient>();
-    }
 
-    #[tokio::test]
-    async fn query_executor_execute_delegates_to_client() {
-        let tx = MockTransaction::new(QueryResultKind::Rows(vec![serde_json::json!({"x": 1})]));
-        let client = make_client(MockBackend::new(tx));
-        let executor: Box<dyn QueryExecutor> = Box::new(client);
 
-        let result = executor
-            .execute("db", "match $x isa thing;", "read")
-            .await
-            .unwrap();
-        assert!(result.is_array());
-        assert_eq!(result.as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn query_executor_is_connected_delegates_to_client() {
-        let mut backend = MockBackend::new(MockTransaction::new(QueryResultKind::Ok));
-        backend.is_open = true;
-        let client = make_client(backend);
-        let executor: Box<dyn QueryExecutor> = Box::new(client);
-        assert!(executor.is_connected());
-    }
 
     #[tokio::test]
     async fn prepared_first_and_v2_connections_never_expose_credentials_or_provider_identity() {

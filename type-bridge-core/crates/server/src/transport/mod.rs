@@ -1,7 +1,5 @@
-/// Released V1 Axum routes and handlers.
+/// HTTP error responses and health mount.
 pub mod http;
-/// Released V1 HTTP request and response models.
-pub mod types;
 
 #[cfg(feature = "v2-query")]
 /// Shared staged executor state and replay protection.

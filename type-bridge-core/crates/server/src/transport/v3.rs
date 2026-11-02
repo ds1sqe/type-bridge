@@ -237,7 +237,15 @@ pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryStat
     Router::new()
         .route("/v3/staged", post(handle_v3_staged))
         .route("/v3/capabilities", get(handle_v3_capabilities))
+        .route("/health", get(handle_health))
         .with_state(state)
+        .fallback(super::http::route_removed)
+}
+
+async fn handle_health(
+    State(state): State<Arc<StagedExecutor>>,
+) -> axum::Json<super::http::HealthBody> {
+    super::http::health_response(state.query.database.is_connected())
 }
 
 async fn handle_v3_capabilities(

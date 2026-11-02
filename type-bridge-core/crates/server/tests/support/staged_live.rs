@@ -32,8 +32,6 @@ use type_bridge_orm::session::backend::{AnswerLimits, QueryResult};
 use type_bridge_orm::session::database::Database;
 use type_bridge_orm::session::real_driver::ConnectOptions;
 use type_bridge_schema::{ManagedDeltaContext, managed_schema_state, resolve};
-use type_bridge_server::error::PipelineError;
-use type_bridge_server::executor::QueryExecutor;
 use type_bridge_server::interceptor::{
     InterceptError, Interceptor, RequestContext, StagedWriteAuthority, V2PolicyOutcome,
     V3CommitOutcome, V3PolicyPlan,
@@ -164,29 +162,6 @@ impl Interceptor for LivePolicy {
             outcome.failure().and_then(|f| f.code()).map(str::to_owned),
         ));
         Box::pin(async { Ok(()) })
-    }
-}
-
-/// The v1 executor behind the pipeline; the staged routes run on the
-/// `StagedQueryState` database instead, so it only reports a connection.
-struct UnusedV1Executor;
-
-impl QueryExecutor for UnusedV1Executor {
-    fn execute<'a>(
-        &'a self,
-        _database: &'a str,
-        _typeql: &'a str,
-        _transaction_type: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, PipelineError>> + Send + 'a>> {
-        Box::pin(async {
-            Err(PipelineError::QueryExecution(
-                "the staged live fixture serves no v1 queries".to_owned(),
-            ))
-        })
-    }
-
-    fn is_connected(&self) -> bool {
-        true
     }
 }
 
@@ -354,7 +329,7 @@ pub async fn proxy_with_database(
         .with_unauthenticated_staged_writes(allow_unauthenticated),
     );
     let commits = Arc::clone(&policy.commits);
-    let pipeline = PipelineBuilder::new(UnusedV1Executor)
+    let pipeline = PipelineBuilder::new()
         .with_default_database(name)
         .with_interceptor(policy)
         .build()

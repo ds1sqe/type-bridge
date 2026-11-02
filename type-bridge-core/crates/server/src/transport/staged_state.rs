@@ -803,7 +803,6 @@ mod tests {
 
     use crate::interceptor::{InterceptError, Interceptor};
     use crate::pipeline::{PipelineBuilder, QueryPipeline};
-    use crate::test_helpers::MockExecutor;
 
     use super::*;
 
@@ -1053,7 +1052,7 @@ mod tests {
     }
 
     fn default_pipeline() -> QueryPipeline {
-        PipelineBuilder::new(MockExecutor::new())
+        PipelineBuilder::new()
             .with_default_database("server-staged-route")
             .build()
             .expect("query pipeline")

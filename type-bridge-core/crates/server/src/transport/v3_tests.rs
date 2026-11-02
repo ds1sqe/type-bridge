@@ -168,7 +168,7 @@ impl Interceptor for VouchingPolicy {
 }
 
 fn vouching_pipeline() -> QueryPipeline {
-    PipelineBuilder::new(MockExecutor::new())
+    PipelineBuilder::new()
         .with_default_database("server-v2-route")
         .with_interceptor(VouchingPolicy)
         .build()
@@ -469,7 +469,7 @@ impl Interceptor for Arc<StagedGate> {
 }
 
 fn gate_pipeline(gate: &Arc<StagedGate>) -> QueryPipeline {
-    PipelineBuilder::new(MockExecutor::new())
+    PipelineBuilder::new()
         .with_default_database("server-v2-route")
         .with_interceptor(Arc::clone(gate))
         .build()
@@ -664,7 +664,7 @@ impl Interceptor for Arc<WithholdsReplies> {
 
 fn withholding_fixture() -> (Arc<WithholdsReplies>, V3Fixture) {
     let policy = Arc::new(WithholdsReplies::default());
-    let pipeline = PipelineBuilder::new(MockExecutor::new())
+    let pipeline = PipelineBuilder::new()
         .with_default_database("server-v2-route")
         .with_interceptor(VouchingPolicy)
         .with_interceptor(Arc::clone(&policy))
@@ -922,7 +922,7 @@ fn hook_pipeline(policies: &[&Arc<HookPolicy>]) -> QueryPipeline {
     policies
         .iter()
         .fold(
-            PipelineBuilder::new(MockExecutor::new()).with_default_database("server-v2-route"),
+            PipelineBuilder::new().with_default_database("server-v2-route"),
             |builder, policy| builder.with_interceptor(Arc::clone(policy)),
         )
         .build()
@@ -1558,7 +1558,7 @@ impl Interceptor for Arc<OrderPolicy> {
 }
 
 fn order_pipeline(policy: &Arc<OrderPolicy>) -> QueryPipeline {
-    PipelineBuilder::new(MockExecutor::new())
+    PipelineBuilder::new()
         .with_default_database("server-v2-route")
         .with_interceptor(Arc::clone(policy))
         .build()
@@ -1690,4 +1690,19 @@ async fn staged_io_traces_use_nonce_without_payload_fingerprints() {
     assert!(!encoded.contains(&request.fingerprint().unwrap().digest().to_hex()));
     assert!(!encoded.contains(&read.fingerprint().unwrap().digest().to_hex()));
     assert!(records.iter().any(|record| record.name == "type_bridge.io.reply" && record.fields.contains_key("bytes_out")));
+}
+
+#[tokio::test]
+async fn staged_router_preserves_health_and_names_removed_routes() {
+    let fixture = v3_fixture(default_pipeline(), false);
+    let health = call(&fixture.router, "GET", "/health", Vec::new()).await;
+    assert_eq!(health, br#"{"status":"ok","version":"1.5.11","typedb_connected":true}"#);
+    for path in ["/query", "/query/raw", "/query/validate", "/schema", "/v2/query", "/v2/capabilities", "/v2/unknown"] {
+        for method in ["GET", "POST"] {
+            let response = fixture.router.clone().oneshot(Request::builder()
+                .method(method).uri(path).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+            assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), br#"{"error":"route_removed","use":"/v3/staged"}"#);
+        }
+    }
 }

@@ -208,11 +208,8 @@ async fn main() {
             std::env::var("SMOKE_ALLOW_STAGED_WRITES").as_deref() == Ok("true"),
         ),
     );
-    let policy_client = TypeDBClient::connect_prepared_secure(&prepared_connection)
-        .await
-        .expect("policy pipeline connects");
     let pipeline = Arc::new(
-        PipelineBuilder::new(policy_client)
+        PipelineBuilder::new()
             .with_default_database(database_name)
             .build()
             .expect("policy pipeline builds"),
