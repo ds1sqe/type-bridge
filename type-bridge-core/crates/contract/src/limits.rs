@@ -1003,3 +1003,117 @@ mod query_limits_tests {
         assert!(from_canonical_json_with_limits::<serde_json::Value>(&beyond, unbounded).is_err());
     }
 }
+
+/// A call's execution timeout: unbounded, or a positive millisecond duration.
+///
+/// The wire representation is `null` for no deadline and a positive integer
+/// otherwise. Binding inputs of zero or less map to [`Self::NONE`]; the wire
+/// refuses them so there is only one encoding of an unbounded timeout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct QueryTimeout(Option<std::num::NonZeroU64>);
+
+impl QueryTimeout {
+    /// No execution deadline.
+    pub const NONE: Self = Self(None);
+
+    /// A positive execution duration in milliseconds.
+    #[must_use]
+    pub const fn after(milliseconds: std::num::NonZeroU64) -> Self {
+        Self(Some(milliseconds))
+    }
+
+    /// Map a language binding's signed input: zero and negatives are unbounded.
+    #[must_use]
+    pub const fn from_signed_milliseconds(milliseconds: i64) -> Self {
+        if milliseconds <= 0 {
+            Self::NONE
+        } else {
+            Self(std::num::NonZeroU64::new(milliseconds as u64))
+        }
+    }
+
+    /// The positive duration, or `None` when execution is unbounded.
+    #[must_use]
+    pub const fn milliseconds(self) -> Option<u64> {
+        match self.0 {
+            Some(value) => Some(value.get()),
+            None => None,
+        }
+    }
+
+    /// Tighten by another timeout, treating no deadline as unbounded.
+    #[must_use]
+    pub const fn constrained_by(self, ceiling: Self) -> Self {
+        match (self.0, ceiling.0) {
+            (Some(left), Some(right)) if left.get() > right.get() => ceiling,
+            (Some(_), _) => self,
+            (None, _) => ceiling,
+        }
+    }
+}
+
+impl Default for QueryTimeout {
+    fn default() -> Self {
+        Self::from_signed_milliseconds(60_000)
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::QueryTimeout;
+    use std::num::NonZeroU64;
+
+    #[test]
+    fn timeout_is_positive_or_unbounded_without_a_duration_cap() {
+        assert_eq!(QueryTimeout::default().milliseconds(), Some(60_000));
+        for input in [i64::MIN, -1, 0] {
+            assert_eq!(
+                QueryTimeout::from_signed_milliseconds(input),
+                QueryTimeout::NONE
+            );
+        }
+        for input in [1, 86_400_001, i64::MAX] {
+            assert_eq!(
+                QueryTimeout::from_signed_milliseconds(input).milliseconds(),
+                Some(input as u64)
+            );
+        }
+        assert_eq!(
+            QueryTimeout::after(NonZeroU64::MAX).milliseconds(),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn intersection_is_tighten_only_including_an_unbounded_ceiling() {
+        let short = QueryTimeout::from_signed_milliseconds(7);
+        let long = QueryTimeout::default();
+        for (left, right, expected) in [
+            (short, long, short),
+            (long, short, short),
+            (QueryTimeout::NONE, short, short),
+            (short, QueryTimeout::NONE, short),
+            (QueryTimeout::NONE, QueryTimeout::NONE, QueryTimeout::NONE),
+        ] {
+            assert_eq!(left.constrained_by(right), expected);
+        }
+    }
+
+    #[test]
+    fn wire_none_is_null_and_bounded_timeouts_are_positive_integers() {
+        for (timeout, wire) in [
+            (QueryTimeout::NONE, "null"),
+            (QueryTimeout::default(), "60000"),
+        ] {
+            assert_eq!(serde_json::to_string(&timeout).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<QueryTimeout>(wire).unwrap(), timeout);
+        }
+        for wire in ["0", "-1", "1.0", "1.5", "true", "\"none\"", "{}", "[]"] {
+            assert!(
+                serde_json::from_str::<QueryTimeout>(wire).is_err(),
+                "{wire}"
+            );
+        }
+    }
+}
