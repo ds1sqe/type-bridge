@@ -847,6 +847,9 @@ impl TransactionContext {
                 })
                 .await?;
                 active_transaction(&mut inner)?;
+                crate::execution_phases::record(
+                    type_bridge_contract::execution_timeline::ExecutionPhase::Accepted,
+                );
                 let mut lease = TransactionContextMutationLease {
                     inner,
                     phase: MutationLeasePhase::PreDispatch,
@@ -867,6 +870,9 @@ impl TransactionContext {
                 // Arm before awaiting provider work; cancellation keeps the context
                 // rollback-only until the caller explicitly rolls it back.
                 lease.phase = MutationLeasePhase::PossibleEffect;
+                crate::execution_phases::record(
+                    type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted,
+                );
                 let result = crate::query_plan_exec::execute_plans_counted::<true>(
                     lease.transaction()?,
                     given,
@@ -879,6 +885,9 @@ impl TransactionContext {
                 .await;
                 match result {
                     Ok((answers, _)) => {
+                        crate::execution_phases::record(
+                            type_bridge_contract::execution_timeline::ExecutionPhase::BeforeCommit,
+                        );
                         lease.complete_success();
                         Ok(answers)
                     }
@@ -1553,6 +1562,71 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[tokio::test]
+    async fn borrowed_write_phases_keep_the_outer_call_clock() {
+        let calls = Arc::new(Calls::default());
+        let context = TransactionContext::new(
+            super::super::eager::EagerTransaction::new(
+                Box::new(PlanTransaction {
+                    calls,
+                    malformed: false,
+                }),
+                TxType::Write,
+                None,
+            ),
+            TxType::Write,
+            CapabilitySet::new(),
+            None,
+            DatabaseExecutionIdentity::isolated("borrowed-write-phases"),
+            None,
+        );
+        let policy = QueryExecutionResourceLimits::default();
+        let cancellation = crate::AnswerCancellation::default();
+        let deadline = crate::QueryExecutionDeadline::for_limits(policy);
+        let (diagnostic, phases) =
+            crate::execution_phases::observe(deadline.started(), true, async {
+                context
+                    .execute_plans(
+                        &[crate::query_plan_exec::race::touch()],
+                        &policy,
+                        &cancellation,
+                        deadline,
+                    )
+                    .await
+                    .unwrap();
+                // Cancellation after execution still belongs to the caller's clock.
+                cancellation.cancel();
+                deadline.check(&cancellation).unwrap_err()
+            })
+            .await;
+        let diagnostic = phases.unwrap().diagnostic(diagnostic);
+        let host = serde_json::to_value(diagnostic.host_json()).unwrap();
+        let stamps = host["details"]["execution_timeline"]["value"]["stamps"]
+            .as_array()
+            .unwrap();
+        let names: Vec<_> = stamps
+            .iter()
+            .map(|stamp| stamp["phase"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "fired",
+                "accepted",
+                "execution_started",
+                "db_write",
+                "before_commit",
+                "failed"
+            ]
+        );
+        assert_eq!(stamps[3]["statement_index"], 0);
+        assert_eq!(stamps.last().unwrap()["failing_phase"], "before_commit");
+        assert_eq!(
+            context.lifecycle_state().await,
+            TransactionContextState::Active
+        );
     }
 
     #[tokio::test]
