@@ -6,6 +6,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- The V3 staged contract carries typed IID result references. Singleton
+  answers broadcast; larger answers zip only with equal template row counts.
+  Forward, scalar, incompatible-type and cross-source references are refused.
+
 - Direct manager connections accept independently configured `QueryLimits`;
   borrowed transactions and projected single/batch writes inherit them.
   Raising every needed dimension keeps wide rows in one statement; an

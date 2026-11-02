@@ -661,7 +661,7 @@ impl QueryPlanV3 {
         validate_local_functions(&spec.functions, limits.structural, &mut nodes)?;
         let mut binding_types = BTreeMap::new();
         let (fetch_document_shape, scalar_types) =
-            validate_stages(&spec, schema, limits, &mut nodes, &mut binding_types)?;
+            validate_stages(&spec, schema, limits, &mut nodes, &mut binding_types, None)?;
         fn extra_zero_hop_nodes(
             pattern: &QueryPattern,
             domains: &BTreeMap<BindingId, BTreeSet<TypeId>>,
@@ -1002,6 +1002,29 @@ impl QueryPlanV3 {
         spec.given_rows = Some(rows);
         Self::new_with_limits(spec, schema, self.limits)
     }
+    pub(crate) fn selected_thing_types(
+        &self,
+        schema: &DeclaredSchema,
+    ) -> Result<BTreeMap<BindingId, BTreeSet<TypeId>>, Diagnostic> {
+        let mut output = BTreeMap::new();
+        let mut nodes = 0;
+        validate_stages(
+            &self.spec(),
+            schema,
+            self.limits,
+            &mut nodes,
+            &mut BTreeMap::new(),
+            Some(&mut output),
+        )?;
+        Ok(output)
+    }
+
+    pub(crate) fn without_given_rows(&self, schema: &DeclaredSchema) -> Result<Self, Diagnostic> {
+        let mut spec = self.spec();
+        spec.given_rows = None;
+        Self::new_with_limits(spec, schema, self.limits)
+    }
+
     /// Select an operation when lifting an invocation from V2.
     pub fn with_operation(
         &self,
@@ -1148,6 +1171,7 @@ fn validate_stages(
     limits: QueryLimits,
     nodes: &mut usize,
     binding_types: &mut BTreeMap<BindingId, BTreeSet<TypeId>>,
+    output_types: Option<&mut BTreeMap<BindingId, BTreeSet<TypeId>>>,
 ) -> Result<
     (
         Option<FetchDocumentShape>,
@@ -1734,6 +1758,20 @@ fn validate_stages(
             .entry(*binding)
             .or_default()
             .extend(domains.iter().cloned());
+    }
+    if let Some(output_types) = output_types
+        && let QueryOutput::Rows { columns } = &spec.output
+    {
+        for binding in columns {
+            if let Some(domains) = types.get(binding)
+                && !domains.is_empty()
+                && domains
+                    .iter()
+                    .all(|domain| matches!(domain.kind(), TypeKind::Entity | TypeKind::Relation))
+            {
+                output_types.insert(*binding, domains.clone());
+            }
+        }
     }
     if let Some(document) = fetched {
         let (answer_mandatory, answer_optional) = captured_environment

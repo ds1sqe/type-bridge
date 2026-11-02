@@ -2827,6 +2827,15 @@ fn validate_input_rows(
     inputs: &[InputRow],
     limits: StructuralLimits,
 ) -> Result<(), Diagnostic> {
+    validate_input_rows_deferred(columns, inputs, limits, None)
+}
+
+pub(crate) fn validate_input_rows_deferred(
+    columns: &[InputColumn],
+    inputs: &[InputRow],
+    limits: StructuralLimits,
+    deferred: Option<&BTreeSet<InputColumnId>>,
+) -> Result<(), Diagnostic> {
     if columns.is_empty() {
         if !inputs.is_empty() {
             return Err(failure(
@@ -2874,7 +2883,8 @@ fn validate_input_rows(
             }
             for (column, value) in columns.iter().zip(row.values()) {
                 match value {
-                    None if column.optional() => {}
+                    None if column.optional()
+                        || deferred.is_some_and(|columns| columns.contains(&column.id())) => {}
                     None => {
                         return Err(failure(
                             DiagnosticCategory::InvalidContract,

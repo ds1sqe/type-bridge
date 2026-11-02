@@ -715,6 +715,26 @@ attributes, values and roles fail with `query_remote_v3_document_key`,
 `query_remote_v3_document_type`, `query_remote_v3_document_attribute`,
 `query_remote_v3_document_value` and `query_remote_v3_document_role`.
 
+A plan entry may add a `result_refs` array under capability
+`query.stage.result_ref`. Each reference names `input` (a later string input
+column), `source_plan` (an earlier stack index), `source_column` (a selected
+thing column), and `expected_type` (the input's declared IID type, including
+subtypes). The source must answer entity or relation IIDs compatible with that
+type. Scalar columns, document roots, forward references, duplicate target
+columns, and references to different sources in one plan are refused before
+provider dispatch. Entries without references keep their existing bytes.
+
+A referenced plan embeds its unbound canonical program and ordinary given-row
+templates. Every referenced cell is absent in the template; future IIDs are
+never encoded into the request. One source row broadcasts to all template
+rows. More than one source row zips by index only when its count equals the
+template count. Several columns from that same source zip together. An empty
+source or absent source cell supplies absence only to an optional input; a
+required input refuses with `query_stage_result_ref_missing`. Other row-count
+mismatches refuse with `query_stage_result_ref_rows`. Binding validates the
+resulting input rows under the plan's captured limits before that plan runs;
+a failure aborts the transaction. No cross product is implied.
+
 Staged byte and item budgets default to 32 MiB and 65,536; explicit values may
 raise them to the shared answer-policy maxima, subject to the caller, session
 and advertised ceilings. Canonical envelope and collection hard caps still apply

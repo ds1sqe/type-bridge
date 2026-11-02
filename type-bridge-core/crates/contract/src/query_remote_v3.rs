@@ -25,6 +25,13 @@ use crate::sdk_diagnostic::SdkExecutionDiagnostic;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[path = "query_remote_v3_result_ref.rs"]
+mod result_ref;
+pub use result_ref::{StagedResultRefV3, validate_staged_result_refs_v3};
+
+/// Admission capability for IID dependencies between staged plans.
+pub const CAP_QUERY_STAGE_RESULT_REF: &str = "query.stage.result_ref";
+
 /// Exact request discriminator and fingerprint canonicalization.
 pub const QUERY_REMOTE_REQUEST_FORMAT_V3: &str = "typebridge.query-remote-request/v3";
 /// Exact staged reply payload discriminator.
@@ -210,6 +217,8 @@ impl StagedLimitsV3 {
 struct PlanWire {
     plan_bytes: String,
     rows: Vec<InputRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    result_refs: Vec<StagedResultRefV3>,
 }
 impl<'de> Deserialize<'de> for PlanWire {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -218,11 +227,14 @@ impl<'de> Deserialize<'de> for PlanWire {
         struct Raw {
             plan_bytes: String,
             rows: Vec<Vec<Option<crate::value::CanonicalValue>>>,
+            #[serde(default)]
+            result_refs: Vec<StagedResultRefV3>,
         }
         let raw = Raw::deserialize(d)?;
         Ok(Self {
             plan_bytes: raw.plan_bytes,
             rows: raw.rows.into_iter().map(InputRow::new).collect(),
+            result_refs: raw.result_refs,
         })
     }
 }
@@ -231,11 +243,14 @@ impl<'de> Deserialize<'de> for PlanWire {
 struct RawPlanWire {
     plan_bytes: String,
     rows: Vec<Vec<Option<PlanScalarWire>>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    result_refs: Vec<StagedResultRefV3>,
 }
 impl RawPlanWire {
     fn rebuild(self, limits: crate::limits::CodecLimits) -> Result<PlanWire, Diagnostic> {
         Ok(PlanWire {
             plan_bytes: self.plan_bytes,
+            result_refs: self.result_refs,
             rows: self
                 .rows
                 .into_iter()
@@ -267,6 +282,7 @@ impl StagedPlanV3 {
             PlanWire {
                 plan_bytes: hex(&plan.canonical_bytes()?),
                 rows,
+                result_refs: Vec::new(),
             },
             schema,
             plan.limits(),
@@ -293,6 +309,17 @@ impl StagedPlanV3 {
             )
         })?;
         let plan = decode_query_plan_v3_with_limits(&bytes, schema, limits)?;
+        if !wire.result_refs.is_empty() {
+            if plan.given_rows().is_some() {
+                return Err(invalid(
+                    "query_stage_result_ref_bound",
+                    "a referenced input template requires an unbound plan",
+                ));
+            }
+            let entry = Self { wire, plan };
+            entry.validate_ref_template()?;
+            return Ok(entry);
+        }
         if let Some(bound) = plan.given_rows() {
             if bound != wire.rows {
                 return Err(invalid(
@@ -327,6 +354,12 @@ impl StagedPlanV3 {
     }
     /// Materialize invocation values as a trusted plan for the staged executor.
     pub fn bound_plan(&self, schema: &DeclaredSchema) -> Result<QueryPlanV3, Diagnostic> {
+        if !self.result_refs().is_empty() {
+            return Err(invalid(
+                "query_stage_result_ref_unresolved",
+                "result references must bind inside the staged transaction",
+            ));
+        }
         if self.plan.inputs().is_empty() || self.plan.given_rows().is_some() {
             Ok(self.plan.clone())
         } else {
@@ -477,6 +510,7 @@ impl StagedRequestV3 {
             .cloned()
             .map(|p| StagedPlanV3::rebuild(p, schema, limits))
             .collect::<Result<Vec<_>, _>>()?;
+        validate_staged_result_refs_v3(&plans, schema)?;
         let (reads, writes) = plans.iter().fold((0, 0), |(reads, writes), entry| {
             let (plan_reads, plan_writes) = entry.plan.statement_counts();
             (reads + plan_reads, writes + plan_writes)
@@ -510,6 +544,9 @@ impl StagedRequestV3 {
         }
         let mut capabilities = CapabilitySet::new();
         capabilities.insert(CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3)?);
+        if plans.iter().any(|entry| !entry.result_refs().is_empty()) {
+            capabilities.insert(CapabilityId::new(CAP_QUERY_STAGE_RESULT_REF)?);
+        }
         if [
             wire.limits.max_graph_nodes,
             wire.limits.max_attribute_values,
