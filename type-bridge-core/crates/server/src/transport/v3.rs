@@ -236,6 +236,7 @@ pub(super) fn staged_advertisement_for_profile(
     for capability in [
         CAP_QUERY_REMOTE_STAGED_V3,
         CAP_QUERY_REMOTE_WRITE_V3,
+        type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
         type_bridge_contract::query_remote_v3::CAP_QUERY_REMOTE_ANSWER_DIMENSIONS,
     ] {
         capabilities.insert(CapabilityId::new(capability)?);
@@ -496,7 +497,13 @@ async fn execute_inner(
     let plans = match staged
         .plans()
         .iter()
-        .map(|entry| entry.bound_plan(&state.query.declared))
+        .map(|entry| {
+            if entry.result_refs().is_empty() {
+                entry.bound_plan(&state.query.declared)
+            } else {
+                Ok(entry.plan().clone())
+            }
+        })
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(plans) => plans,
@@ -504,7 +511,23 @@ async fn execute_inner(
     };
     for (index, plan) in plans.iter().enumerate() {
         let types = touched_types(plan);
+        let entry = &staged.plans()[index];
+        let capabilities = (!entry.result_refs().is_empty()).then(|| {
+            let mut capabilities = plan.required_capabilities().clone();
+            capabilities.insert(
+                CapabilityId::new(
+                    type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
+                )
+                .expect("static capability"),
+            );
+            capabilities
+        });
         let view = V3PolicyPlan::new(plan, &types);
+        let view = if let Some(capabilities) = &capabilities {
+            view.with_result_refs(entry.result_refs(), entry.rows(), capabilities)
+        } else {
+            view
+        };
         match await_before_deadline(
             admission,
             state.pipeline.authorize_v3_plan(index, view, &ctx),
@@ -773,10 +796,21 @@ async fn execute_staged(
         .with_kind(kind)
         .with_answer_limits(limits);
     let mut transaction = state.query.database.transaction(options);
-    let mut pending = Vec::with_capacity(plans.len());
-    for plan in plans {
-        pending.push(transaction.stage_plan(plan).map_err(pending_diagnostic)?);
-    }
+    let pending = if staged
+        .plans()
+        .iter()
+        .any(|entry| !entry.result_refs().is_empty())
+    {
+        transaction
+            .stage_plan_stack(staged.plans().to_vec(), Arc::clone(&state.query.declared))
+            .map_err(pending_diagnostic)?
+    } else {
+        let mut pending = Vec::with_capacity(plans.len());
+        for plan in plans {
+            pending.push(transaction.stage_plan(plan).map_err(pending_diagnostic)?);
+        }
+        pending
+    };
     // The transaction checks the deadline before commit; a dispatched commit
     // must run to its actual outcome instead of being dropped by an outer timer.
     transaction

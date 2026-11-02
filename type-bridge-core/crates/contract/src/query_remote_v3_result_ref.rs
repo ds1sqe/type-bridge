@@ -21,8 +21,8 @@ pub struct StagedResultRefV3 {
     pub source_plan: u32,
     /// Zero-based selected column in the source's row answer.
     pub source_column: u16,
-    /// Schema type accepted by this IID input, including its subtypes.
-    pub expected_type: TypeId,
+    /// Canonical allow-set for this IID input; each type admits its subtypes.
+    pub expected_types: Vec<TypeId>,
 }
 
 impl<'de> Deserialize<'de> for StagedResultRefV3 {
@@ -33,16 +33,18 @@ impl<'de> Deserialize<'de> for StagedResultRefV3 {
             input: u16,
             source_plan: u32,
             source_column: u16,
-            expected_type: TypeIdWire,
+            expected_types: Vec<TypeIdWire>,
         }
         let raw = Raw::deserialize(d)?;
         Ok(Self {
             input: InputColumnId::new(raw.input),
             source_plan: raw.source_plan,
             source_column: raw.source_column,
-            expected_type: raw
-                .expected_type
-                .rebuild()
+            expected_types: raw
+                .expected_types
+                .into_iter()
+                .map(TypeIdWire::rebuild)
+                .collect::<Result<_, _>>()
                 .map_err(serde::de::Error::custom)?,
         })
     }
@@ -52,17 +54,27 @@ fn result_failure(code: &'static str, message: &'static str) -> Diagnostic {
     Diagnostic::stable(DiagnosticCategory::Integrity, code, message)
 }
 
-fn subtype(schema: &DeclaredSchema, actual: &TypeId, expected: &TypeId) -> bool {
+fn parents(schema: &DeclaredSchema) -> BTreeMap<TypeId, TypeId> {
+    schema
+        .facts()
+        .filter_map(|fact| match fact {
+            SchemaFact::Sub(fact) => {
+                Some((fact.id().subtype().clone(), fact.id().supertype().clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn subtype(parents: &BTreeMap<TypeId, TypeId>, actual: &TypeId, expected: &[TypeId]) -> bool {
     let mut current = actual;
-    for _ in 0..=schema.facts().len() {
-        if current == expected {
+    for _ in 0..=parents.len() {
+        if expected.binary_search(current).is_ok() {
             return true;
         }
-        let parent = schema.facts().find_map(|fact| match fact {
-            SchemaFact::Sub(fact) if fact.id().subtype() == current => Some(fact.id().supertype()),
-            _ => None,
-        });
-        let Some(parent) = parent else { return false };
+        let Some(parent) = parents.get(current) else {
+            return false;
+        };
         current = parent;
     }
     false
@@ -82,6 +94,10 @@ impl StagedPlanV3 {
         schema: &DeclaredSchema,
     ) -> Result<Self, Diagnostic> {
         result_refs.sort_by_key(|reference| reference.input);
+        for reference in &mut result_refs {
+            reference.expected_types.sort();
+            reference.expected_types.dedup();
+        }
         if result_refs.is_empty() {
             return Self::new(plan, rows, schema);
         }
@@ -114,6 +130,17 @@ impl StagedPlanV3 {
                 ));
             }
             previous = Some(reference.input);
+            if reference.expected_types.is_empty()
+                || reference
+                    .expected_types
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+            {
+                return Err(invalid(
+                    "query_stage_result_ref_type",
+                    "IID input types must be a nonempty canonical allow-set",
+                ));
+            }
             if reference.source_plan != source {
                 return Err(invalid(
                     "query_stage_result_ref_sources",
@@ -154,6 +181,20 @@ impl StagedPlanV3 {
         )
     }
 
+    /// Rebase block-local source indexes when appending this entry to a stack.
+    /// The resulting complete stack must pass graph validation before dispatch.
+    pub fn rebase_result_refs(mut self, offset: u32) -> Result<Self, Diagnostic> {
+        for reference in &mut self.wire.result_refs {
+            reference.source_plan = reference.source_plan.checked_add(offset).ok_or_else(|| {
+                invalid(
+                    "query_stage_result_ref_order",
+                    "result reference source index overflowed",
+                )
+            })?;
+        }
+        Ok(self)
+    }
+
     /// Bind IID answers immediately before this plan's provider dispatch.
     ///
     /// `answers` contains only earlier, schema-validated answers from this
@@ -167,7 +208,26 @@ impl StagedPlanV3 {
             return self.bound_plan(schema);
         }
         let source_index = self.result_refs()[0].source_plan as usize;
-        let Some(StagedAnswerV3::Rows { rows: source }) = answers.get(source_index) else {
+        let source = answers.get(source_index).ok_or_else(|| {
+            result_failure(
+                "query_stage_result_ref_answer",
+                "result reference requires an earlier answer",
+            )
+        })?;
+        self.bind_source_result(source, schema)
+    }
+
+    /// Bind this entry's single source without copying earlier answers.
+    /// The executor selects `source` from the validated ordered dependency graph.
+    pub fn bind_source_result(
+        &self,
+        source: &StagedAnswerV3,
+        schema: &DeclaredSchema,
+    ) -> Result<QueryPlanV3, Diagnostic> {
+        if self.result_refs().is_empty() {
+            return self.bound_plan(schema);
+        }
+        let StagedAnswerV3::Rows { rows: source } = source else {
             return Err(result_failure(
                 "query_stage_result_ref_answer",
                 "result reference requires an earlier row answer",
@@ -179,6 +239,7 @@ impl StagedPlanV3 {
                 "result reference rows must broadcast a singleton or zip equal counts",
             ));
         }
+        let parents = parents(schema);
         let mut rows = self
             .rows()
             .iter()
@@ -195,7 +256,7 @@ impl StagedPlanV3 {
                 row[target] = match value {
                     Some(RemoteValue::Thing { iid, type_id })
                         if crate::id::is_canonical_thing_iid(iid)
-                            && subtype(schema, type_id, &reference.expected_type) =>
+                            && subtype(&parents, type_id, &reference.expected_types) =>
                     {
                         Some(CanonicalValue::String(CanonicalString::new(iid.clone())?))
                     }
@@ -235,6 +296,10 @@ pub fn validate_staged_result_refs_v3(
     plans: &[StagedPlanV3],
     schema: &DeclaredSchema,
 ) -> Result<(), Diagnostic> {
+    if plans.iter().all(|entry| entry.result_refs().is_empty()) {
+        return Ok(());
+    }
+    let parents = parents(schema);
     let mut source_types = BTreeMap::new();
     for (index, entry) in plans.iter().enumerate() {
         for reference in entry.result_refs() {
@@ -247,13 +312,10 @@ pub fn validate_staged_result_refs_v3(
                     "a result reference must name an earlier plan",
                 ));
             };
-            if !matches!(
-                reference.expected_type.kind(),
-                TypeKind::Entity | TypeKind::Relation
-            ) || schema
-                .fact(&SchemaFactId::Type(reference.expected_type.clone()))
-                .is_none()
-            {
+            if reference.expected_types.iter().any(|type_id| {
+                !matches!(type_id.kind(), TypeKind::Entity | TypeKind::Relation)
+                    || schema.fact(&SchemaFactId::Type(type_id.clone())).is_none()
+            }) {
                 return Err(invalid(
                     "query_stage_result_ref_type",
                     "result reference expects a declared thing type",
@@ -295,7 +357,7 @@ pub fn validate_staged_result_refs_v3(
                 })?;
             if types
                 .iter()
-                .any(|actual| !subtype(schema, actual, &reference.expected_type))
+                .any(|actual| !subtype(&parents, actual, &reference.expected_types))
             {
                 return Err(invalid(
                     "query_stage_result_ref_type",

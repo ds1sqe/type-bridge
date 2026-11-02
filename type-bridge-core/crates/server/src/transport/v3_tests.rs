@@ -304,6 +304,7 @@ async fn staged_capabilities_match_the_executor_authority() {
     for capability in [
         CAP_QUERY_REMOTE_STAGED_V3,
         CAP_QUERY_REMOTE_WRITE_V3,
+        type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF,
         "query.fetch.thing",
         "query.write.attach",
     ] {
@@ -738,6 +739,7 @@ async fn concurrent_writes_from_one_caller_are_all_in_flight_at_once() {
 
 /// What one plan policy saw: index, capabilities, types and row count.
 type SeenPlan = (usize, Vec<String>, Vec<String>, Option<usize>);
+type SeenReferences = (usize, Vec<type_bridge_contract::query_remote_v3::StagedResultRefV3>, Option<Vec<InputRow>>);
 /// What one commit observer saw: kind, committed, code, certainty, provider
 /// code.
 type SeenCommit = (
@@ -758,6 +760,7 @@ struct HookPolicy {
     wants_rows: bool,
     plans: Mutex<Vec<SeenPlan>>,
     debug: Mutex<Vec<String>>,
+    references: Mutex<Vec<SeenReferences>>,
     commits: Mutex<Vec<SeenCommit>>,
 }
 
@@ -811,6 +814,7 @@ impl Interceptor for Arc<HookPolicy> {
             plan.rows().map(<[InputRow]>::len),
         ));
         self.debug.lock().expect("debug").push(format!("{plan:?}"));
+        self.references.lock().expect("references").push((index, plan.result_refs().to_vec(), plan.rows().map(<[InputRow]>::to_vec)));
         let refused = self.refuse.is_some_and(|cap| plan.requires(cap));
         Box::pin(async move {
             if refused {
@@ -1932,5 +1936,100 @@ mod raw_tests {
         assert_eq!(raw(&fixture,body.clone()).await.0,StatusCode::OK);
         assert_eq!(raw(&fixture,body).await,(StatusCode::CONFLICT,br#"{"error":"query_remote_replay"}"#.to_vec()));
         assert_eq!(host.queries.lock().unwrap().len(),1);
+    }
+}
+
+fn iid_reference_request(fixture: &V3Fixture) -> StagedRequestV3 {
+    use type_bridge_contract::query_remote_v3::StagedResultRefV3;
+    let root = BindingId::new(0).unwrap();
+    let source = insert_returning(&fixture.declared, WriteReturns::Rows, vec![root]);
+    let mut target = spec(Operation::Write { returns: WriteReturns::Matched }, vec![
+        Stage::Match { patterns: vec![
+            QueryPattern::Isa { binding: root, type_id: person(), include_subtypes: false }.into(),
+            QueryPattern::Iid { binding: root, iid: QueryOperand::Input { column: InputColumnId::new(0) } }.into(),
+        ] },
+        Stage::Delete { items: vec![DeleteItem::Thing { binding: root }] },
+    ], vec![]);
+    target.inputs = vec![InputColumn::new(InputColumnId::new(0), QueryVariable::new("target").unwrap(), type_bridge_contract::value::ValueTypeTag::String, false)];
+    let target = QueryPlanV3::new(target, &fixture.declared).unwrap();
+    StagedRequestV3::new(StagedRequestSpecV3 {
+        nonce: "server-iid-reference-0001".into(), kind: None, limits: StagedLimitsV3::default(),
+        plans: vec![
+            StagedPlanV3::new(&source, vec![], &fixture.declared).unwrap(),
+            StagedPlanV3::new_with_result_refs(&target, vec![InputRow::new(vec![None])], vec![StagedResultRefV3 { input: InputColumnId::new(0), source_plan: 0, source_column: 0, expected_types: vec![person()] }], &fixture.declared).unwrap(),
+        ], prepared_at_unix_ms: now_ms(),
+    }, &fixture.declared, &fixture.advertisement).unwrap()
+}
+
+#[tokio::test]
+async fn staged_iid_refs_bind_inside_one_provider_transaction() {
+    let fixture = v3_fixture(default_pipeline(), true);
+    let request = iid_reference_request(&fixture);
+    let bytes = post(&fixture, &request).await;
+    let reply = verify(&fixture, &request, &bytes);
+    assert!(reply.diagnostic().is_none(), "{:?}", reply.diagnostic());
+    assert_eq!(reply.answers().len(), 2);
+    assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
+    assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.metrics.rollbacks.load(Ordering::SeqCst), 0);
+    let queries = fixture.metrics.queries.lock().unwrap();
+    assert!(queries[1].contains("0x1e"));
+    assert!(!String::from_utf8(request.encode().unwrap()).unwrap().contains("0x1e"));
+}
+
+#[tokio::test]
+async fn staged_iid_ref_missing_and_last_piece_failures_commit_nothing() {
+    for missing in [false, true] {
+        let fixture = v3_fixture(default_pipeline(), true);
+        if !missing { fixture.metrics.fail_query_at.store(2, Ordering::SeqCst); }
+        let mut request = iid_reference_request(&fixture);
+        if missing {
+            let mut source = spec(Operation::Rows, vec![Stage::Match { patterns: vec![
+                QueryPattern::Isa { binding: BindingId::new(0).unwrap(), type_id: person(), include_subtypes: false }.into(),
+                QueryPattern::Has { owner: BindingId::new(0).unwrap(), attribute: BindingId::new(1).unwrap(), attribute_id: AttributeId::new("transport-name").unwrap() }.into(),
+                QueryPattern::Value { comparator: type_bridge_contract::migration_assertion::ValueComparator::Equal, left: QueryOperand::Binding { binding: BindingId::new(1).unwrap() }, right: QueryOperand::Literal { value: CanonicalValue::String(CanonicalString::new("missing-player").unwrap()) } }.into(),
+            ] }], vec![BindingId::new(0).unwrap()]);
+            source.bindings.push(AssertionBinding::new(BindingId::new(1).unwrap(), QueryVariable::new("selected_name").unwrap()));
+            let source = QueryPlanV3::new(source, &fixture.declared).unwrap();
+            let entries = vec![request.plans()[0].clone(), StagedPlanV3::new(&source, vec![], &fixture.declared).unwrap(), request.plans()[1].clone().rebase_result_refs(1).unwrap()];
+            request = StagedRequestV3::new(StagedRequestSpecV3 { nonce: request.nonce().to_owned(), kind: None, limits: request.limits(), plans: entries, prepared_at_unix_ms: now_ms() }, &fixture.declared, &fixture.advertisement).unwrap();
+        }
+        let bytes = post(&fixture, &request).await;
+        let reply = verify(&fixture, &request, &bytes);
+        assert_eq!(failure_code(&reply), if missing {"query_stage_result_ref_missing"} else {"provider_operation_failed"});
+        assert!(reply.answers().is_empty());
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
+        assert_eq!(fixture.metrics.rollbacks.load(Ordering::SeqCst), 1);
+        assert_eq!(fixture.metrics.transaction_closes.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn staged_iid_ref_policy_sees_metadata_and_templates_before_provider_io() {
+    use type_bridge_contract::query_remote_v3::CAP_QUERY_STAGE_RESULT_REF;
+    for wants_rows in [false, true] {
+        for refuse in [false, true] {
+            let policy = Arc::new(HookPolicy { wants_rows, refuse: refuse.then_some(CAP_QUERY_STAGE_RESULT_REF), ..Default::default() });
+            let fixture = v3_fixture(hook_pipeline(&[&policy]), false);
+            let request = iid_reference_request(&fixture);
+            let bytes = post(&fixture, &request).await;
+            let reply = verify(&fixture, &request, &bytes);
+            if refuse {
+                assert_eq!(failure_code(&reply), "query_remote_policy_rejected");
+                assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst), 0);
+                assert_eq!(fixture.metrics.query_executions.load(Ordering::SeqCst), 0);
+                assert_eq!(fixture.metrics.commits.load(Ordering::SeqCst), 0);
+            } else { assert!(reply.diagnostic().is_none()); }
+            let seen = policy.references.lock().unwrap();
+            assert_eq!(seen.len(), 2);
+            assert!(seen[0].1.is_empty());
+            assert_eq!(seen[1].1, request.plans()[1].result_refs());
+            assert_eq!(seen[1].2, wants_rows.then(|| vec![InputRow::new(vec![None])]));
+            assert!(policy.plans.lock().unwrap()[1].1.iter().any(|cap| cap == CAP_QUERY_STAGE_RESULT_REF));
+            assert!(policy.debug.lock().unwrap().iter().all(|line| !line.contains("0x1e")));
+        }
     }
 }

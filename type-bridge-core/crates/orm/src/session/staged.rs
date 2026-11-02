@@ -893,11 +893,49 @@ struct Item {
     query: Option<StagedQuery>,
     /// The validated plan a proxy commit sends instead of `query`.
     remote: Option<StagedPlanV3>,
+    deferred: Option<Box<DeferredPlan>>,
     slot: Slot,
+}
+struct DeferredPlan {
+    schema: Arc<type_bridge_contract::schema::DeclaredSchema>,
+    source_base: usize,
+    local_index: usize,
 }
 impl Item {
     fn writes(&self) -> bool {
         self.query.as_ref().is_some_and(|query| query.writes)
+            || self
+                .remote
+                .as_ref()
+                .is_some_and(|entry| entry.plan().writes())
+    }
+    fn bind_source(&mut self, answers: &[Resolved], supports_given: bool) -> Result<(), OrmError> {
+        let Some(deferred) = &self.deferred else {
+            return Ok(());
+        };
+        let entry = self.remote.as_ref().expect("deferred canonical entry");
+        let index = deferred.source_base + entry.result_refs()[0].source_plan as usize;
+        let Some(Resolved::Plan { wire, .. }) = answers.get(index) else {
+            return Err(result_ref_error(proxy_refusal(
+                "result reference source is not a preceding plan answer",
+            )));
+        };
+        let bound = entry
+            .bind_source_result(wire, &deferred.schema)
+            .map_err(result_ref_error)?;
+        let source = PlanSource::Owned(Arc::new(bound));
+        let query = if supports_given {
+            crate::query_plan_exec::staged_query_with_source(&source, true)
+        } else {
+            crate::query_plan_exec::staged_literal_query(source.plan().map_err(result_ref_error)?)
+        }
+        .map_err(result_ref_error)?;
+        let Slot::Plan { plan, .. } = &mut self.slot else {
+            unreachable!("deferred item is a plan")
+        };
+        *plan = source;
+        self.query = Some(query);
+        Ok(())
     }
     fn failure_context(&self) -> FailureContext {
         self.query
@@ -1019,6 +1057,10 @@ pub(crate) fn plan_answer_error(diagnostic: Diagnostic) -> OrmError {
     )
     .at(MatchErrorPathSegment::Result)
     .into()
+}
+
+fn result_ref_error(diagnostic: Diagnostic) -> OrmError {
+    crate::match_request::selected_result_executor::adapter_match_error(diagnostic).into()
 }
 
 /// Race a multi-statement read against the commit's cancellation and deadline.
@@ -1327,6 +1369,7 @@ impl Transaction {
         self.stack.0.push(Item {
             query: Some(query),
             remote: None,
+            deferred: None,
             slot: Slot::Query(Arc::clone(&state)),
         });
         Ok(Pending { state })
@@ -1443,6 +1486,14 @@ impl Transaction {
         &mut self,
         source: PlanSource,
     ) -> Result<Pending<PlanAnswer>, PendingError> {
+        self.stage_plan_source_with_entry(source, None)
+    }
+
+    fn stage_plan_source_with_entry(
+        &mut self,
+        source: PlanSource,
+        remote_entry: Option<StagedPlanV3>,
+    ) -> Result<Pending<PlanAnswer>, PendingError> {
         let plan = source
             .plan()
             .map_err(|d| PendingError::InvalidPlan(Box::new(d)))?;
@@ -1466,33 +1517,118 @@ impl Transaction {
                     .map_err(invalid)?;
                 (
                     Some(
-                        crate::query_plan_exec::staged_query_with_source(
-                            &source,
-                            super::database::backend_supports_given_stage(backend.as_ref()),
-                        )
+                        if remote_entry.is_some()
+                            && !super::database::backend_supports_given_stage(backend.as_ref())
+                        {
+                            crate::query_plan_exec::staged_literal_query(plan)
+                        } else {
+                            crate::query_plan_exec::staged_query_with_source(
+                                &source,
+                                super::database::backend_supports_given_stage(backend.as_ref()),
+                            )
+                        }
                         .map_err(invalid)?,
                     ),
                     None,
                 )
             }
             Backend::Proxy(proxy) => {
-                let rows = plan.given_rows().unwrap_or_default().to_vec();
-                (
-                    None,
-                    Some(StagedPlanV3::new(plan, rows, proxy.declared()).map_err(invalid)?),
-                )
+                let entry = match remote_entry {
+                    Some(entry) => entry,
+                    None => StagedPlanV3::new(
+                        plan,
+                        plan.given_rows().unwrap_or_default().to_vec(),
+                        proxy.declared(),
+                    )
+                    .map_err(invalid)?,
+                };
+                (None, Some(entry))
             }
         };
         let state = Arc::new(PendingState::new());
         self.stack.0.push(Item {
             query,
             remote,
+            deferred: None,
             slot: Slot::Plan {
                 state: Arc::clone(&state),
                 plan: source,
             },
         });
         tracing::Span::current().record("outcome", "ok");
+        Ok(Pending { state })
+    }
+
+    /// Queue an authored static stack, including block-local IID dependencies.
+    ///
+    /// All graph and provider admission checks finish before anything opens.
+    /// Source indexes are relative to this block; proxy framing rebases them
+    /// when earlier staged operations expand to several wire plans. Referenced
+    /// values bind inside the transaction, and answers publish only on commit.
+    pub fn stage_plan_stack(
+        &mut self,
+        entries: Vec<StagedPlanV3>,
+        schema: Arc<type_bridge_contract::schema::DeclaredSchema>,
+    ) -> Result<Vec<Pending<PlanAnswer>>, PendingError> {
+        self.admit(false)?;
+        self.admit_typed()?;
+        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(&entries, &schema)
+            .map_err(|error| PendingError::InvalidPlan(Box::new(error)))?;
+        let start = self.stack.0.len();
+        let mut pending = Vec::with_capacity(entries.len());
+        for (local_index, entry) in entries.into_iter().enumerate() {
+            let staged = if entry.result_refs().is_empty() {
+                entry
+                    .bound_plan(&schema)
+                    .map_err(|error| PendingError::InvalidPlan(Box::new(error)))
+                    .and_then(|plan| {
+                        self.stage_plan_source_with_entry(
+                            PlanSource::Owned(Arc::new(plan)),
+                            Some(entry),
+                        )
+                    })
+            } else {
+                self.stage_deferred_plan(entry, Arc::clone(&schema), start, local_index)
+            };
+            match staged {
+                Ok(answer) => pending.push(answer),
+                Err(error) => {
+                    self.stack.0.truncate(start);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(pending)
+    }
+
+    fn stage_deferred_plan(
+        &mut self,
+        entry: StagedPlanV3,
+        schema: Arc<type_bridge_contract::schema::DeclaredSchema>,
+        source_base: usize,
+        local_index: usize,
+    ) -> Result<Pending<PlanAnswer>, PendingError> {
+        self.admit(entry.plan().writes())?;
+        self.admit_typed()?;
+        if let Backend::Local(backend) = &self.backend {
+            crate::query_plan_exec::check_provider(entry.plan(), backend.server_version())
+                .map_err(|error| PendingError::InvalidPlan(Box::new(error)))?;
+        }
+        let state = Arc::new(PendingState::new());
+        let plan = PlanSource::Owned(Arc::new(entry.plan().clone()));
+        self.stack.0.push(Item {
+            query: None,
+            remote: Some(entry),
+            deferred: Some(Box::new(DeferredPlan {
+                schema,
+                source_base,
+                local_index,
+            })),
+            slot: Slot::Plan {
+                state: Arc::clone(&state),
+                plan,
+            },
+        });
         Ok(Pending { state })
     }
 
@@ -1585,6 +1721,7 @@ impl Transaction {
         self.stack.0.push(Item {
             query: None,
             remote: None,
+            deferred: None,
             slot: Slot::Program(Box::new(MatchProgram {
                 state: Arc::clone(&state),
                 input: Some((registry.owned_registry_snapshot(), validated)),
@@ -1610,6 +1747,7 @@ impl Transaction {
         self.stack.0.push(Item {
             query: None,
             remote: None,
+            deferred: None,
             slot: Slot::Program(Box::new(ProgramSlot {
                 state: Arc::clone(&state),
                 program: Mutex::new(Some(program)),
@@ -1775,10 +1913,12 @@ impl Transaction {
             crate::execution_phases::record(type_bridge_contract::execution_timeline::ExecutionPhase::ExecutionStarted);
             let mut provider = Some(opened);
             let server_version = backend.server_version();
+            let supports_given = super::database::backend_supports_given_stage(backend.as_ref());
             let mut answers = Vec::with_capacity(execution.0.len());
             let mut plan_meter = crate::answer_meter::PlanMeter::new(&self.options.answer_limits);
             for (index, item) in execution.0.iter_mut().enumerate() {
-                let resolved = match (&item.query, provider.as_mut()) {
+                let prepared = item.bind_source(&answers, supports_given);
+                let resolved = match prepared { Err(error) => Err(error), Ok(()) => match (&item.query, provider.as_mut()) {
                     (_, None) => Err(provider_consumed()),
                     (Some(query), Some(ops)) => {
                         let result = query
@@ -1825,7 +1965,7 @@ impl Transaction {
                         provider = owned.into_provider();
                         ran.map(|()| Resolved::Program)
                     }
-                };
+                }};
                 match resolved {
                     Ok(answer) => answers.push(answer),
                     Err(error) => {
@@ -1956,7 +2096,26 @@ impl Transaction {
                 }
                 _ => {
                     counts.push(1);
-                    plans.push(item.remote.take().expect("proxy plan entry"));
+                    let entry = item.remote.take().expect("proxy plan entry");
+                    let entry = if let Some(deferred) = &item.deferred {
+                        let base = plans.len() - deferred.local_index;
+                        match u32::try_from(base)
+                            .map_err(|_| proxy_refusal("result reference block offset is invalid"))
+                            .and_then(|base| entry.rebase_result_refs(base))
+                        {
+                            Ok(entry) => entry,
+                            Err(diagnostic) => {
+                                let error = CommitError::lifecycle(PendingError::InvalidPlan(
+                                    Box::new(diagnostic),
+                                ));
+                                execution.fail(error.pending());
+                                return Err(error);
+                            }
+                        }
+                    } else {
+                        entry
+                    };
+                    plans.push(entry);
                 }
             }
         }
@@ -2211,8 +2370,19 @@ impl Transaction {
                                     .resolve_remote(&mut entries, answers)
                                     .map(|()| Resolved::Program),
                                 Slot::Plan { plan, .. } => {
-                                    entries.next();
-                                    plan.plan()
+                                    let entry = entries.next().expect("verified plan entry");
+                                    let bound = if entry.result_refs().is_empty() {
+                                        Ok(())
+                                    } else {
+                                        entry
+                                            .bind_results(
+                                                &verified.answers()[..cursor - count],
+                                                proxy.declared(),
+                                            )
+                                            .map(|bound| *plan = PlanSource::Owned(Arc::new(bound)))
+                                    };
+                                    bound
+                                        .and_then(|()| plan.plan())
                                         .and_then(|plan| {
                                             PlanAnswer::from_verified_staged_v3(&answers[0], plan)
                                         })
@@ -2899,6 +3069,346 @@ mod tests {
             state,
         )
     }
+    fn iid_reference_stack(
+        rows: usize,
+    ) -> (
+        Vec<StagedPlanV3>,
+        Arc<type_bridge_contract::schema::DeclaredSchema>,
+    ) {
+        use type_bridge_contract::id::{AttributeId, TypeId, TypeKind};
+        use type_bridge_contract::migration_assertion::{
+            AssertionBinding, BindingId, QueryVariable,
+        };
+        use type_bridge_contract::query_plan::v3::{
+            Operation, PlanSpec, QueryPlanV3, Set, Stage, WriteReturns,
+        };
+        use type_bridge_contract::query_plan::{
+            InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
+        };
+        use type_bridge_contract::query_remote_v3::StagedResultRefV3;
+        use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
+        let schema = Arc::new(crate::query_plan_exec::race::schema());
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let root = BindingId::new(0).unwrap();
+        let mut spec = PlanSpec {
+            bindings: vec![AssertionBinding::new(
+                root,
+                QueryVariable::new("root").unwrap(),
+            )],
+            inputs: vec![],
+            given_rows: None,
+            operation: Operation::Rows,
+            pipeline: vec![Stage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: root,
+                        type_id: account.clone(),
+                        include_subtypes: false,
+                    }
+                    .into(),
+                ],
+            }],
+            output: QueryOutput::Rows {
+                columns: vec![root],
+            },
+            managed_semantics: crate::query_plan_exec::race::touch()
+                .managed_semantics()
+                .clone(),
+            compatibility: None,
+            functions: vec![],
+        };
+        let source = QueryPlanV3::new(spec.clone(), &schema).unwrap();
+        spec.inputs = vec![InputColumn::new(
+            InputColumnId::new(0),
+            QueryVariable::new("target_iid").unwrap(),
+            ValueTypeTag::String,
+            false,
+        )];
+        let Stage::Match { patterns } = &mut spec.pipeline[0] else {
+            unreachable!()
+        };
+        patterns.push(
+            QueryPattern::Iid {
+                binding: root,
+                iid: QueryOperand::Input {
+                    column: InputColumnId::new(0),
+                },
+            }
+            .into(),
+        );
+        spec.pipeline.push(Stage::Update {
+            sets: vec![Set::Field {
+                owner: root,
+                field: type_bridge_contract::schema::OwnsFactId::new(
+                    account.clone(),
+                    AttributeId::new("balance").unwrap(),
+                )
+                .unwrap(),
+                operand: QueryOperand::Literal {
+                    value: CanonicalValue::Long(7),
+                },
+            }],
+        });
+        spec.operation = Operation::Write {
+            returns: WriteReturns::Rows,
+        };
+        let target = QueryPlanV3::new(spec, &schema).unwrap();
+        (
+            vec![
+                StagedPlanV3::new(&source, vec![], &schema).unwrap(),
+                StagedPlanV3::new_with_result_refs(
+                    &target,
+                    vec![InputRow::new(vec![None]); rows],
+                    vec![StagedResultRefV3 {
+                        input: InputColumnId::new(0),
+                        source_plan: 0,
+                        source_column: 0,
+                        expected_types: vec![account],
+                    }],
+                    &schema,
+                )
+                .unwrap(),
+            ],
+            schema,
+        )
+    }
+
+    fn iid_reference_answer(iids: &[&str]) -> Vec<serde_json::Value> {
+        iids.iter().map(|iid| serde_json::json!({"root": type_bridge_contract::query_remote::RemoteValue::Thing {
+            iid: (*iid).into(), type_id: type_bridge_contract::id::TypeId::new(type_bridge_contract::id::TypeKind::Entity, "account").unwrap(),
+        }})).collect()
+    }
+
+    #[tokio::test]
+    async fn staged_iid_refs_bind_broadcasts_and_zips_on_the_existing_commit_path() {
+        for given in [false, true] {
+            for (ids, templates) in [(vec!["0x10"], 3), (vec!["0x10", "0x20"], 2)] {
+                let (mut tx, state) = fixture(Default::default());
+                {
+                    let mut state = state.lock().unwrap();
+                    state.given = given;
+                    state.row_values = Some(iid_reference_answer(&ids));
+                }
+                let (stack, schema) = iid_reference_stack(templates);
+                let pending = tx.stage_plan_stack(stack, schema).unwrap();
+                assert!(
+                    pending
+                        .iter()
+                        .all(|answer| matches!(answer.get(), Err(PendingError::NotCommitted)))
+                );
+                tx.commit().await.unwrap();
+                assert!(pending.iter().all(|answer| answer.get().is_ok()));
+                let state = state.lock().unwrap();
+                assert_eq!(state.kinds, [TxType::Write]);
+                assert_eq!((state.visible_writes, state.pending_writes), (1, 0));
+                if given {
+                    let expected = (0..templates)
+                        .map(|index| {
+                            vec![super::super::backend::GivenValue::String(
+                                ids[if ids.len() == 1 { 0 } else { index }].into(),
+                            )]
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(state.given_payloads[0].rows, expected);
+                } else {
+                    assert!(state.given_payloads.is_empty());
+                    for iid in ids {
+                        assert!(state.events[1].contains(iid));
+                    }
+                }
+                assert_eq!(&state.events[state.events.len() - 2..], ["commit", "close"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_iid_ref_rolls_back_prior_writes_before_target_dispatch() {
+        let (mut tx, state) = fixture(Default::default());
+        state.lock().unwrap().given = true;
+        tx.stage(StagedQuery::new("earlier-write", true)).unwrap();
+        let (stack, schema) = iid_reference_stack(1);
+        let pending = tx.stage_plan_stack(stack, schema).unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert_eq!(error.op_index, Some(2));
+        assert_eq!(
+            error.diagnostic().code().as_str(),
+            "query_stage_result_ref_missing"
+        );
+        assert!(pending.iter().all(|answer| answer.get().is_err()));
+        let state = state.lock().unwrap();
+        assert!(state.given_payloads.is_empty());
+        assert_eq!((state.visible_writes, state.pending_writes), (0, 0));
+        assert_eq!(
+            &state.events[state.events.len() - 2..],
+            ["rollback", "close"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_failure_never_publishes_an_iid_ref_write() {
+        let (mut tx, state) = fixture(Default::default());
+        {
+            let mut state = state.lock().unwrap();
+            state.given = true;
+            state.row_values = Some(iid_reference_answer(&["0x10"]));
+        }
+        let (stack, schema) = iid_reference_stack(1);
+        let pending = tx.stage_plan_stack(stack, schema).unwrap();
+        tx.stage(StagedQuery::new("fail", true)).unwrap();
+        assert_eq!(tx.commit().await.unwrap_err().op_index, Some(2));
+        assert!(pending.iter().all(|answer| answer.get().is_err()));
+        let state = state.lock().unwrap();
+        assert_eq!((state.visible_writes, state.pending_writes), (0, 0));
+        assert_eq!(
+            &state.events[state.events.len() - 3..],
+            ["fail", "rollback", "close"]
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_iid_refs_preserve_authored_bytes_and_rebase_after_earlier_plans() {
+        use type_bridge_contract::query_remote::{
+            RemoteCapabilities, RemoteExecutorBinding, RemoteValue,
+        };
+        use type_bridge_contract::query_remote_v3::{
+            CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, CAP_QUERY_STAGE_RESULT_REF,
+            StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestSpecV3,
+        };
+        for prefix in [false, true] {
+            let (stack, schema) = iid_reference_stack(3);
+            let mut expected = Vec::new();
+            if prefix {
+                expected.push(stack[0].clone());
+            }
+            expected.extend(
+                stack
+                    .iter()
+                    .cloned()
+                    .map(|entry| entry.rebase_result_refs(u32::from(prefix)).unwrap()),
+            );
+            let mut capabilities =
+                type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary();
+            for cap in [
+                CAP_QUERY_REMOTE_STAGED_V3,
+                CAP_QUERY_REMOTE_WRITE_V3,
+                CAP_QUERY_STAGE_RESULT_REF,
+            ] {
+                capabilities
+                    .insert(type_bridge_contract::capability::CapabilityId::new(cap).unwrap());
+            }
+            let signer = Arc::new(
+                crate::query_v2_remote::RemoteReplySigningKey::from_secret_bytes([0x46; 32]),
+            );
+            let advertisement = RemoteCapabilities::new(
+                capabilities,
+                RemoteExecutorBinding::new("proxy-iid-ref-tests", "epoch-00000000001").unwrap(),
+                signer.public_key(),
+            )
+            .with_query_limits(type_bridge_contract::limits::QueryLimits::V3)
+            .unwrap();
+            let ad_bytes = advertisement.encode().unwrap();
+            let calls = Arc::new(Mutex::new(0));
+            let recorded = Arc::clone(&calls);
+            let captured_schema = Arc::clone(&schema);
+            let exchange: super::super::staged_proxy::StagedExchangeFn = Arc::new(move |bytes| {
+                let schema = Arc::clone(&captured_schema);
+                let ad = advertisement.clone();
+                let signer = Arc::clone(&signer);
+                let expected = expected.clone();
+                let recorded = Arc::clone(&recorded);
+                Box::pin(async move {
+                    *recorded.lock().unwrap() += 1;
+                    let request = StagedRequestV3::decode(&bytes, &schema, &ad).unwrap();
+                    let manual = StagedRequestV3::new(
+                        StagedRequestSpecV3 {
+                            nonce: request.nonce().to_owned(),
+                            kind: Some(request.kind()),
+                            limits: request.limits(),
+                            prepared_at_unix_ms: request.expires_at_unix_ms()
+                                - request.limits().deadline_ms.unwrap_or(
+                                    type_bridge_contract::query_remote::DEFAULT_REMOTE_DEADLINE_MS,
+                                ),
+                            plans: expected,
+                        },
+                        &schema,
+                        &ad,
+                    )
+                    .unwrap();
+                    assert_eq!(bytes, manual.encode().unwrap());
+                    assert_eq!(
+                        request.plans().last().unwrap().result_refs()[0].source_plan,
+                        u32::from(prefix)
+                    );
+                    assert!(
+                        request
+                            .plans()
+                            .last()
+                            .unwrap()
+                            .rows()
+                            .iter()
+                            .all(|row| row.values()[0].is_none())
+                    );
+                    let answers = request
+                        .plans()
+                        .iter()
+                        .map(|_| StagedAnswerV3::Rows {
+                            rows: vec![vec![RemoteValue::Thing {
+                                iid: "0x10".into(),
+                                type_id: type_bridge_contract::id::TypeId::new(
+                                    type_bridge_contract::id::TypeKind::Entity,
+                                    "account",
+                                )
+                                .unwrap(),
+                            }]],
+                        })
+                        .collect();
+                    Ok(
+                        StagedReplyV3::new(&request, StagedOutcomeV3::Committed, answers)
+                            .unwrap()
+                            .encode_signed(&request, &ad, signer.as_ref())
+                            .unwrap(),
+                    )
+                })
+            });
+            let mut tx = Transaction::over_proxy(
+                schema.as_ref().clone(),
+                &ad_bytes,
+                exchange,
+                Default::default(),
+            )
+            .unwrap();
+            let earlier = prefix.then(|| tx.stage_plan(stack[0].plan()).unwrap());
+            let pending = tx.stage_plan_stack(stack, schema).unwrap();
+            assert!(
+                pending
+                    .iter()
+                    .all(|answer| matches!(answer.get(), Err(PendingError::NotCommitted)))
+            );
+            tx.commit().await.unwrap();
+            assert_eq!(*calls.lock().unwrap(), 1);
+            assert!(pending.iter().all(|answer| answer.get().is_ok()));
+            if let Some(earlier) = earlier {
+                assert!(earlier.get().is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_iid_ref_graph_never_opens_or_leaves_a_partial_staged_block() {
+        let (mut tx, state) = fixture(Default::default());
+        let (mut stack, schema) = iid_reference_stack(1);
+        let invalid = stack.pop().unwrap().rebase_result_refs(1).unwrap();
+        stack.push(invalid);
+        let error = tx.stage_plan_stack(stack, schema).err().unwrap();
+        let PendingError::InvalidPlan(diagnostic) = error else {
+            panic!("invalid result reference graph")
+        };
+        assert_eq!(diagnostic.code().as_str(), "query_stage_result_ref_order");
+        assert!(tx.stack.0.is_empty());
+        assert!(state.lock().unwrap().events.is_empty());
+        assert!(state.lock().unwrap().kinds.is_empty());
+    }
+
     fn model_fetch_stack(
         registry: &DescriptorRegistry,
     ) -> Arc<crate::match_request::PlanFetchStack> {

@@ -718,8 +718,8 @@ attributes, values and roles fail with `query_remote_v3_document_key`,
 A plan entry may add a `result_refs` array under capability
 `query.stage.result_ref`. Each reference names `input` (a later string input
 column), `source_plan` (an earlier stack index), `source_column` (a selected
-thing column), and `expected_type` (the input's declared IID type, including
-subtypes). The source must answer entity or relation IIDs compatible with that
+thing column), and `expected_types` (the input's nonempty, sorted type allow-set, with each
+entry admitting its subtypes). The source must answer entity or relation IIDs compatible with that
 type. Scalar columns, document roots, forward references, duplicate target
 columns, and references to different sources in one plan are refused before
 provider dispatch. Entries without references keep their existing bytes.

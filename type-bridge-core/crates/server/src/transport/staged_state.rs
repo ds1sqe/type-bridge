@@ -174,7 +174,7 @@ pub struct StagedQueryState {
     pub(super) staged_query_limits: Option<type_bridge_contract::limits::QueryLimits>,
     pub(super) ceilings: AnswerLimits,
     pub(super) database: Database,
-    pub(super) declared: DeclaredSchema,
+    pub(super) declared: Arc<DeclaredSchema>,
     delta_context: ManagedDeltaContext,
     managed: ManagedSchemaState,
     pub(super) execution_timeout: Option<Duration>,
@@ -261,7 +261,7 @@ impl StagedQueryState {
             staged_query_limits: None,
             ceilings,
             database,
-            declared,
+            declared: Arc::new(declared),
             delta_context,
             managed,
             execution_timeout: Some(DEFAULT_EXECUTION_TIMEOUT),
@@ -842,6 +842,9 @@ mod tests {
         fail_close: AtomicBool,
         fail_commit: AtomicBool,
         fail_query: AtomicBool,
+        fail_query_at: AtomicUsize,
+        queries: Mutex<Vec<String>>,
+        rollbacks: AtomicUsize,
         commits: AtomicUsize,
         schema_exports: AtomicUsize,
         transaction_opens: AtomicUsize,
@@ -936,8 +939,14 @@ mod tests {
 
     impl TransactionOps for CountingTransaction {
         fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
-            self.metrics.query_executions.fetch_add(1, Ordering::SeqCst);
-            let fail = self.metrics.fail_query.load(Ordering::SeqCst);
+            let index = self.metrics.query_executions.fetch_add(1, Ordering::SeqCst) + 1;
+            self.metrics
+                .queries
+                .lock()
+                .expect("queries")
+                .push(typeql.to_owned());
+            let fail = self.metrics.fail_query.load(Ordering::SeqCst)
+                || self.metrics.fail_query_at.load(Ordering::SeqCst) == index;
             let mut rows = self.metrics.rows.lock().expect("rows lock").clone();
             if rows.is_empty()
                 && self.metrics.staged_insert_rows.load(Ordering::SeqCst)
@@ -987,6 +996,7 @@ mod tests {
         }
 
         fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+            self.metrics.rollbacks.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(()) })
         }
 

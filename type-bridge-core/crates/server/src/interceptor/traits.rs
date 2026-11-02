@@ -101,6 +101,9 @@ pub struct V3PolicyPlan<'a> {
     plan: &'a QueryPlanV3,
     types: &'a [TypeId],
     rows_visible: bool,
+    capabilities: &'a CapabilitySet,
+    result_refs: &'a [type_bridge_contract::query_remote_v3::StagedResultRefV3],
+    template_rows: Option<&'a [InputRow]>,
 }
 
 impl<'a> V3PolicyPlan<'a> {
@@ -109,7 +112,30 @@ impl<'a> V3PolicyPlan<'a> {
             plan,
             types,
             rows_visible: false,
+            capabilities: plan.required_capabilities(),
+            result_refs: &[],
+            template_rows: None,
         }
+    }
+
+    pub(crate) const fn with_result_refs(
+        mut self,
+        result_refs: &'a [type_bridge_contract::query_remote_v3::StagedResultRefV3],
+        rows: &'a [InputRow],
+        capabilities: &'a CapabilitySet,
+    ) -> Self {
+        self.result_refs = result_refs;
+        self.template_rows = Some(rows);
+        self.capabilities = capabilities;
+        self
+    }
+
+    /// Symbolic IID dependencies, visible independently of invocation-row policy.
+    #[must_use]
+    pub const fn result_refs(
+        &self,
+    ) -> &'a [type_bridge_contract::query_remote_v3::StagedResultRefV3] {
+        self.result_refs
     }
 
     pub(crate) const fn with_rows_visible(mut self, visible: bool) -> Self {
@@ -120,7 +146,7 @@ impl<'a> V3PolicyPlan<'a> {
     /// Capabilities the plan requires, e.g. `query.write.delete`.
     #[must_use]
     pub const fn capabilities(&self) -> &'a CapabilitySet {
-        self.plan.required_capabilities()
+        self.capabilities
     }
 
     /// Whether the plan requires the capability spelled `id`.
@@ -151,7 +177,7 @@ impl<'a> V3PolicyPlan<'a> {
     #[must_use]
     pub fn rows(&self) -> Option<&'a [InputRow]> {
         if self.rows_visible {
-            self.plan.given_rows()
+            self.template_rows.or_else(|| self.plan.given_rows())
         } else {
             None
         }
@@ -167,7 +193,14 @@ impl fmt::Debug for V3PolicyPlan<'_> {
             .field("capabilities", &capabilities)
             .field("types", &self.types)
             .field("writes", &self.writes())
-            .field("rows", &self.plan.given_rows().map(<[InputRow]>::len))
+            .field(
+                "rows",
+                &self
+                    .template_rows
+                    .or_else(|| self.plan.given_rows())
+                    .map(<[InputRow]>::len),
+            )
+            .field("result_refs", &self.result_refs)
             .field("rows_visible", &self.rows_visible)
             .finish()
     }

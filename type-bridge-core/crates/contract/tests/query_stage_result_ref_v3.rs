@@ -21,7 +21,7 @@ fn reference(input: u16, source_plan: u32) -> StagedResultRefV3 {
         input: InputColumnId::new(input),
         source_plan,
         source_column: 0,
-        expected_type: entity("account"),
+        expected_types: vec![entity("account")],
     }
 }
 fn target(rows: usize, optional: bool, refs: Vec<StagedResultRefV3>) -> StagedPlanV3 {
@@ -170,7 +170,7 @@ fn iid_ref_graph_refuses_forward_scalar_and_incompatible_columns() {
         "query_stage_result_ref_column"
     );
     let mut wrong_type = reference(0, 0);
-    wrong_type.expected_type = entity("item");
+    wrong_type.expected_types = vec![entity("item")];
     assert_eq!(
         validate_staged_result_refs_v3(&[source(), target(1, false, vec![wrong_type])], &schema())
             .unwrap_err()
@@ -425,7 +425,7 @@ fn iid_ref_types_use_the_final_selected_domain_and_accept_subtypes() {
             input: InputColumnId::new(0),
             source_plan: 0,
             source_column: 0,
-            expected_type,
+            expected_types: vec![expected_type],
         };
         let target = StagedPlanV3::new_with_result_refs(
             &plan,
@@ -450,4 +450,80 @@ fn iid_ref_types_use_the_final_selected_domain_and_accept_subtypes() {
             [InputRow::new(vec![iid("0x10")])]
         );
     }
+}
+
+#[test]
+fn iid_refs_accept_a_canonical_union_of_unrelated_player_types() {
+    let mut plan = spec(
+        vec![Stage::Match {
+            patterns: vec![
+                type_bridge_contract::query_plan::QueryPattern::Or {
+                    branches: vec![
+                        vec![isa(0, entity("account"))],
+                        vec![isa(0, entity("item"))],
+                    ],
+                }
+                .into(),
+            ],
+        }],
+        vec![0],
+    );
+    let source = QueryPlanV3::new(plan.clone(), &schema()).unwrap();
+    let source = StagedPlanV3::new(&source, vec![], &schema()).unwrap();
+    plan.inputs = vec![InputColumn::new(
+        InputColumnId::new(0),
+        QueryVariable::new("target").unwrap(),
+        ValueTypeTag::String,
+        false,
+    )];
+    let Stage::Match { patterns } = &mut plan.pipeline[0] else {
+        unreachable!()
+    };
+    patterns.push(
+        type_bridge_contract::query_plan::QueryPattern::Iid {
+            binding: id(0),
+            iid: QueryOperand::Input {
+                column: InputColumnId::new(0),
+            },
+        }
+        .into(),
+    );
+    let plan = QueryPlanV3::new(plan, &schema()).unwrap();
+    let mut reference = reference(0, 0);
+    reference.expected_types = vec![entity("item"), entity("account"), entity("item")];
+    let target = StagedPlanV3::new_with_result_refs(
+        &plan,
+        vec![InputRow::new(vec![None]); 2],
+        vec![reference],
+        &schema(),
+    )
+    .unwrap();
+    assert_eq!(
+        target.result_refs()[0].expected_types,
+        [entity("account"), entity("item")]
+    );
+    validate_staged_result_refs_v3(&[source, target.clone()], &schema()).unwrap();
+    let rows = StagedAnswerV3::Rows {
+        rows: vec![
+            vec![RemoteValue::Thing {
+                iid: "0x10".into(),
+                type_id: entity("account"),
+            }],
+            vec![RemoteValue::Thing {
+                iid: "0x20".into(),
+                type_id: entity("item"),
+            }],
+        ],
+    };
+    assert_eq!(
+        target
+            .bind_results(&[rows], &schema())
+            .unwrap()
+            .given_rows()
+            .unwrap(),
+        [
+            InputRow::new(vec![iid("0x10")]),
+            InputRow::new(vec![iid("0x20")])
+        ]
+    );
 }

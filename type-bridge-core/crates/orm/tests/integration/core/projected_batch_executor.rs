@@ -4560,7 +4560,7 @@ async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live(
                 .put_many(std::slice::from_ref(&fields))
                 .await
                 .unwrap();
-            assert_eq!(actual, [hit.clone()]);
+            assert_eq!(actual.as_slice(), std::slice::from_ref(&hit));
             let expected = if bindings > 256 && terms > 256 { 1 } else { 4 };
             assert_eq!(log.lock().unwrap().statements.len(), expected);
             assert_eq!(log.lock().unwrap().commits, 1);
@@ -4601,6 +4601,254 @@ async fn generic_manager_query_limits_choose_full_plans_or_existing_pieces_live(
             );
             raw.delete_by_iid(&hit).await.unwrap();
             raw.delete_by_iid(&created).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn staged_iid_reference_wide_attachment_and_last_failure_are_atomic_live() {
+    use type_bridge_contract::managed_scope::ManagedScopeId;
+    use type_bridge_contract::migration_assertion::{AssertionBinding, BindingId, QueryVariable};
+    use type_bridge_contract::query_plan::v3::{
+        AttachItem, InsertThing, Operation, PlanSpec, QueryPlanV3, Stage, ThingDocument,
+        WriteReturns,
+    };
+    use type_bridge_contract::query_plan::{
+        InputColumn, InputColumnId, InputRow, QueryOperand, QueryOutput, QueryPattern,
+    };
+    use type_bridge_contract::query_remote::{RemoteFieldValue, RemoteValue};
+    use type_bridge_contract::query_remote_v3::{StagedAnswerV3, StagedPlanV3, StagedResultRefV3};
+    use type_bridge_contract::value::ValueTypeTag;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    database.execute_raw("define attribute reference-value, value string; entity reference-note, owns reference-value @card(0..);", TxType::Schema).await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  reference-value: { value: string }\nentities:\n  reference-note:\n    owns:\n      reference-value: { card: { min: 0 } }\n";
+    let declared = Arc::new(
+        normalize_documents(
+            &SchemaDocumentSet::parse([(
+                DocumentId::new("iid-reference-live.yaml").unwrap(),
+                yaml,
+            )])
+            .unwrap(),
+        )
+        .unwrap(),
+    );
+    let context = type_bridge_schema::ManagedDeltaContext::new(
+        ManagedScopeId::new("iid-reference-live").unwrap(),
+        SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+        type_bridge_contract::capability::CapabilitySet::new(),
+    );
+    let managed = type_bridge_schema::managed_schema_state(&declared, &context).unwrap();
+    let note = TypeId::new(TypeKind::Entity, "reference-note").unwrap();
+    let field =
+        OwnsFactId::new(note.clone(), AttributeId::new("reference-value").unwrap()).unwrap();
+    let root = BindingId::new(0).unwrap();
+    let source = QueryPlanV3::new(
+        PlanSpec {
+            bindings: vec![AssertionBinding::new(
+                root,
+                QueryVariable::new("root").unwrap(),
+            )],
+            inputs: vec![],
+            given_rows: None,
+            operation: Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            pipeline: vec![Stage::Insert {
+                things: vec![InsertThing {
+                    binding: root,
+                    type_id: note.clone(),
+                    fields: vec![],
+                    players: vec![],
+                }],
+            }],
+            output: QueryOutput::Rows {
+                columns: vec![root],
+            },
+            managed_semantics: managed.managed_semantic_schema().clone(),
+            compatibility: None,
+            functions: vec![],
+        },
+        &declared,
+    )
+    .unwrap();
+    let discarded = BindingId::new(1).unwrap();
+    let target = QueryPlanV3::new(
+        PlanSpec {
+            bindings: vec![
+                AssertionBinding::new(root, QueryVariable::new("root").unwrap()),
+                AssertionBinding::new(discarded, QueryVariable::new("discarded").unwrap()),
+            ],
+            inputs: vec![
+                InputColumn::new(
+                    InputColumnId::new(0),
+                    QueryVariable::new("target").unwrap(),
+                    ValueTypeTag::String,
+                    false,
+                ),
+                InputColumn::new(
+                    InputColumnId::new(1),
+                    QueryVariable::new("value").unwrap(),
+                    ValueTypeTag::String,
+                    false,
+                ),
+            ],
+            given_rows: None,
+            operation: Operation::Write {
+                returns: WriteReturns::Rows,
+            },
+            pipeline: vec![
+                Stage::Match {
+                    patterns: vec![
+                        QueryPattern::Isa {
+                            binding: root,
+                            type_id: note.clone(),
+                            include_subtypes: false,
+                        }
+                        .into(),
+                        QueryPattern::Iid {
+                            binding: root,
+                            iid: QueryOperand::Input {
+                                column: InputColumnId::new(0),
+                            },
+                        }
+                        .into(),
+                    ],
+                },
+                Stage::Attach {
+                    items: vec![AttachItem::Has {
+                        optional: false,
+                        owner: root,
+                        field,
+                        operand: QueryOperand::Input {
+                            column: InputColumnId::new(1),
+                        },
+                    }],
+                },
+                Stage::Select {
+                    bindings: vec![root],
+                },
+                Stage::Distinct,
+                // Group before Fetch: the provider can repeat documents after a Given window.
+                Stage::Reduce {
+                    assignments: vec![type_bridge_contract::query_plan::ReduceAssignment::new(
+                        discarded,
+                        type_bridge_contract::query_plan::Reducer::Count,
+                        None,
+                    )],
+                    groups: vec![root],
+                },
+                Stage::Fetch(ThingDocument::new(root, vec![])),
+            ],
+            output: QueryOutput::Rows { columns: vec![] },
+            managed_semantics: managed.managed_semantic_schema().clone(),
+            compatibility: None,
+            functions: vec![],
+        },
+        &declared,
+    )
+    .unwrap();
+    let values = (0..300)
+        .map(|index| {
+            CanonicalValue::String(CanonicalString::new(format!("value-{index}")).unwrap())
+        })
+        .collect::<Vec<_>>();
+    let stack = vec![
+        StagedPlanV3::new(&source, vec![], &declared).unwrap(),
+        StagedPlanV3::new_with_result_refs(
+            &target,
+            values
+                .iter()
+                .map(|value| InputRow::new(vec![None, Some(value.clone())]))
+                .collect(),
+            vec![StagedResultRefV3 {
+                input: InputColumnId::new(0),
+                source_plan: 0,
+                source_column: 0,
+                expected_types: vec![note],
+            }],
+            &declared,
+        )
+        .unwrap(),
+    ];
+    for literal in [false, true] {
+        for fail in [false, true] {
+            let (counted, log) = counted_connection(&database, literal).await;
+            if fail {
+                log.lock().unwrap().fail_at = Some(2);
+            }
+            let mut transaction = counted.transaction(
+                TransactionOptions::default()
+                    .with_answer_timeout(std::time::Duration::from_secs(30)),
+            );
+            let pending = transaction
+                .stage_plan_stack(stack.clone(), Arc::clone(&declared))
+                .unwrap();
+            let result = transaction.commit().await;
+            let QueryResult::Documents(roots) = database
+                .execute_raw(
+                    "match $root isa reference-note; fetch {\"iid\": iid($root)};",
+                    TxType::Read,
+                )
+                .await
+                .unwrap()
+            else {
+                panic!("committed roots")
+            };
+            let counts = {
+                let log = log.lock().unwrap();
+                (log.commits, log.rollbacks)
+            };
+            if fail {
+                assert_eq!(result.unwrap_err().op_index, Some(1));
+                assert!(pending.iter().all(|answer| answer.get().is_err()));
+                assert!(roots.is_empty());
+                assert_eq!(counts, (0, 1));
+            } else {
+                result.unwrap();
+                assert_eq!(roots.len(), 1);
+                let StagedAnswerV3::Rows { rows } =
+                    pending[0].get().unwrap().to_staged_v3(&source).unwrap()
+                else {
+                    panic!("allocated IID")
+                };
+                let [RemoteValue::Thing { iid, .. }] = rows[0].as_slice() else {
+                    panic!("one thing")
+                };
+                assert_eq!(roots[0]["iid"], iid.as_str());
+                let StagedAnswerV3::Documents { documents } =
+                    pending[1].get().unwrap().to_staged_v3(&target).unwrap()
+                else {
+                    panic!("final document")
+                };
+                assert_eq!(documents.len(), 1);
+                let RemoteFieldValue::Document { fields } = &documents[0]["attributes"] else {
+                    panic!("attributes")
+                };
+                let RemoteFieldValue::List { values: actual } = &fields["reference-value"] else {
+                    panic!("values")
+                };
+                assert_eq!(
+                    actual
+                        .iter()
+                        .cloned()
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    values.iter().cloned().collect()
+                );
+                assert_eq!(counts, (1, 0));
+                database
+                    .execute_raw(
+                        "match $root isa reference-note; delete $root;",
+                        TxType::Write,
+                    )
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(log.lock().unwrap().opened, [TxType::Write]);
+            assert_eq!(log.lock().unwrap().statements.len(), 2);
         }
     }
 }
