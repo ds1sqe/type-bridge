@@ -11,9 +11,88 @@ use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::query_plan::v3::{
     AttachItem, DeleteItem, InsertThing, QueryPlanV3, Set, Stage, decode_query_plan_v3,
 };
+
+#[test]
+fn keyed_relation_put_requires_a_later_mandatory_player_attachment() {
+    use type_bridge_contract::id::{AttributeId, RoleId, TypeId, TypeKind};
+    use type_bridge_contract::schema::OwnsFactId;
+    let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+    let seed = Stage::Put {
+        include_subtypes: false,
+        things: vec![InsertThing {
+            binding: id(1),
+            type_id: purchase.clone(),
+            fields: vec![(
+                OwnsFactId::new(purchase, AttributeId::new("purchase-id").unwrap()).unwrap(),
+                string("key"),
+            )],
+            players: vec![],
+        }],
+    };
+    for optional in [false, true] {
+        let stages = vec![
+            matched(),
+            seed.clone(),
+            Stage::Attach {
+                items: vec![AttachItem::Links {
+                    optional,
+                    relation: id(1),
+                    role: RoleId::new("purchase", "buyer").unwrap(),
+                    player: id(0),
+                }],
+            },
+        ];
+        let plan = QueryPlanV3::new(spec(stages, vec![1]), &schema());
+        if optional {
+            assert_eq!(
+                plan.unwrap_err().code().as_str(),
+                "query_plan_insert_relation_players"
+            );
+            let mut request = spec(
+                vec![
+                    matched(),
+                    seed.clone(),
+                    Stage::Attach {
+                        items: vec![AttachItem::Links {
+                            optional: true,
+                            relation: id(1),
+                            role: RoleId::new("purchase", "buyer").unwrap(),
+                            player: id(0),
+                        }],
+                    },
+                ],
+                vec![1],
+            );
+            request.inputs = vec![InputColumn::new(
+                InputColumnId::new(0),
+                type_bridge_contract::migration_assertion::QueryVariable::new("seed").unwrap(),
+                type_bridge_contract::value::ValueTypeTag::String,
+                false,
+            )];
+            request.given_rows = Some(vec![InputRow::new(vec![Some(
+                type_bridge_contract::value::CanonicalValue::String(
+                    type_bridge_contract::value::CanonicalString::new("key").unwrap(),
+                ),
+            )])]);
+            QueryPlanV3::new(request.clone(), &schema()).unwrap();
+            request.pipeline.pop();
+            assert_eq!(
+                QueryPlanV3::new(request, &schema())
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "query_plan_insert_relation_players"
+            );
+        } else {
+            plan.unwrap();
+        }
+    }
+    let bare = QueryPlanV3::new(spec(vec![matched(), seed], vec![1]), &schema()).unwrap_err();
+    assert_eq!(bare.code().as_str(), "query_plan_insert_relation_players");
+}
 use type_bridge_contract::query_plan::{
-    OrderDirection, OrderTerm, QueryOutput, QueryPattern, QueryPlan, ReadStage, ReduceAssignment,
-    Reducer, decode_query_plan,
+    InputColumn, InputColumnId, InputRow, OrderDirection, OrderTerm, QueryOutput, QueryPattern,
+    QueryPlan, ReadStage, ReduceAssignment, Reducer, decode_query_plan,
 };
 
 fn stage_plans() -> BTreeMap<&'static str, QueryPlanV3> {

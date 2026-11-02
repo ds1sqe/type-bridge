@@ -1412,10 +1412,23 @@ fn validate_stages(
                         ));
                     }
                     if thing.type_id.kind() == TypeKind::Relation && thing.players.is_empty() {
-                        return Err(invalid(
-                            "query_plan_insert_relation_players",
-                            "relation insert and put require at least one player",
-                        ));
+                        let keyed_seed = matches!(stage, Stage::Put { .. })
+                            && !thing.fields.is_empty()
+                            && thing.fields.iter().all(|(field, _)| index.annotation(
+                                AnnotationSubjectId::Owns(field.clone()), AnnotationKindId::Key,
+                            ))
+                            && spec.pipeline[stage_index + 1..].iter().any(|stage| {
+                                matches!(stage, Stage::Attach { items } if items.iter().any(|item| {
+                                    matches!(item, AttachItem::Links { relation, optional, .. }
+                                        if *relation == thing.binding && (!optional || spec.given_rows.as_ref().is_some_and(|rows| !rows.is_empty())))
+                                }))
+                            });
+                        if !keyed_seed {
+                            return Err(invalid(
+                                "query_plan_insert_relation_players",
+                                "relation insert and put require players, or a keyed put followed by player attachment",
+                            ));
+                        }
                     }
                     let mut candidates = BTreeSet::from([thing.type_id.clone()]);
                     if matches!(
