@@ -132,7 +132,8 @@ All notable changes to TypeBridge will be documented in this file.
 
 - Removed server `Interceptor::{on_request,on_response,supports_v2,on_v2_request}`,
   `V2PolicyRequest`, `CrudInterceptor`, `CrudInterceptorAdapter`, `CrudInfo`,
-  `CrudOperation`, `interceptor::TypeKind`, and `RequestContext::crud_info`.
+  `CrudOperation`, `interceptor::TypeKind`,
+  `interceptor::crud_info::extract_crud_info`, and `RequestContext::crud_info`.
   Use staged `on_v3_plan` / `on_v3_commit` policies.
   `on_v2_transport` / `on_v2_response` become `on_v3_transport` /
   `on_v3_response`; `V2PolicyOutcome` becomes `V3PolicyOutcome`.
