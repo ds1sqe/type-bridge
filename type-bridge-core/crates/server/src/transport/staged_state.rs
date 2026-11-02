@@ -27,7 +27,7 @@ use type_bridge_orm::session::database::Database;
 use type_bridge_schema::ManagedDeltaContext;
 use type_bridge_schema_compat::{LiveQueryControlPresence, rebuild_live_query_authority};
 
-const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_REPLAY_CAPACITY: usize = 100_000;
 const RESPONSE_AUDIT_GRACE: Duration = Duration::from_millis(100);
 const TRANSACTION_CLOSE_GRACE: Duration = Duration::from_secs(1);
@@ -40,13 +40,14 @@ fn new_staged_preflight_slots() -> Arc<tokio::sync::Semaphore> {
 pub(super) static STAGED_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(new_staged_preflight_slots);
 
-pub(super) async fn await_before_deadline<F>(deadline: Instant, future: F) -> Option<F::Output>
+pub(super) async fn await_before_deadline<F>(deadline: impl Into<Option<Instant>>, future: F) -> Option<F::Output>
 where
     F: Future,
 {
-    tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), future)
-        .await
-        .ok()
+    match deadline.into() {
+        Some(deadline) => tokio::time::timeout_at(deadline.into(), future).await.ok(),
+        None => Some(future.await),
+    }
 }
 
 pub(super) async fn close_staged_transaction(transaction: &mut Transaction) -> Result<(), ()> {
@@ -173,7 +174,7 @@ pub struct StagedQueryState {
     pub(super) declared: DeclaredSchema,
     delta_context: ManagedDeltaContext,
     managed: ManagedSchemaState,
-    pub(super) execution_timeout: Duration,
+    pub(super) execution_timeout: Option<Duration>,
     pub(super) replay_store: Arc<dyn RemoteReplayStore>,
     pub(super) signer: RemoteReplySigningKey,
     control_policy: StagedQueryControlPolicy,
@@ -260,7 +261,7 @@ impl StagedQueryState {
             declared,
             delta_context,
             managed,
-            execution_timeout: DEFAULT_EXECUTION_TIMEOUT,
+            execution_timeout: Some(DEFAULT_EXECUTION_TIMEOUT),
             replay_store: Arc::new(InMemoryReplayStore::new(DEFAULT_REPLAY_CAPACITY)),
             signer,
             control_policy,
@@ -278,10 +279,17 @@ impl StagedQueryState {
         self
     }
 
-    /// Set the finite host admission window used for raw request freshness.
-    pub fn with_admission_window(mut self, window: Duration) -> Self {
-        self.admission_window = window;
-        self
+    /// Set the finite delivery window shared by staged and raw admission.
+    /// Execution may continue after that admission window has closed.
+    pub fn with_admission_window(mut self, window: Duration) -> Result<Self, Diagnostic> {
+        let milliseconds = u64::try_from(window.as_millis()).map_err(|_| diagnostic(
+            DiagnosticCategory::InvalidInput,
+            "query_remote_admission_window",
+            "request admission window exceeds the supported range",
+        ))?;
+        self.advertisement = self.advertisement.with_admission_window_milliseconds(milliseconds)?;
+        self.admission_window = Duration::from_millis(milliseconds);
+        Ok(self)
     }
 
     /// Replace the replay registry without changing this standalone epoch.
@@ -370,6 +378,7 @@ impl StagedQueryState {
             .with_answer_limits(ceilings.overrides())?;
         advertisement.fingerprint()?;
         self.advertisement = advertisement;
+        self.execution_timeout = ceilings.timeout_milliseconds.milliseconds().map(Duration::from_millis);
         self.ceilings.answer.max_items = ceilings.items;
         self.ceilings.answer.max_bytes = ceilings.bytes;
         self.ceilings.max_collection_members = ceilings.collection_members;
@@ -397,8 +406,8 @@ impl StagedQueryState {
 
     /// Tighten the mandatory server execution duration.
     #[must_use]
-    pub fn with_execution_timeout(mut self, timeout: Duration) -> Self {
-        self.execution_timeout = timeout;
+    pub fn with_execution_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        self.execution_timeout = timeout.into();
         self
     }
 
@@ -653,10 +662,9 @@ pub(super) fn declared_staged_body_oversized(headers: &HeaderMap, limit_bytes: u
     })
 }
 
-pub(super) fn response_audit_deadline(request_deadline: Instant) -> Instant {
-    Instant::now()
-        .checked_add(RESPONSE_AUDIT_GRACE)
-        .unwrap_or(request_deadline)
+pub(super) fn response_audit_deadline(request_deadline: impl Into<Option<Instant>>) -> Instant {
+    let now = Instant::now();
+    now.checked_add(RESPONSE_AUDIT_GRACE).unwrap_or_else(|| request_deadline.into().unwrap_or(now))
 }
 
 pub(super) fn staged_request_metadata(

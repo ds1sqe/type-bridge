@@ -111,7 +111,9 @@ impl RemoteQueryLimits {
     ) -> Self {
         Self {
             resources: QueryExecutionResourceLimits {
-                timeout_milliseconds: DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+                    DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS,
+                ),
                 items: max_items,
                 bytes: max_bytes,
                 graph_nodes: max_graph_nodes,
@@ -126,7 +128,8 @@ impl RemoteQueryLimits {
     /// Set `timeout_milliseconds`.
     #[must_use]
     pub const fn deadline_ms(mut self, deadline_ms: u64) -> Self {
-        self.resources.timeout_milliseconds = deadline_ms;
+        self.resources.timeout_milliseconds =
+            type_bridge_orm::QueryTimeout::from_milliseconds(deadline_ms);
         self
     }
 }
@@ -191,7 +194,7 @@ mod tests {
         assert_eq!(
             resources,
             QueryExecutionResourceLimits {
-                timeout_milliseconds: 30_000,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(30_000),
                 items: 100,
                 bytes: 8 << 20,
                 graph_nodes: 1_000,

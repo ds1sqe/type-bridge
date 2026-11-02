@@ -62,6 +62,7 @@ pub struct ProxyQueryConnection {
     advertisement: Arc<[u8]>,
     authority: Arc<QueryAuthority>,
     answer_limits: QueryExecutionResourceLimits,
+    admission_window_milliseconds: std::num::NonZeroU64,
     /// The staged (`/v3/capabilities`) advertisement, pinned or verified
     /// on first use against `advertisement`, then reused.
     staged_advertisement: Mutex<Option<Arc<[u8]>>>,
@@ -145,8 +146,29 @@ impl ProxyQueryConnection {
             advertisement,
             authority,
             answer_limits: answer_limits.effective(),
+            admission_window_milliseconds: std::num::NonZeroU64::new(
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            )
+            .unwrap(),
             staged_advertisement: Mutex::new(staged),
         })
+    }
+
+    /// Configure the finite request delivery window (default 60000 ms).
+    /// The advertised server ceiling may tighten it; execution is independent.
+    #[must_use]
+    pub const fn with_admission_window_milliseconds(
+        mut self,
+        milliseconds: std::num::NonZeroU64,
+    ) -> Self {
+        self.admission_window_milliseconds = milliseconds;
+        self
+    }
+
+    /// The configured delivery window, before intersecting the server ceiling.
+    #[must_use]
+    pub const fn admission_window_milliseconds(&self) -> u64 {
+        self.admission_window_milliseconds.get()
     }
 
     /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
@@ -273,8 +295,14 @@ impl ProxyQueryConnection {
         http: Option<ProxyHttpTransport>,
         exchange: Option<StagedExchangeFn>,
         advertisement: &[u8],
-        options: TransactionOptions,
+        mut options: TransactionOptions,
     ) -> Result<Transaction, SdkExecutionDiagnostic> {
+        options.timeout = Some(
+            options
+                .timeout
+                .unwrap_or(self.answer_limits.timeout_milliseconds)
+                .constrained_by(self.answer_limits.timeout_milliseconds),
+        );
         let proxy = ProxyStaging::new(
             http,
             exchange,
@@ -282,7 +310,8 @@ impl ProxyQueryConnection {
             self.authority.declared().clone(),
             self.answer_limits,
         )
-        .map_err(lower_remote_query_diagnostic)?;
+        .map_err(lower_remote_query_diagnostic)?
+        .with_admission_window_milliseconds(self.admission_window_milliseconds);
         Ok(Transaction::new_proxy(proxy, options))
     }
 
@@ -325,6 +354,7 @@ impl ProxyQueryConnection {
             resources,
             deadline,
             cancellation,
+            self.admission_window_milliseconds.get(),
         )
         .map_err(QueryTargetError::Prepare)?;
         deadline.check(cancellation)?;

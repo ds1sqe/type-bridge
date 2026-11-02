@@ -1265,6 +1265,8 @@ export interface ProxyConnectionOptions {
    * it must name the same executor and reply key as `advertisement`.
    */
   readonly stagedAdvertisement?: Uint8Array;
+  /** Finite delivery window, default 60000 ms; independent of execution. */
+  readonly admissionWindowMilliseconds?: bigint;
   /** Bounds connecting, which fetches the advertisement. */
   readonly connectionLimits?: QueryExecutionResourceLimits;
   /** The ceiling every terminal on this connection is constrained by. */
@@ -1285,6 +1287,11 @@ export class ProxyConnection implements RuntimeProjectionRemote {
   private constructor(native: NativeProxyConnection) {
     this.#native = native;
     Object.freeze(this);
+  }
+
+  /** Configured delivery window, before the server ceiling is applied. */
+  get admissionWindowMilliseconds(): bigint {
+    return this.#native.admissionWindowMilliseconds;
   }
 
   /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
@@ -1331,6 +1338,7 @@ export class ProxyConnection implements RuntimeProjectionRemote {
         options.answerLimits?.nativeHandle(),
         options.cancellation?.nativeHandle(),
         stagedAdvertisement,
+        options.admissionWindowMilliseconds,
       )
     ));
     return new ProxyConnection(native);

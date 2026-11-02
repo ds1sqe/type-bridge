@@ -52,7 +52,7 @@ def test_both_transport_default_sets_are_exported() -> None:
     # A direct session keeps the 2.2 in-process bounds; a proxy connection is
     # bounded by what one remote envelope carries.
     assert direct == {
-        "timeout_milliseconds": 30_000,
+        "timeout_milliseconds": 60_000,
         "items": 100_000,
         "bytes": 64 * 1024 * 1024,
         "graph_nodes": 1_000_000,
@@ -62,7 +62,7 @@ def test_both_transport_default_sets_are_exported() -> None:
         "statements": 3,
     }
     assert proxy == {
-        "timeout_milliseconds": 30_000,
+        "timeout_milliseconds": 60_000,
         "items": 65_536,
         "bytes": 32 * 1024 * 1024,
         "graph_nodes": 65_536,

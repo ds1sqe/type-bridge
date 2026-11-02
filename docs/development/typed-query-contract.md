@@ -659,7 +659,7 @@ an unset policy becomes a default; `Default` is the direct policy.
 
 | Limit | Direct default | Proxy default | Supported maximum | Bounds |
 | --- | ---: | ---: | ---: | --- |
-| `timeout_milliseconds` | 30,000 | 30,000 | 86,400,000 | Duration of one terminal |
+| `timeout_milliseconds` | 60,000 | 60,000 | none | Duration of one terminal; zero or negative binding input means no deadline |
 | `items` | 100,000 | 65,536 | none | Provider items read and rows returned; the scan and hydration both draw on it |
 | `bytes` | 64 MiB | 32 MiB | none | Provider answer bytes, the reply envelope, and the projected result |
 | `graph_nodes` | 1,000,000 | 65,536 | none | Hydrated things, including nested role players |
@@ -696,8 +696,18 @@ request's budget and its own ceilings, per dimension. The reply is encoded
 and decoded under those budgets, so a reply over 32 MiB or 65,536 rows is
 exchanged only between peers that both raised the limit.
 
-The proxy keeps one bound of its own: a request lives at most five minutes,
-so a longer `timeout_milliseconds` shortens to that through a proxy.
+Execution timeouts start when the call executes, not when its plan is built.
+Rust represents them with `QueryTimeout`, either no deadline or a positive
+millisecond duration. Python, Node and C accept signed 64-bit milliseconds;
+zero and negative inputs select no deadline. A connection or server ceiling
+still tightens an unbounded request. Commit is never interrupted: a deadline
+observed before commit rolls back, and a dispatched commit runs to its outcome.
+
+The proxy's `admission_window_milliseconds` is separate: it defaults to 60,000 ms
+from request issue to admission. Configure it on the proxy connection (Node:
+`admissionWindowMilliseconds`) and the server. The server's advertised ceiling
+wins. It must be positive and finite; it protects request freshness and nonce
+retention without shortening an admitted operation's execution time.
 
 ## Remote Envelope
 

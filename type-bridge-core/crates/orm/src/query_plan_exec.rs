@@ -329,11 +329,9 @@ pub(crate) fn plan_answer_limits(
         answer: crate::session::backend::BoundedAnswerLimits {
             max_items: policy.items,
             max_bytes: policy.bytes,
-            deadline: Some(
-                deadline
-                    .earliest(crate::QueryExecutionDeadline::for_limits(policy))
-                    .instant(),
-            ),
+            deadline: deadline
+                .earliest(crate::QueryExecutionDeadline::for_limits(policy))
+                .instant(),
             cancellation: cancellation.clone(),
         },
         max_graph_nodes: policy.graph_nodes,

@@ -180,8 +180,8 @@ pub use query_execution_limits::{
     DEFAULT_PROXY_QUERY_BYTES, DEFAULT_PROXY_QUERY_COLLECTION_MEMBERS,
     DEFAULT_PROXY_QUERY_GRAPH_NODES, DEFAULT_PROXY_QUERY_ITEMS, DEFAULT_PROXY_QUERY_ROLE_PLAYERS,
     DEFAULT_PROXY_QUERY_STATEMENTS, DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS, MAX_QUERY_STATEMENTS,
-    MAX_QUERY_TIMEOUT_MILLISECONDS, QueryExecutionDeadline, QueryExecutionLimitOutOfRange,
-    QueryExecutionLimitsError, QueryExecutionResourceLimits,
+    QueryExecutionDeadline, QueryExecutionLimitOutOfRange, QueryExecutionLimitsError,
+    QueryExecutionResourceLimits, QueryTimeout,
 };
 #[allow(deprecated)]
 pub use query_execution_limits::{

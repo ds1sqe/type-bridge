@@ -39,6 +39,7 @@ pub(crate) struct ProxyStaging {
     advertisement: RemoteCapabilities,
     declared: DeclaredSchema,
     limits: QueryExecutionResourceLimits,
+    admission_window_milliseconds: u64,
 }
 
 impl ProxyStaging {
@@ -63,7 +64,17 @@ impl ProxyStaging {
             advertisement: RemoteCapabilities::decode(advertisement)?,
             declared,
             limits,
+            admission_window_milliseconds:
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
         })
+    }
+
+    pub(crate) fn with_admission_window_milliseconds(
+        mut self,
+        milliseconds: std::num::NonZeroU64,
+    ) -> Self {
+        self.admission_window_milliseconds = milliseconds.get();
+        self
     }
 
     pub(crate) fn declared(&self) -> &DeclaredSchema {
@@ -104,6 +115,9 @@ impl ProxyStaging {
             super::staged::TransactionKind::Write => StagedKindV3::Write,
             super::staged::TransactionKind::Schema => StagedKindV3::Schema,
         };
+        let deadline_ms = crate::QueryTimeout::from_milliseconds(deadline_ms.unwrap_or(0))
+            .constrained_by(self.match_limits()?.timeout_milliseconds)
+            .milliseconds();
         StagedRequestV3::new(
             StagedRequestSpecV3 {
                 nonce,
@@ -111,14 +125,16 @@ impl ProxyStaging {
                 limits: policy.map_or_else(
                     || StagedLimitsV3 {
                         deadline_ms,
+                        admission_window_milliseconds: self.admission_window_milliseconds,
                         ..Default::default()
                     },
                     |policy| StagedLimitsV3 {
-                        deadline_ms: Some(
-                            deadline_ms
-                                .unwrap_or(policy.timeout_milliseconds)
-                                .min(policy.timeout_milliseconds),
-                        ),
+                        deadline_ms: crate::QueryTimeout::from_milliseconds(
+                            deadline_ms.unwrap_or(0),
+                        )
+                        .constrained_by(policy.timeout_milliseconds)
+                        .milliseconds(),
+                        admission_window_milliseconds: self.admission_window_milliseconds,
                         max_bytes: policy.bytes,
                         max_items: policy.items,
                         max_graph_nodes: Some(policy.graph_nodes),

@@ -243,8 +243,12 @@ pub struct StagedSection {
     /// Answer ceilings this executor advertises and enforces, by stable
     /// name: how much one query may return. A dimension left out keeps its
     /// default.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_answer_limits")]
     pub answer_limits: std::collections::BTreeMap<String, u64>,
+    /// Finite request delivery window in milliseconds; unset defaults to 60000.
+    /// This does not limit the execution time of an admitted request.
+    #[serde(default)]
+    pub admission_window_milliseconds: Option<u64>,
     /// Admit staged `/v3/staged` write transactions without an interceptor
     /// vouching for the caller. Defaults to `false`: writes need an
     /// authenticating policy.
@@ -653,6 +657,21 @@ impl Default for RuntimeLoggingSectionWire {
     }
 }
 
+fn deserialize_answer_limits<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<std::collections::BTreeMap<String, u64>, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Integer { Unsigned(u64), Signed(i64) }
+    let values = <std::collections::BTreeMap<String, Integer> as serde::Deserialize>::deserialize(deserializer)?;
+    values.into_iter().map(|(name, value)| {
+        let value = match value {
+            Integer::Unsigned(value) => value,
+            Integer::Signed(value) if name == "timeout_milliseconds" && value <= 0 => 0,
+            Integer::Signed(_) => return Err(serde::de::Error::custom("answer dimension must be non-negative")),
+        };
+        Ok((name, value))
+    }).collect()
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeStagedSectionWire {
@@ -666,8 +685,10 @@ struct RuntimeStagedSectionWire {
     authority_mode: StagedAuthorityMode,
     #[serde(default)]
     query_limits: std::collections::BTreeMap<String, u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_answer_limits")]
     answer_limits: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    admission_window_milliseconds: Option<u64>,
     #[serde(default)]
     allow_unauthenticated_staged_writes: bool,
 }
@@ -708,6 +729,7 @@ impl From<RuntimeStagedSectionWire> for StagedSection {
             authority_mode: wire.authority_mode,
             query_limits: wire.query_limits,
             answer_limits: wire.answer_limits,
+            admission_window_milliseconds: wire.admission_window_milliseconds,
             allow_unauthenticated_staged_writes: wire.allow_unauthenticated_staged_writes,
         }
     }
@@ -3460,6 +3482,14 @@ enabled = ["audit-log", "rate-limiter", "custom"]
 
     #[test]
     fn staged_answer_limits_resolve_by_name_and_refuse_unknown_or_unsupported_values() {
+        for timeout in [0, -1, i64::MIN] {
+            let section: StagedSection = serde_json::from_value(serde_json::json!({
+                "answer_limits": { "timeout_milliseconds": timeout }
+            })).unwrap();
+            assert_eq!(section.resolved_answer_limits().unwrap().timeout_milliseconds, type_bridge_orm::QueryTimeout::NONE);
+        }
+        assert!(serde_json::from_value::<StagedSection>(serde_json::json!({"answer_limits": {"items": -1}})).is_err());
+
         use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
 
         let section = |entries: &[(&str, u64)]| StagedSection {

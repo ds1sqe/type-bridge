@@ -508,7 +508,7 @@ pub struct RuntimeConnectionControl {
     max_items: u64,
     max_bytes: u64,
     max_statements: u32,
-    deadline: Instant,
+    deadline: Option<Instant>,
     cancellation: RuntimeAnswerCancellation,
 }
 
@@ -520,7 +520,7 @@ impl RuntimeConnectionControl {
         max_items: u64,
         max_bytes: u64,
         max_statements: u32,
-        deadline: Instant,
+        deadline: Option<Instant>,
         cancellation: RuntimeAnswerCancellation,
     ) -> Self {
         Self {
@@ -1222,7 +1222,9 @@ impl ConnectionMeter {
                 message: "provider connection was cancelled",
             });
         }
-        if tokio::time::Instant::now() >= tokio::time::Instant::from_std(control.deadline) {
+        if control.deadline.is_some_and(|deadline| {
+            tokio::time::Instant::now() >= tokio::time::Instant::from_std(deadline)
+        }) {
             return Err(RuntimeError::ResourceLimit {
                 code: "transaction_deadline_exceeded",
                 message: "provider connection deadline expired",
@@ -1330,7 +1332,12 @@ async fn await_connection_work<T>(
     tokio::pin!(future);
     let cancellation = control.cancellation.cancelled();
     tokio::pin!(cancellation);
-    let deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(control.deadline));
+    let deadline = async {
+        match control.deadline {
+            Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+            None => std::future::pending().await,
+        }
+    };
     tokio::pin!(deadline);
 
     tokio::select! {
@@ -4675,7 +4682,7 @@ mod tests {
             max_items,
             max_bytes,
             max_statements,
-            Instant::now() + Duration::from_secs(5),
+            Some(Instant::now() + Duration::from_secs(5)),
             cancellation,
         )
     }
@@ -4999,7 +5006,7 @@ mod tests {
             1,
             32,
             1,
-            Instant::now() + Duration::from_secs(1),
+            Some(Instant::now() + Duration::from_secs(1)),
             RuntimeAnswerCancellation::default(),
         );
         let pending = tokio::spawn(async move {

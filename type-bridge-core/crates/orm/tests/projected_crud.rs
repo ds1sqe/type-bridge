@@ -3275,7 +3275,7 @@ async fn controlled_single_update_preserves_captured_control_and_poison_after_di
         let cancellation = AnswerCancellation::default();
         let mut limits = QueryExecutionResourceLimits::default();
         if expired {
-            limits.timeout_milliseconds = 1;
+            limits.timeout_milliseconds = type_bridge_orm::QueryTimeout::from_milliseconds(1);
         } else {
             cancellation.cancel();
         }

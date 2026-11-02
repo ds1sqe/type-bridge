@@ -64,6 +64,7 @@ impl PyProxyConnection {
         answer_limits=None,
         cancellation=None,
         staged_advertisement=None,
+        admission_window_milliseconds=std::num::NonZeroU64::new(60_000).unwrap(),
     ))]
     #[allow(clippy::too_many_arguments)]
     fn connect(
@@ -78,6 +79,7 @@ impl PyProxyConnection {
         answer_limits: Option<PyRef<'_, PyQueryExecutionResourceLimits>>,
         cancellation: Option<PyRef<'_, PyQueryCancellation>>,
         staged_advertisement: Option<&Bound<'_, PyAny>>,
+        admission_window_milliseconds: std::num::NonZeroU64,
     ) -> PyResult<Self> {
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let endpoint = headers.into_iter().flatten().fold(
@@ -127,7 +129,8 @@ impl PyProxyConnection {
                 &cancellation,
             ),
         )
-        .map_err(py_sdk_diagnostic)?;
+        .map_err(py_sdk_diagnostic)?
+        .with_admission_window_milliseconds(admission_window_milliseconds);
         // A pinned staged advertisement must name the same executor and
         // reply key as the connection's advertisement.
         let connection = match staged_advertisement {
@@ -141,6 +144,12 @@ impl PyProxyConnection {
             runtime,
             authority: authority.authority(),
         })
+    }
+
+    /// Configured request delivery window, default 60000 ms; execution is independent.
+    #[getter]
+    fn admission_window_milliseconds(&self) -> u64 {
+        self.connection.admission_window_milliseconds()
     }
 
     /// Open a staged transaction over this connection. Nothing is sent

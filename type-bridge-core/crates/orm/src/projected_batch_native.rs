@@ -1078,7 +1078,7 @@ async fn dispatch_query(
         answer: BoundedAnswerLimits {
             max_items: ledger.remaining_items(),
             max_bytes: ledger.remaining_bytes(),
-            deadline: Some(prepared.deadline().instant()),
+            deadline: prepared.deadline().instant(),
             cancellation: prepared.cancellation().clone(),
         },
         max_collection_members: prepared.limits().collection_members,

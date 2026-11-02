@@ -476,7 +476,8 @@ typedef struct type_bridge_query_limit_override_v1 {
 typedef struct type_bridge_query_execution_limits_v1 {
   uint32_t struct_size;
   uint32_t version;
-  uint64_t timeout_milliseconds;
+  /* Per-call timeout; zero or negative means no execution deadline. */
+  int64_t timeout_milliseconds;
   uint64_t items;
   uint64_t bytes;
   uint64_t graph_nodes;
@@ -2431,6 +2432,8 @@ typedef struct type_bridge_proxy_connection_options_v1 {
   type_bridge_byte_view_t pinned_advertisement;
   const type_bridge_query_execution_limits_v1_t *connection_limits;
   const type_bridge_query_execution_limits_v1_t *answer_limits;
+  /* Finite delivery window; zero selects 60000 ms, independent of execution. */
+  uint64_t admission_window_milliseconds;
   uint64_t reserved[4];
 } type_bridge_proxy_connection_options_v1_t;
 

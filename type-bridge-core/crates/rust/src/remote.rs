@@ -83,6 +83,7 @@ pub struct ProxyConnectionPolicy {
     route: ProxyRoute,
     advertisement: Option<Vec<u8>>,
     staged_advertisement: Option<Vec<u8>>,
+    admission_window_milliseconds: std::num::NonZeroU64,
 }
 
 impl std::fmt::Debug for ProxyConnectionPolicy {
@@ -113,7 +114,22 @@ impl ProxyConnectionPolicy {
             route,
             advertisement: None,
             staged_advertisement: None,
+            admission_window_milliseconds: std::num::NonZeroU64::new(
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            )
+            .unwrap(),
         }
+    }
+
+    /// Configure the finite request delivery window (default 60000 ms).
+    /// The server may tighten this window; it does not limit execution.
+    #[must_use]
+    pub const fn admission_window_milliseconds(
+        mut self,
+        milliseconds: std::num::NonZeroU64,
+    ) -> Self {
+        self.admission_window_milliseconds = milliseconds;
+        self
     }
 
     /// Pin the staged (`GET /v3/capabilities`) advertisement, provisioned
@@ -311,7 +327,8 @@ impl ProxyDatabase<Unbound> {
             Arc::new(authority),
             options.answer_limits,
         )
-        .map_err(connect_error)?;
+        .map_err(connect_error)?
+        .with_admission_window_milliseconds(options.admission_window_milliseconds);
         let connection = match options.staged_advertisement {
             Some(staged) => connection
                 .with_staged_advertisement(staged)
@@ -467,7 +484,7 @@ async fn await_proxy(
     tokio::pin!(exchange);
     let cancellation_wait = cancellation.cancelled();
     tokio::pin!(cancellation_wait);
-    let timeout = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant()));
+    let timeout = deadline.elapsed();
     tokio::pin!(timeout);
     let result = tokio::select! {
         biased;
@@ -575,6 +592,16 @@ fn remote_model_hydration_error(error: RemoteModelQueryV2Error) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admission_window_defaults_and_round_trips() {
+        let policy = super::ProxyConnectionPolicy::new(type_bridge_orm::ProxyEndpoint::new(
+            "http://localhost:41650",
+        ));
+        assert_eq!(policy.admission_window_milliseconds.get(), 60_000);
+        let policy = policy.admission_window_milliseconds(std::num::NonZeroU64::new(1234).unwrap());
+        assert_eq!(policy.admission_window_milliseconds.get(), 1234);
+    }
+
     #[test]
     fn a_default_proxy_policy_carries_the_proxy_defaults() {
         use super::{
@@ -1680,21 +1707,20 @@ mod tests {
         assert_eq!(*capability_calls.lock().unwrap(), 1);
 
         let zero_timeout = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
         let mut timed_session = remote
             .query_with_resources(zero_timeout, AnswerCancellation::default())
             .unwrap();
         let timed_person = timed_session.exact::<Person>().unwrap();
-        let timed_error = timed_session
+        let count_without_deadline = timed_session
             .query(timed_person)
             .unwrap()
             .count()
             .await
-            .expect_err("zero timeout must reject before caller transport");
-        assert_eq!(timed_error.category(), crate::ErrorCategory::ResourceLimit);
-        assert_eq!(timed_error.code(), Some("transaction_deadline_exceeded"));
+            .expect("no deadline allows the caller transport");
+        assert_eq!(count_without_deadline, 7);
 
         let cancellation = AnswerCancellation::default();
         cancellation.cancel();
@@ -1758,7 +1784,7 @@ mod tests {
         );
 
         let requests = exchanges.lock().unwrap();
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 7);
         assert!(
             std::str::from_utf8(&requests[0])
                 .unwrap()
@@ -1766,7 +1792,7 @@ mod tests {
         );
         let authority = remote_fixture_authority();
         let request = StagedRequestV3::decode(
-            &requests[5],
+            &requests[6],
             authority.declared(),
             &RemoteCapabilities::decode(
                 &remote

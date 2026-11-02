@@ -193,3 +193,14 @@ test("a staged proxy transaction refuses an unknown kind before any exchange", a
     /unknown transaction kind 'bogus'/,
   );
 });
+
+test("admission window defaults and round-trips independently of execution", async () => {
+  const endpoint = await closedEndpoint();
+  const defaults = await ProxyConnection.connect(authority(), endpoint, { advertisement: advertisement() });
+  assert.equal(defaults.admissionWindowMilliseconds, 60_000n);
+  const configured = await ProxyConnection.connect(authority(), endpoint, {
+    advertisement: advertisement(), admissionWindowMilliseconds: 1234n,
+  });
+  assert.equal(configured.admissionWindowMilliseconds, 1234n);
+  await assert.rejects(ProxyConnection.connect(authority(), endpoint, { admissionWindowMilliseconds: 0n }));
+});

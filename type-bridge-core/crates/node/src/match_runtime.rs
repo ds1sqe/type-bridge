@@ -309,11 +309,18 @@ impl NodeQueryExecutionResources {
             .transpose()?
             .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
-            timeout_milliseconds: dimension(
-                timeout_milliseconds,
-                defaults.timeout_milliseconds,
-                "timeoutMilliseconds",
-            )?,
+            timeout_milliseconds: match timeout_milliseconds {
+                None => defaults.timeout_milliseconds,
+                Some(value) => {
+                    let (milliseconds, lossless) = value.get_i64();
+                    if !lossless {
+                        return Err(invalid_arg(
+                            "timeoutMilliseconds must be a signed 64-bit bigint",
+                        ));
+                    }
+                    type_bridge_orm::QueryTimeout::from_signed_milliseconds(milliseconds)
+                }
+            },
             items: dimension(items, defaults.items, "items")?,
             bytes: dimension(bytes, defaults.bytes, "bytes")?,
             graph_nodes: dimension(graph_nodes, defaults.graph_nodes, "graphNodes")?,
@@ -337,7 +344,7 @@ impl NodeQueryExecutionResources {
 
     #[napi(getter, js_name = "timeoutMilliseconds")]
     pub fn timeout_milliseconds(&self) -> BigInt {
-        u64_bigint(self.inner.timeout_milliseconds)
+        u64_bigint(self.inner.timeout_milliseconds.milliseconds().unwrap_or(0))
     }
 
     #[napi(getter)]
@@ -3414,7 +3421,7 @@ plays:
     }
 
     #[tokio::test]
-    async fn staged_query_projection_retries_after_a_deadline_failure() {
+    async fn staged_query_projection_retries_after_cancellation() {
         let (query, registry) = projected_query();
         let (database, events) = projected_query_database(projected_query_responses("0xa1"));
         let request = Arc::new(projected_rows_request(&query));
@@ -3426,12 +3433,13 @@ plays:
         let proof = pending.get().unwrap();
         let mut context = query.result_context(
             QueryExecutionResourceLimits {
-                timeout_milliseconds: 0,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
                 ..Default::default()
             },
             QueryExecutionDeadline::expired(),
             AnswerCancellation::default(),
         );
+        context.cancellation.cancel();
         let cache = NodeQueryProjectionCache::new();
         let failure = context
             .attach_shared(
@@ -3443,9 +3451,9 @@ plays:
             )
             .err()
             .unwrap();
-        assert!(failure.reason.contains("transaction_deadline_exceeded"));
+        assert!(failure.reason.contains("provider_cancelled"));
         assert!(cache.get().is_none());
-        context.resources = QueryExecutionResourceLimits::default();
+        context.cancellation = AnswerCancellation::default();
         let result = context
             .attach_shared(
                 ProjectedQueryOrigin::for_database(&database),
@@ -3740,7 +3748,7 @@ plays:
             ..QueryExecutionResourceLimits::default()
         };
         let ceiling = QueryExecutionResourceLimits {
-            timeout_milliseconds: 5_000,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(5_000),
             items: 0,
             ..QueryExecutionResourceLimits::default()
         };
@@ -3751,7 +3759,7 @@ plays:
             query.terminal_budget(&QueryTarget::Proxy(&connection), session_deadline);
         assert_eq!(resources, query.resources.constrained_by(ceiling));
         assert_eq!(resources.items, 0);
-        assert_eq!(resources.timeout_milliseconds, 5_000);
+        assert_eq!(resources.timeout_milliseconds.milliseconds(), Some(5_000));
         assert!(deadline.instant() < session_deadline.instant());
 
         // Hydration shares the constrained policy: the session's raised item
@@ -3882,7 +3890,9 @@ plays:
         assert_eq!(
             resources.inner(),
             QueryExecutionResourceLimits {
-                timeout_milliseconds: default.timeout_milliseconds + 1,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+                    default.timeout_milliseconds.milliseconds().unwrap() + 1
+                ),
                 items: default.items + 1,
                 bytes: default.bytes + 1,
                 graph_nodes: default.graph_nodes + 1,
@@ -3907,8 +3917,7 @@ plays:
             .map(|_| ())
             .map_err(|error| error.reason.clone())
         };
-        let refused = with(type_bridge_orm::MAX_QUERY_TIMEOUT_MILLISECONDS + 1, 3).unwrap_err();
-        assert!(refused.contains("timeout_milliseconds"), "{refused}");
+        assert!(with(86_400_001, 3).is_ok());
         let refused = with(1, u64::from(type_bridge_orm::MAX_QUERY_STATEMENTS) + 1).unwrap_err();
         assert!(refused.contains("statements"), "{refused}");
 
@@ -3926,7 +3935,10 @@ plays:
         .unwrap();
         assert_eq!(
             resources.inner(),
-            QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0)
+            QueryExecutionResourceLimits {
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
+                ..QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0)
+            }
         );
     }
 

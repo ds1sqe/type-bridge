@@ -196,9 +196,11 @@ async fn default_answer_limits_follow_the_transport_live() {
     let direct_defaults = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
     assert_eq!(direct_defaults.items, 100_000);
     assert_eq!(direct_defaults.bytes, 64 * 1024 * 1024);
-    assert_eq!(direct_defaults.timeout_milliseconds, 30_000);
+    assert_eq!(direct_defaults.timeout_milliseconds.milliseconds(), Some(60_000));
     let direct = QueryExecutionResourceLimits {
-        timeout_milliseconds: TEST_TIMEOUT_MILLISECONDS,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+            TEST_TIMEOUT_MILLISECONDS,
+        ),
         ..direct_defaults
     };
     assert!(ENTITIES > DEFAULT_PROXY_QUERY_ITEMS && ENTITIES < direct.items);
@@ -230,9 +232,11 @@ async fn default_answer_limits_follow_the_transport_live() {
     let proxy_defaults = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
     assert_eq!(proxy_defaults.items, 65_536);
     assert_eq!(proxy_defaults.bytes, 32 * 1024 * 1024);
-    assert_eq!(proxy_defaults.timeout_milliseconds, 30_000);
+    assert_eq!(proxy_defaults.timeout_milliseconds.milliseconds(), Some(60_000));
     let proxy = QueryExecutionResourceLimits {
-        timeout_milliseconds: TEST_TIMEOUT_MILLISECONDS,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+            TEST_TIMEOUT_MILLISECONDS,
+        ),
         ..proxy_defaults
     };
     let connection = ProxyQueryConnection::with_exchange(

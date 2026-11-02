@@ -1479,17 +1479,16 @@ mod invocation_control_tests {
             AnswerCancellation::default(),
         );
         let ceiling = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: crate::QueryTimeout::from_milliseconds(1),
             items: 3,
             ..QueryExecutionResourceLimits::default()
         };
         let model = TypeId::new(TypeKind::Entity, "person").unwrap();
 
         assert!(control.checkpoint(&model).is_ok());
+        let original_deadline = control.deadline.instant();
         let control = control.constrained_by(Some(ceiling));
         assert_eq!(control.limits, requested.constrained_by(ceiling));
-        // The ceiling's zero timeout must bind the absolute deadline the
-        // binding captured with its wider request.
-        assert!(control.checkpoint(&model).is_err());
+        assert!(control.deadline.instant() < original_deadline);
     }
 }

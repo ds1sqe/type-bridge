@@ -1317,7 +1317,10 @@ class ProxyConnection:
         answer_limits: QueryExecutionResourceLimits | None = ...,
         cancellation: QueryCancellation | None = ...,
         staged_advertisement: bytes | bytearray | None = ...,
+        admission_window_milliseconds: int = ...,
     ) -> ProxyConnection: ...
+    @property
+    def admission_window_milliseconds(self) -> int: ...
     @property
     def answer_limits(self) -> QueryExecutionResourceLimits: ...
     def transaction(

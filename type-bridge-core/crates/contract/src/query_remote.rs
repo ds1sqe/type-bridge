@@ -39,6 +39,9 @@ const EXECUTOR_COMPONENT_MAX_BYTES: usize = 128;
 pub const DEFAULT_REMOTE_DEADLINE_MS: u64 = 30 * 1_000;
 /// Longest caller deadline admitted by the first remote format: five minutes.
 pub const MAX_REMOTE_DEADLINE_MS: u64 = 5 * 60 * 1_000;
+/// Default request delivery window; independent of execution duration.
+pub const DEFAULT_ADMISSION_WINDOW_MILLISECONDS: u64 = 60_000;
+
 /// Maximum positive client/server wall-clock skew admitted by remote preflight.
 ///
 /// The request lifetime is still bounded to [`MAX_REMOTE_DEADLINE_MS`]
@@ -377,6 +380,8 @@ pub struct RemoteCapabilities {
     // that differ from the defaults, under the same rule as `query_limits`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     answer_limits: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admission_window_milliseconds: Option<std::num::NonZeroU64>,
     // This key is an explicit caller trust input. Its inclusion in the exact
     // advertisement fingerprint binds every prepared request to one signer.
     reply_key: RemoteSigningPublicKey,
@@ -413,9 +418,29 @@ impl RemoteCapabilities {
             format: QUERY_REMOTE_CAPABILITIES_FORMAT_V1.to_owned(),
             query_limits,
             answer_limits: BTreeMap::new(),
+            admission_window_milliseconds: None,
             reply_key,
             reply_key_id,
         }
+    }
+
+    /// Set the finite request delivery window this executor permits.
+    pub fn with_admission_window_milliseconds(
+        mut self,
+        milliseconds: u64,
+    ) -> Result<Self, Diagnostic> {
+        let value =
+            std::num::NonZeroU64::new(milliseconds).ok_or_else(advertised_limits_invalid)?;
+        self.admission_window_milliseconds =
+            (milliseconds != DEFAULT_ADMISSION_WINDOW_MILLISECONDS).then_some(value);
+        Ok(self)
+    }
+
+    /// Maximum request age at admission; it does not limit execution.
+    #[must_use]
+    pub fn admission_window_milliseconds(&self) -> u64 {
+        self.admission_window_milliseconds
+            .map_or(DEFAULT_ADMISSION_WINDOW_MILLISECONDS, |value| value.get())
     }
 
     /// Advertise the answer ceilings this executor enforces.
@@ -442,6 +467,12 @@ impl RemoteCapabilities {
     /// Require the canonical form of the advertised answer ceilings: known
     /// names, no default-valued entry, and no value past its maximum.
     fn validate_answer_limits(&self) -> Result<(), Diagnostic> {
+        if self
+            .admission_window_milliseconds
+            .is_some_and(|value| value.get() == DEFAULT_ADMISSION_WINDOW_MILLISECONDS)
+        {
+            return Err(advertised_limits_invalid());
+        }
         for (name, value) in &self.answer_limits {
             let field = answer_limit_field(name).ok_or_else(advertised_limits_invalid)?;
             if (field.name != "statements" && *value == field.proxy_default)

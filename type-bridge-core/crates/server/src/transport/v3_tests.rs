@@ -107,7 +107,7 @@ async fn direct(fixture: &V3Fixture, request: &StagedRequestV3) -> StagedOutcome
         .begin_v3_request(&mut ctx)
         .await
         .expect("transport admission");
-    let deadline = Instant::now() + fixture.query.execution_timeout;
+    let deadline = fixture.query.execution_timeout.map(|timeout| Instant::now() + timeout);
     fixture
         .executor
         .execute_staged_request(ctx, body.into(), deadline)

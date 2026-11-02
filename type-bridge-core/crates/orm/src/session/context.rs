@@ -522,9 +522,8 @@ impl TransactionContext {
             }
             limits.answer.max_items = policy.items;
             limits.answer.max_bytes = policy.bytes;
-            limits.answer.deadline = Some(
-                crate::query_execution_limits::QueryExecutionDeadline::for_limits(policy).instant(),
-            );
+            limits.answer.deadline =
+                crate::query_execution_limits::QueryExecutionDeadline::for_limits(policy).instant();
             limits.max_collection_members = policy.collection_members;
         }
         let mut lease = self.acquire_mutation_lease().await?;

@@ -193,19 +193,21 @@ async fn run(
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
     operation: SdkProviderOperation,
-    call: impl FnOnce(Duration) -> Result<Vec<u8>, ProxyHttpError> + Send + 'static,
+    call: impl FnOnce(Option<Duration>) -> Result<Vec<u8>, ProxyHttpError> + Send + 'static,
 ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
     deadline.check(cancellation)?;
     // The blocking call gets the remaining budget, plus a grace period so the
     // deadline below always fires first and reports the interruption, as its
     // own timeout: the worker thread does not outlive an abandoned
     // invocation by long.
-    let timeout = Duration::from_millis(deadline.remaining_milliseconds()) + BLOCKING_GRACE;
+    let timeout = deadline
+        .remaining_milliseconds()
+        .map(|remaining| Duration::from_millis(remaining).saturating_add(BLOCKING_GRACE));
     let blocking = tokio::task::spawn_blocking(move || call(timeout));
     let result = tokio::select! {
         biased;
         () = cancellation.cancelled() => None,
-        () = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => None,
+        () = deadline.elapsed() => None,
         joined = blocking => Some(joined),
     };
     deadline.check(cancellation)?;
@@ -260,7 +262,7 @@ mod tests {
 
     fn deadline(milliseconds: u64) -> QueryExecutionDeadline {
         QueryExecutionDeadline::for_limits(QueryExecutionResourceLimits {
-            timeout_milliseconds: milliseconds,
+            timeout_milliseconds: crate::QueryTimeout::from_milliseconds(milliseconds),
             ..QueryExecutionResourceLimits::default()
         })
     }

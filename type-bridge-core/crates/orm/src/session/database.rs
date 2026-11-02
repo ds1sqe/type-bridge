@@ -427,8 +427,16 @@ impl Database {
     /// Create a deferred transaction. No provider transaction opens until commit.
     pub fn transaction(
         &self,
-        options: super::staged::TransactionOptions,
+        mut options: super::staged::TransactionOptions,
     ) -> super::staged::Transaction {
+        if let Some(ceiling) = self.answer_limits {
+            options.timeout = Some(
+                options
+                    .timeout
+                    .unwrap_or(ceiling.timeout_milliseconds)
+                    .constrained_by(ceiling.timeout_milliseconds),
+            );
+        }
         super::staged::Transaction::new(
             Arc::clone(&self.backend),
             self.database_name.clone(),

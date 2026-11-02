@@ -1693,7 +1693,12 @@ plays:
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: 1,
-            timeout_milliseconds: limits.timeout_milliseconds,
+            timeout_milliseconds: limits
+                .timeout_milliseconds
+                .milliseconds()
+                .map_or(0, |value| {
+                    i64::try_from(value).expect("test timeout fits i64")
+                }),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,
@@ -2398,7 +2403,7 @@ plays:
         let ceiling = QueryExecutionResourceLimits {
             items: 0,
             statements: Some(0),
-            timeout_milliseconds: 0,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
             ..QueryExecutionResourceLimits::default()
         };
         let (database, state) =

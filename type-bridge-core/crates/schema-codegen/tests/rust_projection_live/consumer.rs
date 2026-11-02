@@ -377,7 +377,7 @@ fn transport_error(error: reqwest::Error) -> type_bridge::Error {
 /// The answer-limit ceiling of the remote journeys.
 fn remote_answer_limits() -> QueryExecutionResourceLimits {
     QueryExecutionResourceLimits {
-        timeout_milliseconds: 30_000,
+        timeout_milliseconds: type_bridge::QueryTimeout::from_milliseconds(30_000),
         items: 100,
         bytes: 8 << 20,
         collection_members: 1000,
@@ -2275,7 +2275,7 @@ fn sdk_queries_resource_limit_base() -> Value {
     // Every dimension but the statement count may be raised past its default
     // and is kept as given.
     let raised = QueryExecutionResourceLimits {
-        timeout_milliseconds: hard.timeout_milliseconds + 1,
+        timeout_milliseconds: type_bridge::QueryTimeout::from_milliseconds(hard.timeout_milliseconds.milliseconds().unwrap() + 1),
         items: hard.items + 1,
         bytes: hard.bytes + 1,
         graph_nodes: hard.graph_nodes + 1,
@@ -2292,14 +2292,9 @@ fn sdk_queries_resource_limit_base() -> Value {
     }
     .validate()
     .is_err_and(|refusal| refusal.limit == "statements")
-        && QueryExecutionResourceLimits {
-            timeout_milliseconds: type_bridge::MAX_QUERY_TIMEOUT_MILLISECONDS + 1,
-            ..hard
-        }
-        .validate()
-        .is_err_and(|refusal| refusal.limit == "timeout_milliseconds");
+;
     let zero = QueryExecutionResourceLimits::tightened(0, 0, 0, 0, 0, 0, 0, 0);
-    let zero_tightening_all = zero.timeout_milliseconds == 0
+    let zero_tightening_all = zero.timeout_milliseconds == hard.timeout_milliseconds
         && zero.items == 0
         && zero.bytes == 0
         && zero.graph_nodes == 0

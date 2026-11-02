@@ -36,6 +36,12 @@ pub struct NodeProxyConnection {
 
 #[napi]
 impl NodeProxyConnection {
+    /// Request delivery window in milliseconds; execution is independent.
+    #[napi(getter, js_name = "admissionWindowMilliseconds")]
+    pub fn admission_window_milliseconds(&self) -> napi::bindgen_prelude::BigInt {
+        self.connection.admission_window_milliseconds().into()
+    }
+
     /// Open `endpoint`, fetch its advertisement unless one is pinned, and
     /// verify it.
     ///
@@ -57,6 +63,7 @@ impl NodeProxyConnection {
         answer_limits: Option<&NodeQueryExecutionResources>,
         cancellation: Option<&NodeQueryCancellation>,
         staged_advertisement: Option<Unknown>,
+        admission_window_milliseconds: Option<napi::bindgen_prelude::BigInt>,
     ) -> napi::Result<Object<'static>> {
         if header_names.len() != header_values.len() {
             return Err(napi::Error::new(
@@ -64,6 +71,14 @@ impl NodeProxyConnection {
                 "proxy header names and values must have the same length",
             ));
         }
+        let admission_window_milliseconds = admission_window_milliseconds
+            .map(|value| crate::match_runtime::bigint_u64(&value, "admissionWindowMilliseconds"))
+            .transpose()?
+            .unwrap_or(type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS);
+        let admission_window_milliseconds =
+            std::num::NonZeroU64::new(admission_window_milliseconds).ok_or_else(|| {
+                napi::Error::from_reason("admissionWindowMilliseconds must be positive")
+            })?;
         let endpoint = header_names.into_iter().zip(header_values).fold(
             ProxyEndpoint::new(endpoint).tls(direct_tls_from_node(&tls_mode, tls_root_ca)?),
             |endpoint, (name, value)| endpoint.header(name, value),
@@ -99,7 +114,8 @@ impl NodeProxyConnection {
                 &cancellation,
             )
             .await
-            .map_err(napi_sdk_diagnostic)?;
+            .map_err(napi_sdk_diagnostic)?
+            .with_admission_window_milliseconds(admission_window_milliseconds);
             // A pinned staged advertisement must name the connection's
             // executor and reply key.
             let connection = match staged_advertisement {

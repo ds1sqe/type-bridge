@@ -897,7 +897,7 @@ async fn deadline_crossed_by_the_mapper_poisons_borrowed_execution() {
     );
     let transaction = database.transaction_context(TxType::Write).await.unwrap();
     let limits = QueryExecutionResourceLimits {
-        timeout_milliseconds: 2_000,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(2_000),
         ..QueryExecutionResourceLimits::default()
     };
     let mapper_ran = Arc::new(AtomicBool::new(false));
@@ -915,7 +915,9 @@ async fn deadline_crossed_by_the_mapper_poisons_borrowed_execution() {
                 mapper_probe.store(true, Ordering::SeqCst);
                 // This synchronous checkpoint uses the real clock, beyond Tokio virtual time.
                 std::thread::sleep(
-                    deadline.saturating_duration_since(std::time::Instant::now())
+                    deadline
+                        .expect("test has a finite deadline")
+                        .saturating_duration_since(std::time::Instant::now())
                         + Duration::from_millis(1),
                 );
                 let ProjectedBatchResult::Things(things) = result else {
@@ -2038,7 +2040,7 @@ async fn first_middle_last_inflight_timeout_rolls_back_both_batch_kinds() {
             );
             let limits = QueryExecutionResourceLimits {
                 // Real preparation must reach the pending stream before virtual timeout.
-                timeout_milliseconds: 10_000,
+                timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(10_000),
                 ..QueryExecutionResourceLimits::default()
             };
             let diagnostic = ProjectedBatchExecutor::new(&installed)

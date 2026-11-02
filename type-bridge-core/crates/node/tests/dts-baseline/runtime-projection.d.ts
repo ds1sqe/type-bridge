@@ -369,6 +369,8 @@ export interface ProxyConnectionOptions {
      * it must name the same executor and reply key as `advertisement`.
      */
     readonly stagedAdvertisement?: Uint8Array;
+    /** Finite delivery window, default 60000 ms; independent of execution. */
+    readonly admissionWindowMilliseconds?: bigint;
     /** Bounds connecting, which fetches the advertisement. */
     readonly connectionLimits?: QueryExecutionResourceLimits;
     /** The ceiling every terminal on this connection is constrained by. */
@@ -385,6 +387,8 @@ export interface ProxyConnectionOptions {
 export declare class ProxyConnection implements RuntimeProjectionRemote {
     #private;
     private constructor();
+    /** Configured delivery window, before the server ceiling is applied. */
+    get admissionWindowMilliseconds(): bigint;
     /** Open `endpoint` under `authority`, fetch or pin its advertisement, and verify it. */
     static connect(authority: QueryV2Authority, endpoint: string, options?: ProxyConnectionOptions): Promise<ProxyConnection>;
     /**

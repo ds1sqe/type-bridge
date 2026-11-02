@@ -443,7 +443,7 @@ fn prepares_and_is_admitted(evidence: bool) {
     let request = common_definitions(&registry, evidence);
     let matched = request.request().plan.bindings.len();
     let policy = QueryExecutionResourceLimits {
-        timeout_milliseconds: 30_000,
+        timeout_milliseconds: crate::QueryTimeout::from_milliseconds(30_000),
         bytes: 1 << 22,
         items: 500,
         collection_members: 1 << 16,
@@ -461,6 +461,7 @@ fn prepares_and_is_admitted(evidence: bool) {
             policy,
             QueryExecutionDeadline::for_limits(policy),
             &AnswerCancellation::default(),
+            type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
         )
     };
     let pending = prepare(request, policy)
@@ -560,7 +561,7 @@ fn a_request_budget_is_held_to_the_advertised_answer_ceilings() {
     let registry = automotive_registry();
     let authority = authority(&registry);
     let wanted = QueryExecutionResourceLimits {
-        timeout_milliseconds: 30_000,
+        timeout_milliseconds: crate::QueryTimeout::from_milliseconds(30_000),
         bytes: 1 << 31,
         items: 2_000_000,
         collection_members: 1 << 16,
@@ -578,6 +579,7 @@ fn a_request_budget_is_held_to_the_advertised_answer_ceilings() {
             wanted,
             QueryExecutionDeadline::for_limits(wanted),
             &AnswerCancellation::default(),
+            type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
         )
         .unwrap_or_else(|error| panic!("the client prepares the request: {error:?}"));
         StagedRequestV3::decode(pending.request_bytes(), authority.declared(), advertisement)

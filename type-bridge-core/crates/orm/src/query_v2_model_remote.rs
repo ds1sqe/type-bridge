@@ -382,6 +382,7 @@ pub fn prepare_remote_model_query_v2(
         policy,
         QueryExecutionDeadline::for_limits(policy),
         &AnswerCancellation::default(),
+        type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
     )
 }
 /// Prepare with the caller's already captured deadline and cancellation owner.
@@ -402,9 +403,11 @@ pub fn prepare_remote_model_query_v2_with_budget(
         QueryExecutionResourceLimits::from_remote(limits),
         deadline,
         cancellation,
+        type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_remote_model_query_with_policy(
     authority: &QueryAuthority,
     registry: &DescriptorRegistry,
@@ -413,6 +416,7 @@ pub(crate) fn prepare_remote_model_query_with_policy(
     policy: QueryExecutionResourceLimits,
     deadline: QueryExecutionDeadline,
     cancellation: &AnswerCancellation,
+    admission_window_milliseconds: u64,
 ) -> Result<PendingRemoteModelQueryV2, RemoteModelQueryV2Error> {
     check_prepare_budget(deadline, cancellation)?;
     let registry = Arc::new(registry.owned_registry_snapshot().map_err(|_| {
@@ -499,11 +503,10 @@ pub(crate) fn prepare_remote_model_query_with_policy(
             nonce: nonce.iter().map(|byte| format!("{byte:02x}")).collect(),
             kind: Some(StagedKindV3::Read),
             limits: StagedLimitsV3 {
-                deadline_ms: Some(
-                    deadline
-                        .remaining_milliseconds()
-                        .min(held.timeout_milliseconds),
-                ),
+                admission_window_milliseconds,
+                deadline_ms: deadline
+                    .earliest(QueryExecutionDeadline::for_limits(held))
+                    .remaining_milliseconds(),
                 max_bytes: held.bytes,
                 max_items: held.items,
                 max_graph_nodes: Some(held.graph_nodes),

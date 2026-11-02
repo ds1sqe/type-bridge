@@ -1891,7 +1891,7 @@ plays:
         .unwrap_err();
         assert_eq!(authority.code().as_str(), "wrong_model_kind");
 
-        let expired = ProjectedBatchInvocationControl::capture(
+        let mut expired = ProjectedBatchInvocationControl::capture(
             QueryExecutionResourceLimits::tightened(
                 0,
                 u64::MAX,
@@ -1904,6 +1904,7 @@ plays:
             ),
             AnswerCancellation::default(),
         );
+        expired.deadline = QueryExecutionDeadline::expired();
         let error = ProjectedBatch::try_new_for_invocation_with_reservation_probe(
             &installed,
             keyed.clone(),

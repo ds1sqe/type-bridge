@@ -550,7 +550,7 @@ fn commit_context_sdk_controlled(
                     cancellation.cancel();
                     future.await
                 },
-                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => {
+                _ = deadline.elapsed() => {
                     future.await
                 },
             }
@@ -1001,7 +1001,7 @@ where
         biased;
         result = &mut future => result.map_err(ControlledAwaitError::Inner),
         _ = cancellation.cancelled() => Err(ControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_cancelled())),
-        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => Err(ControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_deadline_exceeded())),
+        _ = deadline.elapsed() => Err(ControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_deadline_exceeded())),
     }
 }
 
@@ -3200,7 +3200,12 @@ entities:
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: 1,
-            timeout_milliseconds: limits.timeout_milliseconds,
+            timeout_milliseconds: limits
+                .timeout_milliseconds
+                .milliseconds()
+                .map_or(0, |value| {
+                    i64::try_from(value).expect("test timeout fits i64")
+                }),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,
@@ -3451,7 +3456,7 @@ entities:
         assert!(diagnostics.is_null());
 
         let zero_timeout = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
         let expired_but_provider_free = DatabaseConfigV2Fixture::new(
@@ -3534,26 +3539,27 @@ entities:
         let mut package = Box::into_raw(Box::new(package("typedb-3.12.1/v1", "v2allocation")));
         let fixture = DatabaseConfigV2Fixture::plaintext(QueryExecutionResourceLimits::default());
 
-        let expired_connection_limits = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+        let unbounded_connection_limits = QueryExecutionResourceLimits {
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::NONE,
             ..QueryExecutionResourceLimits::default()
         };
-        let expired_connection = DatabaseConfigV2Fixture::new(
+        let unbounded_connection = DatabaseConfigV2Fixture::new(
             TLS_DISABLED,
             Vec::new(),
-            expired_connection_limits,
+            unbounded_connection_limits,
             QueryExecutionResourceLimits::default(),
         );
-        let (database, mut diagnostics, status) =
-            unsafe { open_database_v2(runtime, package, &expired_connection.config, ptr::null()) };
-        assert_eq!(status, TypeBridgeStatus::ResourceLimit);
-        assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        let (mut database, mut diagnostics, status) = unsafe {
+            open_database_v2(runtime, package, &unbounded_connection.config, ptr::null())
+        };
+        assert_eq!(status, TypeBridgeStatus::Ok);
+        assert!(!database.is_null());
+        assert!(diagnostics.is_null());
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
-            unsafe { diagnostic_code(diagnostics) },
-            "transaction_deadline_exceeded"
+            unsafe { type_bridge_database_close(&mut database, &mut diagnostics) },
+            TypeBridgeStatus::Ok
         );
-        unsafe { close_diagnostics(&mut diagnostics) };
 
         let zero_statement_connection_limits = QueryExecutionResourceLimits {
             statements: Some(0),
@@ -3575,7 +3581,7 @@ entities:
         };
         assert_eq!(status, TypeBridgeStatus::ResourceLimit);
         assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
             "provider_statement_limit"
@@ -3588,7 +3594,7 @@ entities:
         };
         assert_eq!(status, TypeBridgeStatus::ResourceLimit);
         assert!(database.is_null());
-        assert_eq!(state.connects.load(Ordering::Acquire), 0);
+        assert_eq!(state.connects.load(Ordering::Acquire), 1);
         assert_eq!(
             unsafe { diagnostic_code(diagnostics) },
             "c_allocation_exhausted"
@@ -4323,7 +4329,7 @@ entities:
         );
 
         let timeout_limits = QueryExecutionResourceLimits {
-            timeout_milliseconds: 1,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(1),
             ..QueryExecutionResourceLimits::default()
         };
         let timeout_descriptor = limits_descriptor(timeout_limits);
@@ -4561,7 +4567,7 @@ entities:
         );
 
         let zero_timeout = QueryExecutionResourceLimits {
-            timeout_milliseconds: 0,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
             ..QueryExecutionResourceLimits::default()
         };
         let context = unsafe { &*database }
@@ -4571,20 +4577,15 @@ entities:
             unsafe { &*database },
             context,
         )));
-        let inherited_before = inherited;
         assert_eq!(
             unsafe {
                 type_bridge_write_transaction_commit(&mut inherited, ptr::null(), &mut diagnostics)
             },
-            TypeBridgeStatus::ResourceLimit
+            TypeBridgeStatus::Ok
         );
-        assert_eq!(inherited, inherited_before);
-        assert_eq!(state.commits.load(Ordering::Acquire), 0);
-        assert_eq!(
-            unsafe { diagnostic_code(diagnostics) },
-            "transaction_deadline_exceeded"
-        );
-        unsafe { close_diagnostics(&mut diagnostics) };
+        assert!(inherited.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 1);
+        assert!(diagnostics.is_null());
         assert_eq!(
             unsafe { type_bridge_write_transaction_close(&mut inherited, &mut diagnostics) },
             TypeBridgeStatus::Ok
@@ -4616,7 +4617,7 @@ entities:
             TypeBridgeStatus::ResourceLimit
         );
         assert_eq!(write, write_before);
-        assert_eq!(state.commits.load(Ordering::Acquire), 0);
+        assert_eq!(state.commits.load(Ordering::Acquire), 1);
         unsafe { close_diagnostics(&mut diagnostics) };
 
         let zero_timeout_descriptor = limits_descriptor(zero_timeout);
@@ -4629,14 +4630,11 @@ entities:
                     &mut diagnostics,
                 )
             },
-            TypeBridgeStatus::ResourceLimit
+            TypeBridgeStatus::Ok
         );
-        assert_eq!(write, write_before);
-        assert_eq!(
-            unsafe { diagnostic_code(diagnostics) },
-            "transaction_deadline_exceeded"
-        );
-        unsafe { close_diagnostics(&mut diagnostics) };
+        assert!(write.is_null());
+        assert!(diagnostics.is_null());
+        assert_eq!(state.commits.load(Ordering::Acquire), 2);
         assert_eq!(
             unsafe { type_bridge_write_transaction_close(&mut write, &mut diagnostics) },
             TypeBridgeStatus::Ok
@@ -4690,7 +4688,7 @@ entities:
         requester.join().unwrap();
         assert!(write.is_null());
         assert!(diagnostics.is_null());
-        assert_eq!(state.commits.load(Ordering::Acquire), 1);
+        assert_eq!(state.commits.load(Ordering::Acquire), 3);
         assert_eq!(
             unsafe { type_bridge_cancellation_close(&mut cancellation) },
             TypeBridgeStatus::Ok
@@ -4748,7 +4746,7 @@ entities:
             answer.is_cancelled()
         });
         let deadline_limits = QueryExecutionResourceLimits {
-            timeout_milliseconds: 5,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(5),
             ..QueryExecutionResourceLimits::default()
         };
         let deadline_descriptor = limits_descriptor(deadline_limits);

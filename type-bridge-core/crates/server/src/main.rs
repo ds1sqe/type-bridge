@@ -254,6 +254,12 @@ async fn build_staged_state(
         .map_err(|error| format!("staged query limits rejected: {error:?}"))?
         .with_answer_limits(config.staged.resolved_answer_limits()?)
         .map_err(|error| format!("staged answer limits rejected: {error:?}"))?
+        .with_admission_window(std::time::Duration::from_millis(
+            config.staged.admission_window_milliseconds.unwrap_or(
+                type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
+            ),
+        ))
+        .map_err(|error| format!("request admission window rejected: {error:?}"))?
         .with_unauthenticated_staged_writes(config.staged.allow_unauthenticated_staged_writes);
     let state = if config.staged.raw_enabled {
         state.with_raw_executor(outbound_transport.connect_raw_runtime().await?)

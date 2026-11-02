@@ -52,6 +52,16 @@ All notable changes to TypeBridge will be documented in this file.
 
 ## [3.0.0] - Unreleased
 
+### Changed
+
+- Per-call execution timeouts now default to 60,000 ms on direct and proxy
+  connections, with no 24-hour maximum. Signed timeout inputs of zero or
+  less mean no deadline; Rust uses `QueryTimeout`. Server ceilings remain
+  tighten-only, and a dispatched commit runs to its actual outcome.
+- Proxy request freshness is independent of execution duration. Configure
+  `admission_window_milliseconds` on the client and server (default 60,000 ms);
+  the server ceiling wins and even unbounded calls retain finite replay expiry.
+
 ### Added
 
 - V3 `DocumentScalar` fetch fields accept bound entities and relations and

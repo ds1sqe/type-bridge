@@ -16,7 +16,7 @@ use crate::query_plan::v3::{
 use crate::query_plan::{InputRow, QueryOutput};
 use crate::query_plan_wire::{PlanScalarWire, WireScalar};
 use crate::query_remote::{
-    DEFAULT_REMOTE_DEADLINE_MS, MAX_REMOTE_CLOCK_SKEW_MS, MAX_REMOTE_DEADLINE_MS,
+    DEFAULT_ADMISSION_WINDOW_MILLISECONDS, MAX_REMOTE_CLOCK_SKEW_MS,
     QUERY_REMOTE_REQUEST_FINGERPRINT_DOMAIN, RemoteCapabilities, RemoteFieldValue,
     RemoteReplySigner, RemoteReplyVerifier, RemoteSigningPublicKey, RemoteValue,
 };
@@ -110,8 +110,14 @@ pub enum StagedKindV3 {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StagedLimitsV3 {
-    /// Optional execution deadline; absence means thirty seconds.
+    /// Execution deadline; null means unbounded, a positive integer is milliseconds.
     pub deadline_ms: Option<u64>,
+    /// Finite delivery window from issue to admission, independent of execution.
+    #[serde(
+        default = "default_admission_window",
+        skip_serializing_if = "is_default_admission_window"
+    )]
+    pub admission_window_milliseconds: u64,
     /// Maximum signed successful reply bytes.
     pub max_bytes: u64,
     /// Maximum aggregate answer items across all plans.
@@ -135,10 +141,17 @@ pub struct StagedLimitsV3 {
     /// Independent write provider-statement budget.
     pub max_write_statements: u32,
 }
+fn default_admission_window() -> u64 {
+    DEFAULT_ADMISSION_WINDOW_MILLISECONDS
+}
+fn is_default_admission_window(value: &u64) -> bool {
+    *value == DEFAULT_ADMISSION_WINDOW_MILLISECONDS
+}
 impl Default for StagedLimitsV3 {
     fn default() -> Self {
         Self {
-            deadline_ms: None,
+            deadline_ms: Some(60_000),
+            admission_window_milliseconds: DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
             max_bytes: MAX_REMOTE_ENVELOPE_BYTES as u64,
             max_items: MAX_STAGED_ITEMS_V3,
             max_graph_nodes: None,
@@ -174,9 +187,8 @@ impl StagedLimitsV3 {
             || self.max_read_statements > MAX_STAGED_STATEMENTS_V3
             || self.max_write_statements == 0
             || self.max_write_statements > MAX_STAGED_STATEMENTS_V3
-            || self
-                .deadline_ms
-                .is_some_and(|v| v == 0 || v > MAX_REMOTE_DEADLINE_MS)
+            || self.deadline_ms == Some(0)
+            || self.admission_window_milliseconds == 0
         {
             return Err(limit(
                 "query_remote_v3_limits",
@@ -371,10 +383,13 @@ impl StagedRequestV3 {
                 "caller query limits are invalid",
             )
         })?;
-        let limits = spec.limits.validate()?;
+        let mut limits = spec.limits.validate()?;
+        limits.admission_window_milliseconds = limits
+            .admission_window_milliseconds
+            .min(advertisement.admission_window_milliseconds());
         let expires = spec
             .prepared_at_unix_ms
-            .checked_add(limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS))
+            .checked_add(limits.admission_window_milliseconds)
             .ok_or_else(|| invalid("query_remote_v3_time", "staged request lifetime is invalid"))?;
         let wire = RequestWire {
             advertisement: advertisement.fingerprint()?.digest_hex(),
@@ -418,11 +433,9 @@ impl StagedRequestV3 {
         if wire
             .expires_at_unix_ms
             .checked_sub(wire.prepared_at_unix_ms)
-            != Some(
-                wire.limits
-                    .deadline_ms
-                    .unwrap_or(DEFAULT_REMOTE_DEADLINE_MS),
-            )
+            != Some(wire.limits.admission_window_milliseconds)
+            || wire.limits.admission_window_milliseconds
+                > advertisement.admission_window_milliseconds()
         {
             return Err(invalid(
                 "query_remote_v3_time",

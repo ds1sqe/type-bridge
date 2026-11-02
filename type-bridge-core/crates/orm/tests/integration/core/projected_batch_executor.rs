@@ -1814,7 +1814,7 @@ fn person_rows(
 fn split_control() -> ProjectedBatchInvocationControl {
     ProjectedBatchInvocationControl::capture(
         QueryExecutionResourceLimits {
-            timeout_milliseconds: 600_000,
+            timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(600_000),
             ..QueryExecutionResourceLimits::default()
         },
         AnswerCancellation::default(),

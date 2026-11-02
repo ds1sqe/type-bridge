@@ -93,7 +93,9 @@ pub(crate) fn parse_common_limits(
         return Err(invalid_limits());
     }
     QueryExecutionResourceLimits {
-        timeout_milliseconds: value.timeout_milliseconds,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+            value.timeout_milliseconds,
+        ),
         items: value.items,
         bytes: value.bytes,
         graph_nodes: value.graph_nodes,

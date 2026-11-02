@@ -239,7 +239,8 @@ pub(super) fn staged_advertisement_for_profile(
     }
     RemoteCapabilities::new(capabilities, base.executor().clone(), base.reply_key())
         .with_query_limits(limits)?
-        .with_answer_limits(base.answer_limits().clone())
+        .with_answer_limits(base.answer_limits().clone())?
+        .with_admission_window_milliseconds(base.admission_window_milliseconds())
 }
 
 /// Build `POST /v3/staged` and `GET /v3/capabilities` over one staged executor.
@@ -275,9 +276,10 @@ async fn handle_v3_capabilities(
     State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
-    let Some(deadline) = Instant::now().checked_add(state.query.execution_timeout) else {
-        return envelope_response(state.unbound(&deadline_exceeded()));
-    };
+    let deadline = state
+        .query
+        .execution_timeout
+        .and_then(|timeout| Instant::now().checked_add(timeout));
     let ctx = match admit_transport(&state, request.headers(), "capabilities", deadline).await {
         Ok(ctx) => ctx,
         Err(response) => return *response,
@@ -302,9 +304,10 @@ async fn handle_v3_capabilities(
 
 async fn handle_v3_staged(State(shared): State<Arc<StagedExecutor>>, request: Request) -> Response {
     let state = shared.as_ref();
-    let Some(deadline) = Instant::now().checked_add(state.query.execution_timeout) else {
-        return envelope_response(state.unbound(&deadline_exceeded()));
-    };
+    let deadline = state
+        .query
+        .execution_timeout
+        .and_then(|timeout| Instant::now().checked_add(timeout));
     // Transport policy authenticates before any attacker-controlled bytes
     // are buffered, exactly as for `/v2/query`.
     let ctx = match admit_transport(state, request.headers(), "staged", deadline).await {
@@ -360,9 +363,9 @@ impl StagedExecutor {
         self: &Arc<Self>,
         ctx: RequestContext,
         body: Bytes,
-        deadline: Instant,
+        deadline: impl Into<Option<Instant>>,
     ) -> StagedOutcome {
-        execute(self, ctx, body, deadline).await
+        execute(self, ctx, body, deadline.into()).await
     }
 }
 
@@ -371,8 +374,9 @@ async fn execute(
     shared: &Arc<StagedExecutor>,
     ctx: RequestContext,
     body: Bytes,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> StagedOutcome {
+    let received_at = Instant::now();
     let state = shared.as_ref();
     tracing::debug!(target: "type_bridge.io", bytes_in = body.len(), "type_bridge.io.request");
     let permit = match await_before_deadline(
@@ -405,18 +409,26 @@ async fn execute(
         Some(Err(_)) => return refuse(state, deadline, &ctx, None, unavailable()).await,
         None => return refuse(state, deadline, &ctx, None, deadline_exceeded()).await,
     };
-    tracing::debug!(target: "type_bridge.io", decode = "ok", deadline_ms = u64::try_from(deadline.saturating_duration_since(Instant::now()).as_millis()).unwrap_or(u64::MAX), nonce = staged.nonce(), kind = ?staged.kind(), plans = staged.plans().len(), "type_bridge.io.request");
+    tracing::debug!(target: "type_bridge.io", decode = "ok", deadline_ms = ?deadline.map(|value| value.saturating_duration_since(Instant::now()).as_millis()), nonce = staged.nonce(), kind = ?staged.kind(), plans = staged.plans().len(), "type_bridge.io.request");
     let request = Some(&staged);
 
     let now_ms = unix_ms();
     if let Err(diagnostic) = staged.validate_at(now_ms) {
         return refuse(state, deadline, &ctx, request, diagnostic).await;
     }
-    // The request's own lifetime tightens the mandatory server deadline and
-    // bounds how long its nonce or retained reply is kept.
+    // Freshness bounds nonce retention, never the time an admitted call may execute.
     let lifetime = Duration::from_millis(staged.expires_at_unix_ms().saturating_sub(now_ms));
-    let expires = Instant::now().checked_add(lifetime).unwrap_or(deadline);
-    let deadline = deadline.min(expires);
+    let Some(expires) = Instant::now().checked_add(lifetime) else {
+        return refuse(state, deadline, &ctx, request, deadline_exceeded()).await;
+    };
+    let requested = staged
+        .limits()
+        .deadline_ms
+        .and_then(|milliseconds| received_at.checked_add(Duration::from_millis(milliseconds)));
+    let deadline = match (deadline, requested) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (left, right) => left.or(right),
+    };
     let kind = match staged.kind() {
         StagedKindV3::Read => TransactionKind::Read,
         StagedKindV3::Write => TransactionKind::Write,
@@ -509,7 +521,7 @@ async fn execute(
 /// When a staged request must finish, and when its nonce may be forgotten.
 #[derive(Clone, Copy)]
 struct Window {
-    deadline: Instant,
+    deadline: Option<Instant>,
     expires: Instant,
 }
 
@@ -642,7 +654,7 @@ fn unknown_code() -> String {
 #[tracing::instrument(target = "type_bridge.io", name = "type_bridge.io.reply", skip_all, fields(bytes_out = tracing::field::Empty, outcome = tracing::field::Empty, signing_key_id = %state.advertisement.reply_key_id().to_hex()))]
 async fn settle(
     state: &StagedExecutor,
-    deadline: Instant,
+    deadline: Option<Instant>,
     ctx: &RequestContext,
     staged: &StagedRequestV3,
     reply: Vec<u8>,
@@ -682,7 +694,7 @@ async fn execute_staged(
     staged: &StagedRequestV3,
     plans: &[QueryPlanV3],
     kind: TransactionKind,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<Vec<StagedAnswerV3>, SdkExecutionDiagnostic> {
     let lower = lower_remote_query_diagnostic;
     await_before_deadline(deadline, state.query.verify_live_authority())
@@ -709,13 +721,12 @@ async fn execute_staged(
     if let Some(maximum) = requested.max_role_players {
         limits.max_role_players = limits.max_role_players.min(maximum);
     }
-    limits.answer.deadline = Some(
-        limits
-            .answer
-            .deadline
-            .map_or(deadline, |own| own.min(deadline)),
-    );
+    limits.answer.deadline = match (limits.answer.deadline, deadline) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (left, right) => left.or(right),
+    };
     let options = TransactionOptions::default()
+        .with_timeout(type_bridge_orm::QueryTimeout::NONE)
         .with_kind(kind)
         .with_answer_limits(limits);
     let mut transaction = state.query.database.transaction(options);
@@ -723,17 +734,12 @@ async fn execute_staged(
     for plan in plans {
         pending.push(transaction.stage_plan(plan).map_err(pending_diagnostic)?);
     }
-    match await_before_deadline(deadline, transaction.commit()).await {
-        Some(Ok(())) => {}
-        Some(Err(error)) => return Err(error.diagnostic()),
-        // A write abandoned mid-commit may or may not have applied.
-        None if kind == TransactionKind::Write => {
-            return Err(SdkExecutionDiagnostic::commit_failure(
-                SdkCommitFailureOutcome::Unknown,
-            ));
-        }
-        None => return Err(lower(deadline_exceeded())),
-    }
+    // The transaction checks the deadline before commit; a dispatched commit
+    // must run to its actual outcome instead of being dropped by an outer timer.
+    transaction
+        .commit()
+        .await
+        .map_err(|error| error.diagnostic())?;
     // Plan answers resolved before the provider commit; only their reply
     // mapping runs now, after a write already committed.
     pending
@@ -824,7 +830,7 @@ async fn admit_transport(
     state: &StagedExecutor,
     headers: &HeaderMap,
     endpoint: &'static str,
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> Result<RequestContext, Box<Response>> {
     let mut metadata = staged_request_metadata(headers, endpoint);
     metadata.insert("transport".to_owned(), serde_json::json!("v3"));
@@ -852,7 +858,7 @@ async fn admit_transport(
 
 async fn refuse(
     state: &StagedExecutor,
-    deadline: Instant,
+    deadline: Option<Instant>,
     ctx: &RequestContext,
     request: Option<&StagedRequestV3>,
     diagnostic: Diagnostic,
@@ -872,7 +878,7 @@ async fn refuse(
 
 async fn finish_failed(
     state: &StagedExecutor,
-    deadline: Instant,
+    deadline: Option<Instant>,
     ctx: &RequestContext,
     request: &StagedRequestV3,
     diagnostic: SdkExecutionDiagnostic,
@@ -894,7 +900,7 @@ async fn finish_failed(
 /// Run the response/audit policies, then deliver `reply` or their refusal.
 async fn finish(
     state: &StagedExecutor,
-    deadline: Instant,
+    deadline: Option<Instant>,
     ctx: &RequestContext,
     request: Option<&StagedRequestV3>,
     kind: StagedOutcomeKind,
@@ -917,7 +923,7 @@ async fn finish(
 /// they withhold it, if they do.
 async fn police(
     state: &StagedExecutor,
-    deadline: Instant,
+    deadline: Option<Instant>,
     ctx: &RequestContext,
     success: bool,
     code: &str,

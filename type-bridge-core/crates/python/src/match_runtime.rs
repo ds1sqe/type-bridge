@@ -265,11 +265,17 @@ impl PyQueryExecutionResourceLimits {
             .transpose()?
             .map(|value| u32::try_from(value).unwrap_or(u32::MAX));
         let inner = QueryExecutionResourceLimits {
-            timeout_milliseconds: python_optional_resource_limit(
-                timeout_milliseconds,
-                defaults.timeout_milliseconds,
-                "timeout_milliseconds",
-            )?,
+            timeout_milliseconds: match timeout_milliseconds {
+                None => defaults.timeout_milliseconds,
+                Some(value) => type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+                    value
+                        .cast_exact::<PyInt>()
+                        .map_err(|_| {
+                            PyTypeError::new_err("timeout_milliseconds must be an exact int")
+                        })?
+                        .extract::<i64>()?,
+                ),
+            },
             items: python_optional_resource_limit(items, defaults.items, "items")?,
             bytes: python_optional_resource_limit(bytes, defaults.bytes, "bytes")?,
             graph_nodes: python_optional_resource_limit(
@@ -300,8 +306,8 @@ impl PyQueryExecutionResourceLimits {
     }
 
     #[getter]
-    const fn timeout_milliseconds(&self) -> u64 {
-        self.inner.timeout_milliseconds
+    fn timeout_milliseconds(&self) -> u64 {
+        self.inner.timeout_milliseconds.milliseconds().unwrap_or(0)
     }
 
     #[getter]
@@ -3001,7 +3007,7 @@ mod tests {
             globals.set_item("m", &module).unwrap();
             py.run(
                 pyo3::ffi::c_str!(
-                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nfor arguments in ({'timeout_milliseconds': 86400001}, {'statements': 4097}):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
+                    "plus = m.QueryExecutionResourceLimits(30001, 65537, 33554433, 65537, 65537, 65537, 65537, 3)\nzero = m.QueryExecutionResourceLimits(0, 0, 0, 0, 0, 0, 0, 0)\nrefused = []\nassert m.QueryExecutionResourceLimits(timeout_milliseconds=86400001).timeout_milliseconds == 86400001\nassert m.QueryExecutionResourceLimits(timeout_milliseconds=-1).timeout_milliseconds == 0\nfor arguments in ({'statements': 4097},):\n    try:\n        m.QueryExecutionResourceLimits(**arguments)\n    except ValueError as error:\n        refused.append(str(error))"
                 ),
                 Some(&globals),
                 None,
@@ -3015,9 +3021,8 @@ mod tests {
                 .unwrap()
                 .extract::<Vec<String>>()
                 .unwrap();
-            assert_eq!(refused.len(), 2, "{refused:?}");
-            assert!(refused[0].contains("timeout_milliseconds"), "{refused:?}");
-            assert!(refused[1].contains("statements"), "{refused:?}");
+            assert_eq!(refused.len(), 1, "{refused:?}");
+            assert!(refused[0].contains("statements"), "{refused:?}");
             for (name, expected) in [
                 ("timeout_milliseconds", 30_001_u64),
                 ("items", 65_537),

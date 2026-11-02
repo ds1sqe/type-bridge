@@ -150,7 +150,7 @@ fn request_round_trip_lifetime_kind_and_fingerprint_bind_every_field() {
     assert_eq!(request.kind(), StagedKindV3::Write);
     assert_eq!(request.plans().len(), 3);
     assert!(request.validate_at(1_000_000).is_ok());
-    assert!(request.validate_at(1_030_000).is_err());
+    assert!(request.validate_at(1_060_000).is_err());
     assert!(request.validate_at(900_000).is_err());
     for field in ["nonce", "kind", "prepared_at_unix_ms"] {
         let changed = mutate_request(|v| match field {
@@ -158,7 +158,7 @@ fn request_round_trip_lifetime_kind_and_fingerprint_bind_every_field() {
             "kind" => v[field] = json!("write"),
             _ => {
                 v[field] = json!(1_000_001);
-                v["expires_at_unix_ms"] = json!(1_030_001);
+                v["expires_at_unix_ms"] = json!(1_060_001);
             }
         })
         .unwrap();
@@ -1500,4 +1500,83 @@ fn current_vocabulary_only_adds_explicitly_named_capabilities_to_frozen_advertis
     .collect();
     assert_eq!(current.missing_from(frozen.capabilities()), expected);
     assert_eq!(advertisement().encode().unwrap(), frozen.encode().unwrap());
+}
+
+#[test]
+fn execution_deadline_is_independent_of_finite_request_freshness() {
+    let mut spec = spec();
+    spec.limits.deadline_ms = None;
+    let issued = spec.prepared_at_unix_ms;
+    let request = StagedRequestV3::new(spec, &support::schema(), &advertisement()).unwrap();
+    assert_eq!(request.limits().deadline_ms, None);
+    assert_eq!(request.expires_at_unix_ms(), issued + 60_000);
+    assert!(request.validate_at(issued + 59_999).is_ok());
+    assert_eq!(
+        request
+            .validate_at(issued + 60_000)
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_remote_v3_expired"
+    );
+    let bytes = request.encode().unwrap();
+    assert_eq!(
+        StagedRequestV3::decode(&bytes, &support::schema(), &advertisement()).unwrap(),
+        request
+    );
+    for (field, value) in [
+        ("expires_at_unix_ms", Value::Null),
+        ("expires_at_unix_ms", json!(issued + 60_001)),
+        ("prepared_at_unix_ms", json!(issued + 1)),
+    ] {
+        let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+        wire[field] = value;
+        assert!(
+            StagedRequestV3::decode(
+                &to_canonical_json(&wire).unwrap(),
+                &support::schema(),
+                &advertisement()
+            )
+            .is_err()
+        );
+    }
+    for value in [json!(0), json!(-1), json!(1.5), json!("none")] {
+        let mut wire: Value = serde_json::from_slice(&bytes).unwrap();
+        wire["limits"]["deadline_ms"] = value;
+        assert!(
+            StagedRequestV3::decode(
+                &to_canonical_json(&wire).unwrap(),
+                &support::schema(),
+                &advertisement()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn admission_window_is_configurable_and_server_ceiling_wins() {
+    let advertisement = advertisement()
+        .with_admission_window_milliseconds(17)
+        .unwrap();
+    let mut spec = spec();
+    spec.limits.admission_window_milliseconds = 100;
+    spec.limits.deadline_ms = Some(86_400_001);
+    let issued = spec.prepared_at_unix_ms;
+    let request = StagedRequestV3::new(spec, &support::schema(), &advertisement).unwrap();
+    assert_eq!(request.limits().admission_window_milliseconds, 17);
+    assert_eq!(request.expires_at_unix_ms(), issued + 17);
+    assert_eq!(request.limits().deadline_ms, Some(86_400_001));
+    assert!(
+        advertisement
+            .clone()
+            .with_admission_window_milliseconds(0)
+            .is_err()
+    );
+    assert_eq!(
+        RemoteCapabilities::decode(&advertisement.encode().unwrap())
+            .unwrap()
+            .admission_window_milliseconds(),
+        17
+    );
 }

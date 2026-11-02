@@ -263,6 +263,7 @@ interface NativePlanBuilderModule {
 }
 /** Native proxy connection over the built-in HTTP route. */
 export interface NativeProxyConnection {
+    readonly admissionWindowMilliseconds: bigint;
     readonly answerLimits: NativeQueryExecutionResources;
     transaction(kind?: string, cancellation?: NativeQueryCancellation): Promise<NativeStagedTransaction>;
     rows(query: NativeMatchQueryHandle, orders: NativeMatchOrderHandle[], offset: bigint, limit: bigint, cardinality: NativeMatchRowCardinality): Promise<NativeValidatedMatchResultHandle>;
@@ -275,7 +276,7 @@ export interface NativeProxyConnection {
 }
 interface NativeProxyConnectionModule {
     NodeProxyConnection: {
-        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, stagedAdvertisement?: Uint8Array): Promise<NativeProxyConnection>;
+        connect(authority: ReturnType<NativeModule["queryV2Authority"]>, endpoint: string, tlsMode: string, tlsRootCa: string | undefined, headerNames: string[], headerValues: string[], advertisement?: Uint8Array, connectionLimits?: NativeQueryExecutionResources, answerLimits?: NativeQueryExecutionResources, cancellation?: NativeQueryCancellation, stagedAdvertisement?: Uint8Array, admissionWindowMilliseconds?: bigint): Promise<NativeProxyConnection>;
     };
 }
 /** Core limits the addon exports, so the package holds no copies. */

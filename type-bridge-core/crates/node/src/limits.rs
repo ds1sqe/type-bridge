@@ -107,7 +107,7 @@ mod tests {
         assert_eq!(resources, QueryExecutionResourceLimits::default());
         let direct = QueryExecutionResourceLimits::default_for(AnswerTransport::Direct);
         assert_eq!(
-            direct.timeout_milliseconds,
+            direct.timeout_milliseconds.milliseconds().unwrap(),
             DEFAULT_DIRECT_QUERY_TIMEOUT_MILLISECONDS
         );
         assert_eq!(direct.items, DEFAULT_DIRECT_QUERY_ITEMS);
@@ -128,7 +128,7 @@ mod tests {
         );
         let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         assert_eq!(
-            proxy.timeout_milliseconds,
+            proxy.timeout_milliseconds.milliseconds().unwrap(),
             DEFAULT_PROXY_QUERY_TIMEOUT_MILLISECONDS
         );
         assert_eq!(proxy.items, DEFAULT_PROXY_QUERY_ITEMS);

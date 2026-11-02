@@ -117,12 +117,8 @@ impl MatchExecutionLimits {
 
     pub(crate) fn deadline(&self) -> Option<Instant> {
         self.absolute_deadline
-            .map(QueryExecutionDeadline::instant)
-            .or_else(|| {
-                tokio::time::Instant::now()
-                    .checked_add(Duration::from_millis(self.policy.timeout_milliseconds))
-                    .map(tokio::time::Instant::into_std)
-            })
+            .unwrap_or_else(|| QueryExecutionDeadline::for_limits(self.policy))
+            .instant()
     }
 
     pub(crate) const fn policy(&self) -> QueryExecutionResourceLimits {

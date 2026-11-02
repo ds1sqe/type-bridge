@@ -2109,31 +2109,18 @@ async fn query_facade_rejects_cross_owner_fields_and_zero_limits_before_io() {
 }
 
 #[tokio::test]
-async fn query_terminal_budget_rejects_zero_timeout_and_precancellation_before_provider_io() {
+async fn query_terminal_unbounded_timeout_preserves_precancellation_before_provider_io() {
     let (db, state) = test_db();
     let zero_timeout = type_bridge_orm::QueryExecutionResourceLimits {
-        timeout_milliseconds: 0,
+        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(0),
         ..type_bridge_orm::QueryExecutionResourceLimits::default()
     };
-    let mut timed_session = db
-        .query_with_resources(zero_timeout, type_bridge_orm::AnswerCancellation::default())
-        .unwrap();
-    let timed_record = timed_session.exact::<Record>().unwrap();
-    let timed_error = timed_session
-        .query(timed_record)
-        .unwrap()
-        .count()
-        .await
-        .expect_err("zero timeout must fail before opening a transaction");
-    assert_eq!(timed_error.category(), crate::ErrorCategory::ResourceLimit);
-    assert_eq!(timed_error.code(), Some("transaction_deadline_exceeded"));
-    assert_eq!(
-        timed_error.diagnostic_path(),
-        Some(
-            &[crate::ErrorPathSegment::Query(
-                crate::QueryDiagnosticPathKind::ProviderEvidence
-            )][..]
-        )
+    let unbounded = type_bridge_orm::QueryExecutionDeadline::for_limits(zero_timeout);
+    assert_eq!(unbounded.instant(), None);
+    assert!(
+        unbounded
+            .check(&type_bridge_orm::AnswerCancellation::default())
+            .is_ok()
     );
 
     let cancellation = type_bridge_orm::AnswerCancellation::default();

@@ -3152,7 +3152,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             answer: BoundedAnswerLimits {
                 max_items: ledger.remaining_items(),
                 max_bytes: ledger.remaining_bytes(),
-                deadline: Some(control.deadline.instant()),
+                deadline: control.deadline.instant(),
                 cancellation: control.cancellation.clone(),
             },
             max_collection_members: control.limits.collection_members,
@@ -4808,7 +4808,7 @@ where
     tokio::select! {
         biased;
         _ = cancellation.cancelled() => Err(CrudControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_cancelled())),
-        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline.instant())) => Err(CrudControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_deadline_exceeded())),
+        _ = deadline.elapsed() => Err(CrudControlledAwaitError::Interrupted(SdkExecutionDiagnostic::data_operation_deadline_exceeded())),
         result = &mut future => result.map_err(CrudControlledAwaitError::Inner),
     }
 }

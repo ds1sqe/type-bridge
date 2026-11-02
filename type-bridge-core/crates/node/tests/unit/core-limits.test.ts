@@ -42,7 +42,7 @@ test("both transport default sets are exported", () => {
   // A direct session keeps the 2.2 in-process bounds; a proxy connection is
   // bounded by what one remote envelope carries.
   assert.deepEqual(direct, {
-    timeoutMilliseconds: 30_000n,
+    timeoutMilliseconds: 60_000n,
     items: 100_000n,
     bytes: 64n * 1024n * 1024n,
     graphNodes: 1_000_000n,
@@ -52,7 +52,7 @@ test("both transport default sets are exported", () => {
     statements: 3n,
   });
   assert.deepEqual(proxy, {
-    timeoutMilliseconds: 30_000n,
+    timeoutMilliseconds: 60_000n,
     items: 65_536n,
     bytes: 32n * 1024n * 1024n,
     graphNodes: 65_536n,

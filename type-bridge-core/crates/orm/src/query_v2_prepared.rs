@@ -1323,7 +1323,11 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
         })?;
     check_remote_execution_budget(deadline, cancellation)?;
     let requested_lifetime = limits.deadline_ms.unwrap_or(DEFAULT_REMOTE_DEADLINE_MS);
-    let lifetime = requested_lifetime.min(deadline.remaining_milliseconds());
+    let lifetime = deadline
+        .remaining_milliseconds()
+        .map_or(requested_lifetime, |remaining| {
+            requested_lifetime.min(remaining)
+        });
     if lifetime == 0 {
         return Err(failure(
             DiagnosticCategory::ResourceLimit,
@@ -1334,9 +1338,18 @@ pub(crate) fn prepare_validated_remote_query_v2_with_budget(
     limits.deadline_ms = Some(lifetime);
     let reply_deadline = Instant::now()
         .checked_add(Duration::from_millis(lifetime))
-        .map_or(deadline.instant(), |requested| {
-            requested.min(deadline.instant())
-        });
+        .map(|requested| {
+            deadline
+                .instant()
+                .map_or(requested, |deadline| requested.min(deadline))
+        })
+        .ok_or_else(|| {
+            failure(
+                DiagnosticCategory::ResourceLimit,
+                "query_remote_v2_clock_limit",
+                "request lifetime exceeds the monotonic clock range",
+            )
+        })?;
     let request = encode_remote_request_v2_at(
         &validated,
         &invocation,

@@ -71,8 +71,17 @@ pub struct TransactionOptions {
     pub never_commit: bool,
     /// Relative answer timeout refreshed at every commit.
     pub answer_timeout: Option<Duration>,
+    /// Per-call timeout, inherited from the connection when unset (default 60000 ms).
+    /// An explicit unbounded value disables this deadline; commit is never interrupted.
+    pub timeout: Option<crate::QueryTimeout>,
 }
 impl TransactionOptions {
+    /// Configure execution duration independently of plan construction.
+    pub fn with_timeout(mut self, timeout: crate::QueryTimeout) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     /// Set an explicit kind.
     pub fn with_kind(mut self, kind: TransactionKind) -> Self {
         self.kind = Some(kind);
@@ -1020,9 +1029,7 @@ pub(crate) async fn bounded<T>(
             "provider transaction deadline expired",
         )
     };
-    if limits.cancellation.is_cancelled() {
-        return Err(cancelled());
-    }
+    super::backend::BoundedAnswerReader::new(limits.clone()).check_before_read()?;
     let deadline = async {
         match limits.deadline {
             Some(deadline) => {
@@ -1678,10 +1685,7 @@ impl Transaction {
                 TransactionKind::Read
             }
         });
-        let timeout = match (self.options.deadline, self.options.answer_timeout) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (left, right) => left.or(right),
-        };
+        let timeout = self.commit_timeout();
         let mut answer_limits = self.options.answer_limits.answer.clone();
         let result = async {
             answer_limits.deadline = timeout
@@ -1697,10 +1701,11 @@ impl Transaction {
                     })
                 })
                 .transpose()?;
-            let opened = backend
-                .open_with_options(&self.database, kind.into(), &self.options)
-                .await
-                .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
+            let opened = bounded(&answer_limits, async {
+                backend.open_with_options(&self.database, kind.into(), &self.options).await
+            })
+            .await
+            .map_err(|error| CommitError::new(error.into(), None, Default::default()))?;
             // A program borrows the provider as an owned transaction and
             // hands it back; `None` means it was consumed.
             let mut provider = Some(opened);
@@ -1783,6 +1788,11 @@ impl Transaction {
             let provider = provider.as_mut().ok_or_else(|| {
                 CommitError::new(provider_consumed().into(), None, Default::default())
             })?;
+            if let Err(error) = super::backend::BoundedAnswerReader::new(answer_limits.clone()).check_before_read() {
+                if kind != TransactionKind::Read { let _ = provider.rollback().await; }
+                let _ = provider.close().await;
+                return Err(CommitError::new(error.into(), None, Default::default()));
+            }
             if self.options.never_commit || kind == TransactionKind::Read {
                 provider
                     .close()
@@ -1893,8 +1903,10 @@ impl Transaction {
             constrain_match_policy(&mut policy, &mut origins, connection, "connection", None);
             let bounds = &self.options.answer_limits;
             let transaction = crate::QueryExecutionResourceLimits {
-                timeout_milliseconds: timeout.map_or(u64::MAX, |value| {
-                    u64::try_from(value.as_millis()).unwrap_or(u64::MAX)
+                timeout_milliseconds: timeout.map_or(crate::QueryTimeout::NONE, |value| {
+                    crate::QueryTimeout::from_milliseconds(
+                        u64::try_from(value.as_millis()).unwrap_or(u64::MAX),
+                    )
                 }),
                 items: bounds.answer.max_items,
                 bytes: bounds.answer.max_bytes,
@@ -1985,10 +1997,22 @@ impl Transaction {
         .await
     }
     fn commit_timeout(&self) -> Option<Duration> {
-        match (self.options.deadline, self.options.answer_timeout) {
-            (Some(left), Some(right)) => Some(left.min(right)),
-            (left, right) => left.or(right),
-        }
+        let timeout = self
+            .options
+            .timeout
+            .unwrap_or_else(|| {
+                if self.options.answer_timeout.is_some() {
+                    crate::QueryTimeout::NONE
+                } else {
+                    crate::QueryTimeout::default()
+                }
+            })
+            .milliseconds()
+            .map(Duration::from_millis);
+        [timeout, self.options.deadline, self.options.answer_timeout]
+            .into_iter()
+            .flatten()
+            .min()
     }
     async fn attempt(
         proxy: &ProxyStaging,
@@ -2452,7 +2476,7 @@ mod tests {
             let cancellation = super::super::backend::AnswerCancellation::default();
             let limits = MatchExecutionLimits::from_policy(
                 crate::QueryExecutionResourceLimits {
-                    timeout_milliseconds: 5000,
+                    timeout_milliseconds: crate::QueryTimeout::from_milliseconds(5000),
                     ..Default::default()
                 },
                 cancellation.clone(),

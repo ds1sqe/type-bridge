@@ -9745,7 +9745,10 @@ mod tests {
         let wire_limits =
             QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
         let dimensions = [
-            ("timeout_milliseconds", wire_limits.timeout_milliseconds),
+            (
+                "timeout_milliseconds",
+                wire_limits.timeout_milliseconds.milliseconds().unwrap_or(0),
+            ),
             ("items", wire_limits.items),
             ("bytes", wire_limits.bytes),
             ("graph_nodes", wire_limits.graph_nodes),
@@ -13160,7 +13163,9 @@ def decode(proof):
                     request,
                     registry,
                     QueryExecutionResourceLimits {
-                        timeout_milliseconds: 1000,
+                        timeout_milliseconds: type_bridge_orm::QueryTimeout::from_milliseconds(
+                            1000,
+                        ),
                         ..Default::default()
                     },
                     cancellation.clone(),

@@ -67,9 +67,8 @@ pub(super) async fn handle_raw(
     State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
-    let deadline = Instant::now()
-        .checked_add(state.query.execution_timeout)
-        .unwrap_or_else(Instant::now);
+    let now = Instant::now();
+    let deadline = state.query.execution_timeout.map(|timeout| now.checked_add(timeout).unwrap_or(now));
     let mut metadata = staged_request_metadata(request.headers(), "raw");
     metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
     let mut ctx = state.pipeline().request_context(metadata);
@@ -322,7 +321,7 @@ pub(super) async fn handle_raw(
                 &request.query,
                 kind,
                 RawExecutionOptions {
-                    deadline: Some(deadline),
+                    deadline,
                     max_answer_bytes: Some(type_bridge_contract::limits::MAX_REMOTE_ENVELOPE_BYTES),
                 },
             )
@@ -440,7 +439,7 @@ pub(super) async fn handle_raw(
 async fn refuse(
     state: &StagedExecutor,
     ctx: &RequestContext,
-    deadline: Instant,
+    deadline: Option<Instant>,
     status: StatusCode,
     code: &str,
 ) -> Response {
@@ -458,7 +457,7 @@ async fn refuse(
 async fn finish(
     state: &StagedExecutor,
     ctx: &RequestContext,
-    deadline: Instant,
+    deadline: Option<Instant>,
     response: Response,
     outcome: V3PolicyOutcome<'_>,
     may_have_committed: bool,

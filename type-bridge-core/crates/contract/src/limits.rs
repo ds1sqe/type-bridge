@@ -562,15 +562,14 @@ pub struct AnswerLimitField {
 /// This table is the one statement of their names, defaults, and supported
 /// maxima. A direct session keeps the 2.2 in-process defaults; a proxy
 /// connection defaults to the wire ceilings, which bound what one remote
-/// envelope carries. Only the timeout and the statement count have a maximum
-/// below the type's: a day keeps deadline arithmetic exact, and the statement
-/// budget is bounded independently of the adapter's static stack size.
+/// envelope carries. Only the statement count has a maximum below the type's;
+/// its budget is independent of the adapter's static stack size.
 pub const ANSWER_LIMIT_FIELDS: [AnswerLimitField; 8] = [
     AnswerLimitField {
         name: "timeout_milliseconds",
-        direct_default: 30_000,
-        proxy_default: 30_000,
-        maximum: 24 * 60 * 60 * 1000,
+        direct_default: 60_000,
+        proxy_default: 60_000,
+        maximum: u64::MAX,
     },
     AnswerLimitField {
         name: "items",
@@ -1021,6 +1020,12 @@ impl QueryTimeout {
     #[must_use]
     pub const fn after(milliseconds: std::num::NonZeroU64) -> Self {
         Self(Some(milliseconds))
+    }
+
+    /// Map an unsigned configuration value, with zero denoting no deadline.
+    #[must_use]
+    pub const fn from_milliseconds(milliseconds: u64) -> Self {
+        Self(std::num::NonZeroU64::new(milliseconds))
     }
 
     /// Map a language binding's signed input: zero and negatives are unbounded.

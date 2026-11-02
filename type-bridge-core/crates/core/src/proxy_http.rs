@@ -166,7 +166,7 @@ impl ProxyHttpClient {
     /// a non-200 answer, or [`ProxyHttpError::ResponseTooLarge`].
     pub fn capabilities(
         &self,
-        timeout: Duration,
+        timeout: Option<Duration>,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ProxyHttpError> {
         const ROUTE: &str = "/v2/capabilities";
@@ -184,7 +184,7 @@ impl ProxyHttpClient {
     pub fn exchange(
         &self,
         request: &[u8],
-        timeout: Duration,
+        timeout: Option<Duration>,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ProxyHttpError> {
         const ROUTE: &str = "/v2/query";
@@ -201,7 +201,7 @@ impl ProxyHttpClient {
     /// As [`Self::capabilities`].
     pub fn staged_capabilities(
         &self,
-        timeout: Duration,
+        timeout: Option<Duration>,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ProxyHttpError> {
         const ROUTE: &str = "/v3/capabilities";
@@ -218,7 +218,7 @@ impl ProxyHttpClient {
     pub fn exchange_staged(
         &self,
         request: &[u8],
-        timeout: Duration,
+        timeout: Option<Duration>,
         max_bytes: usize,
     ) -> Result<Vec<u8>, ProxyHttpError> {
         const ROUTE: &str = "/v3/staged";
@@ -228,11 +228,11 @@ impl ProxyHttpClient {
         read_response(ROUTE, call.send_bytes(request), max_bytes)
     }
 
-    fn request(&self, method: &str, route: &str, timeout: Duration) -> ureq::Request {
-        let mut request = self
-            .agent
-            .request(method, &format!("{}{route}", self.base))
-            .timeout(timeout);
+    fn request(&self, method: &str, route: &str, timeout: Option<Duration>) -> ureq::Request {
+        let mut request = self.agent.request(method, &format!("{}{route}", self.base));
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
         for (name, value) in &self.headers {
             request = request.set(name, value);
         }
@@ -457,7 +457,7 @@ mod tests {
         )
         .unwrap();
         let reply = client
-            .exchange(b"{\"a\":1}", Duration::from_secs(5), 5)
+            .exchange(b"{\"a\":1}", Some(Duration::from_secs(5)), 5)
             .unwrap();
         assert_eq!(reply, b"reply");
         let (head, body) = server.join().unwrap();
@@ -472,7 +472,9 @@ mod tests {
     fn oversized_and_non_200_responses_are_refused() {
         let (endpoint, server) = serve_once(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nreply!");
         let client = ProxyHttpClient::new(&endpoint, &ProxyTrust::Plaintext, &[]).unwrap();
-        let error = client.capabilities(Duration::from_secs(5), 5).unwrap_err();
+        let error = client
+            .capabilities(Some(Duration::from_secs(5)), 5)
+            .unwrap_err();
         assert_eq!(error.code(), "proxy_response_too_large");
         assert!(
             server
@@ -490,7 +492,7 @@ mod tests {
             let (endpoint, server) = serve_once(response);
             let client = ProxyHttpClient::new(&endpoint, &ProxyTrust::Plaintext, &[]).unwrap();
             let error = client
-                .exchange(b"{}", Duration::from_secs(5), 64)
+                .exchange(b"{}", Some(Duration::from_secs(5)), 64)
                 .unwrap_err();
             assert_eq!(error.code(), "proxy_http_status");
             server.join().unwrap();

@@ -804,11 +804,18 @@ The union of all plan capabilities is also required. The receiver checks every
 plan under its own schema and the minimum of its query limits and the advertised
 query limits. Sender metadata cannot widen receiver limits.
 
-Deadline omission means 30,000 ms; explicit deadlines range from 1 to 300,000 ms.
-Expiry equals preparation plus that duration, with checked arithmetic. Execution
-must reject an expired request or a preparation timestamp more than 60,000 ms
-in the future. Archival decoding is separate from this wall-clock freshness
-check.
+`deadline_ms` is explicitly `null` for no execution deadline or a positive
+integer duration. Constructors default to 60,000 ms; zero, negative, fractional
+and missing values are refused as noncanonical. There is no 24-hour maximum.
+
+`expires_at_unix_ms` remains a mandatory finite integer. It equals preparation
+plus `admission_window_milliseconds` with checked arithmetic. The admission
+window defaults to 60,000 ms and is omitted at that value; a configured value
+must be positive and cannot exceed the executor advertisement's window. The
+client intersects its configured window with the server ceiling. This window
+covers delivery only, never execution. Admission rejects expired requests even
+when `deadline_ms` is null, and preparation more than 60,000 ms in the future.
+Archival decoding is separate from the wall-clock freshness check.
 
 ### Aggregate budgets
 
@@ -816,7 +823,7 @@ The complete `limits` object always includes these fields, including defaults:
 
 | Member | Default | Supported range |
 | --- | --- | --- |
-| `deadline_ms` | null | null, or 1..300,000 |
+| `deadline_ms` | 60,000 | null, or a positive u64 millisecond duration |
 | `max_bytes` | 33,554,432 | 1..33,554,432 signed successful reply bytes |
 | `max_items` | 65,536 | 1..65,536 aggregate answer items |
 | `max_staged_plans` | 64 | 1..64 |

@@ -44,3 +44,16 @@ def test_transaction_fetches_the_staged_advertisement_and_fails_typed() -> None:
         _connection().transaction("write")
     assert not isinstance(raised.value, (ValueError, TypeError))
     assert type(raised.value).__module__.startswith("type_bridge")
+
+
+def test_admission_window_defaults_and_round_trips() -> None:
+    assert _connection().admission_window_milliseconds == 60_000
+    connection = ProxyConnection.connect(
+        _authority(),
+        _closed_endpoint(),
+        advertisement=_advertisement(PLAN_CAPABILITIES),
+        admission_window_milliseconds=1234,
+    )
+    assert connection.admission_window_milliseconds == 1234
+    with pytest.raises((ValueError, OverflowError)):
+        ProxyConnection.connect(_authority(), _closed_endpoint(), admission_window_milliseconds=0)
