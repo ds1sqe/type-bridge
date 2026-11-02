@@ -1624,6 +1624,7 @@ mod raw_tests {
         queries: Mutex<Vec<(String, TransactionKind)>>,
         commits: Mutex<Vec<TransactionKind>>,
         refuse: bool,
+        unvouched: bool,
         gate: Option<Arc<tokio::sync::Semaphore>>,
     }
     impl RawQueryExecutor for Arc<RawHost> {
@@ -1638,6 +1639,10 @@ mod raw_tests {
     impl Interceptor for Arc<RawHost> {
         fn name(&self) -> &str { "raw-host" }
         fn supports_v3(&self) -> bool { true }
+        fn on_v3_write_authority<'a>(&'a self, _ctx: &'a RequestContext)
+            -> Pin<Box<dyn Future<Output=Result<StagedWriteAuthority,InterceptError>> + Send + 'a>> {
+            Box::pin(async move { Ok(if self.unvouched { StagedWriteAuthority::Abstain } else { StagedWriteAuthority::Authenticated }) })
+        }
         fn on_v3_raw<'a>(&'a self, _query: &'a str, _kind: TransactionKind, _ctx: &'a mut RequestContext)
             -> Pin<Box<dyn Future<Output=Result<(),InterceptError>> + Send + 'a>> {
             Box::pin(async move { if self.refuse { Err(InterceptError::Refused { code:"host_raw_refused" }) } else { Ok(()) } })
@@ -1730,6 +1735,19 @@ mod raw_tests {
             while host.commits.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
         }).await.unwrap();
         assert_eq!(*host.commits.lock().unwrap(), [TransactionKind::Write]);
+    }
+    #[tokio::test]
+    async fn raw_unvouched_writes_and_schema_never_dispatch() {
+        let host = Arc::new(RawHost { unvouched: true, ..Default::default() });
+        let fixture = fixture(Arc::clone(&host), None);
+        for kind in ["write", "schema"] {
+            let (status, body) = raw(&fixture, request("unchecked", kind, &format!("raw-unvouched-{kind}"))).await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), serde_json::json!({"error": STAGED_WRITE_NOT_AUTHORIZED}));
+        }
+        assert!(host.queries.lock().unwrap().is_empty());
+        assert!(host.commits.lock().unwrap().is_empty());
+        assert_eq!(raw(&fixture, request("read", "read", "raw-unvouched-read")).await.0, StatusCode::OK);
     }
     #[tokio::test]
     async fn raw_replay_is_refused_before_a_second_transaction() {

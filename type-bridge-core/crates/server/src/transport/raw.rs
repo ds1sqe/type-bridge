@@ -145,6 +145,19 @@ pub(super) async fn handle_raw(
         }
         None => return refusal(StatusCode::GATEWAY_TIMEOUT, "transaction_deadline_exceeded"),
     }
+    if kind != TransactionKind::Read && !state.query.allow_unauthenticated_staged_writes {
+        match await_before_deadline(deadline, state.pipeline().authorize_v3_write(&ctx)).await {
+            Some(Ok(true)) => {}
+            Some(Ok(false)) => {
+                return refusal(
+                    StatusCode::FORBIDDEN,
+                    super::v3::STAGED_WRITE_NOT_AUTHORIZED,
+                );
+            }
+            Some(Err(_)) => return refusal(StatusCode::FORBIDDEN, "query_remote_policy_rejected"),
+            None => return refusal(StatusCode::GATEWAY_TIMEOUT, "transaction_deadline_exceeded"),
+        }
+    }
     if Instant::now() >= retain_until {
         return refusal(StatusCode::BAD_REQUEST, "raw_request_expired");
     }

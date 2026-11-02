@@ -30,6 +30,7 @@ use type_bridge_typedb_runtime::{ConnectOptions, TxType, TypeDBRuntime};
 #[derive(Default, Clone)]
 struct Host {
     commits: Arc<Mutex<Vec<TransactionKind>>>,
+    unvouched: bool,
 }
 impl Interceptor for Host {
     fn name(&self) -> &str {
@@ -37,6 +38,28 @@ impl Interceptor for Host {
     }
     fn supports_v3(&self) -> bool {
         true
+    }
+    fn on_v3_write_authority<'a>(
+        &'a self,
+        _ctx: &'a RequestContext,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        type_bridge_server::interceptor::StagedWriteAuthority,
+                        InterceptError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            Ok(if self.unvouched {
+                type_bridge_server::interceptor::StagedWriteAuthority::Abstain
+            } else {
+                type_bridge_server::interceptor::StagedWriteAuthority::Authenticated
+            })
+        })
     }
     fn on_v3_raw<'a>(
         &'a self,
@@ -189,7 +212,41 @@ async fn raw_answers_match_typedb_http_and_host_refusal_writes_nothing() {
         .with_interceptor(host.clone())
         .build()
         .unwrap();
-    let router = create_v3_router(Arc::new(pipeline), Arc::new(query));
+    let query = Arc::new(query);
+    let unvouched = PipelineBuilder::new()
+        .with_default_database(&name)
+        .with_interceptor(Host {
+            unvouched: true,
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+    let unvouched = create_v3_router(Arc::new(unvouched), Arc::clone(&query));
+    for (text, kind) in [
+        (
+            "insert $p isa raw-person, has raw-name \"unvouched\";",
+            "write",
+        ),
+        ("undefine entity raw-person;", "schema"),
+    ] {
+        let (status, body) = raw(&unvouched, text, kind).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"error":"staged_write_not_authorized"})
+        );
+    }
+    let unchanged = direct
+        .execute_raw(
+            &name,
+            "match $p isa raw-person; reduce $n = count;",
+            TxType::Read,
+        )
+        .await
+        .unwrap();
+    let unchanged: Value = serde_json::from_slice(&unchanged).unwrap();
+    assert_eq!(unchanged["answers"][0]["data"]["n"]["value"], 1);
+    let router = create_v3_router(Arc::new(pipeline), query);
     let client = reqwest::Client::new();
     let base = format!(
         "http://127.0.0.1:{}",
