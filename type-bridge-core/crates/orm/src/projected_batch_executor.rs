@@ -677,7 +677,15 @@ impl<'a> BatchPlan<'a> {
                 capture_role_snapshots,
                 write_program: None,
             };
-            let program = plan.complete_write_plans()?;
+            let program = plan
+                .complete_write_plans()?
+                .prepare_static()
+                .map_err(|error| {
+                    lower_orm_error(
+                        &crate::plan_builders::manager::diagnostic(error),
+                        SdkProviderOperation::Write,
+                    )
+                })?;
             let statements =
                 u32::try_from(program.statement_count()).map_err(|_| complexity_overflow())?;
             let mut ledger = ExecutionLedger::new(

@@ -432,6 +432,8 @@ impl ProjectedBatchExecutor<'_> {
             }
             let mut reference_order = None;
             while let Some(step) = program.next().map_err(diagnostic)? {
+                let records_answers = program.records_answers();
+                let mut recorded = Vec::new();
                 if plan.capture_role_snapshots
                     && let Some(snapshots) = program.take_reference_snapshots()
                 {
@@ -466,6 +468,7 @@ impl ProjectedBatchExecutor<'_> {
                         &mut ledger,
                         true,
                         &authority,
+                        &mut |_: &AnswerItem| {},
                     )
                     .await?;
                     guard.validate(&returned, |role, ordinal| {
@@ -550,6 +553,7 @@ impl ProjectedBatchExecutor<'_> {
                         &mut ledger,
                         true,
                         &authority,
+                        &mut |_: &AnswerItem| {},
                     )
                     .await?;
                     if let Some(missing) = resolution
@@ -614,6 +618,11 @@ impl ProjectedBatchExecutor<'_> {
                         &mut ledger,
                         false,
                         &authority,
+                        &mut |item: &AnswerItem| {
+                            if records_answers {
+                                recorded.push(item.clone());
+                            }
+                        },
                     )
                     .await?;
                     let iid = returned.ok_or_else(|| {
@@ -624,6 +633,7 @@ impl ProjectedBatchExecutor<'_> {
                             step.ordinal,
                         )
                     })?;
+                    record_static_answer(&mut program, &step, recorded, records_answers)?;
                     program.accept_identity(&step, iid).map_err(diagnostic)?;
                     continue;
                 }
@@ -636,9 +646,15 @@ impl ProjectedBatchExecutor<'_> {
                     &mut ledger,
                     false,
                     &authority,
+                    &mut |item: &AnswerItem| {
+                        if records_answers {
+                            recorded.push(item.clone());
+                        }
+                    },
                 )
                 .await
                 .map_err(|later| consumer.take_deferred().unwrap_or(later))?;
+                record_static_answer(&mut program, &step, recorded, records_answers)?;
             }
             let reference_snapshots = consumer.resolved_references.take();
             let things = consumer.finish()?;
@@ -700,6 +716,7 @@ impl ProjectedBatchExecutor<'_> {
                 &mut ledger,
                 false,
                 &authority,
+                &mut |_: &AnswerItem| {},
             )
             .await
             .map_err(|later| identities.take_deferred().unwrap_or(later))?;
@@ -708,6 +725,33 @@ impl ProjectedBatchExecutor<'_> {
         prepared.check_control()?;
         Ok(ProjectedBatchResult::Deleted)
     }
+}
+
+fn record_static_answer(
+    program: &mut crate::plan_builders::bulk_write::WriteProgram,
+    step: &crate::plan_builders::bulk_write::WriteStep,
+    recorded: Vec<AnswerItem>,
+    required: bool,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    if !required {
+        return Ok(());
+    }
+    let rows = !matches!(step.plan.local().pipeline().last(), Some(Stage::Fetch(_)));
+    let values = recorded
+        .into_iter()
+        .map(|item| match (rows, item) {
+            (true, AnswerItem::Row(value)) | (false, AnswerItem::Document(value)) => Ok(value),
+            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let result = if rows {
+        QueryResult::Rows(values)
+    } else {
+        QueryResult::Documents(values)
+    };
+    let answer = TransactionContext::resolve_plan(step.plan.local(), result)
+        .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
+    program.record_answer(step, &answer).map_err(diagnostic)
 }
 
 fn input_row_upper_bound(row: &[GivenValue]) -> usize {
@@ -795,7 +839,8 @@ struct ReferenceOrder<'plan, 'schema> {
     references: Vec<&'plan RoleReference<'schema>>,
 }
 
-struct Consumer<'a> {
+struct Consumer<'a, R> {
+    record: &'a mut R,
     inner: &'a mut dyn AnswerConsumer,
     plan: &'a type_bridge_contract::query_plan::v3::QueryPlanV3,
     reply: Reply,
@@ -810,7 +855,7 @@ fn evidence(error: Diagnostic) -> OrmError {
     )
     .into()
 }
-impl Consumer<'_> {
+impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
     fn decode(&mut self, item: AnswerItem) -> crate::Result<AnswerControl> {
         let document = match self.reply {
             Reply::Hydration => {
@@ -943,11 +988,12 @@ impl Consumer<'_> {
     }
 }
 
-impl AnswerConsumer for Consumer<'_> {
+impl<R: FnMut(&AnswerItem) + Send> AnswerConsumer for Consumer<'_, R> {
     fn accept(&mut self, item: AnswerItem) -> crate::Result<AnswerControl> {
         if self.deferred.is_some() {
             return Ok(AnswerControl::Continue);
         }
+        (self.record)(&item);
         match self.decode(item) {
             Ok(control) => Ok(control),
             Err(error) => {
@@ -967,6 +1013,7 @@ pub(super) fn accept_prerequisite_result(
         return Err(SdkExecutionDiagnostic::internal_failure());
     };
     let mut consumer = Consumer {
+        record: &mut |_: &AnswerItem| {},
         inner,
         plan,
         reply: Reply::Prerequisite,
@@ -981,7 +1028,7 @@ pub(super) fn accept_prerequisite_result(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn dispatch(
+async fn dispatch<R: FnMut(&AnswerItem) + Send>(
     lease: &mut TransactionContextMutationLease,
     plan: &BuiltPlan,
     reply: Reply,
@@ -990,6 +1037,7 @@ async fn dispatch(
     ledger: &mut ExecutionLedger,
     lookup: bool,
     authority: &crate::plan_builders::authority::PlanAuthority,
+    record: &mut R,
 ) -> std::result::Result<(), SdkExecutionDiagnostic> {
     let mut query = lease
         .prepare_plan(plan.local())
@@ -1008,6 +1056,7 @@ async fn dispatch(
             prepared,
             consumer,
             ledger,
+            record,
         )
         .await;
     };
@@ -1030,6 +1079,7 @@ async fn dispatch(
             prepared,
             consumer,
             ledger,
+            record,
         )
         .await;
     }
@@ -1052,13 +1102,16 @@ async fn dispatch(
         let query = lease
             .prepare_plan(&local)
             .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
-        dispatch_query(lease, &local, query, reply, prepared, consumer, ledger).await?;
+        dispatch_query(
+            lease, &local, query, reply, prepared, consumer, ledger, record,
+        )
+        .await?;
     }
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_query(
+async fn dispatch_query<R: FnMut(&AnswerItem) + Send>(
     lease: &mut TransactionContextMutationLease,
     plan: &type_bridge_contract::query_plan::v3::QueryPlanV3,
     query: crate::session::staged::StagedQuery,
@@ -1066,6 +1119,7 @@ async fn dispatch_query(
     prepared: &PreparedProjectedBatchInvocation<'_>,
     consumer: &mut dyn AnswerConsumer,
     ledger: &mut ExecutionLedger,
+    record: &mut R,
 ) -> std::result::Result<(), SdkExecutionDiagnostic> {
     prepared.check_control()?;
     let limits = AnswerLimits {
@@ -1079,6 +1133,7 @@ async fn dispatch_query(
         ..Default::default()
     };
     let mut consumer = Consumer {
+        record,
         inner: consumer,
         plan,
         reply,
@@ -1141,6 +1196,85 @@ mod native_input_tests {
             })
             .collect::<Vec<_>>();
         given_rows_bytes(&canonical).unwrap() as usize
+    }
+
+    #[test]
+    fn streamed_static_source_keeps_its_actual_provider_type() {
+        use crate::plan_builders::authority::PlanAuthority;
+        use crate::plan_builders::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use type_bridge_contract::fingerprint::SemanticProfileId;
+        use type_bridge_contract::id::AttributeId;
+        use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+        use type_bridge_contract::value::CanonicalValue;
+
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|value| (balance.clone(), CanonicalValue::Long(value)))
+            .collect::<Vec<_>>();
+        let authority = PlanAuthority::new(
+            crate::query_plan_exec::race::schema(),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"streamed-static-source",
+            )
+            .unwrap(),
+        );
+        for actual_type in ["account", "wrong-provider-type"] {
+            let mut program = write_many(
+                &authority,
+                WriteKind::Insert,
+                WriteShape {
+                    type_id: &account,
+                    keys: &[],
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: false,
+                    return_documents: false,
+                    references_see_prior_writes: false,
+                },
+                &[WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                }],
+            )
+            .unwrap()
+            .prepare_static()
+            .unwrap();
+            assert!(program.records_answers());
+            let step = program.next().unwrap().unwrap();
+            let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
+                step.plan.local().output()
+            else {
+                panic!("allocation answers ordinal and root")
+            };
+            let mut row = serde_json::Map::new();
+            row.insert(
+                step.plan.local().bindings()[usize::from(columns[0].get())]
+                    .variable()
+                    .as_str()
+                    .into(),
+                serde_json::json!({"kind":"value", "value":CanonicalValue::Long(0)}),
+            );
+            row.insert(step.plan.local().bindings()[usize::from(columns[1].get())].variable().as_str().into(), serde_json::json!({"kind":"thing", "iid":"0x10", "type_id":{"kind":"entity", "label":actual_type}}));
+            record_static_answer(&mut program, &step, vec![AnswerItem::Row(row.into())], true)
+                .unwrap();
+            program.accept_identity(&step, Some("0x10".into())).unwrap();
+            let next = program.next();
+            if actual_type == "account" {
+                let next = next.unwrap().unwrap();
+                next.check_identity("0x10").unwrap();
+                assert!(next.check_identity("0xff").is_err());
+            } else {
+                assert_eq!(
+                    next.err().unwrap().code().as_str(),
+                    "query_stage_result_ref_answer"
+                );
+            }
+        }
     }
 
     #[test]

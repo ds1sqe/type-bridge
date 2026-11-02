@@ -144,12 +144,18 @@ impl StaticProgram {
         self.steps.iter().filter(|step| step.complete).count()
     }
 
+    pub(super) fn records_answers(&self) -> bool {
+        !self.steps.is_empty()
+    }
+
     pub(super) fn record_answer(
         &mut self,
         step: &WriteStep,
         answer: &PlanAnswer,
     ) -> Result<(), Diagnostic> {
-        self.answers.push(answer.to_staged_v3(step.plan.local())?);
+        if self.records_answers() {
+            self.answers.push(answer.to_staged_v3(step.plan.local())?);
+        }
         Ok(())
     }
 

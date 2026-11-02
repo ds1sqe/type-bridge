@@ -62,6 +62,14 @@ impl WriteProgram {
         }
     }
 
+    pub(crate) fn records_answers(&self) -> bool {
+        match self {
+            Self::Static(program) => program.records_answers(),
+            Self::Chain(programs) => programs.front().is_some_and(Self::records_answers),
+            _ => false,
+        }
+    }
+
     pub(crate) fn record_answer(
         &mut self,
         step: &WriteStep,
