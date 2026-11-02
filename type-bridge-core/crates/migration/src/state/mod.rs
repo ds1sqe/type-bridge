@@ -13,6 +13,7 @@
 //! [`SchemaInfo`][type_bridge_orm::_schema::SchemaInfo].
 
 pub mod memory;
+mod plans;
 pub mod schema;
 pub mod typedb;
 

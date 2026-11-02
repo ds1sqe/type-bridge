@@ -463,6 +463,8 @@ impl TransactionOps for MockMigrationTransaction {
                     Err(OrmError::Transaction(
                         "injected query failure for testing".to_string(),
                     ))
+                } else if typeql.contains("\"_iid\"") && typeql.contains("\"attributes\"") {
+                    Ok(QueryResult::Documents(Vec::new()))
                 } else {
                     Ok(QueryResult::Ok)
                 }

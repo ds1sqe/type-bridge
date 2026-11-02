@@ -17,6 +17,8 @@ name = "type_bridge_migration"
 path = "src/lib.rs"
 
 [dependencies]
+type-bridge-schema = { path = "../schema", version = "2.3.2" }
+type-bridge-schema-compat = { path = "../schema-compat", version = "2.3.2" }
 type-bridge-contract = { path = "../contract", version = "2.3.2" }
 type-bridge-core-lib = { path = "../core", version = "2.3.2" }
 type-bridge-orm = { path = "../orm", version = "2.3.2", default-features = false, features = ["band9"] }
@@ -30,7 +32,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-type-bridge-schema-compat = { path = "../schema-compat", version = "2.3.2" }
 tempfile = "3"
 
 [lints]

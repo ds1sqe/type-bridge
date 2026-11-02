@@ -33,6 +33,7 @@ use type_bridge_orm::{
     require_legacy_writer_open_in_transaction as require_orm_legacy_writer_open_in_transaction,
 };
 
+use super::plans;
 use crate::state::schema::labels::{
     APP_LABEL, APPLIED_AT, APPLIED_ENTITY, CHECKSUM, DIRECTION, ERROR, EXECUTOR_IP, EXECUTOR_MAC,
     FINISHED_AT, MIGRATION_ID, NAME, RUN_ENTITY, RUN_ID, STARTED_AT, STATUS,
@@ -230,17 +231,24 @@ impl TypeDbStateStore {
         self.ensure_schema().await
     }
 
-    async fn query_documents(&self, query: &str) -> Result<Vec<serde_json::Value>> {
+    async fn query_documents(&self, kind: &str) -> Result<Vec<serde_json::Value>> {
         let ctx = self
             .db
             .transaction_context(TxType::Read)
             .await
             .map_err(map_orm_error)?;
+        let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+        let plan = plans::read(kind, &[])?;
         let queried = ctx
-            .query(query)
+            .execute_plans(
+                &[plan],
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
             .await
             .map_err(map_orm_error)
-            .map(query_result_values);
+            .and_then(state_documents);
         let closed = ctx.close().await.map_err(map_orm_error);
         match (queried, closed) {
             (Ok(values), Ok(())) => Ok(values),
@@ -259,7 +267,7 @@ impl TypeDbStateStore {
         if !self.archival_schema_is_complete().await? {
             return Ok(Vec::new());
         }
-        parse_applied_documents(&self.query_documents(&applied_query()?).await?)
+        parse_applied_documents(&self.query_documents(APPLIED_ENTITY).await?)
     }
 
     /// Read the frozen legacy run log without any schema bootstrap or repair.
@@ -292,37 +300,16 @@ impl TypeDbStateStore {
     }
 
     async fn load_runs_documents(&self) -> Result<Vec<MigrationRunRecord>> {
-        let query = state_read(
-            "r",
-            RUN_ENTITY,
-            &[],
-            &[
-                (RUN_ID, "run_id"),
-                (APP_LABEL, "app"),
-                (NAME, "name"),
-                (CHECKSUM, "checksum"),
-                (DIRECTION, "direction"),
-                (STATUS, "status"),
-                (STARTED_AT, "started"),
-            ],
-        )?;
-        let mut runs = parse_run_documents(&self.query_documents(&query).await?)?;
-
-        let finished_query = optional_run_field_query(FINISHED_AT, "finished")?;
-        let finished_docs = self.query_documents(&finished_query).await?;
-        merge_optional_run_field(&mut runs, &finished_docs, "finished_at", "finished");
-
-        let error_query = optional_run_field_query(ERROR, "error")?;
-        let error_docs = self.query_documents(&error_query).await?;
-        merge_optional_run_field(&mut runs, &error_docs, "error", "error");
-
-        let ip_query = optional_run_field_query(EXECUTOR_IP, "executor_ip")?;
-        let ip_docs = self.query_documents(&ip_query).await?;
-        merge_optional_run_field(&mut runs, &ip_docs, "executor_ip", "executor_ip");
-
-        let mac_query = optional_run_field_query(EXECUTOR_MAC, "executor_mac")?;
-        let mac_docs = self.query_documents(&mac_query).await?;
-        merge_optional_run_field(&mut runs, &mac_docs, "executor_mac", "executor_mac");
+        let documents = self.query_documents(RUN_ENTITY).await?;
+        let mut runs = parse_run_documents(&documents)?;
+        for (target, source) in [
+            ("finished_at", "finished"),
+            ("error", "error"),
+            ("executor_ip", "executor_ip"),
+            ("executor_mac", "executor_mac"),
+        ] {
+            merge_optional_run_field(&mut runs, &documents, target, source);
+        }
 
         Ok(runs)
     }
@@ -337,11 +324,7 @@ impl TypeDbStateStore {
     pub async fn load_applied_in_transaction(
         transaction: &mut Transaction,
     ) -> Result<Vec<AppliedMigrationRecord>> {
-        let result = transaction
-            .query(&applied_query()?)
-            .await
-            .map_err(map_orm_error)?;
-        parse_applied_documents(&query_result_values(result))
+        parse_applied_documents(&owned_state_documents(transaction, APPLIED_ENTITY).await?)
     }
 
     /// Read the released applied projection and validate the reserved V2
@@ -377,27 +360,24 @@ impl TypeDbStateStore {
             }
             LegacyStateSchemaPresence::Complete => {}
         }
-        let result = transaction
-            .query(&applied_query()?)
+        let documents = owned_state_documents(transaction, APPLIED_ENTITY)
             .await
-            .map_err(map_sentinel_storage_error)?;
-        let mut applied = parse_applied_documents(&query_result_values(result))
             .map_err(LegacyCutoverSentinelError::Storage)?;
-
-        let id_candidates = sentinel_query_values(
-            transaction,
-            &state_exists(
-                "m",
-                APPLIED_ENTITY,
-                &[(MIGRATION_ID, LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)],
-            )?,
-        )
-        .await?;
-        let name_candidates = sentinel_query_values(
-            transaction,
-            &state_exists("m", APPLIED_ENTITY, &[(NAME, LEGACY_CUTOVER_SENTINEL_NAME)])?,
-        )
-        .await?;
+        let mut applied =
+            parse_applied_documents(&documents).map_err(LegacyCutoverSentinelError::Storage)?;
+        let id_candidates = documents
+            .iter()
+            .filter(|document| {
+                extract_value(document, "migration_id").as_deref()
+                    == Some(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)
+            })
+            .collect::<Vec<_>>();
+        let name_candidates = documents
+            .iter()
+            .filter(|document| {
+                extract_value(document, "name").as_deref() == Some(LEGACY_CUTOVER_SENTINEL_NAME)
+            })
+            .collect::<Vec<_>>();
 
         if id_candidates.is_empty() && name_candidates.is_empty() {
             if matches!(
@@ -425,31 +405,13 @@ impl TypeDbStateStore {
             ));
         }
 
-        let details = sentinel_query_values(
-            transaction,
-            &tql::render(&tql::pipeline(vec![
-                tql::match_stage(vec![tql::entity(
-                    "m",
-                    APPLIED_ENTITY,
-                    vec![
-                        (
-                            MIGRATION_ID,
-                            tql::string(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)?,
-                        ),
-                        (APP_LABEL, tql::var("app")?),
-                        (NAME, tql::string(LEGACY_CUTOVER_SENTINEL_NAME)?),
-                        (APPLIED_AT, tql::var("applied")?),
-                        (CHECKSUM, tql::var("checksum")?),
-                    ],
-                )?]),
-                tql::fetch(vec![
-                    ("app", tql::fetch_expr(tql::var("app")?)),
-                    ("applied", tql::fetch_expr(tql::var("applied")?)),
-                    ("checksum", tql::fetch_expr(tql::var("checksum")?)),
-                ])?,
-            ]))?,
-        )
-        .await?;
+        let details = id_candidates
+            .iter()
+            .copied()
+            .filter(|document| {
+                extract_value(document, "name").as_deref() == Some(LEGACY_CUTOVER_SENTINEL_NAME)
+            })
+            .collect::<Vec<_>>();
         if details.len() != 1 {
             return Err(sentinel_contract_error(
                 "the legacy-writer sentinel is missing required exact fields",
@@ -470,7 +432,9 @@ impl TypeDbStateStore {
                 "the legacy-writer sentinel carries a foreign application label",
             ));
         }
-        if applied_at != LEGACY_CUTOVER_SENTINEL_APPLIED_AT {
+        if type_bridge_schema::parse_provider_datetime(&applied_at).ok()
+            != type_bridge_schema::parse_provider_datetime(LEGACY_CUTOVER_SENTINEL_APPLIED_AT).ok()
+        {
             return Err(sentinel_contract_error(
                 "the legacy-writer sentinel carries a foreign applied timestamp",
             ));
@@ -521,24 +485,33 @@ impl TypeDbStateStore {
                     .to_owned(),
             });
         }
-        let query = tql::render(&tql::pipeline(vec![tql::insert(vec![tql::entity(
-            "m",
+        let plan = plans::write(
             APPLIED_ENTITY,
             vec![
                 (
                     MIGRATION_ID,
-                    tql::string(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)?,
+                    plans::text(LEGACY_CUTOVER_SENTINEL_MIGRATION_ID)?,
                 ),
-                (APP_LABEL, tql::string(LEGACY_CUTOVER_SENTINEL_APP_LABEL)?),
-                (NAME, tql::string(LEGACY_CUTOVER_SENTINEL_NAME)?),
+                (APP_LABEL, plans::text(LEGACY_CUTOVER_SENTINEL_APP_LABEL)?),
+                (NAME, plans::text(LEGACY_CUTOVER_SENTINEL_NAME)?),
                 (
                     APPLIED_AT,
-                    tql::literal_source(LEGACY_CUTOVER_SENTINEL_APPLIED_AT)?,
+                    plans::datetime(LEGACY_CUTOVER_SENTINEL_APPLIED_AT)?,
                 ),
-                (CHECKSUM, tql::string(anchor_fingerprint)?),
+                (CHECKSUM, plans::text(anchor_fingerprint)?),
             ],
-        )?])]))?;
-        transaction.query(&query).await.map_err(map_orm_error)?;
+            false,
+        )?;
+        let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+        transaction
+            .execute_plans(
+                &[plan],
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
+            .await
+            .map_err(map_orm_error)?;
         Ok(())
     }
 }
@@ -679,59 +652,6 @@ fn legacy_sentinel_error_into_migration_error(error: LegacyCutoverSentinelError)
     }
 }
 
-fn state_pattern(
-    variable: &str,
-    kind: &str,
-    fixed: &[(&str, &str)],
-    bound: &[(&str, &str)],
-) -> std::result::Result<tql::Pattern, tql::TqlError> {
-    let mut fields = Vec::new();
-    for &(name, value) in fixed {
-        fields.push((name, tql::string(value)?));
-    }
-    for &(name, value) in bound {
-        fields.push((name, tql::var(value)?));
-    }
-    tql::entity(variable, kind, fields)
-}
-fn state_read(
-    variable: &str,
-    kind: &str,
-    fixed: &[(&str, &str)],
-    bound: &[(&str, &str)],
-) -> std::result::Result<String, tql::TqlError> {
-    let fetch = bound
-        .iter()
-        .map(|&(_, name)| Ok((name, tql::fetch_expr(tql::var(name)?))))
-        .collect::<std::result::Result<Vec<_>, tql::TqlError>>()?;
-    tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![state_pattern(variable, kind, fixed, bound)?]),
-        tql::fetch(fetch)?,
-    ]))
-}
-fn state_exists(
-    variable: &str,
-    kind: &str,
-    fixed: &[(&str, &str)],
-) -> std::result::Result<String, tql::TqlError> {
-    tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![state_pattern(variable, kind, fixed, &[])?]),
-        tql::fetch(vec![(
-            "exists",
-            tql::fetch_expr(tql::literal_source("true")?),
-        )])?,
-    ]))
-}
-fn state_delete(
-    variable: &str,
-    kind: &str,
-    fixed: &[(&str, &str)],
-) -> std::result::Result<String, tql::TqlError> {
-    tql::render(&tql::pipeline(vec![
-        tql::match_stage(vec![state_pattern(variable, kind, fixed, &[])?]),
-        tql::delete(vec![tql::delete_thing(variable)?]),
-    ]))
-}
 fn schema_kind_query(kind: &str, tagged: bool) -> std::result::Result<String, tql::TqlError> {
     let query = tql::pipeline(vec![
         tql::match_stage(vec![tql::schema_kind_pattern("$t", kind)?]),
@@ -746,36 +666,6 @@ fn schema_kind_query(kind: &str, tagged: bool) -> std::result::Result<String, tq
         tql::render(&query)
     }
 }
-fn applied_query() -> std::result::Result<String, tql::TqlError> {
-    state_read(
-        "m",
-        APPLIED_ENTITY,
-        &[],
-        &[
-            (APP_LABEL, "app"),
-            (NAME, "name"),
-            (APPLIED_AT, "applied"),
-            (CHECKSUM, "checksum"),
-        ],
-    )
-}
-
-async fn sentinel_query_values(
-    transaction: &mut Transaction,
-    query: &str,
-) -> std::result::Result<Vec<serde_json::Value>, LegacyCutoverSentinelError> {
-    let result = transaction
-        .query(query)
-        .await
-        .map_err(map_sentinel_storage_error)?;
-    match result {
-        QueryResult::Documents(values) | QueryResult::Rows(values) => Ok(values),
-        QueryResult::Ok => Err(LegacyCutoverSentinelError::Storage(MigrationError::State {
-            message: "legacy cutover sentinel fetch returned no document result".to_owned(),
-        })),
-    }
-}
-
 fn map_sentinel_storage_error(error: OrmError) -> LegacyCutoverSentinelError {
     LegacyCutoverSentinelError::Storage(map_orm_error(error))
 }
@@ -800,14 +690,6 @@ fn is_lower_hex_fingerprint(value: &str) -> bool {
 /// live clock or TypeDB.
 fn format_applied_at(now: chrono::DateTime<Utc>) -> String {
     now.format(APPLIED_AT_FORMAT).to_string()
-}
-
-fn query_result_values(result: QueryResult) -> Vec<serde_json::Value> {
-    match result {
-        QueryResult::Documents(docs) => docs,
-        QueryResult::Rows(rows) => rows,
-        QueryResult::Ok => Vec::new(),
-    }
 }
 
 /// Map an ORM-layer error into the migration error hierarchy.
@@ -942,18 +824,6 @@ pub fn parse_run_documents(values: &[serde_json::Value]) -> Result<Vec<Migration
     Ok(records)
 }
 
-fn optional_run_field_query(
-    attribute: &str,
-    alias: &str,
-) -> std::result::Result<String, tql::TqlError> {
-    state_read(
-        "r",
-        RUN_ENTITY,
-        &[],
-        &[(RUN_ID, "run_id"), (attribute, alias)],
-    )
-}
-
 fn merge_optional_run_field(
     runs: &mut [MigrationRunRecord],
     docs: &[serde_json::Value],
@@ -977,36 +847,6 @@ fn merge_optional_run_field(
             _ => {}
         }
     }
-}
-
-fn run_insert_query(record: &MigrationRunRecord) -> std::result::Result<String, tql::TqlError> {
-    let mut fields = Vec::new();
-    for (name, value) in [
-        (RUN_ID, &record.run_id),
-        (APP_LABEL, &record.app_label),
-        (NAME, &record.name),
-        (CHECKSUM, &record.checksum),
-        (DIRECTION, &record.direction),
-        (STATUS, &record.status),
-    ] {
-        fields.push((name, tql::string(value)?));
-    }
-    fields.push((STARTED_AT, tql::literal_source(&record.started_at)?));
-    if let Some(value) = &record.finished_at {
-        fields.push((FINISHED_AT, tql::literal_source(value)?));
-    }
-    for (name, value) in [
-        (ERROR, &record.error),
-        (EXECUTOR_IP, &record.executor_ip),
-        (EXECUTOR_MAC, &record.executor_mac),
-    ] {
-        if let Some(value) = value {
-            fields.push((name, tql::string(value)?));
-        }
-    }
-    tql::render(&tql::pipeline(vec![tql::insert(vec![tql::entity(
-        "r", RUN_ENTITY, fields,
-    )?])]))
 }
 
 impl MigrationStateStore for TypeDbStateStore {
@@ -1055,9 +895,7 @@ impl MigrationStateStore for TypeDbStateStore {
             self.ensure_schema_for_read().await?;
 
             // Ported verbatim from state.py:179-191.
-            let query = applied_query()?;
-
-            let values = self.query_documents(&query).await?;
+            let values = self.query_documents(APPLIED_ENTITY).await?;
             parse_applied_documents(&values)
         })
     }
@@ -1081,19 +919,17 @@ impl MigrationStateStore for TypeDbStateStore {
                 .unwrap_or_else(|| format_applied_at(Utc::now()));
 
             let migration_id = format!("{}:{}", record.app_label, record.name);
-            let delete_existing =
-                state_delete("m", APPLIED_ENTITY, &[(MIGRATION_ID, &migration_id)])?;
-            let insert = tql::render(&tql::pipeline(vec![tql::insert(vec![tql::entity(
-                "m",
+            let plan = plans::write(
                 APPLIED_ENTITY,
                 vec![
-                    (MIGRATION_ID, tql::string(&migration_id)?),
-                    (APP_LABEL, tql::string(&record.app_label)?),
-                    (NAME, tql::string(&record.name)?),
-                    (APPLIED_AT, tql::literal_source(&applied_at)?),
-                    (CHECKSUM, tql::string(&record.checksum)?),
+                    (MIGRATION_ID, plans::text(&migration_id)?),
+                    (APP_LABEL, plans::text(&record.app_label)?),
+                    (NAME, plans::text(&record.name)?),
+                    (APPLIED_AT, plans::datetime(&applied_at)?),
+                    (CHECKSUM, plans::text(&record.checksum)?),
                 ],
-            )?])]))?;
+                true,
+            )?;
 
             let ctx = self
                 .db
@@ -1104,8 +940,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
-            ctx.query(&delete_existing).await.map_err(map_orm_error)?;
-            ctx.query(&insert).await.map_err(map_orm_error)?;
+            execute_context_plan(&ctx, plan).await?;
             ctx.commit().await.map_err(map_orm_error)?;
             Ok(())
         })
@@ -1122,7 +957,7 @@ impl MigrationStateStore for TypeDbStateStore {
             // Storage schema matches state.py:288-293; the delete clause uses the
             // TypeDB 3.x form `delete $m;` (the older `delete $m isa <type>;` that
             // the Python code carried is a parse error on TypeDB 3.x).
-            let query = state_delete("m", APPLIED_ENTITY, &[(APP_LABEL, app_label), (NAME, name)])?;
+            let plan = plans::delete(APPLIED_ENTITY, &[(APP_LABEL, app_label), (NAME, name)])?;
 
             let ctx = self
                 .db
@@ -1133,7 +968,7 @@ impl MigrationStateStore for TypeDbStateStore {
                 let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
-            ctx.query(&query).await.map_err(map_orm_error)?;
+            execute_context_plan(&ctx, plan).await?;
             ctx.commit().await.map_err(map_orm_error)?;
             Ok(())
         })
@@ -1143,8 +978,7 @@ impl MigrationStateStore for TypeDbStateStore {
         Box::pin(async move {
             self.ensure_schema().await?;
 
-            let delete_existing = state_delete("r", RUN_ENTITY, &[(RUN_ID, &record.run_id)])?;
-            let insert = run_insert_query(&record)?;
+            let plan = plans::run(&record)?;
 
             let ctx = self
                 .db
@@ -1155,12 +989,112 @@ impl MigrationStateStore for TypeDbStateStore {
                 let _ = rollback_and_close_context(&ctx).await;
                 return Err(error);
             }
-            ctx.query(&delete_existing).await.map_err(map_orm_error)?;
-            ctx.query(&insert).await.map_err(map_orm_error)?;
+            execute_context_plan(&ctx, plan).await?;
             ctx.commit().await.map_err(map_orm_error)?;
             Ok(())
         })
     }
+}
+
+fn state_documents(
+    answers: Vec<type_bridge_orm::session::staged::PlanAnswer>,
+) -> Result<Vec<serde_json::Value>> {
+    use type_bridge_orm::session::staged::PlanAnswer;
+    let mut documents = Vec::new();
+    for answer in answers {
+        let PlanAnswer::Documents(rows) = answer else {
+            return Err(MigrationError::State {
+                message: "migration state plan returned no documents".into(),
+            });
+        };
+        for row in rows {
+            let fields = row
+                .get("attributes")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| MigrationError::State {
+                    message: "migration state document has no attributes".into(),
+                })?;
+            let aliases = [
+                (MIGRATION_ID, "migration_id"),
+                (RUN_ID, "run_id"),
+                (APP_LABEL, "app"),
+                (NAME, "name"),
+                (APPLIED_AT, "applied"),
+                (CHECKSUM, "checksum"),
+                (DIRECTION, "direction"),
+                (STATUS, "status"),
+                (STARTED_AT, "started"),
+                (FINISHED_AT, "finished"),
+                (ERROR, "error"),
+                (EXECUTOR_IP, "executor_ip"),
+                (EXECUTOR_MAC, "executor_mac"),
+            ];
+            let mut document = serde_json::Map::new();
+            for (field, alias) in aliases {
+                let Some(value) = fields.get(field) else {
+                    continue;
+                };
+                let value =
+                    if [APPLIED_AT, STARTED_AT, FINISHED_AT].contains(&field) && !value.is_null() {
+                        // Released driver fetches expose exactly nine fractional digits.
+                        // Preserve that host format after native canonical verification.
+                        let datetime = type_bridge_schema::parse_provider_datetime(
+                            value.as_str().ok_or_else(|| MigrationError::State {
+                                message: "migration timestamp document is malformed".into(),
+                            })?,
+                        )
+                        .map_err(|error| MigrationError::State {
+                            message: error.to_string(),
+                        })?;
+                        let (hour, minute, second, nanosecond) = datetime.time().components();
+                        serde_json::Value::String(format!(
+                            "{}T{hour:02}:{minute:02}:{second:02}.{nanosecond:09}",
+                            datetime.date()
+                        ))
+                    } else {
+                        value.clone()
+                    };
+                document.insert(alias.to_owned(), value);
+            }
+            documents.push(serde_json::Value::Object(document));
+        }
+    }
+    Ok(documents)
+}
+
+async fn owned_state_documents(
+    transaction: &mut Transaction,
+    kind: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let plan = plans::read(kind, &[])?;
+    let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+    let answers = transaction
+        .execute_plans(
+            &[plan],
+            &limits,
+            &type_bridge_orm::AnswerCancellation::default(),
+            type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+        )
+        .await
+        .map_err(map_orm_error)?;
+    state_documents(answers)
+}
+
+async fn execute_context_plan(
+    context: &TransactionContext,
+    plan: type_bridge_contract::query_plan::v3::QueryPlanV3,
+) -> Result<()> {
+    let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+    context
+        .execute_plans(
+            &[plan],
+            &limits,
+            &type_bridge_orm::AnswerCancellation::default(),
+            type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+        )
+        .await
+        .map_err(map_orm_error)?;
+    Ok(())
 }
 
 async fn rollback_and_close_context(
@@ -1204,19 +1138,24 @@ mod tests {
         );
     }
 
+    fn applied_document(flat: serde_json::Value) -> serde_json::Value {
+        let app = flat["app"].as_str().unwrap();
+        let name = flat["name"].as_str().unwrap();
+        serde_json::json!({
+            "_iid": "0x01", "_type": APPLIED_ENTITY,
+            "attributes": {
+                MIGRATION_ID: if name == LEGACY_CUTOVER_SENTINEL_NAME { LEGACY_CUTOVER_SENTINEL_MIGRATION_ID.to_owned() } else { format!("{app}:{name}") },
+                APP_LABEL: flat["app"], NAME: flat["name"], APPLIED_AT: flat["applied"], CHECKSUM: flat["checksum"],
+            }
+        })
+    }
+
     #[tokio::test]
     async fn state_readers_close_every_read_context() {
         let responses = vec![
-            QueryResult::Documents(vec![serde_json::json!({
-                "app": "myapp",
-                "name": "0001_initial",
-                "applied": "2026-06-05T00:00:00.000000000",
-                "checksum": "abc123"
-            })]),
-            QueryResult::Documents(Vec::new()),
-            QueryResult::Documents(Vec::new()),
-            QueryResult::Documents(Vec::new()),
-            QueryResult::Documents(Vec::new()),
+            QueryResult::Documents(vec![applied_document(serde_json::json!({
+                "app":"myapp", "name":"0001_initial", "applied":"2026-06-05T00:00:00.000000000", "checksum":"abc123"
+            }))]),
             QueryResult::Documents(Vec::new()),
         ];
         let (backend, log) = MockMigrationBackend::with_state_read_responses(responses);
@@ -1235,7 +1174,10 @@ mod tests {
             .iter()
             .filter(|event| matches!(event, MockEvent::Close))
             .count();
-        assert_eq!(opens, 7, "one schema inspection plus six ledger reads");
+        assert_eq!(
+            opens, 3,
+            "one schema inspection plus one plan per ledger read"
+        );
         assert_eq!(closes, opens, "every read context must be acknowledged");
     }
 
@@ -1334,16 +1276,7 @@ mod tests {
             "applied": LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
             "checksum": fingerprint,
         });
-        let responses = vec![
-            QueryResult::Documents(vec![sentinel]),
-            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
-            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
-            QueryResult::Documents(vec![serde_json::json!({
-                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
-                "applied": LEGACY_CUTOVER_SENTINEL_APPLIED_AT,
-                "checksum": fingerprint,
-            })]),
-        ];
+        let responses = vec![QueryResult::Documents(vec![applied_document(sentinel)])];
         let (backend, _) = MockMigrationBackend::with_state_read_responses(responses);
         let database = Database::with_backend(Box::new(backend), "test");
         let mut transaction = database.read_transaction().await.unwrap();
@@ -1361,24 +1294,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn equivalent_fractional_sentinel_timestamp_is_recognized() {
+        let fingerprint = "c".repeat(64);
+        let responses = vec![QueryResult::Documents(vec![applied_document(
+            serde_json::json!({
+                "app":LEGACY_CUTOVER_SENTINEL_APP_LABEL, "name":LEGACY_CUTOVER_SENTINEL_NAME,
+                "applied":"1970-01-01T00:00:00.0", "checksum":fingerprint,
+            }),
+        )])];
+        let (backend, _) = MockMigrationBackend::with_state_read_responses(responses);
+        let database = Database::with_backend(Box::new(backend), "test");
+        let mut transaction = database.read_transaction().await.unwrap();
+        let partition = TypeDbStateStore::load_verified_legacy_partition_in_transaction(
+            &mut transaction,
+            LegacyCutoverSentinelExpectation::RequiredExact(&fingerprint),
+        )
+        .await
+        .unwrap();
+        assert!(partition.applied().is_empty());
+        assert_eq!(partition.sentinel_fingerprint(), Some(fingerprint.as_str()));
+        transaction.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn malformed_sentinel_timestamp_is_not_filtered() {
         let fingerprint = "b".repeat(64);
-        let malformed_timestamp = "1970-01-01T00:00:00";
-        let responses = vec![
-            QueryResult::Documents(vec![serde_json::json!({
-                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
-                "name": LEGACY_CUTOVER_SENTINEL_NAME,
-                "applied": malformed_timestamp,
-                "checksum": fingerprint,
-            })]),
-            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
-            QueryResult::Documents(vec![serde_json::json!({"exists": true})]),
-            QueryResult::Documents(vec![serde_json::json!({
-                "app": LEGACY_CUTOVER_SENTINEL_APP_LABEL,
-                "applied": malformed_timestamp,
-                "checksum": fingerprint,
-            })]),
-        ];
+        let malformed_timestamp = "1970-01-01T00:00:01";
+        let responses = vec![QueryResult::Documents(vec![applied_document(
+            serde_json::json!({
+                "app":LEGACY_CUTOVER_SENTINEL_APP_LABEL, "name":LEGACY_CUTOVER_SENTINEL_NAME,
+                "applied":malformed_timestamp, "checksum":fingerprint,
+            }),
+        )])];
         let (backend, _) = MockMigrationBackend::with_state_read_responses(responses);
         let database = Database::with_backend(Box::new(backend), "test");
         let mut transaction = database.read_transaction().await.unwrap();
@@ -1536,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn run_insert_query_includes_optional_fields_when_present() {
+    fn run_plan_includes_exact_optional_fields_when_present() {
         let record = MigrationRunRecord {
             run_id: "run-1".to_string(),
             app_label: "app".to_string(),
@@ -1551,13 +1498,36 @@ mod tests {
             executor_mac: Some("00:11:22:33:44:55".to_string()),
         };
 
-        let query = run_insert_query(&record).unwrap();
-
-        assert!(query.contains("has migration_run_id \"run-1\""));
-        assert!(query.contains("has migration_finished_at 2026-06-05T00:00:01.000000"));
-        assert!(query.contains("has migration_error \"quote: \\\"boom\\\"\""));
-        assert!(query.contains("has migration_executor_ip \"127.0.0.1\""));
-        assert!(query.contains("has migration_executor_mac \"00:11:22:33:44:55\""));
+        use type_bridge_contract::query_plan::QueryOperand;
+        use type_bridge_contract::query_plan::v3::{AttachItem, Stage};
+        let plan = plans::run(&record).unwrap();
+        let values = plan
+            .pipeline()
+            .iter()
+            .filter_map(|stage| match stage {
+                Stage::Attach { items } => Some(items),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|item| match item {
+                AttachItem::Has {
+                    field,
+                    operand: QueryOperand::Literal { value },
+                    ..
+                } => Some((field.attribute().label().as_str(), value)),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            values[FINISHED_AT],
+            &plans::datetime(record.finished_at.as_deref().unwrap()).unwrap()
+        );
+        assert_eq!(values[ERROR], &plans::text("quote: \"boom\"").unwrap());
+        assert_eq!(values[EXECUTOR_IP], &plans::text("127.0.0.1").unwrap());
+        assert_eq!(
+            values[EXECUTOR_MAC],
+            &plans::text("00:11:22:33:44:55").unwrap()
+        );
     }
 
     // ── timestamp parity (no TypeDB) ────────────────────────────────────────
