@@ -105,6 +105,14 @@ pub struct QueryExecutionDeadline {
 }
 
 impl QueryExecutionDeadline {
+    /// An already elapsed deadline for an operation that must not start.
+    #[must_use]
+    pub fn expired() -> Self {
+        Self {
+            deadline: Instant::now(),
+        }
+    }
+
     /// Capture one absolute deadline from a timeout, clamped to the longest
     /// supported execution duration.
     #[must_use]
@@ -662,6 +670,21 @@ fn usize_limit(value: u64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_explicitly_expired_deadline_refuses_execution() {
+        let deadline = QueryExecutionDeadline::expired();
+        assert!(deadline.is_expired());
+        assert_eq!(deadline.remaining_milliseconds(), 0);
+        assert_eq!(
+            deadline
+                .check(&AnswerCancellation::default())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "transaction_deadline_exceeded"
+        );
+    }
 
     #[test]
     fn an_unset_statement_budget_preserves_adapter_need_and_explicit_limits() {

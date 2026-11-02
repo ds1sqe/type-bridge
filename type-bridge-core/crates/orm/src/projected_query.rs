@@ -2930,7 +2930,7 @@ plays:
             result,
             ProjectedQueryMaterializationLimits::default(),
             &AnswerCancellation::default(),
-            Some(QueryExecutionDeadline::from_timeout_milliseconds(0)),
+            Some(QueryExecutionDeadline::expired()),
         )
         .expect_err("an expired invocation cannot publish a materialized result");
         assert_eq!(error.category(), SdkDiagnosticCategory::ResourceLimit);

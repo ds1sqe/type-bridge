@@ -284,7 +284,7 @@ async fn caller_semantic_limits_and_expired_deadlines_are_enforced() {
             &[],
             &QueryExecutionResourceLimits::default(),
             &AnswerCancellation::default(),
-            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            QueryExecutionDeadline::expired(),
         )
         .await
         .unwrap_err();

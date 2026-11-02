@@ -2185,7 +2185,7 @@ plays:
         let retained_storage = rows.as_ptr();
         let retained_capacity = rows.capacity();
         let accepted_measure = expired.resource_measure();
-        expired.control.deadline = QueryExecutionDeadline::from_timeout_milliseconds(0);
+        expired.control.deadline = QueryExecutionDeadline::expired();
         let captured_deadline = expired.control.deadline().instant();
         let error = expired.try_finalize(&installed, &mut rows).unwrap_err();
         assert_eq!(error.code().as_str(), "transaction_deadline_exceeded");

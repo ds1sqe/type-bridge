@@ -3429,7 +3429,7 @@ plays:
                 timeout_milliseconds: 0,
                 ..Default::default()
             },
-            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            QueryExecutionDeadline::expired(),
             AnswerCancellation::default(),
         );
         let cache = NodeQueryProjectionCache::new();
@@ -3686,7 +3686,7 @@ plays:
         let error = match query
             .result_context(
                 QueryExecutionResourceLimits::default(),
-                QueryExecutionDeadline::from_timeout_milliseconds(0),
+                QueryExecutionDeadline::expired(),
                 AnswerCancellation::default(),
             )
             .attach(request, inner, registry)

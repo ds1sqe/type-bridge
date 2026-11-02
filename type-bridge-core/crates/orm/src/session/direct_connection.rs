@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn expired_connection_deadline_fails_before_provider_dispatch() {
         let error = check_control(
-            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            QueryExecutionDeadline::expired(),
             &AnswerCancellation::default(),
         )
         .expect_err("zero-timeout connection must fail");

@@ -1291,7 +1291,7 @@ functions:
                 max_role_players: 10,
                 max_statements: 3,
             },
-            QueryExecutionDeadline::from_timeout_milliseconds(0),
+            QueryExecutionDeadline::expired(),
             &AnswerCancellation::default(),
         );
         let RemoteModelQueryV2Error::Match(expired) = expired

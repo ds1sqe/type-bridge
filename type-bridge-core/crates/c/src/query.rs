@@ -8188,7 +8188,7 @@ mod tests {
         };
         let proof = query.pending.get().unwrap();
         let failure = query
-            .materialize(&proof, QueryExecutionDeadline::from_timeout_milliseconds(0))
+            .materialize(&proof, QueryExecutionDeadline::expired())
             .err()
             .unwrap();
         assert_eq!(failure.code().as_str(), "transaction_deadline_exceeded");
