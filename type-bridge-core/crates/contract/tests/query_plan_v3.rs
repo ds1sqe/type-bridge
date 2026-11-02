@@ -1907,3 +1907,64 @@ fn native_write_stages_refuse_ordered_collections_without_a_scalar_escape() {
         );
     }
 }
+
+#[test]
+fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
+    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    for (patterns, owner, expected) in [
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Try {
+                    patterns: vec![isa(1, entity("account"))],
+                }
+                .into(),
+            ],
+            id(1),
+            None,
+        ),
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                Pattern::Let {
+                    binding: id(1),
+                    expr: Expr::Operand(literal(1)),
+                },
+            ],
+            id(1),
+            Some("query_plan_write_untyped_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(9),
+            Some("query_plan_write_unbound_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(1),
+            Some("query_plan_write_unbound_target"),
+        ),
+    ] {
+        let plan = QueryPlanV3::new(
+            spec(
+                vec![
+                    Stage::Match { patterns },
+                    Stage::Delete {
+                        items: vec![DeleteItem::Has {
+                            owner,
+                            field: field("score"),
+                        }],
+                    },
+                ],
+                vec![],
+            ),
+            &schema(),
+        );
+        match expected {
+            None => {
+                plan.unwrap();
+            }
+            Some(code) => assert_eq!(plan.unwrap_err().code().as_str(), code),
+        }
+    }
+}

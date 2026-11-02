@@ -1576,7 +1576,9 @@ fn validate_stages(
                             }
                         }
                         DeleteItem::Has { owner, field } => {
-                            bound(*owner, &mandatory)?;
+                            if !mandatory.contains(owner) {
+                                bound(*owner, &optional)?;
+                            }
                             index.ownership(*owner, field, &types, false)?;
                         }
                         DeleteItem::Links {
