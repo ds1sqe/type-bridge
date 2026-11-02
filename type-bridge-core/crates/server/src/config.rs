@@ -32,6 +32,7 @@ enum RuntimeConfigParseErrorKind {
     ValueShape,
     UnknownSecurityKey,
     RemovedSection,
+    RemovedSchemaSection,
 }
 
 struct RuntimeConfigParseError {
@@ -65,6 +66,9 @@ impl fmt::Display for RuntimeConfigParseError {
             RuntimeConfigParseErrorKind::ValueShape => "value shape",
             RuntimeConfigParseErrorKind::UnknownSecurityKey => "unknown security-sensitive key",
             RuntimeConfigParseErrorKind::RemovedSection => "removed [v2] section; use [staged]",
+            RuntimeConfigParseErrorKind::RemovedSchemaSection => {
+                "removed [schema] section; use [staged].schema_authority_file"
+            }
         };
         write!(formatter, "server configuration is invalid ({reason})")?;
         if let Some((line, column)) = self.location {
@@ -104,9 +108,6 @@ pub struct ServerConfig {
     pub server: ServerSection,
     /// TypeDB connection configuration.
     pub typedb: TypeDBSection,
-    /// Optional V1 TypeQL schema source.
-    #[serde(default)]
-    pub schema: SchemaSection,
     /// Interceptors enabled for the request pipeline.
     #[serde(default)]
     pub interceptors: InterceptorsSection,
@@ -127,8 +128,6 @@ pub struct RuntimeServerConfig {
     pub server: ServerSection,
     /// Validated TypeDB connection and outbound TLS policy.
     pub typedb: SecureTypeDBSection,
-    /// Optional V1 TypeQL schema source.
-    pub schema: SchemaSection,
     /// Interceptors enabled for the request pipeline.
     pub interceptors: InterceptorsSection,
     /// Process logging configuration.
@@ -172,7 +171,6 @@ impl fmt::Debug for RuntimeServerConfig {
             .debug_struct("RuntimeServerConfig")
             .field("server", &self.server)
             .field("typedb", &self.typedb)
-            .field("schema", &self.schema)
             .field("interceptors", &self.interceptors)
             .field("logging", &self.logging)
             .field("inbound_tls", &self.inbound_tls)
@@ -577,8 +575,6 @@ struct RuntimeServerConfigWire {
     server: RuntimeServerSectionWire,
     typedb: RuntimeTypeDBSectionWire,
     #[serde(default)]
-    schema: RuntimeSchemaSectionWire,
-    #[serde(default)]
     interceptors: RuntimeInterceptorsSectionWire,
     #[serde(default)]
     logging: RuntimeLoggingSectionWire,
@@ -628,12 +624,6 @@ impl fmt::Debug for RuntimeTypeDBSectionWire {
             .field("tls_root_ca", &self.tls_root_ca)
             .finish()
     }
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct RuntimeSchemaSectionWire {
-    #[serde(default)]
-    source_file: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -688,14 +678,6 @@ struct RuntimeStagedSectionWire {
     allow_unauthenticated_staged_writes: bool,
 }
 
-impl From<RuntimeSchemaSectionWire> for SchemaSection {
-    fn from(wire: RuntimeSchemaSectionWire) -> Self {
-        Self {
-            source_file: wire.source_file,
-        }
-    }
-}
-
 impl From<RuntimeInterceptorsSectionWire> for InterceptorsSection {
     fn from(wire: RuntimeInterceptorsSectionWire) -> Self {
         Self {
@@ -735,14 +717,6 @@ impl From<RuntimeStagedSectionWire> for StagedSection {
             allow_unauthenticated_staged_writes: wire.allow_unauthenticated_staged_writes,
         }
     }
-}
-
-#[derive(Debug, Default, Deserialize)]
-/// Optional V1 TypeQL schema source configuration.
-pub struct SchemaSection {
-    /// Path to a TypeQL schema file, or an empty string when unused.
-    #[serde(default)]
-    pub source_file: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1028,7 +1002,6 @@ impl RuntimeServerConfig {
 
                 staged_schema_authority_snapshot,
             },
-            schema: wire.schema.into(),
             interceptors: wire.interceptors.into(),
             logging: wire.logging.into(),
             inbound_tls: wire.server.tls,
@@ -1535,6 +1508,13 @@ fn reject_ambiguous_security_keys(content: &str) -> Result<(), Box<dyn std::erro
         }
         .into());
     }
+    if root.contains_key("schema") {
+        return Err(RuntimeConfigParseError {
+            kind: RuntimeConfigParseErrorKind::RemovedSchemaSection,
+            location: None,
+        }
+        .into());
+    }
     for key in root.keys() {
         let path = [key.clone()];
         if security_shaped_key(key) && !documented_security_path(&path) {
@@ -1743,9 +1723,6 @@ username = "root"
 password = "secret"
 server_version = "3.14.0"
 
-[schema]
-source_file = "schema.tql"
-
 [interceptors]
 enabled = ["audit-log"]
 
@@ -1767,6 +1744,19 @@ database = "mydb"
 "#;
 
     // --- from_file tests ---
+
+    #[test]
+    fn removed_schema_source_is_refused_instead_of_ignored() {
+        let error = parse_runtime_wire(&format!(
+            "{MINIMAL_CONFIG}\n[schema]\nsource_file=\"legacy.tql\"\n"
+        ))
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("removed [schema] section; use [staged].schema_authority_file")
+        );
+    }
 
     #[test]
     fn removed_v2_section_is_refused_instead_of_silently_disabling_policies() {
@@ -1793,7 +1783,6 @@ database = "mydb"
         assert_eq!(config.typedb.username, "root");
         assert_eq!(config.typedb.password, "secret");
         assert_eq!(config.typedb.server_version.as_deref(), Some("3.14.0"));
-        assert_eq!(config.schema.source_file, "schema.tql");
         assert_eq!(config.interceptors.enabled, vec!["audit-log"]);
         let audit = config.interceptors.audit_log.unwrap();
         assert_eq!(audit.output, "file");
@@ -1873,8 +1862,7 @@ database = "mydb"
         std::fs::write(
             &config_path,
             format!(
-                "{MINIMAL_CONFIG}\n[schema]\nsource_file = \"released-schema.tql\"\n\
-                 [staged]\nenabled = true\nschema_authority_file = \"schemas/schema-authority.json\"\n"
+                "{MINIMAL_CONFIG}\n[staged]\nenabled = true\nschema_authority_file = \"schemas/schema-authority.json\"\n"
             ),
         )
         .unwrap();
@@ -1886,7 +1874,6 @@ database = "mydb"
             config.staged.schema_authority_file,
             "schemas/schema-authority.json"
         );
-        assert_eq!(config.schema.source_file, "released-schema.tql");
         assert_eq!(
             config.staged_schema_authority_bytes().unwrap(),
             Some(original.as_slice())
@@ -2388,7 +2375,6 @@ certificate = "extension-metadata"
         assert_eq!(config.typedb.username, "admin");
         assert_eq!(config.typedb.password, "password");
         assert_eq!(config.typedb.server_version, None);
-        assert_eq!(config.schema.source_file, "");
         assert!(config.interceptors.enabled.is_empty());
         assert!(config.interceptors.audit_log.is_none());
         assert_eq!(config.logging.level, "info");
@@ -3258,26 +3244,6 @@ password = "hunter2"
         let config: ServerConfig = toml::from_str(toml).unwrap();
         assert_eq!(config.typedb.username, "superuser");
         assert_eq!(config.typedb.password, "hunter2");
-    }
-
-    #[test]
-    fn schema_section_default_when_missing() {
-        let config: ServerConfig = toml::from_str(MINIMAL_CONFIG).unwrap();
-        assert_eq!(config.schema.source_file, "");
-    }
-
-    #[test]
-    fn schema_section_with_file() {
-        let toml = r#"
-[server]
-[typedb]
-address = "localhost:1729"
-database = "db"
-[schema]
-source_file = "my_schema.tql"
-"#;
-        let config: ServerConfig = toml::from_str(toml).unwrap();
-        assert_eq!(config.schema.source_file, "my_schema.tql");
     }
 
     #[test]

@@ -66,7 +66,7 @@ artifact. Every generated package embeds the authority its proxy connection
 uses (`connect_proxy` in Python, `connectProxy` in TypeScript,
 `ProxyConnectionPolicy` in Rust, `type_bridge_proxy_connection_open_v1` in C);
 none reads the standalone artifact or constructs a low-level
-`QuerystagedAuthority`. Mount `generated/schema-authority.json` for this generic
+`QueryAuthority`. Mount `generated/schema-authority.json` for this generic
 server.
 
 The artifact uses the versioned `typebridge.schema-authority/v1` canonical JSON
@@ -97,10 +97,6 @@ http_port = 8000              # default; used for connect-time version probing
 server_version = "3.12.1"     # optional; skips HTTP probing for gRPC-only TypeDB
 tls = true
 tls-root-ca = "certs/root.pem" # optional; omit for native trust roots
-
-[schema]
-# Optional retained legacy validation source; not staged schema authority.
-source_file = "schema.tql"
 
 [interceptors]
 enabled = ["audit-log"]

@@ -13,7 +13,6 @@ fn documented_runtime_config_is_executable() {
     assert_eq!(config.server.host, "0.0.0.0");
     assert_eq!(config.server.port, 8080);
     assert_eq!(config.typedb.database(), "my_database");
-    assert_eq!(config.schema.source_file, "schema.tql");
     assert_eq!(config.interceptors.enabled, ["audit-log"]);
     assert!(config.staged.enabled);
     assert_eq!(config.staged.schema_authority_file, "schema-authority.json");

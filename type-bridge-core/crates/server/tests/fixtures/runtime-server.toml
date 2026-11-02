@@ -16,8 +16,6 @@ server_version = "3.12.1"
 tls = true
 tls-root-ca = "certs/root.pem"
 
-[schema]
-source_file = "schema.tql"
 
 [interceptors]
 enabled = ["audit-log"]

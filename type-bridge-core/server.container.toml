@@ -10,9 +10,6 @@ address = "localhost:1729"
 database = "typedb"
 http_port = 8000
 
-[schema]
-source_file = ""
-
 [interceptors]
 enabled = ["audit-log"]
 

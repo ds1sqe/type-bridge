@@ -16,8 +16,6 @@ pub mod error;
 pub mod interceptor;
 /// The transport-independent query execution pipeline.
 pub mod pipeline;
-/// Schema-loading interfaces and built-in sources.
-pub mod schema_source;
 
 #[cfg(feature = "axum-transport")]
 /// Axum HTTP request and response transports.
