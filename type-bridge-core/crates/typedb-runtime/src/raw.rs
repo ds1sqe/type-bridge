@@ -60,9 +60,16 @@ impl TypeDBRuntime {
         kind: TxType,
     ) -> Result<Vec<u8>, RawQueryError> {
         let mut transaction = self
-            .open_transaction(database, kind)
+            .open_transaction_preserving_error(
+                database,
+                kind,
+                &crate::TransactionOptions::default(),
+            )
             .await
-            .map_err(RawQueryError::runtime)?;
+            .map_err(|error| match error {
+                crate::TransactionOpenError::Runtime(error) => RawQueryError::runtime(error),
+                crate::TransactionOpenError::Driver(error) => RawQueryError::driver(error),
+            })?;
         let result = async {
             let answer = transaction.query_raw(query).await?;
             if kind != TxType::Read {

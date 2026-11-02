@@ -348,6 +348,18 @@ async fn raw_answers_match_typedb_http_and_host_refusal_writes_nothing() {
         );
     }
     direct.delete_database(&name).await.unwrap();
+    let missing = direct
+        .execute_raw(&name, "match $x isa entity;", TxType::Read)
+        .await
+        .unwrap_err();
+    assert_ne!(missing.code, "runtime_error");
+    let (status, missing_proxy) = raw(&router, "match $x isa entity;", "read").await;
+    assert!(status.is_client_error() || status.is_server_error());
+    let missing_proxy: Value = serde_json::from_slice(&missing_proxy).unwrap();
+    assert_eq!(
+        missing_proxy["typedb"],
+        json!({"code":missing.code,"message":missing.message})
+    );
     println!(
         "raw HTTP parity: 4 query kinds/shapes; refusal, audit, error-code passthrough; database {name}"
     );

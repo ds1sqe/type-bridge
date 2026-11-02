@@ -2246,6 +2246,11 @@ pub async fn delete_database_prepared_secure(
     finish_one_shot_database_operation(operation, close).map_err(SecureConnectError::Runtime)
 }
 
+enum TransactionOpenError {
+    Runtime(RuntimeError),
+    Driver(typedb_driver::Error),
+}
+
 impl TypeDBRuntime {
     /// Open a TypeDB transaction against `database`.
     pub fn open_transaction(
@@ -2284,11 +2289,30 @@ impl TypeDBRuntime {
         tx_type: TxType,
         options: &TransactionOptions,
     ) -> BoxFuture<'_, Result<RuntimeTransaction>> {
+        let work = self.open_transaction_preserving_error(database, tx_type, options);
+        Box::pin(async move {
+            work.await.map_err(|error| match error {
+                TransactionOpenError::Runtime(error) => error,
+                TransactionOpenError::Driver(error) => RuntimeError::Transaction(
+                    redact_provider_error(&error, "Failed to open transaction"),
+                ),
+            })
+        })
+    }
+
+    fn open_transaction_preserving_error(
+        &self,
+        database: &str,
+        tx_type: TxType,
+        options: &TransactionOptions,
+    ) -> BoxFuture<'_, std::result::Result<RuntimeTransaction, TransactionOpenError>> {
         let db = database.to_string();
         let options = *options;
         let driver_lease = Arc::clone(&self.driver);
         let work = async move {
-            driver_lease.ensure_open()?;
+            driver_lease
+                .ensure_open()
+                .map_err(TransactionOpenError::Runtime)?;
             match driver_lease.inner() {
                 #[cfg(feature = "band9")]
                 DriverHandleInner::B9(d) => {
@@ -2301,17 +2325,13 @@ impl TypeDBRuntime {
                     let transaction = d
                         .transaction_with_options(&db, typedb_tx_type, options)
                         .await
-                        .map_err(|e| {
-                            RuntimeError::Transaction(redact_provider_error(
-                                &e,
-                                "Failed to open transaction",
-                            ))
-                        })?;
+                        .map_err(TransactionOpenError::Driver)?;
                     retain_driver_transaction(
                         &driver_lease.state,
                         &driver_lease.active_transactions,
                         &driver_lease.close_lock,
-                    )?;
+                    )
+                    .map_err(TransactionOpenError::Runtime)?;
                     Ok(RuntimeTransaction {
                         inner: RuntimeTransactionInner::B9(Some(transaction)),
                         driver_lease: Some(driver_lease),
