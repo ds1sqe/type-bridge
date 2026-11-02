@@ -202,6 +202,8 @@ def test_repository_cargo_graph_is_complete_and_ordered() -> None:
     assert isinstance(dependency_order, dict)
     assert dependency_order["type-bridge-core-lib"] == ["type-bridge-contract"]
     assert dependency_order["type-bridge-migration"] == [
+        "type-bridge-schema",
+        "type-bridge-schema-compat",
         "type-bridge-contract",
         "type-bridge-core-lib",
         "type-bridge-orm",
