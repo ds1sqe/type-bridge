@@ -22,9 +22,26 @@ use crate::plan_builder_runtime::{NodePlan, NodePlanProgram};
 use crate::proxy_connection_runtime::settle;
 use crate::query_v2_runtime::non_shared_buffer;
 
-/// Parse the optional JavaScript transaction kind; omitted infers from writes.
-pub(crate) fn staged_options(kind: Option<&str>) -> napi::Result<TransactionOptions> {
-    let options = TransactionOptions::default();
+/// Parse transaction kind and shared deadline/phase policy without provider I/O.
+pub(crate) fn staged_options(
+    kind: Option<&str>,
+    timeout: Option<napi::bindgen_prelude::BigInt>,
+    collect: Option<bool>,
+) -> napi::Result<TransactionOptions> {
+    let mut options =
+        TransactionOptions::default().with_collect_phase_timestamps(collect.unwrap_or(false));
+    if let Some(timeout) = timeout {
+        let (milliseconds, lossless) = timeout.get_i64();
+        if !lossless {
+            return Err(napi::Error::new(
+                napi::Status::InvalidArg,
+                "timeoutMilliseconds must be a signed 64-bit bigint",
+            ));
+        }
+        options = options.with_timeout(type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+            milliseconds,
+        ));
+    }
     let kind = match kind {
         None => return Ok(options),
         Some("read") => TransactionKind::Read,
@@ -452,5 +469,38 @@ mod pending_diagnostic_redaction_tests {
         let surfaced = pending_error(&error);
         assert!(!surfaced.reason.contains("signed-server-secret"));
         assert!(surfaced.reason.contains("commit_outcome_unknown"));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use napi::bindgen_prelude::BigInt;
+
+    #[test]
+    fn staged_policy_defaults_and_signed_timeouts() {
+        let defaults = staged_options(None, None, None).unwrap();
+        assert_eq!(
+            defaults.timeout.unwrap_or_default().milliseconds(),
+            Some(60_000)
+        );
+        assert!(!defaults.collect_phase_timestamps);
+        for (input, expected) in [(0_i64, None), (-1, None), (86_400_001, Some(86_400_001))] {
+            let options =
+                staged_options(Some("write"), Some(BigInt::from(input)), Some(true)).unwrap();
+            assert_eq!(options.timeout.unwrap().milliseconds(), expected);
+            assert!(options.collect_phase_timestamps);
+        }
+        assert!(
+            staged_options(
+                None,
+                Some(BigInt {
+                    sign_bit: false,
+                    words: vec![u64::MAX]
+                }),
+                None
+            )
+            .is_err()
+        );
     }
 }

@@ -980,9 +980,14 @@ identity after admission.
 `collectPhaseTimestamps`) defaults to `false`. Set it to `true` to retain a
 full diagnostic phase timeline without a tracing subscriber. Rust
 transactions also expose `TransactionOptions::with_collect_phase_timestamps`.
-The C ABI retains its unsigned fields and existing transaction options until
-the ABI 2.0 migration. This is a diagnostic option, not another resource ceiling
-or deadline.
+Python's `Database.staged_transaction` accepts keyword `timeout_milliseconds`
+and `collect_phase_timestamps`. Node's `Database.stagedTransaction(kind, options)`
+accepts `timeoutMilliseconds` (a signed bigint) and `collectPhaseTimestamps`.
+Omitting these options preserves 60000 ms and collection off; zero or a negative
+timeout disables the deadline. The C ABI retains its existing unsigned fields
+and staged transaction defaults; its signed timeout, admission and timeline
+options are part of the ABI 2.0 migration.
+This is a diagnostic option, not another resource ceiling or deadline.
 
 The option survives policy intersection when either side enables it. Proxy
 requests carry it as an optional Boolean; omission means disabled. Timelines

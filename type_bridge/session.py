@@ -667,6 +667,8 @@ class Database:
         kind: Literal["read", "write", "schema"] | None = None,
         *,
         commit_on_exit: bool = True,
+        timeout_milliseconds: int | None = None,
+        collect_phase_timestamps: bool = False,
     ) -> StagedTransaction:
         """Create a staged transaction for typed plans.
 
@@ -677,11 +679,17 @@ class Database:
         discards on an exception, and closes; a commit whose outcome is
         unknown raises, and the caller reads the database. An omitted
         ``kind`` is inferred from the staged plans. ``transaction()`` keeps
-        its eager context.
+        its eager context. The timeout defaults to 60000 ms; zero or negative
+        disables it. Phase timestamp collection is off unless requested.
         """
         from type_bridge._native import core_database_for
 
-        return core_database_for(self).staged_transaction(kind, commit_on_exit=commit_on_exit)
+        return core_database_for(self).staged_transaction(
+            kind,
+            commit_on_exit=commit_on_exit,
+            timeout_milliseconds=timeout_milliseconds,
+            collect_phase_timestamps=collect_phase_timestamps,
+        )
 
     def execute_query(self, query: str, transaction_type: str = "read") -> list[dict[str, Any]]:
         """Execute a query and return results.

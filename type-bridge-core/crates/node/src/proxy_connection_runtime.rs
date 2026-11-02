@@ -142,7 +142,8 @@ impl NodeProxyConnection {
         kind: Option<String>,
         cancellation: Option<&NodeQueryCancellation>,
     ) -> napi::Result<Object<'static>> {
-        let options = crate::staged_transaction_runtime::staged_options(kind.as_deref())?;
+        let options =
+            crate::staged_transaction_runtime::staged_options(kind.as_deref(), None, None)?;
         let cancellation = cancellation
             .map(NodeQueryCancellation::inner)
             .unwrap_or_default();

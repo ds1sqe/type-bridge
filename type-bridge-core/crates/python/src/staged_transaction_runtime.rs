@@ -24,6 +24,31 @@ use type_bridge_orm::session::staged::{
     merge_plan_answers,
 };
 
+/// Shared transaction configuration; absent timeout inherits the connection.
+pub(crate) fn staged_options(
+    kind: Option<&str>,
+    timeout: Option<Bound<'_, PyAny>>,
+    collect: bool,
+) -> PyResult<type_bridge_orm::session::staged::TransactionOptions> {
+    let mut options = type_bridge_orm::session::staged::TransactionOptions::default()
+        .with_collect_phase_timestamps(collect);
+    if let Some(kind) = kind {
+        options = options.with_kind(parse_kind(kind)?);
+    }
+    if let Some(timeout) = timeout {
+        let milliseconds = timeout
+            .cast_exact::<pyo3::types::PyInt>()
+            .map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err("timeout_milliseconds must be an exact int")
+            })?
+            .extract::<i64>()?;
+        options = options.with_timeout(type_bridge_orm::QueryTimeout::from_signed_milliseconds(
+            milliseconds,
+        ));
+    }
+    Ok(options)
+}
+
 use crate::match_runtime::{
     PyQueryInvocationBudget, py_sdk_diagnostic, validated_invocation_handle,
 };
@@ -619,6 +644,38 @@ mod pending_diagnostic_redaction_tests {
                     .unwrap()
                     .to_string()
                     .contains("signed-server-secret")
+            );
+        });
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn staged_policy_defaults_and_signed_timeouts() {
+        Python::initialize();
+        Python::attach(|py| {
+            let defaults = staged_options(None, None, false).unwrap();
+            assert_eq!(
+                defaults.timeout.unwrap_or_default().milliseconds(),
+                Some(60_000)
+            );
+            assert!(!defaults.collect_phase_timestamps);
+            for (input, expected) in [(0_i64, None), (-1, None), (86_400_001, Some(86_400_001))] {
+                let value = input.into_pyobject(py).unwrap().into_any();
+                let options = staged_options(Some("write"), Some(value), true).unwrap();
+                assert_eq!(options.timeout.unwrap().milliseconds(), expected);
+                assert!(options.collect_phase_timestamps);
+            }
+            assert!(
+                staged_options(
+                    None,
+                    Some(true.into_pyobject(py).unwrap().to_owned().into_any()),
+                    false
+                )
+                .is_err()
             );
         });
     }

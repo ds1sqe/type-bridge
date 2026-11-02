@@ -3,6 +3,12 @@ import type { NativeAuthoredPlanResult, RuntimeProjectionMatchResult } from "./r
 import { type Plan } from "./plan.js";
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
+/** Per-commit configuration. Omission keeps the 60000 ms default and collection off. */
+export interface StagedTransactionOptions {
+    /** Zero or negative disables the execution deadline. */
+    readonly timeoutMilliseconds?: bigint;
+    readonly collectPhaseTimestamps?: boolean;
+}
 /** The answer a committed `query-plan/v3` program resolves to. */
 export type PlanAnswer = {
     readonly kind: "rows";

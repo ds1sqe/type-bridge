@@ -516,13 +516,20 @@ impl NodeRustDatabase {
 #[napi]
 impl NodeRustDatabase {
     /// Create a deferred staged transaction; nothing opens until commit.
-    /// An omitted kind is inferred from the staged writes.
+    /// An omitted kind is inferred from the staged writes. Timeout defaults to
+    /// 60000 ms; zero or negative disables it. Phase collection defaults off.
     #[napi(js_name = "stagedTransaction")]
     pub fn staged_transaction(
         &self,
         kind: Option<String>,
+        timeout_milliseconds: Option<napi::bindgen_prelude::BigInt>,
+        collect_phase_timestamps: Option<bool>,
     ) -> Result<staged_transaction_runtime::NodeStagedTransaction> {
-        let options = staged_transaction_runtime::staged_options(kind.as_deref())?;
+        let options = staged_transaction_runtime::staged_options(
+            kind.as_deref(),
+            timeout_milliseconds,
+            collect_phase_timestamps,
+        )?;
         Ok(staged_transaction_runtime::NodeStagedTransaction::new(
             self.db.transaction(options),
             Arc::clone(&self.runtime),

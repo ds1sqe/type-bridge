@@ -10,6 +10,13 @@ import { queryV2NativeCall, queryV2NativePromise } from "./query-v2-internals.js
 /** Provider transaction kind; an omitted kind is inferred from staged writes. */
 export type StagedTransactionKind = "read" | "write" | "schema";
 
+/** Per-commit configuration. Omission keeps the 60000 ms default and collection off. */
+export interface StagedTransactionOptions {
+  /** Zero or negative disables the execution deadline. */
+  readonly timeoutMilliseconds?: bigint;
+  readonly collectPhaseTimestamps?: boolean;
+}
+
 /** The answer a committed `query-plan/v3` program resolves to. */
 export type PlanAnswer =
   | { readonly kind: "rows"; readonly rows: readonly unknown[] }

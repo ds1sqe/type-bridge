@@ -588,6 +588,8 @@ class PyDatabase:
         kind: Literal["read", "write", "schema"] | None = None,
         *,
         commit_on_exit: bool = True,
+        timeout_milliseconds: int | None = None,
+        collect_phase_timestamps: bool = False,
     ) -> Transaction: ...
     def __getattr__(self, name: str) -> Any: ...
 

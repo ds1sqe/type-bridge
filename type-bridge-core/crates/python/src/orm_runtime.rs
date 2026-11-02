@@ -958,17 +958,21 @@ impl PyDatabase {
 
     /// Create a deferred staged transaction; nothing opens until commit.
     /// An omitted kind is inferred from the staged writes. The released
-    /// `transaction()` keeps its eager context.
-    #[pyo3(signature = (kind=None, *, commit_on_exit=true))]
+    /// `transaction()` keeps its eager context. Timeout defaults to 60000 ms;
+    /// zero or negative disables it. Phase collection defaults to false.
+    #[pyo3(signature = (kind=None, *, commit_on_exit=true, timeout_milliseconds=None, collect_phase_timestamps=false))]
     fn staged_transaction(
         &self,
         kind: Option<&str>,
         commit_on_exit: bool,
+        timeout_milliseconds: Option<Bound<'_, PyAny>>,
+        collect_phase_timestamps: bool,
     ) -> PyResult<crate::staged_transaction_runtime::PyStagedTransaction> {
-        let mut options = type_bridge_orm::session::staged::TransactionOptions::default();
-        if let Some(kind) = kind {
-            options = options.with_kind(crate::staged_transaction_runtime::parse_kind(kind)?);
-        }
+        let options = crate::staged_transaction_runtime::staged_options(
+            kind,
+            timeout_milliseconds,
+            collect_phase_timestamps,
+        )?;
         Ok(crate::staged_transaction_runtime::PyStagedTransaction::new(
             self.db.transaction(options),
             Arc::clone(&self.runtime),

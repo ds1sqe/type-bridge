@@ -152,7 +152,7 @@ export interface NativeRustDatabase {
     planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
     resetDatabase(): void;
     transaction(transactionType?: TransactionType): NativeRustTransactionContext;
-    stagedTransaction(kind?: string): NativeStagedTransaction;
+    stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
 }
 export interface NativeManagedDatabaseDeletionPlan {
     inspectedState(): ManagedDatabasePairState;
@@ -418,7 +418,7 @@ export declare class Database {
      * omitted kind is inferred from the staged writes. Stage plans from
      * `PlanBuilder`; TypeScript never commits implicitly.
      */
-    stagedTransaction(kind?: StagedTransactionKind): StagedTransaction;
+    stagedTransaction(kind?: StagedTransactionKind, options?: import("./staged-transaction.js").StagedTransactionOptions): StagedTransaction;
 }
 export declare class ManagedDatabaseDeletionPlan {
     #private;
@@ -441,7 +441,7 @@ export declare class TransactionContext {
     close(): void;
     transactionType(): TransactionType;
 }
-export { PendingPlanAnswer, PendingPlanAnswer as Pending, StagedTransaction, type PlanAnswer, type StagedTransactionKind, } from "./staged-transaction.js";
+export { PendingPlanAnswer, PendingPlanAnswer as Pending, StagedTransaction, type PlanAnswer, type StagedTransactionKind, type StagedTransactionOptions, } from "./staged-transaction.js";
 export { Plan, PlanBuilder, PlanCondition, PlanCondition as Condition, PlanExpr, PlanInput, PlanInputValue, PlanNewThing, PlanRecording, PlanTemplate, Handle, planFieldToken, planMatch, planInsert, planInsertMany, PlanThing, PlanValue, type PlanExplanation, type PlanFieldToken, type PlanLiteral, type PlanModelToken, type PlanOperand, type PlanRoleToken, type PlanValueType, Matched, type FieldToken, type PlanModelAuthoring, type PlanOptions, } from "./plan.js";
 /** Metadata from Rust plan execution; transported input values are omitted. */
 export interface DebugEvent {

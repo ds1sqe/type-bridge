@@ -4,6 +4,7 @@ import type { NativeStagedTransaction } from "./native.js";
 import {
   StagedTransaction,
   type StagedTransactionKind,
+  type StagedTransactionOptions,
 } from "./staged-transaction.js";
 import {
   queryV2AuthorityHandle,
@@ -224,7 +225,7 @@ export interface NativeRustDatabase {
   planDatabaseDeleteControlled(timeoutMilliseconds?: number | null, cancellation?: NativeMigrationCancellation | null): NativeManagedDatabaseDeletionPlan;
   resetDatabase(): void;
   transaction(transactionType?: TransactionType): NativeRustTransactionContext;
-  stagedTransaction(kind?: string): NativeStagedTransaction;
+  stagedTransaction(kind?: string, timeoutMilliseconds?: bigint, collectPhaseTimestamps?: boolean): NativeStagedTransaction;
 }
 
 export interface NativeManagedDatabaseDeletionPlan {
@@ -963,9 +964,9 @@ export class Database {
    * omitted kind is inferred from the staged writes. Stage plans from
    * `PlanBuilder`; TypeScript never commits implicitly.
    */
-  stagedTransaction(kind?: StagedTransactionKind): StagedTransaction {
+  stagedTransaction(kind?: StagedTransactionKind, options: import("./staged-transaction.js").StagedTransactionOptions = {}): StagedTransaction {
     return new StagedTransaction(
-      queryV2NativeCall(() => this.#native.stagedTransaction(kind)),
+      queryV2NativeCall(() => this.#native.stagedTransaction(kind, options.timeoutMilliseconds, options.collectPhaseTimestamps)),
     );
   }
 }
@@ -1101,6 +1102,7 @@ export {
   StagedTransaction,
   type PlanAnswer,
   type StagedTransactionKind,
+  type StagedTransactionOptions,
 } from "./staged-transaction.js";
 export {
   Plan,
