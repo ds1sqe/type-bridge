@@ -764,11 +764,6 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
     for operation in ["update", "controlled_update", "put", "delete_returning"] {
         for borrowed in [false, true] {
             let mut responses = Vec::new();
-            if operation == "put" {
-                responses.push(RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({
-                    "root0": {"kind": "thing", "iid": "0x20", "type_id": {"kind": "relation", "label": "collaboration"}}
-                })])));
-            }
             responses.push(documents(vec![document.clone()]));
             if operation == "delete_returning" {
                 responses.push(RecordingResponse::Result(QueryResult::Ok));
@@ -853,7 +848,7 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
                 "{operation} borrowed={borrowed}"
             );
             let state = state.lock().unwrap();
-            let calls = if matches!(operation, "put" | "delete_returning") {
+            let calls = if operation == "delete_returning" {
                 2
             } else {
                 1
@@ -864,7 +859,7 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
                 "{operation} borrowed={borrowed}"
             );
             let modes = match operation {
-                "put" => vec!["given", "canonical"],
+                "put" => vec!["given"],
                 "delete_returning" => vec!["given", "given"],
                 _ => vec!["canonical"],
             };

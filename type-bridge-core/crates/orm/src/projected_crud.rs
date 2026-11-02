@@ -30,7 +30,7 @@ use crate::plan_builders::ValueTransport;
 use crate::plan_builders::authority::PlanAuthority;
 use crate::plan_builders::insert::relation_insert;
 use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
-use crate::plan_builders::put::{KeyedPut, keyed_entity_put};
+use crate::plan_builders::put::{KeyedPut, RelationPut, keyed_entity_put, keyed_relation_put};
 use crate::plan_builders::reference::{Reference, ReferenceIdentity};
 use crate::plan_builders::write::{
     ThingUpdate, delete_by_iid, delete_by_iid_returning, entity_insert, update_by_iid,
@@ -963,7 +963,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             )
             .await?;
         let result = self
-            .put_relation_prepared(&transaction, &prepared, ExecutionMode::default())
+            .put_relation_prepared(&transaction, &prepared, input, ExecutionMode::default())
             .await;
         finish_owned_write(transaction, &prepared.type_id, result).await
     }
@@ -987,7 +987,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         let prepared = self.prepare_relation_create(input)?;
         require_role_player_database_identity(&prepared, transaction.execution_identity())?;
         require_transaction(transaction, TxType::Write, &prepared.type_id)?;
-        self.put_relation_prepared(transaction, &prepared, ExecutionMode::default())
+        self.put_relation_prepared(transaction, &prepared, input, ExecutionMode::default())
             .await
     }
 
@@ -2464,6 +2464,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             .put_relation_prepared(
                 transaction,
                 &prepared,
+                input,
                 ExecutionMode::compatibility(&capture),
             )
             .await;
@@ -3319,7 +3320,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         Ok(PreparedRelationCreate {
             type_id: prepared.type_id,
             descriptor: prepared.descriptor,
-            attributes: self.lower_create_fields(input)?,
             plan_write: self.lower_plan_write(input)?,
             role_players: self.lower_create_roles(input)?,
         })
@@ -3417,32 +3417,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             ));
         }
         Ok(model)
-    }
-
-    fn lower_create_fields(
-        &self,
-        input: &ProjectedCreate,
-    ) -> Result<DynamicAttributeMap, SdkExecutionDiagnostic> {
-        let model = self.model_integrity(input.type_id())?;
-        let mut attributes = Vec::new();
-        for (field_id, values) in input.fields() {
-            let token = model.query_tokens().fields().get(field_id).ok_or_else(|| {
-                integrity_at_field(
-                    "projected_field_token_missing",
-                    "The create facet refers to an absent projected ownership token",
-                    input.type_id(),
-                    field_id,
-                )
-            })?;
-            for value in values {
-                value.validate_for(self.installed)?;
-                attributes.push((
-                    token.id().attribute().label().as_str().to_owned(),
-                    value.to_attribute_value(),
-                ));
-            }
-        }
-        Ok(attributes)
     }
 
     /// A create as an insert or update plan input: the given non-key values
@@ -4165,40 +4139,63 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
         &self,
         transaction: &TransactionContext,
         prepared: &PreparedRelationCreate,
+        input: &ProjectedCreate,
         mode: ExecutionMode<'_>,
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         let authority = self
             .installed
             .plan_authority()
             .map_err(|error| plan_build_failure(&error, &prepared.type_id))?;
-        let manager = self
-            .relation_manager(
-                transaction,
-                Arc::clone(&prepared.descriptor),
-                &prepared.type_id,
-                mode,
-            )
-            .await?;
-        let existing = manager
-            .key_iid_exact(&prepared.attributes)
-            .await
-            .map_err(|error| {
-                mode.orm_at_type(error, SdkProviderOperation::Read, &prepared.type_id)
-            })?;
-        if let Some(iid) = existing {
-            self.update_relation_by_plan(
-                transaction,
-                &iid,
-                prepared,
-                &prepared.plan_write,
-                &authority,
-                mode,
-            )
-            .await
-        } else {
-            self.insert_relation_by_plan(transaction, prepared, &authority, mode)
-                .await
+        let Some(put) = self.lower_keyed_put(input)? else {
+            return self
+                .insert_relation_by_plan(transaction, prepared, &authority, mode)
+                .await;
+        };
+        let type_id = &prepared.type_id;
+        let resolved_path = has_polymorphic_or_relation_players(prepared);
+        if resolved_path {
+            reject_duplicate_references(prepared)?;
         }
+        let players = plan_references(prepared)?;
+        let plan = keyed_relation_put(
+            &authority,
+            plan_transport(transaction, type_id, mode).await?,
+            &KeyedPut {
+                include_subtypes: false,
+                return_document: true,
+                type_id,
+                keys: &put.keys,
+                fields: &put.fields,
+                cleared: &put.cleared,
+                attached: &put.attached,
+            },
+            RelationPut {
+                players: &players,
+                cleared_roles: &prepared.plan_write.cleared_roles,
+                document_roles: self.document_roles(prepared)?,
+            },
+        )
+        .map_err(|error| plan_build_failure(&error, type_id))?;
+        let documents = execute_write_rows(transaction, plan.local(), type_id, mode).await?;
+        if documents.is_empty() {
+            return Err(identity_cardinality(type_id));
+        }
+        let hydrate = || {
+            let iid = single_document_iid(&documents, type_id)?;
+            if resolved_path {
+                reject_resolved_duplicates(prepared, &documents)?;
+            }
+            let rows = coalesce_dynamic_relation_by_iid(&prepared.descriptor, &documents, &iid)
+                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Read, type_id))?;
+            self.hydrate_relation(
+                require_mutation_relation_row(rows, type_id)?,
+                type_id,
+                &iid,
+                transaction.execution_identity(),
+                mode,
+            )
+        };
+        after_write(transaction, hydrate()).await
     }
 
     async fn get_relation_prepared(
@@ -5265,7 +5262,6 @@ struct PreparedRelationIdentity {
 struct PreparedRelationCreate {
     type_id: TypeId,
     descriptor: Arc<RelationDescriptor>,
-    attributes: DynamicAttributeMap,
     /// The create as an update plan input.
     plan_write: PreparedPlanWrite,
     role_players: Vec<PreparedRolePlayerInput>,
