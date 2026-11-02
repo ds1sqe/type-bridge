@@ -4356,3 +4356,136 @@ async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live()
             .unwrap();
     }
 }
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn wide_relation_match_put_intersects_all_player_probe_chunks_live() {
+    use type_bridge_orm::_dynamic::DynamicRolePlayerInput;
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  probe-key: { value: string }\nentities:\n  probe-person:\n    owns:\n      probe-key: { key: true }\nrelations:\n  probe-relation:\n    relates:\n      member: { card: { min: 0 } }\nplays:\n  probe-person:\n    probe-relation: [member]\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("player-probes.yaml").unwrap(), yaml)]).unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute probe-key, value string; entity probe-person, owns probe-key @key, plays probe-relation:member; relation probe-relation, relates member @card(0..);", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let people = DynamicEntityManager::from_registry(
+        &database,
+        registry.clone(),
+        registry.entity("probe-person").unwrap(),
+    );
+    let iids = people
+        .insert_many(
+            &(0..101)
+                .map(|index| {
+                    vec![(
+                        "probe-key".into(),
+                        type_bridge_orm::AttributeValue::String(format!("player-{index}")),
+                    )]
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    // Each key reference consumes a player binding, a key binding and an input.
+    // One hundred players force two probes and grouped Boolean read patterns.
+    let players = (0..101)
+        .map(|index| DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: "probe-person".into(),
+            iid: None,
+            key: Some((
+                "probe-key".into(),
+                type_bridge_orm::AttributeValue::String(format!("player-{index}")),
+            )),
+        })
+        .collect::<Vec<_>>();
+    let descriptor = registry.relation("probe-relation").unwrap();
+    let raw = DynamicRelationManager::new(&database, descriptor.clone());
+    let full = players[..100].to_vec();
+    let mut near = full.clone();
+    near[99] = players[100].clone();
+    let expected_players = |values: &[DynamicRolePlayerInput]| {
+        values
+            .iter()
+            .map(|player| {
+                let Some((_, type_bridge_orm::AttributeValue::String(key))) = &player.key else {
+                    panic!("key reference");
+                };
+                let index: usize = key.strip_prefix("player-").unwrap().parse().unwrap();
+                iids[index].clone()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    for literal in [false, true] {
+        let hit = raw.insert(&vec![], &full).await.unwrap();
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager =
+            DynamicRelationManager::from_registry(&counted, registry.clone(), descriptor.clone());
+        let actual = manager
+            .put_many(&[(vec![], full.clone()), (vec![], near.clone())])
+            .await
+            .unwrap();
+        assert_eq!(
+            actual[0], hit,
+            "all probe chunks must agree before reusing a relation"
+        );
+        assert_ne!(actual[1], hit, "the last-player near miss must allocate");
+        assert_eq!(raw.count().await.unwrap(), 2);
+        for (iid, input) in actual.iter().zip([&full, &near]) {
+            let stored = raw.get_by_iid(iid).await.unwrap();
+            let stored = stored
+                .iter()
+                .flat_map(|row| {
+                    row.role_players
+                        .iter()
+                        .map(|player| player.player_iid.clone().unwrap())
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(stored, expected_players(input));
+        }
+        let observed = log.lock().unwrap();
+        let probes = observed
+            .statements
+            .iter()
+            .filter(|query| query.contains("select $root0;"))
+            .count();
+        assert_eq!(
+            probes, 4,
+            "two bounded player probes for each full-match row"
+        );
+        // Each row has two probes; a hit reads its IID, a miss fits one Insert.
+        assert_eq!(observed.statements.len(), 6);
+        assert_eq!(
+            observed
+                .statements
+                .iter()
+                .filter(|query| query.contains("insert"))
+                .count(),
+            1
+        );
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        drop(observed);
+        for iid in actual {
+            raw.delete_by_iid(&iid).await.unwrap();
+        }
+    }
+}
