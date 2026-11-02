@@ -1526,8 +1526,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             },
             &control,
         )?;
-        self.execute_controlled_single_delete(database, &batch, control)
-            .await
+        self.execute_controlled_delete(
+            controlled_update::WriteTarget::Database(database),
+            &batch,
+            control,
+        )
+        .await
     }
 
     /// Execute one policy-aware entity delete in a borrowed write transaction.
@@ -1569,8 +1573,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             },
             &control,
         )?;
-        self.execute_controlled_single_delete_in_transaction(transaction, &batch, control)
-            .await
+        self.execute_controlled_delete(
+            controlled_update::WriteTarget::Transaction(transaction),
+            &batch,
+            control,
+        )
+        .await
     }
 
     /// Execute one policy-aware relation insert in an owned write transaction.
@@ -1872,8 +1880,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             },
             &control,
         )?;
-        self.execute_controlled_single_delete(database, &batch, control)
-            .await
+        self.execute_controlled_delete(
+            controlled_update::WriteTarget::Database(database),
+            &batch,
+            control,
+        )
+        .await
     }
 
     /// Execute one policy-aware relation delete in a borrowed write transaction.
@@ -1915,8 +1927,12 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             },
             &control,
         )?;
-        self.execute_controlled_single_delete_in_transaction(transaction, &batch, control)
-            .await
+        self.execute_controlled_delete(
+            controlled_update::WriteTarget::Transaction(transaction),
+            &batch,
+            control,
+        )
+        .await
     }
 
     /// Execute one policy-aware entity IID read in an owned read transaction.
@@ -2784,44 +2800,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             rows,
             control,
         )
-    }
-
-    // Box only controlled execution so default single-CRUD futures stay small.
-
-    async fn execute_controlled_single_delete(
-        &self,
-        database: &Database,
-        batch: &ProjectedBatch,
-        control: ProjectedBatchInvocationControl,
-    ) -> Result<(), SdkExecutionDiagnostic> {
-        let model = batch.model().clone();
-        Box::pin(ProjectedBatchExecutor::new(self.installed).execute_mapped(
-            database,
-            batch,
-            control,
-            (),
-            move |result| single_batch_delete(result, &model),
-        ))
-        .await
-    }
-
-    async fn execute_controlled_single_delete_in_transaction(
-        &self,
-        transaction: &TransactionContext,
-        batch: &ProjectedBatch,
-        control: ProjectedBatchInvocationControl,
-    ) -> Result<(), SdkExecutionDiagnostic> {
-        let model = batch.model().clone();
-        Box::pin(
-            ProjectedBatchExecutor::new(self.installed).execute_in_transaction_mapped(
-                transaction,
-                batch,
-                control,
-                (),
-                move |result| single_batch_delete(result, &model),
-            ),
-        )
-        .await
     }
 
     async fn open_controlled_read_transaction(
@@ -5104,16 +5082,6 @@ fn single_batch_optional_thing(
     }
 }
 
-fn single_batch_delete(
-    result: ProjectedBatchResult,
-    type_id: &TypeId,
-) -> Result<(), SdkExecutionDiagnostic> {
-    match result {
-        ProjectedBatchResult::Deleted => Ok(()),
-        ProjectedBatchResult::Things(_) => Err(single_batch_result_invalid(type_id)),
-    }
-}
-
 fn single_batch_result_invalid(type_id: &TypeId) -> SdkExecutionDiagnostic {
     integrity_at_type(
         "projected_crud_batch_result_invalid",
@@ -6939,12 +6907,16 @@ plays:
         let diagnostic = control.check(&type_id).unwrap_err();
         assert_eq!(diagnostic.code().as_str(), "provider_cancelled");
         assert_eq!(
-            single_batch_delete(ProjectedBatchResult::Things(Vec::new()), &type_id)
+            single_batch_optional_thing(ProjectedBatchResult::Deleted, &type_id)
                 .unwrap_err()
                 .code()
                 .as_str(),
             "projected_crud_batch_result_invalid"
         );
-        assert!(single_batch_delete(ProjectedBatchResult::Deleted, &type_id).is_ok());
+        assert!(
+            single_batch_optional_thing(ProjectedBatchResult::Things(Vec::new()), &type_id)
+                .unwrap()
+                .is_none()
+        );
     }
 }

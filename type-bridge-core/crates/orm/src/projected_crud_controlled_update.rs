@@ -410,7 +410,148 @@ impl ProjectedCrudExecutor<'_> {
     }
 }
 
-impl ProjectedCrudExecutor<'_> {}
+impl ProjectedCrudExecutor<'_> {
+    pub(super) async fn execute_controlled_delete(
+        &self,
+        target: WriteTarget<'_>,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        let ceiling = match target {
+            WriteTarget::Database(database) => database.answer_limits(),
+            WriteTarget::Transaction(transaction) => transaction.answer_limits(),
+        };
+        let prepared = PreparedProjectedBatchInvocation::try_new(
+            self.installed,
+            batch,
+            control.constrained_by(ceiling),
+        )?;
+        if let WriteTarget::Transaction(transaction) = target
+            && transaction.tx_type() != TxType::Write
+        {
+            return Err(crate::projected_batch_executor::invalid_at_type(
+                "transaction_type_mismatch",
+                "Projected batch execution requires a borrowed write transaction",
+                batch.model(),
+            ));
+        }
+        crate::projected_batch_executor::require_native_provider(match target {
+            WriteTarget::Database(database) => database.server_version(),
+            WriteTarget::Transaction(transaction) => transaction.server_version(),
+        })?;
+        prepared.check_control()?;
+        let Some((_, ProjectedBatchRow::Delete { iid })) = batch.row_at(0) else {
+            return Err(single_batch_result_invalid(batch.model()));
+        };
+        let plans = ManagerPlans::new(
+            self.installed
+                .manager_registry()
+                .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, batch.model()))?,
+        );
+        let plan = plans
+            .delete(batch.model().label().as_str(), iid, true, false)
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, batch.model()))?;
+        let query = crate::query_plan_exec::staged_query(plan.local(), true)
+            .map_err(|error| plan_build_failure(&error, batch.model()))?;
+        let mut ledger = ExecutionLedger::new(prepared.limits(), batch.resource_measure().bytes());
+        ledger.charge_preflight(u64::try_from(query.typeql.len()).unwrap_or(u64::MAX), 1)?;
+        prepared.check_control()?;
+        match target {
+            WriteTarget::Database(database) => {
+                let transaction = await_crud_controlled(
+                    database.transaction_context(TxType::Write),
+                    prepared.deadline(),
+                    prepared.cancellation(),
+                )
+                .await
+                .map_err(|error| {
+                    controlled_crud_orm(
+                        error,
+                        SdkProviderOperation::OpenWriteTransaction,
+                        batch.model(),
+                    )
+                })?;
+                let result = self
+                    .run_controlled_delete(&transaction, &prepared, &plan, query, &mut ledger)
+                    .await;
+                match result.and_then(|()| prepared.check_control()) {
+                    Ok(()) => transaction.commit_sdk().await.map_err(|error| {
+                        append_path(
+                            error,
+                            [SdkDiagnosticPathSegment::Type(batch.model().clone())],
+                        )
+                    }),
+                    Err(primary) => {
+                        let _ = transaction.rollback().await;
+                        Err(primary)
+                    }
+                }
+            }
+            WriteTarget::Transaction(transaction) => {
+                self.run_controlled_delete(transaction, &prepared, &plan, query, &mut ledger)
+                    .await
+            }
+        }
+    }
+
+    async fn run_controlled_delete(
+        &self,
+        transaction: &TransactionContext,
+        prepared: &PreparedProjectedBatchInvocation<'_>,
+        plan: &BuiltPlan,
+        query: crate::session::staged::StagedQuery,
+        ledger: &mut ExecutionLedger,
+    ) -> Result<(), SdkExecutionDiagnostic> {
+        let type_id = prepared.batch().model();
+        let mut lease = await_crud_controlled(
+            transaction.acquire_mutation_lease(),
+            prepared.deadline(),
+            prepared.cancellation(),
+        )
+        .await
+        .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Write, type_id))?;
+        lease
+            .check_plan_provider(plan.local())
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+        let result = async {
+            prepared.check_control()?;
+            let mut policy = prepared.limits();
+            policy.items = ledger.remaining_items();
+            policy.bytes = ledger.remaining_bytes();
+            let limits = crate::query_plan_exec::plan_answer_limits(
+                policy,
+                prepared.cancellation(),
+                prepared.deadline(),
+            )
+            .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+            let (answer, stats) = await_crud_controlled(
+                lease.dispatch_plan_counted(query, limits, Some(plan.local())),
+                prepared.deadline(),
+                prepared.cancellation(),
+            )
+            .await
+            .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Write, type_id))?;
+            ledger.record_reply(stats)?;
+            let answer = TransactionContext::resolve_plan(plan.local(), answer)
+                .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+            if !matches!(answer, PlanAnswer::Matched(0 | 1)) {
+                return Err(single_batch_result_invalid(type_id));
+            }
+            prepared.check_control()
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                lease.complete_success();
+                Ok(())
+            }
+            Err(error) => {
+                lease.record_failure(&error);
+                Err(error)
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
