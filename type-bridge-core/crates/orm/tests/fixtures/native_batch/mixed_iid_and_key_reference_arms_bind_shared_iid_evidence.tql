@@ -1,0 +1,12 @@
+given $ordinal_input: integer, $field_0_0: string?, $player_0_0: string?, $player_1_0: string?; match try { $optional_player3 isa! person; 
+ iid($optional_player3) == $player_0_0; 
+}; { not { $player_0_0 == $player_0_0; 
+}; } or { $guard2 isa! person; iid($guard2) == $player_0_0; }; try { $optional_player6 isa! person; 
+ $optional_player6 has identifier $key7; 
+ $key7 isa! identifier; 
+ $key7 == $player_1_0; 
+}; { not { $player_1_0 == $player_1_0; 
+}; } or { $guard4 isa! person; $guard4 has identifier $key5; $key5 isa! identifier; $key5 == $player_1_0; }; let $ordinal1 = $ordinal_input; insert $root0 isa membership; insert try { $root0 has identifier == $field_0_0; 
+}; try { $root0 links (member: $optional_player3); 
+}; try { $root0 links (member: $optional_player6); 
+}; select $root0, $ordinal1; distinct; match $root0 isa! $PlanFetchType; fetch { "_iid": iid($root0), "_type": label($PlanFetchType), "attributes": {  $root0.*}, "ordinal": $ordinal1, "_role_0_players": [ match $root0 links (member: $PlanFetchRole0); $PlanFetchRole0 isa! $PlanFetchRole0Type;fetch { "_iid": iid($PlanFetchRole0), "_type": label($PlanFetchRole0Type), "attributes": {  $PlanFetchRole0.*}};]};

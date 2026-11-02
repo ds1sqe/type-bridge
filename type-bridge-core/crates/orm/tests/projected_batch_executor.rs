@@ -998,6 +998,12 @@ async fn entity_insert_is_one_call_and_correlates_shuffled_documents_by_ordinal(
             ["0x10", "0x11"]
         );
         let state = state.lock().unwrap();
+        assert_eq!(
+            state.calls[0].0,
+            include_str!(
+                "fixtures/native_batch/entity_insert_is_one_call_and_correlates_shuffled_documents_by_ordinal.tql"
+            )
+        );
         assert_eq!(state.calls.len(), 1);
         assert_eq!(state.calls[0].1.rows.len(), 2);
         assert!(state.calls[0].0.contains("insert $root0 isa person;"));
@@ -1051,6 +1057,12 @@ async fn put_uses_one_multirow_key_pattern_and_preserves_hit_identity() {
         ["0x10", "0x11"]
     );
     let state = state.lock().unwrap();
+    assert_eq!(
+        state.calls[0].0,
+        include_str!(
+            "fixtures/native_batch/put_uses_one_multirow_key_pattern_and_preserves_hit_identity.tql"
+        )
+    );
     assert_eq!(state.calls.len(), 1);
     assert_eq!(state.calls[0].1.rows.len(), 2);
     assert_eq!(
@@ -1152,7 +1164,10 @@ async fn empty_ordered_only_model_batches_insert_and_update_without_empty_write_
 
 #[tokio::test]
 async fn relation_insert_resolves_players_and_creates_exact_type_before_links() {
-    for installed in [installed(), installed_with_ordered_role()] {
+    for (variant, installed) in [installed(), installed_with_ordered_role()]
+        .into_iter()
+        .enumerate()
+    {
         let membership = type_id(TypeKind::Relation, "membership");
         let batch = ProjectedBatch::try_new(
             &installed,
@@ -1179,6 +1194,17 @@ async fn relation_insert_resolves_players_and_creates_exact_type_before_links() 
             .await
             .unwrap();
         let state = state.lock().unwrap();
+        assert_eq!(
+            state.calls[0].0,
+            [
+                include_str!(
+                    "fixtures/native_batch/relation_insert_resolves_players_and_creates_exact_type_before_links.tql"
+                ),
+                include_str!(
+                    "fixtures/native_batch/relation_insert_resolves_players_and_creates_exact_type_before_links_ordered_role.tql"
+                )
+            ][variant]
+        );
         assert_eq!(state.calls.len(), 1);
         let (source, rows) = &state.calls[0];
         assert!(rows.rows.iter().flatten().any(|value| matches!(value, type_bridge_orm::session::backend::GivenValue::String(iid) if iid == "0xab")));
@@ -1224,6 +1250,12 @@ async fn key_reference_uses_its_selected_key_and_scoped_roles_are_validated() {
         .unwrap();
     {
         let state = state.lock().unwrap();
+        assert_eq!(
+            state.calls[0].0,
+            include_str!(
+                "fixtures/native_batch/key_reference_uses_its_selected_key_and_scoped_roles_are_validated.tql"
+            )
+        );
         let key_column = state.calls[0]
             .1
             .variables
@@ -1293,6 +1325,12 @@ async fn mixed_iid_and_key_reference_arms_bind_shared_iid_evidence() {
         .unwrap();
 
     let state = state.lock().unwrap();
+    assert_eq!(
+        state.calls[0].0,
+        include_str!(
+            "fixtures/native_batch/mixed_iid_and_key_reference_arms_bind_shared_iid_evidence.tql"
+        )
+    );
     assert_eq!(state.calls.len(), 1);
     let source = &state.calls[0].0;
     assert!(source.contains("iid(") && source.contains("has identifier"));
@@ -1340,6 +1378,12 @@ async fn mixed_relation_put_is_one_call_and_keeps_key_hit_identity() {
         ["0x30", "0x31"]
     );
     let state = state.lock().unwrap();
+    assert_eq!(
+        state.calls[0].0,
+        include_str!(
+            "fixtures/native_batch/mixed_relation_put_is_one_call_and_keeps_key_hit_identity.tql"
+        )
+    );
     assert_eq!(state.calls.len(), 1);
     assert_eq!(state.calls[0].1.rows.len(), 2);
     let source = &state.calls[0].0;
@@ -1378,6 +1422,12 @@ async fn relation_update_is_one_call_and_clears_keys_and_roles() {
         .await
         .unwrap();
     let state = state.lock().unwrap();
+    assert_eq!(
+        state.calls[0].0,
+        include_str!(
+            "fixtures/native_batch/relation_update_is_one_call_and_clears_keys_and_roles.tql"
+        )
+    );
     assert_eq!(state.calls.len(), 1);
     let source = &state.calls[0].0;
     assert!(source.contains("has $PlanHas") && source.contains("of $root0;"));
@@ -1598,6 +1648,12 @@ async fn update_is_one_call_clears_keys_and_rejects_a_changed_target_iid() {
         .unwrap();
     {
         let state = state.lock().unwrap();
+        assert_eq!(
+            state.calls[0].0,
+            include_str!(
+                "fixtures/native_batch/update_is_one_call_clears_keys_and_rejects_a_changed_target_iid.tql"
+            )
+        );
         assert_eq!(state.calls.len(), 1);
         assert!(matches!(
             &state.calls[0].1.rows[0][1],

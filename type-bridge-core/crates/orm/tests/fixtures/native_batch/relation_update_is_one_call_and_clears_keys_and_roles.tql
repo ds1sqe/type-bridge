@@ -1,0 +1,5 @@
+given $ordinal_input: integer, $target_iid: string, $field_0_0: string?, $player_0_0: string; match $root0 isa! membership; iid($root0) == $target_iid; { $player2 isa! person; iid($player2) == $player_0_0; }; let $ordinal1 = $ordinal_input; match try { $root0 has identifier $PlanHas1x0; 
+ $PlanHas1x0 isa! identifier; 
+}; try { $root0 links (member: $PlanPlayers1x1); 
+}; delete try { has $PlanHas1x0 of $root0; }; try { links (member: $PlanPlayers1x1) of $root0; }; insert try { $root0 has identifier == $field_0_0; 
+}; $root0 links (member: $player2); select $root0, $ordinal1; distinct; match $root0 isa! $PlanFetchType; fetch { "_iid": iid($root0), "_type": label($PlanFetchType), "attributes": {  $root0.*}, "ordinal": $ordinal1, "_role_0_players": [ match $root0 links (member: $PlanFetchRole0); $PlanFetchRole0 isa! $PlanFetchRole0Type;fetch { "_iid": iid($PlanFetchRole0), "_type": label($PlanFetchRole0Type), "attributes": {  $PlanFetchRole0.*}};]};

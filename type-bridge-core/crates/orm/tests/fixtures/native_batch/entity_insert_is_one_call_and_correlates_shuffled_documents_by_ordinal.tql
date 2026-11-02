@@ -1,0 +1,2 @@
+given $ordinal_input: integer, $field_0_0: string?; match let $ordinal1 = $ordinal_input; insert $root0 isa person; insert try { $root0 has identifier == $field_0_0; 
+}; select $root0, $ordinal1; distinct; match $root0 isa! $PlanFetchType; fetch { "_iid": iid($root0), "_type": label($PlanFetchType), "attributes": {  $root0.*}, "ordinal": $ordinal1};

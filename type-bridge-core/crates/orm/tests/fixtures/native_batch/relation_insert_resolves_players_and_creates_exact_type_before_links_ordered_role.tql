@@ -1,0 +1,4 @@
+given $ordinal_input: integer, $field_0_0: string?, $player_0_0: string; match { $player2 isa! person; iid($player2) == $player_0_0; }; let $ordinal1 = $ordinal_input; insert $root0 isa membership; insert try { $root0 has identifier == $field_0_0; 
+}; $root0 links (member: $player2); select $root0, $ordinal1; distinct; match $root0 isa! $PlanFetchType; try { $root0 links (participant: $PlanFetchRole1); 
+ $PlanFetchRole1 isa! $PlanFetchRole1Type; 
+}; fetch { "_iid": iid($root0), "_type": label($PlanFetchType), "attributes": {  $root0.*}, "ordinal": $ordinal1, "_role_0_players": [ match $root0 links (member: $PlanFetchRole0); $PlanFetchRole0 isa! $PlanFetchRole0Type;fetch { "_iid": iid($PlanFetchRole0), "_type": label($PlanFetchRole0Type), "attributes": {  $PlanFetchRole0.*}};], "_role_1_iid": iid($PlanFetchRole1), "_role_1_type": label($PlanFetchRole1Type), "_role_1_attributes": {  $PlanFetchRole1.*}};
