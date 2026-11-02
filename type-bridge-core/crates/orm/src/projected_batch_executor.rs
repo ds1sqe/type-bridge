@@ -3262,7 +3262,7 @@ pub(crate) fn integrity_at_row(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn integrity_at_reference(
+pub(crate) fn integrity_at_reference(
     code_value: &'static str,
     message_value: &'static str,
     relation_type: &TypeId,

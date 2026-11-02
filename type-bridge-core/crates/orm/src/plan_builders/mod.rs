@@ -528,6 +528,7 @@ mod tests {
             WriteKind::Put,
             WriteKind::Update,
             WriteKind::PartialPut,
+            WriteKind::PartialUpdate,
         ] {
             for missing in [false, true] {
                 let mut program = write_many(
@@ -575,15 +576,39 @@ mod tests {
                     vec![]
                 } else {
                     vec![
-                        serde_json::json!({names[0]:RemoteValue::Value { value: CanonicalValue::Long(0) }, names[1]:RemoteValue::Thing { iid: "0x02".into(), type_id: account[0].clone() }}),
+                        serde_json::json!({names[0]:RemoteValue::Value { value: CanonicalValue::Long(1) }, names[1]:RemoteValue::Thing { iid: "0xffff".into(), type_id: account[0].clone() }}),
                     ]
                 });
-                let identity = guard.identity(&answer).unwrap();
-                let result = program.accept_identity(&guard, identity);
+                assert!(!guard.missing_iid_noop);
+                let identities = guard.reference_iids(&answer).unwrap();
+                let result = guard
+                    .reference_resolution
+                    .as_ref()
+                    .unwrap()
+                    .guard
+                    .as_ref()
+                    .unwrap()
+                    .validate(&identities, |_, _| None);
                 if missing {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code().as_str(), "projected_batch_reference_missing");
                     assert_eq!(
-                        result.unwrap_err().code().as_str(),
-                        "provider_identity_mismatch"
+                        error.category(),
+                        type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Integrity
+                    );
+                    use type_bridge_contract::sdk_diagnostic::{
+                        SdkDiagnosticName, SdkDiagnosticPathSegment as Path,
+                    };
+                    assert_eq!(
+                        error.path(),
+                        &[
+                            Path::Argument(SdkDiagnosticName::new("rows").unwrap()),
+                            Path::Index(0),
+                            Path::Type(purchase.clone()),
+                            Path::Role(role.clone()),
+                            Path::Index(1),
+                            Path::Type(account[0].clone())
+                        ]
                     );
                 } else {
                     result.unwrap();

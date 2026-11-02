@@ -2128,7 +2128,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
         for fail in [false, true] {
             let value = format!("dynamic-role-{literal}-{fail}");
             *log.lock().unwrap() = DispatchLog {
-                fail_at: fail.then_some(4),
+                fail_at: fail.then_some(3),
                 ..Default::default()
             };
             let result = dynamic_relation
@@ -2139,7 +2139,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                 .await;
             {
                 let observed = log.lock().unwrap();
-                assert_eq!(observed.statements.len(), 4);
+                assert_eq!(observed.statements.len(), 3);
                 assert_eq!(observed.opened, [TxType::Write]);
                 assert_eq!(
                     (observed.commits, observed.rollbacks),
@@ -2174,7 +2174,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                 let value = format!("projected-{literal}-{relation}-{fail}");
                 let input = wide_input(relation, &value);
                 *log.lock().unwrap() = DispatchLog {
-                    fail_at: fail.then_some(if relation { 4 } else { 2 }),
+                    fail_at: fail.then_some(if relation { 3 } else { 2 }),
                     ..Default::default()
                 };
                 let batch = ProjectedBatch::try_new(
@@ -2193,7 +2193,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                     .await;
                 assert_eq!(
                     log.lock().unwrap().statements.len(),
-                    if relation { 4 } else { 2 }
+                    if relation { 3 } else { 2 }
                 );
                 assert_eq!(log.lock().unwrap().opened, [TxType::Write]);
                 if fail {
@@ -2243,7 +2243,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                     let value = format!("controlled-put-{literal}-{relation}-{borrowed}-{fail}");
                     let input = wide_input(relation, &value);
                     *log.lock().unwrap() = DispatchLog {
-                        fail_at: fail.then_some(if relation { 4 } else { 2 }),
+                        fail_at: fail.then_some(if relation { 3 } else { 2 }),
                         ..Default::default()
                     };
                     let result = if borrowed {
@@ -2293,7 +2293,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                         let observed = log.lock().unwrap();
                         assert_eq!(
                             observed.statements.len(),
-                            if relation { 4 } else { 2 },
+                            if relation { 3 } else { 2 },
                             "controlled Put relation={relation} borrowed={borrowed} fail={fail}"
                         );
                         assert_eq!(observed.opened, [TxType::Write]);
@@ -2368,7 +2368,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                             .unwrap();
                             assert_eq!(repeated.iid(), thing.iid());
                             let observed = log.lock().unwrap();
-                            assert_eq!(observed.statements.len(), if relation { 4 } else { 2 });
+                            assert_eq!(observed.statements.len(), if relation { 3 } else { 2 });
                             assert_eq!(observed.opened, [TxType::Write]);
                             assert_eq!((observed.commits, observed.rollbacks), (1, 0));
                         }
@@ -3837,6 +3837,32 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
             key: None,
         })
         .to_vec();
+    let relation_type = TypeId::new(TypeKind::Relation, "guard-relation").unwrap();
+    let person_type = TypeId::new(TypeKind::Entity, "guard-person").unwrap();
+    let role = RoleId::new("guard-relation", "member").unwrap();
+    let tag = AttributeId::new("guard-tag").unwrap();
+    let assert_missing =
+        |diagnostic: &type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic| {
+            use type_bridge_contract::sdk_diagnostic::{
+                SdkDiagnosticCategory, SdkDiagnosticName, SdkDiagnosticPathSegment as Path,
+            };
+            assert_eq!(
+                diagnostic.code().as_str(),
+                "projected_batch_reference_missing"
+            );
+            assert_eq!(diagnostic.category(), SdkDiagnosticCategory::Integrity);
+            assert_eq!(
+                diagnostic.path(),
+                &[
+                    Path::Argument(SdkDiagnosticName::new("rows").unwrap()),
+                    Path::Index(0),
+                    Path::Type(relation_type.clone()),
+                    Path::Role(role.clone()),
+                    Path::Index(1),
+                    Path::Type(person_type.clone())
+                ]
+            );
+        };
     for literal in [false, true] {
         let (counted, log) = counted_connection(&database, literal).await;
         let manager =
@@ -3853,12 +3879,49 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
                 "wide missing-player literal={literal} operation={operation}: result={result:?}, committed_count={}",
                 raw.count().await.unwrap()
             );
-            assert!(result.is_err());
+            let error = result.unwrap_err();
+            let type_bridge_orm::OrmError::ExecutionDiagnostic(diagnostic) = error else {
+                panic!("guard miss must retain its execution diagnostic");
+            };
+            assert_missing(&diagnostic);
             assert_eq!(raw.count().await.unwrap(), 0);
             let observed = log.lock().unwrap();
             assert_eq!(observed.opened, [TxType::Write]);
             assert_eq!((observed.commits, observed.rollbacks), (0, 1));
         }
+        let create = ProjectedCreate::try_new(
+            &installed,
+            relation_type.clone(),
+            vec![(
+                field(&relation_type, &tag),
+                (0..300)
+                    .map(|index| string_scalar(&installed, &tag, &format!("tag-{index:04}")))
+                    .collect(),
+            )],
+            vec![(
+                role.clone(),
+                vec![
+                    reference(&installed, &person_type, &iid),
+                    reference(&installed, &person_type, "0xffff"),
+                ],
+            )],
+        )
+        .unwrap();
+        let batch = ProjectedBatch::try_new(
+            &installed,
+            relation_type.clone(),
+            ProjectedBatchOperation::Insert,
+            vec![ProjectedBatchRow::Create(create)],
+        )
+        .unwrap();
+        *log.lock().unwrap() = DispatchLog::default();
+        let failure = ProjectedBatchExecutor::new(&installed)
+            .execute(&counted, &batch, control())
+            .await
+            .unwrap_err();
+        assert_missing(&failure);
+        assert_eq!(raw.count().await.unwrap(), 0);
+        assert_eq!(log.lock().unwrap().statements.len(), 1);
         *log.lock().unwrap() = DispatchLog::default();
         let target = manager
             .insert_many(&[(fields.clone(), valid_players.clone())])
@@ -3878,12 +3941,14 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
         assert_eq!(raw.get_by_iid(&target).await.unwrap(), before);
         // Force the update into pieces as well, retaining every old tag/player.
         *log.lock().unwrap() = DispatchLog::default();
-        assert!(
-            manager
-                .update_many_and_get_exact(&[(target.clone(), fields.clone(), players.clone())])
-                .await
-                .is_err()
-        );
+        let failure = manager
+            .update_many_and_get_exact(&[(target.clone(), fields.clone(), players.clone())])
+            .await
+            .unwrap_err();
+        let OrmError::ExecutionDiagnostic(diagnostic) = failure else {
+            panic!("wide update retains reference diagnostic");
+        };
+        assert_missing(&diagnostic);
         assert_eq!(raw.get_by_iid(&target).await.unwrap(), before);
         {
             let observed = log.lock().unwrap();

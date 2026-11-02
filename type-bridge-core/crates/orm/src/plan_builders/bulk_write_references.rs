@@ -3,6 +3,154 @@ use super::*;
 
 pub(crate) struct ResolutionStep {
     pub(crate) ordinals: Vec<usize>,
+    pub(crate) guard: Option<GuardContext>,
+}
+
+pub(crate) struct GuardContext {
+    relation: TypeId,
+    row: usize,
+    references: Vec<(usize, RoleId, usize, TypeId, Option<String>)>,
+}
+impl GuardContext {
+    pub(crate) fn validate(
+        &self,
+        answers: &[(usize, String)],
+        requested_type: impl FnOnce(&RoleId, usize) -> Option<TypeId>,
+    ) -> Result<(), type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic> {
+        use crate::projected_batch_executor::{integrity_at_reference, integrity_at_row};
+        let malformed = || {
+            integrity_at_row(
+                "provider_identity_mismatch",
+                "Reference guard returned repeated or foreign identity evidence",
+                &self.relation,
+                self.row,
+            )
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        for (ordinal, iid) in answers {
+            let index = self
+                .references
+                .binary_search_by_key(ordinal, |reference| reference.0)
+                .map_err(|_| malformed())?;
+            let reference = &self.references[index];
+            if !seen.insert(*ordinal)
+                || reference
+                    .4
+                    .as_ref()
+                    .is_some_and(|expected| !expected.eq_ignore_ascii_case(iid))
+            {
+                return Err(malformed());
+            }
+        }
+        if let Some((_, role, reference, player, _)) = self
+            .references
+            .iter()
+            .find(|reference| !seen.contains(&reference.0))
+        {
+            return Err(integrity_at_reference(
+                "projected_batch_reference_missing",
+                "A projected role-player reference did not resolve exactly once",
+                &self.relation,
+                role,
+                self.row,
+                *reference,
+                &requested_type(role, *reference).unwrap_or_else(|| player.clone()),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn guards(
+    authority: &PlanAuthority,
+    relation: &TypeId,
+    players: &[Player],
+    row: usize,
+) -> Result<Vec<WriteStep>, Diagnostic> {
+    let mut routes: Vec<(LookupRoute, Vec<InputRow>)> = Vec::new();
+    let mut references = Vec::new();
+    let mut indices = BTreeMap::<RoleId, usize>::new();
+    for (ordinal, player) in players.iter().enumerate() {
+        let reference = indices.entry(player.role.clone()).or_default();
+        let index = *reference;
+        *reference += 1;
+        // The seed proves its first player atomically; the rest must exist before writes.
+        if ordinal == 0 {
+            continue;
+        }
+        let value = if let Some(iid) = &player.iid {
+            super::iid(iid)?
+        } else {
+            player.key.as_ref().ok_or_else(identity_error)?.1.clone()
+        };
+        let route = LookupRoute {
+            candidates: player.candidates.clone(),
+            key: player.key.as_ref().map(|(key, _)| key.clone()),
+        };
+        // Preserve first-missing-reference precedence across different routes.
+        if routes.last().is_none_or(|(previous, _)| previous != &route) {
+            routes.push((route, Vec::new()));
+        }
+        routes
+            .last_mut()
+            .expect("route added")
+            .1
+            .push(InputRow::new(vec![
+                Some(CanonicalValue::Long(
+                    i64::try_from(ordinal).map_err(|_| identity_error())?,
+                )),
+                Some(value),
+            ]));
+        references.push((
+            ordinal,
+            player.role.clone(),
+            index,
+            player
+                .candidates
+                .first()
+                .ok_or_else(identity_error)?
+                .clone(),
+            player.iid.clone(),
+        ));
+    }
+    let mut guards = Vec::new();
+    for (route, rows) in routes {
+        let chunks = crate::plan_builders::input::chunks(rows, 0, crate::plan_builders::input::canonical_upper_bound, |row| usize::try_from(crate::projected_batch_executor::given_rows_bytes(row)?).map_err(|_| type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()), |_, _| false).map_err(|error| invalid(error.code().as_str(), error.message().as_str()))?;
+        for rows in chunks {
+            let ordinals = rows
+                .iter()
+                .map(|row| match row.values()[0].as_ref() {
+                    Some(CanonicalValue::Long(ordinal)) => {
+                        usize::try_from(*ordinal).map_err(|_| identity_error())
+                    }
+                    _ => Err(identity_error()),
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let selected = references
+                .iter()
+                .filter(|reference| ordinals.binary_search(&reference.0).is_ok())
+                .cloned()
+                .collect();
+            guards.push(WriteStep {
+                plan: lookup(authority, &route, rows)?,
+                complete: false,
+                ordinal: row,
+                expected_iid: None,
+                missing_iid_noop: false,
+                candidate_filter: false,
+                reference_guard: true,
+                reference_resolution: Some(Box::new(ResolutionStep {
+                    ordinals,
+                    guard: Some(GuardContext {
+                        relation: relation.clone(),
+                        row,
+                        references: selected,
+                    }),
+                })),
+            });
+        }
+    }
+    Ok(guards)
 }
 
 #[derive(Clone)]
@@ -74,7 +222,10 @@ impl ReferenceProgram {
                 missing_iid_noop: false,
                 candidate_filter: false,
                 reference_guard: false,
-                reference_resolution: Some(Box::new(ResolutionStep { ordinals })),
+                reference_resolution: Some(Box::new(ResolutionStep {
+                    ordinals,
+                    guard: None,
+                })),
             }));
         }
         if self.body.is_none() {

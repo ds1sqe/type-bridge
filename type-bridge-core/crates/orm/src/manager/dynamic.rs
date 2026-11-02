@@ -3802,9 +3802,19 @@ impl DynamicExecutionTarget<'_> {
                     let iids = step
                         .reference_iids(&answer)
                         .map_err(crate::plan_builders::manager::diagnostic)?;
-                    program
-                        .accept_reference_iids(&step, iids)
-                        .map_err(crate::plan_builders::manager::diagnostic)?;
+                    if let Some(guard) = step
+                        .reference_resolution
+                        .as_ref()
+                        .and_then(|resolution| resolution.guard.as_ref())
+                    {
+                        guard
+                            .validate(&iids, |_, _| None)
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                    } else {
+                        program
+                            .accept_reference_iids(&step, iids)
+                            .map_err(crate::plan_builders::manager::diagnostic)?;
+                    }
                 } else if step.candidate_filter {
                     program
                         .accept_candidates(&step, &answer)

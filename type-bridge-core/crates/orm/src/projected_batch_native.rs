@@ -443,6 +443,49 @@ impl ProjectedBatchExecutor<'_> {
                 {
                     consumer.resolved_references = Some(snapshots);
                 }
+                if let Some(guard) = step
+                    .reference_resolution
+                    .as_ref()
+                    .and_then(|resolution| resolution.guard.as_ref())
+                {
+                    let mut returned = Vec::new();
+                    let mut capture = |item: AnswerItem| {
+                        let AnswerItem::Document(document) = item else {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                SdkExecutionDiagnostic::internal_failure(),
+                            )));
+                        };
+                        let ordinal = document_index(&document, "ordinal", usize::MAX)
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        let iid = document_string(&document, "iid")
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        step.check_identity(&iid).map_err(evidence)?;
+                        returned.push((ordinal, iid));
+                        Ok(AnswerControl::Continue)
+                    };
+                    dispatch(
+                        lease,
+                        &step.plan,
+                        Reply::ReferenceResolution,
+                        prepared,
+                        &mut capture,
+                        &mut ledger,
+                        true,
+                        &authority,
+                    )
+                    .await?;
+                    guard.validate(&returned, |role, ordinal| {
+                        plan.role_references
+                            .iter()
+                            .find(|reference| {
+                                reference.owner_ordinal == step.ordinal
+                                    && reference.role == *role
+                                    && reference.reference_ordinal == ordinal
+                            })
+                            .map(|reference| reference.reference.type_id().clone())
+                    })?;
+                    continue;
+                }
                 if let Some(resolution) = &step.reference_resolution {
                     let order = reference_order.get_or_insert_with(|| {
                         let mut references = plan.role_references.iter().collect::<Vec<_>>();

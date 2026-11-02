@@ -380,17 +380,7 @@ impl SplitProgram {
             if iid.is_some() {
                 return Ok(());
             }
-            if !step.missing_iid_noop {
-                return Err(identity_error());
-            }
-            while self.steps.front().is_some_and(|next| match next {
-                Step::Ready(next) => next.ordinal == step.ordinal,
-                Step::Target { ordinal, .. } => *ordinal == step.ordinal,
-            }) {
-                self.steps.pop_front();
-            }
-            self.identity = None;
-            return Ok(());
+            return Err(identity_error());
         }
         if let Some(iid) = iid {
             step.check_identity(&iid)?;
@@ -651,21 +641,9 @@ fn split_with_guards(
         // players because a mixed attachment answer cannot prove every event
         // matched, and one skipped reference must not leave a partial write.
         if guard_references {
-            for plan in match_put::reference_guards(
-                authority,
-                row.players.get(1..).unwrap_or_default(),
-                output_ordinal,
-            )? {
-                steps.push_back(Step::Ready(WriteStep {
-                    plan,
-                    complete: false,
-                    ordinal: output_ordinal,
-                    expected_iid: None,
-                    missing_iid_noop: kind == WriteKind::PartialUpdate,
-                    candidate_filter: false,
-                    reference_guard: true,
-                    reference_resolution: None,
-                }));
+            for step in references::guards(authority, shape.type_id, &row.players, output_ordinal)?
+            {
+                steps.push_back(Step::Ready(step));
             }
         }
         let (keys, fields) = row

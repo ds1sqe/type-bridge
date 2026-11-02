@@ -2524,13 +2524,9 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                 let mut document = membership_document(0, "0x8000", "wide-role", "0x01");
                 document["role_players"] = (0..count).map(|index| json!({"role":"member", "iid":format!("0x{:04x}",index+1), "type_name":"person", "attributes":{"identifier":[{"value":format!("p-{index:04}")}]}})).collect::<Vec<_>>().into();
                 let mut responses = Vec::new();
-                let guard_count = if count > boundary {
-                    (count - 1).div_ceil(type_bridge_contract::limits::MAX_BINDINGS - 2)
-                } else {
-                    0
-                };
-                for guard in 0..guard_count {
-                    responses.push(Response::Documents(vec![json!({"ordinal":0,"iid":format!("0x{:04x}", 2 + guard * (type_bridge_contract::limits::MAX_BINDINGS - 2)),"_type":"person"})]));
+                let guard_count = usize::from(count > boundary);
+                if guard_count > 0 {
+                    responses.push(Response::Documents((1..count).map(|index| json!({"ordinal":index,"iid":format!("0x{:04x}", index + 1),"_type":"person"})).collect()));
                 }
                 if count > boundary {
                     responses.push(Response::Documents(vec![

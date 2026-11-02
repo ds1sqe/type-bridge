@@ -407,7 +407,7 @@ pub(crate) fn build_many(
     }
     let mut deleted_fields = Vec::new();
     if let Some(target) = &target {
-        if kind == WriteKind::PartialUpdate && !complete {
+        if kind == WriteKind::PartialUpdate && !complete && player_widths.is_empty() {
             // Forced seeds contain one row, so their lookup needs no nullable
             // route disjunction. Keep the ordinal even when the target is absent.
             let mut lookup = vec![QueryPattern::Isa {
