@@ -256,9 +256,14 @@ players of a role give one document per player combination. A fetch adds
 `query.fetch.thing`.
 
 A fetch may include `scalars:[{"key":"ordinal","binding":B},...]` under
-`query.fetch.scalar-fields`. Each binding must be a present typed scalar; keys
-are unique, cannot start with `_`, and cannot be `attributes`. Empty `scalars`
-is omitted. Missing or incorrectly typed scalar evidence is refused.
+`query.fetch.scalar-fields`. A binding may be a present typed scalar or a
+bound entity or relation. A thing binding emits `iid($binding)`; an absent
+optional thing omits the field or returns an explicit absence. Its present
+value must be a canonical IID. This preserves source identity evidence when a
+write changes a referenced thing's keys. Unbound and optional non-thing
+bindings are refused. Keys are unique, cannot start with `_`, and cannot be
+`attributes`. Empty `scalars` is omitted. Missing required or incorrectly
+typed scalar evidence is refused.
 
 A listed unordered role may carry `collect:true` under `query.fetch.role-lists`.
 Its output key is `_role_N_players`, a list of complete documents with `_iid`,
