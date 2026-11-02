@@ -290,6 +290,217 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_wide_rows_keep_sequential_groups_and_piece_ordinals() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        let authority = authority();
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let key =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let text = CanonicalValue::String(CanonicalString::new("same-key").unwrap());
+        let small = vec![
+            (key.clone(), text.clone()),
+            (balance.clone(), CanonicalValue::Long(7)),
+        ];
+        let wide = std::iter::once((key.clone(), text))
+            .chain((0..300).map(|value| (balance.clone(), CanonicalValue::Long(value))))
+            .collect::<Vec<_>>();
+        for kind in [WriteKind::PartialPut, WriteKind::PartialUpdate] {
+            let rows = [&small, &wide, &small].map(|fields| WriteRow {
+                iid: None,
+                fields,
+                players: &[],
+            });
+            let mut program = write_many(
+                &authority,
+                kind,
+                WriteShape {
+                    references_see_prior_writes: true,
+                    type_id: &account,
+                    keys: std::slice::from_ref(&key),
+                    cleared_fields: std::slice::from_ref(&balance),
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: true,
+                    return_documents: false,
+                },
+                &rows,
+            )
+            .unwrap();
+            assert_eq!(program.statement_count(), 4);
+            let layout = program.identity_layout().unwrap();
+            assert_eq!(layout.len(), 3);
+            assert!(layout[1].is_none());
+            if kind == WriteKind::PartialPut {
+                assert_eq!(layout[0].as_ref().unwrap()[0].0, 0);
+                assert_eq!(layout[2].as_ref().unwrap()[0].0, 2);
+            }
+            let mut completed = 0;
+            while let Some(step) = program.next().unwrap() {
+                assert!(
+                    step.plan.local().bindings().len()
+                        <= type_bridge_contract::limits::MAX_BINDINGS
+                );
+                if step.complete {
+                    completed += 1;
+                } else {
+                    assert_eq!(step.ordinal, 1);
+                    program.accept_identity(&step, Some("0x02".into())).unwrap();
+                }
+            }
+            assert_eq!(completed, 3);
+        }
+    }
+
+    #[test]
+    fn wide_match_put_intersects_every_predicate_before_reuse_or_allocation() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use type_bridge_contract::query_plan::QueryOutput;
+        use type_bridge_contract::query_remote::RemoteValue;
+        let authority = authority();
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|value| (balance.clone(), CanonicalValue::Long(value)))
+            .collect::<Vec<_>>();
+        for full_match in [true, false] {
+            let mut program = write_many(
+                &authority,
+                WriteKind::MatchPut,
+                WriteShape {
+                    references_see_prior_writes: true,
+                    type_id: &account,
+                    keys: &[],
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: true,
+                    return_documents: false,
+                },
+                &[WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                }],
+            )
+            .unwrap();
+            let mut probes = 0;
+            let mut writes = 0;
+            let mut completed = 0;
+            while let Some(step) = program.next().unwrap() {
+                assert!(
+                    step.plan.local().bindings().len()
+                        <= type_bridge_contract::limits::MAX_BINDINGS
+                );
+                if step.candidate_filter {
+                    probes += 1;
+                    let QueryOutput::Rows { columns } = step.plan.local().output() else {
+                        panic!("candidate identities");
+                    };
+                    let column = step.plan.local().bindings()[usize::from(columns[0].get())]
+                        .variable()
+                        .as_str();
+                    let candidates = if full_match || probes == 1 {
+                        vec![
+                            serde_json::json!({column:RemoteValue::Thing { iid: "0x02".into(), type_id: account.clone() }}),
+                        ]
+                    } else {
+                        vec![]
+                    };
+                    program
+                        .accept_candidates(
+                            &step,
+                            &crate::query_plan_exec::PlanAnswer::Rows(candidates),
+                        )
+                        .unwrap();
+                } else {
+                    writes += step
+                        .plan
+                        .local()
+                        .pipeline()
+                        .iter()
+                        .filter(|stage| stage.is_write())
+                        .count();
+                    if step.complete {
+                        completed += 1;
+                    } else {
+                        program.accept_identity(&step, Some("0x03".into())).unwrap();
+                    }
+                }
+            }
+            assert!(probes > 1);
+            assert_eq!(completed, 1);
+            assert_eq!(writes == 0, full_match);
+        }
+    }
+
+    #[test]
+    fn wide_relation_match_put_keeps_all_iid_player_predicates_bounded() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        let authority = authority();
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let account = [TypeId::new(TypeKind::Entity, "account").unwrap()];
+        let role = RoleId::new("purchase", "buyer").unwrap();
+        let iids = (1..=300)
+            .map(|index| format!("0x{index:04x}"))
+            .collect::<Vec<_>>();
+        let players = iids
+            .iter()
+            .map(|iid| {
+                (
+                    role.clone(),
+                    Reference {
+                        candidates: &account,
+                        identity: ReferenceIdentity::Iid(iid),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut program = write_many(
+            &authority,
+            WriteKind::MatchPut,
+            WriteShape {
+                references_see_prior_writes: true,
+                type_id: &purchase,
+                keys: &[],
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: true,
+                return_documents: false,
+            },
+            &[WriteRow {
+                iid: None,
+                fields: &[],
+                players: &players,
+            }],
+        )
+        .unwrap();
+        let mut predicates = String::new();
+        let mut pieces = 0;
+        while let Some(step) = program.next().unwrap() {
+            if !step.candidate_filter {
+                break;
+            }
+            pieces += 1;
+            predicates.push_str(
+                &crate::query_plan_exec::staged_query(step.plan.local(), true)
+                    .unwrap()
+                    .typeql,
+            );
+            program
+                .accept_candidates(&step, &crate::query_plan_exec::PlanAnswer::Rows(vec![]))
+                .unwrap();
+        }
+        assert!(pieces > 1);
+        for iid in iids {
+            assert!(predicates.contains(&iid));
+        }
+    }
+
+    #[test]
     fn exact_relation_sequences_retain_players_and_batch_visibility_stays_explicit() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
         use type_bridge_contract::projection::{
@@ -507,6 +718,7 @@ mod tests {
             .identity_layout()
             .unwrap()
             .into_iter()
+            .flatten()
             .flatten()
             .map(|(ordinal, _)| ordinal)
             .collect::<Vec<_>>();

@@ -520,6 +520,7 @@ pub(super) fn build(
     shape: WriteShape<'_>,
     rows: &[WriteRow<'_>],
 ) -> Result<WriteProgram, Diagnostic> {
+    let mut programs = std::collections::VecDeque::new();
     let mut plans = Vec::new();
     let mut offset = 0;
     while offset < rows.len() {
@@ -534,8 +535,32 @@ pub(super) fn build(
             }
         }
         if low == 0 {
-            return one(authority, kind, &shape, &rows[offset..offset + 1])
-                .map(|_| unreachable!("one row failed its canonical fit check"));
+            if !plans.is_empty() {
+                programs.push_back(WriteProgram::Sequential(std::mem::take(&mut plans)));
+            }
+            let mut piece_shape = shape.clone();
+            piece_shape.return_documents = false;
+            programs.push_back(
+                if kind == WriteKind::MatchPut
+                    || (kind == WriteKind::PartialPut
+                        && !rows[offset]
+                            .fields
+                            .iter()
+                            .any(|(field, _)| shape.keys.contains(field)))
+                {
+                    program::wide_match(authority, piece_shape, &rows[offset], offset)?
+                } else {
+                    program::split_at(
+                        authority,
+                        kind,
+                        piece_shape,
+                        &rows[offset..offset + 1],
+                        offset,
+                    )?
+                },
+            );
+            offset += 1;
+            continue;
         }
         let plan = one(authority, kind, &shape, &rows[offset..offset + low])?;
         plans.push((
@@ -548,5 +573,11 @@ pub(super) fn build(
         ));
         offset += low;
     }
-    Ok(WriteProgram::Sequential(plans))
+    if programs.is_empty() {
+        return Ok(WriteProgram::Sequential(plans));
+    }
+    if !plans.is_empty() {
+        programs.push_back(WriteProgram::Sequential(plans));
+    }
+    Ok(WriteProgram::Chain(programs))
 }

@@ -5,10 +5,18 @@ use std::collections::VecDeque;
 use type_bridge_contract::query_remote::RemoteValue;
 use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 
+#[path = "bulk_write_match.rs"]
+mod match_put;
+pub(super) use match_put::wide_match;
+
+pub(crate) type IdentityLayout = Vec<Option<Vec<(usize, String)>>>;
+
 pub(crate) enum WriteProgram {
     Compact(Vec<BuiltPlan>),
     Sequential(Vec<(BuiltPlan, Vec<usize>)>),
     Split(SplitProgram),
+    Chain(VecDeque<WriteProgram>),
+    MatchWide(Box<match_put::MatchProgram>),
 }
 impl WriteProgram {
     pub(crate) fn compact(plans: Vec<BuiltPlan>) -> Self {
@@ -19,6 +27,8 @@ impl WriteProgram {
             Self::Compact(plans) => plans.len(),
             Self::Sequential(plans) => plans.len(),
             Self::Split(program) => program.steps.len(),
+            Self::Chain(programs) => programs.iter().map(Self::statement_count).sum(),
+            Self::MatchWide(program) => program.statement_count(),
         }
     }
     pub(crate) fn next(&mut self) -> Result<Option<WriteStep>, Diagnostic> {
@@ -29,6 +39,7 @@ impl WriteProgram {
                 ordinal: 0,
                 expected_iid: None,
                 missing_iid_noop: false,
+                candidate_filter: false,
             })),
             Self::Sequential(plans) => Ok((!plans.is_empty()).then(|| WriteStep {
                 plan: plans.remove(0).0,
@@ -36,14 +47,31 @@ impl WriteProgram {
                 ordinal: 0,
                 expected_iid: None,
                 missing_iid_noop: false,
+                candidate_filter: false,
             })),
             Self::Split(program) => program.next(),
+            Self::MatchWide(program) => program.next(),
+            Self::Chain(programs) => {
+                while let Some(program) = programs.front_mut() {
+                    if let Some(step) = program.next()? {
+                        return Ok(Some(step));
+                    }
+                    programs.pop_front();
+                }
+                Ok(None)
+            }
         }
     }
     pub(crate) fn into_static(self) -> Result<Vec<BuiltPlan>, Diagnostic> {
         match self {
             Self::Compact(plans) => Ok(plans),
+            Self::MatchWide(_) => Err(identity_error()),
             Self::Sequential(plans) => Ok(plans.into_iter().map(|(plan, _)| plan).collect()),
+            Self::Chain(programs) => programs
+                .into_iter()
+                .map(Self::into_static)
+                .collect::<Result<Vec<_>, _>>()
+                .map(|plans| plans.into_iter().flatten().collect()),
             Self::Split(program) => program
                 .steps
                 .into_iter()
@@ -55,33 +83,71 @@ impl WriteProgram {
         }
     }
 
-    pub(crate) fn identity_layout(&self) -> Option<Vec<Vec<(usize, String)>>> {
-        let Self::Sequential(plans) = self else {
-            return None;
-        };
-        Some(
-            plans
-                .iter()
-                .map(|(plan, ordinals)| {
-                    let QueryOutput::Rows { columns } = plan.local().output() else {
-                        unreachable!("sequential puts return row identities")
-                    };
-                    ordinals
-                        .iter()
-                        .zip(columns)
-                        .map(|(ordinal, column)| {
-                            (
-                                *ordinal,
-                                plan.local().bindings()[usize::from(column.get())]
-                                    .variable()
-                                    .as_str()
-                                    .to_owned(),
-                            )
+    pub(crate) fn identity_layout(&self) -> Option<IdentityLayout> {
+        match self {
+            Self::Sequential(plans) => Some(
+                plans
+                    .iter()
+                    .map(|(plan, ordinals)| {
+                        let QueryOutput::Rows { columns } = plan.local().output() else {
+                            unreachable!("sequential puts return row identities")
+                        };
+                        Some(
+                            ordinals
+                                .iter()
+                                .zip(columns)
+                                .map(|(ordinal, column)| {
+                                    (
+                                        *ordinal,
+                                        plan.local().bindings()[usize::from(column.get())]
+                                            .variable()
+                                            .as_str()
+                                            .to_owned(),
+                                    )
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+            Self::Chain(programs) => Some(
+                programs
+                    .iter()
+                    .flat_map(|program| {
+                        program.identity_layout().unwrap_or_else(|| match program {
+                            Self::Compact(plans) => vec![None; plans.len()],
+                            Self::MatchWide(_) => vec![None],
+                            Self::Split(split) => split
+                                .steps
+                                .iter()
+                                .filter_map(|step| match step {
+                                    Step::Ready(step) if step.complete => Some(None),
+                                    Step::Target { complete: true, .. } => Some(None),
+                                    _ => None,
+                                })
+                                .collect(),
+                            _ => unreachable!("nested sequences carry their layouts"),
                         })
-                        .collect()
-                })
-                .collect(),
-        )
+                    })
+                    .collect(),
+            ),
+            Self::Compact(_) | Self::Split(_) | Self::MatchWide(_) => None,
+        }
+    }
+
+    pub(crate) fn accept_candidates(
+        &mut self,
+        step: &WriteStep,
+        answer: &PlanAnswer,
+    ) -> Result<(), Diagnostic> {
+        match self {
+            Self::MatchWide(program) => program.accept_candidates(step, answer),
+            Self::Chain(programs) => programs
+                .front_mut()
+                .ok_or_else(identity_error)?
+                .accept_candidates(step, answer),
+            _ => Err(identity_error()),
+        }
     }
 
     pub(crate) fn accept_identity(
@@ -91,6 +157,11 @@ impl WriteProgram {
     ) -> Result<(), Diagnostic> {
         match self {
             Self::Split(program) => program.accept_identity(step, iid),
+            Self::MatchWide(program) => program.accept_identity(step, iid),
+            Self::Chain(programs) => programs
+                .front_mut()
+                .ok_or_else(identity_error)?
+                .accept_identity(step, iid),
             Self::Compact(_) | Self::Sequential(_) => Err(identity_error()),
         }
     }
@@ -113,6 +184,7 @@ pub(crate) struct WriteStep {
     pub(crate) ordinal: usize,
     expected_iid: Option<String>,
     pub(crate) missing_iid_noop: bool,
+    pub(crate) candidate_filter: bool,
 }
 impl WriteStep {
     pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
@@ -216,6 +288,7 @@ impl SplitProgram {
                     ordinal,
                     expected_iid: Some(iid.to_owned()),
                     missing_iid_noop: false,
+                    candidate_filter: false,
                 }
             }
         }))
@@ -396,11 +469,22 @@ pub(super) fn split(
     shape: WriteShape<'_>,
     rows: &[WriteRow<'_>],
 ) -> Result<WriteProgram, Diagnostic> {
+    split_at(authority, kind, shape, rows, 0)
+}
+
+pub(super) fn split_at(
+    authority: &PlanAuthority,
+    kind: WriteKind,
+    shape: WriteShape<'_>,
+    rows: &[WriteRow<'_>],
+    ordinal_offset: usize,
+) -> Result<WriteProgram, Diagnostic> {
     let mut steps = VecDeque::new();
     let mut ordinal = 0;
     while ordinal < rows.len() {
+        let output_ordinal = ordinal_offset + ordinal;
         let row = Row::of(&rows[ordinal]);
-        match one(authority, kind, shape.clone(), &row, true, ordinal) {
+        match one(authority, kind, shape.clone(), &row, true, output_ordinal) {
             Ok(_) => {
                 let mut low = 1;
                 let mut high =
@@ -413,7 +497,7 @@ pub(super) fn split(
                         shape.clone(),
                         &rows[ordinal..ordinal + middle],
                         true,
-                        ordinal,
+                        output_ordinal,
                     ) {
                         Ok(_) => low = middle,
                         Err(error) if forces_pieces(&error) => high = middle - 1,
@@ -426,14 +510,15 @@ pub(super) fn split(
                     shape.clone(),
                     &rows[ordinal..ordinal + low],
                     true,
-                    ordinal,
+                    output_ordinal,
                 )? {
                     steps.push_back(Step::Ready(WriteStep {
                         plan,
                         complete: true,
-                        ordinal,
+                        ordinal: output_ordinal,
                         expected_iid: None,
                         missing_iid_noop: false,
+                        candidate_filter: false,
                     }));
                 }
                 ordinal += low;
@@ -443,7 +528,7 @@ pub(super) fn split(
             Err(error) => return Err(error),
         }
         if matches!(kind, WriteKind::Delete | WriteKind::DeleteReturning) {
-            return one(authority, kind, shape.clone(), &row, true, ordinal)
+            return one(authority, kind, shape.clone(), &row, true, output_ordinal)
                 .map(|_| unreachable!("a deletion row exceeded its canonical limits"));
         }
         let (keys, fields) = row
@@ -474,13 +559,14 @@ pub(super) fn split(
         if matches!(kind, WriteKind::PartialUpdate | WriteKind::PartialPut) {
             seed_shape.cleared_fields = &cleared_fields;
         }
-        let plan = one(authority, kind, seed_shape, &seed, false, ordinal)?;
+        let plan = one(authority, kind, seed_shape, &seed, false, output_ordinal)?;
         steps.push_back(Step::Ready(WriteStep {
             plan,
             complete: false,
-            ordinal,
+            ordinal: output_ordinal,
             expected_iid: row.iid,
             missing_iid_noop: kind == WriteKind::PartialUpdate,
+            candidate_filter: false,
         }));
         let mut attach_shape = shape.clone();
         attach_shape.cleared_fields = &[];
@@ -503,7 +589,7 @@ pub(super) fn split(
                 &base,
                 &remaining,
                 true,
-                ordinal,
+                output_ordinal,
             )?;
             if count == 0 && remaining.len() != 0 {
                 return Err(invalid(
@@ -520,12 +606,12 @@ pub(super) fn split(
                 attach_shape.clone(),
                 &piece,
                 complete,
-                ordinal,
+                output_ordinal,
             )?;
             steps.push_back(Step::Target {
                 plan,
                 complete,
-                ordinal,
+                ordinal: output_ordinal,
             });
             if complete {
                 break;

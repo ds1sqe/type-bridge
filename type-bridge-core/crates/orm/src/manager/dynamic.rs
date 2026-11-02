@@ -3798,7 +3798,11 @@ impl DynamicExecutionTarget<'_> {
                     .dispatch_plan_counted(query, limits, Some(plan.local()))
                     .await?;
                 let answer = TransactionContext::resolve_plan(plan.local(), answer)?;
-                if step.complete {
+                if step.candidate_filter {
+                    program
+                        .accept_candidates(&step, &answer)
+                        .map_err(crate::plan_builders::manager::diagnostic)?;
+                } else if step.complete {
                     answers.push(answer);
                 } else {
                     let iid = step
@@ -4170,7 +4174,7 @@ async fn plan_identity_rows(
 fn group_write_identity_rows(
     answers: Vec<PlanAnswer>,
     count: usize,
-    layout: Option<Vec<Vec<(usize, String)>>>,
+    layout: Option<crate::plan_builders::bulk_write::IdentityLayout>,
     name: &str,
 ) -> Result<Vec<String>> {
     use type_bridge_contract::query_remote::RemoteValue;
@@ -4187,8 +4191,9 @@ fn group_write_identity_rows(
             return Err(snapshot_error(name));
         };
         for row in rows {
-            let columns = if let Some(layout) = &layout {
-                layout[piece].clone()
+            let columns = if let Some(Some(columns)) = layout.as_ref().map(|layout| &layout[piece])
+            {
+                columns.clone()
             } else {
                 let value = crate::query_plan_exec::row_value(&row, "ordinal1", Default::default())
                     .map_err(crate::plan_builders::manager::diagnostic)?;

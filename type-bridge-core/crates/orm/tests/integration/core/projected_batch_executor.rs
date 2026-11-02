@@ -3518,3 +3518,246 @@ plays:
     }
     database.delete_database().await.unwrap();
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
+    use type_bridge_orm::_dynamic::DynamicAttributeMap;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::_manager::EntityManager;
+    use type_bridge_orm::AttributeValue;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  partial-key: { value: string }\n  partial-tag: { value: string }\nentities:\n  partial-person:\n    owns:\n      partial-key: { key: true }\n      partial-tag: { card: { min: 0 } }\n  partial-note:\n    owns:\n      partial-tag: { card: { min: 0 } }\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("wide-sequence.yaml").unwrap(), yaml)]).unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute partial-key, value string; attribute partial-tag, value string; entity partial-person, owns partial-key @key, owns partial-tag @card(0..); entity partial-note, owns partial-tag @card(0..);", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let keyed = registry.entity("partial-person").unwrap();
+    let note = registry.entity("partial-note").unwrap();
+    let tag = |value: String| ("partial-tag".to_owned(), AttributeValue::String(value));
+    let values = |prefix: &str| -> DynamicAttributeMap {
+        (0..300)
+            .map(|index| tag(format!("{prefix}-{index:04}")))
+            .collect()
+    };
+    let normalized = |fields: DynamicAttributeMap| {
+        fields
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value:?}"))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    for literal in [false, true] {
+        let raw_note = DynamicEntityManager::new(&database, note.clone());
+        let full = values(&format!("full-{literal}"));
+        let hit = raw_note.insert(&full).await.unwrap();
+        let mut near = full.clone();
+        near[299] = tag(format!("near-{literal}"));
+        let items = vec![full.clone(), near.clone()];
+        let tx = database.transaction_context(TxType::Write).await.unwrap();
+        let looped = DynamicEntityManager::with_transaction(tx.clone(), note.clone());
+        let mut expected = Vec::new();
+        for fields in &items {
+            let iid = looped.put(fields).await.unwrap();
+            expected.push((
+                iid.clone(),
+                normalized(looped.get_by_iid(&iid).await.unwrap().unwrap().attributes),
+            ));
+        }
+        assert_eq!(expected[0].0, hit);
+        assert_ne!(expected[1].0, hit);
+        tx.rollback().await.unwrap();
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager = DynamicEntityManager::from_registry(&counted, registry.clone(), note.clone());
+        let actual = manager.put_many(&items).await.unwrap();
+        assert_eq!(actual[0], hit);
+        assert_ne!(actual[1], hit, "a one-field near miss must allocate");
+        for (iid, (_, fields)) in actual.iter().zip(&expected) {
+            assert_eq!(
+                normalized(raw_note.get_by_iid(iid).await.unwrap().unwrap().attributes),
+                *fields
+            );
+        }
+        let statements = {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            assert_eq!(observed.statements.len(), 9);
+            observed.statements.len()
+        };
+        let before = raw_note.count().await.unwrap();
+        let mut failing = full.clone();
+        failing[299] = tag(format!("rolled-back-{literal}"));
+        *log.lock().unwrap() = DispatchLog {
+            fail_at: Some(statements),
+            ..Default::default()
+        };
+        assert!(manager.put_many(&[full, failing]).await.is_err());
+        assert_eq!(raw_note.count().await.unwrap(), before);
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), statements);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
+
+        let key = (
+            "partial-key".to_owned(),
+            AttributeValue::String(format!("overlap-{literal}")),
+        );
+        let raw_keyed = DynamicEntityManager::new(&database, keyed.clone());
+        let initial = vec![key.clone(), tag("old".into())];
+        let iid = raw_keyed.insert(&initial).await.unwrap();
+        let mut wide = values(&format!("overlap-{literal}"));
+        wide.push(key.clone());
+        let rows = vec![
+            vec![key.clone(), tag("first".into())],
+            wide,
+            vec![key.clone(), tag("last".into())],
+        ];
+        // Preserve the raw answer quirk as evidence while comparing committed data.
+        let tx = database.transaction_context(TxType::Write).await.unwrap();
+        let mut raw_answer_counts = Vec::new();
+        for fields in &rows {
+            let query = type_bridge_orm::_manager::query_builder::build_dynamic_entity_put(
+                &keyed, fields, "$e",
+            )
+            .unwrap();
+            let QueryResult::Documents(documents) = tx.query(&query).await.unwrap() else {
+                panic!("raw Put documents");
+            };
+            raw_answer_counts.push(documents.len());
+            assert!(
+                documents
+                    .iter()
+                    .all(|document| document["iid"] == serde_json::json!(iid))
+            );
+        }
+        tx.commit().await.unwrap();
+        assert_eq!(raw_answer_counts, [1, 1, 300]);
+        let raw_committed = normalized(
+            raw_keyed
+                .get_by_iid(&iid)
+                .await
+                .unwrap()
+                .unwrap()
+                .attributes,
+        );
+        raw_keyed.update(Some(&iid), &initial).await.unwrap();
+        let tx = database.transaction_context(TxType::Write).await.unwrap();
+        let looped = DynamicEntityManager::with_transaction(tx.clone(), keyed.clone());
+        for fields in &rows {
+            looped.update(Some(&iid), fields).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        let expected = normalized(
+            raw_keyed
+                .get_by_iid(&iid)
+                .await
+                .unwrap()
+                .unwrap()
+                .attributes,
+        );
+        assert_eq!(raw_committed, expected);
+        raw_keyed.update(Some(&iid), &initial).await.unwrap();
+        eprintln!(
+            "old keyed raw Put literal={literal}: committed={raw_committed:?}, fetch rows={raw_answer_counts:?} all IID={iid}; clear/attach recipe committed={expected:?}, answers=[(), (), ()]; duplicate fetch rows are a pre-existing raw-path quirk"
+        );
+        for update in [false, true] {
+            for fail in [false, true] {
+                *log.lock().unwrap() = DispatchLog {
+                    fail_at: fail.then_some(4),
+                    ..Default::default()
+                };
+                let result = if update {
+                    let typed = EntityManager::<PartialUpdateEntity>::from_registry(
+                        &counted,
+                        registry.clone(),
+                    )
+                    .unwrap();
+                    let updates = rows
+                        .iter()
+                        .map(|fields| PartialUpdateEntity {
+                            iid: Some(iid.clone()),
+                            fields: fields
+                                .iter()
+                                .map(|(name, value)| {
+                                    (
+                                        if name == "partial-key" {
+                                            "partial-key"
+                                        } else {
+                                            "partial-tag"
+                                        },
+                                        value.clone(),
+                                    )
+                                })
+                                .collect(),
+                        })
+                        .collect::<Vec<_>>();
+                    typed.update_many(&updates).await
+                } else {
+                    let manager = DynamicEntityManager::from_registry(
+                        &counted,
+                        registry.clone(),
+                        keyed.clone(),
+                    );
+                    manager
+                        .put_many(&rows)
+                        .await
+                        .map(|iids| assert_eq!(iids, vec![iid.clone(); 3]))
+                };
+                if fail {
+                    assert!(result.is_err());
+                } else {
+                    result.unwrap();
+                }
+                assert_eq!(
+                    normalized(
+                        raw_keyed
+                            .get_by_iid(&iid)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .attributes
+                    ),
+                    if fail {
+                        normalized(initial.clone())
+                    } else {
+                        expected.clone()
+                    }
+                );
+                {
+                    let observed = log.lock().unwrap();
+                    assert_eq!(observed.statements.len(), 4);
+                    assert_eq!(observed.opened, [TxType::Write]);
+                    assert_eq!(
+                        (observed.commits, observed.rollbacks),
+                        if fail { (0, 1) } else { (1, 0) }
+                    );
+                }
+                raw_keyed.update(Some(&iid), &initial).await.unwrap();
+            }
+        }
+        eprintln!(
+            "wide sequential literal={literal}: full match reuses IID, near miss allocates; {statements} bounded match/write statements, later-piece rollback; overlapping partial put/update use four statements and equal old loops"
+        );
+    }
+}
