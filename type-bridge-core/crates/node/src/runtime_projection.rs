@@ -58,10 +58,11 @@ use type_bridge_orm::{
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCrudExecutor,
     ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-    ProjectedReference, ProjectedRolePlayer, ProjectedStructValue, ProjectedThing,
-    ProviderRuntimeOwner, QueryExecutionResourceLimits, ThingKind, TransactionContext,
-    TransactionContextState, ValueType, resolve_generated_manager_lookup,
-    validate_projected_create_member_count, validate_projected_hydrated_member_count,
+    ProjectedManagerFilterInvocationControl, ProjectedReference, ProjectedRolePlayer,
+    ProjectedStructValue, ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits,
+    QueryTarget, ThingKind, TransactionContext, TransactionContextState, ValueType,
+    resolve_generated_manager_lookup, validate_projected_create_member_count,
+    validate_projected_hydrated_member_count,
 };
 use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -2231,7 +2232,9 @@ impl NodeRuntimeProjection {
             policy = policy.answer_limits(limits.inner());
         }
         if let Some(limits) = query_limits {
-            policy = policy.query_limits(limits.inner()).map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
+            policy = policy
+                .query_limits(limits.inner())
+                .map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
         }
         let runtime = ProviderRuntimeOwner::new()
             .map(Arc::new)
@@ -3282,93 +3285,72 @@ impl NodeProjectedManagerFilter {
     #[napi]
     pub fn count(&self) -> napi::Result<BigInt> {
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
-        let count = match (&self.database, &self.transaction) {
-            (Some(database), None) => self.runtime.block_on(executor.count(
-                database,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            (None, Some(transaction)) => self.runtime.block_on(executor.count_in_read_transaction(
-                transaction,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            _ => {
-                return Err(runtime_error(
-                    "projected manager filter has no execution target",
-                ));
-            }
-        }
-        .map_err(napi_sdk_diagnostic)?;
-        Ok(BigInt::from(count))
+        self.runtime
+            .block_on(executor.count_on_target(self.target()?, &self.filter, self.control()))
+            .map(BigInt::from)
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
     }
 
     /// Test whether an exact-model match exists without materializing it.
     #[napi]
     pub fn exists(&self) -> napi::Result<bool> {
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => self.runtime.block_on(executor.exists(
-                database,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            (None, Some(transaction)) => {
-                self.runtime.block_on(executor.exists_in_read_transaction(
-                    transaction,
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ))
-            }
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
-        }
-        .map_err(napi_sdk_diagnostic)
+        self.runtime
+            .block_on(executor.exists_on_target(self.target()?, &self.filter, self.control()))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
     }
 }
 
 impl NodeProjectedManagerFilter {
+    fn target(&self) -> napi::Result<QueryTarget<'_>> {
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => Ok(QueryTarget::Database(database)),
+            (None, Some(transaction)) => Ok(QueryTarget::Transaction(transaction)),
+            _ => Err(runtime_error(
+                "projected manager filter has no execution target",
+            )),
+        }
+    }
+
+    fn control(&self) -> ProjectedManagerFilterInvocationControl {
+        ProjectedManagerFilterInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+    }
+
     fn execute_all(&self) -> napi::Result<Vec<Arc<ProjectedThing>>> {
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => self.runtime.block_on(executor.all(
-                database,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            (None, Some(transaction)) => self.runtime.block_on(executor.all_in_read_transaction(
-                transaction,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
-        }
-        .map_err(napi_sdk_diagnostic)
+        self.runtime
+            .block_on(executor.all_on_target(self.target()?, &self.filter, self.control()))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
     }
 
     fn execute_first(&self) -> napi::Result<Option<Arc<ProjectedThing>>> {
         let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => self.runtime.block_on(executor.first(
-                database,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            (None, Some(transaction)) => self.runtime.block_on(executor.first_in_read_transaction(
-                transaction,
-                &self.filter,
-                QueryExecutionResourceLimits::default(),
-                AnswerCancellation::default(),
-            )),
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
-        }
-        .map_err(napi_sdk_diagnostic)
+        self.runtime
+            .block_on(executor.first_on_target(self.target()?, &self.filter, self.control()))
+            .map_err(|error| {
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                )
+            })
+            .map_err(napi_sdk_diagnostic)
     }
 }
 

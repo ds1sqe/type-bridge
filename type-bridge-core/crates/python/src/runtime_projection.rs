@@ -59,10 +59,10 @@ use type_bridge_orm::{
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCreateBudget,
     ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
-    ProjectedManagerFilterExecutor, ProjectedReference, ProjectedReferenceOrigin,
-    ProjectedRolePlayer, ProjectedThing, QueryExecutionResourceLimits, ThingKind,
-    resolve_generated_manager_lookup, validate_projected_create_member_count,
-    validate_projected_hydrated_member_count,
+    ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, ProjectedReference,
+    ProjectedReferenceOrigin, ProjectedRolePlayer, ProjectedThing, QueryExecutionResourceLimits,
+    QueryTarget, ThingKind, resolve_generated_manager_lookup,
+    validate_projected_create_member_count, validate_projected_hydrated_member_count,
 };
 use type_bridge_orm::{InstalledRuntimeProjection, ProviderRuntimeOwner};
 use type_bridge_schema::VerifiedSchemaAuthority;
@@ -1659,7 +1659,9 @@ impl PyRuntimeProjection {
             policy = policy.answer_limits(limits.inner());
         }
         if let Some(limits) = query_limits {
-            policy = policy.query_limits(limits.inner()).map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            policy = policy
+                .query_limits(limits.inner())
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         }
         let runtime = ProviderRuntimeOwner::new().map(Arc::new).map_err(|error| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -2640,29 +2642,14 @@ impl PyProjectedManagerFilter {
     /// Hydrate every distinct exact-model match.
     fn all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
-        let projected = match (&self.database, &self.transaction) {
-            (Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.all(
-                    database.as_ref(),
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            (None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.all_in_read_transaction(
-                    transaction,
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            _ => return Err(py_runtime_error("projected filter has no execution target")),
-        }
+        let projected = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.all_on_target(self.target()?, &self.filter, self.control()),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
         .map_err(py_sdk_diagnostic)?;
         let values = PyList::empty(py);
         for value in projected {
@@ -2674,29 +2661,14 @@ impl PyProjectedManagerFilter {
     /// Return the optional identity-proven match.
     fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
-        let projected = match (&self.database, &self.transaction) {
-            (Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.first(
-                    database.as_ref(),
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            (None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.first_in_read_transaction(
-                    transaction,
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            _ => return Err(py_runtime_error("projected filter has no execution target")),
-        }
+        let projected = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.first_on_target(self.target()?, &self.filter, self.control()),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
         .map_err(py_sdk_diagnostic)?;
         projected
             .map(|value| hydrate_projected_thing(py, self.package.as_ref(), value))
@@ -2707,59 +2679,46 @@ impl PyProjectedManagerFilter {
     /// Count distinct exact-model matches.
     fn count(&self, py: Python<'_>) -> PyResult<u64> {
         let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.count(
-                    database.as_ref(),
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            (None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.count_in_read_transaction(
-                    transaction,
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            _ => return Err(py_runtime_error("projected filter has no execution target")),
-        }
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.count_on_target(self.target()?, &self.filter, self.control()),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
         .map_err(py_sdk_diagnostic)
     }
 
     /// Return whether at least one exact-model match exists.
     fn exists(&self, py: Python<'_>) -> PyResult<bool> {
         let executor = ProjectedManagerFilterExecutor::new(&self.package.projection);
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.exists(
-                    database.as_ref(),
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            (None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.exists_in_read_transaction(
-                    transaction,
-                    &self.filter,
-                    QueryExecutionResourceLimits::default(),
-                    AnswerCancellation::default(),
-                ),
-            ),
-            _ => return Err(py_runtime_error("projected filter has no execution target")),
-        }
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.exists_on_target(self.target()?, &self.filter, self.control()),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
         .map_err(py_sdk_diagnostic)
+    }
+}
+
+impl PyProjectedManagerFilter {
+    fn target(&self) -> PyResult<QueryTarget<'_>> {
+        match (&self.database, &self.transaction) {
+            (Some(database), None) => Ok(QueryTarget::Database(database)),
+            (None, Some(transaction)) => Ok(QueryTarget::Transaction(transaction)),
+            _ => Err(py_runtime_error("projected filter has no execution target")),
+        }
+    }
+
+    fn control(&self) -> ProjectedManagerFilterInvocationControl {
+        ProjectedManagerFilterInvocationControl::capture(
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
     }
 }
 

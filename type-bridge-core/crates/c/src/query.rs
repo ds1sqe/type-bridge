@@ -4430,9 +4430,9 @@ pub(crate) async fn execute_validated_on_target(
     )
 }
 
-async fn execute_manager_database(
+async fn execute_manager_on_target(
     terminal: &TypeBridgeQueryTerminal,
-    database: &TypeBridgeDatabase,
+    target: type_bridge_orm::QueryTarget<'_>,
     operation: ManagerTerminalKind,
     filter: &ProjectedManagerFilter,
     resources: QueryExecutionResourceLimits,
@@ -4447,71 +4447,46 @@ async fn execute_manager_database(
         ManagerTerminalKind::All => QueryResultStorage::ManagerRows {
             model,
             rows: executor
-                .all_with_control(database.orm_database(), filter, control)
-                .await?,
+                .all_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?,
         },
         ManagerTerminalKind::First => QueryResultStorage::ManagerRows {
             model,
             rows: executor
-                .first_with_control(database.orm_database(), filter, control)
-                .await?
+                .first_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?
                 .into_iter()
                 .collect(),
         },
         ManagerTerminalKind::Count => QueryResultStorage::ManagerCount(
             executor
-                .count_with_control(database.orm_database(), filter, control)
-                .await?,
+                .count_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?,
         ),
         ManagerTerminalKind::Exists => QueryResultStorage::ManagerExists(
             executor
-                .exists_with_control(database.orm_database(), filter, control)
-                .await?,
-        ),
-    };
-    Ok(TypeBridgeQueryResult {
-        state: Arc::clone(&terminal.state),
-        storage,
-    })
-}
-
-async fn execute_manager_read_transaction(
-    terminal: &TypeBridgeQueryTerminal,
-    context: &type_bridge_orm::TransactionContext,
-    operation: ManagerTerminalKind,
-    filter: &ProjectedManagerFilter,
-    resources: QueryExecutionResourceLimits,
-    deadline: QueryExecutionDeadline,
-    answer: type_bridge_orm::AnswerCancellation,
-) -> Result<TypeBridgeQueryResult, SdkExecutionDiagnostic> {
-    let executor =
-        ProjectedManagerFilterExecutor::new(&terminal.state.package.installed_projection);
-    let control = ProjectedManagerFilterInvocationControl::from_parts(resources, deadline, answer);
-    let model = filter.model().clone();
-    let storage = match operation {
-        ManagerTerminalKind::All => QueryResultStorage::ManagerRows {
-            model,
-            rows: executor
-                .all_in_read_transaction_with_control(context, filter, control)
-                .await?,
-        },
-        ManagerTerminalKind::First => QueryResultStorage::ManagerRows {
-            model,
-            rows: executor
-                .first_in_read_transaction_with_control(context, filter, control)
-                .await?
-                .into_iter()
-                .collect(),
-        },
-        ManagerTerminalKind::Count => QueryResultStorage::ManagerCount(
-            executor
-                .count_in_read_transaction_with_control(context, filter, control)
-                .await?,
-        ),
-        ManagerTerminalKind::Exists => QueryResultStorage::ManagerExists(
-            executor
-                .exists_in_read_transaction_with_control(context, filter, control)
-                .await?,
+                .exists_on_target(target, filter, control)
+                .await
+                .map_err(|error| {
+                    error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    )
+                })?,
         ),
     };
     Ok(TypeBridgeQueryResult {
@@ -4892,9 +4867,9 @@ pub unsafe extern "C" fn type_bridge_database_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    database.block_on(execute_manager_database(
+                    database.block_on(execute_manager_on_target(
                         terminal,
-                        database,
+                        type_bridge_orm::QueryTarget::Database(database.orm_database()),
                         *operation,
                         filter,
                         parsed.resources,
@@ -5032,9 +5007,9 @@ pub unsafe extern "C" fn type_bridge_read_transaction_query_execute_v1(
                     }
                 };
                 let outcome = catch_unwind(AssertUnwindSafe(|| {
-                    transaction.block_on(execute_manager_read_transaction(
+                    transaction.block_on(execute_manager_on_target(
                         terminal,
-                        context,
+                        type_bridge_orm::QueryTarget::Transaction(context),
                         *operation,
                         filter,
                         parsed.resources,

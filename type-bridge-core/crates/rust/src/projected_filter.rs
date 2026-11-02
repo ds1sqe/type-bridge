@@ -5,7 +5,8 @@ use std::marker::PhantomData;
 use type_bridge_orm::session::context::TransactionContext;
 use type_bridge_orm::{
     AnswerCancellation, InstalledRuntimeProjection, ProjectedManagerComparison,
-    ProjectedManagerFilter, ProjectedManagerFilterExecutor, QueryExecutionResourceLimits,
+    ProjectedManagerFilter, ProjectedManagerFilterExecutor,
+    ProjectedManagerFilterInvocationControl, QueryTarget, QueryTargetError,
 };
 
 use crate::__codegen::{CompleteModel, EntityModel, FieldToken, Model, QueryValued, RelationModel};
@@ -18,31 +19,23 @@ use crate::relation_codec::resolve_relation_authority;
 use crate::schema::Schema;
 use crate::{Database, Result};
 
-#[derive(Clone, Copy)]
-enum FilterTarget<'target> {
-    Database(&'target type_bridge_orm::Database),
-    ReadTransaction(&'target TransactionContext),
-}
-
 struct ProjectedFilterCore<'target> {
     installed: &'target InstalledRuntimeProjection,
-    target: FilterTarget<'target>,
+    target: QueryTarget<'target>,
     filter: ProjectedManagerFilter,
 }
 
 impl<'target> ProjectedFilterCore<'target> {
-    fn limits(&self) -> QueryExecutionResourceLimits {
-        match self.target {
-            FilterTarget::Database(database) => database.answer_limits().unwrap_or_default(),
-            FilterTarget::ReadTransaction(transaction) => {
-                transaction.answer_limits().unwrap_or_default()
-            }
-        }
+    fn control(&self) -> ProjectedManagerFilterInvocationControl {
+        ProjectedManagerFilterInvocationControl::capture(
+            self.target.answer_limits().unwrap_or_default(),
+            AnswerCancellation::default(),
+        )
     }
 
     fn try_new(
         installed: &'target InstalledRuntimeProjection,
-        target: FilterTarget<'target>,
+        target: QueryTarget<'target>,
         model: type_bridge_contract::id::TypeId,
     ) -> Result<Self> {
         let filter =
@@ -83,30 +76,10 @@ impl<'target> ProjectedFilterCore<'target> {
     }
 
     async fn all<M: CompleteModel>(&self) -> Result<Vec<M>> {
-        let executor = ProjectedManagerFilterExecutor::new(self.installed);
-        let values = match self.target {
-            FilterTarget::Database(database) => {
-                executor
-                    .all(
-                        database,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-            FilterTarget::ReadTransaction(transaction) => {
-                executor
-                    .all_in_read_transaction(
-                        transaction,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-        }
-        .map_err(manager_filter_error)?;
+        let values = ProjectedManagerFilterExecutor::new(self.installed)
+            .all_on_target(self.target, &self.filter, self.control())
+            .await
+            .map_err(filter_target_error)?;
         values
             .into_iter()
             .map(|value| materialize_projected::<M>((*value).clone(), self.installed))
@@ -114,87 +87,27 @@ impl<'target> ProjectedFilterCore<'target> {
     }
 
     async fn first<M: CompleteModel>(&self) -> Result<Option<M>> {
-        let executor = ProjectedManagerFilterExecutor::new(self.installed);
-        let value = match self.target {
-            FilterTarget::Database(database) => {
-                executor
-                    .first(
-                        database,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-            FilterTarget::ReadTransaction(transaction) => {
-                executor
-                    .first_in_read_transaction(
-                        transaction,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-        }
-        .map_err(manager_filter_error)?;
+        let value = ProjectedManagerFilterExecutor::new(self.installed)
+            .first_on_target(self.target, &self.filter, self.control())
+            .await
+            .map_err(filter_target_error)?;
         value
             .map(|value| materialize_projected::<M>((*value).clone(), self.installed))
             .transpose()
     }
 
     async fn count(&self) -> Result<u64> {
-        let executor = ProjectedManagerFilterExecutor::new(self.installed);
-        match self.target {
-            FilterTarget::Database(database) => {
-                executor
-                    .count(
-                        database,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-            FilterTarget::ReadTransaction(transaction) => {
-                executor
-                    .count_in_read_transaction(
-                        transaction,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-        }
-        .map_err(manager_filter_error)
+        ProjectedManagerFilterExecutor::new(self.installed)
+            .count_on_target(self.target, &self.filter, self.control())
+            .await
+            .map_err(filter_target_error)
     }
 
     async fn exists(&self) -> Result<bool> {
-        let executor = ProjectedManagerFilterExecutor::new(self.installed);
-        match self.target {
-            FilterTarget::Database(database) => {
-                executor
-                    .exists(
-                        database,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-            FilterTarget::ReadTransaction(transaction) => {
-                executor
-                    .exists_in_read_transaction(
-                        transaction,
-                        &self.filter,
-                        self.limits(),
-                        AnswerCancellation::default(),
-                    )
-                    .await
-            }
-        }
-        .map_err(manager_filter_error)
+        ProjectedManagerFilterExecutor::new(self.installed)
+            .exists_on_target(self.target, &self.filter, self.control())
+            .await
+            .map_err(filter_target_error)
     }
 }
 
@@ -223,14 +136,14 @@ where
         )?;
         Self::new(
             installed,
-            FilterTarget::Database(database.inner_orm()),
+            QueryTarget::Database(database.inner_orm()),
             model,
         )
     }
 
     fn new(
         installed: &'target InstalledRuntimeProjection,
-        target: FilterTarget<'target>,
+        target: QueryTarget<'target>,
         model: type_bridge_contract::id::TypeId,
     ) -> Result<Self> {
         Ok(Self {
@@ -297,14 +210,14 @@ where
         )?;
         Self::new(
             installed,
-            FilterTarget::Database(database.inner_orm()),
+            QueryTarget::Database(database.inner_orm()),
             model,
         )
     }
 
     fn new(
         installed: &'target InstalledRuntimeProjection,
-        target: FilterTarget<'target>,
+        target: QueryTarget<'target>,
         model: type_bridge_contract::id::TypeId,
     ) -> Result<Self> {
         Ok(Self {
@@ -383,7 +296,7 @@ where
         )?;
         ProjectedEntityFilter::new(
             self.installed,
-            FilterTarget::ReadTransaction(self.transaction),
+            QueryTarget::Transaction(self.transaction),
             model,
         )
     }
@@ -435,7 +348,7 @@ where
         )?;
         ProjectedRelationFilter::new(
             self.installed,
-            FilterTarget::ReadTransaction(self.transaction),
+            QueryTarget::Transaction(self.transaction),
             model,
         )
     }
@@ -462,4 +375,33 @@ fn schema_not_bound() -> Error {
         "database is not schema-bound",
         None,
     )
+}
+
+fn filter_target_error(error: QueryTargetError) -> Error {
+    match error {
+        QueryTargetError::Callback(_) => crate::remote::target_error(error),
+        other => manager_filter_error(
+            other.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_filter_target_keeps_application_error_and_source() {
+        let error = filter_target_error(QueryTargetError::Callback(Box::new(Error::remote(
+            "application_transport_down",
+            "application transport failed",
+            Some(Box::new(std::io::Error::other("application cause"))),
+        ))));
+        assert_eq!(error.category(), crate::ErrorCategory::Remote);
+        assert_eq!(error.code(), Some("application_transport_down"));
+        assert_eq!(
+            std::error::Error::source(&error).unwrap().to_string(),
+            "application cause"
+        );
+    }
 }
