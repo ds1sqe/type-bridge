@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         transport::v3::create_v3_router(Arc::new(pipeline), Arc::new(state))
     } else {
-        transport::http::create_health_router(false)
+        transport::http::create_health_router(false, Arc::new(pipeline))
     };
 
     let addr: SocketAddr = format!("{}:{}", config.server.host, config.server.port)

@@ -1,9 +1,17 @@
+use super::staged_state::{
+    await_before_deadline, response_audit_deadline, staged_request_metadata,
+};
 use crate::error::PipelineError;
+use crate::interceptor::V3PolicyOutcome;
+use crate::pipeline::QueryPipeline;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
+use std::sync::Arc;
+use std::time::Instant;
 
 // --- Axum-specific error response types ---
 
@@ -59,9 +67,15 @@ fn failure_response(
 }
 
 /// Health-only mount used when staged execution is disabled.
-pub fn create_health_router(connected: bool) -> Router {
+pub fn create_health_router(connected: bool, pipeline: Arc<QueryPipeline>) -> Router {
     Router::new()
-        .route("/v3/raw", post(raw_disabled))
+        .route(
+            "/v3/raw",
+            post(move |headers: HeaderMap| {
+                let pipeline = Arc::clone(&pipeline);
+                async move { raw_disabled_with_pipeline(&pipeline, &headers).await }
+            }),
+        )
         .route(
             "/health",
             get(move || async move { health_response(connected) }),
@@ -97,4 +111,59 @@ pub(crate) async fn raw_disabled() -> Response {
         Json(serde_json::json!({"error":"raw_disabled"})),
     )
         .into_response()
+}
+
+pub(super) async fn raw_disabled_with_pipeline(
+    pipeline: &QueryPipeline,
+    headers: &HeaderMap,
+) -> Response {
+    let mut metadata = staged_request_metadata(headers, "raw");
+    metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
+    let ctx = pipeline.request_context(metadata);
+    let outcome = V3PolicyOutcome::new(false, "raw_disabled", 0);
+    let _ = await_before_deadline(
+        response_audit_deadline(Instant::now()),
+        pipeline.finish_v3_request(&outcome, &ctx),
+    )
+    .await;
+    raw_disabled().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn disabled_staged_router_audits_raw_refusals() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("disabled.jsonl");
+        let audit = crate::interceptor::audit_log::AuditLogInterceptor::new(
+            &crate::config::AuditLogConfig {
+                output: "file".into(),
+                file_path: path.to_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+        let pipeline = crate::pipeline::PipelineBuilder::new()
+            .with_interceptor(audit)
+            .build()
+            .unwrap();
+        let router = create_health_router(false, Arc::new(pipeline));
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/v3/raw")
+                    .body(axum::body::Body::from("malformed and never collected"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let records = std::fs::read_to_string(path).unwrap();
+        let record: serde_json::Value = serde_json::from_str(records.trim()).unwrap();
+        assert_eq!(record["diagnostic_code"], "raw_disabled");
+        assert_eq!(record["status"], "error");
+    }
 }

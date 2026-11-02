@@ -1,5 +1,6 @@
 //! Offline proof that optional rustls termination preserves V1 response bytes.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -22,7 +23,14 @@ async fn inbound_tls_serves_the_exact_plaintext_v1_health_body() {
     .await
     .expect("test identity is valid");
 
-    let router = create_health_router(true);
+    let router = create_health_router(
+        true,
+        Arc::new(
+            type_bridge_server::pipeline::PipelineBuilder::new()
+                .build()
+                .unwrap(),
+        ),
+    );
     let expected = router
         .clone()
         .oneshot(

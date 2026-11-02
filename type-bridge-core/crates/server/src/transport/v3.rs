@@ -244,6 +244,8 @@ pub(super) fn staged_advertisement_for_profile(
 
 /// Build `POST /v3/staged` and `GET /v3/capabilities` over one staged executor.
 pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Router {
+    #[cfg(not(feature = "typedb"))]
+    let disabled_pipeline = Arc::clone(&pipeline);
     let state = Arc::new(StagedExecutor::new(pipeline, query));
     let router = Router::new()
         .route("/v3/staged", post(handle_v3_staged))
@@ -255,11 +257,9 @@ pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryStat
     #[cfg(not(feature = "typedb"))]
     let router = router.route(
         "/v3/raw",
-        post(|| async {
-            (
-                axum::http::StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({"error":"raw_disabled"})),
-            )
+        post(move |headers: HeaderMap| {
+            let pipeline = Arc::clone(&disabled_pipeline);
+            async move { super::http::raw_disabled_with_pipeline(&pipeline, &headers).await }
         }),
     );
     router.with_state(state)
