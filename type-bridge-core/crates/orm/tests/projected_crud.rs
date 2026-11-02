@@ -2936,7 +2936,28 @@ async fn registry_manager_single_and_bulk_commits_keep_certainty_and_redact_prov
         for (relation, bulk) in [(false, false), (false, true), (true, false), (true, true)] {
             let label = if relation { "membership" } else { "person" };
             let kind = if relation { "relation" } else { "entity" };
-            let responses = (0..if bulk {2} else {1}).map(|index| RecordingResponse::Result(QueryResult::Rows(vec![serde_json::json!({"root0":{"kind":"thing","iid":if index==0 {"0x10"} else {"0x11"},"type_id":{"kind":kind,"label":label}}})]))).collect();
+            let responses = if bulk {
+                let rows = (0..2)
+                    .map(|index| {
+                        let iid = if index == 0 { "0x10" } else { "0x11" };
+                        let mut document = if relation {
+                            membership_document(iid)
+                        } else {
+                            person_document(iid)
+                        };
+                        document["ordinal"] = serde_json::json!(index);
+                        if relation {
+                            document["_role_0_iid"] = serde_json::json!("0x01");
+                        }
+                        document
+                    })
+                    .collect();
+                vec![documents(rows)]
+            } else {
+                vec![RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"root0":{"kind":"thing","iid":"0x10","type_id":{"kind":kind,"label":label}}}),
+                ]))]
+            };
             let (backend, state) = RecordingBackend::new(
                 responses,
                 CommitBehavior::Failure(certainty, "provider-secret"),

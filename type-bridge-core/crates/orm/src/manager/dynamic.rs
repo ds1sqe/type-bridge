@@ -12,6 +12,7 @@ use crate::error::{OrmError, Result};
 use crate::filter::Filter;
 use crate::match_request::{HydratedThing, MatchResult, SlotValue};
 use crate::plan_builders::BuiltPlan;
+use crate::plan_builders::bulk_write::WriteKind;
 use crate::plan_builders::manager::{ManagerPlans, ManagerRead, ReadTerminal};
 use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResourceLimits};
 use crate::query_plan_exec::PlanAnswer;
@@ -130,26 +131,21 @@ impl<'db> DynamicEntityManager<'db> {
         &self.descriptor
     }
 
-    pub(crate) async fn resolve_iid(
+    pub(crate) async fn mutate_many_identities(
         &self,
-        iid: Option<&str>,
-        attributes: &DynamicAttributeMap,
-    ) -> Result<Option<String>> {
-        let plans = self.plans.as_ref().ok_or_else(|| {
-            crate::plan_builders::manager::invalid(
-                "manager_plan_authority_unavailable",
-                "This operation requires a registry-backed manager",
-            )
-        })?;
-        resolve_manager_iid(
-            &self.target,
-            plans,
-            &self.descriptor.type_name,
-            iid,
-            attributes,
-            &[],
-        )
-        .await
+        items: &[(Option<String>, DynamicAttributeMap)],
+        kind: WriteKind,
+    ) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let inputs = items
+            .iter()
+            .map(|(iid, fields)| (iid.as_deref(), fields, &[][..]))
+            .collect::<Vec<_>>();
+        let program = plans.write_many(&self.descriptor.type_name, kind, &inputs)?;
+        self.target.write_plan_group(program, |_| Ok(())).await
     }
 
     pub(crate) async fn delete_identity(
@@ -346,6 +342,9 @@ impl<'db> DynamicEntityManager<'db> {
             return Ok(vec![]);
         }
 
+        if let Some(plans) = &self.plans {
+            return self.write_many_by_plan(plans, items, WriteKind::Put).await;
+        }
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
@@ -1332,6 +1331,35 @@ impl<'db> DynamicEntityManager<'db> {
         &self,
         items: &[(String, DynamicAttributeMap)],
     ) -> Result<Vec<DynamicEntityRow>> {
+        if let Some(plans) = &self.plans {
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            let inputs = items
+                .iter()
+                .map(|(iid, attributes)| (Some(iid.as_str()), attributes, &[][..]))
+                .collect::<Vec<_>>();
+            let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
+            return self
+                .target
+                .write_plan_group(plan, |answer| {
+                    group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                        .iter()
+                        .zip(items)
+                        .map(|(documents, (iid, _))| {
+                            let [document] = documents.as_slice() else {
+                                return Err(snapshot_error(&self.descriptor.type_name));
+                            };
+                            let row = hydrate_dynamic_entity(&self.descriptor, document)?;
+                            if row.iid.as_deref() != Some(iid) {
+                                return Err(snapshot_error(&self.descriptor.type_name));
+                            }
+                            Ok(row)
+                        })
+                        .collect()
+                })
+                .await;
+        }
         let mut rows = Vec::with_capacity(items.len());
         for (iid, attributes) in items {
             rows.push(
@@ -1343,10 +1371,58 @@ impl<'db> DynamicEntityManager<'db> {
     }
 
     async fn delete_many_by_iid_exact_in_transaction(&self, iids: &[String]) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            if iids.is_empty() {
+                return Ok(());
+            }
+            let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
+            return self.target.write_plan(&plan, |_| Ok(())).await;
+        }
         for iid in iids {
             self.delete_by_iid_exact(iid).await?;
         }
         Ok(())
+    }
+
+    async fn write_many_by_plan(
+        &self,
+        plans: &ManagerPlans,
+        items: &[DynamicAttributeMap],
+        kind: WriteKind,
+    ) -> Result<Vec<String>> {
+        let inputs = items
+            .iter()
+            .map(|attributes| (None, attributes, &[][..]))
+            .collect::<Vec<_>>();
+        let plan = plans.write_many(&self.descriptor.type_name, kind, &inputs)?;
+        let layout = plan.identity_layout();
+        self.target
+            .write_plan_group(plan, |answer| {
+                if layout.is_some()
+                    || answer
+                        .iter()
+                        .all(|answer| matches!(answer, PlanAnswer::Rows(_)))
+                {
+                    return group_write_identity_rows(
+                        answer,
+                        items.len(),
+                        layout,
+                        &self.descriptor.type_name,
+                    );
+                }
+                group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                    .iter()
+                    .map(|documents| {
+                        let [document] = documents.as_slice() else {
+                            return Err(snapshot_error(&self.descriptor.type_name));
+                        };
+                        hydrate_dynamic_entity(&self.descriptor, document)?
+                            .iid
+                            .ok_or_else(|| snapshot_error(&self.descriptor.type_name))
+                    })
+                    .collect()
+            })
+            .await
     }
 
     async fn write_many(
@@ -1358,63 +1434,12 @@ impl<'db> DynamicEntityManager<'db> {
             return Ok(vec![]);
         }
 
-        if matches!(operation, DynamicWriteOperation::Insert)
-            && let Some(plans) = &self.plans
-            && plans.transport == crate::plan_builders::ValueTransport::Given
-            && let Some(batch) = plans.insert_entities(&self.descriptor.type_name, items)?
-        {
-            let mut output = vec![None; items.len()];
-            self.target
-                .write_plans(&batch, |plan, answer| {
-                    let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
-                        answer
-                            .to_staged_v3(plan.local())
-                            .map_err(crate::plan_builders::manager::diagnostic)?
-                    else {
-                        return Err(snapshot_error(&self.descriptor.type_name));
-                    };
-                    let inputs = plan.local().given_rows().expect("native batch inputs");
-                    if rows.len() != inputs.len() {
-                        return Err(snapshot_error(&self.descriptor.type_name));
-                    }
-                    let first = match inputs[0].values().first() {
-                        Some(Some(type_bridge_contract::value::CanonicalValue::Long(index))) => {
-                            *index
-                        }
-                        _ => return Err(snapshot_error(&self.descriptor.type_name)),
-                    };
-                    for row in rows {
-                        match row.as_slice() {
-                            [
-                                type_bridge_contract::query_remote::RemoteValue::Value {
-                                    value: type_bridge_contract::value::CanonicalValue::Long(index),
-                                },
-                                type_bridge_contract::query_remote::RemoteValue::Thing {
-                                    iid,
-                                    type_id,
-                                },
-                            ] if type_id.label().as_str() == self.descriptor.type_name
-                                && *index >= first
-                                && (*index - first) < inputs.len() as i64 =>
-                            {
-                                let slot = usize::try_from(*index)
-                                    .ok()
-                                    .and_then(|index| output.get_mut(index))
-                                    .ok_or_else(|| snapshot_error(&self.descriptor.type_name))?;
-                                if slot.replace(iid.clone()).is_some() {
-                                    return Err(snapshot_error(&self.descriptor.type_name));
-                                }
-                            }
-                            _ => return Err(snapshot_error(&self.descriptor.type_name)),
-                        }
-                    }
-                    Ok(())
-                })
-                .await?;
-            return output
-                .into_iter()
-                .map(|value| value.ok_or_else(|| snapshot_error(&self.descriptor.type_name)))
-                .collect();
+        if let Some(plans) = &self.plans {
+            let kind = match operation {
+                DynamicWriteOperation::Insert => WriteKind::Insert,
+                DynamicWriteOperation::Put => WriteKind::PartialPut,
+            };
+            return self.write_many_by_plan(plans, items, kind).await;
         }
 
         // Given-stage fast path (TypeDB 3.12+): one compiled insert pipeline
@@ -1650,27 +1675,34 @@ impl<'db> DynamicRelationManager<'db> {
         &self.descriptor
     }
 
-    pub(crate) async fn resolve_iid(
+    pub(crate) async fn delete_many_identities(
         &self,
-        iid: Option<&str>,
-        attributes: &DynamicAttributeMap,
-        players: &[DynamicRolePlayerInput],
-    ) -> Result<Option<String>> {
-        let plans = self.plans.as_ref().ok_or_else(|| {
-            crate::plan_builders::manager::invalid(
-                "manager_plan_authority_unavailable",
-                "This operation requires a registry-backed manager",
-            )
-        })?;
-        resolve_manager_iid(
-            &self.target,
-            plans,
-            &self.descriptor.type_name,
-            iid,
-            attributes,
-            players,
-        )
-        .await
+        items: &[(
+            Option<String>,
+            DynamicAttributeMap,
+            Vec<DynamicRolePlayerInput>,
+        )],
+    ) -> Result<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let plans = self.plans.as_ref().expect("registry-backed manager");
+        let inputs = items
+            .iter()
+            .map(|(iid, fields, players)| {
+                (
+                    iid.as_deref(),
+                    fields,
+                    if iid.is_some() {
+                        &[][..]
+                    } else {
+                        players.as_slice()
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let program = plans.write_many(&self.descriptor.type_name, WriteKind::Delete, &inputs)?;
+        self.target.write_plan_group(program, |_| Ok(())).await
     }
 
     pub(crate) async fn delete_identity(
@@ -2184,6 +2216,9 @@ impl<'db> DynamicRelationManager<'db> {
         &self,
         items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
     ) -> Result<Vec<String>> {
+        if let Some(plans) = &self.plans {
+            return self.write_many_by_plan(plans, items, WriteKind::Put).await;
+        }
         let mut result = Vec::with_capacity(items.len());
         for (attributes, role_players) in items {
             result.push(
@@ -2419,6 +2454,42 @@ impl<'db> DynamicRelationManager<'db> {
         &self,
         items: &[(String, DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
     ) -> Result<Vec<DynamicRelationRow>> {
+        if let Some(plans) = &self.plans {
+            if items.is_empty() {
+                return Ok(Vec::new());
+            }
+            let inputs = items
+                .iter()
+                .map(|(iid, attributes, players)| {
+                    (Some(iid.as_str()), attributes, players.as_slice())
+                })
+                .collect::<Vec<_>>();
+            let plan = plans.write_many(&self.descriptor.type_name, WriteKind::Update, &inputs)?;
+            return self
+                .target
+                .write_plan_group(plan, |answer| {
+                    group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                        .iter()
+                        .zip(items)
+                        .map(|(documents, (iid, _, players))| {
+                            let rows =
+                                coalesce_dynamic_relation_by_iid(&self.descriptor, documents, iid)?;
+                            let [row] = rows.as_slice() else {
+                                return Err(snapshot_error(&self.descriptor.type_name));
+                            };
+                            validate_written_players(
+                                &plans.registry,
+                                true,
+                                &self.descriptor.type_name,
+                                row,
+                                players,
+                            )?;
+                            Ok(row.clone())
+                        })
+                        .collect()
+                })
+                .await;
+        }
         let mut rows = Vec::with_capacity(items.len());
         for (iid, attributes, role_players) in items {
             rows.push(
@@ -2910,6 +2981,13 @@ impl<'db> DynamicRelationManager<'db> {
     }
 
     async fn delete_many_by_iid_exact_in_transaction(&self, iids: &[String]) -> Result<()> {
+        if let Some(plans) = &self.plans {
+            if iids.is_empty() {
+                return Ok(());
+            }
+            let plan = plans.delete_many(&self.descriptor.type_name, iids, true, false)?;
+            return self.target.write_plan(&plan, |_| Ok(())).await;
+        }
         for iid in iids {
             self.delete_by_iid_exact(iid).await?;
         }
@@ -3143,6 +3221,56 @@ impl<'db> DynamicRelationManager<'db> {
         Ok(())
     }
 
+    async fn write_many_by_plan(
+        &self,
+        plans: &ManagerPlans,
+        items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
+        kind: WriteKind,
+    ) -> Result<Vec<String>> {
+        let inputs = items
+            .iter()
+            .map(|(attributes, players)| (None, attributes, players.as_slice()))
+            .collect::<Vec<_>>();
+        let plan = plans.write_many(&self.descriptor.type_name, kind, &inputs)?;
+        let layout = plan.identity_layout();
+        self.target
+            .write_plan_group(plan, |answer| {
+                if layout.is_some()
+                    || answer
+                        .iter()
+                        .all(|answer| matches!(answer, PlanAnswer::Rows(_)))
+                {
+                    return group_write_identity_rows(
+                        answer,
+                        items.len(),
+                        layout,
+                        &self.descriptor.type_name,
+                    );
+                }
+                group_write_documents(answer, items.len(), &self.descriptor.type_name)?
+                    .iter()
+                    .zip(items)
+                    .map(|(documents, (_, players))| {
+                        let rows = coalesce_dynamic_relations(&self.descriptor, documents)?;
+                        let [row] = rows.as_slice() else {
+                            return Err(snapshot_error(&self.descriptor.type_name));
+                        };
+                        validate_written_players(
+                            &plans.registry,
+                            kind != WriteKind::Insert,
+                            &self.descriptor.type_name,
+                            row,
+                            players,
+                        )?;
+                        row.iid
+                            .clone()
+                            .ok_or_else(|| snapshot_error(&self.descriptor.type_name))
+                    })
+                    .collect()
+            })
+            .await
+    }
+
     async fn write_many(
         &self,
         items: &[(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)],
@@ -3152,6 +3280,13 @@ impl<'db> DynamicRelationManager<'db> {
             return Ok(vec![]);
         }
 
+        if let Some(plans) = &self.plans {
+            let kind = match operation {
+                DynamicWriteOperation::Insert => WriteKind::Insert,
+                DynamicWriteOperation::Put => WriteKind::MatchPut,
+            };
+            return self.write_many_by_plan(plans, items, kind).await;
+        }
         match &self.target {
             DynamicExecutionTarget::Database(db) => {
                 let tx = db.transaction_context(TxType::Write).await?;
@@ -3591,11 +3726,17 @@ impl DynamicExecutionTarget<'_> {
         }
     }
 
-    async fn write_plans(
+    async fn write_plan_group<T>(
         &self,
-        plans: &[BuiltPlan],
-        mut map: impl FnMut(&BuiltPlan, PlanAnswer) -> Result<()>,
-    ) -> Result<()> {
+        mut program: crate::plan_builders::bulk_write::WriteProgram,
+        map: impl FnOnce(Vec<PlanAnswer>) -> Result<T>,
+    ) -> Result<T> {
+        if let crate::plan_builders::bulk_write::WriteProgram::Compact(plans) = &program
+            && let [plan] = plans.as_slice()
+        {
+            return self.write_plan(plan, |answer| map(vec![answer])).await;
+        }
+        let statement_count = program.statement_count();
         let (tx, owned) = match self {
             Self::Database(db) | Self::CanonicalDatabase(db) => {
                 (db.transaction_context(TxType::Write).await?, true)
@@ -3605,61 +3746,93 @@ impl DynamicExecutionTarget<'_> {
         let policy = tx
             .answer_limits()
             .unwrap_or_default()
-            .for_adapter_statements(plans.len());
+            .for_adapter_statements(statement_count);
         let cancellation = AnswerCancellation::default();
         let deadline = QueryExecutionDeadline::for_limits(policy);
+        let given = tx.supports_given_stage().await?;
+        let mut lease = tx.acquire_mutation_lease().await?;
         let result = async {
-            let mut lease = tx.acquire_mutation_lease().await?;
-            let result = async {
-                if plans.len() > policy.statement_limit() as usize {
+            if statement_count > policy.statement_limit() as usize {
+                return Err(crate::match_request::MatchError::new(
+                    crate::match_request::MatchErrorCategory::ResourceLimit,
+                    "projected_batch_statement_limit",
+                    "Manager batch exceeds the provider statement ceiling",
+                )
+                .into());
+            }
+            let mut remaining = policy;
+            let mut answers = Vec::with_capacity(statement_count);
+            while let Some(step) = program
+                .next()
+                .map_err(crate::plan_builders::manager::diagnostic)?
+            {
+                let plan = &step.plan;
+                lease.check_plan_provider(plan.local())?;
+                let query = if given {
+                    crate::query_plan_exec::staged_query(plan.local(), true)
+                } else {
+                    crate::query_plan_exec::staged_literal_query(plan.local())
+                }
+                .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
+                let request_bytes = (query.typeql.len() as u64).saturating_add(
+                    query
+                        .rows
+                        .as_ref()
+                        .map(crate::projected_batch_executor::given_rows_bytes)
+                        .transpose()
+                        .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?
+                        .unwrap_or(0),
+                );
+                if request_bytes > remaining.bytes {
                     return Err(crate::match_request::MatchError::new(
                         crate::match_request::MatchErrorCategory::ResourceLimit,
-                        "projected_batch_statement_limit",
-                        "Manager batch exceeds the provider statement ceiling",
+                        "projected_batch_transport_byte_limit",
+                        "Manager batch exceeds the captured byte ceiling",
                     )
                     .into());
                 }
-                let mut remaining = policy;
-                for plan in plans {
-                    let query = lease.prepare_plan(plan.local())?;
-                    let limits = crate::query_plan_exec::plan_answer_limits(
-                        remaining,
-                        &cancellation,
-                        deadline,
-                    )?;
-                    let (answer, stats) = lease
-                        .dispatch_plan_counted(query, limits, Some(plan.local()))
-                        .await?;
-                    map(
-                        plan,
-                        TransactionContext::resolve_plan(plan.local(), answer)?,
-                    )?;
-                    remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
-                    remaining.items = remaining.items.saturating_sub(stats.processed_items);
+                remaining.bytes -= request_bytes;
+                let limits =
+                    crate::query_plan_exec::plan_answer_limits(remaining, &cancellation, deadline)?;
+                let (answer, stats) = lease
+                    .dispatch_plan_counted(query, limits, Some(plan.local()))
+                    .await?;
+                let answer = TransactionContext::resolve_plan(plan.local(), answer)?;
+                if step.complete {
+                    answers.push(answer);
+                } else {
+                    let iid = step
+                        .identity(&answer)
+                        .map_err(crate::plan_builders::manager::diagnostic)?;
+                    program
+                        .accept_identity(&step, iid)
+                        .map_err(crate::plan_builders::manager::diagnostic)?;
                 }
-                Ok(())
+                remaining.bytes = remaining.bytes.saturating_sub(stats.response_bytes);
+                remaining.items = remaining.items.saturating_sub(stats.processed_items);
             }
-            .await;
-            match result {
-                Ok(()) => lease.complete_success(),
-                Err(error) => {
-                    lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
-                        &error,
-                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                    ));
-                    return Err(error);
-                }
-            }
-            Ok(())
+            map(answers)
         }
         .await;
         match result {
-            Ok(()) if owned => super::returning::commit(&tx).await,
-            Err(error) if owned => {
-                let _ = tx.rollback().await;
+            Ok(value) => {
+                lease.complete_success();
+                if owned {
+                    super::returning::commit(&tx).await?;
+                }
+                Ok(value)
+            }
+            Err(error) => {
+                lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                    &error,
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                ));
+                drop(lease);
+                if owned {
+                    let _ = tx.rollback().await;
+                }
                 Err(error)
             }
-            result => result,
         }
     }
 
@@ -3970,49 +4143,6 @@ async fn plan_identities(
     plan_identity_rows(target, &program).await
 }
 
-async fn resolve_manager_iid(
-    target: &DynamicExecutionTarget<'_>,
-    plans: &ManagerPlans,
-    name: &str,
-    iid: Option<&str>,
-    attributes: &DynamicAttributeMap,
-    players: &[DynamicRolePlayerInput],
-) -> Result<Option<String>> {
-    plans.authority()?;
-    if let Some(iid) = iid {
-        if !type_bridge_contract::id::is_canonical_thing_iid(iid) {
-            return Err(crate::plan_builders::manager::invalid(
-                "query_plan_invalid_iid",
-                "Mutation requires a canonical IID",
-            ));
-        }
-        return Ok(Some(iid.to_ascii_lowercase()));
-    }
-    let keys = plans.key_expressions(name, attributes)?;
-    if keys.is_empty() && players.is_empty() {
-        return Err(crate::plan_builders::manager::invalid(
-            "manager_identity_missing",
-            "Mutation requires an IID, key attributes, or role players",
-        ));
-    }
-    let program = plans.read(
-        name,
-        false,
-        &keys,
-        &[],
-        None,
-        None,
-        players,
-        ReadTerminal::Identity,
-    )?;
-    let mut identities = plan_identity_rows(target, &program).await?;
-    match identities.len() {
-        0 => Ok(None),
-        1 => Ok(identities.pop().map(|(iid, _)| iid)),
-        _ => Err(snapshot_error(name)),
-    }
-}
-
 async fn plan_identity_rows(
     target: &DynamicExecutionTarget<'_>,
     program: &ManagerRead,
@@ -4035,6 +4165,163 @@ async fn plan_identity_rows(
             _ => Err(snapshot_error("identity")),
         })
         .collect()
+}
+
+fn group_write_identity_rows(
+    answers: Vec<PlanAnswer>,
+    count: usize,
+    layout: Option<Vec<Vec<(usize, String)>>>,
+    name: &str,
+) -> Result<Vec<String>> {
+    use type_bridge_contract::query_remote::RemoteValue;
+    use type_bridge_contract::value::CanonicalValue;
+    let mut identities: Vec<Option<String>> = vec![None; count];
+    if layout
+        .as_ref()
+        .is_some_and(|layout| layout.len() != answers.len())
+    {
+        return Err(snapshot_error(name));
+    }
+    for (piece, answer) in answers.into_iter().enumerate() {
+        let PlanAnswer::Rows(rows) = answer else {
+            return Err(snapshot_error(name));
+        };
+        for row in rows {
+            let columns = if let Some(layout) = &layout {
+                layout[piece].clone()
+            } else {
+                let value = crate::query_plan_exec::row_value(&row, "ordinal1", Default::default())
+                    .map_err(crate::plan_builders::manager::diagnostic)?;
+                let RemoteValue::Value {
+                    value: CanonicalValue::Long(ordinal),
+                } = value
+                else {
+                    return Err(snapshot_error(name));
+                };
+                vec![(
+                    usize::try_from(ordinal).map_err(|_| snapshot_error(name))?,
+                    String::from("root0"),
+                )]
+            };
+            for (ordinal, column) in columns {
+                let value = crate::query_plan_exec::row_value(&row, &column, Default::default())
+                    .map_err(crate::plan_builders::manager::diagnostic)?;
+                let RemoteValue::Thing { iid, .. } = value else {
+                    return Err(snapshot_error(name));
+                };
+                let target = identities
+                    .get_mut(ordinal)
+                    .ok_or_else(|| snapshot_error(name))?;
+                if target.as_ref().is_some_and(|previous| previous != &iid) {
+                    return Err(snapshot_error(name));
+                }
+                *target = Some(iid);
+            }
+        }
+    }
+    identities
+        .into_iter()
+        .map(|iid| iid.ok_or_else(|| snapshot_error(name)))
+        .collect()
+}
+
+fn group_write_documents(
+    answers: Vec<PlanAnswer>,
+    count: usize,
+    name: &str,
+) -> Result<Vec<Vec<serde_json::Value>>> {
+    let mut groups = vec![Vec::new(); count];
+    for answer in answers {
+        let PlanAnswer::Documents(documents) = answer else {
+            return Err(snapshot_error(name));
+        };
+        for document in documents {
+            let ordinal = document
+                .get("ordinal")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|ordinal| usize::try_from(ordinal).ok())
+                .ok_or_else(|| snapshot_error(name))?;
+            groups
+                .get_mut(ordinal)
+                .ok_or_else(|| snapshot_error(name))?
+                .push(document);
+        }
+    }
+    if groups.iter().any(Vec::is_empty) {
+        return Err(snapshot_error(name));
+    }
+    Ok(groups)
+}
+
+fn validate_written_players(
+    registry: &DescriptorRegistry,
+    exact: bool,
+    name: &str,
+    row: &DynamicRelationRow,
+    players: &[DynamicRolePlayerInput],
+) -> Result<()> {
+    let mut expected = std::collections::BTreeMap::<_, usize>::new();
+    let mut actual = std::collections::BTreeMap::<_, usize>::new();
+    for player in players {
+        *expected.entry(player.role_name.as_str()).or_default() += 1;
+    }
+    for player in &row.role_players {
+        *actual.entry(player.role_name.as_str()).or_default() += 1;
+    }
+    if expected != actual {
+        return Err(snapshot_error(name));
+    }
+    for expected in players {
+        let found = row.role_players.iter().any(|actual| {
+            actual.role_name == expected.role_name
+                && expected.iid.as_deref().is_none_or(|iid| {
+                    actual
+                        .player_iid
+                        .as_deref()
+                        .is_some_and(|actual| actual.eq_ignore_ascii_case(iid))
+                })
+                && expected.key.as_ref().is_none_or(|(field, value)| {
+                    actual.attributes.iter().any(|(name, actual)| {
+                        name == field
+                            && crate::value::AttributeValue::from_json(
+                                actual,
+                                value.value_type_name(),
+                            )
+                            .as_ref()
+                            .is_some_and(|actual| {
+                                crate::runtime_projection::canonical_attribute_value(actual).ok()
+                                    == crate::runtime_projection::canonical_attribute_value(value)
+                                        .ok()
+                            })
+                    })
+                })
+                && actual.player_type_name.as_deref().is_some_and(|actual| {
+                    if actual == expected.player_type_name {
+                        return true;
+                    }
+                    if exact {
+                        return false;
+                    }
+                    registry
+                        .installed_schema_authority()
+                        .expect("registry-backed write")
+                        .resolved()
+                        .types()
+                        .iter()
+                        .any(|(id, model)| {
+                            id.label().as_str() == expected.player_type_name
+                                && model
+                                    .subtypes()
+                                    .iter()
+                                    .any(|child| child.label().as_str() == actual)
+                        })
+                })
+        });
+        if !found {
+            return Err(snapshot_error(name));
+        }
+    }
+    Ok(())
 }
 
 fn plan_insert_iid(name: &str, plan: &BuiltPlan, answer: PlanAnswer) -> Result<String> {

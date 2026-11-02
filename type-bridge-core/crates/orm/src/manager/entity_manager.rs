@@ -563,48 +563,57 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             .map(|manager| manager.in_transaction(tx.clone()));
         let mut iids = Vec::with_capacity(entities.len());
 
-        for entity in entities.iter_mut() {
-            if let Some(manager) = &dynamic {
-                let iid = manager
-                    .insert(
-                        &entity
-                            .to_attribute_values()
-                            .into_iter()
-                            .map(|(name, value)| (name.into(), value))
-                            .collect::<DynamicAttributeMap>(),
-                    )
-                    .await?;
-                entity.set_iid(iid.clone());
-                iids.push(iid);
-                continue;
-            }
-            let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT BATCH");
-
-            // raw remainder: no registry authority; removed in 06
-            let result = tx.query(&typeql).await?;
-            match result {
-                QueryResult::Documents(docs) => {
-                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                        type_name: T::TYPE_NAME.into(),
-                        message: "Insert returned no documents".into(),
-                    })?;
-                    let iid = doc
-                        .get("iid")
-                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                        .ok_or_else(|| OrmError::Hydration {
-                            type_name: T::TYPE_NAME.into(),
-                            message: "No IID in insert response".into(),
-                        })?
-                        .to_string();
-                    entity.set_iid(iid.clone());
-                    iids.push(iid);
+        if let Some(manager) = &dynamic {
+            let items = entities
+                .iter()
+                .map(|entity| {
+                    entity
+                        .to_attribute_values()
+                        .into_iter()
+                        .map(|(name, value)| (name.into(), value))
+                        .collect::<DynamicAttributeMap>()
+                })
+                .collect::<Vec<_>>();
+            iids = match manager.insert_many(&items).await {
+                Ok(iids) => iids,
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    return Err(error);
                 }
-                _ => {
-                    return Err(OrmError::Hydration {
-                        type_name: T::TYPE_NAME.into(),
-                        message: "Expected Documents from insert+fetch".into(),
-                    });
+            };
+            for (entity, iid) in entities.iter_mut().zip(&iids) {
+                entity.set_iid(iid.clone());
+            }
+        } else {
+            for entity in entities.iter_mut() {
+                let typeql = query_builder::build_insert_with_iid::<T>(entity, "$e")?;
+                tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "INSERT BATCH");
+
+                // raw remainder: no registry authority; removed in 06
+                let result = tx.query(&typeql).await?;
+                match result {
+                    QueryResult::Documents(docs) => {
+                        let doc = docs.first().ok_or_else(|| OrmError::Hydration {
+                            type_name: T::TYPE_NAME.into(),
+                            message: "Insert returned no documents".into(),
+                        })?;
+                        let iid = doc
+                            .get("iid")
+                            .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                            .ok_or_else(|| OrmError::Hydration {
+                                type_name: T::TYPE_NAME.into(),
+                                message: "No IID in insert response".into(),
+                            })?
+                            .to_string();
+                        entity.set_iid(iid.clone());
+                        iids.push(iid);
+                    }
+                    _ => {
+                        return Err(OrmError::Hydration {
+                            type_name: T::TYPE_NAME.into(),
+                            message: "Expected Documents from insert+fetch".into(),
+                        });
+                    }
                 }
             }
         }
@@ -652,24 +661,34 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             .dynamic
             .as_ref()
             .map(|manager| manager.in_transaction(tx.clone()));
-        for entity in entities {
-            if let Some(manager) = &dynamic {
-                manager
-                    .delete_identity(
-                        entity.iid(),
-                        &entity
+        if let Some(manager) = &dynamic {
+            let items = entities
+                .iter()
+                .map(|entity| {
+                    (
+                        entity.iid().map(str::to_owned),
+                        entity
                             .to_attribute_values()
                             .into_iter()
                             .map(|(name, value)| (name.into(), value))
                             .collect::<DynamicAttributeMap>(),
                     )
-                    .await?;
-                continue;
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = manager
+                .mutate_many_identities(&items, crate::plan_builders::bulk_write::WriteKind::Delete)
+                .await
+            {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
-            let typeql = query_builder::build_delete::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE BATCH");
-            // raw remainder: no registry authority; removed in 06
-            tx.query(&typeql).await?;
+        } else {
+            for entity in entities {
+                let typeql = query_builder::build_delete::<T>(entity, "$e")?;
+                tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "DELETE BATCH");
+                // raw remainder: no registry authority; removed in 06
+                tx.query(&typeql).await?;
+            }
         }
         tx.commit().await?;
 
@@ -713,24 +732,37 @@ impl<'db, T: TypeBridgeEntity> EntityManager<'db, T> {
             .dynamic
             .as_ref()
             .map(|manager| manager.in_transaction(tx.clone()));
-        for entity in entities {
-            if let Some(manager) = &dynamic {
-                manager
-                    .update(
-                        entity.iid(),
-                        &entity
+        if let Some(manager) = &dynamic {
+            let items = entities
+                .iter()
+                .map(|entity| {
+                    (
+                        entity.iid().map(str::to_owned),
+                        entity
                             .to_attribute_values()
                             .into_iter()
                             .map(|(name, value)| (name.into(), value))
                             .collect::<DynamicAttributeMap>(),
                     )
-                    .await?;
-                continue;
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = manager
+                .mutate_many_identities(
+                    &items,
+                    crate::plan_builders::bulk_write::WriteKind::PartialUpdate,
+                )
+                .await
+            {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
-            let typeql = query_builder::build_update::<T>(entity, "$e")?;
-            tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE BATCH");
-            // raw remainder: no registry authority; removed in 06
-            tx.query(&typeql).await?;
+        } else {
+            for entity in entities {
+                let typeql = query_builder::build_update::<T>(entity, "$e")?;
+                tracing::debug!(typeql = %typeql, entity_type = T::TYPE_NAME, "UPDATE BATCH");
+                // raw remainder: no registry authority; removed in 06
+                tx.query(&typeql).await?;
+            }
         }
         tx.commit().await?;
 

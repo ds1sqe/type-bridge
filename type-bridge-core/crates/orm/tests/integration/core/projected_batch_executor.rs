@@ -276,15 +276,15 @@ entities:
   {person}:
     owns:
       {key}: {{ key: true }}
-      {string}: {{ card: {{ min: 0 }} }}
-      {boolean}: {{ card: {{ min: 0 }} }}
-      {integer}: {{ card: {{ min: 0 }} }}
-      {double}: {{ card: {{ min: 0 }} }}
-      {date}: {{ card: {{ min: 0 }} }}
-      {datetime}: {{ card: {{ min: 0 }} }}
-      {datetime_tz}: {{ card: {{ min: 0 }} }}
-      {decimal}: {{ card: {{ min: 0 }} }}
-      {duration}: {{ card: {{ min: 0 }} }}
+      {string}: {{ card: {{ min: 0, max: 1 }} }}
+      {boolean}: {{ card: {{ min: 0, max: 1 }} }}
+      {integer}: {{ card: {{ min: 0, max: 1 }} }}
+      {double}: {{ card: {{ min: 0, max: 1 }} }}
+      {date}: {{ card: {{ min: 0, max: 1 }} }}
+      {datetime}: {{ card: {{ min: 0, max: 1 }} }}
+      {datetime_tz}: {{ card: {{ min: 0, max: 1 }} }}
+      {decimal}: {{ card: {{ min: 0, max: 1 }} }}
+      {duration}: {{ card: {{ min: 0, max: 1 }} }}
 relations:
   {membership}:
     owns:
@@ -805,10 +805,13 @@ async fn projected_batch_all_operations_domains_roles_and_mixed_players_live() {
 /// Provider calls one counted connection observed.
 #[derive(Debug, Default)]
 struct DispatchLog {
+    statements: Vec<String>,
     /// `(query source, given rows)` per `given` query, in order.
     given_queries: Vec<(String, usize)>,
     opened: Vec<TxType>,
     commits: usize,
+    rollbacks: usize,
+    fail_at: Option<usize>,
 }
 
 impl DispatchLog {
@@ -828,11 +831,13 @@ impl DispatchLog {
 /// Forwards every provider call to the real backend and records each one.
 struct CountingBackend {
     inner: RealBackend,
+    literal: bool,
     log: Arc<Mutex<DispatchLog>>,
 }
 
 struct CountingTransaction {
     inner: Box<dyn TransactionOps>,
+    literal: bool,
     log: Arc<Mutex<DispatchLog>>,
 }
 
@@ -846,7 +851,11 @@ impl CountingBackend {
         Box::pin(async move {
             let inner = opened.await?;
             log.lock().unwrap().opened.push(tx_type);
-            Ok(Box::new(CountingTransaction { inner, log }) as Box<dyn TransactionOps>)
+            Ok(Box::new(CountingTransaction {
+                inner,
+                literal: self.literal,
+                log,
+            }) as Box<dyn TransactionOps>)
         })
     }
 }
@@ -892,7 +901,7 @@ impl DriverBackend for CountingBackend {
         self.inner.server_version()
     }
     fn supports_given_rows(&self) -> bool {
-        DriverBackend::supports_given_rows(&self.inner)
+        !self.literal && DriverBackend::supports_given_rows(&self.inner)
     }
     fn database_exists(&self, database: &str) -> BoxFuture<'_, Result<bool, OrmError>> {
         self.inner.database_exists(database)
@@ -910,18 +919,20 @@ impl DriverBackend for CountingBackend {
 
 impl TransactionOps for CountingTransaction {
     fn supports_given_rows(&self) -> bool {
-        self.inner.supports_given_rows()
+        !self.literal && self.inner.supports_given_rows()
     }
     fn schema_snapshot(&mut self) -> BoxFuture<'_, Result<Option<String>, OrmError>> {
         self.inner.schema_snapshot()
     }
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
+        self.log.lock().unwrap().statements.push(typeql.to_owned());
         self.inner.query(typeql)
     }
     fn query_canonical<'a>(
         &'a mut self,
         typeql: &str,
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
+        self.log.lock().unwrap().statements.push(typeql.to_owned());
         self.inner.query_canonical(typeql)
     }
     fn query_with_rows(
@@ -953,9 +964,20 @@ impl TransactionOps for CountingTransaction {
     ) -> BoxFuture<'a, Result<QueryResult, OrmError>> {
         if let Some(rows) = &rows {
             self.record(typeql, rows);
+        } else {
+            self.log.lock().unwrap().statements.push(typeql.to_owned());
         }
-        self.inner
-            .query_materialized_bounded(typeql, rows, limits, canonical, statement_display)
+        let fail = self.fail_requested();
+        after_counted(
+            self.inner.query_materialized_bounded(
+                typeql,
+                rows,
+                limits,
+                canonical,
+                statement_display,
+            ),
+            fail,
+        )
     }
     fn query_bounded<'a>(
         &'a mut self,
@@ -963,6 +985,7 @@ impl TransactionOps for CountingTransaction {
         limits: BoundedAnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
+        self.log.lock().unwrap().statements.push(typeql.to_owned());
         self.inner.query_bounded(typeql, limits, consumer)
     }
     fn query_v2_bounded<'a>(
@@ -971,7 +994,9 @@ impl TransactionOps for CountingTransaction {
         limits: AnswerLimits,
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
-        self.inner.query_v2_bounded(typeql, limits, consumer)
+        self.log.lock().unwrap().statements.push(typeql.to_owned());
+        let fail = self.fail_requested();
+        after_counted(self.inner.query_v2_bounded(typeql, limits, consumer), fail)
     }
     fn query_v2_with_rows_bounded<'a>(
         &'a mut self,
@@ -981,8 +1006,12 @@ impl TransactionOps for CountingTransaction {
         consumer: &'a mut dyn AnswerConsumer,
     ) -> BoxFuture<'a, Result<BoundedAnswerStats, OrmError>> {
         self.record(typeql, &rows);
-        self.inner
-            .query_v2_with_rows_bounded(typeql, rows, limits, consumer)
+        let fail = self.fail_requested();
+        after_counted(
+            self.inner
+                .query_v2_with_rows_bounded(typeql, rows, limits, consumer),
+            fail,
+        )
     }
     fn query_typed_bounded<'a>(
         &'a mut self,
@@ -1038,6 +1067,7 @@ impl TransactionOps for CountingTransaction {
         self.inner.commit_classified()
     }
     fn rollback(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
+        self.log.lock().unwrap().rollbacks += 1;
         self.inner.rollback()
     }
     fn close(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
@@ -1045,8 +1075,27 @@ impl TransactionOps for CountingTransaction {
     }
 }
 
+fn after_counted<'a, T: Send + 'a>(
+    future: BoxFuture<'a, Result<T, OrmError>>,
+    fail: bool,
+) -> BoxFuture<'a, Result<T, OrmError>> {
+    Box::pin(async move {
+        let answer = future.await?;
+        if fail {
+            Err(OrmError::Transaction("injected final-piece failure".into()))
+        } else {
+            Ok(answer)
+        }
+    })
+}
+
 impl CountingTransaction {
+    fn fail_requested(&self) -> bool {
+        let log = self.log.lock().unwrap();
+        log.fail_at == Some(log.statements.len())
+    }
     fn record(&self, typeql: &str, rows: &GivenRowsSpec) {
+        self.log.lock().unwrap().statements.push(typeql.to_owned());
         self.log
             .lock()
             .unwrap()
@@ -1075,6 +1124,14 @@ async fn counted_fixture(
         .execute_raw(&schema_text(&ids), TxType::Schema)
         .await
         .unwrap();
+    let (counted, log) = counted_connection(&database, false).await;
+    Some((database, counted, installed, ids, log))
+}
+
+async fn counted_connection(
+    database: &Database,
+    literal: bool,
+) -> (Database, Arc<Mutex<DispatchLog>>) {
     let address = std::env::var("TYPEDB_ADDRESS").unwrap_or_else(|_| "localhost:1730".into());
     let username = std::env::var("TYPEDB_USERNAME").unwrap_or_else(|_| "admin".into());
     let password = std::env::var("TYPEDB_PASSWORD").unwrap_or_else(|_| "password".into());
@@ -1085,11 +1142,655 @@ async fn counted_fixture(
     let counted = Database::with_backend(
         Box::new(CountingBackend {
             inner,
+            literal,
             log: Arc::clone(&log),
         }),
         database.database_name(),
     );
-    Some((database, counted, installed, ids, log))
+    (counted, log)
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn keyed_relation_put_replaces_players_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let Some((database, counted, installed, ids, log)) = counted_fixture("keyed-put").await else {
+        return;
+    };
+    let executor = type_bridge_orm::ProjectedCrudExecutor::new(&installed);
+    let first = executor
+        .insert_entity(&counted, &person_create(&installed, &ids, "first", false))
+        .await
+        .unwrap();
+    let second = executor
+        .insert_entity(&counted, &person_create(&installed, &ids, "second", false))
+        .await
+        .unwrap();
+    let role = RoleId::new(ids.membership.label().as_str(), "member").unwrap();
+    let input = |player: &str| {
+        relation_create(
+            &installed,
+            &ids.membership,
+            role.clone(),
+            &ids.key,
+            "same-key",
+            vec![reference(&installed, &ids.person, player)],
+        )
+    };
+    let original = executor
+        .put_relation(&counted, &input(first.iid()))
+        .await
+        .unwrap();
+    assert_role_players(&original, &role, &[(&ids.person, first.iid())]);
+    *log.lock().unwrap() = DispatchLog::default();
+    let started = std::time::Instant::now();
+    let replaced = executor
+        .put_relation(&counted, &input(second.iid()))
+        .await
+        .unwrap();
+    eprintln!(
+        "keyed relation put: statements={} elapsed={:?}",
+        log.lock().unwrap().statements.len(),
+        started.elapsed()
+    );
+    assert_eq!(log.lock().unwrap().statements.len(), 1);
+    assert_eq!(replaced.iid(), original.iid());
+    assert_role_players(&replaced, &role, &[(&ids.person, second.iid())]);
+    let persisted = executor
+        .get_relation_by_iid(&counted, &ids.membership, original.iid())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_role_players(&persisted, &role, &[(&ids.person, second.iid())]);
+    *log.lock().unwrap() = DispatchLog::default();
+    let controlled = executor
+        .put_relation_controlled(
+            &counted,
+            &input(first.iid()),
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(log.lock().unwrap().statements.len(), 1);
+    assert_eq!(controlled, original);
+    *log.lock().unwrap() = DispatchLog::default();
+    let fresh = executor
+        .put_relation_controlled(
+            &counted,
+            &relation_create(
+                &installed,
+                &ids.membership,
+                role.clone(),
+                &ids.key,
+                "new-key",
+                vec![reference(&installed, &ids.person, second.iid())],
+            ),
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(log.lock().unwrap().statements.len(), 1);
+    assert_ne!(fresh.iid(), original.iid());
+    assert_role_players(&fresh, &role, &[(&ids.person, second.iid())]);
+    let (literal, literal_log) = counted_connection(&database, true).await;
+    let literal_put = executor
+        .put_relation_controlled(
+            &literal,
+            &input(second.iid()),
+            QueryExecutionResourceLimits::default(),
+            AnswerCancellation::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(literal_put.iid(), original.iid());
+    assert_role_players(&literal_put, &role, &[(&ids.person, second.iid())]);
+    {
+        let observed = literal_log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+    }
+    let mut put_times = Vec::new();
+    let mut update_times = Vec::new();
+    let mut get_times = Vec::new();
+    for iteration in 0..35 {
+        let player = if iteration % 2 == 0 {
+            first.iid()
+        } else {
+            second.iid()
+        };
+        let replacement = input(player);
+        let started = std::time::Instant::now();
+        let put = executor
+            .put_relation_controlled(
+                &database,
+                &replacement,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+            .await
+            .unwrap();
+        let put_elapsed = started.elapsed().as_micros();
+        assert_eq!(put.iid(), original.iid());
+        let started = std::time::Instant::now();
+        let updated = executor
+            .update_relation_controlled(
+                &database,
+                original.iid(),
+                &replacement,
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+            .await
+            .unwrap();
+        let update_elapsed = started.elapsed().as_micros();
+        assert_eq!(updated.iid(), original.iid());
+        let started = std::time::Instant::now();
+        let fetched = executor
+            .get_relation_by_iid_controlled(
+                &database,
+                &ids.membership,
+                original.iid(),
+                QueryExecutionResourceLimits::default(),
+                AnswerCancellation::default(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let get_elapsed = started.elapsed().as_micros();
+        assert_role_players(&fetched, &role, &[(&ids.person, player)]);
+        if iteration >= 5 {
+            put_times.push(put_elapsed);
+            update_times.push(update_elapsed);
+            get_times.push(get_elapsed);
+        }
+    }
+    for (operation, times) in [
+        ("put", &mut put_times),
+        ("update", &mut update_times),
+        ("get_by_iid", &mut get_times),
+    ] {
+        times.sort_unstable();
+        eprintln!(
+            "NATIVE_MANAGER_BENCH server={:?} operation={operation} samples=30 warmup=5 median_us={}",
+            database.server_version(),
+            (times[14] + times[15]) / 2
+        );
+    }
+    database.delete_database().await.unwrap();
+}
+
+#[derive(Debug, PartialEq)]
+struct PolymorphicSnapshot {
+    iid: Option<String>,
+    document: serde_json::Map<String, serde_json::Value>,
+}
+
+impl type_bridge_orm::_relation::TypeBridgeRelation for PolymorphicSnapshot {
+    const TYPE_NAME: &'static str = "poly-root";
+    fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+        &[]
+    }
+    fn role_info() -> &'static [type_bridge_orm::_relation::RoleInfo] {
+        &[]
+    }
+    fn iid(&self) -> Option<&str> {
+        self.iid.as_deref()
+    }
+    fn set_iid(&mut self, iid: String) {
+        self.iid = Some(iid);
+    }
+    fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+        vec![]
+    }
+    fn to_role_player_refs(&self) -> Vec<type_bridge_orm::_relation::RolePlayerRef> {
+        vec![]
+    }
+    fn from_document(
+        document: &serde_json::Map<String, serde_json::Value>,
+    ) -> type_bridge_orm::Result<Self> {
+        Ok(Self {
+            iid: None,
+            document: document.clone(),
+        })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn polymorphic_returning_delete_keeps_complete_subtype_snapshots_live() {
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = r#"format: typebridge.schema/v2
+attributes:
+  poly-key: { value: string }
+entities:
+  poly-person:
+    owns:
+      poly-key: { key: true }
+  poly-employee:
+    sub: poly-person
+relations:
+  poly-root:
+    owns:
+      poly-key: { key: true }
+    relates:
+      member: { card: { min: 1, max: 2 } }
+  poly-child:
+    sub: poly-root
+    relates:
+      extra: { card: { min: 0, max: 2 } }
+  poly-choice:
+    owns:
+      poly-key: { key: true }
+    relates:
+      left: { card: { min: 0, max: 2 } }
+      right: { card: { min: 0, max: 2 } }
+plays:
+  poly-person:
+    poly-root: [member]
+    poly-child: [extra]
+    poly-choice: [left, right]
+"#;
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("polymorphic.yaml").unwrap(), yaml)]).unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database
+        .execute_raw(
+            r#"define
+attribute poly-key, value string;
+entity poly-person, owns poly-key @key, plays poly-root:member, plays poly-child:extra, plays poly-choice:left, plays poly-choice:right;
+entity poly-employee sub poly-person;
+relation poly-root, owns poly-key @key, relates member @card(1..2);
+relation poly-child sub poly-root, relates extra @card(0..2);
+relation poly-choice, owns poly-key @key, relates left @card(0..2), relates right @card(0..2);
+"#,
+            TxType::Schema,
+        )
+        .await
+        .unwrap();
+    database
+        .execute_raw(
+            r#"insert $p isa! poly-person, has poly-key "p";
+$employee isa! poly-employee, has poly-key "employee";
+$r isa! poly-root, has poly-key "root", links (member: $p);
+$c isa! poly-child, has poly-key "child", links (member: $p, extra: $p);
+$e isa! poly-child, has poly-key "empty-child", links (member: $p);
+"#,
+            TxType::Write,
+        )
+        .await
+        .unwrap();
+    let (counted, log) = counted_connection(&database, false).await;
+    let manager = type_bridge_orm::_manager::RelationManager::<PolymorphicSnapshot>::from_registry(
+        &counted,
+        installed.manager_registry().unwrap(),
+    )
+    .unwrap();
+    let mut before = manager.all().await.unwrap();
+    before.sort_by(|a, b| {
+        a.document["poly-key"]
+            .as_str()
+            .cmp(&b.document["poly-key"].as_str())
+    });
+    assert_eq!(before.len(), 3);
+    *log.lock().unwrap() = DispatchLog::default();
+    let snapshots = manager.delete_many_returning(&before).await.unwrap();
+    eprintln!(
+        "polymorphic returning delete: statements={} snapshots={snapshots:?}",
+        log.lock().unwrap().statements.len()
+    );
+    assert_eq!(log.lock().unwrap().statements.len(), 2);
+    assert_eq!(snapshots, before);
+    assert!(manager.all().await.unwrap().is_empty());
+    disjoint_role_insert(&counted, &installed, &log).await;
+    database.delete_database().await.unwrap();
+}
+
+struct BatchChoiceRelation {
+    iid: Option<String>,
+    key: Option<String>,
+    players: Vec<type_bridge_orm::_relation::RolePlayerRef>,
+    document: Option<serde_json::Map<String, serde_json::Value>>,
+}
+impl type_bridge_orm::_relation::TypeBridgeRelation for BatchChoiceRelation {
+    const TYPE_NAME: &'static str = "poly-choice";
+    fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+        &[]
+    }
+    fn role_info() -> &'static [type_bridge_orm::_relation::RoleInfo] {
+        &[]
+    }
+    fn iid(&self) -> Option<&str> {
+        self.iid.as_deref()
+    }
+    fn set_iid(&mut self, iid: String) {
+        self.iid = Some(iid);
+    }
+    fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+        self.key
+            .as_ref()
+            .map(|key| {
+                (
+                    "poly-key",
+                    type_bridge_orm::AttributeValue::String(key.clone()),
+                )
+            })
+            .into_iter()
+            .collect()
+    }
+    fn to_role_player_refs(&self) -> Vec<type_bridge_orm::_relation::RolePlayerRef> {
+        self.players.clone()
+    }
+    fn from_document(
+        document: &serde_json::Map<String, serde_json::Value>,
+    ) -> type_bridge_orm::Result<Self> {
+        Ok(Self {
+            iid: None,
+            key: document
+                .get("poly-key")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            players: vec![],
+            document: Some(document.clone()),
+        })
+    }
+}
+
+async fn disjoint_role_insert(
+    database: &Database,
+    installed: &InstalledRuntimeProjection,
+    log: &Arc<Mutex<DispatchLog>>,
+) {
+    use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::DynamicRelationManager;
+    use type_bridge_orm::AttributeValue;
+    let registry = installed.manager_registry().unwrap();
+    let descriptor = registry.relation("poly-choice").unwrap();
+    let raw = DynamicRelationManager::new(database, Arc::clone(&descriptor));
+    let manager = DynamicRelationManager::from_registry(database, registry, descriptor);
+    let player = |role: &str| DynamicRolePlayerInput {
+        role_name: role.into(),
+        player_type_name: "poly-person".into(),
+        iid: None,
+        key: Some(("poly-key".into(), AttributeValue::String("p".into()))),
+    };
+    let items: Vec<(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)> = vec![
+        (
+            vec![("poly-key".into(), AttributeValue::String("left".into()))],
+            vec![player("left")],
+        ),
+        (
+            vec![("poly-key".into(), AttributeValue::String("right".into()))],
+            vec![player("right")],
+        ),
+        (
+            vec![("poly-key".into(), AttributeValue::String("both".into()))],
+            vec![player("left"), player("right")],
+        ),
+    ];
+    let old_iids = raw.insert_many(&items).await.unwrap();
+    let mut baseline = Vec::new();
+    for iid in &old_iids {
+        let mut row = manager.get_by_iid_exact(iid).await.unwrap();
+        row[0].iid = None;
+        baseline.push(serde_json::to_value(row).unwrap());
+    }
+    manager.delete_many_by_iid_exact(&old_iids).await.unwrap();
+    *log.lock().unwrap() = DispatchLog::default();
+    let iids = manager.insert_many(&items).await.unwrap();
+    assert_eq!(log.lock().unwrap().statements.len(), 1);
+    assert_eq!(iids.len(), 3);
+    for (iid, expected) in iids.iter().zip(&baseline) {
+        let mut row = manager.get_by_iid_exact(iid).await.unwrap();
+        row[0].iid = None;
+        assert_eq!(&serde_json::to_value(row).unwrap(), expected);
+    }
+    let first_player = manager.get_by_iid_exact(&iids[0]).await.unwrap()[0].role_players[0]
+        .player_iid
+        .clone()
+        .unwrap();
+    let mut aliased_players = vec![player("left"), player("left")];
+    aliased_players[0].iid = Some(first_player.clone());
+    aliased_players[0].key = None;
+    *log.lock().unwrap() = DispatchLog::default();
+    assert!(
+        manager
+            .put_exact(&items[0].0, &aliased_players)
+            .await
+            .is_err()
+    );
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+    }
+    let mut unchanged = manager.get_by_iid_exact(&iids[0]).await.unwrap();
+    unchanged[0].iid = None;
+    assert_eq!(serde_json::to_value(unchanged).unwrap(), baseline[0]);
+    let mut put_items = items.clone();
+    put_items[0].1[0].iid = Some(first_player);
+    put_items[0].1[0].key = None;
+    put_items[2].0[0].1 = AttributeValue::String("new-mixed".into());
+    let old_put = raw.put_many_exact(&put_items).await.unwrap();
+    let mut put_baseline = Vec::new();
+    for iid in &old_put {
+        let mut row = manager.get_by_iid_exact(iid).await.unwrap();
+        row[0].iid = None;
+        put_baseline.push(serde_json::to_value(row).unwrap());
+    }
+    manager
+        .delete_many_by_iid_exact(&old_put[2..])
+        .await
+        .unwrap();
+    *log.lock().unwrap() = DispatchLog::default();
+    let put = manager.put_many_exact(&put_items).await.unwrap();
+    {
+        let log = log.lock().unwrap();
+        assert_eq!(log.statements.len(), 1);
+        assert_eq!(log.opened, [TxType::Write]);
+        assert_eq!(log.commits, 1);
+    }
+    assert_eq!(&put[..2], &iids[..2]);
+    assert_ne!(put[2], iids[2]);
+    for (iid, expected) in put.iter().zip(&put_baseline) {
+        let mut row = manager.get_by_iid_exact(iid).await.unwrap();
+        row[0].iid = None;
+        assert_eq!(&serde_json::to_value(row).unwrap(), expected);
+    }
+    eprintln!(
+        "mixed IID/key put_many: one plan statement and transaction; existing IIDs preserved and all fields/players equal prior answers"
+    );
+    manager.delete_many_by_iid_exact(&iids).await.unwrap();
+    let (literal, literal_log) = counted_connection(database, true).await;
+    let literal_manager = DynamicRelationManager::from_registry(
+        &literal,
+        installed.manager_registry().unwrap(),
+        installed
+            .manager_registry()
+            .unwrap()
+            .relation("poly-choice")
+            .unwrap(),
+    );
+    let iids = literal_manager.insert_many(&items).await.unwrap();
+    assert_eq!(literal_log.lock().unwrap().statements.len(), 1);
+    for (iid, expected) in iids.iter().zip(&baseline) {
+        let mut row = literal_manager.get_by_iid_exact(iid).await.unwrap();
+        row[0].iid = None;
+        assert_eq!(&serde_json::to_value(row).unwrap(), expected);
+    }
+    let typed = type_bridge_orm::_manager::RelationManager::<BatchChoiceRelation>::from_registry(
+        database,
+        installed.manager_registry().unwrap(),
+    )
+    .unwrap();
+    let mut inserts = ["left", "right", "both"]
+        .into_iter()
+        .map(|kind| BatchChoiceRelation {
+            iid: None,
+            key: Some(format!("generic-{kind}")),
+            document: None,
+            players: if kind == "both" {
+                vec!["left", "right"]
+            } else {
+                vec![kind]
+            }
+            .into_iter()
+            .map(|role| type_bridge_orm::_relation::RolePlayerRef {
+                role,
+                entity_type_name: "poly-person",
+                iid: None,
+                key: Some(("poly-key", AttributeValue::String("p".into()))),
+            })
+            .collect(),
+        })
+        .collect::<Vec<_>>();
+    *log.lock().unwrap() = DispatchLog::default();
+    let created = typed.insert_many(&mut inserts).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    assert_eq!(
+        inserts
+            .iter()
+            .map(|model| model.iid.clone().unwrap())
+            .collect::<Vec<_>>(),
+        created
+    );
+    inserts[1].iid = None;
+    inserts[2].iid = None;
+    inserts[2].players.clear();
+    *log.lock().unwrap() = DispatchLog::default();
+    typed.delete_many(&inserts).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    for iid in &created {
+        assert!(manager.get_by_iid_exact(iid).await.unwrap().is_empty());
+    }
+    eprintln!(
+        "generic relation insert_many/delete_many: one statement and transaction each, mixed IID/key/player selectors"
+    );
+    let subtype_items = ["employee-left", "employee-right"]
+        .into_iter()
+        .map(|key| {
+            (
+                vec![("poly-key".into(), AttributeValue::String(key.into()))],
+                vec![DynamicRolePlayerInput {
+                    role_name: "left".into(),
+                    player_type_name: "poly-person".into(),
+                    iid: None,
+                    key: Some(("poly-key".into(), AttributeValue::String("employee".into()))),
+                }],
+            )
+        })
+        .collect::<Vec<_>>();
+    *log.lock().unwrap() = DispatchLog::default();
+    let subtype_iids = manager.insert_many(&subtype_items).await.unwrap();
+    assert_eq!(log.lock().unwrap().statements.len(), 1);
+    for iid in &subtype_iids {
+        let stored = manager.get_by_iid_exact(iid).await.unwrap();
+        assert_eq!(
+            stored[0].role_players[0].player_type_name.as_deref(),
+            Some("poly-employee")
+        );
+    }
+    let selectors = vec![
+        BatchChoiceRelation {
+            iid: None,
+            key: Some("employee-right".into()),
+            players: vec![type_bridge_orm::_relation::RolePlayerRef {
+                role: "left",
+                entity_type_name: "poly-person",
+                iid: None,
+                key: Some(("poly-key", AttributeValue::String("employee".into()))),
+            }],
+            document: None,
+        },
+        BatchChoiceRelation {
+            iid: None,
+            key: Some("missing".into()),
+            players: vec![],
+            document: None,
+        },
+        BatchChoiceRelation {
+            iid: Some(subtype_iids[0].clone()),
+            key: Some("stale-selector-ignored-for-iid".into()),
+            players: vec![],
+            document: None,
+        },
+    ];
+    *log.lock().unwrap() = DispatchLog {
+        fail_at: Some(2),
+        ..Default::default()
+    };
+    assert!(typed.delete_many_returning(&selectors).await.is_err());
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 2);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+    }
+    for iid in &subtype_iids {
+        assert_eq!(manager.get_by_iid_exact(iid).await.unwrap().len(), 1);
+    }
+    *log.lock().unwrap() = DispatchLog::default();
+    let snapshots = typed.delete_many_returning(&selectors).await.unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].iid.as_ref(), Some(&subtype_iids[1]));
+    assert_eq!(snapshots[1].iid.as_ref(), Some(&subtype_iids[0]));
+    assert_eq!(snapshots[0].key.as_deref(), Some("employee-right"));
+    assert_eq!(snapshots[1].key.as_deref(), Some("employee-left"));
+    for snapshot in &snapshots {
+        assert!(
+            snapshot
+                .document
+                .as_ref()
+                .unwrap()
+                .contains_key("role_players")
+        );
+    }
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 2);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+    }
+    for iid in &subtype_iids {
+        assert!(manager.get_by_iid_exact(iid).await.unwrap().is_empty());
+    }
+    eprintln!(
+        "generic relation returning delete: mixed IID/key/base-player selectors, subtype snapshots, missing omitted, input order and final-delete rollback; two statements in one transaction"
+    );
+
+    eprintln!(
+        "disjoint and mixed role insert: one statement, given and literal; all committed fields and players equal grouped baseline"
+    );
 }
 
 fn person_rows(
@@ -1134,7 +1835,7 @@ async fn person_count(database: &Database, ids: &LiveIds) -> usize {
     }
 }
 
-/// A batch under every limit is one mutation and one attach query.
+/// A batch under every limit is one complete mutation pipeline.
 #[tokio::test]
 #[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
 async fn projected_batch_thousand_rows_fire_one_mutation_live() {
@@ -1160,18 +1861,13 @@ async fn projected_batch_thousand_rows_fire_one_mutation_live() {
     );
     assert_eq!(log.opened, vec![TxType::Write]);
     assert_eq!(log.commits, 1);
-    assert_eq!(calls.len(), 2, "one mutation stage and one attach stage");
-    assert_eq!(calls[0].1.len(), 1, "the mutation fires once");
-    assert_eq!(calls[1].1.len(), 1, "the attach fires once");
+    assert_eq!(calls.len(), 1, "one complete mutation pipeline");
+    assert_eq!(calls[0].1, vec![1_000], "the pipeline fires once");
     assert_eq!(person_count(&database, &ids).await, 1_000);
     database.delete_database().await.unwrap();
 }
 
 /// Rows past 4,096 split into same-shape chunks on one Write with one commit.
-///
-/// 5,000 rows, not 10,000: the attach stage costs grow with rows times
-/// stored instances, and a 10,000-row batch passes the provider's
-/// transaction timeout on the attach stage alone.
 #[tokio::test]
 #[ignore = "requires the exact TypeDB CE 3.12.1 live fixture"]
 async fn projected_batch_past_row_limit_splits_in_one_transaction_live() {
@@ -1198,7 +1894,11 @@ async fn projected_batch_past_row_limit_splits_in_one_transaction_live() {
     );
     assert_eq!(log.opened, vec![TxType::Write]);
     assert_eq!(log.commits, 1);
-    assert_eq!(calls.len(), 2, "one mutation stage and one attach stage");
+    assert_eq!(
+        calls.len(),
+        1,
+        "one complete mutation pipeline across canonical chunks"
+    );
     for (_, chunks) in &calls {
         assert_eq!(chunks, &vec![4_096, 904]);
     }
@@ -1257,5 +1957,1362 @@ async fn projected_batch_split_key_clash_in_last_chunk_stores_nothing_live() {
         1,
         "only the earlier person remains"
     );
+    database.delete_database().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
+    use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::{AttributeValue, Filter};
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    let prefix = unique_label("wide-manager");
+    let key = format!("{prefix}-key");
+    let tag = format!("{prefix}-tag");
+    let person_name = format!("{prefix}-person");
+    let relation_name = format!("{prefix}-relation");
+    let yaml = format!(
+        "format: typebridge.schema/v2\nattributes:\n  {key}: {{ value: string }}\n  {tag}: {{ value: string }}\nentities:\n  {person_name}:\n    owns:\n      {key}: {{ key: true }}\n      {tag}: {{ card: {{ min: 0 }} }}\nrelations:\n  {relation_name}:\n    owns:\n      {key}: {{ key: true }}\n    relates:\n      member: {{ card: {{ min: 0 }} }}\nplays:\n  {person_name}:\n    {relation_name}: [member]\n"
+    );
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("wide-manager.yaml").unwrap(), yaml.as_str())])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw(&format!("define attribute {key}, value string; attribute {tag}, value string; entity {person_name}, owns {key} @key, owns {tag} @card(0..), plays {relation_name}:member; relation {relation_name}, owns {key} @key, relates member @card(0..);"), TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let person_type = TypeId::new(TypeKind::Entity, &person_name).unwrap();
+    let relation_type = TypeId::new(TypeKind::Relation, &relation_name).unwrap();
+    let key_id = AttributeId::new(&key).unwrap();
+    let tag_id = AttributeId::new(&tag).unwrap();
+    let member = RoleId::new(&relation_name, "member").unwrap();
+    let raw_person = DynamicEntityManager::new(&database, registry.entity(&person_name).unwrap());
+    let raw_relation =
+        DynamicRelationManager::new(&database, registry.relation(&relation_name).unwrap());
+    let fields = |value: &str, count: usize| -> DynamicAttributeMap {
+        std::iter::once((key.clone(), AttributeValue::String(value.into())))
+            .chain(
+                (0..count)
+                    .map(|index| (tag.clone(), AttributeValue::String(format!("v-{index:04}")))),
+            )
+            .collect()
+    };
+    let baseline_iid = raw_person.insert(&fields("baseline", 300)).await.unwrap();
+    let baseline = raw_person.get_by_iid(&baseline_iid).await.unwrap().unwrap();
+    let baseline_values = baseline
+        .attributes
+        .iter()
+        .filter(|(name, _)| name == &tag)
+        .map(|(_, value)| format!("{value:?}"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let player_iids = raw_person
+        .insert_many(
+            &(0..300)
+                .map(|index| fields(&format!("player-{index}"), 0))
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    let role_inputs = player_iids
+        .iter()
+        .map(|iid| DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: person_name.clone(),
+            iid: Some(iid.clone()),
+            key: None,
+        })
+        .collect::<Vec<_>>();
+    let baseline_relation_iid = raw_relation
+        .insert(
+            &vec![(key.clone(), AttributeValue::String("baseline-role".into()))],
+            &role_inputs,
+        )
+        .await
+        .unwrap();
+    let mut baseline_role = raw_relation
+        .get_by_iid(&baseline_relation_iid)
+        .await
+        .unwrap();
+    assert_eq!(baseline_role.len(), 1);
+    let baseline_role = baseline_role.remove(0);
+    let baseline_players = baseline_role
+        .role_players
+        .iter()
+        .map(|player| player.player_iid.clone().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let wide_input = |relation: bool, value: &str| {
+        if relation {
+            relation_create(
+                &installed,
+                &relation_type,
+                member.clone(),
+                &key_id,
+                value,
+                player_iids
+                    .iter()
+                    .map(|iid| reference(&installed, &person_type, iid))
+                    .collect(),
+            )
+        } else {
+            ProjectedCreate::try_new(
+                &installed,
+                person_type.clone(),
+                vec![
+                    (
+                        field(&person_type, &key_id),
+                        vec![string_scalar(&installed, &key_id, value)],
+                    ),
+                    (
+                        field(&person_type, &tag_id),
+                        (0..300)
+                            .map(|index| {
+                                string_scalar(&installed, &tag_id, &format!("v-{index:04}"))
+                            })
+                            .collect(),
+                    ),
+                ],
+                vec![],
+            )
+            .unwrap()
+        }
+    };
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        let dynamic = DynamicEntityManager::from_registry(
+            &counted,
+            registry.clone(),
+            registry.entity(&person_name).unwrap(),
+        );
+        for count in [254, 300] {
+            *log.lock().unwrap() = DispatchLog::default();
+            let value = format!("dynamic-{literal}-{count}");
+            let iids = dynamic.insert_many(&[fields(&value, count)]).await.unwrap();
+            assert_eq!(
+                log.lock().unwrap().statements.len(),
+                if count == 254 { 1 } else { 2 }
+            );
+            assert_eq!(log.lock().unwrap().opened, [TxType::Write]);
+            assert_eq!(log.lock().unwrap().commits, 1);
+            if count == 300 {
+                let actual = raw_person.get_by_iid(&iids[0]).await.unwrap().unwrap();
+                let actual = actual
+                    .attributes
+                    .iter()
+                    .filter(|(name, _)| name == &tag)
+                    .map(|(_, value)| format!("{value:?}"))
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(actual, baseline_values);
+            }
+        }
+        let dynamic_relation = DynamicRelationManager::from_registry(
+            &counted,
+            registry.clone(),
+            registry.relation(&relation_name).unwrap(),
+        );
+        for fail in [false, true] {
+            let value = format!("dynamic-role-{literal}-{fail}");
+            *log.lock().unwrap() = DispatchLog {
+                fail_at: fail.then_some(2),
+                ..Default::default()
+            };
+            let result = dynamic_relation
+                .insert_many(&[(
+                    vec![(key.clone(), AttributeValue::String(value.clone()))],
+                    role_inputs.clone(),
+                )])
+                .await;
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 2);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!(
+                    (observed.commits, observed.rollbacks),
+                    if fail { (0, 1) } else { (1, 0) }
+                );
+            }
+            if fail {
+                assert!(result.is_err());
+                assert!(
+                    raw_relation
+                        .get(&[Filter::eq(&key, AttributeValue::String(value))])
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                let iid = result.unwrap().remove(0);
+                let mut rows = raw_relation.get_by_iid(&iid).await.unwrap();
+                assert_eq!(rows.len(), 1);
+                let row = rows.remove(0);
+                assert_eq!(
+                    row.role_players
+                        .iter()
+                        .map(|player| player.player_iid.clone().unwrap())
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    baseline_players
+                );
+            }
+        }
+        for relation in [false, true] {
+            for fail in [false, true] {
+                let value = format!("projected-{literal}-{relation}-{fail}");
+                let input = wide_input(relation, &value);
+                *log.lock().unwrap() = DispatchLog {
+                    fail_at: fail.then_some(2),
+                    ..Default::default()
+                };
+                let batch = ProjectedBatch::try_new(
+                    &installed,
+                    if relation {
+                        relation_type.clone()
+                    } else {
+                        person_type.clone()
+                    },
+                    ProjectedBatchOperation::Insert,
+                    vec![ProjectedBatchRow::Create(input)],
+                )
+                .unwrap();
+                let result = ProjectedBatchExecutor::new(&installed)
+                    .execute(&counted, &batch, control())
+                    .await;
+                assert_eq!(log.lock().unwrap().statements.len(), 2);
+                assert_eq!(log.lock().unwrap().opened, [TxType::Write]);
+                if fail {
+                    assert!(result.is_err());
+                    {
+                        let observed = log.lock().unwrap();
+                        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+                    }
+                    if relation {
+                        assert!(
+                            raw_relation
+                                .get(&[Filter::eq(&key, AttributeValue::String(value))])
+                                .await
+                                .unwrap()
+                                .is_empty()
+                        );
+                    } else {
+                        assert!(
+                            raw_person
+                                .get(&[Filter::eq(&key, AttributeValue::String(value))])
+                                .await
+                                .unwrap()
+                                .is_empty()
+                        );
+                    }
+                } else {
+                    let output = things(result.unwrap());
+                    assert_eq!(log.lock().unwrap().commits, 1);
+                    if relation {
+                        assert_eq!(
+                            output[0].roles()[&member]
+                                .iter()
+                                .map(|player| player.iid().to_owned())
+                                .collect::<std::collections::BTreeSet<_>>(),
+                            baseline_players
+                        );
+                    } else {
+                        assert_eq!(output[0].fields()[&field(&person_type, &tag_id)].len(), 300);
+                    }
+                }
+            }
+        }
+        let crud = type_bridge_orm::ProjectedCrudExecutor::new(&installed);
+        for relation in [false, true] {
+            for borrowed in [false, true] {
+                for fail in [false, true] {
+                    let value = format!("controlled-put-{literal}-{relation}-{borrowed}-{fail}");
+                    let input = wide_input(relation, &value);
+                    *log.lock().unwrap() = DispatchLog {
+                        fail_at: fail.then_some(2),
+                        ..Default::default()
+                    };
+                    let result = if borrowed {
+                        let transaction = counted.transaction_context(TxType::Write).await.unwrap();
+                        let result = if relation {
+                            crud.put_relation_in_transaction_controlled(
+                                &transaction,
+                                &input,
+                                QueryExecutionResourceLimits::default(),
+                                AnswerCancellation::default(),
+                            )
+                            .await
+                        } else {
+                            crud.put_entity_in_transaction_controlled(
+                                &transaction,
+                                &input,
+                                QueryExecutionResourceLimits::default(),
+                                AnswerCancellation::default(),
+                            )
+                            .await
+                        };
+                        if fail {
+                            assert!(transaction.commit_sdk().await.is_err());
+                            transaction.rollback().await.unwrap();
+                        } else {
+                            transaction.commit_sdk().await.unwrap();
+                        }
+                        result
+                    } else if relation {
+                        crud.put_relation_controlled(
+                            &counted,
+                            &input,
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                    } else {
+                        crud.put_entity_controlled(
+                            &counted,
+                            &input,
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                    };
+                    {
+                        let observed = log.lock().unwrap();
+                        assert_eq!(
+                            observed.statements.len(),
+                            2,
+                            "controlled Put relation={relation} borrowed={borrowed} fail={fail}"
+                        );
+                        assert_eq!(observed.opened, [TxType::Write]);
+                        assert_eq!(
+                            (observed.commits, observed.rollbacks),
+                            if fail { (0, 1) } else { (1, 0) }
+                        );
+                    }
+                    if fail {
+                        assert!(result.is_err());
+                        if relation {
+                            assert!(
+                                raw_relation
+                                    .get(&[Filter::eq(&key, AttributeValue::String(value))])
+                                    .await
+                                    .unwrap()
+                                    .is_empty()
+                            );
+                        } else {
+                            assert!(
+                                raw_person
+                                    .get(&[Filter::eq(&key, AttributeValue::String(value))])
+                                    .await
+                                    .unwrap()
+                                    .is_empty()
+                            );
+                        }
+                    } else {
+                        let thing = result.unwrap();
+                        if relation {
+                            assert_eq!(
+                                thing.roles()[&member]
+                                    .iter()
+                                    .map(|player| player.iid().to_owned())
+                                    .collect::<std::collections::BTreeSet<_>>(),
+                                baseline_players
+                            );
+                        } else {
+                            let actual = thing.fields()[&field(&person_type, &tag_id)]
+                                .iter()
+                                .map(|value| {
+                                    let CanonicalValue::String(text) = value.value() else {
+                                        panic!("expected string field")
+                                    };
+                                    text.as_str().to_owned()
+                                })
+                                .collect::<std::collections::BTreeSet<_>>();
+                            assert_eq!(
+                                actual,
+                                (0..300).map(|index| format!("v-{index:04}")).collect()
+                            );
+                        }
+                        if !borrowed {
+                            *log.lock().unwrap() = DispatchLog::default();
+                            let repeated = if relation {
+                                crud.put_relation_controlled(
+                                    &counted,
+                                    &input,
+                                    QueryExecutionResourceLimits::default(),
+                                    AnswerCancellation::default(),
+                                )
+                                .await
+                            } else {
+                                crud.put_entity_controlled(
+                                    &counted,
+                                    &input,
+                                    QueryExecutionResourceLimits::default(),
+                                    AnswerCancellation::default(),
+                                )
+                                .await
+                            }
+                            .unwrap();
+                            assert_eq!(repeated.iid(), thing.iid());
+                            let observed = log.lock().unwrap();
+                            assert_eq!(observed.statements.len(), 2);
+                            assert_eq!(observed.opened, [TxType::Write]);
+                            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+                        }
+                    }
+                }
+            }
+        }
+        if !literal {
+            for relation in [false, true] {
+                let input = wide_input(relation, &format!("controlled-statement-limit-{relation}"));
+                *log.lock().unwrap() = DispatchLog::default();
+                let limits = QueryExecutionResourceLimits {
+                    statements: Some(1),
+                    ..Default::default()
+                };
+                let result = if relation {
+                    crud.put_relation_controlled(
+                        &counted,
+                        &input,
+                        limits,
+                        AnswerCancellation::default(),
+                    )
+                    .await
+                } else {
+                    crud.put_entity_controlled(
+                        &counted,
+                        &input,
+                        limits,
+                        AnswerCancellation::default(),
+                    )
+                    .await
+                };
+                assert_eq!(
+                    result.unwrap_err().code().as_str(),
+                    "projected_batch_statement_limit"
+                );
+                let observed = log.lock().unwrap();
+                assert!(observed.statements.is_empty());
+                assert!(observed.opened.is_empty());
+            }
+        }
+    }
+    database.delete_database().await.unwrap();
+}
+
+struct PartialUpdateEntity {
+    iid: Option<String>,
+    fields: Vec<(&'static str, type_bridge_orm::AttributeValue)>,
+}
+impl type_bridge_orm::_entity::TypeBridgeEntity for PartialUpdateEntity {
+    const TYPE_NAME: &'static str = "partial-person";
+    fn owned_attributes() -> &'static [type_bridge_orm::_entity::OwnedAttributeInfo] {
+        &[]
+    }
+    fn iid(&self) -> Option<&str> {
+        self.iid.as_deref()
+    }
+    fn set_iid(&mut self, iid: String) {
+        self.iid = Some(iid);
+    }
+    fn to_attribute_values(&self) -> Vec<(&'static str, type_bridge_orm::AttributeValue)> {
+        self.fields.clone()
+    }
+    fn from_document(
+        document: &serde_json::Map<String, serde_json::Value>,
+    ) -> type_bridge_orm::Result<Self> {
+        let mut fields = Vec::new();
+        for name in [
+            "partial-key",
+            "partial-name",
+            "partial-tag",
+            "partial-email",
+        ] {
+            match document.get(name) {
+                Some(serde_json::Value::String(value)) => {
+                    fields.push((name, type_bridge_orm::AttributeValue::String(value.clone())))
+                }
+                Some(serde_json::Value::Array(values)) => {
+                    for value in values {
+                        fields.push((
+                            name,
+                            type_bridge_orm::AttributeValue::String(
+                                value.as_str().expect("string fixture field").into(),
+                            ),
+                        ));
+                    }
+                }
+                None => {}
+                other => panic!("unexpected fixture field {name}: {other:?}"),
+            }
+        }
+        Ok(Self { iid: None, fields })
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn conditional_partial_update_matches_looped_answers_live() {
+    use type_bridge_orm::_dynamic::DynamicAttributeMap;
+    use type_bridge_orm::_manager::DynamicEntityManager;
+    use type_bridge_orm::AttributeValue;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let key = String::from("partial-key");
+    let name = String::from("partial-name");
+    let tag = String::from("partial-tag");
+    let person = String::from("partial-person");
+    let email = String::from("partial-email");
+    let yaml = format!(
+        "format: typebridge.schema/v2\nattributes:\n  {key}: {{ value: string }}\n  {name}: {{ value: string }}\n  {tag}: {{ value: string }}\n  {email}: {{ value: string }}\nentities:\n  {person}:\n    owns:\n      {key}: {{ key: true }}\n      {name}: {{ card: {{ min: 0, max: 1 }} }}\n      {tag}: {{ card: {{ min: 0 }} }}\n      {email}: {{ unique: true, card: {{ min: 0, max: 1 }} }}\n"
+    );
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("partial.yaml").unwrap(), yaml.as_str())])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw(&format!("define attribute {key}, value string; attribute {name}, value string; attribute {tag}, value string; attribute {email}, value string; entity {person}, owns {key} @key, owns {name} @card(0..1), owns {tag} @card(0..), owns {email} @unique @card(0..1);"), TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let manager = DynamicEntityManager::from_registry(
+        &database,
+        registry.clone(),
+        registry.entity(&person).unwrap(),
+    );
+    let initial = |value: &str| -> DynamicAttributeMap {
+        vec![
+            (key.clone(), AttributeValue::String(value.into())),
+            (name.clone(), AttributeValue::String("old-name".into())),
+            (tag.clone(), AttributeValue::String("old-1".into())),
+            (tag.clone(), AttributeValue::String("old-2".into())),
+        ]
+    };
+    let iids = manager
+        .insert_many(&[initial("a"), initial("b"), initial("c")])
+        .await
+        .unwrap();
+    let a = vec![(name.clone(), AttributeValue::String("new-name".into()))];
+    let b = vec![
+        (key.clone(), AttributeValue::String("b".into())),
+        (tag.clone(), AttributeValue::String("x".into())),
+        (tag.clone(), AttributeValue::String("y".into())),
+    ];
+    let tx = database.transaction_context(TxType::Write).await.unwrap();
+    let looped = DynamicEntityManager::with_registry_transaction(
+        tx.clone(),
+        registry.clone(),
+        registry.entity(&person).unwrap(),
+    );
+    looped.update(Some(&iids[0]), &a).await.unwrap();
+    looped.update(None, &b).await.unwrap();
+    looped.update(Some(&iids[2]), &vec![]).await.unwrap();
+    tx.commit().await.unwrap();
+    let mut expected = Vec::new();
+    for iid in &iids {
+        let row = manager.get_by_iid_exact(iid).await.unwrap().unwrap();
+        expected.push(
+            row.attributes
+                .iter()
+                .map(|(name, value)| format!("{name}={value:?}"))
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
+    }
+    for (iid, value) in iids.iter().zip(["a", "b", "c"]) {
+        manager.update_exact(iid, &initial(value)).await.unwrap();
+    }
+    let (counted, log) = counted_connection(&database, false).await;
+    let query = format!(
+        r#"match
+{{ $root isa! {person}, iid {aid}; let $row = 0; }} or
+{{ $root isa! {person}, has {key} "b"; let $row = 1; }} or
+{{ $root isa! {person}, iid {cid}; let $row = 2; }};
+let $root_iid = iid($root);
+try {{ $name_owner isa! {person}; iid($name_owner) == $root_iid; $row == 0; }};
+try {{ $tag_owner isa! {person}; iid($tag_owner) == $root_iid; $row == 1; }};
+match try {{ $name_owner has {name} $old_name; $old_name isa! {name}; }};
+try {{ $tag_owner has {tag} $old_tag; $old_tag isa! {tag}; }};
+delete try {{ has $old_name of $name_owner; }}; try {{ has $old_tag of $tag_owner; }};
+insert try {{ $name_owner has {name} "new-name"; }};
+try {{ $tag_owner has {tag} "x"; }}; try {{ $tag_owner has {tag} "y"; }};
+select $root; distinct;
+"#,
+        aid = iids[0],
+        cid = iids[2]
+    );
+    counted.execute_raw(&query, TxType::Write).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    for (iid, expected) in iids.iter().zip(&expected) {
+        let row = manager.get_by_iid_exact(iid).await.unwrap().unwrap();
+        let actual = row
+            .attributes
+            .iter()
+            .map(|(name, value)| format!("{name}={value:?}"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(&actual, expected);
+    }
+    eprintln!(
+        "conditional partial update: one statement/transaction; IID A name only, key B tags only, omitted C unchanged; equals looped updates"
+    );
+    for (iid, value) in iids.iter().zip(["a", "b", "c"]) {
+        manager.update_exact(iid, &initial(value)).await.unwrap();
+    }
+    let put_items = vec![
+        vec![
+            (key.clone(), AttributeValue::String("a".into())),
+            (name.clone(), AttributeValue::String("new-name".into())),
+        ],
+        b.clone(),
+        vec![(key.clone(), AttributeValue::String("c".into()))],
+        vec![
+            (key.clone(), AttributeValue::String("new".into())),
+            (name.clone(), AttributeValue::String("fresh".into())),
+        ],
+    ];
+    let tx = database.transaction_context(TxType::Write).await.unwrap();
+    let looped = DynamicEntityManager::with_registry_transaction(
+        tx.clone(),
+        registry.clone(),
+        registry.entity(&person).unwrap(),
+    );
+    let mut old_put = Vec::new();
+    for fields in &put_items {
+        old_put.push(looped.put(fields).await.unwrap());
+    }
+    tx.commit().await.unwrap();
+    let mut put_expected = Vec::new();
+    for iid in &old_put {
+        put_expected.push(
+            manager
+                .get_by_iid_exact(iid)
+                .await
+                .unwrap()
+                .unwrap()
+                .attributes
+                .iter()
+                .map(|(name, value)| format!("{name}={value:?}"))
+                .collect::<std::collections::BTreeSet<_>>(),
+        );
+    }
+    manager.delete_by_iid_exact(&old_put[3]).await.unwrap();
+    for literal in [false, true] {
+        for (iid, value) in iids.iter().zip(["a", "b", "c"]) {
+            manager.update_exact(iid, &initial(value)).await.unwrap();
+        }
+        let (put_db, put_log) = counted_connection(&database, literal).await;
+        let put_manager = DynamicEntityManager::from_registry(
+            &put_db,
+            registry.clone(),
+            registry.entity(&person).unwrap(),
+        );
+        let result = put_manager.put_many(&put_items).await.unwrap();
+        {
+            let observed = put_log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 1);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!(observed.commits, 1);
+        }
+        assert_eq!(result[..3], iids[..]);
+        assert_ne!(result[3], old_put[3]);
+        for (iid, expected) in result.iter().zip(&put_expected) {
+            let row = manager.get_by_iid_exact(iid).await.unwrap().unwrap();
+            assert_eq!(
+                &row.attributes
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value:?}"))
+                    .collect::<std::collections::BTreeSet<_>>(),
+                expected
+            );
+        }
+        manager.delete_by_iid_exact(&result[3]).await.unwrap();
+    }
+    for (iid, value) in iids.iter().zip(["a", "b", "c"]) {
+        manager.update_exact(iid, &initial(value)).await.unwrap();
+    }
+    eprintln!(
+        "keyed-partial entity put_many: Given/literal one statement/TX, hit/new identities and all committed fields equal per-row put"
+    );
+    let typed = type_bridge_orm::_manager::EntityManager::<PartialUpdateEntity>::from_registry(
+        &counted,
+        registry.clone(),
+    )
+    .unwrap();
+    let updates = vec![
+        PartialUpdateEntity {
+            iid: Some(iids[0].clone()),
+            fields: vec![("partial-name", AttributeValue::String("new-name".into()))],
+        },
+        PartialUpdateEntity {
+            iid: None,
+            fields: vec![
+                ("partial-key", AttributeValue::String("b".into())),
+                ("partial-tag", AttributeValue::String("x".into())),
+                ("partial-tag", AttributeValue::String("y".into())),
+            ],
+        },
+        PartialUpdateEntity {
+            iid: Some(iids[2].clone()),
+            fields: vec![],
+        },
+    ];
+    *log.lock().unwrap() = DispatchLog::default();
+    typed.update_many(&updates).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    for (iid, expected) in iids.iter().zip(&expected) {
+        let row = manager.get_by_iid_exact(iid).await.unwrap().unwrap();
+        assert_eq!(
+            &row.attributes
+                .iter()
+                .map(|(name, value)| format!("{name}={value:?}"))
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
+    }
+    *log.lock().unwrap() = DispatchLog::default();
+    let missing = format!("{}ff", &iids[0][..iids[0].len() - 2]);
+    let repeated = vec![
+        PartialUpdateEntity {
+            iid: Some(iids[0].clone()),
+            fields: vec![("partial-name", AttributeValue::String("first".into()))],
+        },
+        PartialUpdateEntity {
+            iid: Some(missing),
+            fields: vec![("partial-name", AttributeValue::String("ignored".into()))],
+        },
+        PartialUpdateEntity {
+            iid: Some(iids[0].clone()),
+            fields: vec![("partial-name", AttributeValue::String("last".into()))],
+        },
+    ];
+    typed.update_many(&repeated).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    assert!(
+        manager
+            .get_by_iid_exact(&iids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .attributes
+            .iter()
+            .any(|(name, value)| name == "partial-name"
+                && value == &AttributeValue::String("last".into()))
+    );
+    manager
+        .update(
+            Some(&iids[0]),
+            &vec![(email.clone(), AttributeValue::String("ea".into()))],
+        )
+        .await
+        .unwrap();
+    manager
+        .update(
+            Some(&iids[1]),
+            &vec![(email.clone(), AttributeValue::String("eb".into()))],
+        )
+        .await
+        .unwrap();
+    let tx = database.transaction_context(TxType::Write).await.unwrap();
+    let looped = DynamicEntityManager::with_registry_transaction(
+        tx.clone(),
+        registry.clone(),
+        registry.entity(&person).unwrap(),
+    );
+    let old_failure = looped
+        .update(
+            Some(&iids[0]),
+            &vec![(email.clone(), AttributeValue::String("eb".into()))],
+        )
+        .await
+        .unwrap_err()
+        .failure()
+        .unwrap();
+    tx.rollback().await.unwrap();
+    let swap = vec![
+        PartialUpdateEntity {
+            iid: Some(iids[0].clone()),
+            fields: vec![("partial-email", AttributeValue::String("eb".into()))],
+        },
+        PartialUpdateEntity {
+            iid: Some(iids[1].clone()),
+            fields: vec![("partial-email", AttributeValue::String("ea".into()))],
+        },
+    ];
+    *log.lock().unwrap() = DispatchLog::default();
+    let failure = typed
+        .update_many(&swap)
+        .await
+        .unwrap_err()
+        .failure()
+        .unwrap();
+    assert_eq!(failure.code(), old_failure.code());
+    assert_eq!(failure.code(), Some("CNT9"));
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+    }
+    for (iid, email) in iids.iter().take(2).zip(["ea", "eb"]) {
+        assert!(
+            manager
+                .get_by_iid_exact(iid)
+                .await
+                .unwrap()
+                .unwrap()
+                .attributes
+                .iter()
+                .any(|(name, value)| name == "partial-email"
+                    && value == &AttributeValue::String(email.into()))
+        );
+    }
+    *log.lock().unwrap() = DispatchLog::default();
+    typed.delete_many(&updates).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    for iid in &iids {
+        assert!(manager.get_by_iid_exact(iid).await.unwrap().is_none());
+    }
+    let mut inserts = vec![
+        PartialUpdateEntity {
+            iid: None,
+            fields: vec![("partial-key", AttributeValue::String("d".into()))],
+        },
+        PartialUpdateEntity {
+            iid: None,
+            fields: vec![("partial-key", AttributeValue::String("e".into()))],
+        },
+    ];
+    *log.lock().unwrap() = DispatchLog::default();
+    let created = typed.insert_many(&mut inserts).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 1);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!(observed.commits, 1);
+    }
+    assert_eq!(
+        inserts
+            .iter()
+            .map(|model| model.iid.clone().unwrap())
+            .collect::<Vec<_>>(),
+        created
+    );
+    eprintln!(
+        "generic entity insert_many/update_many/delete_many: one statement and transaction each; mixed IID/key partial updates equal looped answers"
+    );
+    let selectors = vec![
+        PartialUpdateEntity {
+            iid: None,
+            fields: vec![("partial-key", AttributeValue::String("e".into()))],
+        },
+        PartialUpdateEntity {
+            iid: Some(format!("{}ff", &created[0][..created[0].len() - 2])),
+            fields: vec![],
+        },
+        PartialUpdateEntity {
+            iid: Some(created[0].clone()),
+            fields: vec![("partial-name", AttributeValue::String("stale".into()))],
+        },
+    ];
+    *log.lock().unwrap() = DispatchLog {
+        fail_at: Some(2),
+        ..Default::default()
+    };
+    assert!(typed.delete_many_returning(&selectors).await.is_err());
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 2);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+    }
+    for iid in &created {
+        assert!(manager.get_by_iid_exact(iid).await.unwrap().is_some());
+    }
+    *log.lock().unwrap() = DispatchLog::default();
+    let snapshots = typed.delete_many_returning(&selectors).await.unwrap();
+    {
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 2);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+    }
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|model| model.iid.clone().unwrap())
+            .collect::<Vec<_>>(),
+        vec![created[1].clone(), created[0].clone()]
+    );
+    assert!(
+        snapshots[0]
+            .fields
+            .contains(&("partial-key", AttributeValue::String("e".into())))
+    );
+    assert!(
+        snapshots[1]
+            .fields
+            .contains(&("partial-key", AttributeValue::String("d".into())))
+    );
+    for iid in &created {
+        assert!(manager.get_by_iid_exact(iid).await.unwrap().is_none());
+    }
+    eprintln!(
+        "generic returning deletion: mixed key/IID selectors, missing omitted, requested order, capture+delete only, final-delete rollback"
+    );
+    database.delete_database().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn nonexact_put_many_preserves_sequential_answers_live() {
+    use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::{AttributeValue, Filter};
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = r#"format: typebridge.schema/v2
+attributes:
+  seq-key: { value: string }
+  seq-name: { value: string }
+  seq-tag: { value: string }
+entities:
+  seq-person:
+    owns:
+      seq-key: { key: true }
+  seq-note:
+    owns:
+      seq-name: { card: { min: 0, max: 1 } }
+      seq-tag: { card: { min: 0 } }
+  seq-keyed:
+    owns:
+      seq-key: { key: true }
+      seq-name: { card: { min: 0, max: 1 } }
+      seq-tag: { card: { min: 0 } }
+relations:
+  seq-edge:
+    owns:
+      seq-key: { key: true }
+    relates:
+      node: { card: { min: 0, max: 1 } }
+      prior: { card: { min: 0, max: 1 } }
+plays:
+  seq-person:
+    seq-edge: [node]
+  seq-edge:
+    seq-edge: [prior]
+"#;
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("sequence.yaml").unwrap(), yaml)]).unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute seq-key, value string; attribute seq-name, value string; attribute seq-tag, value string; entity seq-person, owns seq-key @key, plays seq-edge:node; entity seq-note, owns seq-name @card(0..1), owns seq-tag @card(0..); entity seq-keyed, owns seq-key @key, owns seq-name @card(0..1), owns seq-tag @card(0..); relation seq-edge, owns seq-key @key, relates node @card(0..1), relates prior @card(0..1), plays seq-edge:prior;",TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let fields = |values: &[(&str, &str)]| -> DynamicAttributeMap {
+        values
+            .iter()
+            .map(|(field, value)| ((*field).into(), AttributeValue::String((*value).into())))
+            .collect()
+    };
+    for literal in [false, true] {
+        for (case, kind, items, puts) in [
+            (
+                "repeat-keyless",
+                "seq-note",
+                vec![
+                    fields(&[("seq-name", "repeat")]),
+                    fields(&[("seq-name", "repeat")]),
+                ],
+                2,
+            ),
+            (
+                "interleaved",
+                "seq-note",
+                vec![
+                    fields(&[("seq-name", "a")]),
+                    fields(&[("seq-tag", "t")]),
+                    fields(&[("seq-name", "a")]),
+                    fields(&[("seq-name", "b")]),
+                ],
+                4,
+            ),
+            (
+                "repeat-keyed",
+                "seq-keyed",
+                vec![
+                    fields(&[("seq-key", "repeat"), ("seq-name", "first")]),
+                    fields(&[("seq-key", "repeat"), ("seq-name", "last")]),
+                ],
+                2,
+            ),
+            (
+                "independent-keyless",
+                "seq-note",
+                vec![
+                    fields(&[("seq-name", "independent-a")]),
+                    fields(&[("seq-name", "independent-b")]),
+                ],
+                1,
+            ),
+            (
+                "independent-keyed",
+                "seq-keyed",
+                vec![
+                    fields(&[("seq-key", "a"), ("seq-name", "a")]),
+                    fields(&[("seq-key", "b"), ("seq-name", "b")]),
+                ],
+                1,
+            ),
+        ] {
+            let descriptor = registry.entity(kind).unwrap();
+            let manager = DynamicEntityManager::from_registry(
+                &database,
+                registry.clone(),
+                descriptor.clone(),
+            );
+            let tx = database.transaction_context(TxType::Write).await.unwrap();
+            let looped = DynamicEntityManager::with_registry_transaction(
+                tx.clone(),
+                registry.clone(),
+                descriptor.clone(),
+            );
+            let mut old = Vec::new();
+            for item in &items {
+                old.push(looped.put(item).await.unwrap());
+            }
+            tx.commit().await.unwrap();
+            let mut expected = Vec::new();
+            for iid in &old {
+                expected.push(
+                    manager
+                        .get_by_iid_exact(iid)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .attributes
+                        .iter()
+                        .map(|(name, value)| format!("{name}={value:?}"))
+                        .collect::<std::collections::BTreeSet<_>>(),
+                );
+            }
+            let unique = old
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            manager.delete_many_by_iid_exact(&unique).await.unwrap();
+            let (counted, log) = counted_connection(&database, literal).await;
+            let many = DynamicEntityManager::from_registry(&counted, registry.clone(), descriptor);
+            let actual = many
+                .put_many(&items)
+                .await
+                .unwrap_or_else(|error| panic!("{case} literal={literal}: {error:?}"));
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 1, "{case}");
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!(observed.commits, 1);
+                assert_eq!(
+                    observed.statements[0]
+                        .split_whitespace()
+                        .filter(|word| *word == "put")
+                        .count(),
+                    puts,
+                    "{case}"
+                );
+            }
+            assert_eq!(actual.len(), old.len());
+            for left in 0..actual.len() {
+                for right in 0..actual.len() {
+                    assert_eq!(
+                        actual[left] == actual[right],
+                        old[left] == old[right],
+                        "{case}: IID aliasing"
+                    );
+                }
+            }
+            for (iid, expected) in actual.iter().zip(&expected) {
+                assert_eq!(
+                    &manager
+                        .get_by_iid_exact(iid)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .attributes
+                        .iter()
+                        .map(|(name, value)| format!("{name}={value:?}"))
+                        .collect::<std::collections::BTreeSet<_>>(),
+                    expected,
+                    "{case}"
+                );
+            }
+            let unique = actual
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            manager.delete_many_by_iid_exact(&unique).await.unwrap();
+        }
+        for fail in [false, true] {
+            let key = if fail { "wide-failure" } else { "wide-success" };
+            let items = (0..130)
+                .map(|index| {
+                    vec![
+                        ("seq-key".into(), AttributeValue::String(key.into())),
+                        (
+                            "seq-name".into(),
+                            AttributeValue::String(format!("value-{index}")),
+                        ),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let (counted, log) = counted_connection(&database, literal).await;
+            *log.lock().unwrap() = DispatchLog {
+                fail_at: fail.then_some(2),
+                ..Default::default()
+            };
+            let manager = DynamicEntityManager::from_registry(
+                &counted,
+                registry.clone(),
+                registry.entity("seq-keyed").unwrap(),
+            );
+            let result = manager.put_many(&items).await;
+            {
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 2);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!(
+                    (observed.commits, observed.rollbacks),
+                    if fail { (0, 1) } else { (1, 0) }
+                );
+            }
+            let reader = DynamicEntityManager::from_registry(
+                &database,
+                registry.clone(),
+                registry.entity("seq-keyed").unwrap(),
+            );
+            if fail {
+                assert!(result.is_err());
+                assert!(
+                    reader
+                        .get(&[Filter::eq("seq-key", AttributeValue::String(key.into()))])
+                        .await
+                        .unwrap()
+                        .is_empty()
+                );
+            } else {
+                let ids = result.unwrap();
+                assert_eq!(ids.len(), 130);
+                assert!(ids.iter().all(|iid| iid == &ids[0]));
+                let row = reader.get_by_iid_exact(&ids[0]).await.unwrap().unwrap();
+                assert!(row.attributes.iter().any(|(name, value)| name == "seq-name"
+                    && value == &AttributeValue::String("value-129".into())));
+                reader.delete_by_iid_exact(&ids[0]).await.unwrap();
+            }
+        }
+        let person = DynamicEntityManager::from_registry(
+            &database,
+            registry.clone(),
+            registry.entity("seq-person").unwrap(),
+        );
+        let person_iid = person.put(&fields(&[("seq-key", "p")])).await.unwrap();
+        let edges = DynamicRelationManager::from_registry(
+            &database,
+            registry.clone(),
+            registry.relation("seq-edge").unwrap(),
+        );
+        let node = DynamicRolePlayerInput {
+            role_name: "node".into(),
+            player_type_name: "seq-person".into(),
+            iid: Some(person_iid),
+            key: None,
+        };
+        let prior = |key: &str| DynamicRolePlayerInput {
+            role_name: "prior".into(),
+            player_type_name: "seq-edge".into(),
+            iid: None,
+            key: Some(("seq-key".into(), AttributeValue::String(key.into()))),
+        };
+        let chain = vec![
+            (fields(&[("seq-key", "a")]), vec![node.clone()]),
+            (fields(&[("seq-key", "b")]), vec![prior("a")]),
+            (fields(&[("seq-key", "c")]), vec![prior("b")]),
+        ];
+        let a = edges.put(&chain[0].0, &chain[0].1).await.unwrap();
+        let tx = database.transaction_context(TxType::Write).await.unwrap();
+        let looped = DynamicRelationManager::with_registry_transaction(
+            tx.clone(),
+            registry.clone(),
+            registry.relation("seq-edge").unwrap(),
+        );
+        let mut old = Vec::new();
+        for (fields, players) in &chain {
+            old.push(looped.put(fields, players).await.unwrap());
+        }
+        tx.commit().await.unwrap();
+        assert_eq!(old[0], a);
+        edges.delete_many_by_iid_exact(&old[1..]).await.unwrap();
+        let (counted, log) = counted_connection(&database, literal).await;
+        let many = DynamicRelationManager::from_registry(
+            &counted,
+            registry.clone(),
+            registry.relation("seq-edge").unwrap(),
+        );
+        let result = many.put_many(&chain).await.unwrap();
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 1);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!(observed.commits, 1);
+        }
+        assert_eq!(result[0], a);
+        assert_eq!(
+            result
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+        for row in 1..3 {
+            let stored = edges.get_by_iid_exact(&result[row]).await.unwrap();
+            assert_eq!(stored.len(), 1);
+            assert_eq!(stored[0].role_players.len(), 1);
+            assert_eq!(
+                stored[0].role_players[0].player_iid.as_deref(),
+                Some(result[row - 1].as_str())
+            );
+        }
+        edges.delete_many_by_iid_exact(&result[1..]).await.unwrap();
+        let conflict = vec![
+            (fields(&[("seq-key", "temporary")]), vec![prior("a")]),
+            (fields(&[("seq-key", "a")]), vec![prior("temporary")]),
+        ];
+        let tx = database.transaction_context(TxType::Write).await.unwrap();
+        let looped = DynamicRelationManager::with_registry_transaction(
+            tx.clone(),
+            registry.clone(),
+            registry.relation("seq-edge").unwrap(),
+        );
+        looped.put(&conflict[0].0, &conflict[0].1).await.unwrap();
+        let before = looped
+            .put(&conflict[1].0, &conflict[1].1)
+            .await
+            .unwrap_err()
+            .failure()
+            .unwrap();
+        tx.rollback().await.unwrap();
+        *log.lock().unwrap() = DispatchLog::default();
+        let after = many
+            .put_many(&conflict)
+            .await
+            .unwrap_err()
+            .failure()
+            .unwrap();
+        assert_eq!(after.code(), before.code());
+        assert_eq!(after.code(), Some("CNT9"));
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 1);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
+        assert!(
+            edges
+                .get(&[Filter::eq(
+                    "seq-key",
+                    AttributeValue::String("temporary".into())
+                )])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        *log.lock().unwrap() = DispatchLog {
+            fail_at: Some(1),
+            ..Default::default()
+        };
+        assert!(many.put_many(&chain).await.is_err());
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 1);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
+        assert!(
+            edges
+                .get(&[Filter::eq("seq-key", AttributeValue::String("b".into()))])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            edges
+                .get(&[Filter::eq("seq-key", AttributeValue::String("c".into()))])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        edges.delete_by_iid_exact(&a).await.unwrap();
+        eprintln!(
+            "non-exact put_many literal={literal}: matrix and sequential recipes, repeated keyed/keyless IIDs, interleaved rows, self-playing relation chain, CNT9 and rollback all equal looped semantics"
+        );
+    }
     database.delete_database().await.unwrap();
 }

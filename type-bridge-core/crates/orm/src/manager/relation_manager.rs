@@ -460,16 +460,17 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
             .map(|manager| manager.in_transaction(tx.clone()));
         let mut iids = Vec::with_capacity(relations.len());
 
-        for relation in relations.iter_mut() {
-            if let Some(manager) = &dynamic {
-                let iid = manager
-                    .insert(
-                        &relation
+        if let Some(manager) = &dynamic {
+            let items = relations
+                .iter()
+                .map(|relation| {
+                    (
+                        relation
                             .to_attribute_values()
                             .into_iter()
                             .map(|(name, value)| (name.into(), value))
                             .collect::<DynamicAttributeMap>(),
-                        &relation
+                        relation
                             .to_role_player_refs()
                             .into_iter()
                             .map(|player| crate::_dynamic::DynamicRolePlayerInput {
@@ -480,38 +481,48 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
                             })
                             .collect::<Vec<_>>(),
                     )
-                    .await?;
-                relation.set_iid(iid.clone());
-                iids.push(iid);
-                continue;
-            }
-            let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
-            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION BATCH");
-
-            // raw remainder: no registry authority; removed in 06
-            let result = tx.query(&typeql).await?;
-            match result {
-                QueryResult::Documents(docs) => {
-                    let doc = docs.first().ok_or_else(|| OrmError::Hydration {
-                        type_name: R::TYPE_NAME.into(),
-                        message: "Insert returned no documents".into(),
-                    })?;
-                    let iid = doc
-                        .get("iid")
-                        .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
-                        .ok_or_else(|| OrmError::Hydration {
-                            type_name: R::TYPE_NAME.into(),
-                            message: "No IID in insert response".into(),
-                        })?
-                        .to_string();
-                    relation.set_iid(iid.clone());
-                    iids.push(iid);
+                })
+                .collect::<Vec<_>>();
+            iids = match manager.insert_many(&items).await {
+                Ok(iids) => iids,
+                Err(error) => {
+                    let _ = tx.rollback().await;
+                    return Err(error);
                 }
-                _ => {
-                    return Err(OrmError::Hydration {
-                        type_name: R::TYPE_NAME.into(),
-                        message: "Expected Documents from insert+fetch".into(),
-                    });
+            };
+            for (relation, iid) in relations.iter_mut().zip(&iids) {
+                relation.set_iid(iid.clone());
+            }
+        } else {
+            for relation in relations.iter_mut() {
+                let typeql = query_builder::build_relation_insert_with_iid::<R>(relation, "$r")?;
+                tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "INSERT RELATION BATCH");
+
+                // raw remainder: no registry authority; removed in 06
+                let result = tx.query(&typeql).await?;
+                match result {
+                    QueryResult::Documents(docs) => {
+                        let doc = docs.first().ok_or_else(|| OrmError::Hydration {
+                            type_name: R::TYPE_NAME.into(),
+                            message: "Insert returned no documents".into(),
+                        })?;
+                        let iid = doc
+                            .get("iid")
+                            .and_then(|v| v.as_str().or_else(|| v.get("value")?.as_str()))
+                            .ok_or_else(|| OrmError::Hydration {
+                                type_name: R::TYPE_NAME.into(),
+                                message: "No IID in insert response".into(),
+                            })?
+                            .to_string();
+                        relation.set_iid(iid.clone());
+                        iids.push(iid);
+                    }
+                    _ => {
+                        return Err(OrmError::Hydration {
+                            type_name: R::TYPE_NAME.into(),
+                            message: "Expected Documents from insert+fetch".into(),
+                        });
+                    }
                 }
             }
         }
@@ -558,17 +569,18 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
             .dynamic
             .as_ref()
             .map(|manager| manager.in_transaction(tx.clone()));
-        for relation in relations {
-            if let Some(manager) = &dynamic {
-                manager
-                    .delete_identity(
-                        relation.iid(),
-                        &relation
+        if let Some(manager) = &dynamic {
+            let items = relations
+                .iter()
+                .map(|relation| {
+                    (
+                        relation.iid().map(str::to_owned),
+                        relation
                             .to_attribute_values()
                             .into_iter()
                             .map(|(name, value)| (name.into(), value))
                             .collect::<DynamicAttributeMap>(),
-                        &relation
+                        relation
                             .to_role_player_refs()
                             .into_iter()
                             .map(|player| crate::_dynamic::DynamicRolePlayerInput {
@@ -579,13 +591,19 @@ impl<'db, R: TypeBridgeRelation> RelationManager<'db, R> {
                             })
                             .collect::<Vec<_>>(),
                     )
-                    .await?;
-                continue;
+                })
+                .collect::<Vec<_>>();
+            if let Err(error) = manager.delete_many_identities(&items).await {
+                let _ = tx.rollback().await;
+                return Err(error);
             }
-            let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
-            tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION BATCH");
-            // raw remainder: no registry authority; removed in 06
-            tx.query(&typeql).await?;
+        } else {
+            for relation in relations {
+                let typeql = query_builder::build_relation_delete::<R>(relation, "$r")?;
+                tracing::debug!(typeql = %typeql, relation_type = R::TYPE_NAME, "DELETE RELATION BATCH");
+                // raw remainder: no registry authority; removed in 06
+                tx.query(&typeql).await?;
+            }
         }
         tx.commit().await?;
 
