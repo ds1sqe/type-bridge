@@ -1,0 +1,385 @@
+//! Static IID dependencies for forced allocation and attachment pieces.
+use super::*;
+
+struct StaticStep {
+    complete: bool,
+    ordinal: usize,
+    missing_iid_noop: bool,
+    expected_iid: Option<String>,
+}
+
+pub(crate) struct StaticProgram {
+    entries: Vec<type_bridge_contract::query_remote_v3::StagedPlanV3>,
+    steps: VecDeque<StaticStep>,
+    answers: Vec<StagedAnswerV3>,
+    authority: PlanAuthority,
+}
+impl StaticProgram {
+    pub(super) fn new(program: SplitProgram) -> Result<Self, Diagnostic> {
+        use type_bridge_contract::query_plan::v3::QueryPlanV3;
+        use type_bridge_contract::query_plan::{InputColumn, InputColumnId};
+        use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+        let mut entries: Vec<StagedPlanV3> = Vec::with_capacity(program.steps.len());
+        let mut steps = VecDeque::with_capacity(program.steps.len());
+        let mut source = None;
+        for step in program.steps {
+            let (entry, metadata) = match step {
+                Step::Ready(step) => {
+                    if !step.complete {
+                        source = Some((entries.len(), step.ordinal, step.missing_iid_noop));
+                    }
+                    let entry = StagedPlanV3::new(
+                        step.plan.local(),
+                        step.plan.local().given_rows().unwrap_or_default().to_vec(),
+                        program.authority.declared(),
+                    )?;
+                    (
+                        entry,
+                        StaticStep {
+                            complete: step.complete,
+                            ordinal: step.ordinal,
+                            missing_iid_noop: step.missing_iid_noop,
+                            expected_iid: step.expected_iid,
+                        },
+                    )
+                }
+                Step::Target {
+                    plan,
+                    complete,
+                    ordinal,
+                } => {
+                    let (index, source_ordinal, optional) = source.ok_or_else(identity_error)?;
+                    if source_ordinal != ordinal {
+                        return Err(identity_error());
+                    }
+                    let source_plan = entries[index].plan();
+                    let QueryOutput::Rows { columns } = source_plan.output() else {
+                        return Err(identity_error());
+                    };
+                    let expected_types = source_plan
+                        .binding_types(columns[1])
+                        .ok_or_else(identity_error)?
+                        .iter()
+                        .cloned()
+                        .collect();
+                    let plan = plan.local();
+                    let column = plan
+                        .inputs()
+                        .iter()
+                        .position(|input| input.public_name().as_str() == "target_iid")
+                        .ok_or_else(identity_error)?;
+                    let mut inputs = plan.inputs().to_vec();
+                    let input = &inputs[column];
+                    inputs[column] = InputColumn::new(
+                        input.id(),
+                        input.public_name().clone(),
+                        input.value_type(),
+                        optional,
+                    );
+                    let mut rows = plan.given_rows().ok_or_else(identity_error)?.to_vec();
+                    for row in &mut rows {
+                        let mut cells = row.values().to_vec();
+                        cells[column] = None;
+                        *row = InputRow::new(cells);
+                    }
+                    let unbound = QueryPlanV3::new_with_limits(
+                        crate::plan_builders::PlanSpec {
+                            bindings: plan.bindings().to_vec(),
+                            inputs,
+                            given_rows: None,
+                            operation: plan.operation(),
+                            pipeline: plan.pipeline().to_vec(),
+                            output: plan.output().clone(),
+                            managed_semantics: plan.managed_semantics().clone(),
+                            compatibility: plan.compatibility().cloned(),
+                            functions: plan.functions().to_vec(),
+                        },
+                        program.authority.declared(),
+                        plan.limits(),
+                    )?;
+                    let entry = StagedPlanV3::new_with_result_refs(
+                        &unbound,
+                        rows,
+                        vec![StagedResultRefV3 {
+                            input: InputColumnId::new(
+                                u16::try_from(column).map_err(|_| identity_error())?,
+                            ),
+                            source_plan: u32::try_from(index).map_err(|_| identity_error())?,
+                            source_column: 1,
+                            expected_types,
+                        }],
+                        program.authority.declared(),
+                    )?;
+                    (
+                        entry,
+                        StaticStep {
+                            complete,
+                            ordinal,
+                            missing_iid_noop: optional,
+                            expected_iid: None,
+                        },
+                    )
+                }
+            };
+            entries.push(entry);
+            steps.push_back(metadata);
+        }
+        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+            &entries,
+            program.authority.declared(),
+        )?;
+        Ok(Self {
+            entries,
+            steps,
+            answers: Vec::new(),
+            authority: program.authority,
+        })
+    }
+
+    pub(super) fn statement_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub(super) fn completion_count(&self) -> usize {
+        self.steps.iter().filter(|step| step.complete).count()
+    }
+
+    pub(super) fn record_answer(
+        &mut self,
+        step: &WriteStep,
+        answer: &PlanAnswer,
+    ) -> Result<(), Diagnostic> {
+        self.answers.push(answer.to_staged_v3(step.plan.local())?);
+        Ok(())
+    }
+
+    pub(super) fn next(&mut self) -> Result<Option<WriteStep>, Diagnostic> {
+        let Some(step) = self.steps.pop_front() else {
+            return Ok(None);
+        };
+        let entry = &self.entries[self.answers.len()];
+        let plan = entry.bind_results(&self.answers, self.authority.declared())?;
+        let expected_iid = if entry.result_refs().is_empty() {
+            step.expected_iid
+        } else {
+            let column = usize::from(entry.result_refs()[0].input.get());
+            plan.given_rows()
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.values()[column].as_ref())
+                .and_then(|value| {
+                    if let CanonicalValue::String(iid) = value {
+                        Some(iid.as_str().to_owned())
+                    } else {
+                        None
+                    }
+                })
+        };
+        Ok(Some(WriteStep {
+            plan: BuiltPlan {
+                plan,
+                verified: self.authority.verified(),
+            },
+            complete: step.complete,
+            ordinal: step.ordinal,
+            expected_iid,
+            missing_iid_noop: step.missing_iid_noop,
+            candidate_filter: false,
+            reference_guard: false,
+            reference_resolution: None,
+        }))
+    }
+}
+
+#[cfg(test)]
+mod static_tests {
+    use super::*;
+    use type_bridge_contract::fingerprint::SemanticProfileId;
+    use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+
+    #[test]
+    fn forced_scalar_pieces_are_authored_references_before_execution() {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let key =
+            OwnsFactId::new(account.clone(), AttributeId::new("account-id").unwrap()).unwrap();
+        let fields = std::iter::once((
+            key.clone(),
+            CanonicalValue::String(CanonicalString::new("static-stack").unwrap()),
+        ))
+        .chain((0..300).map(|value| (balance.clone(), CanonicalValue::Long(value))))
+        .collect::<Vec<_>>();
+        let authority = PlanAuthority::new(
+            crate::query_plan_exec::race::schema(),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"static-pieces",
+            )
+            .unwrap(),
+        );
+        let mut program = write_many(
+            &authority,
+            WriteKind::Insert,
+            WriteShape {
+                references_see_prior_writes: true,
+                type_id: &account,
+                keys: &[key],
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: true,
+                return_documents: false,
+            },
+            &[WriteRow {
+                iid: None,
+                fields: &fields,
+                players: &[],
+            }],
+        )
+        .unwrap()
+        .prepare_static()
+        .unwrap();
+        let WriteProgram::Static(stack) = &program else {
+            panic!("forced static stack")
+        };
+        assert!(stack.entries.len() > 1);
+        assert!(stack.entries[0].result_refs().is_empty());
+        for entry in &stack.entries[1..] {
+            let [reference] = entry.result_refs() else {
+                panic!("one source")
+            };
+            assert_eq!((reference.source_plan, reference.source_column), (0, 1));
+            assert_eq!(reference.expected_types, std::slice::from_ref(&account));
+            assert!(
+                entry
+                    .rows()
+                    .iter()
+                    .all(|row| row.values()[usize::from(reference.input.get())].is_none())
+            );
+        }
+        let count = stack.entries.len();
+        let wire = StagedAnswerV3::Rows {
+            rows: vec![vec![
+                RemoteValue::Value {
+                    value: CanonicalValue::Long(0),
+                },
+                RemoteValue::Thing {
+                    iid: "0x10".into(),
+                    type_id: account,
+                },
+            ]],
+        };
+        let mut observed = 0;
+        while let Some(step) = program.next().unwrap() {
+            if observed != 0 {
+                let column = step
+                    .plan
+                    .local()
+                    .inputs()
+                    .iter()
+                    .position(|input| input.public_name().as_str() == "target_iid")
+                    .unwrap();
+                assert!(
+                    step.plan
+                        .local()
+                        .given_rows()
+                        .unwrap()
+                        .iter()
+                        .all(|row| row.values()[column]
+                            == Some(CanonicalValue::String(
+                                CanonicalString::new("0x10").unwrap()
+                            )))
+                );
+            }
+            let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
+            program.record_answer(&step, &answer).unwrap();
+            if !step.complete {
+                program
+                    .accept_identity(&step, step.identity(&answer).unwrap())
+                    .unwrap();
+            }
+            observed += 1;
+        }
+        assert_eq!(observed, count);
+    }
+    #[test]
+    fn missing_partial_update_keeps_all_static_attachments_empty() {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let balance =
+            OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|value| (balance.clone(), CanonicalValue::Long(value)))
+            .collect::<Vec<_>>();
+        let authority = PlanAuthority::new(
+            crate::query_plan_exec::race::schema(),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"static-pieces",
+            )
+            .unwrap(),
+        );
+        let mut program = write_many(
+            &authority,
+            WriteKind::PartialUpdate,
+            WriteShape {
+                references_see_prior_writes: true,
+                type_id: &account,
+                keys: &[],
+                cleared_fields: &[],
+                cleared_roles: &[],
+                document_roles: vec![],
+                include_subtypes: true,
+                return_documents: false,
+            },
+            &[WriteRow {
+                iid: Some("0x10"),
+                fields: &fields,
+                players: &[],
+            }],
+        )
+        .unwrap()
+        .prepare_static()
+        .unwrap();
+        assert!(matches!(program, WriteProgram::Static(_)));
+        let mut observed = 0;
+        while let Some(step) = program.next().unwrap() {
+            let wire = if observed == 0 {
+                StagedAnswerV3::Rows {
+                    rows: vec![vec![
+                        RemoteValue::Value {
+                            value: CanonicalValue::Long(0),
+                        },
+                        RemoteValue::Absent,
+                    ]],
+                }
+            } else {
+                let column = step
+                    .plan
+                    .local()
+                    .inputs()
+                    .iter()
+                    .position(|input| input.public_name().as_str() == "target_iid")
+                    .unwrap();
+                assert!(step.plan.local().inputs()[column].optional());
+                assert!(
+                    step.plan
+                        .local()
+                        .given_rows()
+                        .unwrap()
+                        .iter()
+                        .all(|row| row.values()[column].is_none())
+                );
+                StagedAnswerV3::Rows { rows: vec![] }
+            };
+            let answer = PlanAnswer::from_staged_v3(&wire, step.plan.local()).unwrap();
+            program.record_answer(&step, &answer).unwrap();
+            if !step.complete {
+                program
+                    .accept_identity(&step, step.identity(&answer).unwrap())
+                    .unwrap();
+            }
+            observed += 1;
+        }
+        assert!(observed > 1);
+    }
+}

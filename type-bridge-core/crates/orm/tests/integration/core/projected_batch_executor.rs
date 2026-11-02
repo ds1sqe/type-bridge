@@ -2120,6 +2120,30 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                 assert_eq!(actual, baseline_values);
             }
         }
+        let failed_key = format!("dynamic-field-final-failure-{literal}");
+        *log.lock().unwrap() = DispatchLog {
+            fail_at: Some(2),
+            ..Default::default()
+        };
+        assert!(
+            dynamic
+                .insert_many(&[fields(&failed_key, 300)])
+                .await
+                .is_err()
+        );
+        assert!(
+            raw_person
+                .get(&[Filter::eq(&key, AttributeValue::String(failed_key))])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.statements.len(), 2);
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
         let dynamic_relation = DynamicRelationManager::from_registry(
             &counted,
             registry.clone(),

@@ -3745,6 +3745,9 @@ impl DynamicExecutionTarget<'_> {
         {
             return self.write_plan(plan, |answer| map(vec![answer])).await;
         }
+        program = program
+            .prepare_static()
+            .map_err(crate::plan_builders::manager::diagnostic)?;
         let statement_count = program.statement_count();
         let (tx, owned) = match self {
             Self::Database(db) | Self::CanonicalDatabase(db) => {
@@ -3807,6 +3810,9 @@ impl DynamicExecutionTarget<'_> {
                     .dispatch_plan_counted(query, limits, Some(plan.local()))
                     .await?;
                 let answer = TransactionContext::resolve_plan(plan.local(), answer)?;
+                program
+                    .record_answer(&step, &answer)
+                    .map_err(crate::plan_builders::manager::diagnostic)?;
                 if step.reference_resolution.is_some() {
                     let iids = step
                         .reference_iids(&answer)

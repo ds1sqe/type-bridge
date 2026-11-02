@@ -13,6 +13,10 @@ pub(super) use match_put::wide_match;
 mod references;
 pub(super) use references::resolve_references;
 
+#[path = "bulk_write_static.rs"]
+mod static_stack;
+use static_stack::StaticProgram;
+
 pub(crate) type ReferenceSnapshots = BTreeMap<usize, BTreeMap<RoleId, Vec<String>>>;
 
 pub(crate) type IdentityLayout = Vec<Option<Vec<(usize, String)>>>;
@@ -21,6 +25,7 @@ pub(crate) enum WriteProgram {
     Compact(Vec<BuiltPlan>),
     Sequential(Vec<(BuiltPlan, Vec<usize>)>),
     Split(SplitProgram),
+    Static(Box<StaticProgram>),
     Chain(VecDeque<WriteProgram>),
     MatchWide(Box<match_put::MatchProgram>),
     References(Box<references::ReferenceProgram>),
@@ -29,11 +34,44 @@ impl WriteProgram {
     pub(crate) fn compact(plans: Vec<BuiltPlan>) -> Self {
         Self::Compact(plans)
     }
+    /// Freeze allocation dependencies before opening the manager transaction.
+    pub(crate) fn prepare_static(self) -> Result<Self, Diagnostic> {
+        match self {
+            Self::Split(program)
+                if program
+                    .steps
+                    .iter()
+                    .any(|step| matches!(step, Step::Target { .. }))
+                    && program.steps.iter().all(|step| match step {
+                        Step::Ready(step) => {
+                            !step.reference_guard && step.reference_resolution.is_none()
+                        }
+                        Step::Target { .. } => true,
+                    }) =>
+            {
+                Ok(Self::Static(Box::new(StaticProgram::new(program)?)))
+            }
+            program => Ok(program),
+        }
+    }
+
+    pub(crate) fn record_answer(
+        &mut self,
+        step: &WriteStep,
+        answer: &PlanAnswer,
+    ) -> Result<(), Diagnostic> {
+        if let Self::Static(program) = self {
+            program.record_answer(step, answer)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn statement_count(&self) -> usize {
         match self {
             Self::Compact(plans) => plans.len(),
             Self::Sequential(plans) => plans.len(),
             Self::Split(program) => program.steps.len(),
+            Self::Static(program) => program.statement_count(),
             Self::Chain(programs) => programs.iter().map(Self::statement_count).sum(),
             Self::MatchWide(program) => program.statement_count(),
             Self::References(program) => program.statement_count(),
@@ -62,6 +100,7 @@ impl WriteProgram {
                 reference_resolution: None,
             })),
             Self::Split(program) => program.next(),
+            Self::Static(program) => program.next(),
             Self::MatchWide(program) => program.next(),
             Self::References(program) => program.next(),
             Self::Chain(programs) => {
@@ -78,7 +117,7 @@ impl WriteProgram {
     pub(crate) fn into_static(self) -> Result<Vec<BuiltPlan>, Diagnostic> {
         match self {
             Self::Compact(plans) => Ok(plans),
-            Self::MatchWide(_) | Self::References(_) => Err(identity_error()),
+            Self::MatchWide(_) | Self::References(_) | Self::Static(_) => Err(identity_error()),
             Self::Sequential(plans) => Ok(plans.into_iter().map(|(plan, _)| plan).collect()),
             Self::Chain(programs) => programs
                 .into_iter()
@@ -130,6 +169,7 @@ impl WriteProgram {
                         program.identity_layout().unwrap_or_else(|| match program {
                             Self::Compact(plans) => vec![None; plans.len()],
                             Self::MatchWide(_) => vec![None],
+                            Self::Static(program) => vec![None; program.completion_count()],
                             Self::References(_) => vec![None],
                             Self::Split(split) => split
                                 .steps
@@ -145,7 +185,11 @@ impl WriteProgram {
                     })
                     .collect(),
             ),
-            Self::Compact(_) | Self::Split(_) | Self::MatchWide(_) | Self::References(_) => None,
+            Self::Compact(_)
+            | Self::Split(_)
+            | Self::Static(_)
+            | Self::MatchWide(_)
+            | Self::References(_) => None,
         }
     }
 
@@ -188,6 +232,11 @@ impl WriteProgram {
     ) -> Result<(), Diagnostic> {
         match self {
             Self::Split(program) => program.accept_identity(step, iid),
+            Self::Static(_) => match iid {
+                Some(iid) => step.check_identity(&iid),
+                None if step.missing_iid_noop => Ok(()),
+                None => Err(identity_error()),
+            },
             Self::MatchWide(program) => program.accept_identity(step, iid),
             Self::References(program) => program.accept_identity(step, iid),
             Self::Chain(programs) => programs
