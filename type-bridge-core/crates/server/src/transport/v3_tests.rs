@@ -1625,6 +1625,7 @@ mod raw_tests {
         commits: Mutex<Vec<TransactionKind>>,
         refuse: bool,
         unvouched: bool,
+        transport_refuse: bool,
         gate: Option<Arc<tokio::sync::Semaphore>>,
     }
     impl RawQueryExecutor for Arc<RawHost> {
@@ -1639,6 +1640,11 @@ mod raw_tests {
     impl Interceptor for Arc<RawHost> {
         fn name(&self) -> &str { "raw-host" }
         fn supports_v3(&self) -> bool { true }
+        fn on_v3_transport<'a>(&'a self, ctx: &'a mut RequestContext)
+            -> Pin<Box<dyn Future<Output=Result<(),InterceptError>> + Send + 'a>> {
+            assert_eq!(ctx.metadata["query_format"], "raw-typeql");
+            Box::pin(async move { if self.transport_refuse { Err(InterceptError::Refused { code: "transport_refused" }) } else { Ok(()) } })
+        }
         fn on_v3_write_authority<'a>(&'a self, _ctx: &'a RequestContext)
             -> Pin<Box<dyn Future<Output=Result<StagedWriteAuthority,InterceptError>> + Send + 'a>> {
             Box::pin(async move { Ok(if self.unvouched { StagedWriteAuthority::Abstain } else { StagedWriteAuthority::Authenticated }) })
@@ -1655,11 +1661,14 @@ mod raw_tests {
         }
     }
     fn fixture(host: Arc<RawHost>, audit: Option<crate::interceptor::audit_log::AuditLogInterceptor>) -> V3Fixture {
+        fixture_with_query(host, audit, |query| query)
+    }
+    fn fixture_with_query(host: Arc<RawHost>, audit: Option<crate::interceptor::audit_log::AuditLogInterceptor>, configure: impl FnOnce(StagedQueryState) -> StagedQueryState) -> V3Fixture {
         let authority = authority_fixture(false);
         let declared = authority.declared.clone();
         let metrics = Arc::new(BackendMetrics::default());
         let database = Database::with_backend(Box::new(CountingBackend::new([],Arc::clone(&metrics))),"raw-host");
-        let query = Arc::new(StagedQueryState::new_query_only(CapabilitySet::new(),AnswerLimits::default(),database,authority.declared,authority.delta_context,authority.managed).unwrap().with_raw_executor(Arc::clone(&host)));
+        let query = Arc::new(configure(StagedQueryState::new_query_only(CapabilitySet::new(),AnswerLimits::default(),database,authority.declared,authority.delta_context,authority.managed).unwrap().with_raw_executor(Arc::clone(&host))));
         let mut pipeline = PipelineBuilder::new();
         if let Some(audit) = audit { pipeline = pipeline.with_interceptor(audit); }
         let pipeline = Arc::new(pipeline.with_interceptor(host).build().unwrap());
@@ -1748,6 +1757,30 @@ mod raw_tests {
         assert!(host.queries.lock().unwrap().is_empty());
         assert!(host.commits.lock().unwrap().is_empty());
         assert_eq!(raw(&fixture, request("read", "read", "raw-unvouched-read")).await.0, StatusCode::OK);
+    }
+    #[tokio::test]
+    async fn every_raw_refusal_reaches_response_auditing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("refusals.jsonl");
+        let audit = || crate::interceptor::audit_log::AuditLogInterceptor::new(&crate::config::AuditLogConfig { output: "file".into(), file_path: path.to_str().unwrap().into() }).unwrap();
+        let host = Arc::new(RawHost::default());
+        let fixture = fixture_with_query(Arc::clone(&host), Some(audit()), |query| query.with_replay_store(Arc::new(InMemoryReplayStore::new(1))));
+        assert_eq!(raw(&fixture, serde_json::Value::Null).await.0, StatusCode::BAD_REQUEST);
+        let mut expired = request("expired text", "read", "raw-audit-expired");
+        expired["expires_at_unix_ms"] = serde_json::json!(1);
+        assert_eq!(raw(&fixture, expired).await.0, StatusCode::BAD_REQUEST);
+        let admitted = request("read", "read", "raw-audit-reserved");
+        assert_eq!(raw(&fixture, admitted.clone()).await.0, StatusCode::OK);
+        assert_eq!(raw(&fixture, admitted).await.0, StatusCode::CONFLICT);
+        assert_eq!(raw(&fixture, request("capacity text", "read", "raw-audit-capacity")).await.0, StatusCode::SERVICE_UNAVAILABLE);
+        let blocked = fixture_with_query(Arc::new(RawHost { transport_refuse: true, ..Default::default() }), Some(audit()), |query| query);
+        assert_eq!(raw(&blocked, serde_json::Value::Null).await.0, StatusCode::FORBIDDEN);
+        let disabled = fixture_with_query(host, Some(audit()), |mut query| { query.raw_executor = None; query });
+        assert_eq!(raw(&disabled, serde_json::Value::Null).await.0, StatusCode::FORBIDDEN);
+        let records = std::fs::read_to_string(path).unwrap();
+        let records: Vec<serde_json::Value> = records.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(records.iter().map(|r|r["diagnostic_code"].as_str().unwrap()).collect::<Vec<_>>(), ["raw_request_invalid", "raw_request_expired", "ok", "query_remote_replay", "query_remote_replay_capacity", "query_remote_policy_rejected", "raw_disabled"]);
+        assert_eq!(records[1]["compiled_typeql"], "expired text");
     }
     #[tokio::test]
     async fn raw_replay_is_refused_before_a_second_transaction() {

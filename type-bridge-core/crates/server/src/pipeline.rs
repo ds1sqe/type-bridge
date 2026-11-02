@@ -20,14 +20,21 @@ impl QueryPipeline {
         metadata: HashMap<String, serde_json::Value>,
     ) -> Result<RequestContext, PipelineError> {
         self.validate_v3_coverage()?;
-        Ok(RequestContext {
+        Ok(self.request_context(metadata))
+    }
+
+    pub(crate) fn request_context(
+        &self,
+        metadata: HashMap<String, serde_json::Value>,
+    ) -> RequestContext {
+        RequestContext {
             request_id: uuid::Uuid::new_v4().to_string(),
             client_id: UNAUTHENTICATED_CLIENT_ID.to_owned(),
             database: self.default_database.clone(),
             transaction_type: "read".to_owned(),
             metadata,
             timestamp: chrono::Utc::now(),
-        })
+        }
     }
 
     /// Prove every configured policy explicitly covers staged V3 requests.

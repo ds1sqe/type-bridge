@@ -4,7 +4,7 @@ use super::staged_state::{
     ReplayStoreError, await_before_deadline, response_audit_deadline, staged_request_metadata,
 };
 use super::v3::StagedExecutor;
-use crate::interceptor::{V3CommitOutcome, V3PolicyOutcome};
+use crate::interceptor::{RequestContext, V3CommitOutcome, V3PolicyOutcome};
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
@@ -60,27 +60,44 @@ pub(super) async fn handle_raw(
     State(state): State<Arc<StagedExecutor>>,
     request: Request,
 ) -> Response {
+    let deadline = Instant::now()
+        .checked_add(state.query.execution_timeout)
+        .unwrap_or_else(Instant::now);
+    let mut metadata = staged_request_metadata(request.headers(), "raw");
+    metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
+    let mut ctx = state.pipeline().request_context(metadata);
     let Some(executor) = state.query.raw_executor.clone() else {
-        return refusal(StatusCode::FORBIDDEN, "raw_disabled");
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::FORBIDDEN,
+            "raw_disabled",
+        )
+        .await;
     };
-    let Some(deadline) = Instant::now().checked_add(state.query.execution_timeout) else {
-        return refusal(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "transaction_deadline_exceeded",
-        );
-    };
-    let mut ctx = match state
-        .pipeline()
-        .v3_request_context(staged_request_metadata(request.headers(), "raw"))
-    {
-        Ok(ctx) => ctx,
-        Err(_) => return refusal(StatusCode::FORBIDDEN, "query_remote_policy_rejected"),
-    };
+    if state.pipeline().validate_v3_coverage().is_err() {
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::FORBIDDEN,
+            "query_remote_policy_rejected",
+        )
+        .await;
+    }
     if !matches!(
         await_before_deadline(deadline, state.pipeline().begin_v3_request(&mut ctx)).await,
         Some(Ok(()))
     ) {
-        return refusal(StatusCode::FORBIDDEN, "query_remote_policy_rejected");
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::FORBIDDEN,
+            "query_remote_policy_rejected",
+        )
+        .await;
     }
     let body = match await_before_deadline(
         deadline,
@@ -89,17 +106,48 @@ pub(super) async fn handle_raw(
     .await
     {
         Some(Ok(body)) => body,
-        _ => return refusal(StatusCode::BAD_REQUEST, "raw_request_invalid"),
+        _ => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::BAD_REQUEST,
+                "raw_request_invalid",
+            )
+            .await;
+        }
     };
     let request = match serde_json::from_slice::<RawRequest>(&body) {
         Ok(request) => request,
-        Err(_) => return refusal(StatusCode::BAD_REQUEST, "raw_request_invalid"),
+        Err(_) => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::BAD_REQUEST,
+                "raw_request_invalid",
+            )
+            .await;
+        }
     };
+    ctx.metadata.insert(
+        "compiled_typeql".into(),
+        serde_json::Value::String(request.query.clone()),
+    );
     let kind = match request.kind.as_str() {
         "read" => TransactionKind::Read,
         "write" => TransactionKind::Write,
         "schema" => TransactionKind::Schema,
-        _ => return refusal(StatusCode::BAD_REQUEST, "raw_request_invalid"),
+        _ => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::BAD_REQUEST,
+                "raw_request_invalid",
+            )
+            .await;
+        }
     };
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -109,7 +157,14 @@ pub(super) async fn handle_raw(
         .checked_sub(now_ms)
         .filter(|ms| *ms > 0 && *ms <= state.query.admission_window.as_millis())
     else {
-        return refusal(StatusCode::BAD_REQUEST, "raw_request_expired");
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_expired",
+        )
+        .await;
     };
     if !(16..=128).contains(&request.nonce.len())
         || !request
@@ -117,12 +172,26 @@ pub(super) async fn handle_raw(
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
     {
-        return refusal(StatusCode::BAD_REQUEST, "raw_request_invalid");
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_invalid",
+        )
+        .await;
     }
     let Some(retain_until) = Instant::now().checked_add(Duration::from_millis(
         u64::try_from(validity_ms).expect("validity fits the u64 expiry"),
     )) else {
-        return refusal(StatusCode::BAD_REQUEST, "raw_request_invalid");
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_invalid",
+        )
+        .await;
     };
     ctx.transaction_type = request.kind;
     match await_before_deadline(
@@ -135,31 +204,63 @@ pub(super) async fn handle_raw(
     {
         Some(Ok(())) => {}
         Some(Err(error)) => {
-            let outcome = V3PolicyOutcome::new(false, error.code(), 0);
-            let _ = await_before_deadline(
-                response_audit_deadline(deadline),
-                state.pipeline().finish_v3_request(&outcome, &ctx),
+            return refuse(&state, &ctx, deadline, StatusCode::FORBIDDEN, error.code()).await;
+        }
+        None => {
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::GATEWAY_TIMEOUT,
+                "transaction_deadline_exceeded",
             )
             .await;
-            return refusal(StatusCode::FORBIDDEN, error.code());
         }
-        None => return refusal(StatusCode::GATEWAY_TIMEOUT, "transaction_deadline_exceeded"),
     }
     if kind != TransactionKind::Read && !state.query.allow_unauthenticated_staged_writes {
         match await_before_deadline(deadline, state.pipeline().authorize_v3_write(&ctx)).await {
             Some(Ok(true)) => {}
             Some(Ok(false)) => {
-                return refusal(
+                return refuse(
+                    &state,
+                    &ctx,
+                    deadline,
                     StatusCode::FORBIDDEN,
                     super::v3::STAGED_WRITE_NOT_AUTHORIZED,
-                );
+                )
+                .await;
             }
-            Some(Err(_)) => return refusal(StatusCode::FORBIDDEN, "query_remote_policy_rejected"),
-            None => return refusal(StatusCode::GATEWAY_TIMEOUT, "transaction_deadline_exceeded"),
+            Some(Err(_)) => {
+                return refuse(
+                    &state,
+                    &ctx,
+                    deadline,
+                    StatusCode::FORBIDDEN,
+                    "query_remote_policy_rejected",
+                )
+                .await;
+            }
+            None => {
+                return refuse(
+                    &state,
+                    &ctx,
+                    deadline,
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "transaction_deadline_exceeded",
+                )
+                .await;
+            }
         }
     }
     if Instant::now() >= retain_until {
-        return refusal(StatusCode::BAD_REQUEST, "raw_request_expired");
+        return refuse(
+            &state,
+            &ctx,
+            deadline,
+            StatusCode::BAD_REQUEST,
+            "raw_request_expired",
+        )
+        .await;
     }
     match await_before_deadline(
         deadline,
@@ -173,23 +274,40 @@ pub(super) async fn handle_raw(
     {
         Some(Ok(())) => {}
         Some(Err(ReplayStoreError::Replayed)) => {
-            return refusal(StatusCode::CONFLICT, "query_remote_replay");
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
+                StatusCode::CONFLICT,
+                "query_remote_replay",
+            )
+            .await;
         }
         Some(Err(ReplayStoreError::Capacity)) => {
-            return refusal(
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "query_remote_replay_capacity",
-            );
+            )
+            .await;
         }
         _ => {
-            return refusal(
+            return refuse(
+                &state,
+                &ctx,
+                deadline,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "query_remote_replay_unavailable",
-            );
+            )
+            .await;
         }
     }
     // Never cancel a commit: once dispatch starts the provider completes its
     // one transaction, and the host observes the actual durability outcome.
+    let finish_state = Arc::clone(&state);
+    let finish_ctx = ctx.clone();
     let task = tokio::spawn(async move {
         let answer = executor
             .execute(state.query.database.database_name(), &request.query, kind)
@@ -221,26 +339,73 @@ pub(super) async fn handle_raw(
                 ((status,axum::Json(serde_json::json!({"error":"typedb_error","typedb":{"code":error.code,"message":error.message}}))).into_response(),false,"typedb_error",0)
             }
         };
-        let outcome = V3PolicyOutcome::new(success, code, size);
-        if !matches!(
-            await_before_deadline(
-                response_audit_deadline(deadline),
-                state.pipeline().finish_v3_request(&outcome, &ctx)
-            )
-            .await,
-            Some(Ok(()))
-        ) {
-            return refusal(
-                StatusCode::SERVICE_UNAVAILABLE,
-                if success && kind != TransactionKind::Read {
-                    "commit_outcome_unknown"
-                } else {
-                    "query_remote_policy_rejected"
-                },
-            );
-        }
-        response
+        finish(
+            &state,
+            &ctx,
+            deadline,
+            response,
+            V3PolicyOutcome::new(success, code, size),
+            success && kind != TransactionKind::Read,
+        )
+        .await
     });
-    task.await
-        .unwrap_or_else(|_| refusal(StatusCode::SERVICE_UNAVAILABLE, "commit_outcome_unknown"))
+    match task.await {
+        Ok(response) => response,
+        Err(_) => {
+            refuse(
+                &finish_state,
+                &finish_ctx,
+                deadline,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "commit_outcome_unknown",
+            )
+            .await
+        }
+    }
+}
+
+async fn refuse(
+    state: &StagedExecutor,
+    ctx: &RequestContext,
+    deadline: Instant,
+    status: StatusCode,
+    code: &str,
+) -> Response {
+    finish(
+        state,
+        ctx,
+        deadline,
+        refusal(status, code),
+        V3PolicyOutcome::new(false, code, 0),
+        false,
+    )
+    .await
+}
+
+async fn finish(
+    state: &StagedExecutor,
+    ctx: &RequestContext,
+    deadline: Instant,
+    response: Response,
+    outcome: V3PolicyOutcome<'_>,
+    may_have_committed: bool,
+) -> Response {
+    if !matches!(
+        await_before_deadline(
+            response_audit_deadline(deadline),
+            state.pipeline().finish_v3_request(&outcome, ctx)
+        )
+        .await,
+        Some(Ok(()))
+    ) {
+        return refusal(
+            StatusCode::SERVICE_UNAVAILABLE,
+            if may_have_committed {
+                "commit_outcome_unknown"
+            } else {
+                "query_remote_policy_rejected"
+            },
+        );
+    }
+    response
 }
