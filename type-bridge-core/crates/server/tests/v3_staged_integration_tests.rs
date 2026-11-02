@@ -9,6 +9,9 @@
 #[path = "support/staged_live.rs"]
 mod staged_live;
 
+#[path = "support/deadline_live.rs"]
+mod deadline_live;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

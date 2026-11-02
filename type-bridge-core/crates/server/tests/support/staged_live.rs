@@ -57,6 +57,7 @@ pub struct LivePolicy {
     pub vouch: bool,
     pub refuse: Option<&'static str>,
     pub query_limits: Option<type_bridge_contract::limits::QueryLimits>,
+    pub execution_timeout: Option<type_bridge_orm::QueryTimeout>,
     pub withhold_next_reply: Arc<AtomicBool>,
     pub commits: Arc<Mutex<Vec<CommitRecord>>>,
 }
@@ -190,7 +191,8 @@ pub async fn given_rows_supported(test: &str) -> bool {
 /// schema omits those annotations to keep the live-authority check exact.
 pub async fn seeded(test: &str) -> (String, Database) {
     let name = format!(
-        "tb_server_v3_{test}_{}_{}",
+        "{}{test}_{}_{}",
+        std::env::var("TB_STAGED_DATABASE_PREFIX").unwrap_or_else(|_| "tb_server_v3_".into()),
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
@@ -305,6 +307,11 @@ pub async fn proxy_with_database(
         .expect("executor advertisement")
         .with_query_limits(policy.query_limits.unwrap_or_default())
         .expect("query limits")
+        .with_answer_limits(type_bridge_orm::QueryExecutionResourceLimits {
+            timeout_milliseconds: policy.execution_timeout.unwrap_or_default(),
+            ..type_bridge_orm::QueryExecutionResourceLimits::default()
+        })
+        .expect("answer limits")
         .with_unauthenticated_staged_writes(allow_unauthenticated),
     );
     let commits = Arc::clone(&policy.commits);
