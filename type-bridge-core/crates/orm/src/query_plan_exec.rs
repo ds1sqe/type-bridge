@@ -1761,7 +1761,7 @@ impl Scope<'_> {
         for (index, listed) in document.roles.iter().enumerate() {
             let player = format!("PlanFetchRole{index}");
             let player_type = format!("PlanFetchRole{index}Type");
-            let bound = vec![
+            let mut bound = vec![
                 ast(tql::thing(
                     thing,
                     vec![ast(tql::links(vec![(
@@ -1774,6 +1774,16 @@ impl Scope<'_> {
                     vec![ast(tql::isa(&format!("${player_type}"), true))?],
                 ))?,
             ];
+            if let Some(owner) = self
+                .plan
+                .fetch_document_shape()
+                .and_then(|shape| shape.restricted_role_owner(index))
+            {
+                bound.insert(
+                    0,
+                    ast(tql::thing(thing, vec![ast(tql::isa(owner, false))?]))?,
+                );
+            }
             if listed.collect {
                 if listed.required {
                     patterns.push(tql::not(vec![tql::not(bound.clone())]));

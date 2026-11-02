@@ -92,6 +92,52 @@ fn keyed_relation_put_requires_a_later_mandatory_player_attachment() {
 }
 
 #[test]
+fn optional_fetch_roles_may_belong_to_a_subset_of_candidates() {
+    use type_bridge_contract::id::RoleId;
+    use type_bridge_contract::query_plan::v3::{DocumentRole, ThingDocument};
+    let schema = schema_with_subtype_role();
+    for (role, required, accepted) in [
+        (
+            RoleId::new("child-membership", "extra").unwrap(),
+            false,
+            true,
+        ),
+        (
+            RoleId::new("child-membership", "extra").unwrap(),
+            true,
+            false,
+        ),
+        (RoleId::new("purchase", "buyer").unwrap(), false, false),
+    ] {
+        let stages = vec![
+            Stage::Match {
+                patterns: vec![
+                    QueryPattern::Isa {
+                        binding: id(0),
+                        type_id: relation(),
+                        include_subtypes: true,
+                    }
+                    .into(),
+                ],
+            },
+            Stage::Fetch(ThingDocument::new(
+                id(0),
+                vec![DocumentRole::new(role, required)],
+            )),
+        ];
+        let plan = QueryPlanV3::new(spec(stages, vec![]), &schema);
+        if accepted {
+            plan.unwrap();
+        } else {
+            assert_eq!(
+                plan.unwrap_err().code().as_str(),
+                "query_plan_wrong_role_owner"
+            );
+        }
+    }
+}
+
+#[test]
 fn relation_insert_seeds_require_a_later_player_attachment() {
     let seed = Stage::Insert {
         things: vec![InsertThing {

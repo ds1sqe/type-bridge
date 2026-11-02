@@ -12,10 +12,24 @@ type Types = BTreeMap<String, BTreeMap<String, AttributeShape>>;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FetchDocumentShape {
     types: Types,
-    roles: Vec<(bool, Types, bool)>,
+    roles: Vec<RoleShape>,
     scalars: BTreeMap<String, ValueTypeTag>,
     ordered_roles: bool,
     complete_model_roles: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RoleShape {
+    required: bool,
+    players: Types,
+    collect: bool,
+    owner: Option<std::sync::Arc<RoleOwner>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RoleOwner {
+    label: String,
+    types: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,11 +70,35 @@ impl FetchDocumentShape {
                             .then(|| fact.id().clone())
                     })
                     .collect();
-                (
-                    listed.required,
-                    index.document_types(&players, profile),
-                    listed.collect,
-                )
+                let candidates = &bindings[&document.thing];
+                let owner = if candidates.len() == 1 {
+                    None
+                } else {
+                    let owner = TypeId::new(
+                        TypeKind::Relation,
+                        listed.role.declaring_relation().as_str(),
+                    )
+                    .expect("validated role owner");
+                    let belongs = |candidate: &TypeId| index.ancestors(candidate).contains(&owner);
+                    if candidates.iter().all(belongs) {
+                        None
+                    } else {
+                        Some(std::sync::Arc::new(RoleOwner {
+                            label: owner.label().as_str().to_owned(),
+                            types: candidates
+                                .iter()
+                                .filter(|candidate| belongs(candidate))
+                                .map(|candidate| candidate.label().as_str().to_owned())
+                                .collect(),
+                        }))
+                    }
+                };
+                RoleShape {
+                    required: listed.required,
+                    players: index.document_types(&players, profile),
+                    collect: listed.collect,
+                    owner,
+                }
             })
             .collect();
         let mut ordered_roles = false;
@@ -101,6 +139,16 @@ impl FetchDocumentShape {
         }
     }
 
+    /// Declaring relation for an optional role that only some fetched types have.
+    #[must_use]
+    pub fn restricted_role_owner(&self, position: usize) -> Option<&str> {
+        self.roles
+            .get(position)?
+            .owner
+            .as_ref()
+            .map(|owner| owner.label.as_str())
+    }
+
     /// Whether any possible root type has ordered related-role semantics.
     #[must_use]
     pub const fn has_ordered_roles(&self) -> bool {
@@ -127,7 +175,7 @@ impl FetchDocumentShape {
         attribute: &str,
     ) -> Option<ValueTypeTag> {
         let types = match role {
-            Some(index) => &self.roles.get(index)?.1,
+            Some(index) => &self.roles.get(index)?.players,
             None => &self.types,
         };
         types
@@ -156,7 +204,7 @@ impl FetchDocumentShape {
                 return Err(document_error("value"));
             }
         }
-        for (index, (_, _, collect)) in self.roles.iter().enumerate() {
+        for (index, RoleShape { collect, .. }) in self.roles.iter().enumerate() {
             if *collect {
                 allowed.insert(format!("_role_{index}_players"));
                 continue;
@@ -174,14 +222,26 @@ impl FetchDocumentShape {
             document.get("attributes"),
             &self.types,
         )?;
-        for (index, (required, types, collect)) in self.roles.iter().enumerate() {
+        for (
+            index,
+            RoleShape {
+                required,
+                players: types,
+                collect,
+                owner,
+            },
+        ) in self.roles.iter().enumerate()
+        {
+            let applicable = owner.as_ref().is_none_or(|owner| {
+                string(document.get("_type")).is_some_and(|label| owner.types.contains(label))
+            });
             if *collect {
                 let Some(RemoteFieldValue::Documents { documents }) =
                     document.get(&format!("_role_{index}_players"))
                 else {
                     return Err(document_error("role"));
                 };
-                if *required && documents.is_empty() {
+                if (*required && documents.is_empty()) || (!applicable && !documents.is_empty()) {
                     return Err(document_error("role"));
                 }
                 let mut iids = BTreeSet::new();
@@ -219,6 +279,9 @@ impl FetchDocumentShape {
                 .iter()
                 .any(|value| value.is_none() || matches!(value, Some(RemoteFieldValue::Absent)))
             {
+                return Err(document_error("role"));
+            }
+            if !applicable {
                 return Err(document_error("role"));
             }
             validate_thing(values[0], values[1], values[2], types)

@@ -2200,9 +2200,9 @@ impl<'a> SchemaIndex<'a> {
                     "fetched role is not declared",
                 ));
             }
-            if candidates
-                .iter()
-                .any(|id| !self.ancestors(id).contains(&owner))
+            let belongs = |id: &TypeId| self.ancestors(id).contains(&owner);
+            if (listed.required && !candidates.iter().all(belongs))
+                || !candidates.iter().any(belongs)
             {
                 return Err(invalid(
                     "query_plan_wrong_role_owner",
