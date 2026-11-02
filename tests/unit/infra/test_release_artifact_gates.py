@@ -1013,7 +1013,7 @@ def test_live_cli_workspace_state_machine_is_required_locally_and_in_ci() -> Non
     # The same live job gates two recovery probes, generated Rust, generated C,
     # and C runtime; the retired-server live probe was removed with its lane.
     assert (
-        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 10
+        rust_integration.count("scripts/ci/run_exact_ignored_rust_test.sh") == len(tests) - 1 + 9
     )
     assert "unsupported_server_apply_creates_neither_database_live" not in rust_integration
     assert "runner_rolls_back_the_applied_head_and_reapplies_on_3_12_3" in rust_integration
@@ -1182,11 +1182,11 @@ def test_live_release_parity_consumes_exact_artifacts_before_every_publish() -> 
     assert (
         "cargo build --manifest-path type-bridge-core/Cargo.toml "
         "--release -p type-bridge-server --no-default-features "
-        "--features band9,v2-query "
-        "--example v2_smoke_server"
+        "--features band9,axum-transport "
+        "--example staged_smoke_server"
     ) in " ".join(smoke_server.split())
     assert "name: v2-smoke-server" in smoke_server
-    assert "path: type-bridge-core/target/release/examples/v2_smoke_server" in smoke_server
+    assert "path: type-bridge-core/target/release/examples/staged_smoke_server" in smoke_server
     assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in smoke_server
     assert "npm publish" not in smoke_server
     assert "cargo publish" not in smoke_server

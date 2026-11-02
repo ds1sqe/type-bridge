@@ -86,8 +86,9 @@ def test_server_image_build_and_runtime_are_immutable_and_least_privilege() -> N
     assert "dpkg --install /tmp/libpcre2.deb /tmp/perl-base.deb" in source
     assert "rm -f /tmp/libpcre2.deb /tmp/perl-base.deb /var/log/dpkg.log" in source
     assert "/var/cache/ldconfig/aux-cache" in source
-    assert "cargo build --locked --release -p type-bridge-server --no-default-features" in source
-    assert "--features band9,v2-query" in source
+    assert "cargo build --locked --release -p type-bridge-server" in source
+    assert "--no-default-features" not in source
+    assert "--features" not in source
     assert "&& chage --lastday 0 typebridge" in source
     assert "&& rm -f /etc/shadow-" in source
     assert "USER 10001:10001" in source
@@ -125,7 +126,8 @@ def test_container_default_configuration_contains_no_credentials() -> None:
         "database": "typedb",
         "http_port": 8000,
     }
-    assert config["v2"] == {"enabled": False}
+    assert config["staged"] == {"enabled": False, "raw_enabled": False}
+    assert "schema" not in config
     for marker in ("username", "password", "secret", "token", "private"):
         assert marker not in source.lower()
 
@@ -187,7 +189,7 @@ def _layer_bytes(
     files = {
         "etc/ssl/certs/ca-certificates.crt": b"test certificate bundle\n",
         "etc/shadow": f"root:*:0:0:99999:7:::\n{shadow_entry}\n".encode(),
-        "etc/type-bridge/server.toml": b"[v2]\nenabled = false\n",
+        "etc/type-bridge/server.toml": CONTAINER_CONFIG.read_bytes(),
         "usr/local/bin/type-bridge-server": b"\x7fELFsynthetic server",
         "usr/share/licenses/type-bridge/LICENSE": b"MIT\n",
     }
@@ -687,7 +689,7 @@ def test_release_builds_accepts_and_publishes_only_exact_oci_bytes() -> None:
     assert workflow.count('export SOURCE_DATE_EPOCH="$source_date_epoch"') == 1
     assert workflow.count('--build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}"') == 1
     assert "TYPE_BRIDGE_SERVER_IMAGE" in workflow
-    assert "production_binary_serves_v1_health_and_v2_query" in workflow
+    assert "production_binary_serves_staged_and_removed_routes" in workflow
     assert "docker/setup-qemu-action@" in workflow
     assert workflow.count(f"image: {BINFMT_IMAGE}") == 1
     assert "tonistiigi/binfmt:latest" not in workflow

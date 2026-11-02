@@ -29,8 +29,7 @@ COPY Cargo.toml Cargo.lock LICENSE ./
 COPY crates crates
 COPY vendor vendor
 
-RUN cargo build --locked --release -p type-bridge-server --no-default-features \
-    --features band9,v2-query \
+RUN cargo build --locked --release -p type-bridge-server \
     && strip target/release/type-bridge-server
 
 FROM ${RUNTIME_IMAGE} AS runtime

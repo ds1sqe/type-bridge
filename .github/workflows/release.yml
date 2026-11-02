@@ -1290,7 +1290,7 @@ jobs:
           docker logs ${{ job.services.typedb.id }} >&2 || true
           exit 1
 
-      - name: Run exact-image V1 compatibility and authenticated V2 query
+      - name: Run exact-image staged server smoke
         env:
           TYPEDB_ADDRESS: localhost:1729
           TYPEDB_HTTP_PORT: "8000"
@@ -1298,11 +1298,11 @@ jobs:
         run: >-
           timeout --foreground 15m
           bash scripts/ci/run_exact_ignored_rust_test.sh
-          production_binary_serves_v1_health_and_v2_query
+          production_binary_serves_staged_and_removed_routes
           --manifest-path type-bridge-core/Cargo.toml --locked
           -p type-bridge-server --no-default-features
           --features band9,axum-transport
-          --test v2_query_integration_tests
+          --test raw_integration_tests
 
       - name: Run external generated Rust application through the exact image
         if: matrix.architecture == 'amd64'

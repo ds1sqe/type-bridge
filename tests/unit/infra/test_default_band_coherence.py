@@ -67,7 +67,7 @@ def test_single_feature_ci_compiles_each_retained_band() -> None:
     assert include == [
         {
             "band": "band9",
-            "features": "band9,v2-query",
+            "features": "band9,axum-transport",
             "required_driver": "typedb-driver v3.14.0",
             "forbidden_driver": "type-bridge-typedb-driver-",
         },

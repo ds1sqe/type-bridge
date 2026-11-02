@@ -977,40 +977,31 @@ run_live_lane() {
         -p type-bridge-orm --features integration-tests --test integration -- \
             --nocapture --test-threads=1
 
-    printf "${BOLD}━━━ Production V2 server (integration) ━━━${RESET}\n\n"
-    run_step "type-bridge-server V1 + V2 live smoke" \
+    printf "${BOLD}━━━ Production staged server (integration) ━━━${RESET}\n\n"
+    run_step "type-bridge-server staged binary live smoke" \
         run_with_timeout 10m \
         env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
         bash scripts/ci/run_exact_ignored_rust_test.sh \
-            production_binary_serves_v1_health_and_v2_query \
+            production_binary_serves_staged_and_removed_routes \
             --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v2_query_integration_tests
+            -p type-bridge-server --test raw_integration_tests
 
-    run_step "type-bridge-server fetch write commit failure regression" \
-        run_with_timeout 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        bash scripts/ci/run_exact_ignored_rust_test.sh \
-            fetch_write_commit_failure_reaches_driver_and_v1_query \
-            --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --test v2_query_integration_tests
-
-    run_step "type-bridge-server classified commit certainty regression" \
-        run_with_timeout 10m \
-        env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
-        bash scripts/ci/run_exact_ignored_rust_test.sh \
-            typedb::client::tests::integration_classified_commit_isolation_conflict \
-            --manifest-path type-bridge-core/Cargo.toml \
-            -p type-bridge-server --features v2-query \
-            --lib
+    if [[ "$lane_profile" == typedb-3.13.6/v1 ]]; then
+        run_step "type-bridge-server raw TypeQL HTTP parity and host policy" \
+            run_with_timeout 10m \
+            env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
+            bash scripts/ci/run_exact_ignored_rust_test.sh \
+                raw_answers_match_typedb_http_and_host_refusal_writes_nothing \
+                --manifest-path type-bridge-core/Cargo.toml \
+                -p type-bridge-server --test raw_integration_tests
+    fi
 
     if [[ "$lane_given_rows" == 1 ]]; then
         run_step "type-bridge-server V3 staged live acceptance" \
             run_with_timeout 10m \
             env TYPEDB_ADDRESS="$TYPEDB_ADDRESS" TYPEDB_HTTP_PORT="$TYPEDB_HTTP_PORT" \
             cargo test --manifest-path type-bridge-core/Cargo.toml \
-                -p type-bridge-server --features v2-query \
+                -p type-bridge-server \
                 --test v3_staged_integration_tests -- --ignored
 
         run_step "Rust SDK plan builder over the V3 staged proxy (live)" \

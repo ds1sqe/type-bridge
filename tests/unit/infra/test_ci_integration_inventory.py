@@ -48,7 +48,7 @@ def test_rust_orm_live_suite_is_serialized_locally_and_in_ci() -> None:
     start = local_source.index(
         'run_step "cargo test -p type-bridge-orm --features integration-tests --test integration"'
     )
-    end = local_source.index('printf "${BOLD}━━━ Production V2 server', start)
+    end = local_source.index('printf "${BOLD}━━━ Production staged server', start)
     local_command = " ".join(local_source[start:end].replace("\\\n", " ").split())
 
     assert expected_tail in local_command
