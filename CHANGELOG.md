@@ -54,6 +54,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- V3 `DocumentScalar` fetch fields accept bound entities and relations and
+  return their canonical IID. Optional thing bindings omit the field when
+  absent, preserving source identity evidence across key-changing writes.
+
 - Opt-in server `/v3/raw`, enabled by `[staged].raw_enabled` (false by
   default), with `query.remote.raw` discovery, finite nonce admission,
   host `on_v3_raw` authorization and raw-text auditing. Shared runtime
