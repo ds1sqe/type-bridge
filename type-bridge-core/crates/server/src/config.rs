@@ -657,19 +657,33 @@ impl Default for RuntimeLoggingSectionWire {
     }
 }
 
-fn deserialize_answer_limits<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<std::collections::BTreeMap<String, u64>, D::Error> {
+fn deserialize_answer_limits<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<std::collections::BTreeMap<String, u64>, D::Error> {
     #[derive(serde::Deserialize)]
     #[serde(untagged)]
-    enum Integer { Unsigned(u64), Signed(i64) }
-    let values = <std::collections::BTreeMap<String, Integer> as serde::Deserialize>::deserialize(deserializer)?;
-    values.into_iter().map(|(name, value)| {
-        let value = match value {
-            Integer::Unsigned(value) => value,
-            Integer::Signed(value) if name == "timeout_milliseconds" && value <= 0 => 0,
-            Integer::Signed(_) => return Err(serde::de::Error::custom("answer dimension must be non-negative")),
-        };
-        Ok((name, value))
-    }).collect()
+    enum Integer {
+        Unsigned(u64),
+        Signed(i64),
+    }
+    let values = <std::collections::BTreeMap<String, Integer> as serde::Deserialize>::deserialize(
+        deserializer,
+    )?;
+    values
+        .into_iter()
+        .map(|(name, value)| {
+            let value = match value {
+                Integer::Unsigned(value) => value,
+                Integer::Signed(value) if name == "timeout_milliseconds" && value <= 0 => 0,
+                Integer::Signed(_) => {
+                    return Err(serde::de::Error::custom(
+                        "answer dimension must be non-negative",
+                    ));
+                }
+            };
+            Ok((name, value))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -3485,10 +3499,22 @@ enabled = ["audit-log", "rate-limiter", "custom"]
         for timeout in [0, -1, i64::MIN] {
             let section: StagedSection = serde_json::from_value(serde_json::json!({
                 "answer_limits": { "timeout_milliseconds": timeout }
-            })).unwrap();
-            assert_eq!(section.resolved_answer_limits().unwrap().timeout_milliseconds, type_bridge_orm::QueryTimeout::NONE);
+            }))
+            .unwrap();
+            assert_eq!(
+                section
+                    .resolved_answer_limits()
+                    .unwrap()
+                    .timeout_milliseconds,
+                type_bridge_orm::QueryTimeout::NONE
+            );
         }
-        assert!(serde_json::from_value::<StagedSection>(serde_json::json!({"answer_limits": {"items": -1}})).is_err());
+        assert!(
+            serde_json::from_value::<StagedSection>(
+                serde_json::json!({"answer_limits": {"items": -1}})
+            )
+            .is_err()
+        );
 
         use type_bridge_orm::{AnswerTransport, QueryExecutionResourceLimits};
 

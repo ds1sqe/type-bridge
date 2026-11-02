@@ -1693,10 +1693,7 @@ plays:
         TypeBridgeQueryExecutionLimitsV1 {
             struct_size: size_of::<TypeBridgeQueryExecutionLimitsV1>() as u32,
             version: 1,
-            timeout_milliseconds: limits
-                .timeout_milliseconds
-                .milliseconds()
-                .unwrap_or(0),
+            timeout_milliseconds: limits.timeout_milliseconds.milliseconds().unwrap_or(0),
             items: limits.items,
             bytes: limits.bytes,
             graph_nodes: limits.graph_nodes,

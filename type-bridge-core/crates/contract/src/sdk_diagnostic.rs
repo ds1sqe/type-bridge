@@ -1364,7 +1364,9 @@ struct DetailJson<'a>(&'a SdkDiagnosticDetailValue);
 impl Serialize for DetailJson<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self.0 {
-            SdkDiagnosticDetailValue::ExecutionTimeline(value) => tagged(serializer, "execution_timeline", value),
+            SdkDiagnosticDetailValue::ExecutionTimeline(value) => {
+                tagged(serializer, "execution_timeline", value)
+            }
             SdkDiagnosticDetailValue::Boolean(value) => tagged(serializer, "boolean", value),
             SdkDiagnosticDetailValue::Count(value) => {
                 tagged(serializer, "count", &value.to_string())
