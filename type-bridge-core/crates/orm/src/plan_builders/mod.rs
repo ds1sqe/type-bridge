@@ -501,6 +501,107 @@ mod tests {
     }
 
     #[test]
+    fn split_reference_guards_precede_allocating_and_replacing_rows() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use type_bridge_contract::query_plan::QueryOutput;
+        use type_bridge_contract::query_remote::RemoteValue;
+        let authority = authority();
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let account = [TypeId::new(TypeKind::Entity, "account").unwrap()];
+        let role = RoleId::new("purchase", "buyer").unwrap();
+        let field =
+            OwnsFactId::new(purchase.clone(), AttributeId::new("order-id").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|index| (field.clone(), text(&format!("v-{index}"))))
+            .collect::<Vec<_>>();
+        let players = ["0x02", "0xffff"].map(|iid| {
+            (
+                role.clone(),
+                Reference {
+                    candidates: &account,
+                    identity: ReferenceIdentity::Iid(iid),
+                },
+            )
+        });
+        for kind in [
+            WriteKind::Insert,
+            WriteKind::Put,
+            WriteKind::Update,
+            WriteKind::PartialPut,
+        ] {
+            for missing in [false, true] {
+                let mut program = write_many(
+                    &authority,
+                    kind,
+                    WriteShape {
+                        references_see_prior_writes: true,
+                        type_id: &purchase,
+                        keys: &[],
+                        cleared_fields: std::slice::from_ref(&field),
+                        cleared_roles: std::slice::from_ref(&role),
+                        document_roles: vec![],
+                        include_subtypes: true,
+                        return_documents: false,
+                    },
+                    &[WriteRow {
+                        iid: Some("0x10"),
+                        fields: &fields,
+                        players: &players,
+                    }],
+                )
+                .unwrap();
+                let guard = program.next().unwrap().unwrap();
+                assert!(guard.reference_guard);
+                assert!(
+                    guard
+                        .plan
+                        .local()
+                        .pipeline()
+                        .iter()
+                        .all(|stage| !stage.is_write())
+                );
+                let QueryOutput::Rows { columns } = guard.plan.local().output() else {
+                    panic!("guard identities");
+                };
+                let names = columns
+                    .iter()
+                    .map(|column| {
+                        guard.plan.local().bindings()[usize::from(column.get())]
+                            .variable()
+                            .as_str()
+                    })
+                    .collect::<Vec<_>>();
+                let answer = crate::query_plan_exec::PlanAnswer::Rows(if missing {
+                    vec![]
+                } else {
+                    vec![
+                        serde_json::json!({names[0]:RemoteValue::Value { value: CanonicalValue::Long(0) }, names[1]:RemoteValue::Thing { iid: "0x02".into(), type_id: account[0].clone() }}),
+                    ]
+                });
+                let identity = guard.identity(&answer).unwrap();
+                let result = program.accept_identity(&guard, identity);
+                if missing {
+                    assert_eq!(
+                        result.unwrap_err().code().as_str(),
+                        "provider_identity_mismatch"
+                    );
+                } else {
+                    result.unwrap();
+                    let seed = program.next().unwrap().unwrap();
+                    assert!(!seed.reference_guard);
+                    assert!(
+                        seed.plan
+                            .local()
+                            .pipeline()
+                            .iter()
+                            .any(|stage| stage.is_write())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn exact_relation_sequences_retain_players_and_batch_visibility_stays_explicit() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
         use type_bridge_contract::projection::{

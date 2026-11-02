@@ -2477,7 +2477,7 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
     let membership = type_id(TypeKind::Relation, "membership");
     let person = type_id(TypeKind::Entity, "person");
     let member = RoleId::new("membership", "member").unwrap();
-    for count in [253, 254, 300] {
+    for count in [253_usize, 254, 300] {
         for operation in [
             ProjectedBatchOperation::Insert,
             ProjectedBatchOperation::Put,
@@ -2524,6 +2524,14 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                 let mut document = membership_document(0, "0x8000", "wide-role", "0x01");
                 document["role_players"] = (0..count).map(|index| json!({"role":"member", "iid":format!("0x{:04x}",index+1), "type_name":"person", "attributes":{"identifier":[{"value":format!("p-{index:04}")}]}})).collect::<Vec<_>>().into();
                 let mut responses = Vec::new();
+                let guard_count = if count > boundary {
+                    (count - 1).div_ceil(type_bridge_contract::limits::MAX_BINDINGS - 2)
+                } else {
+                    0
+                };
+                for guard in 0..guard_count {
+                    responses.push(Response::Documents(vec![json!({"ordinal":0,"iid":format!("0x{:04x}", 2 + guard * (type_bridge_contract::limits::MAX_BINDINGS - 2)),"_type":"person"})]));
+                }
                 if count > boundary {
                     responses.push(Response::Documents(vec![
                         json!({"ordinal":0,"iid":"0x8000","_type":"membership"}),
@@ -2566,7 +2574,14 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                 }
                 let state = state.lock().unwrap();
                 assert_eq!(state.opens, [TxType::Write]);
-                assert_eq!(state.calls.len(), if count <= boundary { 1 } else { 2 });
+                assert_eq!(
+                    state.calls.len(),
+                    if count <= boundary {
+                        1
+                    } else {
+                        2 + guard_count
+                    }
+                );
                 assert_eq!(
                     state
                         .calls

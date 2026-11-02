@@ -30,6 +30,7 @@ impl MatchProgram {
                 expected_iid: None,
                 missing_iid_noop: false,
                 candidate_filter: true,
+                reference_guard: false,
             }));
         }
         if self.selected.is_none() {
@@ -87,6 +88,34 @@ impl MatchProgram {
         }
         Ok(())
     }
+}
+
+fn group_reads(mut patterns: Vec<Pattern>) -> Result<Vec<Pattern>, Diagnostic> {
+    if patterns.len() > type_bridge_contract::limits::MAX_BOOLEAN_TERMS {
+        let reads = patterns
+            .into_iter()
+            .map(|pattern| match pattern {
+                Pattern::Read(read) => Ok(read),
+                Pattern::Iid { binding, iid } => Ok(QueryPattern::Iid {
+                    binding,
+                    iid: QueryOperand::Literal {
+                        value: super::iid(&iid)?,
+                    },
+                }),
+                _ => unreachable!("candidate filters contain only reads"),
+            })
+            .collect::<Result<Vec<_>, Diagnostic>>()?;
+        patterns = reads
+            .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
+            .map(|chunk| {
+                QueryPattern::Or {
+                    branches: vec![chunk.to_vec()],
+                }
+                .into()
+            })
+            .collect();
+    }
+    Ok(patterns)
 }
 
 fn probe(
@@ -157,30 +186,7 @@ fn probe(
             "Match predicate variables exceed the canonical binding ceiling",
         ));
     }
-    if patterns.len() > type_bridge_contract::limits::MAX_BOOLEAN_TERMS {
-        let reads = patterns
-            .into_iter()
-            .map(|pattern| match pattern {
-                Pattern::Read(read) => Ok(read),
-                Pattern::Iid { binding, iid } => Ok(QueryPattern::Iid {
-                    binding,
-                    iid: QueryOperand::Literal {
-                        value: super::iid(&iid)?,
-                    },
-                }),
-                _ => unreachable!("candidate filters contain only reads"),
-            })
-            .collect::<Result<Vec<_>, Diagnostic>>()?;
-        patterns = reads
-            .chunks(type_bridge_contract::limits::MAX_BOOLEAN_TERMS)
-            .map(|chunk| {
-                QueryPattern::Or {
-                    branches: vec![chunk.to_vec()],
-                }
-                .into()
-            })
-            .collect();
-    }
+    let patterns = group_reads(patterns)?;
     draft.finish(
         authority,
         vec![
@@ -290,4 +296,130 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
         authority: authority.clone(),
         ordinal,
     })))
+}
+
+fn reference_guard(
+    authority: &PlanAuthority,
+    players: &[Player],
+    ordinal: usize,
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = PlanDraft::new(ValueTransport::Given);
+    let root = draft.bind("root")?;
+    let ordinal_binding = draft.bind("ordinal")?;
+    let mut patterns = vec![Pattern::Let {
+        binding: ordinal_binding,
+        expr: Expr::Operand(draft.value(CanonicalValue::Long(
+            i64::try_from(ordinal).map_err(|_| identity_error())?,
+        ))?),
+    }];
+    for (index, player) in players.iter().enumerate() {
+        if index == 0 {
+            let (key, input) = if let Some(iid) = &player.iid {
+                (
+                    None,
+                    QueryOperand::Literal {
+                        value: super::iid(iid)?,
+                    },
+                )
+            } else {
+                let (attribute, value) = player.key.as_ref().expect("owned reference identity");
+                (Some(attribute), draft.value(value.clone())?)
+            };
+            let mut branches = player
+                .candidates
+                .iter()
+                .map(|candidate| reference_patterns(&mut draft, root, candidate, key, &input))
+                .collect::<Result<Vec<_>, Diagnostic>>()?;
+            if branches.len() == 1 {
+                patterns.extend(branches.remove(0).into_iter().map(Pattern::Read));
+            } else {
+                patterns.push(QueryPattern::Or { branches }.into());
+            }
+        } else {
+            let identity = if let Some(iid) = &player.iid {
+                ReferenceIdentity::Iid(iid)
+            } else {
+                let (attribute, value) = player.key.as_ref().expect("owned reference identity");
+                ReferenceIdentity::Key {
+                    attribute,
+                    value: value.clone(),
+                }
+            };
+            reference_binding(
+                &mut draft,
+                &Reference {
+                    candidates: &player.candidates,
+                    identity,
+                },
+                &mut patterns,
+            )?;
+        }
+    }
+    if players.is_empty() {
+        return Err(identity_error());
+    }
+    if draft.bindings.len() + draft.inputs.len() > type_bridge_contract::limits::MAX_BINDINGS {
+        return Err(invalid(
+            "query_plan_binding_limit",
+            "Reference guard variables exceed the canonical binding ceiling",
+        ));
+    }
+    let mut reads = Vec::new();
+    let mut retained = Vec::new();
+    for pattern in patterns {
+        if matches!(pattern, Pattern::Let { .. }) {
+            retained.push(pattern);
+        } else {
+            reads.push(pattern);
+        }
+    }
+    retained.extend(group_reads(reads)?);
+    draft.finish(
+        authority,
+        vec![
+            Stage::Match { patterns: retained },
+            Stage::Select {
+                bindings: vec![root, ordinal_binding],
+            },
+            Stage::Distinct,
+        ],
+        Operation::Rows,
+        QueryOutput::Rows {
+            columns: vec![ordinal_binding, root],
+        },
+    )
+}
+
+pub(super) fn reference_guards(
+    authority: &PlanAuthority,
+    players: &[Player],
+    ordinal: usize,
+) -> Result<Vec<BuiltPlan>, Diagnostic> {
+    let mut guards = Vec::new();
+    let mut offset = 0;
+    while offset < players.len() {
+        let mut low = 0;
+        let mut high = players.len() - offset;
+        while low < high {
+            let count = low + (high - low).div_ceil(2);
+            match reference_guard(authority, &players[offset..offset + count], ordinal) {
+                Ok(_) => low = count,
+                Err(error) if forces_pieces(&error) => high = count - 1,
+                Err(error) => return Err(error),
+            }
+        }
+        if low == 0 {
+            return Err(invalid(
+                "projected_batch_input_unit_byte_limit",
+                "One reference exceeds the canonical write-piece ceiling",
+            ));
+        }
+        guards.push(reference_guard(
+            authority,
+            &players[offset..offset + low],
+            ordinal,
+        )?);
+        offset += low;
+    }
+    Ok(guards)
 }

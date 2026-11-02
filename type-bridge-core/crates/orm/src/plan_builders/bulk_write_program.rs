@@ -40,6 +40,7 @@ impl WriteProgram {
                 expected_iid: None,
                 missing_iid_noop: false,
                 candidate_filter: false,
+                reference_guard: false,
             })),
             Self::Sequential(plans) => Ok((!plans.is_empty()).then(|| WriteStep {
                 plan: plans.remove(0).0,
@@ -48,6 +49,7 @@ impl WriteProgram {
                 expected_iid: None,
                 missing_iid_noop: false,
                 candidate_filter: false,
+                reference_guard: false,
             })),
             Self::Split(program) => program.next(),
             Self::MatchWide(program) => program.next(),
@@ -185,12 +187,16 @@ pub(crate) struct WriteStep {
     expected_iid: Option<String>,
     pub(crate) missing_iid_noop: bool,
     pub(crate) candidate_filter: bool,
+    pub(crate) reference_guard: bool,
 }
 impl WriteStep {
     pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
         let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
             return Err(identity_error());
         };
+        if (self.reference_guard || self.missing_iid_noop) && rows.is_empty() {
+            return Ok(None);
+        }
         let [row] = rows.as_slice() else {
             return Err(identity_error());
         };
@@ -289,6 +295,7 @@ impl SplitProgram {
                     expected_iid: Some(iid.to_owned()),
                     missing_iid_noop: false,
                     candidate_filter: false,
+                    reference_guard: false,
                 }
             }
         }))
@@ -298,6 +305,22 @@ impl SplitProgram {
         step: &WriteStep,
         iid: Option<String>,
     ) -> Result<(), Diagnostic> {
+        if step.reference_guard {
+            if iid.is_some() {
+                return Ok(());
+            }
+            if !step.missing_iid_noop {
+                return Err(identity_error());
+            }
+            while self.steps.front().is_some_and(|next| match next {
+                Step::Ready(next) => next.ordinal == step.ordinal,
+                Step::Target { ordinal, .. } => *ordinal == step.ordinal,
+            }) {
+                self.steps.pop_front();
+            }
+            self.identity = None;
+            return Ok(());
+        }
         if let Some(iid) = iid {
             step.check_identity(&iid)?;
             self.identity = Some(iid);
@@ -519,6 +542,7 @@ pub(super) fn split_at(
                         expected_iid: None,
                         missing_iid_noop: false,
                         candidate_filter: false,
+                        reference_guard: false,
                     }));
                 }
                 ordinal += low;
@@ -530,6 +554,24 @@ pub(super) fn split_at(
         if matches!(kind, WriteKind::Delete | WriteKind::DeleteReturning) {
             return one(authority, kind, shape.clone(), &row, true, output_ordinal)
                 .map(|_| unreachable!("a deletion row exceeded its canonical limits"));
+        }
+        // The seed matches its first player before any write. Guard later
+        // players because a mixed attachment answer cannot prove every event
+        // matched, and one skipped reference must not leave a partial write.
+        for plan in match_put::reference_guards(
+            authority,
+            row.players.get(1..).unwrap_or_default(),
+            output_ordinal,
+        )? {
+            steps.push_back(Step::Ready(WriteStep {
+                plan,
+                complete: false,
+                ordinal: output_ordinal,
+                expected_iid: None,
+                missing_iid_noop: kind == WriteKind::PartialUpdate,
+                candidate_filter: false,
+                reference_guard: true,
+            }));
         }
         let (keys, fields) = row
             .fields
@@ -567,6 +609,7 @@ pub(super) fn split_at(
             expected_iid: row.iid,
             missing_iid_noop: kind == WriteKind::PartialUpdate,
             candidate_filter: false,
+            reference_guard: false,
         }));
         let mut attach_shape = shape.clone();
         attach_shape.cleared_fields = &[];

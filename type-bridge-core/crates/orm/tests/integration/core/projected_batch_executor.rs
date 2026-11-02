@@ -2128,7 +2128,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
         for fail in [false, true] {
             let value = format!("dynamic-role-{literal}-{fail}");
             *log.lock().unwrap() = DispatchLog {
-                fail_at: fail.then_some(2),
+                fail_at: fail.then_some(4),
                 ..Default::default()
             };
             let result = dynamic_relation
@@ -2139,7 +2139,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                 .await;
             {
                 let observed = log.lock().unwrap();
-                assert_eq!(observed.statements.len(), 2);
+                assert_eq!(observed.statements.len(), 4);
                 assert_eq!(observed.opened, [TxType::Write]);
                 assert_eq!(
                     (observed.commits, observed.rollbacks),
@@ -2174,7 +2174,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                 let value = format!("projected-{literal}-{relation}-{fail}");
                 let input = wide_input(relation, &value);
                 *log.lock().unwrap() = DispatchLog {
-                    fail_at: fail.then_some(2),
+                    fail_at: fail.then_some(if relation { 4 } else { 2 }),
                     ..Default::default()
                 };
                 let batch = ProjectedBatch::try_new(
@@ -2191,7 +2191,10 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                 let result = ProjectedBatchExecutor::new(&installed)
                     .execute(&counted, &batch, control())
                     .await;
-                assert_eq!(log.lock().unwrap().statements.len(), 2);
+                assert_eq!(
+                    log.lock().unwrap().statements.len(),
+                    if relation { 4 } else { 2 }
+                );
                 assert_eq!(log.lock().unwrap().opened, [TxType::Write]);
                 if fail {
                     assert!(result.is_err());
@@ -2240,7 +2243,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                     let value = format!("controlled-put-{literal}-{relation}-{borrowed}-{fail}");
                     let input = wide_input(relation, &value);
                     *log.lock().unwrap() = DispatchLog {
-                        fail_at: fail.then_some(2),
+                        fail_at: fail.then_some(if relation { 4 } else { 2 }),
                         ..Default::default()
                     };
                     let result = if borrowed {
@@ -2290,7 +2293,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                         let observed = log.lock().unwrap();
                         assert_eq!(
                             observed.statements.len(),
-                            2,
+                            if relation { 4 } else { 2 },
                             "controlled Put relation={relation} borrowed={borrowed} fail={fail}"
                         );
                         assert_eq!(observed.opened, [TxType::Write]);
@@ -2365,7 +2368,7 @@ async fn wide_manager_rows_match_prior_answers_and_last_piece_is_atomic_live() {
                             .unwrap();
                             assert_eq!(repeated.iid(), thing.iid());
                             let observed = log.lock().unwrap();
-                            assert_eq!(observed.statements.len(), 2);
+                            assert_eq!(observed.statements.len(), if relation { 4 } else { 2 });
                             assert_eq!(observed.opened, [TxType::Write]);
                             assert_eq!((observed.commits, observed.rollbacks), (1, 0));
                         }
@@ -3759,5 +3762,133 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
         eprintln!(
             "wide sequential literal={literal}: full match reuses IID, near miss allocates; {statements} bounded match/write statements, later-piece rollback; overlapping partial put/update use four statements and equal old loops"
         );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn wide_relation_missing_player_refuses_before_allocation_live() {
+    use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    use type_bridge_orm::AttributeValue;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  guard-tag: { value: string }\nentities:\n  guard-person: {}\nrelations:\n  guard-relation:\n    owns:\n      guard-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0 } }\nplays:\n  guard-person:\n    guard-relation: [member]\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("wide-reference-guard.yaml").unwrap(), yaml)])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute guard-tag, value string; entity guard-person, plays guard-relation:member; relation guard-relation, owns guard-tag @card(0..), relates member @card(0..);", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let person = registry.entity("guard-person").unwrap();
+    let relation = registry.relation("guard-relation").unwrap();
+    let iid = DynamicEntityManager::new(&database, person)
+        .insert(&vec![])
+        .await
+        .unwrap();
+    let players = [iid.as_str(), "0xffff"]
+        .map(|iid| DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: "guard-person".into(),
+            iid: Some(iid.into()),
+            key: None,
+        })
+        .to_vec();
+    let fields: DynamicAttributeMap = (0..300)
+        .map(|index| {
+            (
+                "guard-tag".into(),
+                AttributeValue::String(format!("tag-{index:04}")),
+            )
+        })
+        .collect();
+    let raw = DynamicRelationManager::new(&database, relation.clone());
+    let tx = database.transaction_context(TxType::Write).await.unwrap();
+    let looped = DynamicRelationManager::with_transaction(tx.clone(), relation.clone());
+    assert!(looped.put(&fields, &players).await.is_err());
+    tx.rollback().await.unwrap();
+    assert_eq!(raw.count().await.unwrap(), 0);
+    let other = DynamicEntityManager::new(&database, registry.entity("guard-person").unwrap())
+        .insert(&vec![])
+        .await
+        .unwrap();
+    let valid_players = [iid.as_str(), other.as_str()]
+        .map(|iid| DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: "guard-person".into(),
+            iid: Some(iid.into()),
+            key: None,
+        })
+        .to_vec();
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager =
+            DynamicRelationManager::from_registry(&counted, registry.clone(), relation.clone());
+        for operation in ["insert", "put", "match-put"] {
+            *log.lock().unwrap() = DispatchLog::default();
+            let items = [(fields.clone(), players.clone())];
+            let result = match operation {
+                "insert" => manager.insert_many(&items).await,
+                "put" => manager.put_many_exact(&items).await,
+                _ => manager.put_many(&items).await,
+            };
+            eprintln!(
+                "wide missing-player literal={literal} operation={operation}: result={result:?}, committed_count={}",
+                raw.count().await.unwrap()
+            );
+            assert!(result.is_err());
+            assert_eq!(raw.count().await.unwrap(), 0);
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
+        *log.lock().unwrap() = DispatchLog::default();
+        let target = manager
+            .insert_many(&[(fields.clone(), valid_players.clone())])
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(raw.count().await.unwrap(), 1);
+        assert_eq!(log.lock().unwrap().statements.len(), 3);
+        let before = raw.get_by_iid(&target).await.unwrap();
+        *log.lock().unwrap() = DispatchLog::default();
+        assert!(
+            manager
+                .update_many_and_get_exact(&[(target.clone(), vec![], players.clone())])
+                .await
+                .is_err()
+        );
+        assert_eq!(raw.get_by_iid(&target).await.unwrap(), before);
+        // Force the update into pieces as well, retaining every old tag/player.
+        *log.lock().unwrap() = DispatchLog::default();
+        assert!(
+            manager
+                .update_many_and_get_exact(&[(target.clone(), fields.clone(), players.clone())])
+                .await
+                .is_err()
+        );
+        assert_eq!(raw.get_by_iid(&target).await.unwrap(), before);
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        }
+        raw.delete_by_iid(&target).await.unwrap();
     }
 }
