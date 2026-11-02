@@ -68,7 +68,10 @@ pub(super) async fn handle_raw(
     request: Request,
 ) -> Response {
     let now = Instant::now();
-    let deadline = state.query.execution_timeout.map(|timeout| now.checked_add(timeout).unwrap_or(now));
+    let deadline = state
+        .query
+        .execution_timeout
+        .map(|timeout| now.checked_add(timeout).unwrap_or(now));
     let mut metadata = staged_request_metadata(request.headers(), "raw");
     metadata.insert("query_format".into(), serde_json::json!("raw-typeql"));
     let mut ctx = state.pipeline().request_context(metadata);
