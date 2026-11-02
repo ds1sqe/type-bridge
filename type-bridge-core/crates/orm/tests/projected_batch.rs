@@ -1585,8 +1585,8 @@ fn every_resource_dimension_is_checked_in_deterministic_order() {
     assert_eq!(first.code().as_str(), "batch_item_limit");
 }
 
-#[test]
-fn cancellation_and_deadline_diagnostics_are_exact() {
+#[tokio::test(start_paused = true)]
+async fn cancellation_and_deadline_diagnostics_are_exact() {
     let installed = installed(BindingTarget::Python);
     let person = type_id(TypeKind::Entity, "person");
     let make_insert = || vec![ProjectedBatchRow::Create(person_create(&installed, "ada"))];
@@ -1612,24 +1612,22 @@ fn cancellation_and_deadline_diagnostics_are_exact() {
     assert_eq!(cancellation.code().as_str(), "provider_cancelled");
     assert!(cancellation.path().is_empty());
     assert!(cancellation.details().is_empty());
-    let deadline = PreparedProjectedBatchInvocation::try_new(
-        &installed,
-        &batch,
-        ProjectedBatchInvocationControl::capture(
-            QueryExecutionResourceLimits::tightened(
-                0,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                u64::MAX,
-                3,
-            ),
-            AnswerCancellation::default(),
+    let control = ProjectedBatchInvocationControl::capture(
+        QueryExecutionResourceLimits::tightened(
+            1,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            3,
         ),
-    )
-    .unwrap_err();
+        AnswerCancellation::default(),
+    );
+    tokio::time::advance(std::time::Duration::from_millis(2)).await;
+    let deadline =
+        PreparedProjectedBatchInvocation::try_new(&installed, &batch, control).unwrap_err();
     assert_eq!(deadline.category(), SdkDiagnosticCategory::ResourceLimit);
     assert_eq!(deadline.code().as_str(), "transaction_deadline_exceeded");
     assert!(deadline.path().is_empty());

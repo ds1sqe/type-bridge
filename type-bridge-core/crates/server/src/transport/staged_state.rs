@@ -404,7 +404,9 @@ impl StagedQueryState {
         self
     }
 
-    /// Tighten the mandatory server execution duration.
+    /// Set the execution guard independently of the advertised answer policy.
+    /// `None` disables this guard. Use [`Self::with_answer_limits`] to configure
+    /// the client-visible timeout ceiling and this guard together.
     #[must_use]
     pub fn with_execution_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.execution_timeout = timeout.into();

@@ -1259,13 +1259,25 @@ fn advertised_answer_limits_are_omitted_at_default_and_canonical_otherwise() {
     );
     assert_eq!(explicit.answer_limits().get("statements"), Some(&3));
 
+    // None and durations beyond the former 24-hour cap are canonical ceilings.
+    for milliseconds in [0, 24 * 60 * 60 * 1000 + 1, u64::MAX] {
+        let value = advertisement()
+            .with_answer_limits(BTreeMap::from([(
+                "timeout_milliseconds".to_owned(),
+                milliseconds,
+            )]))
+            .unwrap();
+        assert_eq!(
+            RemoteCapabilities::decode(&value.encode().unwrap())
+                .unwrap()
+                .answer_limits()
+                .get("timeout_milliseconds"),
+            Some(&milliseconds)
+        );
+    }
+
     // An unknown name, a redundant default, and a value past its maximum.
-    for refused in [
-        ("made_up", 1_u64),
-        ("items", 65_536),
-        ("statements", 4097),
-        ("timeout_milliseconds", 24 * 60 * 60 * 1000 + 1),
-    ] {
+    for refused in [("made_up", 1_u64), ("items", 65_536), ("statements", 4097)] {
         assert_eq!(
             advertisement()
                 .with_answer_limits(BTreeMap::from([(refused.0.to_owned(), refused.1)]))

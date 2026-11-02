@@ -885,7 +885,7 @@ async fn cancellation_triggered_by_the_mapper_poisons_borrowed_execution() {
     assert_eq!(state.rollbacks, 0);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn deadline_crossed_by_the_mapper_poisons_borrowed_execution() {
     let installed = installed();
     let batch = three_row_batch(&installed, BatchKind::Entity);
