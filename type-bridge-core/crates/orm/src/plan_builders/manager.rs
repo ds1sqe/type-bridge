@@ -802,10 +802,20 @@ impl ManagerPlans {
         Ok(Some(plans))
     }
 
-    pub(crate) fn entity_put(
+    pub(crate) fn relation_put(
         &self,
         name: &str,
         attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
+    ) -> Result<BuiltPlan> {
+        self.keyed_put(name, attributes, players, true)
+    }
+
+    fn keyed_put(
+        &self,
+        name: &str,
+        attributes: &DynamicAttributeMap,
+        players: &[DynamicRolePlayerInput],
         exact: bool,
     ) -> Result<BuiltPlan> {
         let type_id = self.type_id(name)?;
@@ -825,7 +835,7 @@ impl ManagerPlans {
             }
         }
         if keys.is_empty() {
-            return self.insert(name, attributes, &[], !exact, exact);
+            return self.insert(name, attributes, players, !exact, exact);
         }
         if exact {
             for attribute in descriptors
@@ -836,20 +846,87 @@ impl ManagerPlans {
                 cleared.insert(self.ownership(&type_id, &attribute.attr_name)?);
             }
         }
-        super::put::keyed_entity_put(
+        let cleared = cleared.into_iter().collect::<Vec<_>>();
+        let put = super::put::KeyedPut {
+            include_subtypes: !exact,
+            return_document: false,
+            type_id: &type_id,
+            keys: &keys,
+            fields: &[],
+            cleared: &cleared,
+            attached: &attached,
+        };
+        if type_id.kind() == TypeKind::Entity {
+            return super::put::keyed_entity_put(self.authority()?, self.transport, &put)
+                .map_err(diagnostic);
+        }
+        let candidates = players
+            .iter()
+            .map(|player| self.type_id(&player.player_type_name).map(|id| vec![id]))
+            .collect::<Result<Vec<_>>>()?;
+        let key_attributes = players
+            .iter()
+            .zip(&candidates)
+            .map(|(player, types)| {
+                player
+                    .key
+                    .as_ref()
+                    .map(|(name, _)| self.attribute(&types[0], name))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let references = players
+            .iter()
+            .zip(&candidates)
+            .zip(&key_attributes)
+            .map(|((player, candidates), attribute)| {
+                let identity = match (&player.iid, &player.key, attribute) {
+                    (Some(iid), _, _) => ReferenceIdentity::Iid(iid),
+                    (None, Some((_, value)), Some(attribute)) => ReferenceIdentity::Key {
+                        attribute,
+                        value: canonical(value)?,
+                    },
+                    _ => {
+                        return Err(invalid(
+                            "manager_player_identity_missing",
+                            "A role player requires an IID or key",
+                        ));
+                    }
+                };
+                Ok((
+                    self.role(&type_id, &player.role_name)?,
+                    Reference {
+                        candidates,
+                        identity,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let roles = self
+            .document_roles(&type_id)?
+            .into_iter()
+            .map(|role| role.role)
+            .collect::<Vec<_>>();
+        super::put::keyed_relation_put(
             self.authority()?,
             self.transport,
-            &super::put::KeyedPut {
-                include_subtypes: !exact,
-                return_document: false,
-                type_id: &type_id,
-                keys: &keys,
-                fields: &[],
-                cleared: &cleared.into_iter().collect::<Vec<_>>(),
-                attached: &attached,
+            &put,
+            super::put::RelationPut {
+                players: &references,
+                cleared_roles: &roles,
+                document_roles: Vec::new(),
             },
         )
         .map_err(diagnostic)
+    }
+
+    pub(crate) fn entity_put(
+        &self,
+        name: &str,
+        attributes: &DynamicAttributeMap,
+        exact: bool,
+    ) -> Result<BuiltPlan> {
+        self.keyed_put(name, attributes, &[], exact)
     }
 
     pub(crate) fn key_expressions(

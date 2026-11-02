@@ -1625,38 +1625,6 @@ impl<'db> DynamicRelationManager<'db> {
         &self.descriptor
     }
 
-    pub(crate) async fn key_iid_exact(
-        &self,
-        attributes: &DynamicAttributeMap,
-    ) -> Result<Option<String>> {
-        let plans = self.plans.as_ref().ok_or_else(|| {
-            crate::plan_builders::manager::invalid(
-                "manager_plan_authority_unavailable",
-                "Exact key resolution requires a registry-backed manager",
-            )
-        })?;
-        let keys = plans.key_expressions(&self.descriptor.type_name, attributes)?;
-        if keys.is_empty() {
-            return Ok(None);
-        }
-        let program = plans.read(
-            &self.descriptor.type_name,
-            true,
-            &keys,
-            &[],
-            None,
-            None,
-            &[],
-            ReadTerminal::Identity,
-        )?;
-        let mut identities = plan_identity_rows(&self.target, &program).await?;
-        match identities.len() {
-            0 => Ok(None),
-            1 => Ok(identities.pop().map(|(iid, _)| iid)),
-            _ => Err(snapshot_error(&self.descriptor.type_name)),
-        }
-    }
-
     pub(crate) async fn resolve_iid(
         &self,
         iid: Option<&str>,
@@ -2207,36 +2175,7 @@ impl<'db> DynamicRelationManager<'db> {
         role_players: &[DynamicRolePlayerInput],
     ) -> Result<String> {
         if let Some(plans) = &self.plans {
-            let keys = plans.key_expressions(&self.descriptor.type_name, attributes)?;
-            if !keys.is_empty() {
-                let program = plans.read(
-                    &self.descriptor.type_name,
-                    true,
-                    &keys,
-                    &[],
-                    None,
-                    None,
-                    &[],
-                    ReadTerminal::Identity,
-                )?;
-                let identities = plan_identity_rows(&self.target, &program).await?;
-                match identities.as_slice() {
-                    [(iid, _)] => {
-                        self.update_exact_in_transaction(iid, attributes, role_players)
-                            .await?;
-                        return Ok(iid.clone());
-                    }
-                    [] => {}
-                    _ => return Err(snapshot_error(&self.descriptor.type_name)),
-                }
-            }
-            let plan = plans.insert(
-                &self.descriptor.type_name,
-                attributes,
-                role_players,
-                false,
-                true,
-            )?;
+            let plan = plans.relation_put(&self.descriptor.type_name, attributes, role_players)?;
             return self
                 .target
                 .write_plan(&plan, |answer| {
