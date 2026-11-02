@@ -1494,7 +1494,9 @@ fn validate_stages(
                             operand,
                             optional: allow_absent,
                         } => {
-                            bound(*owner, &mandatory)?;
+                            if !(*allow_absent && optional.contains(owner)) {
+                                bound(*owner, &mandatory)?;
+                            }
                             index.ownership(*owner, field, &types, false)?;
                             if let QueryOperand::Input { column } = operand
                                 && *allow_absent

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use support::*;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::query_plan::v3::{
-    DeleteItem, QueryPlanV3, Set, Stage, decode_query_plan_v3,
+    AttachItem, DeleteItem, QueryPlanV3, Set, Stage, decode_query_plan_v3,
 };
 use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryOutput, QueryPattern, QueryPlan, ReadStage, ReduceAssignment,
@@ -1953,6 +1953,85 @@ fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
                         items: vec![DeleteItem::Has {
                             owner,
                             field: field("score"),
+                        }],
+                    },
+                ],
+                vec![],
+            ),
+            &schema(),
+        );
+        match expected {
+            None => {
+                plan.unwrap();
+            }
+            Some(code) => assert_eq!(plan.unwrap_err().code().as_str(), code),
+        }
+    }
+}
+
+#[test]
+fn optional_has_attachment_requires_a_bound_typed_owner_and_optional_flag() {
+    use type_bridge_contract::query_plan::v3::{Expr, Pattern};
+    for (patterns, owner, optional, expected) in [
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Try {
+                    patterns: vec![isa(1, entity("account"))],
+                }
+                .into(),
+            ],
+            id(1),
+            true,
+            None,
+        ),
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                QueryPattern::Try {
+                    patterns: vec![isa(1, entity("account"))],
+                }
+                .into(),
+            ],
+            id(1),
+            false,
+            Some("query_plan_write_unbound_target"),
+        ),
+        (
+            vec![
+                isa(0, entity("account")).into(),
+                Pattern::Let {
+                    binding: id(1),
+                    expr: Expr::Operand(literal(1)),
+                },
+            ],
+            id(1),
+            true,
+            Some("query_plan_write_untyped_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(9),
+            true,
+            Some("query_plan_write_unbound_target"),
+        ),
+        (
+            vec![isa(0, entity("account")).into()],
+            id(1),
+            true,
+            Some("query_plan_write_unbound_target"),
+        ),
+    ] {
+        let plan = QueryPlanV3::new(
+            spec(
+                vec![
+                    Stage::Match { patterns },
+                    Stage::Attach {
+                        items: vec![AttachItem::Has {
+                            optional,
+                            owner,
+                            field: field("score"),
+                            operand: literal(1),
                         }],
                     },
                 ],
