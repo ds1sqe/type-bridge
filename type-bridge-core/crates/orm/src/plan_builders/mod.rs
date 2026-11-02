@@ -813,6 +813,100 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
     }
 
     #[test]
+    fn keyed_relation_put_matches_only_its_key_before_replacing_roles() {
+        use super::put::{RelationPut, keyed_relation_put};
+        use type_bridge_contract::query_plan::v3::{DocumentRole, Stage};
+        let authority = PlanAuthority::new(
+            type_bridge_schema_compat::typeql_to_declared(
+                type_bridge_contract::schema::DocumentId::new("keyed-relation-put.typeql").unwrap(),
+                race::SCHEMA_TYPEQL,
+            )
+            .unwrap(),
+            authority().managed_semantics().clone(),
+        );
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let accounts = [TypeId::new(TypeKind::Entity, "account").unwrap()];
+        let items = [TypeId::new(TypeKind::Entity, "item").unwrap()];
+        let account_key = AttributeId::new("account-id").unwrap();
+        let roles = [
+            RoleId::new("purchase", "buyer").unwrap(),
+            RoleId::new("purchase", "item").unwrap(),
+        ];
+        let keys = [(
+            OwnsFactId::new(purchase.clone(), AttributeId::new("order-id").unwrap()).unwrap(),
+            text("O1"),
+        )];
+        let players = [
+            (
+                roles[0].clone(),
+                Reference {
+                    candidates: &accounts,
+                    identity: ReferenceIdentity::Key {
+                        attribute: &account_key,
+                        value: text("A1"),
+                    },
+                },
+            ),
+            (
+                roles[1].clone(),
+                Reference {
+                    candidates: &items,
+                    identity: ReferenceIdentity::Iid("0x1e00000000000000000001"),
+                },
+            ),
+        ];
+        for transport in [ValueTransport::Given, ValueTransport::Literal] {
+            for supplied in [players.as_slice(), &[]] {
+                let plan = keyed_relation_put(
+                    &authority,
+                    transport,
+                    &KeyedPut {
+                        include_subtypes: false,
+                        return_document: true,
+                        type_id: &purchase,
+                        keys: &keys,
+                        fields: &[],
+                        cleared: &[],
+                        attached: &[],
+                    },
+                    RelationPut {
+                        players: supplied,
+                        cleared_roles: &roles,
+                        document_roles: roles
+                            .iter()
+                            .cloned()
+                            .map(|role| DocumentRole::new(role, true))
+                            .collect(),
+                    },
+                );
+                if supplied.is_empty() {
+                    assert_eq!(
+                        plan.unwrap_err().code().as_str(),
+                        "query_plan_insert_relation_players"
+                    );
+                    continue;
+                }
+                let plan = plan.unwrap();
+                let pipeline = plan.local().pipeline();
+                let seed = pipeline
+                    .iter()
+                    .position(|stage| matches!(stage, Stage::Put { .. }))
+                    .unwrap();
+                let Stage::Put { things, .. } = &pipeline[seed] else {
+                    unreachable!()
+                };
+                assert!(things[0].players.is_empty());
+                assert_eq!(things[0].fields.len(), 1);
+                assert!(matches!(&pipeline[seed + 1], Stage::Delete { items } if items.len() == 2));
+                assert!(matches!(&pipeline[seed + 2], Stage::Attach { items } if items.len() == 2));
+                let lowered = lower(plan.local()).unwrap();
+                assert!(lowered.snapshot.is_none());
+                tql::parse(&tql::render(&lowered.query).unwrap()).unwrap();
+            }
+        }
+    }
+
+    #[test]
     fn keyed_put_puts_the_key_then_replaces_the_other_fields() {
         let updated = doctor_put(true);
         let expected = "given $in0: string, $in1: boolean;

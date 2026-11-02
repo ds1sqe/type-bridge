@@ -8,15 +8,18 @@
 //! insert a duplicate key whenever the stored fields differ from the input.
 
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::id::TypeId;
-use type_bridge_contract::query_plan::QueryOutput;
+use type_bridge_contract::id::{RoleId, TypeId};
+use type_bridge_contract::migration_assertion::ValueComparator;
 use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, InsertThing, Operation, Set, Stage, ThingDocument, WriteReturns,
+    AttachItem, DeleteItem, DocumentRole, Expr, InsertThing, Operation, Pattern, Set, Stage,
+    ThingDocument, WriteReturns,
 };
+use type_bridge_contract::query_plan::{QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::CanonicalValue;
 
 use super::authority::PlanAuthority;
+use super::reference::{Reference, reference_binding};
 use super::{BuiltPlan, PlanDraft, ValueTransport};
 
 /// One keyed entity put: `keys` and single-valued `fields` are given
@@ -40,14 +43,83 @@ pub(crate) fn keyed_entity_put(
     transport: ValueTransport,
     put: &KeyedPut<'_>,
 ) -> Result<BuiltPlan, Diagnostic> {
+    keyed_put(authority, transport, put, None)
+}
+
+pub(crate) struct RelationPut<'a> {
+    pub(crate) players: &'a [(RoleId, Reference<'a>)],
+    pub(crate) cleared_roles: &'a [RoleId],
+    pub(crate) document_roles: Vec<DocumentRole>,
+}
+
+pub(crate) fn keyed_relation_put(
+    authority: &PlanAuthority,
+    transport: ValueTransport,
+    put: &KeyedPut<'_>,
+    relation: RelationPut<'_>,
+) -> Result<BuiltPlan, Diagnostic> {
+    keyed_put(authority, transport, put, Some(relation))
+}
+
+fn keyed_put(
+    authority: &PlanAuthority,
+    transport: ValueTransport,
+    put: &KeyedPut<'_>,
+    relation: Option<RelationPut<'_>>,
+) -> Result<BuiltPlan, Diagnostic> {
     let mut draft = PlanDraft::new(transport);
     let thing = draft.bind("thing")?;
+    let mut patterns = Vec::new();
+    let mut links = Vec::new();
+    if let Some(relation) = &relation {
+        let mut player_iids = Vec::new();
+        for (role, reference) in relation.players {
+            let player = reference_binding(&mut draft, reference, &mut patterns)?;
+            if relation
+                .players
+                .iter()
+                .filter(|(candidate, _)| candidate == role)
+                .take(2)
+                .count()
+                > 1
+            {
+                let iid = draft.bind("player_iid")?;
+                patterns.push(Pattern::Let {
+                    binding: iid,
+                    expr: Expr::Iid { binding: player },
+                });
+                for (previous_role, previous_iid) in &player_iids {
+                    if previous_role == role {
+                        patterns.push(Pattern::Read(QueryPattern::Value {
+                            comparator: ValueComparator::NotEqual,
+                            left: QueryOperand::Binding {
+                                binding: *previous_iid,
+                            },
+                            right: QueryOperand::Binding { binding: iid },
+                        }));
+                    }
+                }
+                player_iids.push((role.clone(), iid));
+            }
+            links.push(AttachItem::Links {
+                optional: false,
+                relation: thing,
+                role: role.clone(),
+                player,
+            });
+        }
+    }
     let keys = put
         .keys
         .iter()
         .map(|(field, value)| Ok((field.clone(), draft.value(value.clone())?)))
         .collect::<Result<Vec<_>, Diagnostic>>()?;
-    let mut pipeline = vec![Stage::Put {
+    let mut pipeline = Vec::new();
+    if !patterns.is_empty() {
+        pipeline.push(Stage::Match { patterns });
+    }
+    // Put only the key: new players in its match would duplicate an existing key.
+    pipeline.push(Stage::Put {
         include_subtypes: put.include_subtypes,
         things: vec![InsertThing {
             binding: thing,
@@ -55,7 +127,21 @@ pub(crate) fn keyed_entity_put(
             fields: keys,
             players: Vec::new(),
         }],
-    }];
+    });
+    if let Some(relation) = &relation
+        && !relation.cleared_roles.is_empty()
+    {
+        pipeline.push(Stage::Delete {
+            items: relation
+                .cleared_roles
+                .iter()
+                .map(|role| DeleteItem::Players {
+                    relation: thing,
+                    role: role.clone(),
+                })
+                .collect(),
+        });
+    }
     if !put.cleared.is_empty() {
         pipeline.push(Stage::Delete {
             items: put
@@ -97,12 +183,18 @@ pub(crate) fn keyed_entity_put(
             .collect::<Result<Vec<_>, Diagnostic>>()?;
         pipeline.push(Stage::Attach { items });
     }
+    if !links.is_empty() {
+        pipeline.push(Stage::Attach { items: links });
+    }
     pipeline.push(Stage::Select {
         bindings: vec![thing],
     });
     pipeline.push(Stage::Distinct);
     if put.return_document {
-        pipeline.push(Stage::Fetch(ThingDocument::new(thing, Vec::new())));
+        pipeline.push(Stage::Fetch(ThingDocument::new(
+            thing,
+            relation.map_or_else(Vec::new, |relation| relation.document_roles),
+        )));
     }
     draft.finish(
         authority,
