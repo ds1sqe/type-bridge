@@ -368,11 +368,11 @@ impl<'a> SelectedResultExecutor<'a> {
     ///
     /// Adapt under the registry's schema authority and execute the complete
     /// native plan stack on one read-only provider snapshot.
-    pub(crate) async fn execute_compatible_owned(
+    pub(crate) fn execute_compatible_owned(
         mut self,
         database: &Database,
         validated: &ValidatedMatchRequest,
-    ) -> Result<ValidatedMatchResult, OrmError> {
+    ) -> impl Future<Output = Result<ValidatedMatchResult, OrmError>> {
         use tracing::Instrument;
         let deadline = self
             .limits
@@ -381,23 +381,17 @@ impl<'a> SelectedResultExecutor<'a> {
         self.limits.absolute_deadline = Some(deadline);
         let collect = self.limits.policy.collect_phase_timestamps;
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "direct");
-        let (result, phases) =
-            crate::execution_phases::observe_result(deadline.started(), collect, async {
-                self.check_lifecycle_budget()?;
-                let registry = self.registry.owned_registry_snapshot()?;
-                self.check_lifecycle_budget()?;
-                let fenced = self.with_registry(&registry);
-                fenced
-                    .execute_compatible_owned_fenced(database, validated)
-                    .await
-                    .map_err(|error| self.limits.annotate_refusal(error))
-            })
-            .instrument(span)
-            .await;
-        result.map_err(|error| match phases.as_ref() {
-            Some(phases) => phases.orm_error(error),
-            None => error,
+        crate::execution_phases::observe_orm(deadline.started(), collect, async move {
+            self.check_lifecycle_budget()?;
+            let registry = self.registry.owned_registry_snapshot()?;
+            self.check_lifecycle_budget()?;
+            let fenced = self.with_registry(&registry);
+            fenced
+                .execute_compatible_owned_fenced(database, validated)
+                .await
+                .map_err(|error| self.limits.annotate_refusal(error))
         })
+        .instrument(span)
     }
 
     async fn execute_compatible_owned_fenced(
@@ -477,11 +471,11 @@ impl<'a> SelectedResultExecutor<'a> {
     }
 
     /// Borrowed counterpart of [`Self::execute_compatible_owned`].
-    pub(crate) async fn execute_compatible_borrowed(
+    pub(crate) fn execute_compatible_borrowed(
         mut self,
         context: &TransactionContext,
         validated: &ValidatedMatchRequest,
-    ) -> Result<ValidatedMatchResult, OrmError> {
+    ) -> impl Future<Output = Result<ValidatedMatchResult, OrmError>> {
         use tracing::Instrument;
         let deadline = self
             .limits
@@ -490,23 +484,17 @@ impl<'a> SelectedResultExecutor<'a> {
         self.limits.absolute_deadline = Some(deadline);
         let collect = self.limits.policy.collect_phase_timestamps;
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "borrowed");
-        let (result, phases) =
-            crate::execution_phases::observe_result(deadline.started(), collect, async {
-                self.check_lifecycle_budget()?;
-                let registry = self.registry.owned_registry_snapshot()?;
-                self.check_lifecycle_budget()?;
-                let fenced = self.with_registry(&registry);
-                fenced
-                    .execute_compatible_borrowed_fenced(context, validated)
-                    .await
-                    .map_err(|error| self.limits.annotate_refusal(error))
-            })
-            .instrument(span)
-            .await;
-        result.map_err(|error| match phases.as_ref() {
-            Some(phases) => phases.orm_error(error),
-            None => error,
+        crate::execution_phases::observe_orm(deadline.started(), collect, async move {
+            self.check_lifecycle_budget()?;
+            let registry = self.registry.owned_registry_snapshot()?;
+            self.check_lifecycle_budget()?;
+            let fenced = self.with_registry(&registry);
+            fenced
+                .execute_compatible_borrowed_fenced(context, validated)
+                .await
+                .map_err(|error| self.limits.annotate_refusal(error))
         })
+        .instrument(span)
     }
 
     async fn execute_compatible_borrowed_fenced(

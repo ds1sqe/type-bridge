@@ -558,30 +558,25 @@ impl Database {
     /// Execute read-only plans in one read transaction, then close without
     /// committing. One answer policy and absolute deadline cover the stack;
     /// normalized answers have the same representation as staged replies.
-    pub async fn execute_plans(
+    pub fn execute_plans(
         &self,
         plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
         limits: &QueryExecutionResourceLimits,
         cancellation: &AnswerCancellation,
         deadline: QueryExecutionDeadline,
-    ) -> Result<Vec<super::staged::PlanAnswer>> {
+    ) -> impl std::future::Future<Output = Result<Vec<super::staged::PlanAnswer>>> {
         use tracing::Instrument;
         let collect = limits.collect_phase_timestamps
             || self
                 .answer_limits
                 .is_some_and(|policy| policy.collect_phase_timestamps);
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "direct");
-        let (result, phases) = crate::execution_phases::observe_result(
+        crate::execution_phases::observe_orm(
             deadline.started(),
             collect,
             self.execute_plans_inner(plans, limits, cancellation, deadline),
         )
         .instrument(span)
-        .await;
-        result.map_err(|error| match phases.as_ref() {
-            Some(phases) => phases.orm_error(error),
-            None => error,
-        })
     }
 
     async fn execute_plans_inner(

@@ -789,30 +789,25 @@ impl TransactionContext {
     /// Execute read plans on Read, Write or Schema contexts, and write plans on
     /// Write or Schema contexts, under one answer policy and deadline.
     /// The caller retains transaction ownership.
-    pub async fn execute_plans(
+    pub fn execute_plans(
         &self,
         plans: &[type_bridge_contract::query_plan::v3::QueryPlanV3],
         limits: &QueryExecutionResourceLimits,
         cancellation: &super::backend::AnswerCancellation,
         deadline: crate::QueryExecutionDeadline,
-    ) -> Result<Vec<crate::session::staged::PlanAnswer>> {
+    ) -> impl std::future::Future<Output = Result<Vec<crate::session::staged::PlanAnswer>>> {
         use tracing::Instrument;
         let collect = limits.collect_phase_timestamps
             || self
                 .answer_limits
                 .is_some_and(|policy| policy.collect_phase_timestamps);
         let span = tracing::debug_span!(target: "type_bridge.plan", "type_bridge.plan.execute", transport = "borrowed");
-        let (result, phases) = crate::execution_phases::observe_result(
+        crate::execution_phases::observe_orm(
             deadline.started(),
             collect,
             self.execute_plans_inner(plans, limits, cancellation, deadline),
         )
         .instrument(span)
-        .await;
-        result.map_err(|error| match phases.as_ref() {
-            Some(phases) => phases.orm_error(error),
-            None => error,
-        })
     }
 
     async fn execute_plans_inner(

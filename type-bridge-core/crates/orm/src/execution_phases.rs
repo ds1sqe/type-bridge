@@ -192,50 +192,143 @@ impl ExecutionPhases {
     }
 }
 
+// Hold the provider future exactly once. Nested async wrappers duplicate large
+// generic state machines and inflate every generated manager future.
+enum ObservationScope {
+    Unstarted { started: Instant, collect: bool },
+    Owned(ExecutionPhases),
+    Nested,
+}
+
+struct Observation<F: Future, C> {
+    future: F,
+    scope: ObservationScope,
+    outcome: fn(&F::Output) -> Option<bool>,
+    complete: C,
+}
+
+impl<F: Future, C, O> Future for Observation<F, C>
+where
+    C: FnMut(F::Output, Option<ExecutionPhases>) -> O,
+{
+    type Output = O;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        // SAFETY: `future` is structurally pinned: it is never moved or replaced
+        // after Observation is pinned, including on completion and drop.
+        let this = unsafe { self.get_unchecked_mut() };
+        // SAFETY: the pinned projection above preserves the future's address.
+        let future = unsafe { std::pin::Pin::new_unchecked(&mut this.future) };
+        let scope = std::mem::replace(&mut this.scope, ObservationScope::Nested);
+        let scope = match scope {
+            ObservationScope::Unstarted { started, collect } => {
+                if PHASES
+                    .try_with(|cell| cell.borrow().is_some())
+                    .unwrap_or(false)
+                {
+                    ObservationScope::Nested
+                } else {
+                    ObservationScope::Owned(ExecutionPhases::new(started, collect))
+                }
+            }
+            scope => scope,
+        };
+        let (result, mut phases) = match scope {
+            ObservationScope::Owned(phases) => {
+                PHASES.sync_scope(RefCell::new(Some(phases)), || {
+                    let result = future.poll(context);
+                    (result, PHASES.with(|cell| cell.borrow_mut().take()))
+                })
+            }
+            ObservationScope::Nested => (future.poll(context), None),
+            ObservationScope::Unstarted { .. } => unreachable!("scope initialized above"),
+        };
+        match result {
+            std::task::Poll::Pending => {
+                this.scope = phases.map_or(ObservationScope::Nested, ObservationScope::Owned);
+                std::task::Poll::Pending
+            }
+            std::task::Poll::Ready(result) => {
+                if let Some(phases) = &mut phases
+                    && let Some(success) = (this.outcome)(&result)
+                {
+                    phases.record(if success {
+                        ExecutionPhase::Committed
+                    } else {
+                        ExecutionPhase::Failed
+                    });
+                }
+                std::task::Poll::Ready((this.complete)(result, phases))
+            }
+        }
+    }
+}
+
+fn observation<F: Future, C>(
+    started: Instant,
+    collect: bool,
+    future: F,
+    outcome: fn(&F::Output) -> Option<bool>,
+    complete: C,
+) -> Observation<F, C> {
+    Observation {
+        future,
+        scope: ObservationScope::Unstarted { started, collect },
+        outcome,
+        complete,
+    }
+}
+
 /// Reuse the outer invocation across staged programs and borrowed transactions.
-pub async fn observe<T>(
+pub fn observe<T>(
     started: Instant,
     collect: bool,
     future: impl Future<Output = T>,
-) -> (T, Option<ExecutionPhases>) {
-    tokio::pin!(future);
-    if PHASES
-        .try_with(|cell| cell.borrow().is_some())
-        .unwrap_or(false)
-    {
-        return (future.await, None);
-    }
-    PHASES
-        .scope(
-            RefCell::new(Some(ExecutionPhases::new(started, collect))),
-            async {
-                let result = future.await;
-                let phases = PHASES.with(|cell| cell.borrow_mut().take());
-                (result, phases)
-            },
-        )
-        .await
+) -> impl Future<Output = (T, Option<ExecutionPhases>)> {
+    observation(
+        started,
+        collect,
+        future,
+        |_| None,
+        |result, phases| (result, phases),
+    )
 }
 
 /// Observe a result-bearing call and close its timeline once, at the outer invocation.
-pub async fn observe_result<T, E>(
+pub fn observe_result<T, E>(
     started: Instant,
     collect: bool,
     future: impl Future<Output = Result<T, E>>,
-) -> (Result<T, E>, Option<ExecutionPhases>) {
-    tokio::pin!(future);
-    if PHASES
-        .try_with(|cell| cell.borrow().is_some())
-        .unwrap_or(false)
-    {
-        return (future.await, None);
-    }
-    observe(started, collect, async {
-        let result = future.await;
-        finish(result.is_ok());
-        result
-    })
-    .await
+) -> impl Future<Output = (Result<T, E>, Option<ExecutionPhases>)> {
+    observation(
+        started,
+        collect,
+        future,
+        |result| Some(result.is_ok()),
+        |result, phases| (result, phases),
+    )
+}
+
+pub(crate) fn observe_orm<T>(
+    started: Instant,
+    collect: bool,
+    future: impl Future<Output = Result<T, crate::OrmError>>,
+) -> impl Future<Output = Result<T, crate::OrmError>> {
+    observation(
+        started,
+        collect,
+        future,
+        |result| Some(result.is_ok()),
+        |result: Result<T, crate::OrmError>, phases: Option<ExecutionPhases>| {
+            result.map_err(|error| match phases {
+                Some(phases) => phases.orm_error(error),
+                None => error,
+            })
+        },
+    )
 }
 
 /// Record a phase on the active invocation, if any.
