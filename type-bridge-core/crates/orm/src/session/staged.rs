@@ -1178,6 +1178,19 @@ pub(crate) fn proxy_failure(projection: &SdkDiagnosticProjectionV3) -> CommitErr
     if !unknown && projection.code() != "commit_definitely_aborted" {
         commit.remote = remote_refusal(projection.code(), field("sdk_category")).map(Box::new);
     }
+    // Retain the server's clock and phase facts instead of reconstructing a
+    // client-side timeline when the authenticated failure crosses the proxy.
+    if let Some(remote) = commit.remote.as_mut()
+        && let Ok(typed) = projection.to_query_diagnostic()
+    {
+        for (name, value) in typed.details() {
+            **remote = remote
+                .as_ref()
+                .clone()
+                .try_with_detail(name.clone(), value.clone())
+                .expect("verified server details fit the diagnostic budget");
+        }
+    }
     // The signed details carry the failure the server classified, so a
     // refusal is typed exactly as the direct commit would be; the refusal
     // keeps its own code and category.
@@ -2311,6 +2324,27 @@ mod tests {
             commit.diagnostic().code().as_str(),
             "provider_operation_failed"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn proxy_deadline_keeps_the_server_phase_and_clock() {
+        let (diagnostic, _) =
+            crate::execution_phases::observe(tokio::time::Instant::now().into_std(), true, async {
+                crate::execution_phases::received();
+                tokio::time::advance(Duration::from_millis(7)).await;
+                crate::execution_phases::annotate(
+                    crate::QueryExecutionDeadline::expired()
+                        .check(&Default::default())
+                        .unwrap_err(),
+                )
+            })
+            .await;
+        let mapped = proxy_failure(&signed(&diagnostic)).diagnostic();
+        assert_eq!(mapped.code(), diagnostic.code());
+        assert_eq!(mapped.details(), diagnostic.details());
+        let json = serde_json::to_value(mapped.host_json()).unwrap();
+        assert_eq!(json["details"]["execution_phase"]["value"], "accepted");
+        assert_eq!(json["details"]["elapsed_milliseconds"]["value"], "7");
     }
 
     #[test]
