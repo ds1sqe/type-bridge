@@ -501,6 +501,60 @@ mod tests {
     }
 
     #[test]
+    fn generic_updates_sequence_overlapping_iids_but_explicit_updates_stay_compact() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        let authority = authority();
+        let purchase = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let field =
+            OwnsFactId::new(purchase.clone(), AttributeId::new("order-id").unwrap()).unwrap();
+        let first = [(field.clone(), text("first"))];
+        let second = [(field.clone(), text("second"))];
+        let account = [TypeId::new(TypeKind::Entity, "account").unwrap()];
+        let players = [(
+            RoleId::new("purchase", "buyer").unwrap(),
+            Reference {
+                candidates: &account,
+                identity: ReferenceIdentity::Iid("0x02"),
+            },
+        )];
+        for prior_writes in [false, true] {
+            for overlap in [false, true] {
+                let program = write_many(
+                    &authority,
+                    WriteKind::Update,
+                    WriteShape {
+                        references_see_prior_writes: prior_writes,
+                        type_id: &purchase,
+                        keys: &[],
+                        cleared_fields: std::slice::from_ref(&field),
+                        cleared_roles: &[],
+                        document_roles: vec![],
+                        include_subtypes: false,
+                        return_documents: true,
+                    },
+                    &[
+                        WriteRow {
+                            iid: Some("0x10"),
+                            fields: &first,
+                            players: &players,
+                        },
+                        WriteRow {
+                            iid: Some(if overlap { "0x10" } else { "0x20" }),
+                            fields: &second,
+                            players: &players,
+                        },
+                    ],
+                )
+                .unwrap();
+                assert_eq!(
+                    program.statement_count(),
+                    if prior_writes && overlap { 2 } else { 1 }
+                );
+            }
+        }
+    }
+
+    #[test]
     fn split_reference_guards_precede_allocating_and_replacing_rows() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
         use type_bridge_contract::query_plan::QueryOutput;

@@ -11,6 +11,21 @@ pub(super) fn requires_sequence(
     if rows.len() < 2 {
         return Ok(false);
     }
+    if kind == WriteKind::Update {
+        return Ok(changes_unique(authority, shape, rows)
+            || rows.iter().any(|row| {
+                row.players
+                    .iter()
+                    .any(|(_, reference)| reference.candidates.contains(shape.type_id))
+            })
+            || rows
+                .iter()
+                .filter_map(|row| row.iid)
+                .map(str::to_ascii_lowercase)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != rows.len());
+    }
     if matches!(kind, WriteKind::Insert | WriteKind::Put) {
         if rows.iter().any(|row| {
             row.players

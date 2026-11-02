@@ -937,8 +937,25 @@ pub(crate) fn write_many(
         kind,
         WriteKind::PartialPut | WriteKind::MatchPut | WriteKind::PartialUpdate
     ) || (shape.references_see_prior_writes
-        && matches!(kind, WriteKind::Insert | WriteKind::Put));
+        && matches!(kind, WriteKind::Insert | WriteKind::Put | WriteKind::Update));
     if sequential_visibility && sequence::requires_sequence(authority, kind, &shape, rows)? {
+        if kind == WriteKind::Update {
+            // Each row returns its snapshot before later updates can change it.
+            let mut programs = std::collections::VecDeque::new();
+            for (ordinal, row) in rows.iter().enumerate() {
+                let rows = std::slice::from_ref(row);
+                programs.push_back(
+                    match build_many(authority, kind, shape.clone(), rows, true, ordinal) {
+                        Ok(plans) => WriteProgram::compact(plans),
+                        Err(error) if program::forces_pieces(&error) => {
+                            program::split_at(authority, kind, shape.clone(), rows, ordinal)?
+                        }
+                        Err(error) => return Err(error),
+                    },
+                );
+            }
+            return Ok(WriteProgram::Chain(programs));
+        }
         return sequence::build(authority, kind, shape, rows);
     }
     let program = match build_many(authority, kind, shape.clone(), rows, true, 0) {

@@ -4180,3 +4180,179 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
     }
     assert!(failures.is_empty(), "{failures:?}");
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn generic_relation_updates_keep_prior_row_visibility_and_snapshots_live() {
+    use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicRolePlayerInput};
+    use type_bridge_orm::_manager::DynamicRelationManager;
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  mutable-lookup: { value: string }\nentities:\n  mutable-person: {}\nrelations:\n  mutable-edge:\n    owns:\n      mutable-lookup: { card: { min: 0, max: 1 } }\n    relates:\n      anchor: { card: { min: 0, max: 1 } }\n      prior: { card: { min: 0, max: 1 } }\nplays:\n  mutable-person:\n    mutable-edge: [anchor]\n  mutable-edge:\n    mutable-edge: [prior]\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("mutable-reference.yaml").unwrap(), yaml)])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute mutable-lookup, value string; entity mutable-person, plays mutable-edge:anchor; relation mutable-edge, owns mutable-lookup @card(0..1), relates anchor @card(0..1), relates prior @card(0..1), plays mutable-edge:prior;", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let descriptor = registry.relation("mutable-edge").unwrap();
+    let raw = DynamicRelationManager::new(&database, descriptor.clone());
+    let fields = |value: &str| -> DynamicAttributeMap {
+        vec![(
+            "mutable-lookup".into(),
+            type_bridge_orm::AttributeValue::String(value.into()),
+        )]
+    };
+    let person = type_bridge_orm::_manager::DynamicEntityManager::new(
+        &database,
+        registry.entity("mutable-person").unwrap(),
+    )
+    .insert(&vec![])
+    .await
+    .unwrap();
+    let anchor = || DynamicRolePlayerInput {
+        role_name: "anchor".into(),
+        player_type_name: "mutable-person".into(),
+        iid: Some(person.clone()),
+        key: None,
+    };
+    let first = raw.insert(&fields("old"), &[anchor()]).await.unwrap();
+    let second = raw.insert(&fields("second"), &[anchor()]).await.unwrap();
+    let player = |value: &str| DynamicRolePlayerInput {
+        role_name: "prior".into(),
+        player_type_name: "mutable-edge".into(),
+        iid: None,
+        key: Some((
+            "mutable-lookup".into(),
+            type_bridge_orm::AttributeValue::String(value.into()),
+        )),
+    };
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager =
+            DynamicRelationManager::from_registry(&counted, registry.clone(), descriptor.clone());
+        for case in ["new-value", "old-value", "overlap", "independent"] {
+            let items = match case {
+                "new-value" => vec![
+                    (first.clone(), fields("new"), vec![anchor()]),
+                    (
+                        second.clone(),
+                        fields("second"),
+                        vec![anchor(), player("new")],
+                    ),
+                ],
+                "old-value" => vec![
+                    (first.clone(), fields("new"), vec![anchor()]),
+                    (
+                        second.clone(),
+                        fields("second"),
+                        vec![anchor(), player("old")],
+                    ),
+                ],
+                "overlap" => vec![
+                    (first.clone(), fields("new"), vec![anchor()]),
+                    (first.clone(), fields("newer"), vec![anchor()]),
+                ],
+                _ => vec![
+                    (first.clone(), fields("new"), vec![anchor()]),
+                    (second.clone(), fields("newer"), vec![anchor()]),
+                ],
+            };
+            let tx = database.transaction_context(TxType::Write).await.unwrap();
+            let looped = DynamicRelationManager::with_transaction(tx.clone(), descriptor.clone());
+            let mut expected = Vec::new();
+            let mut old_failed = false;
+            for (iid, fields, players) in &items {
+                match looped.update_and_get_exact(iid, fields, players).await {
+                    Ok(row) => expected.push(row),
+                    Err(_) => {
+                        old_failed = true;
+                        break;
+                    }
+                }
+            }
+            assert_eq!(old_failed, case == "old-value");
+            tx.rollback().await.unwrap();
+            *log.lock().unwrap() = DispatchLog::default();
+            let tx = counted.transaction_context(TxType::Write).await.unwrap();
+            let borrowed = DynamicRelationManager::with_registry_transaction(
+                tx.clone(),
+                registry.clone(),
+                descriptor.clone(),
+            );
+            let result = borrowed.update_many_and_get_exact(&items).await;
+            if old_failed {
+                assert!(
+                    result.is_err(),
+                    "an old-value lookup cannot resolve after the first update"
+                );
+            } else {
+                assert_eq!(result.unwrap(), expected, "literal={literal} case={case}");
+            }
+            let statements = if case == "independent" { 1 } else { 2 };
+            assert_eq!(log.lock().unwrap().statements.len(), statements);
+            tx.rollback().await.unwrap();
+            assert_eq!(
+                raw.get_by_iid(&first).await.unwrap()[0].attributes,
+                fields("old")
+            );
+            if case != "independent" && !old_failed {
+                *log.lock().unwrap() = DispatchLog {
+                    fail_at: Some(2),
+                    ..Default::default()
+                };
+                assert!(manager.update_many_and_get_exact(&items).await.is_err());
+                let observed = log.lock().unwrap();
+                assert_eq!(observed.statements.len(), 2);
+                assert_eq!(observed.opened, [TxType::Write]);
+                assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+                drop(observed);
+                assert_eq!(
+                    raw.get_by_iid(&first).await.unwrap()[0].attributes,
+                    fields("old")
+                );
+            }
+        }
+        *log.lock().unwrap() = DispatchLog::default();
+        let committed = manager
+            .update_many_and_get_exact(&[
+                (first.clone(), fields("new"), vec![anchor()]),
+                (
+                    second.clone(),
+                    fields("second"),
+                    vec![anchor(), player("new")],
+                ),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(committed.len(), 2);
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.statements.len(), 2);
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        drop(observed);
+        raw.update_exact(&second, &fields("second"), &[anchor()])
+            .await
+            .unwrap();
+        raw.update_exact(&first, &fields("old"), &[anchor()])
+            .await
+            .unwrap();
+    }
+}
