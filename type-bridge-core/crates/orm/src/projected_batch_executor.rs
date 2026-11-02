@@ -553,6 +553,7 @@ struct BatchPlan<'a> {
     row_count: usize,
     statement_count: u32,
     preflight_bytes: u64,
+    capture_role_snapshots: bool,
     write_program: Option<(
         crate::plan_builders::bulk_write::WriteProgram,
         ExecutionLedger,
@@ -617,6 +618,11 @@ impl<'a> BatchPlan<'a> {
             &role_references,
         )?;
         if !DIAGNOSIS && batch.operation() != ProjectedBatchOperation::Delete {
+            let capture_role_snapshots = batch.operation() == ProjectedBatchOperation::Update
+                && role_references.iter().any(|reference| {
+                    reference.reference.iid().is_none()
+                        && is_same_or_subtype(installed, model.id(), reference.reference.type_id())
+                });
             let mut plan = Self {
                 installed,
                 model,
@@ -631,6 +637,7 @@ impl<'a> BatchPlan<'a> {
                 row_count: batch.len(),
                 statement_count: batch.resource_measure().statements(),
                 preflight_bytes: 0,
+                capture_role_snapshots,
                 write_program: None,
             };
             let program = plan.complete_write_plans()?;
@@ -697,6 +704,7 @@ impl<'a> BatchPlan<'a> {
             row_count: batch.len(),
             statement_count,
             preflight_bytes,
+            capture_role_snapshots: false,
             write_program: None,
         })
     }
@@ -1757,6 +1765,7 @@ struct HydrationConsumer<'executor, 'projection, 'plan> {
     plan: &'plan BatchPlan<'plan>,
     identity: &'plan DatabaseExecutionIdentity,
     targets: Vec<String>,
+    resolved_references: Option<Box<crate::plan_builders::bulk_write::ReferenceSnapshots>>,
     slots: Vec<Option<ProjectedThing>>,
     ordered: Vec<ProjectedThing>,
     deferred: Option<SdkExecutionDiagnostic>,
@@ -1786,6 +1795,7 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             plan,
             identity,
             targets,
+            resolved_references: None,
             slots,
             ordered,
             deferred: None,
@@ -1883,6 +1893,22 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
             }
             _ => return Err(SdkExecutionDiagnostic::internal_failure()),
         };
+        if self.plan.capture_role_snapshots
+            && !self
+                .resolved_references
+                .as_ref()
+                .is_some_and(|references| references.contains_key(&ordinal))
+        {
+            let captured = document_reference_snapshots(
+                self.executor.installed,
+                self.plan,
+                &document,
+                ordinal,
+            )?;
+            self.resolved_references
+                .get_or_insert_default()
+                .insert(ordinal, captured);
+        }
         self.slots[ordinal] = Some(thing);
         Ok(())
     }
@@ -1909,11 +1935,55 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
     }
 }
 
+fn document_reference_snapshots(
+    installed: &InstalledRuntimeProjection,
+    plan: &BatchPlan<'_>,
+    document: &Value,
+    ordinal: usize,
+) -> std::result::Result<BTreeMap<RoleId, Vec<String>>, SdkExecutionDiagnostic> {
+    let mut snapshots = BTreeMap::new();
+    for (index, role) in plan.model.complete_read().roles().keys().enumerate() {
+        if !plan.role_references.iter().any(|reference| {
+            &reference.role == role
+                && reference.reference.iid().is_none()
+                && is_same_or_subtype(installed, plan.model.id(), reference.reference.type_id())
+        }) {
+            continue;
+        }
+        let prefix = format!("reference_{index}_");
+        let mut iids = Vec::new();
+        for (key, value) in document
+            .as_object()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?
+        {
+            if !key.starts_with(&prefix) || value.is_null() {
+                continue;
+            }
+            let iid = value
+                .as_str()
+                .filter(|iid| type_bridge_contract::id::is_canonical_thing_iid(iid))
+                .ok_or_else(|| {
+                    integrity_at_row(
+                        "provider_identity_mismatch",
+                        "Reference snapshot did not carry a canonical IID",
+                        plan.model.id(),
+                        ordinal,
+                    )
+                })?;
+            iids.push(iid.to_ascii_lowercase());
+        }
+        iids.sort_unstable();
+        snapshots.insert(role.clone(), iids);
+    }
+    Ok(snapshots)
+}
+
 fn validate_written_role_identities(
     installed: &InstalledRuntimeProjection,
     plan: &BatchPlan<'_>,
     thing: &ProjectedThing,
     ordinal: usize,
+    snapshots: Option<&BTreeMap<RoleId, Vec<String>>>,
 ) -> std::result::Result<(), SdkExecutionDiagnostic> {
     let create =
         row_create(plan.rows[ordinal].1).ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
@@ -1939,18 +2009,46 @@ fn validate_written_role_identities(
                 ordinal,
             ));
         }
+        let resolved = snapshots.and_then(|snapshots| snapshots.get(role));
+        if let Some(resolved) = resolved {
+            let mut returned_iids = returned
+                .iter()
+                .map(|player| player.iid().to_ascii_lowercase())
+                .collect::<Vec<_>>();
+            returned_iids.sort_unstable();
+            if resolved != &returned_iids {
+                return Err(integrity_at_row(
+                    "provider_identity_mismatch",
+                    "Returned role players differ from the invocation reference IIDs",
+                    plan.model.id(),
+                    ordinal,
+                ));
+            }
+        }
         for expected in requested {
+            // An IID remains authoritative when this update changes that
+            // same target's keys; those hydrated keys are post-write values.
+            let updated_iid = !expected.keys().is_empty()
+                && plan.operation == ProjectedBatchOperation::Update
+                && is_same_or_subtype(installed, plan.model.id(), expected.type_id())
+                && expected.iid().is_some_and(|iid| {
+                    plan.rows.iter().any(|(_, row)| {
+                        row_iid(row).is_some_and(|target| target.eq_ignore_ascii_case(iid))
+                    })
+                });
             let found = returned.iter().any(|player| {
                 is_same_or_subtype(installed, player.type_id(), expected.type_id())
                     && expected
                         .iid()
                         .is_none_or(|iid| iid.eq_ignore_ascii_case(player.iid()))
-                    && expected.keys().iter().all(|(field, value)| {
-                        player.keys().iter().any(|(actual, supplied)| {
-                            actual.attribute() == field.attribute()
-                                && supplied.value() == value.value()
-                        })
-                    })
+                    && (resolved.is_some()
+                        || updated_iid
+                        || expected.keys().iter().all(|(field, value)| {
+                            player.keys().iter().any(|(actual, supplied)| {
+                                actual.attribute() == field.attribute()
+                                    && supplied.value() == value.value()
+                            })
+                        }))
             });
             if !found {
                 return Err(integrity_at_row(

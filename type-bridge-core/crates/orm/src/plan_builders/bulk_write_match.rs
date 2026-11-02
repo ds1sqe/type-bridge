@@ -31,6 +31,7 @@ impl MatchProgram {
                 missing_iid_noop: false,
                 candidate_filter: true,
                 reference_guard: false,
+                reference_resolution: None,
             }));
         }
         if self.selected.is_none() {

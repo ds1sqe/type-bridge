@@ -23,7 +23,7 @@ use super::{BuiltPlan, PlanDraft, ValueTransport};
 mod program;
 #[path = "bulk_write_sequence.rs"]
 mod sequence;
-pub(crate) use program::{IdentityLayout, WriteProgram, forces_pieces};
+pub(crate) use program::{IdentityLayout, ReferenceSnapshots, WriteProgram, forces_pieces};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteKind {
@@ -528,7 +528,26 @@ pub(crate) fn build_many(
             deleted_fields.push(DeleteItem::Has { owner, field });
         }
     }
+    // Key-changing updates can alter a referenced player's hydrated key.
+    // Retain the source thing itself so its stable IID remains verifiable.
+    let snapshot_roles = if kind == WriteKind::Update && !shape.references_see_prior_writes {
+        player_widths
+            .keys()
+            .filter(|route| route.key.is_some() && route.candidates.contains(shape.type_id))
+            .map(|route| route.role.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    let mut reference_snapshots = Vec::new();
     for (position, (route, (width, domain))) in player_widths.iter().enumerate() {
+        let snapshot_role = snapshot_roles.contains(&route.role).then(|| {
+            shape
+                .document_roles
+                .iter()
+                .position(|listed| listed.role == route.role)
+                .expect("declared role")
+        });
         for slot in 0..*width {
             let required = matrices
                 .iter()
@@ -536,6 +555,9 @@ pub(crate) fn build_many(
             let input = draft.input(&format!("player_{position}_{slot}"), *domain, !required)?;
             if required {
                 let player = draft.bind("player")?;
+                if let Some(role) = snapshot_role {
+                    reference_snapshots.push((role, player));
+                }
                 let branches = route
                     .candidates
                     .iter()
@@ -606,6 +628,9 @@ pub(crate) fn build_many(
                         continue;
                     }
                     let player = draft.bind("optional_player")?;
+                    if let Some(role) = snapshot_role {
+                        reference_snapshots.push((role, player));
+                    }
                     patterns.push(
                         QueryPattern::Try {
                             patterns: reference_patterns(
@@ -751,12 +776,11 @@ pub(crate) fn build_many(
             groups: vec![root, ordinal],
         });
     } else {
-        pipeline.extend([
-            Stage::Select {
-                bindings: vec![root, ordinal],
-            },
-            Stage::Distinct,
-        ]);
+        let mut bindings = vec![root, ordinal];
+        bindings.extend(reference_snapshots.iter().map(|(_, binding)| *binding));
+        bindings.sort_unstable();
+        bindings.dedup();
+        pipeline.extend([Stage::Select { bindings }, Stage::Distinct]);
     }
     if complete
         && shape.return_documents
@@ -772,6 +796,17 @@ pub(crate) fn build_many(
                 key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
                 binding: ordinal,
             });
+        for (role, binding) in reference_snapshots {
+            document
+                .scalars
+                .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+                    key: type_bridge_contract::migration_assertion::QueryVariable::new(format!(
+                        "reference_{role}_{}",
+                        binding.get()
+                    ))?,
+                    binding,
+                });
+        }
         pipeline.push(Stage::Fetch(document));
     }
     if kind == WriteKind::DeleteReturning {
@@ -906,14 +941,31 @@ pub(crate) fn write_many(
     if sequential_visibility && sequence::requires_sequence(authority, kind, &shape, rows)? {
         return sequence::build(authority, kind, shape, rows);
     }
-    match build_many(authority, kind, shape.clone(), rows, true, 0) {
+    let program = match build_many(authority, kind, shape.clone(), rows, true, 0) {
         Ok(plans) => Ok(WriteProgram::compact(plans)),
         Err(error) if kind == WriteKind::MatchPut && program::forces_pieces(&error) => {
-            sequence::build(authority, kind, shape, rows)
+            sequence::build(authority, kind, shape.clone(), rows)
         }
         Err(error) if program::forces_pieces(&error) => {
-            program::split(authority, kind, shape, rows)
+            program::split(authority, kind, shape.clone(), rows)
         }
         Err(error) => Err(error),
+    }?;
+    // Other model types cannot be changed by this exact-type batch. Mutable
+    // same-model references need invocation-start identities across cuts.
+    let mutable_references = !shape.references_see_prior_writes
+        && rows.iter().any(|row| {
+            row.players.iter().any(|(_, reference)| {
+                reference.candidates.contains(shape.type_id)
+                    && (rows.len() > 1
+                        || (kind == WriteKind::Update
+                            && matches!(reference.identity, ReferenceIdentity::Key { .. })))
+            })
+        });
+    if mutable_references && program.statement_count() > 1 {
+        drop(program);
+        program::resolve_references(authority, kind, shape, rows)
+    } else {
+        Ok(program)
     }
 }

@@ -2820,3 +2820,85 @@ async fn returning_capture_keeps_the_first_malformed_item_over_a_later_provider_
     assert_eq!(state.calls.len(), 1);
     assert_eq!((state.commits, state.rollbacks), (0, 1));
 }
+
+#[tokio::test]
+async fn key_changing_self_updates_verify_source_iids_without_an_extra_statement() {
+    let installed = installed_with_schema(
+        "format: typebridge.schema/v2\nattributes:\n  identifier: { value: string }\nrelations:\n  membership:\n    owns:\n      identifier: { key: true }\n    relates:\n      member: { card: { min: 0, max: 1 } }\nplays:\n  membership:\n    membership: [member]\n",
+        ProjectionHandler::python_v1(),
+    );
+    let membership = type_id(TypeKind::Relation, "membership");
+    let member = RoleId::new("membership", "member").unwrap();
+    let key = field(&membership, "identifier");
+    for by_iid in [false, true] {
+        for (source_iid, returned_iid, accepted) in [
+            ("0x20", "0x20", true),
+            ("0x99", "0x20", false),
+            ("0x20", "0x99", false),
+        ] {
+            if by_iid && source_iid != "0x20" {
+                continue;
+            }
+            let reference = ProjectedReference::try_new(
+                &installed,
+                membership.clone(),
+                by_iid.then(|| "0x20".to_owned()),
+                vec![(key.clone(), string_value(&installed, "identifier", "old"))],
+            )
+            .unwrap();
+            let replacement = ProjectedCreate::try_new(
+                &installed,
+                membership.clone(),
+                vec![(
+                    key.clone(),
+                    vec![string_value(&installed, "identifier", "new")],
+                )],
+                vec![(member.clone(), vec![reference])],
+            )
+            .unwrap();
+            let batch = ProjectedBatch::try_new(
+                &installed,
+                membership.clone(),
+                ProjectedBatchOperation::Update,
+                vec![ProjectedBatchRow::Update {
+                    iid: "0x20".into(),
+                    replacement,
+                }],
+            )
+            .unwrap();
+            let mut document = json!({"ordinal":0,"_iid":"0x20","_type":"membership","attributes":{"identifier":[{"value":"new"}]},"role_players":[{"role":"member","iid":returned_iid,"type_name":"membership","attributes":{"identifier":[{"value":"new"}]}}],"reference_0_2":source_iid});
+            if by_iid {
+                document.as_object_mut().unwrap().remove("reference_0_2");
+            }
+            let (database, state) = fixture(
+                vec![Response::Documents(vec![document])],
+                Version::new(3, 13, 6),
+                true,
+                CommitBehavior::Success,
+            );
+            let result = ProjectedBatchExecutor::new(&installed)
+                .execute(&database, &batch, control())
+                .await;
+            if accepted {
+                result.unwrap();
+            } else {
+                assert_eq!(
+                    result.unwrap_err().code().as_str(),
+                    "provider_identity_mismatch"
+                );
+            }
+            let state = state.lock().unwrap();
+            assert_eq!(state.calls.len(), 1);
+            assert_eq!(
+                state.calls[0]
+                    .0
+                    .contains("\"reference_0_2\": iid($player2)"),
+                !by_iid
+            );
+            assert_eq!(
+                (state.commits, state.rollbacks),
+                if accepted { (1, 0) } else { (0, 1) }
+            );
+        }
+    }
+}

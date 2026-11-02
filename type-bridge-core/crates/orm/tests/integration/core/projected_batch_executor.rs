@@ -3892,3 +3892,226 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
         raw.delete_by_iid(&target).await.unwrap();
     }
 }
+
+#[tokio::test]
+#[ignore = "requires a live TypeDB server"]
+async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
+    use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+    let _guard = crate::common::integration_test_guard().await;
+    let database = setup_db().await;
+    database.delete_database().await.unwrap();
+    database.create_database().await.unwrap();
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  snapshot-key: { value: string }\n  snapshot-tag: { value: string }\nentities:\n  snapshot-person: {}\nrelations:\n  snapshot-edge:\n    owns:\n      snapshot-key: { key: true }\n      snapshot-tag: { card: { min: 0 } }\n    relates:\n      anchor: { card: { min: 0, max: 1 } }\n      prior: { card: { min: 0, max: 1 } }\nplays:\n  snapshot-person:\n    snapshot-edge: [anchor]\n  snapshot-edge:\n    snapshot-edge: [prior]\n";
+    let documents =
+        SchemaDocumentSet::parse([(DocumentId::new("reference-snapshot.yaml").unwrap(), yaml)])
+            .unwrap();
+    let resolved = resolve(
+        &normalize_documents(&documents).unwrap(),
+        &SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+    )
+    .unwrap();
+    let installed = InstalledRuntimeProjection::try_new(
+        project(
+            &resolved,
+            BindingTarget::Rust,
+            &ProjectionConfig::rust(),
+            &[ProjectionHandler::rust_v1()],
+            &[],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    database.execute_raw("define attribute snapshot-key, value string; attribute snapshot-tag, value string; entity snapshot-person, plays snapshot-edge:anchor; relation snapshot-edge, owns snapshot-key @key, owns snapshot-tag @card(0..), relates anchor @card(0..1), relates prior @card(0..1), plays snapshot-edge:prior;", TxType::Schema).await.unwrap();
+    let registry = installed.manager_registry().unwrap();
+    let person = TypeId::new(TypeKind::Entity, "snapshot-person").unwrap();
+    let edge = TypeId::new(TypeKind::Relation, "snapshot-edge").unwrap();
+    let key = AttributeId::new("snapshot-key").unwrap();
+    let tag = AttributeId::new("snapshot-tag").unwrap();
+    let anchor = RoleId::new("snapshot-edge", "anchor").unwrap();
+    let prior = RoleId::new("snapshot-edge", "prior").unwrap();
+    let player = DynamicEntityManager::new(&database, registry.entity("snapshot-person").unwrap())
+        .insert(&vec![])
+        .await
+        .unwrap();
+    let create = |value: &str, width: usize, predecessor: Option<ProjectedReference>| {
+        let mut fields = vec![(
+            field(&edge, &key),
+            vec![string_scalar(&installed, &key, value)],
+        )];
+        if width > 0 {
+            fields.push((
+                field(&edge, &tag),
+                (0..width)
+                    .map(|index| string_scalar(&installed, &tag, &format!("t-{index:04}")))
+                    .collect(),
+            ));
+        }
+        let mut roles = vec![(
+            anchor.clone(),
+            vec![reference(&installed, &person, &player)],
+        )];
+        if let Some(predecessor) = predecessor {
+            roles.push((prior.clone(), vec![predecessor]));
+        }
+        ProjectedCreate::try_new(&installed, edge.clone(), fields, roles).unwrap()
+    };
+    let crud = type_bridge_orm::ProjectedCrudExecutor::new(&installed);
+    let first = crud
+        .insert_relation(&database, &create("a", 0, None))
+        .await
+        .unwrap();
+    let second = crud
+        .insert_relation(
+            &database,
+            &create("b", 0, Some(reference(&installed, &edge, first.iid()))),
+        )
+        .await
+        .unwrap();
+    let raw = DynamicRelationManager::new(&database, registry.relation("snapshot-edge").unwrap());
+    let mut failures = Vec::new();
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        for by_iid in [false, true] {
+            let predecessor = || {
+                ProjectedReference::try_new(
+                    &installed,
+                    edge.clone(),
+                    by_iid.then(|| first.iid().to_owned()),
+                    vec![(field(&edge, &key), string_scalar(&installed, &key, "a"))],
+                )
+                .unwrap()
+            };
+            for self_playing in [false, true] {
+                for width in [0, 300] {
+                    *log.lock().unwrap() = DispatchLog::default();
+                    let rows = if self_playing {
+                        vec![ProjectedBatchRow::Update {
+                            iid: first.iid().into(),
+                            replacement: create("a2", width, Some(predecessor())),
+                        }]
+                    } else {
+                        vec![
+                            ProjectedBatchRow::Update {
+                                iid: first.iid().into(),
+                                replacement: create("a2", width, None),
+                            },
+                            ProjectedBatchRow::Update {
+                                iid: second.iid().into(),
+                                replacement: create("b", 0, Some(predecessor())),
+                            },
+                        ]
+                    };
+                    let batch = ProjectedBatch::try_new(
+                        &installed,
+                        edge.clone(),
+                        ProjectedBatchOperation::Update,
+                        rows,
+                    )
+                    .unwrap();
+                    let tx = counted.transaction_context(TxType::Write).await.unwrap();
+                    let result = ProjectedBatchExecutor::new(&installed)
+                        .execute_in_transaction(&tx, &batch, control())
+                        .await;
+                    eprintln!(
+                        "snapshot reference literal={literal} self={self_playing} width={width} by_iid={by_iid}: success={}, diagnostic={:?}",
+                        result.is_ok(),
+                        result.as_ref().err().map(|error| error.code())
+                    );
+                    if let Err(error) = &result {
+                        failures.push(format!(
+                            "literal={literal} self={self_playing} width={width}: {}",
+                            error.code().as_str()
+                        ));
+                        tx.rollback().await.unwrap();
+                        continue;
+                    }
+                    let statements = if width == 0 {
+                        1
+                    } else if self_playing {
+                        if by_iid { 3 } else { 4 }
+                    } else {
+                        5
+                    };
+                    assert_eq!(log.lock().unwrap().statements.len(), statements);
+                    let output = things(result.unwrap());
+                    assert_eq!(
+                        output[0].fields()[&field(&edge, &key)][0].value(),
+                        &CanonicalValue::String(CanonicalString::new("a2").unwrap())
+                    );
+                    let referenced = if self_playing { &output[0] } else { &output[1] };
+                    assert_eq!(referenced.roles()[&prior][0].iid(), first.iid());
+                    assert_eq!(
+                        output[0]
+                            .fields()
+                            .get(&field(&edge, &tag))
+                            .map_or(0, Vec::len),
+                        width
+                    );
+                    tx.rollback().await.unwrap();
+                    assert_eq!(log.lock().unwrap().commits, 0);
+                    assert_eq!(log.lock().unwrap().rollbacks, 1);
+                    assert_eq!(
+                        raw.get_by_iid(first.iid()).await.unwrap()[0].iid.as_deref(),
+                        Some(first.iid())
+                    );
+                    if width > 0 {
+                        *log.lock().unwrap() = DispatchLog {
+                            fail_at: Some(statements),
+                            ..Default::default()
+                        };
+                        let failure = ProjectedBatchExecutor::new(&installed)
+                            .execute(&counted, &batch, control())
+                            .await
+                            .unwrap_err();
+                        assert_eq!(failure.code().as_str(), "transaction_state_invalid");
+                        let observed = log.lock().unwrap();
+                        assert_eq!(observed.statements.len(), statements);
+                        assert_eq!(observed.opened, [TxType::Write]);
+                        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+                        drop(observed);
+                        let original = raw.get_by_iid(first.iid()).await.unwrap();
+                        assert!(
+                            original[0].attributes.iter().any(|(name, value)| name
+                                == "snapshot-key"
+                                && value == &type_bridge_orm::AttributeValue::String("a".into()))
+                        );
+                    }
+                }
+            }
+        }
+        *log.lock().unwrap() = DispatchLog::default();
+        let future = key_reference(&installed, &edge, &key, "future");
+        let invocation_start = ProjectedBatch::try_new(
+            &installed,
+            edge.clone(),
+            ProjectedBatchOperation::Insert,
+            vec![
+                ProjectedBatchRow::Create(create("future", 300, None)),
+                ProjectedBatchRow::Create(create("future-child", 0, Some(future))),
+            ],
+        )
+        .unwrap();
+        let failure = ProjectedBatchExecutor::new(&installed)
+            .execute(&counted, &invocation_start, control())
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code().as_str(), "projected_batch_reference_missing");
+        assert_eq!(
+            failure.category(),
+            type_bridge_contract::sdk_diagnostic::SdkDiagnosticCategory::Integrity
+        );
+        assert_eq!(raw.count().await.unwrap(), 2);
+        let observed = log.lock().unwrap();
+        assert_eq!(observed.opened, [TxType::Write]);
+        assert_eq!((observed.commits, observed.rollbacks), (0, 1));
+        assert!(
+            observed
+                .statements
+                .iter()
+                .all(|source| !source.contains("insert ")
+                    && !source.contains("put ")
+                    && !source.contains("delete "))
+        );
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}

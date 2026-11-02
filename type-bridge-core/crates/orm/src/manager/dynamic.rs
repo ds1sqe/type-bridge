@@ -3798,7 +3798,14 @@ impl DynamicExecutionTarget<'_> {
                     .dispatch_plan_counted(query, limits, Some(plan.local()))
                     .await?;
                 let answer = TransactionContext::resolve_plan(plan.local(), answer)?;
-                if step.candidate_filter {
+                if step.reference_resolution.is_some() {
+                    let iids = step
+                        .reference_iids(&answer)
+                        .map_err(crate::plan_builders::manager::diagnostic)?;
+                    program
+                        .accept_reference_iids(&step, iids)
+                        .map_err(crate::plan_builders::manager::diagnostic)?;
+                } else if step.candidate_filter {
                     program
                         .accept_candidates(&step, &answer)
                         .map_err(crate::plan_builders::manager::diagnostic)?;

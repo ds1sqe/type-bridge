@@ -9,6 +9,12 @@ use type_bridge_contract::query_remote_v3::StagedAnswerV3;
 mod match_put;
 pub(super) use match_put::wide_match;
 
+#[path = "bulk_write_references.rs"]
+mod references;
+pub(super) use references::resolve_references;
+
+pub(crate) type ReferenceSnapshots = BTreeMap<usize, BTreeMap<RoleId, Vec<String>>>;
+
 pub(crate) type IdentityLayout = Vec<Option<Vec<(usize, String)>>>;
 
 pub(crate) enum WriteProgram {
@@ -17,6 +23,7 @@ pub(crate) enum WriteProgram {
     Split(SplitProgram),
     Chain(VecDeque<WriteProgram>),
     MatchWide(Box<match_put::MatchProgram>),
+    References(Box<references::ReferenceProgram>),
 }
 impl WriteProgram {
     pub(crate) fn compact(plans: Vec<BuiltPlan>) -> Self {
@@ -29,6 +36,7 @@ impl WriteProgram {
             Self::Split(program) => program.steps.len(),
             Self::Chain(programs) => programs.iter().map(Self::statement_count).sum(),
             Self::MatchWide(program) => program.statement_count(),
+            Self::References(program) => program.statement_count(),
         }
     }
     pub(crate) fn next(&mut self) -> Result<Option<WriteStep>, Diagnostic> {
@@ -41,6 +49,7 @@ impl WriteProgram {
                 missing_iid_noop: false,
                 candidate_filter: false,
                 reference_guard: false,
+                reference_resolution: None,
             })),
             Self::Sequential(plans) => Ok((!plans.is_empty()).then(|| WriteStep {
                 plan: plans.remove(0).0,
@@ -50,9 +59,11 @@ impl WriteProgram {
                 missing_iid_noop: false,
                 candidate_filter: false,
                 reference_guard: false,
+                reference_resolution: None,
             })),
             Self::Split(program) => program.next(),
             Self::MatchWide(program) => program.next(),
+            Self::References(program) => program.next(),
             Self::Chain(programs) => {
                 while let Some(program) = programs.front_mut() {
                     if let Some(step) = program.next()? {
@@ -67,7 +78,7 @@ impl WriteProgram {
     pub(crate) fn into_static(self) -> Result<Vec<BuiltPlan>, Diagnostic> {
         match self {
             Self::Compact(plans) => Ok(plans),
-            Self::MatchWide(_) => Err(identity_error()),
+            Self::MatchWide(_) | Self::References(_) => Err(identity_error()),
             Self::Sequential(plans) => Ok(plans.into_iter().map(|(plan, _)| plan).collect()),
             Self::Chain(programs) => programs
                 .into_iter()
@@ -119,6 +130,7 @@ impl WriteProgram {
                         program.identity_layout().unwrap_or_else(|| match program {
                             Self::Compact(plans) => vec![None; plans.len()],
                             Self::MatchWide(_) => vec![None],
+                            Self::References(_) => vec![None],
                             Self::Split(split) => split
                                 .steps
                                 .iter()
@@ -133,7 +145,24 @@ impl WriteProgram {
                     })
                     .collect(),
             ),
-            Self::Compact(_) | Self::Split(_) | Self::MatchWide(_) => None,
+            Self::Compact(_) | Self::Split(_) | Self::MatchWide(_) | Self::References(_) => None,
+        }
+    }
+
+    pub(crate) fn accept_reference_iids(
+        &mut self,
+        step: &WriteStep,
+        iids: Vec<(usize, String)>,
+    ) -> Result<(), Diagnostic> {
+        match self {
+            Self::References(program) => program.accept(step, iids),
+            _ => Err(identity_error()),
+        }
+    }
+    pub(crate) fn take_reference_snapshots(&mut self) -> Option<Box<ReferenceSnapshots>> {
+        match self {
+            Self::References(program) => program.take_snapshots(),
+            _ => None,
         }
     }
 
@@ -160,6 +189,7 @@ impl WriteProgram {
         match self {
             Self::Split(program) => program.accept_identity(step, iid),
             Self::MatchWide(program) => program.accept_identity(step, iid),
+            Self::References(program) => program.accept_identity(step, iid),
             Self::Chain(programs) => programs
                 .front_mut()
                 .ok_or_else(identity_error)?
@@ -173,6 +203,7 @@ pub(crate) fn forces_pieces(error: &Diagnostic) -> bool {
     matches!(
         error.code().as_str(),
         "query_plan_binding_limit"
+            | "query_plan_write_term_limit"
             | "migration_assertion_binding_id_out_of_range"
             | "query_plan_input_limit"
             | "projected_batch_input_unit_byte_limit"
@@ -188,8 +219,47 @@ pub(crate) struct WriteStep {
     pub(crate) missing_iid_noop: bool,
     pub(crate) candidate_filter: bool,
     pub(crate) reference_guard: bool,
+    pub(crate) reference_resolution: Option<Box<references::ResolutionStep>>,
 }
 impl WriteStep {
+    pub(crate) fn reference_iids(
+        &self,
+        answer: &PlanAnswer,
+    ) -> Result<Vec<(usize, String)>, Diagnostic> {
+        let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
+            return Err(identity_error());
+        };
+        rows.into_iter()
+            .map(|row| {
+                let [
+                    RemoteValue::Value {
+                        value: CanonicalValue::Long(ordinal),
+                    },
+                    RemoteValue::Thing { iid, type_id },
+                ] = row.as_slice()
+                else {
+                    return Err(identity_error());
+                };
+                let QueryOutput::Rows { columns } = self.plan.local().output() else {
+                    return Err(identity_error());
+                };
+                if !self
+                    .plan
+                    .local()
+                    .binding_types(columns[1])
+                    .is_some_and(|types| types.contains(type_id))
+                {
+                    return Err(identity_error());
+                }
+                self.check_identity(iid)?;
+                Ok((
+                    usize::try_from(*ordinal).map_err(|_| identity_error())?,
+                    iid.clone(),
+                ))
+            })
+            .collect()
+    }
+
     pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
         let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
             return Err(identity_error());
@@ -296,6 +366,7 @@ impl SplitProgram {
                     missing_iid_noop: false,
                     candidate_filter: false,
                     reference_guard: false,
+                    reference_resolution: None,
                 }
             }
         }))
@@ -502,6 +573,26 @@ pub(super) fn split_at(
     rows: &[WriteRow<'_>],
     ordinal_offset: usize,
 ) -> Result<WriteProgram, Diagnostic> {
+    split_with_guards(authority, kind, shape, rows, ordinal_offset, true)
+}
+
+pub(super) fn split_resolved(
+    authority: &PlanAuthority,
+    kind: WriteKind,
+    shape: WriteShape<'_>,
+    rows: &[WriteRow<'_>],
+) -> Result<WriteProgram, Diagnostic> {
+    split_with_guards(authority, kind, shape, rows, 0, false)
+}
+
+fn split_with_guards(
+    authority: &PlanAuthority,
+    kind: WriteKind,
+    shape: WriteShape<'_>,
+    rows: &[WriteRow<'_>],
+    ordinal_offset: usize,
+    guard_references: bool,
+) -> Result<WriteProgram, Diagnostic> {
     let mut steps = VecDeque::new();
     let mut ordinal = 0;
     while ordinal < rows.len() {
@@ -543,6 +634,7 @@ pub(super) fn split_at(
                         missing_iid_noop: false,
                         candidate_filter: false,
                         reference_guard: false,
+                        reference_resolution: None,
                     }));
                 }
                 ordinal += low;
@@ -558,20 +650,23 @@ pub(super) fn split_at(
         // The seed matches its first player before any write. Guard later
         // players because a mixed attachment answer cannot prove every event
         // matched, and one skipped reference must not leave a partial write.
-        for plan in match_put::reference_guards(
-            authority,
-            row.players.get(1..).unwrap_or_default(),
-            output_ordinal,
-        )? {
-            steps.push_back(Step::Ready(WriteStep {
-                plan,
-                complete: false,
-                ordinal: output_ordinal,
-                expected_iid: None,
-                missing_iid_noop: kind == WriteKind::PartialUpdate,
-                candidate_filter: false,
-                reference_guard: true,
-            }));
+        if guard_references {
+            for plan in match_put::reference_guards(
+                authority,
+                row.players.get(1..).unwrap_or_default(),
+                output_ordinal,
+            )? {
+                steps.push_back(Step::Ready(WriteStep {
+                    plan,
+                    complete: false,
+                    ordinal: output_ordinal,
+                    expected_iid: None,
+                    missing_iid_noop: kind == WriteKind::PartialUpdate,
+                    candidate_filter: false,
+                    reference_guard: true,
+                    reference_resolution: None,
+                }));
+            }
         }
         let (keys, fields) = row
             .fields
@@ -610,6 +705,7 @@ pub(super) fn split_at(
             missing_iid_noop: kind == WriteKind::PartialUpdate,
             candidate_filter: false,
             reference_guard: false,
+            reference_resolution: None,
         }));
         let mut attach_shape = shape.clone();
         attach_shape.cleared_fields = &[];

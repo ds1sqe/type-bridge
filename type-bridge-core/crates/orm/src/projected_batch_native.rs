@@ -436,7 +436,106 @@ impl ProjectedBatchExecutor<'_> {
                     .targets
                     .push(row_iid(row).unwrap_or_default().to_owned());
             }
+            let mut reference_order = None;
             while let Some(step) = program.next().map_err(diagnostic)? {
+                if plan.capture_role_snapshots
+                    && let Some(snapshots) = program.take_reference_snapshots()
+                {
+                    consumer.resolved_references = Some(snapshots);
+                }
+                if let Some(resolution) = &step.reference_resolution {
+                    let order = reference_order.get_or_insert_with(|| {
+                        let mut references = plan.role_references.iter().collect::<Vec<_>>();
+                        references.sort_by_key(|reference| reference.owner_ordinal);
+                        Box::new(ReferenceOrder { references })
+                    });
+                    let mut returned = Vec::with_capacity(resolution.ordinals.len());
+                    let mut seen = BTreeSet::new();
+                    let mut capture = |item: AnswerItem| {
+                        let AnswerItem::Document(document) = item else {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                SdkExecutionDiagnostic::internal_failure(),
+                            )));
+                        };
+                        let ordinal = document_index(&document, "ordinal", order.references.len())
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        let reference = order.references[ordinal];
+                        if resolution.ordinals.binary_search(&ordinal).is_err() {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                integrity_at_type(
+                                    "provider_identity_mismatch",
+                                    "Reference lookup returned an unexpected ordinal",
+                                    plan.model.id(),
+                                ),
+                            )));
+                        }
+                        if !seen.insert(ordinal) {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                integrity_at_reference(
+                                    "projected_batch_reference_ambiguous",
+                                    "A projected role-player reference resolved more than one exact thing",
+                                    plan.model.id(),
+                                    &reference.role,
+                                    reference.owner_ordinal,
+                                    reference.reference_ordinal,
+                                    reference.reference.type_id(),
+                                ),
+                            )));
+                        }
+                        let iid = document_string(&document, "iid")
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        if reference
+                            .reference
+                            .iid()
+                            .is_some_and(|expected| !expected.eq_ignore_ascii_case(&iid))
+                        {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                integrity_at_reference(
+                                    "provider_identity_mismatch",
+                                    "The provider prerequisite returned a different requested IID",
+                                    plan.model.id(),
+                                    &reference.role,
+                                    reference.owner_ordinal,
+                                    reference.reference_ordinal,
+                                    reference.reference.type_id(),
+                                ),
+                            )));
+                        }
+                        returned.push((ordinal, iid));
+                        Ok(AnswerControl::Continue)
+                    };
+                    dispatch(
+                        lease,
+                        &step.plan,
+                        Reply::ReferenceResolution,
+                        prepared,
+                        &mut capture,
+                        &mut ledger,
+                        true,
+                        &authority,
+                    )
+                    .await?;
+                    if let Some(missing) = resolution
+                        .ordinals
+                        .iter()
+                        .find(|ordinal| !seen.contains(ordinal))
+                    {
+                        let reference = order.references[*missing];
+                        return Err(integrity_at_reference(
+                            "projected_batch_reference_missing",
+                            "A projected role-player reference did not resolve exactly once",
+                            plan.model.id(),
+                            &reference.role,
+                            reference.owner_ordinal,
+                            reference.reference_ordinal,
+                            reference.reference.type_id(),
+                        ));
+                    }
+                    program
+                        .accept_reference_iids(&step, returned)
+                        .map_err(diagnostic)?;
+                    continue;
+                }
                 if !step.complete {
                     let mut returned = None;
                     let mut capture = |item: AnswerItem| {
@@ -504,6 +603,7 @@ impl ProjectedBatchExecutor<'_> {
                 .await
                 .map_err(|later| consumer.take_deferred().unwrap_or(later))?;
             }
+            let reference_snapshots = consumer.resolved_references.take();
             let things = consumer.finish()?;
             let mut identities = BTreeSet::new();
             for (ordinal, thing) in things.iter().enumerate() {
@@ -518,7 +618,15 @@ impl ProjectedBatchExecutor<'_> {
             }
             ledger.charge_projected(&things)?;
             for (ordinal, thing) in things.iter().enumerate() {
-                validate_written_role_identities(self.installed, plan, thing, ordinal)?;
+                validate_written_role_identities(
+                    self.installed,
+                    plan,
+                    thing,
+                    ordinal,
+                    reference_snapshots
+                        .as_ref()
+                        .and_then(|snapshots| snapshots.get(&ordinal)),
+                )?;
             }
 
             prepared.check_control()?;
@@ -641,8 +749,13 @@ enum DeletedRow {
 #[derive(Clone, Copy)]
 enum Reply {
     Prerequisite,
+    ReferenceResolution,
     Mutation,
     Hydration,
+}
+
+struct ReferenceOrder<'plan, 'schema> {
+    references: Vec<&'plan RoleReference<'schema>>,
 }
 
 struct Consumer<'a> {
@@ -722,7 +835,7 @@ impl Consumer<'_> {
                 }
                 document
             }
-            Reply::Prerequisite | Reply::Mutation => {
+            Reply::Prerequisite | Reply::Mutation | Reply::ReferenceResolution => {
                 let AnswerItem::Row(row) = item else {
                     return Err(crate::match_request::MatchError::new(
                         crate::match_request::MatchErrorCategory::ResultDecode,
@@ -749,6 +862,20 @@ impl Consumer<'_> {
                         remote_value(&row, name, self.plan.limits().codec).map_err(evidence)?;
                     match value {
                         RemoteValue::Thing { iid, type_id } => {
+                            if matches!(self.reply, Reply::ReferenceResolution)
+                                && !self
+                                    .plan
+                                    .binding_types(*column)
+                                    .is_some_and(|types| types.contains(&type_id))
+                            {
+                                return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                    integrity_at_type(
+                                        "provider_identity_mismatch",
+                                        "Reference lookup returned a type outside its declared candidates",
+                                        &type_id,
+                                    ),
+                                )));
+                            }
                             document.insert("iid".into(), iid.into());
                             if matches!(self.reply, Reply::Prerequisite) {
                                 document.insert("type".into(), type_id.label().as_str().into());
