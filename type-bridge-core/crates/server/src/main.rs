@@ -52,16 +52,13 @@ fn validate_configured_interceptors(
     ))
 }
 
-#[cfg(test)]
-fn redact_v2_schema_export_error<E>(_error: E) -> String {
-    "staged live schema export failed [typedb_v2_schema_export_failed]; inspect provider logs"
-        .to_owned()
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let config = RuntimeServerConfig::from_file(&cli.config)?;
+    if config.staged.raw_enabled && !config.staged.enabled {
+        return Err("staged.raw_enabled requires staged.enabled and its schema authority".into());
+    }
     validate_configured_interceptors(&config.interceptors.enabled, config.staged.enabled)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
 
@@ -168,7 +165,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// declared schema, resolved semantics, and managed state come from one
 /// constructor-verified artifact; deployment configuration cannot repeat or
 /// override them.
-
 async fn build_staged_state(
     config: &RuntimeServerConfig,
     outbound_transport: &PreparedSecureTypeDBConnection,
@@ -262,6 +258,11 @@ async fn build_staged_state(
         .with_answer_limits(config.staged.resolved_answer_limits()?)
         .map_err(|error| format!("staged answer limits rejected: {error:?}"))?
         .with_unauthenticated_staged_writes(config.staged.allow_unauthenticated_staged_writes);
+    let state = if config.staged.raw_enabled {
+        state.with_raw_executor(outbound_transport.connect_raw_runtime().await?)
+    } else {
+        state
+    };
     state
         .verify_startup_authority()
         .await
@@ -272,7 +273,6 @@ async fn build_staged_state(
 #[cfg(test)]
 mod tests {
 
-    use super::redact_v2_schema_export_error;
     use super::{AuditLogConfig, AuditLogInterceptor, validate_configured_interceptors};
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_security_policy_names_and_typos_fail_closed_before_startup() {
+    fn staged_security_policy_names_and_typos_fail_closed_before_startup() {
         for name in ["auth", "rate-limiter", "custom", "audit_log"] {
             let error = validate_configured_interceptors(&[name.to_owned()], true)
                 .expect_err("an unimplemented policy must abort startup");
@@ -308,35 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_schema_export_startup_error_drops_provider_text_and_source_chain() {
-        #[derive(Debug)]
-        struct ProviderError;
-
-        impl std::fmt::Display for ProviderError {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str(
-                    "TB_ADDRESS_SECRET TB_USERNAME_SECRET TB_PASSWORD_SECRET TB_PROVIDER_SECRET",
-                )
-            }
-        }
-
-        impl std::error::Error for ProviderError {}
-
-        let error: Box<dyn std::error::Error> = redact_v2_schema_export_error(ProviderError).into();
-        let rendered = format!("{error}\n{error:?}");
-        for secret in [
-            "TB_ADDRESS_SECRET",
-            "TB_USERNAME_SECRET",
-            "TB_PASSWORD_SECRET",
-            "TB_PROVIDER_SECRET",
-        ] {
-            assert!(!rendered.contains(secret), "{secret}: {rendered}");
-        }
-        assert!(error.source().is_none());
-        assert!(rendered.contains("typedb_v2_schema_export_failed"));
-    }
-
-    #[test]
     fn build_capability_preflight_precedes_tls_parsing_and_provider_construction_after_config_load()
     {
         let source = include_str!("main.rs");
@@ -356,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn supported_audit_log_declares_typed_v2_coverage() {
+    fn supported_audit_log_declares_staged_coverage() {
         use type_bridge_server::interceptor::Interceptor;
 
         let interceptor = AuditLogInterceptor::new(&AuditLogConfig {

@@ -217,7 +217,7 @@ async fn main() {
         [127, 0, 0, 1],
         env("SMOKE_PORT").parse::<u16>().expect("port"),
     ));
-    println!("v2-smoke-server-ready");
+    println!("staged-smoke-server-ready");
     if let Some(tls) = inbound_tls {
         axum_server::bind_rustls(address, tls)
             .serve(router.into_make_service())

@@ -1,7 +1,7 @@
 use crate::error::PipelineError;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
@@ -69,6 +69,7 @@ fn failure_response(
 /// Health-only mount used when staged execution is disabled.
 pub fn create_health_router(connected: bool) -> Router {
     Router::new()
+        .route("/v3/raw", post(raw_disabled))
         .route(
             "/health",
             get(move || async move { health_response(connected) }),
@@ -96,4 +97,12 @@ pub(crate) fn health_response(typedb_connected: bool) -> Json<HealthBody> {
         version: "1.5.11",
         typedb_connected,
     })
+}
+
+pub(crate) async fn raw_disabled() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({"error":"raw_disabled"})),
+    )
+        .into_response()
 }

@@ -145,9 +145,22 @@ impl Interceptor for AuditLogInterceptor {
 
     /// The audit log authorizes nothing; it observes V3 replies through
     /// [`Interceptor::on_v3_response`], which `/v3/staged` also runs.
-
     fn supports_v3(&self) -> bool {
         true
+    }
+
+    fn on_v3_raw<'a>(
+        &'a self,
+        query: &'a str,
+        _kind: type_bridge_orm::session::staged::TransactionKind,
+        ctx: &'a mut RequestContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), InterceptError>> + Send + 'a>>
+    {
+        ctx.metadata.insert(
+            "compiled_typeql".into(),
+            serde_json::Value::String(query.to_owned()),
+        );
+        Box::pin(async { Ok(()) })
     }
 
     fn on_v3_response<'a>(

@@ -15,7 +15,6 @@ pub struct QueryPipeline {
 impl QueryPipeline {
     /// Construct one staged policy context after proving every configured
     /// interceptor explicitly supports typed plans.
-
     pub fn v3_request_context(
         &self,
         metadata: HashMap<String, serde_json::Value>,
@@ -34,7 +33,6 @@ impl QueryPipeline {
     /// Prove every configured policy explicitly covers staged V3 requests.
     ///
     /// Request admission checks coverage before running any policy hooks.
-
     pub fn validate_v3_coverage(&self) -> Result<(), PipelineError> {
         self.interceptor_chain
             .ensure_v3_coverage()
@@ -43,7 +41,6 @@ impl QueryPipeline {
 
     /// Authenticate and rate-limit staged transport metadata before envelope
     /// decoding or other attacker-controlled contract work.
-
     pub async fn begin_v3_request(
         &self,
         context: &mut RequestContext,
@@ -54,9 +51,20 @@ impl QueryPipeline {
             .map_err(|error| PipelineError::Interceptor(error.to_string()))
     }
 
+    /// Apply host raw-query policies before dispatch, preserving typed refusals.
+    pub async fn authorize_v3_raw(
+        &self,
+        query: &str,
+        kind: type_bridge_orm::session::staged::TransactionKind,
+        ctx: &mut RequestContext,
+    ) -> Result<(), crate::interceptor::InterceptError> {
+        self.interceptor_chain
+            .execute_v3_raw(query, kind, ctx)
+            .await
+    }
+
     /// Whether the configured policies admit a staged V3 write for this
     /// caller. An interceptor error refuses.
-
     pub async fn authorize_v3_write(
         &self,
         context: &RequestContext,
@@ -69,7 +77,6 @@ impl QueryPipeline {
 
     /// Run the staged plan policies for plan `index`. An interceptor error
     /// refuses the request.
-
     pub async fn authorize_v3_plan(
         &self,
         index: usize,
@@ -83,7 +90,6 @@ impl QueryPipeline {
     }
 
     /// Let every policy observe a staged transaction's outcome.
-
     pub async fn observe_v3_commit(&self, outcome: &V3CommitOutcome<'_>, context: &RequestContext) {
         self.interceptor_chain
             .execute_v3_commit(outcome, context)
@@ -91,7 +97,6 @@ impl QueryPipeline {
     }
 
     /// Run configured response and audit policies for every staged outcome.
-
     pub async fn finish_v3_request(
         &self,
         outcome: &V3PolicyOutcome<'_>,

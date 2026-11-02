@@ -13,9 +13,7 @@ use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use type_bridge_contract::capability::CapabilitySet;
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory, DiagnosticCode};
-use type_bridge_contract::query_remote::{
-    RemoteCapabilities, RemoteCapabilitiesFingerprint, RemoteExecutorBinding,
-};
+use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
 use type_bridge_contract::schema::{DeclaredSchema, DocumentId};
 use type_bridge_contract::schema_delta::ManagedSchemaState;
 use type_bridge_orm::OwnedTransaction as Transaction;
@@ -166,9 +164,11 @@ impl RemoteReplayStore for InMemoryReplayStore {
 
 /// Authority and execution state shared by staged requests.
 pub struct StagedQueryState {
+    #[cfg(feature = "typedb")]
+    pub(super) raw_executor: Option<Arc<dyn super::raw::RawQueryExecutor>>,
+    pub(super) admission_window: Duration,
     pub(super) advertisement: RemoteCapabilities,
     pub(super) staged_query_limits: Option<type_bridge_contract::limits::QueryLimits>,
-    advertisement_fingerprint: RemoteCapabilitiesFingerprint,
     pub(super) ceilings: AnswerLimits,
     pub(super) database: Database,
     pub(super) declared: DeclaredSchema,
@@ -188,7 +188,7 @@ enum StagedQueryControlPolicy {
 }
 
 impl StagedQueryState {
-    /// Construct fail-closed V2 state with mandatory execution/replay bounds.
+    /// Construct fail-closed staged state with mandatory execution/replay bounds.
     pub fn new(
         advertised: CapabilitySet,
         ceilings: AnswerLimits,
@@ -208,7 +208,7 @@ impl StagedQueryState {
         )
     }
 
-    /// Construct fail-closed V2 state for an explicitly query-only database.
+    /// Construct fail-closed staged state for an explicitly query-only database.
     ///
     /// This mode rejects both V2 and legacy migration-control partitions. It
     /// cannot be inferred from missing control facts on a managed database.
@@ -249,11 +249,13 @@ impl StagedQueryState {
             .as_ref()
             .and_then(type_bridge_core_lib::version::semantic_profile_id);
         let advertisement = super::v3::staged_advertisement_for_profile(&base, profile)?;
-        let advertisement_fingerprint = advertisement.fingerprint()?;
+        advertisement.fingerprint()?;
         Ok(Self {
+            #[cfg(feature = "typedb")]
+            raw_executor: None,
+            admission_window: Duration::from_secs(60),
             advertisement,
             staged_query_limits: None,
-            advertisement_fingerprint,
             ceilings,
             database,
             declared,
@@ -265,6 +267,22 @@ impl StagedQueryState {
             control_policy,
             allow_unauthenticated_staged_writes: false,
         })
+    }
+
+    /// Enable raw TypeQL using this provider boundary. Disabled by default.
+    #[cfg(feature = "typedb")]
+    pub fn with_raw_executor(
+        mut self,
+        executor: impl super::raw::RawQueryExecutor + 'static,
+    ) -> Self {
+        self.raw_executor = Some(Arc::new(executor));
+        self
+    }
+
+    /// Set the finite host admission window used for raw request freshness.
+    pub fn with_admission_window(mut self, window: Duration) -> Self {
+        self.admission_window = window;
+        self
     }
 
     /// Replace the replay registry without changing this standalone epoch.
@@ -299,9 +317,8 @@ impl StagedQueryState {
                 "shared executor advertisement does not bind the supplied reply signer",
             ));
         }
-        let advertisement_fingerprint = advertisement.fingerprint()?;
+        advertisement.fingerprint()?;
         self.advertisement = advertisement;
-        self.advertisement_fingerprint = advertisement_fingerprint;
         self.replay_store = replay_store;
         self.signer = signer;
         Ok(self)
@@ -317,12 +334,12 @@ impl StagedQueryState {
         limits: type_bridge_contract::limits::QueryLimits,
     ) -> Result<Self, Diagnostic> {
         let advertisement = self.advertisement.clone().with_query_limits(limits)?;
-        self.advertisement_fingerprint = advertisement.fingerprint()?;
+        advertisement.fingerprint()?;
         self.advertisement = advertisement;
         Ok(self)
     }
 
-    /// Set V3 structural limits independently of the frozen V2 advertisement.
+    /// Set the structural limits used for staged admission.
     pub fn with_staged_query_limits(
         mut self,
         limits: type_bridge_contract::limits::QueryLimits,
@@ -352,7 +369,7 @@ impl StagedQueryState {
             .advertisement
             .clone()
             .with_answer_limits(ceilings.overrides())?;
-        self.advertisement_fingerprint = advertisement.fingerprint()?;
+        advertisement.fingerprint()?;
         self.advertisement = advertisement;
         self.ceilings.answer.max_items = ceilings.items;
         self.ceilings.answer.max_bytes = ceilings.bytes;
@@ -440,7 +457,7 @@ impl StagedQueryState {
         export: String,
         rebuild_permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<(), Diagnostic> {
-        let document = DocumentId::new("typebridge-v2-request-live-export.typeql")?;
+        let document = DocumentId::new("typebridge-staged-request-live-export.typeql")?;
         let declared = self.declared.clone();
         let context = self.delta_context.clone();
         let live = tokio::task::spawn_blocking(move || {
@@ -683,7 +700,7 @@ pub(super) fn diagnostic(
 ) -> Diagnostic {
     Diagnostic::new(
         category,
-        DiagnosticCode::new(code).expect("static V2 transport code"),
+        DiagnosticCode::new(code).expect("static staged transport code"),
         message,
     )
 }
@@ -987,7 +1004,7 @@ mod tests {
             SourcedSchemaFact::new(
                 fact,
                 SourceSpan::new(
-                    DocumentId::new("server-v2-route-fixture.typeql").expect("document"),
+                    DocumentId::new("server-staged-route-fixture.typeql").expect("document"),
                     byte,
                     byte + 1,
                     line,
@@ -1002,7 +1019,7 @@ mod tests {
             .expect("declared schema");
         let profile = SemanticProfileId::new("typedb-3.12.1/v1").expect("profile");
         let delta_context = ManagedDeltaContext::new(
-            ManagedScopeId::new("server-v2-route").expect("scope"),
+            ManagedScopeId::new("server-staged-route").expect("scope"),
             profile,
             CapabilitySet::new(),
         );

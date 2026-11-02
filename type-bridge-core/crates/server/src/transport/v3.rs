@@ -1,13 +1,8 @@
-//! Staged V3 transactions over the V2 executor identity.
+//! Staged V3 transactions over one executor identity.
 //!
-//! One canonical request carries an ordered stack of `query-plan/v3`
-//! programs. The executor stages them on one core transaction, commits once
-//! (a read transaction closes instead) and answers with one signed reply
-//! bound to the exact request bytes.
-//!
-//! V3 shares the V2 executor binding, reply signer, policy chain and nonce
-//! replay store. It advertises its own capability set at `/v3/capabilities`,
-//! so the released V2 advertisement and its fingerprint stay unchanged.
+//! One canonical request stages ordered plans on one transaction and commits
+//! once. Reply signing, replay protection and host policy hooks share the
+//! executor identity advertised at `/v3/capabilities`.
 //! Writes open only when a policy vouches for the caller through
 //! [`Interceptor::on_v3_write_authority`](crate::interceptor::Interceptor::on_v3_write_authority)
 //! or the operator explicitly allows unauthenticated staged writes.
@@ -59,7 +54,7 @@ use crate::pipeline::QueryPipeline;
 /// Code of the signed failure refusing a staged write no policy admitted.
 pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
 
-/// The staged V3 executor over one V2 executor identity: the policy
+/// The staged V3 executor over one staged executor identity: the policy
 /// pipeline, the query state (advertisement, ceilings, replay store, live
 /// authority, signer) and the staged advertisement it answers under.
 ///
@@ -67,7 +62,7 @@ pub const STAGED_WRITE_NOT_AUTHORIZED: &str = "staged_write_not_authorized";
 /// calls `StagedExecutor::execute_staged_request` directly.
 pub struct StagedExecutor {
     pipeline: Arc<QueryPipeline>,
-    query: Arc<StagedQueryState>,
+    pub(super) query: Arc<StagedQueryState>,
     advertisement: RemoteCapabilities,
     fingerprint: RemoteCapabilitiesFingerprint,
 }
@@ -111,21 +106,36 @@ impl StagedOutcome {
 
 impl StagedExecutor {
     /// Bind the executor to one pipeline and query state; the staged
-    /// advertisement re-states the validated V2 one.
+    /// advertisement re-states the validated executor identity.
     pub fn new(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Self {
-        // The V2 advertisement's limits were validated when it was built, so
+        // The executor advertisement's limits were validated when it was built, so
         // re-stating them under a wider capability set cannot fail.
         let profile = query
             .database
             .server_version()
             .as_ref()
             .and_then(type_bridge_core_lib::version::semantic_profile_id);
-        let advertisement = staged_advertisement_for_profile(&query.advertisement, profile)
+        let mut advertisement = staged_advertisement_for_profile(&query.advertisement, profile)
             .and_then(|advertisement| match query.staged_query_limits {
                 Some(limits) => advertisement.with_query_limits(limits),
                 None => Ok(advertisement),
             })
-            .expect("validated V2 advertisement re-states under the staged capabilities");
+            .expect("validated advertisement re-states under the staged capabilities");
+        #[cfg(feature = "typedb")]
+        if query.raw_executor.is_some() {
+            let mut capabilities = advertisement.capabilities().clone();
+            capabilities
+                .insert(CapabilityId::new("query.remote.raw").expect("static raw capability"));
+            advertisement = RemoteCapabilities::new(
+                capabilities,
+                advertisement.executor().clone(),
+                advertisement.reply_key(),
+            )
+            .with_query_limits(advertisement.query_limits())
+            .expect("validated limits")
+            .with_answer_limits(advertisement.answer_limits().clone())
+            .expect("validated limits");
+        }
         let fingerprint = advertisement
             .fingerprint()
             .expect("staged advertisement fingerprints");
@@ -188,17 +198,16 @@ impl StagedExecutor {
     }
 }
 
-/// The staged V3 advertisement: the V2 capabilities plus the staged
-/// vocabulary, under the same executor binding, reply key and limits.
-pub fn staged_advertisement(v2: &RemoteCapabilities) -> Result<RemoteCapabilities, Diagnostic> {
-    staged_advertisement_for_profile(v2, Some("typedb-3.13.6/v1"))
+/// Build the staged capability vocabulary under one executor identity and limits.
+pub fn staged_advertisement(base: &RemoteCapabilities) -> Result<RemoteCapabilities, Diagnostic> {
+    staged_advertisement_for_profile(base, Some("typedb-3.13.6/v1"))
 }
 
 pub(super) fn staged_advertisement_for_profile(
-    v2: &RemoteCapabilities,
+    base: &RemoteCapabilities,
     profile: Option<&str>,
 ) -> Result<RemoteCapabilities, Diagnostic> {
-    let mut capabilities: type_bridge_contract::capability::CapabilitySet = v2
+    let mut capabilities: type_bridge_contract::capability::CapabilitySet = base
         .capabilities()
         .iter()
         .filter(|capability| {
@@ -221,25 +230,37 @@ pub(super) fn staged_advertisement_for_profile(
     ] {
         capabilities.insert(CapabilityId::new(capability)?);
     }
-    let mut limits = v2.query_limits();
+    let mut limits = base.query_limits();
     if limits.structural.selected_slots == type_bridge_contract::limits::MAX_SELECTED_SLOTS {
         limits.structural.selected_slots =
             type_bridge_contract::limits::MAX_BINDINGS.min(limits.structural.bindings);
     }
-    RemoteCapabilities::new(capabilities, v2.executor().clone(), v2.reply_key())
+    RemoteCapabilities::new(capabilities, base.executor().clone(), base.reply_key())
         .with_query_limits(limits)?
-        .with_answer_limits(v2.answer_limits().clone())
+        .with_answer_limits(base.answer_limits().clone())
 }
 
-/// Build `POST /v3/staged` and `GET /v3/capabilities` over one V2 executor.
+/// Build `POST /v3/staged` and `GET /v3/capabilities` over one staged executor.
 pub fn create_v3_router(pipeline: Arc<QueryPipeline>, query: Arc<StagedQueryState>) -> Router {
     let state = Arc::new(StagedExecutor::new(pipeline, query));
-    Router::new()
+    let router = Router::new()
         .route("/v3/staged", post(handle_v3_staged))
         .route("/v3/capabilities", get(handle_v3_capabilities))
         .route("/health", get(handle_health))
-        .with_state(state)
-        .fallback(super::http::route_removed)
+        .fallback(super::http::route_removed);
+    #[cfg(feature = "typedb")]
+    let router = router.route("/v3/raw", post(super::raw::handle_raw));
+    #[cfg(not(feature = "typedb"))]
+    let router = router.route(
+        "/v3/raw",
+        post(|| async {
+            (
+                axum::http::StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error":"raw_disabled"})),
+            )
+        }),
+    );
+    router.with_state(state)
 }
 
 async fn handle_health(
@@ -560,7 +581,7 @@ async fn run_staged(
         );
     // Observe-only and bounded like the response audit: a stuck or failing
     // observer never changes the reply.
-    let outcome = V3CommitOutcome::new(staged.kind(), executed.as_ref().err());
+    let outcome = V3CommitOutcome::new(kind, executed.as_ref().err());
     let _ = await_before_deadline(
         response_audit_deadline(deadline),
         state.pipeline.observe_v3_commit(&outcome, &ctx),

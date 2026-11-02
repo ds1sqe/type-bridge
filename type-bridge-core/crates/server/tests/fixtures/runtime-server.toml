@@ -32,5 +32,6 @@ format = "json"
 
 [staged]
 enabled = true
+raw_enabled = false
 schema_authority_file = "schema-authority.json"
 authority_mode = "managed"

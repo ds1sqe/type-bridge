@@ -23,8 +23,21 @@ pub struct PreparedSecureTypeDBConnection {
 }
 
 impl PreparedSecureTypeDBConnection {
-    /// Connect the V2 ORM authority through this exact prepared identity.
+    /// Connect the raw runtime through the same captured transport identity.
+    pub async fn connect_raw_runtime(
+        &self,
+    ) -> Result<type_bridge_typedb_runtime::TypeDBRuntime, PipelineError> {
+        type_bridge_typedb_runtime::TypeDBRuntime::connect_prepared_secure(
+            &self.address,
+            &self.username,
+            &self.password,
+            self.options.clone(),
+        )
+        .await
+        .map_err(sanitize_prepared_connect_error)
+    }
 
+    /// Connect the V2 ORM authority through this exact prepared identity.
     #[doc(hidden)]
     pub async fn connect_database(&self) -> Result<type_bridge_orm::Database, PipelineError> {
         type_bridge_orm::Database::connect_prepared_secure_with_options(

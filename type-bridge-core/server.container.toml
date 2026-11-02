@@ -26,3 +26,4 @@ format = "json"
 
 [staged]
 enabled = false
+raw_enabled = false

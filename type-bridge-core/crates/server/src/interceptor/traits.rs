@@ -14,7 +14,7 @@ use type_bridge_contract::query_plan::v3::Operation;
 
 use type_bridge_contract::query_plan::{InputRow, QueryPlanV3};
 
-use type_bridge_contract::query_remote_v3::StagedKindV3;
+use type_bridge_orm::session::staged::TransactionKind;
 
 use type_bridge_contract::sdk_diagnostic::{SdkCommitFailureOutcome, SdkExecutionDiagnostic};
 
@@ -54,7 +54,6 @@ impl fmt::Debug for RequestContext {
 }
 
 /// Redacted staged result evidence presented to response and audit policies.
-
 pub struct V3PolicyOutcome<'a> {
     success: bool,
     code: &'a str,
@@ -97,7 +96,6 @@ impl<'a> V3PolicyOutcome<'a> {
 /// It exposes what the plan may do, never literal or input row values,
 /// unless the policy opts in through [`Interceptor::wants_v3_plan_rows`].
 /// Its `Debug` output never shows values either: rows appear as a count.
-
 #[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct V3PolicyPlan<'a> {
@@ -178,17 +176,16 @@ impl fmt::Debug for V3PolicyPlan<'_> {
 
 /// Redacted outcome of a staged V3 transaction presented to
 /// [`Interceptor::on_v3_commit`].
-
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct V3CommitOutcome<'a> {
-    kind: StagedKindV3,
+    kind: TransactionKind,
     failure: Option<&'a SdkExecutionDiagnostic>,
 }
 
 impl<'a> V3CommitOutcome<'a> {
     pub(crate) const fn new(
-        kind: StagedKindV3,
+        kind: TransactionKind,
         failure: Option<&'a SdkExecutionDiagnostic>,
     ) -> Self {
         Self { kind, failure }
@@ -196,7 +193,7 @@ impl<'a> V3CommitOutcome<'a> {
 
     /// The transaction kind the request staged on.
     #[must_use]
-    pub const fn kind(&self) -> StagedKindV3 {
+    pub const fn kind(&self) -> TransactionKind {
         self.kind
     }
 
@@ -233,6 +230,12 @@ impl<'a> V3CommitOutcome<'a> {
 #[derive(Debug, thiserror::Error)]
 #[allow(dead_code)] // variants for future interceptors
 pub enum InterceptError {
+    /// A host policy refused raw execution with its stable diagnostic code.
+    #[error("Raw query refused [{code}]")]
+    Refused {
+        /// Host-defined machine-readable refusal code.
+        code: &'static str,
+    },
     /// An authorization policy rejected the request.
     #[error("Access denied: {reason}")]
     AccessDenied {
@@ -256,11 +259,23 @@ pub enum InterceptError {
     Internal(String),
 }
 
+impl InterceptError {
+    /// Stable code returned when raw policy admission refuses a request.
+    pub const fn code(&self) -> &str {
+        match self {
+            Self::Refused { code } => code,
+            Self::AccessDenied { .. } => "access_denied",
+            Self::RateLimited { .. } => "rate_limited",
+            Self::ValidationFailed { .. } => "validation_failed",
+            Self::Internal(_) => "interceptor_internal",
+        }
+    }
+}
+
 /// One policy's write admission for a staged V3 request.
 ///
 /// The server has no built-in authentication. A policy that authenticated
 /// the caller in [`Interceptor::on_v3_transport`] vouches for writes here.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum StagedWriteAuthority {
@@ -285,15 +300,24 @@ pub trait Interceptor: Send + Sync {
     ///
     /// The default is fail-closed: every configured policy must explicitly
     /// cover staged requests before transport admission can proceed.
-
     fn supports_v3(&self) -> bool {
         false
     }
 
     /// Authenticate and rate-limit transport metadata before envelope decode.
-
     fn on_v3_transport<'a>(
         &'a self,
+        _ctx: &'a mut RequestContext,
+    ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Allow or refuse raw TypeQL before replay reservation and provider I/O.
+    /// The query is unchanged; the host owns any policy for this escape hatch.
+    fn on_v3_raw<'a>(
+        &'a self,
+        _query: &'a str,
+        _kind: TransactionKind,
         _ctx: &'a mut RequestContext,
     ) -> Pin<Box<dyn Future<Output = Result<(), InterceptError>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
@@ -305,7 +329,6 @@ pub trait Interceptor: Send + Sync {
     /// [`StagedWriteAuthority::Authenticated`] and none fails, or the server
     /// explicitly allows unauthenticated staged writes. Runs first among the
     /// V3 hooks, after the transport hook and before [`Self::on_v3_plan`].
-
     fn on_v3_write_authority<'a>(
         &'a self,
         _ctx: &'a RequestContext,
@@ -321,7 +344,6 @@ pub trait Interceptor: Send + Sync {
     /// view is computed from the decoded request alone. `index` is the
     /// plan's position in the request. An error refuses the whole request:
     /// later plans are not consulted, nothing is reserved and nothing opens.
-
     fn on_v3_plan<'a>(
         &'a self,
         _index: usize,
@@ -332,7 +354,6 @@ pub trait Interceptor: Send + Sync {
     }
 
     /// Whether [`Self::on_v3_plan`] may see bound input row values.
-
     fn wants_v3_plan_rows(&self) -> bool {
         false
     }
@@ -342,7 +363,6 @@ pub trait Interceptor: Send + Sync {
     /// Observe-only: errors are logged, never change the reply. Runs last
     /// among the V3 hooks, after reservation, staging and the commit, and
     /// before the response policies see the signed reply.
-
     fn on_v3_commit<'a>(
         &'a self,
         _outcome: &'a V3CommitOutcome<'a>,
@@ -352,7 +372,6 @@ pub trait Interceptor: Send + Sync {
     }
 
     /// Observe one redacted success or failure outcome for audit/policy.
-
     fn on_v3_response<'a>(
         &'a self,
         _outcome: &'a V3PolicyOutcome<'a>,

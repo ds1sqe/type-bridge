@@ -235,6 +235,9 @@ pub struct StagedSection {
     /// Serve `/v3/staged` and `/v3/capabilities`.
     #[serde(default)]
     pub enabled: bool,
+    /// Enable the raw, unchecked `/v3/raw` escape hatch. Defaults to false.
+    #[serde(default)]
+    pub raw_enabled: bool,
     /// Path to the source-free authority emitted by `schema generate`.
     #[serde(default)]
     pub schema_authority_file: String,
@@ -262,7 +265,6 @@ impl StagedSection {
     /// values past a dimension's supported maximum. An unnamed dimension
     /// keeps the proxy (wire) default, so an unconfigured server advertises
     /// no answer limit.
-
     pub fn resolved_answer_limits(
         &self,
     ) -> Result<type_bridge_orm::QueryExecutionResourceLimits, String> {
@@ -288,7 +290,6 @@ impl StagedSection {
         .map_err(|error| format!("staged.query_limits is rejected: {error}"))
     }
     /// Resolve V3 output columns without widening the released staged policy.
-
     pub fn resolved_staged_query_limits(
         &self,
     ) -> Result<type_bridge_contract::limits::QueryLimits, String> {
@@ -674,6 +675,8 @@ struct RuntimeStagedSectionWire {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
+    raw_enabled: bool,
+    #[serde(default)]
     schema_authority_file: String,
     #[serde(default)]
     authority_mode: StagedAuthorityMode,
@@ -724,6 +727,7 @@ impl From<RuntimeStagedSectionWire> for StagedSection {
     fn from(wire: RuntimeStagedSectionWire) -> Self {
         Self {
             enabled: wire.enabled,
+            raw_enabled: wire.raw_enabled,
             schema_authority_file: wire.schema_authority_file,
             authority_mode: wire.authority_mode,
             query_limits: wire.query_limits,
@@ -873,7 +877,6 @@ impl RuntimeServerConfig {
     /// A caller that mutates the public diagnostic path after loading must
     /// reload the complete configuration instead of pairing it with stale
     /// schema authority.
-
     pub fn staged_schema_authority_bytes(&self) -> Result<Option<&[u8]>, &'static str> {
         let Some(material) = &self.typedb.staged_schema_authority_snapshot else {
             return Ok(None);
@@ -1903,7 +1906,7 @@ database = "mydb"
         assert!(error.contains("changed after"), "{error}");
     }
 
-    #[cfg(all(feature = "staged-query", unix))]
+    #[cfg(unix)]
     #[test]
     fn relative_staged_schema_authority_uses_retained_base_after_ambient_parent_swap() {
         let dir = tempfile::tempdir().unwrap();
@@ -1949,7 +1952,7 @@ database = "mydb"
         );
     }
 
-    #[cfg(all(feature = "staged-query", unix))]
+    #[cfg(unix)]
     #[test]
     fn absolute_staged_schema_authority_symlink_is_rejected() {
         use std::os::unix::fs::symlink;

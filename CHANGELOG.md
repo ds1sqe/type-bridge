@@ -44,6 +44,12 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Added
 
+- Opt-in server `/v3/raw`, enabled by `[staged].raw_enabled` (false by
+  default), with `query.remote.raw` discovery, finite nonce admission,
+  host `on_v3_raw` authorization and raw-text auditing. Shared runtime
+  `execute_raw` / `query_raw` return TypeDB HTTP query-answer JSON for
+  unchecked TypeQL without generated-model admission or hydration.
+
 - Generated plan idioms in Python, TypeScript, Rust, and C bind caller values
   as typed given inputs and retain the shared builder's canonical bytes.
   Model and mixed model/scalar selections publish only after the full Core
@@ -92,6 +98,10 @@ All notable changes to TypeBridge will be documented in this file.
   before I/O: TypeDB accepts their insertion but removes them at commit.
 
 ### Breaking
+
+- Server `V3CommitOutcome::kind()` now returns `TransactionKind` so raw
+  schema commits are distinguishable from data writes; use its `Read`,
+  `Write`, and `Schema` variants instead of `StagedKindV3`.
 
 - Removed the server `v2-query` feature; default builds serve the staged
   transport through `axum-transport`. Server `[v2]` becomes `[staged]`,

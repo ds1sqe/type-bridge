@@ -6,3 +6,7 @@ pub mod staged_state;
 
 /// Staged V3 transactions over one executor identity.
 pub mod v3;
+
+/// Opt-in raw TypeQL transport with host admission hooks.
+#[cfg(feature = "typedb")]
+pub mod raw;

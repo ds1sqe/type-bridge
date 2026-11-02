@@ -1,6 +1,4 @@
-// `/v3/staged` route tests over the V2 route fixtures (mock backend, no
-// provider). `include!`d into a child of the V2 test module so they share its
-// private backend, authority and pipeline fixtures.
+// Staged route tests sharing the mock backend, authority and policy fixtures.
 
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::query_plan::v3::{
@@ -8,7 +6,7 @@ use type_bridge_contract::query_plan::v3::{
 };
 use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
 use type_bridge_contract::query_remote_v3::{
-    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3, StagedKindV3,
+    CAP_QUERY_REMOTE_STAGED_V3, CAP_QUERY_REMOTE_WRITE_V3, StagedAnswerV3,
     StagedLimitsV3, StagedPlanV3, StagedRequestSpecV3, StagedRequestV3, VerifiedStagedReplyV3,
 };
 use type_bridge_contract::schema::OwnsFactId;
@@ -152,7 +150,7 @@ impl Interceptor for VouchingPolicy {
 
 fn vouching_pipeline() -> QueryPipeline {
     PipelineBuilder::new()
-        .with_default_database("server-v2-route")
+        .with_default_database("server-staged-route")
         .with_interceptor(VouchingPolicy)
         .build()
         .expect("query pipeline")
@@ -315,8 +313,8 @@ async fn staged_capabilities_match_the_executor_authority() {
         );
     }
     assert_eq!(v3.executor(), fixture.query.advertisement.executor());
-    let v2 = fixture.query.advertisement.capabilities();
-    assert!(v2.contains(&CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3).expect("capability")));
+    let capabilities = fixture.query.advertisement.capabilities();
+    assert!(capabilities.contains(&CapabilityId::new(CAP_QUERY_REMOTE_STAGED_V3).expect("capability")));
 }
 
 #[tokio::test]
@@ -370,8 +368,7 @@ enum WriteVouch {
     Hang,
 }
 
-/// A V2 request policy that refuses every typed V2 plan, optionally
-/// declaring V3 coverage, and answers staged write admission per `vouch`.
+/// A host policy with explicit staged coverage and write admission.
 struct StagedGate {
     supports_v3: bool,
     vouch: WriteVouch,
@@ -426,14 +423,14 @@ impl Interceptor for Arc<StagedGate> {
 
 fn gate_pipeline(gate: &Arc<StagedGate>) -> QueryPipeline {
     PipelineBuilder::new()
-        .with_default_database("server-v2-route")
+        .with_default_database("server-staged-route")
         .with_interceptor(Arc::clone(gate))
         .build()
         .expect("query pipeline")
 }
 
 #[tokio::test]
-async fn v2_request_policy_without_v3_coverage_refuses_every_staged_request() {
+async fn policy_without_staged_coverage_refuses_every_staged_request() {
     let gate = StagedGate::new(false, WriteVouch::Vouch);
     let fixture = v3_fixture(gate_pipeline(&gate), false);
     let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
@@ -455,7 +452,7 @@ async fn v2_request_policy_without_v3_coverage_refuses_every_staged_request() {
 }
 
 #[tokio::test]
-async fn v2_request_policy_declaring_v3_coverage_is_admitted() {
+async fn policy_declaring_staged_coverage_is_admitted() {
     let gate = StagedGate::new(true, WriteVouch::Vouch);
     let fixture = v3_fixture(gate_pipeline(&gate), false);
     let request = staged(&fixture, &[count_plan(&fixture.declared)], TEST_NONCE);
@@ -605,7 +602,7 @@ impl Interceptor for Arc<WithholdsReplies> {
 fn withholding_fixture() -> (Arc<WithholdsReplies>, V3Fixture) {
     let policy = Arc::new(WithholdsReplies::default());
     let pipeline = PipelineBuilder::new()
-        .with_default_database("server-v2-route")
+        .with_default_database("server-staged-route")
         .with_interceptor(VouchingPolicy)
         .with_interceptor(Arc::clone(&policy))
         .build()
@@ -736,7 +733,7 @@ type SeenPlan = (usize, Vec<String>, Vec<String>, Option<usize>);
 /// What one commit observer saw: kind, committed, code, certainty, provider
 /// code.
 type SeenCommit = (
-    StagedKindV3,
+    type_bridge_orm::session::staged::TransactionKind,
     bool,
     String,
     Option<SdkCommitFailureOutcome>,
@@ -846,7 +843,7 @@ fn hook_pipeline(policies: &[&Arc<HookPolicy>]) -> QueryPipeline {
     policies
         .iter()
         .fold(
-            PipelineBuilder::new().with_default_database("server-v2-route"),
+            PipelineBuilder::new().with_default_database("server-staged-route"),
             |builder, policy| builder.with_interceptor(Arc::clone(policy)),
         )
         .build()
@@ -1012,15 +1009,15 @@ async fn commit_observer_sees_commits_and_stc2_conflicts() {
     assert_eq!(
         commits,
         [
-            (StagedKindV3::Write, true, "ok".to_owned(), None, None),
+            (type_bridge_orm::session::staged::TransactionKind::Write, true, "ok".to_owned(), None, None),
             (
-                StagedKindV3::Write,
+                type_bridge_orm::session::staged::TransactionKind::Write,
                 false,
                 "commit_definitely_aborted".to_owned(),
                 Some(SdkCommitFailureOutcome::DefinitelyAborted),
                 Some("STC2".to_owned()),
             ),
-            (StagedKindV3::Read, true, "ok".to_owned(), None, None),
+            (type_bridge_orm::session::staged::TransactionKind::Read, true, "ok".to_owned(), None, None),
         ]
     );
 }
@@ -1110,7 +1107,7 @@ async fn client_disconnect_mid_commit_still_commits_and_observes_the_outcome() {
     let commits = policy.commits.lock().expect("commits").clone();
     assert_eq!(
         commits,
-        [(StagedKindV3::Write, true, "ok".to_owned(), None, None)]
+        [(type_bridge_orm::session::staged::TransactionKind::Write, true, "ok".to_owned(), None, None)]
     );
 }
 
@@ -1467,7 +1464,7 @@ impl Interceptor for Arc<OrderPolicy> {
 
 fn order_pipeline(policy: &Arc<OrderPolicy>) -> QueryPipeline {
     PipelineBuilder::new()
-        .with_default_database("server-v2-route")
+        .with_default_database("server-staged-route")
         .with_interceptor(Arc::clone(policy))
         .build()
         .expect("query pipeline")
@@ -1612,5 +1609,113 @@ async fn staged_router_preserves_health_and_names_removed_routes() {
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
             assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), br#"{"error":"route_removed","use":"/v3/staged"}"#);
         }
+    }
+}
+
+#[cfg(feature = "typedb")]
+mod raw_tests {
+    use super::*;
+    use crate::transport::raw::RawQueryExecutor;
+    use type_bridge_orm::session::staged::TransactionKind;
+    use type_bridge_typedb_runtime::raw::RawQueryError;
+
+    #[derive(Default)]
+    struct RawHost {
+        queries: Mutex<Vec<(String, TransactionKind)>>,
+        commits: Mutex<Vec<TransactionKind>>,
+        refuse: bool,
+    }
+    impl RawQueryExecutor for Arc<RawHost> {
+        fn execute<'a>(&'a self, _database: &'a str, query: &'a str, kind: TransactionKind)
+            -> Pin<Box<dyn Future<Output=Result<Vec<u8>,RawQueryError>> + Send + 'a>> {
+            self.queries.lock().unwrap().push((query.to_owned(),kind));
+            Box::pin(async { Ok(br#"{ "queryType": "write", "answerType": "ok", "answers": null, "query": null, "warning": null }"#.to_vec()) })
+        }
+    }
+    impl Interceptor for Arc<RawHost> {
+        fn name(&self) -> &str { "raw-host" }
+        fn supports_v3(&self) -> bool { true }
+        fn on_v3_raw<'a>(&'a self, _query: &'a str, _kind: TransactionKind, _ctx: &'a mut RequestContext)
+            -> Pin<Box<dyn Future<Output=Result<(),InterceptError>> + Send + 'a>> {
+            Box::pin(async move { if self.refuse { Err(InterceptError::Refused { code:"host_raw_refused" }) } else { Ok(()) } })
+        }
+        fn on_v3_commit<'a>(&'a self, outcome: &'a V3CommitOutcome<'a>, _ctx: &'a RequestContext)
+            -> Pin<Box<dyn Future<Output=Result<(),InterceptError>> + Send + 'a>> {
+            assert!(outcome.committed());
+            self.commits.lock().unwrap().push(outcome.kind());
+            Box::pin(async { Ok(()) })
+        }
+    }
+    fn fixture(host: Arc<RawHost>, audit: Option<crate::interceptor::audit_log::AuditLogInterceptor>) -> V3Fixture {
+        let authority = authority_fixture(false);
+        let declared = authority.declared.clone();
+        let metrics = Arc::new(BackendMetrics::default());
+        let database = Database::with_backend(Box::new(CountingBackend::new([],Arc::clone(&metrics))),"raw-host");
+        let query = Arc::new(StagedQueryState::new_query_only(CapabilitySet::new(),AnswerLimits::default(),database,authority.declared,authority.delta_context,authority.managed).unwrap().with_raw_executor(Arc::clone(&host)));
+        let mut pipeline = PipelineBuilder::new();
+        if let Some(audit) = audit { pipeline = pipeline.with_interceptor(audit); }
+        let pipeline = Arc::new(pipeline.with_interceptor(host).build().unwrap());
+        let executor = Arc::new(StagedExecutor::new(Arc::clone(&pipeline),Arc::clone(&query)));
+        let advertisement = executor.advertisement().clone();
+        V3Fixture { advertisement,declared,metrics,query,router:create_v3_router(pipeline,Arc::clone(&executor.query)),executor }
+    }
+    fn request(query: &str, kind: &str, nonce: &str) -> serde_json::Value {
+        serde_json::json!({"query":query,"kind":kind,"nonce":nonce,"expires_at_unix_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64+30_000})
+    }
+    async fn raw(fixture: &V3Fixture, body: serde_json::Value) -> (StatusCode,Vec<u8>) {
+        let response = fixture.router.clone().oneshot(Request::builder().method("POST").uri("/v3/raw").header("content-type","application/json").body(Body::from(body.to_string())).unwrap()).await.unwrap();
+        (response.status(),response.into_body().collect().await.unwrap().to_bytes().to_vec())
+    }
+    #[tokio::test]
+    async fn raw_is_disabled_without_collecting_or_dispatching_the_body() {
+        let fixture = v3_fixture(default_pipeline(),false);
+        assert!(!fixture.advertisement.capabilities().iter().any(|cap|cap.as_str()=="query.remote.raw"));
+        assert_eq!(raw(&fixture,serde_json::Value::Null).await,(StatusCode::FORBIDDEN,br#"{"error":"raw_disabled"}"#.to_vec()));
+        assert_eq!(fixture.metrics.transaction_opens.load(Ordering::SeqCst),0);
+    }
+    #[tokio::test]
+    async fn raw_preserves_query_and_answer_bytes_audits_text_and_observes_commits() {
+        let host = Arc::new(RawHost::default());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("raw.jsonl");
+        let audit = crate::interceptor::audit_log::AuditLogInterceptor::new(&crate::config::AuditLogConfig { output:"file".into(),file_path:path.to_str().unwrap().into() }).unwrap();
+        let fixture = fixture(Arc::clone(&host),Some(audit));
+        assert!(fixture.advertisement.capabilities().iter().any(|cap|cap.as_str()=="query.remote.raw"));
+        let query = "define entity unchecked-model-breaking;\n";
+        for (index,kind) in ["read","write","schema"].into_iter().enumerate() {
+            let (status,answer) = raw(&fixture,request(query,kind,&format!("raw-request-{index:016}"))).await;
+            assert_eq!(status,StatusCode::OK);
+            assert_eq!(answer,br#"{ "queryType": "write", "answerType": "ok", "answers": null, "query": null, "warning": null }"#);
+        }
+        assert_eq!(*host.queries.lock().unwrap(),[(query.into(),TransactionKind::Read),(query.into(),TransactionKind::Write),(query.into(),TransactionKind::Schema)]);
+        assert_eq!(*host.commits.lock().unwrap(),[TransactionKind::Write,TransactionKind::Schema]);
+        let records = std::fs::read_to_string(path).unwrap();
+        let records = records.lines().map(|line|serde_json::from_str::<serde_json::Value>(line).unwrap()).collect::<Vec<_>>();
+        assert_eq!(records.len(),3);
+        assert!(records.iter().all(|record|record["compiled_typeql"]==query));
+    }
+    #[tokio::test]
+    async fn raw_policy_and_admission_refusals_never_dispatch() {
+        let host = Arc::new(RawHost { refuse:true,..Default::default() });
+        let fixture = fixture(Arc::clone(&host),None);
+        assert_eq!(raw(&fixture,request("insert anything;","write","raw-request-refused")).await,(StatusCode::FORBIDDEN,br#"{"error":"host_raw_refused"}"#.to_vec()));
+        assert!(host.queries.lock().unwrap().is_empty());
+        for invalid in [serde_json::json!({}),request("anything","invalid","raw-request-invalid"),request("anything","read","short"),{
+            let mut request=request("anything","read","raw-request-expired");request["expires_at_unix_ms"]=serde_json::json!(1);request
+        },{
+            let mut request=request("anything","read","raw-request-too-far");request["expires_at_unix_ms"]=serde_json::json!(u64::MAX);request
+        }] {
+            assert_eq!(raw(&fixture,invalid).await.0,StatusCode::BAD_REQUEST);
+        }
+        assert!(host.queries.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn raw_replay_is_refused_before_a_second_transaction() {
+        let host = Arc::new(RawHost::default());
+        let fixture = fixture(Arc::clone(&host),None);
+        let body=request("arbitrary unchecked text","write","raw-request-duplicate");
+        assert_eq!(raw(&fixture,body.clone()).await.0,StatusCode::OK);
+        assert_eq!(raw(&fixture,body).await,(StatusCode::CONFLICT,br#"{"error":"query_remote_replay"}"#.to_vec()));
+        assert_eq!(host.queries.lock().unwrap().len(),1);
     }
 }

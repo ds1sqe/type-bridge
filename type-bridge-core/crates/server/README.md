@@ -176,3 +176,39 @@ routes return HTTP 404 with `{"error":"route_removed","use":"/v3/staged"}`.
 
 Run `cargo test -p type-bridge-server` from the Rust workspace. Live staged
 tests additionally need the TypeDB address, HTTP port, and credentials.
+
+## Raw TypeQL escape hatch
+
+`[staged].raw_enabled = true` enables `POST /v3/raw` (default false).
+It requires an enabled staged executor and its configured database. The
+advertisement includes `query.remote.raw` only when enabled. With the route
+off, requests return HTTP 403 `{"error":"raw_disabled"}`.
+
+Send JSON with `query`, `kind` (`read`, `write`, or `schema`), a unique
+16–128 character ASCII alphanumeric/hyphen/underscore `nonce`, and finite
+`expires_at_unix_ms`. The default host admission window is 60 seconds;
+embedded hosts configure it with `StagedQueryState::with_admission_window`.
+Authentication uses the same transport headers and host policy chain as
+staged requests. Nonces share the executor's atomic replay store.
+
+Raw, unchecked TypeQL: the escape hatch. Sends the TypeQL text to TypeDB
+as written and returns the driver's answer unchanged. TypeBridge does not
+parse, validate, rewrite, limit or hydrate it, and makes no promise about
+it: it can run any query in any transaction kind, including schema changes
+that break your generated models. Use a typed call or a V3 plan for
+anything TypeBridge should check. Proxy hosts still control admission:
+`on_v3_transport` authenticates, `on_v3_raw` receives the exact text and
+transaction kind before dispatch, and `on_v3_commit` observes committed
+write and schema transactions. `AuditLogInterceptor` records the raw text.
+Raw policies all run even after a refusal so auditing is preserved; the
+first refusal decides the response.
+
+Responses use [TypeDB's HTTP query-answer JSON](https://typedb.com/docs/reference/typedb-http-api/),
+with query structure disabled, preserving query type, column bindings and
+concept encoding. The same typedb-runtime serializer serves direct raw
+queries. Write and schema transactions commit once; read transactions close.
+Host `InterceptError::Refused { code }` decisions return HTTP 403 with that
+code. Malformed/admission-expired requests return HTTP 400. Provider errors
+return `{"error":"typedb_error","typedb":{"code":...,"message":...}}`.
+A write whose response policy withholds its answer reports
+`commit_outcome_unknown`; reconcile before retrying.
