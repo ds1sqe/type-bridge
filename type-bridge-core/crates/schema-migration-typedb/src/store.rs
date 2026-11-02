@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
 use type_bridge_core_lib::__internal as tql;
 
 use serde_json::Value;
@@ -15,6 +16,7 @@ use type_bridge_contract::query_plan::v3::QueryPlanV3;
 use type_bridge_contract::reserved::TYPEBRIDGE_JOURNAL_DATABASE_SUFFIX;
 use type_bridge_contract::schema::{DocumentId, ManagedSchemaState};
 use type_bridge_orm::session::DatabaseCreateOutcome;
+#[cfg(test)]
 use type_bridge_orm::session::backend::QueryResult;
 use type_bridge_orm::session::eager::EagerTransaction as Transaction;
 use type_bridge_orm::session::staged::{
@@ -44,6 +46,7 @@ use crate::control_schema::{
     RECORD_PAYLOAD, RECORD_PAYLOAD_DIGEST, RECORD_SEQUENCE, ROLLBACK_EVENT_RECORD_KIND,
     ROLLBACK_PLAN_RECORD_KIND, ROLLED_BACK_RECORD_KIND,
 };
+use crate::data_plan::{self, DataQuery};
 use crate::lease_plan::{LeasePlans, LeaseRow};
 use crate::observation::{partition_typeql_export, partition_typeql_export_lossless};
 use crate::provider::{TypeDbExecutionBinding, require_managed_state_execution_context};
@@ -1115,8 +1118,7 @@ impl<'a> TypeDbMigrationStore<'a> {
                     self.managed_database.database_name(),
                     &self.managed_scope_id,
                 )?;
-                if let Err(error) = transaction.query(&owner).await {
-                    let primary = map_orm_error(error);
+                if let Err(primary) = execute_data_plan(&mut transaction, &owner).await {
                     return Err(rollback_schema_error(
                         &mut transaction,
                         primary,
@@ -2230,7 +2232,6 @@ struct ManagedControlSnapshot {
 
 struct StoredRow {
     key: String,
-    kind: String,
     payload: Vec<u8>,
     sequence: JournalSequence,
 }
@@ -2418,61 +2419,38 @@ async fn append_record(
         )
     })?;
     let digest = payload_digest(payload.as_bytes());
-    let query = journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(
-                "control",
-                CONTROL_ENTITY,
-                &[
-                    (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-                    (LEASE_HOLDER, lease.holder().as_str()),
-                    (LEASE_FENCE, &lease.fence().get().to_string()),
-                    (LEASE_STATE, LEASE_HELD),
-                    (NEXT_SEQUENCE, &current.next_sequence.to_string()),
-                ],
-                &[],
-            )?]),
-            tql::delete(vec![tql::delete_thing("control")?]),
-            tql::insert(vec![
-                journal_pattern(
-                    "next-control",
-                    CONTROL_ENTITY,
-                    &[
-                        (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-                        (LEASE_HOLDER, lease.holder().as_str()),
-                        (LEASE_FENCE, &lease.fence().get().to_string()),
-                        (LEASE_STATE, LEASE_HELD),
-                        (NEXT_SEQUENCE, &next.to_string()),
-                    ],
-                    &[],
-                )?,
-                journal_pattern(
-                    "record",
-                    JOURNAL_ENTITY,
-                    &[
-                        (RECORD_KEY, &key),
-                        (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
-                        (RECORD_SEQUENCE, &next.to_string()),
-                        (RECORD_KIND, kind),
-                        (RECORD_PAYLOAD, payload),
-                        (RECORD_PAYLOAD_DIGEST, &digest),
-                    ],
-                    &[],
-                )?,
-            ]),
-        ]))
-    })?;
-    transaction.query(&query).await.map_err(map_orm_error)?;
-    let observed = load_active_control(transaction, lease).await?;
-    if observed.next_sequence != next {
+    let plan = data_plan::replace_and_insert(
+        CONTROL_ENTITY,
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+            (NEXT_SEQUENCE, &current.next_sequence.to_string()),
+        ],
+        &[
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (LEASE_HOLDER, lease.holder().as_str()),
+            (LEASE_FENCE, &lease.fence().get().to_string()),
+            (LEASE_STATE, LEASE_HELD),
+            (NEXT_SEQUENCE, &next.to_string()),
+        ],
+        JOURNAL_ENTITY,
+        &[
+            (RECORD_KEY, &key),
+            (CONTROL_SCOPE, lease.scope().managed_scope_id().as_str()),
+            (RECORD_SEQUENCE, &next.to_string()),
+            (RECORD_KIND, kind),
+            (RECORD_PAYLOAD, payload),
+            (RECORD_PAYLOAD_DIGEST, &digest),
+        ],
+    )?;
+    let mut answers = transaction
+        .execute_plan(&plan)
+        .await
+        .map_err(map_orm_error)?;
+    if !matches!(answers.pop(), Some(PlanAnswer::Matched(1))) || !answers.is_empty() {
         return Err(stale_fence());
-    }
-    let inserted = load_row_by_key(transaction, &key).await?;
-    if inserted.kind != kind
-        || inserted.payload != payload.as_bytes()
-        || inserted.sequence != sequence
-    {
-        return Err(record_identity_mismatch());
     }
     Ok(sequence)
 }
@@ -2516,39 +2494,6 @@ async fn load_rows(
     Ok(rows)
 }
 
-async fn load_row_by_key(
-    transaction: &mut Transaction,
-    key: &str,
-) -> Result<StoredRow, Diagnostic> {
-    let query = journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(
-                "record",
-                JOURNAL_ENTITY,
-                &[(RECORD_KEY, key)],
-                &[
-                    (RECORD_SEQUENCE, "sequence"),
-                    (RECORD_KIND, "kind"),
-                    (RECORD_PAYLOAD, "payload"),
-                    (RECORD_PAYLOAD_DIGEST, "digest"),
-                ],
-            )?]),
-            tql::fetch(vec![
-                ("key", tql::fetch_expr(tql::string(key)?)),
-                ("sequence", tql::fetch_expr(tql::var("sequence")?)),
-                ("kind", tql::fetch_expr(tql::var("kind")?)),
-                ("payload", tql::fetch_expr(tql::var("payload")?)),
-                ("digest", tql::fetch_expr(tql::var("digest")?)),
-            ])?,
-        ]))
-    })?;
-    let documents = query_documents(transaction, &query).await?;
-    if documents.len() != 1 {
-        return Err(record_identity_mismatch());
-    }
-    parse_stored_row(documents.into_iter().next().expect("length checked"))
-}
-
 fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
     let key = required_scalar(&document, "key")?;
     let kind = required_scalar(&document, "kind")?;
@@ -2579,7 +2524,6 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
     }
     Ok(StoredRow {
         key,
-        kind,
         payload,
         sequence: JournalSequence::new(canonical_u64(&required_scalar(&document, "sequence")?)?)?,
     })
@@ -2587,16 +2531,30 @@ fn parse_stored_row(document: Value) -> Result<StoredRow, Diagnostic> {
 
 async fn query_documents<T: MigrationQuery + ?Sized>(
     transaction: &mut T,
-    query: &str,
+    query: &DataQuery,
 ) -> Result<Vec<Value>, Diagnostic> {
-    match transaction.query(query).await.map_err(map_orm_error)? {
-        QueryResult::Documents(documents) | QueryResult::Rows(documents) => Ok(documents),
-        QueryResult::Ok => Err(failure(
-            DiagnosticCategory::InvalidContract,
+    let mut answers = transaction
+        .execute_plan(&query.plan)
+        .await
+        .map_err(map_orm_error)?;
+    if answers.len() != 1 {
+        return Err(failure(
+            DiagnosticCategory::Integrity,
             "migration_typedb_query_returned_no_documents",
             "TypeDB control query returned no document result",
-        )),
+        ));
     }
+    query.documents(answers.remove(0))
+}
+async fn execute_data_plan<T: MigrationQuery + ?Sized>(
+    transaction: &mut T,
+    plan: &QueryPlanV3,
+) -> Result<(), Diagnostic> {
+    transaction
+        .execute_plan(plan)
+        .await
+        .map_err(map_orm_error)?;
+    Ok(())
 }
 
 fn required_scalar(document: &Value, key: &str) -> Result<String, Diagnostic> {
@@ -2643,7 +2601,7 @@ enum LeaseWrite {
 async fn commit_lease_plan(
     database: &Database,
     plan: &QueryPlanV3,
-    settled: &str,
+    settled: &DataQuery,
 ) -> Result<LeaseWrite, Diagnostic> {
     let mut transaction =
         database.transaction(TransactionOptions::default().with_kind(TransactionKind::Write));
@@ -2687,7 +2645,7 @@ fn pending_failure(error: PendingError) -> Diagnostic {
     }
 }
 
-async fn settled_exists(database: &Database, query: &str) -> Result<bool, Diagnostic> {
+async fn settled_exists(database: &Database, query: &DataQuery) -> Result<bool, Diagnostic> {
     let mut transaction = open_read(database).await?;
     let documents = query_documents(&mut transaction, query).await;
     Ok(finish_read(&mut transaction, documents).await?.len() == 1)
@@ -2695,7 +2653,7 @@ async fn settled_exists(database: &Database, query: &str) -> Result<bool, Diagno
 
 /// The control row a lease write leaves behind: held by this holder and
 /// fence, or free at this fence.
-fn lease_state_query(lease: &MigrationLease, state: &str) -> Result<String, Diagnostic> {
+fn lease_state_query(lease: &MigrationLease, state: &str) -> Result<DataQuery, Diagnostic> {
     let scope = lease.scope().managed_scope_id().as_str();
     let fence = lease.fence().get().to_string();
     let mut fields = vec![(CONTROL_SCOPE, scope), (LEASE_FENCE, fence.as_str())];
@@ -2731,56 +2689,36 @@ async fn delete_open_plan(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<(), Diagnostic> {
-    for kind in [
-        PLAN_RECORD_KIND,
-        EVENT_RECORD_KIND,
-        BACKFILL_EVENT_RECORD_KIND,
-    ] {
-        let query = journal_query(|| {
-            Ok(tql::pipeline(vec![
-                tql::match_stage(vec![journal_pattern(
-                    "record",
-                    JOURNAL_ENTITY,
-                    &[
-                        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-                        (RECORD_KIND, kind),
-                    ],
-                    &[],
-                )?]),
-                tql::delete(vec![tql::delete_thing("record")?]),
-            ]))
-        })?;
-        transaction.query(&query).await.map_err(map_orm_error)?;
-    }
-    Ok(())
+    let plan = data_plan::delete_kinds(
+        JOURNAL_ENTITY,
+        CONTROL_SCOPE,
+        scope.managed_scope_id().as_str(),
+        RECORD_KIND,
+        &[
+            PLAN_RECORD_KIND,
+            EVENT_RECORD_KIND,
+            BACKFILL_EVENT_RECORD_KIND,
+        ],
+    )?;
+    execute_data_plan(transaction, &plan).await
 }
 
 async fn delete_open_rollback_plan(
     transaction: &mut Transaction,
     scope: &ExecutionScope,
 ) -> Result<(), Diagnostic> {
-    for kind in [
-        ROLLBACK_PLAN_RECORD_KIND,
-        ROLLBACK_EVENT_RECORD_KIND,
-        BACKFILL_EVENT_RECORD_KIND,
-    ] {
-        let query = journal_query(|| {
-            Ok(tql::pipeline(vec![
-                tql::match_stage(vec![journal_pattern(
-                    "record",
-                    JOURNAL_ENTITY,
-                    &[
-                        (CONTROL_SCOPE, scope.managed_scope_id().as_str()),
-                        (RECORD_KIND, kind),
-                    ],
-                    &[],
-                )?]),
-                tql::delete(vec![tql::delete_thing("record")?]),
-            ]))
-        })?;
-        transaction.query(&query).await.map_err(map_orm_error)?;
-    }
-    Ok(())
+    let plan = data_plan::delete_kinds(
+        JOURNAL_ENTITY,
+        CONTROL_SCOPE,
+        scope.managed_scope_id().as_str(),
+        RECORD_KIND,
+        &[
+            ROLLBACK_PLAN_RECORD_KIND,
+            ROLLBACK_EVENT_RECORD_KIND,
+            BACKFILL_EVENT_RECORD_KIND,
+        ],
+    )?;
+    execute_data_plan(transaction, &plan).await
 }
 
 async fn open_plan_exists(
@@ -3090,7 +3028,7 @@ fn journal_schema_state(export: &str) -> Result<JournalSchemaState, Diagnostic> 
 fn insert_journal_owner_query(
     managed_database_name: &str,
     managed_scope_id: &ManagedScopeId,
-) -> Result<String, Diagnostic> {
+) -> Result<QueryPlanV3, Diagnostic> {
     journal_insert(
         "owner",
         JOURNAL_OWNER_ENTITY,
@@ -3164,77 +3102,27 @@ fn control_schema_matches(
     Ok(true)
 }
 
-fn journal_query(
-    build: impl FnOnce() -> Result<tql::Query, tql::TqlError>,
-) -> Result<String, Diagnostic> {
-    build().and_then(|query| tql::render(&query)).map_err(|_| {
-        failure(
-            DiagnosticCategory::InvalidContract,
-            "migration_typedb_journal_typeql_shape",
-            "journal query cannot be lowered to TypeQL",
-        )
-    })
-}
-fn journal_pattern(
-    variable: &str,
-    kind: &str,
-    fixed: &[(&str, &str)],
-    bound: &[(&str, &str)],
-) -> Result<tql::Pattern, tql::TqlError> {
-    let mut fields = Vec::new();
-    for &(name, value) in fixed {
-        fields.push((name, tql::string(value)?));
-    }
-    for &(name, value) in bound {
-        fields.push((name, tql::var(value)?));
-    }
-    tql::entity(variable, kind, fields)
-}
 fn journal_read(
-    variable: &str,
+    _variable: &str,
     kind: &str,
     fixed: &[(&str, &str)],
     bound: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        let fields = bound
-            .iter()
-            .map(|&(_, name)| Ok((name, tql::fetch_expr(tql::var(name)?))))
-            .collect::<Result<Vec<_>, tql::TqlError>>()?;
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(variable, kind, fixed, bound)?]),
-            tql::fetch(fields)?,
-        ]))
-    })
+) -> Result<DataQuery, Diagnostic> {
+    data_plan::read(kind, fixed, bound)
 }
 fn journal_exists(
-    variable: &str,
+    _variable: &str,
     kind: &str,
     fixed: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        Ok(tql::pipeline(vec![
-            tql::match_stage(vec![journal_pattern(variable, kind, fixed, &[])?]),
-            tql::fetch(vec![(
-                "exists",
-                tql::fetch_expr(tql::literal_source("true")?),
-            )])?,
-        ]))
-    })
+) -> Result<DataQuery, Diagnostic> {
+    data_plan::read(kind, fixed, &[])
 }
 fn journal_insert(
-    variable: &str,
+    _variable: &str,
     kind: &str,
-    fixed: &[(&str, &str)],
-) -> Result<String, Diagnostic> {
-    journal_query(|| {
-        Ok(tql::pipeline(vec![tql::insert(vec![journal_pattern(
-            variable,
-            kind,
-            fixed,
-            &[],
-        )?])]))
-    })
+    fields: &[(&str, &str)],
+) -> Result<QueryPlanV3, Diagnostic> {
+    data_plan::insert(kind, fields)
 }
 
 fn payload_digest(payload: &[u8]) -> String {
@@ -3336,33 +3224,51 @@ async fn rollback_and_close(transaction: &mut Transaction) -> Result<(), OrmErro
 
 // Both concrete owners share the released fence validation without changing its API.
 trait MigrationQuery: Send {
-    fn query<'a>(
+    fn execute_plan<'a>(
         &'a mut self,
-        typeql: &'a str,
-    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>>;
+        plan: &'a QueryPlanV3,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>>;
 }
 impl MigrationQuery for Transaction {
-    fn query<'a>(
+    fn execute_plan<'a>(
         &'a mut self,
-        typeql: &'a str,
-    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>> {
-        Box::pin(Transaction::query(self, typeql))
+        plan: &'a QueryPlanV3,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>> {
+        Box::pin(async move {
+            let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+            self.execute_plans(
+                std::slice::from_ref(plan),
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
+            .await
+        })
     }
 }
 impl MigrationQuery for type_bridge_orm::OwnedTransaction {
-    fn query<'a>(
+    fn execute_plan<'a>(
         &'a mut self,
-        typeql: &'a str,
-    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<QueryResult, OrmError>> {
-        Box::pin(type_bridge_orm::OwnedTransaction::query(self, typeql))
+        plan: &'a QueryPlanV3,
+    ) -> type_bridge_orm::session::backend::BoxFuture<'a, Result<Vec<PlanAnswer>, OrmError>> {
+        Box::pin(async move {
+            let limits = type_bridge_orm::QueryExecutionResourceLimits::default();
+            self.execute_plans(
+                std::slice::from_ref(plan),
+                &limits,
+                &type_bridge_orm::AnswerCancellation::default(),
+                type_bridge_orm::QueryExecutionDeadline::for_limits(limits),
+            )
+            .await
+        })
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
 
-    #[test]
-    fn journal_control_queries_keep_released_asts() {
+    #[tokio::test]
+    async fn journal_owner_plan_preserves_released_values_and_escaping() {
         fn literal(value: &str) -> String {
             serde_json::to_string(value).unwrap()
         }
@@ -3371,7 +3277,7 @@ pub(crate) mod tests {
             managed_scope_id: &ManagedScopeId,
         ) -> String {
             format!(
-                "insert $owner isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
+                "insert $inserted0 isa {JOURNAL_OWNER_ENTITY}, has {JOURNAL_OWNER_KEY} {}, has {JOURNAL_OWNER_MANAGED_DATABASE} {}, has {JOURNAL_OWNER_MANAGED_SCOPE} {};",
                 literal(JOURNAL_OWNER_SINGLETON_KEY),
                 literal(managed_database_name),
                 literal(managed_scope_id.as_str()),
@@ -3383,6 +3289,7 @@ pub(crate) mod tests {
             baseline_insert_journal_owner_query("managed\"database", &scope_id),
         )];
         for (new, old) in cases {
+            let (new, _) = super::lease_tests::lowered(false, &new).await;
             assert!(tql::equivalent(&new, &old).unwrap(), "{new} != {old}");
         }
     }
@@ -4227,10 +4134,11 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn journal_owner_insert_is_literal_escaped_and_binds_both_identities() {
+    #[tokio::test]
+    async fn journal_owner_insert_is_literal_escaped_and_binds_both_identities() {
         let scope = ManagedScopeId::new("scope\"with-quote").unwrap();
-        let query = insert_journal_owner_query("managed\"database", &scope).unwrap();
+        let plan = insert_journal_owner_query("managed\"database", &scope).unwrap();
+        let (query, _) = super::lease_tests::lowered(false, &plan).await;
         assert!(query.contains(JOURNAL_OWNER_SINGLETON_KEY));
         assert!(query.contains("managed\\\"database"));
         assert!(query.contains("scope\\\"with-quote"));
@@ -4305,9 +4213,17 @@ pub(crate) mod tests {
             "digest": payload_digest(payload),
             "sequence": "1",
         });
-        let parsed = parse_stored_row(row).expect("backfill journal row parses");
-        assert_eq!(parsed.kind, BACKFILL_EVENT_RECORD_KIND);
+        let parsed = parse_stored_row(row.clone()).expect("backfill journal row parses");
         assert_eq!(parsed.payload, payload);
+        let mut unknown_kind = row;
+        unknown_kind["kind"] = serde_json::json!("unknown-record-kind");
+        let Err(error) = parse_stored_row(unknown_kind) else {
+            panic!("unknown journal kind must be refused")
+        };
+        assert_eq!(
+            error.code().as_str(),
+            "migration_typedb_record_kind_unknown"
+        );
     }
 }
 
@@ -4365,8 +4281,11 @@ mod lease_tests {
         fn answer(&self, typeql: &str, rows: Option<GivenRowsSpec>) -> QueryResult {
             let mut script = self.0.lock().unwrap();
             script.statements.push((typeql.to_owned(), rows));
-            if typeql.contains("fetch") {
-                QueryResult::Documents(vec![serde_json::json!({"exists": true}); script.settled])
+            if typeql.ends_with("select $root0;") {
+                QueryResult::Rows(vec![
+                    serde_json::json!({"root0":{"kind":"thing", "iid":"0x01", "type_id":{"kind":"entity", "label":CONTROL_ENTITY}}});
+                    script.settled
+                ])
             } else {
                 QueryResult::Rows(vec![serde_json::json!({}); script.matched])
             }
@@ -4483,9 +4402,13 @@ mod lease_tests {
         }
     }
 
-    async fn lowered(given: bool, plan: &QueryPlanV3) -> (String, Option<GivenRowsSpec>) {
+    pub(super) async fn lowered(
+        given: bool,
+        plan: &QueryPlanV3,
+    ) -> (String, Option<GivenRowsSpec>) {
         let script = Scripted::new(given, 1, Commit::Ok, 0);
-        commit_lease_plan(&script.database(), plan, "unused")
+        let settled = data_plan::read(CONTROL_ENTITY, &[], &[]).unwrap();
+        commit_lease_plan(&script.database(), plan, &settled)
             .await
             .unwrap();
         let mut statements = script.statements();
@@ -4619,11 +4542,11 @@ mod lease_tests {
         let fixture = Fixture::new();
         let plans = LeasePlans::journal(&profile()).unwrap();
         let plan = plans.take_over(fixture.row(), 7, Some(9), true).unwrap();
-        let settled = "match $control isa! control; fetch { \"exists\": true };";
+        let settled = data_plan::read(CONTROL_ENTITY, &[], &[]).unwrap();
 
         let lost = Scripted::new(true, 0, Commit::Ok, 0);
         assert!(matches!(
-            commit_lease_plan(&lost.database(), &plan, settled)
+            commit_lease_plan(&lost.database(), &plan, &settled)
                 .await
                 .unwrap(),
             LeaseWrite::Lost
@@ -4631,7 +4554,7 @@ mod lease_tests {
 
         // A rejected commit is definite: no reconciling read.
         let conflict = Scripted::new(true, 1, Commit::Conflict, 1);
-        let error = commit_lease_plan(&conflict.database(), &plan, settled)
+        let error = commit_lease_plan(&conflict.database(), &plan, &settled)
             .await
             .err()
             .expect("conflict fails");
@@ -4641,14 +4564,15 @@ mod lease_tests {
         // An unknown outcome is applied only when a fresh read proves it.
         let applied = Scripted::new(true, 1, Commit::Unknown, 1);
         assert!(matches!(
-            commit_lease_plan(&applied.database(), &plan, settled)
+            commit_lease_plan(&applied.database(), &plan, &settled)
                 .await
                 .unwrap(),
             LeaseWrite::Applied
         ));
-        assert_eq!(applied.statements()[1].0, settled);
+        assert!(applied.statements()[1].0.contains(CONTROL_ENTITY));
+        assert!(applied.statements()[1].0.ends_with("select $root0;"));
         let unknown = Scripted::new(true, 1, Commit::Unknown, 0);
-        let error = commit_lease_plan(&unknown.database(), &plan, settled)
+        let error = commit_lease_plan(&unknown.database(), &plan, &settled)
             .await
             .err()
             .expect("unproven outcome stays uncertain");
