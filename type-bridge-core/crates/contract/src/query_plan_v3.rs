@@ -1218,8 +1218,13 @@ fn validate_stages(
                 let retained = if stage_index == 0 {
                     None
                 } else {
-                    if rematched
-                        || matches!(spec.operation, Operation::Write { .. })
+                    let writing = matches!(spec.operation, Operation::Write { .. });
+                    if (!writing && rematched)
+                        || (writing
+                            && !matches!(
+                                read_tail.as_slice(),
+                                [ReadStage::Select { .. }, ReadStage::Distinct]
+                            ))
                         || !matches!(read_tail.first(), Some(ReadStage::Select { .. }))
                         || !read_tail
                             .iter()
@@ -1259,6 +1264,7 @@ fn validate_stages(
                     rematched = true;
                     Some(visible)
                 };
+                reading = false;
                 nonempty(patterns.len(), limits, nodes)?;
                 let reads: Vec<_> = patterns
                     .iter()

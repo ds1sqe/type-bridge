@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use support::*;
 use type_bridge_contract::codec::to_canonical_json;
 use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, QueryPlanV3, Set, Stage, decode_query_plan_v3,
+    AttachItem, DeleteItem, InsertThing, QueryPlanV3, Set, Stage, decode_query_plan_v3,
 };
 use type_bridge_contract::query_plan::{
     OrderDirection, OrderTerm, QueryOutput, QueryPattern, QueryPlan, ReadStage, ReduceAssignment,
@@ -1967,6 +1967,109 @@ fn ownership_delete_accepts_only_bound_schema_typed_optional_owners() {
             Some(code) => assert_eq!(plan.unwrap_err().code().as_str(), code),
         }
     }
+}
+
+#[test]
+fn write_rematches_keep_selected_bindings_and_admit_fresh_bindings() {
+    use type_bridge_contract::query_plan::v3::Operation;
+    let put = |target, key| Stage::Put {
+        include_subtypes: false,
+        things: vec![InsertThing {
+            binding: id(target),
+            type_id: entity("account"),
+            fields: vec![(field("id"), string(key))],
+            players: vec![],
+        }],
+    };
+    let pipeline = vec![
+        put(0, "a"),
+        Stage::Select {
+            bindings: vec![id(0)],
+        },
+        Stage::Distinct,
+        Stage::Match {
+            patterns: vec![isa(1, entity("account")).into()],
+        },
+        put(2, "b"),
+        Stage::Select {
+            bindings: vec![id(0), id(1), id(2)],
+        },
+        Stage::Distinct,
+        Stage::Match {
+            patterns: vec![isa(3, entity("account")).into()],
+        },
+        Stage::Attach {
+            items: vec![AttachItem::Has {
+                optional: false,
+                owner: id(2),
+                field: field("score"),
+                operand: literal(7),
+            }],
+        },
+    ];
+    let mut request = spec(pipeline, vec![0, 1, 2, 3]);
+    request.bindings.push(binding(3, "again"));
+    QueryPlanV3::new(request.clone(), &schema()).unwrap();
+    let mut absent = request.clone();
+    absent.pipeline[5] = Stage::Select {
+        bindings: vec![id(0), id(1)],
+    };
+    absent.output = type_bridge_contract::query_plan::QueryOutput::Rows {
+        columns: vec![id(0)],
+    };
+    assert_eq!(
+        QueryPlanV3::new(absent, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_write_unbound_target"
+    );
+    let mut reused = request.clone();
+    reused.pipeline[4] = put(0, "duplicate");
+    assert_eq!(
+        QueryPlanV3::new(reused, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_write_binding_not_fresh"
+    );
+    let mut unselected = request;
+    unselected.pipeline.drain(1..3);
+    assert_eq!(
+        QueryPlanV3::new(unselected, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_stage_order"
+    );
+    let mut read = spec(
+        vec![
+            matched(),
+            Stage::Select {
+                bindings: vec![id(0)],
+            },
+            Stage::Distinct,
+            Stage::Match {
+                patterns: vec![isa(1, entity("account")).into()],
+            },
+            Stage::Select {
+                bindings: vec![id(0), id(1)],
+            },
+            Stage::Distinct,
+            Stage::Match {
+                patterns: vec![isa(2, entity("account")).into()],
+            },
+        ],
+        vec![0],
+    );
+    read.operation = Operation::Rows;
+    assert_eq!(
+        QueryPlanV3::new(read, &schema())
+            .unwrap_err()
+            .code()
+            .as_str(),
+        "query_plan_stage_order"
+    );
 }
 
 #[test]
