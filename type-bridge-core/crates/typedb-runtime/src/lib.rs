@@ -36,6 +36,10 @@ use typedb_driver::{
     TransactionType as B9TransactionType, TypeDBDriver as B9Driver,
 };
 
+/// Unchecked raw TypeQL with the provider's HTTP query-answer encoding.
+#[cfg(feature = "band9")]
+pub mod raw;
+
 /// Typed provider failure classification and redaction.
 pub mod failure;
 use failure::{Failure, redact_provider_error, redacted_failure};
