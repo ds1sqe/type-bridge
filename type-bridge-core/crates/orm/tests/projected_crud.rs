@@ -761,7 +761,13 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
         "_role_0_iid": "0x10", "_role_0_type": "person", "_role_0_attributes": {"identifier": "ada"},
         "_role_1_iid": "0x11", "_role_1_type": "person", "_role_1_attributes": {"identifier": "bob"}
     });
-    for operation in ["update", "controlled_update", "put", "delete_returning"] {
+    for operation in [
+        "update",
+        "controlled_update",
+        "put",
+        "controlled_put",
+        "delete_returning",
+    ] {
         for borrowed in [false, true] {
             let mut responses = Vec::new();
             responses.push(documents(vec![document.clone()]));
@@ -783,6 +789,15 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
                         .update_relation_in_transaction_controlled(
                             &transaction,
                             "0x20",
+                            &create,
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "controlled_put" => executor
+                        .put_relation_in_transaction_controlled(
+                            &transaction,
                             &create,
                             QueryExecutionResourceLimits::default(),
                             AnswerCancellation::default(),
@@ -833,6 +848,15 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
                         )
                         .await
                         .map(|_| ()),
+                    "controlled_put" => executor
+                        .put_relation_controlled(
+                            &database,
+                            &create,
+                            QueryExecutionResourceLimits::default(),
+                            AnswerCancellation::default(),
+                        )
+                        .await
+                        .map(|_| ()),
                     "put" => executor.put_relation(&database, &create).await.map(|_| ()),
                     _ => executor
                         .delete_relation_by_iid_returning(&database, &relation, "0x20")
@@ -859,7 +883,7 @@ async fn single_relation_writes_refuse_stale_ordered_players_and_preserve_transa
                 "{operation} borrowed={borrowed}"
             );
             let modes = match operation {
-                "put" => vec!["given"],
+                "put" | "controlled_put" => vec!["given"],
                 "delete_returning" => vec!["given", "given"],
                 _ => vec!["canonical"],
             };

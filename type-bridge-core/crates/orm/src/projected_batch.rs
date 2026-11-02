@@ -878,6 +878,17 @@ impl<'batch> PreparedProjectedBatchInvocation<'batch> {
         Ok(prepared)
     }
 
+    // A canonical cut changes dispatch without restarting the captured control.
+    pub(crate) fn into_control(self) -> ProjectedBatchInvocationControl {
+        ProjectedBatchInvocationControl {
+            limits: self.limits,
+            deadline: self.deadline,
+            cancellation: self.cancellation,
+            #[cfg(test)]
+            reference_checks_until_cancel: AtomicUsize::new(usize::MAX),
+        }
+    }
+
     /// Return the immutable batch.
     #[must_use]
     pub const fn batch(&self) -> &'batch ProjectedBatch {

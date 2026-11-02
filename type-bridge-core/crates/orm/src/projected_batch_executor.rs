@@ -451,21 +451,6 @@ fn empty_result(operation: ProjectedBatchOperation) -> ProjectedBatchResult {
     }
 }
 
-pub(crate) fn require_given_capability(
-    supported: bool,
-) -> std::result::Result<(), SdkExecutionDiagnostic> {
-    if supported {
-        Ok(())
-    } else {
-        Err(SdkExecutionDiagnostic::unsupported_capability(
-            code("projected_batch_transport_unsupported"),
-            message(
-                "Projected batch execution requires TypeDB 3.12 and band-9 scalar GivenRows transport",
-            ),
-        ))
-    }
-}
-
 pub(crate) fn require_native_provider(
     version: Option<type_bridge_core_lib::version::Version>,
 ) -> std::result::Result<(), SdkExecutionDiagnostic> {

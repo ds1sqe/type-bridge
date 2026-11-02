@@ -818,7 +818,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             ProjectedBatchExecutor::new(self.installed)
                 .returning_deleted()
                 .execute_mapped(database, batch, control, None, move |result| {
-                    single_batch_deleted_thing(result, &model)
+                    single_batch_optional_thing(result, &model)
                 }),
         )
         .await
@@ -835,7 +835,7 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
             ProjectedBatchExecutor::new(self.installed)
                 .returning_deleted()
                 .execute_in_transaction_mapped(transaction, batch, control, None, move |result| {
-                    single_batch_deleted_thing(result, &model)
+                    single_batch_optional_thing(result, &model)
                 }),
         )
         .await
@@ -1336,14 +1336,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Put,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing(database, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Database(database),
+            &batch,
+            control,
+        ))
+        .await
     }
 
     /// Execute one policy-aware entity put in a borrowed write transaction.
@@ -1373,14 +1377,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Entity)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Put,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing_in_transaction(transaction, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Transaction(transaction),
+            &batch,
+            control,
+        ))
+        .await
     }
 
     /// Execute one policy-aware entity replacement in an owned write transaction.
@@ -1674,14 +1682,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Put,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing(database, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Database(database),
+            &batch,
+            control,
+        ))
+        .await
     }
 
     /// Execute one policy-aware relation put in a borrowed write transaction.
@@ -1711,14 +1723,18 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
         self.require_exact_model(input.type_id(), TypeKind::Relation)?;
         control.check()?;
-        let batch = self.single_controlled_batch(
+        let batch = self.single_controlled_write_batch(
             input.type_id(),
             ProjectedBatchOperation::Put,
             ProjectedBatchRow::Create(input.clone()),
             &control,
         )?;
-        self.execute_controlled_single_thing_in_transaction(transaction, &batch, control)
-            .await
+        Box::pin(self.execute_controlled_single_write(
+            controlled_update::WriteTarget::Transaction(transaction),
+            &batch,
+            control,
+        ))
+        .await
     }
 
     /// Execute one policy-aware relation replacement in an owned write transaction.
@@ -2771,45 +2787,6 @@ impl<'projection> ProjectedCrudExecutor<'projection> {
     }
 
     // Box only controlled execution so default single-CRUD futures stay small.
-    async fn execute_controlled_single_thing(
-        &self,
-        database: &Database,
-        batch: &ProjectedBatch,
-        control: ProjectedBatchInvocationControl,
-    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let model = batch.model().clone();
-        let mapper_model = model.clone();
-        Box::pin(ProjectedBatchExecutor::new(self.installed).execute_mapped(
-            database,
-            batch,
-            control,
-            None,
-            move |result| single_batch_thing(result, &mapper_model).map(Some),
-        ))
-        .await?
-        .ok_or_else(|| single_batch_result_invalid(&model))
-    }
-
-    async fn execute_controlled_single_thing_in_transaction(
-        &self,
-        transaction: &TransactionContext,
-        batch: &ProjectedBatch,
-        control: ProjectedBatchInvocationControl,
-    ) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-        let model = batch.model().clone();
-        let mapper_model = model.clone();
-        Box::pin(
-            ProjectedBatchExecutor::new(self.installed).execute_in_transaction_mapped(
-                transaction,
-                batch,
-                control,
-                None,
-                move |result| single_batch_thing(result, &mapper_model).map(Some),
-            ),
-        )
-        .await?
-        .ok_or_else(|| single_batch_result_invalid(&model))
-    }
 
     async fn execute_controlled_single_delete(
         &self,
@@ -5117,22 +5094,7 @@ impl ControlledCrudLedger {
     }
 }
 
-fn single_batch_thing(
-    result: ProjectedBatchResult,
-    type_id: &TypeId,
-) -> Result<ProjectedThing, SdkExecutionDiagnostic> {
-    let ProjectedBatchResult::Things(mut things) = result else {
-        return Err(single_batch_result_invalid(type_id));
-    };
-    if things.len() != 1 {
-        return Err(single_batch_result_invalid(type_id));
-    }
-    things
-        .pop()
-        .ok_or_else(|| single_batch_result_invalid(type_id))
-}
-
-fn single_batch_deleted_thing(
+fn single_batch_optional_thing(
     result: ProjectedBatchResult,
     type_id: &TypeId,
 ) -> Result<Option<ProjectedThing>, SdkExecutionDiagnostic> {
