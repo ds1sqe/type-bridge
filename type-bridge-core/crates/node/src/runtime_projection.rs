@@ -54,15 +54,15 @@ use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::{
     AnswerCancellation, AttributeValue, Database, HydratedAttribute, InstalledRuntimeProjection,
-    ManagerLookup, ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
-    ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
-    ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCrudExecutor,
-    ProjectedManagerComparison, ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-    ProjectedManagerFilterInvocationControl, ProjectedReference, ProjectedRolePlayer,
-    ProjectedStructValue, ProjectedThing, ProviderRuntimeOwner, QueryExecutionResourceLimits,
-    QueryTarget, ThingKind, TransactionContext, TransactionContextState, ValueType,
-    resolve_generated_manager_lookup, validate_projected_create_member_count,
-    validate_projected_hydrated_member_count,
+    ManagerLookup, OwnedQueryTarget, ProjectedAttributeValue, ProjectedBatch,
+    ProjectedBatchExecutor, ProjectedBatchInvocationControl, ProjectedBatchOperation,
+    ProjectedBatchResult, ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate,
+    ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
+    ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, ProjectedReference,
+    ProjectedRolePlayer, ProjectedStructValue, ProjectedThing, ProviderRuntimeOwner,
+    QueryExecutionResourceLimits, QueryTarget, ThingKind, TransactionContext,
+    TransactionContextState, ValueType, resolve_generated_manager_lookup,
+    validate_projected_create_member_count, validate_projected_hydrated_member_count,
 };
 use type_bridge_schema::VerifiedSchemaAuthority;
 use type_bridge_schema::{decode_schema_authority, schema_authority_capability_vocabulary};
@@ -2269,8 +2269,7 @@ impl NodeRuntimeProjection {
             transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
-            database: Some(database),
-            transaction: None,
+            target: Some(OwnedQueryTarget::Database(database)),
             successor_batch_marker: None,
             runtime,
             filters: vec![],
@@ -2292,8 +2291,7 @@ impl NodeRuntimeProjection {
             transaction_supports_given_stage,
             package: Arc::clone(&self.package),
             type_id,
-            database: None,
-            transaction: Some(transaction),
+            target: Some(OwnedQueryTarget::Transaction(transaction)),
             successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
@@ -3196,8 +3194,7 @@ pub struct NodeProjectedModelManager {
     transaction_supports_given_stage: bool,
     package: Arc<InstalledPackage>,
     type_id: TypeId,
-    database: Option<Arc<Database>>,
-    transaction: Option<TransactionContext>,
+    target: Option<OwnedQueryTarget>,
     successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
@@ -3208,8 +3205,7 @@ pub struct NodeProjectedModelManager {
 pub struct NodeProjectedManagerFilter {
     package: Arc<InstalledPackage>,
     filter: ProjectedManagerFilter,
-    database: Option<Arc<Database>>,
-    transaction: Option<TransactionContext>,
+    target: Option<OwnedQueryTarget>,
     runtime: Arc<ProviderRuntimeOwner>,
 }
 
@@ -3246,8 +3242,7 @@ impl NodeProjectedManagerFilter {
         Ok(Self {
             package: Arc::clone(&self.package),
             filter,
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
         })
     }
@@ -3313,13 +3308,10 @@ impl NodeProjectedManagerFilter {
 
 impl NodeProjectedManagerFilter {
     fn target(&self) -> napi::Result<QueryTarget<'_>> {
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => Ok(QueryTarget::Database(database)),
-            (None, Some(transaction)) => Ok(QueryTarget::Transaction(transaction)),
-            _ => Err(runtime_error(
-                "projected manager filter has no execution target",
-            )),
-        }
+        self.target
+            .as_ref()
+            .map(OwnedQueryTarget::as_target)
+            .ok_or_else(|| runtime_error("projected manager filter has no execution target"))
     }
 
     fn control(&self) -> ProjectedManagerFilterInvocationControl {
@@ -3368,7 +3360,7 @@ impl NodeProjectedModelManager {
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => self
                 .runtime
                 .block_on(executor.insert_entity(database, &instance)),
@@ -3399,7 +3391,7 @@ impl NodeProjectedModelManager {
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => self
                 .runtime
                 .block_on(executor.put_entity(database, &instance)),
@@ -3431,7 +3423,7 @@ impl NodeProjectedModelManager {
                 .map_err(RawProjectedBindingError::into_napi)?;
         let instance = self.projected_create_input(&instance_json, &proofs)?;
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => self
                 .runtime
                 .block_on(executor.update_entity(database, &iid, &instance)),
@@ -3529,7 +3521,7 @@ impl NodeProjectedModelManager {
             ));
         }
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let projected = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let projected = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => self
                 .runtime
                 .block_on(executor.get_entity_by_iid(database, &self.type_id, &iid)),
@@ -3780,8 +3772,7 @@ impl NodeProjectedModelManager {
         Ok(NodeProjectedManagerFilter {
             package: Arc::clone(&self.package),
             filter,
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
         })
     }
@@ -3811,8 +3802,7 @@ impl NodeProjectedModelManager {
         Ok(Self {
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             transaction_supports_given_stage: self.transaction_supports_given_stage,
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
@@ -3841,8 +3831,7 @@ impl NodeProjectedModelManager {
         Ok(Self {
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             transaction_supports_given_stage: self.transaction_supports_given_stage,
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
@@ -3956,6 +3945,16 @@ impl NodeProjectedModelManager {
 }
 
 impl NodeProjectedModelManager {
+    #[inline]
+    fn database(&self) -> Option<&Arc<Database>> {
+        self.target.as_ref().and_then(OwnedQueryTarget::database)
+    }
+
+    #[inline]
+    fn transaction(&self) -> Option<&TransactionContext> {
+        self.target.as_ref().and_then(OwnedQueryTarget::transaction)
+    }
+
     fn require_successor_batch_runtime(&self) -> napi::Result<()> {
         if !projection_uses_ordered_collections(self.package.projection.projection()) {
             return Err(invalid_error(
@@ -4027,7 +4026,7 @@ impl NodeProjectedModelManager {
         } else {
             executor
         };
-        match (&self.database, &self.transaction) {
+        match (self.database(), self.transaction()) {
             (Some(database), None) => self
                 .runtime
                 .block_on(executor.execute_mapped(database, batch, control, empty, mapper)),
@@ -4214,7 +4213,7 @@ impl NodeProjectedModelManager {
         &self,
         descriptor: Arc<EntityDescriptor>,
     ) -> napi::Result<DynamicEntityManager<'_>> {
-        if let Some(transaction) = &self.transaction {
+        if let Some(transaction) = self.transaction() {
             let manager = DynamicEntityManager::with_registry_transaction(
                 transaction.clone(),
                 self.package
@@ -4230,8 +4229,7 @@ impl NodeProjectedModelManager {
             });
         }
         let database = self
-            .database
-            .as_ref()
+            .database()
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
         Ok(DynamicEntityManager::from_registry(
             database.as_ref(),
@@ -4247,7 +4245,7 @@ impl NodeProjectedModelManager {
         &self,
         descriptor: Arc<RelationDescriptor>,
     ) -> napi::Result<DynamicRelationManager<'_>> {
-        if let Some(transaction) = &self.transaction {
+        if let Some(transaction) = self.transaction() {
             let manager = DynamicRelationManager::with_registry_transaction(
                 transaction.clone(),
                 self.package
@@ -4263,8 +4261,7 @@ impl NodeProjectedModelManager {
             });
         }
         let database = self
-            .database
-            .as_ref()
+            .database()
             .ok_or_else(|| runtime_error("projected manager has no execution target"))?;
         Ok(DynamicRelationManager::from_registry(
             database.as_ref(),
@@ -7549,8 +7546,7 @@ entities:
             transaction_supports_given_stage: false,
             package: Arc::clone(&runtime.package),
             type_id,
-            database: None,
-            transaction: None,
+            target: None,
             successor_batch_marker: None,
             runtime: Arc::new(
                 ProviderRuntimeOwner::new().expect("provider runtime should start for native test"),
@@ -8081,8 +8077,10 @@ entities:
                 transaction_supports_given_stage: false,
                 package: Arc::clone(&projection.package),
                 type_id: TypeId::new(TypeKind::Entity, "group").unwrap(),
-                database: (!borrowed).then(|| Arc::clone(&database)),
-                transaction: transaction.clone(),
+                target: Some(match &transaction {
+                    Some(transaction) => OwnedQueryTarget::Transaction(transaction.clone()),
+                    None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                }),
                 successor_batch_marker: marker.clone(),
                 runtime: Arc::clone(&runtime),
                 filters: Vec::new(),
@@ -8225,8 +8223,10 @@ entities:
                         transaction_supports_given_stage: false,
                         package: Arc::clone(&runtime_projection.package),
                         type_id: type_id.clone(),
-                        database: (!borrowed).then(|| Arc::clone(&database)),
-                        transaction: transaction.clone(),
+                        target: Some(match &transaction {
+                            Some(transaction) => OwnedQueryTarget::Transaction(transaction.clone()),
+                            None => OwnedQueryTarget::Database(Arc::clone(&database)),
+                        }),
                         successor_batch_marker: marker.clone(),
                         runtime: Arc::clone(&provider_runtime),
                         filters: Vec::new(),

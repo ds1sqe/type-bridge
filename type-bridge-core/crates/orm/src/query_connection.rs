@@ -644,6 +644,52 @@ impl ProxyQueryConnection {
     }
 }
 
+/// Retained connection target for generated native manager handles.
+/// Cloning shares the connection or transaction owner without copying schema state.
+#[doc(hidden)]
+#[derive(Clone)]
+pub enum OwnedQueryTarget {
+    /// An owned direct connection handle.
+    Database(Arc<Database>),
+    /// A retained caller-owned context; manager calls do not consume it.
+    Transaction(TransactionContext),
+    /// An owned proxy connection handle.
+    Proxy(Arc<ProxyQueryConnection>),
+}
+
+impl OwnedQueryTarget {
+    /// Borrow the target for execution through the common terminal executor.
+    #[inline]
+    #[must_use]
+    pub fn as_target(&self) -> QueryTarget<'_> {
+        match self {
+            Self::Database(database) => QueryTarget::Database(database),
+            Self::Transaction(transaction) => QueryTarget::Transaction(transaction),
+            Self::Proxy(proxy) => QueryTarget::Proxy(proxy),
+        }
+    }
+
+    /// Borrow the direct owner for existing direct-only operations.
+    #[inline]
+    #[must_use]
+    pub fn database(&self) -> Option<&Arc<Database>> {
+        match self {
+            Self::Database(database) => Some(database),
+            _ => None,
+        }
+    }
+
+    /// Borrow the context owner for existing borrowed operations.
+    #[inline]
+    #[must_use]
+    pub fn transaction(&self) -> Option<&TransactionContext> {
+        match self {
+            Self::Transaction(transaction) => Some(transaction),
+            _ => None,
+        }
+    }
+}
+
 /// Where one terminal runs.
 #[derive(Clone, Copy)]
 pub enum QueryTarget<'a> {

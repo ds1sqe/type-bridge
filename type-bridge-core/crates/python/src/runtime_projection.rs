@@ -55,7 +55,7 @@ use type_bridge_orm::session::{Database, TransactionContext, TransactionContextS
 use type_bridge_orm::value::AttributeValue;
 use type_bridge_orm::{
     AnswerCancellation, HydratedAttribute, HydratedRolePlayer, HydratedThing, ManagerLookup,
-    ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
+    OwnedQueryTarget, ProjectedAttributeValue, ProjectedBatch, ProjectedBatchExecutor,
     ProjectedBatchInvocationControl, ProjectedBatchOperation, ProjectedBatchResult,
     ProjectedBatchRow, ProjectedCodecValue, ProjectedCreate, ProjectedCreateBudget,
     ProjectedCrudExecutor, ProjectedManagerComparison, ProjectedManagerFilter,
@@ -1697,8 +1697,7 @@ impl PyRuntimeProjection {
             transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
-            database: Some(database),
-            transaction: None,
+            target: Some(OwnedQueryTarget::Database(database)),
             successor_batch_marker: None,
             runtime,
             filters: vec![],
@@ -1727,8 +1726,7 @@ impl PyRuntimeProjection {
             transaction_supports_given_stage: supports_given_stage,
             package: Arc::clone(&self.package),
             type_id,
-            database: None,
-            transaction: Some(transaction),
+            target: Some(OwnedQueryTarget::Transaction(transaction)),
             successor_batch_marker: Some(successor_batch_marker),
             runtime,
             filters: vec![],
@@ -2552,8 +2550,7 @@ pub struct PyProjectedModelManager {
     transaction_supports_given_stage: bool,
     package: Arc<InstalledPackage>,
     type_id: TypeId,
-    database: Option<Arc<Database>>,
-    transaction: Option<TransactionContext>,
+    target: Option<OwnedQueryTarget>,
     successor_batch_marker: Option<Arc<AtomicBool>>,
     runtime: Arc<ProviderRuntimeOwner>,
     filters: Vec<DynamicExpr>,
@@ -2564,8 +2561,7 @@ pub struct PyProjectedModelManager {
 #[pyclass]
 pub struct PyProjectedManagerFilter {
     package: Arc<InstalledPackage>,
-    database: Option<Arc<Database>>,
-    transaction: Option<TransactionContext>,
+    target: Option<OwnedQueryTarget>,
     runtime: Arc<ProviderRuntimeOwner>,
     filter: ProjectedManagerFilter,
 }
@@ -2625,8 +2621,7 @@ impl PyProjectedManagerFilter {
             .map_err(py_sdk_diagnostic)?;
         Ok(Self {
             package: Arc::clone(&self.package),
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
             filter,
         })
@@ -2707,11 +2702,10 @@ impl PyProjectedManagerFilter {
 
 impl PyProjectedManagerFilter {
     fn target(&self) -> PyResult<QueryTarget<'_>> {
-        match (&self.database, &self.transaction) {
-            (Some(database), None) => Ok(QueryTarget::Database(database)),
-            (None, Some(transaction)) => Ok(QueryTarget::Transaction(transaction)),
-            _ => Err(py_runtime_error("projected filter has no execution target")),
-        }
+        self.target
+            .as_ref()
+            .map(OwnedQueryTarget::as_target)
+            .ok_or_else(|| py_runtime_error("projected filter has no execution target"))
     }
 
     fn control(&self) -> ProjectedManagerFilterInvocationControl {
@@ -2727,8 +2721,7 @@ impl PyProjectedModelManager {
     /// Start a distinct persistent canonical filter for this exact model.
     fn canonical_filter(&self) -> PyResult<PyProjectedManagerFilter> {
         if self
-            .transaction
-            .as_ref()
+            .transaction()
             .is_some_and(|transaction| transaction.tx_type() != type_bridge_orm::TxType::Read)
         {
             let diagnostic = SdkExecutionDiagnostic::invalid_input(
@@ -2750,8 +2743,7 @@ impl PyProjectedModelManager {
                 .map_err(py_sdk_diagnostic)?;
         Ok(PyProjectedManagerFilter {
             package: Arc::clone(&self.package),
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
             filter,
         })
@@ -3254,8 +3246,7 @@ impl PyProjectedModelManager {
             transaction_supports_given_stage: self.transaction_supports_given_stage,
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             successor_batch_marker: self.successor_batch_marker.clone(),
             runtime: Arc::clone(&self.runtime),
             filters: combined,
@@ -3447,14 +3438,23 @@ impl PyProjectedModelManager {
 }
 
 impl PyProjectedModelManager {
+    #[inline]
+    fn database(&self) -> Option<&Arc<Database>> {
+        self.target.as_ref().and_then(OwnedQueryTarget::database)
+    }
+
+    #[inline]
+    fn transaction(&self) -> Option<&TransactionContext> {
+        self.target.as_ref().and_then(OwnedQueryTarget::transaction)
+    }
+
     fn compatibility_filter_handle(
         &self,
         filter: ProjectedManagerFilter,
     ) -> PyProjectedManagerFilter {
         PyProjectedManagerFilter {
             package: Arc::clone(&self.package),
-            database: self.database.clone(),
-            transaction: self.transaction.clone(),
+            target: self.target.clone(),
             runtime: Arc::clone(&self.runtime),
             filter,
         }
@@ -3471,7 +3471,7 @@ impl PyProjectedModelManager {
         input: &ProjectedCreate,
     ) -> PyResult<ProjectedThing> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
                 py,
                 self.runtime.as_ref(),
@@ -3503,7 +3503,7 @@ impl PyProjectedModelManager {
 
     fn put_projected(&self, py: Python<'_>, input: &ProjectedCreate) -> PyResult<ProjectedThing> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
                 py,
                 self.runtime.as_ref(),
@@ -3540,7 +3540,7 @@ impl PyProjectedModelManager {
         input: &ProjectedCreate,
     ) -> PyResult<ProjectedThing> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
                 py,
                 self.runtime.as_ref(),
@@ -3575,7 +3575,7 @@ impl PyProjectedModelManager {
     fn delete_projected(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
         let type_id = &self.type_id;
-        let result = match (type_id.kind(), &self.database, &self.transaction) {
+        let result = match (type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
                 py,
                 self.runtime.as_ref(),
@@ -3607,7 +3607,7 @@ impl PyProjectedModelManager {
 
     fn get_projected(&self, py: Python<'_>, iid: &str) -> PyResult<Option<ProjectedThing>> {
         let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let result = match (self.type_id.kind(), &self.database, &self.transaction) {
+        let result = match (self.type_id.kind(), self.database(), self.transaction()) {
             (TypeKind::Entity, Some(database), None) => provider_block_on(
                 py,
                 self.runtime.as_ref(),
@@ -3758,8 +3758,8 @@ impl PyProjectedModelManager {
         let package = Arc::clone(&self.package);
         let type_id = self.type_id.clone();
         let slots = self.package.batch_slots(&self.type_id)?;
-        let database = self.database.clone();
-        let transaction = self.transaction.clone();
+        let database = self.database().cloned();
+        let transaction = self.transaction().cloned();
         let successor_batch_marker = self.successor_batch_marker.clone();
         let runtime = Arc::clone(&self.runtime);
         provider_block_on_with_gil(py, runtime.as_ref(), move |py| {
@@ -4022,8 +4022,8 @@ impl PyProjectedModelManager {
         let (batch, control) = self.prepare_delete_batch(iids)?;
         let package = Arc::clone(&self.package);
         let callback_free = self.uses_successor_runtime();
-        let database = self.database.clone();
-        let transaction = self.transaction.clone();
+        let database = self.database().cloned();
+        let transaction = self.transaction().cloned();
         let marker = self.successor_batch_marker.clone();
         provider_block_on_with_gil(py, self.runtime.as_ref(), move |py| {
             Box::pin(async move {
@@ -4098,7 +4098,7 @@ impl PyProjectedModelManager {
     fn delete_many_projected(&self, py: Python<'_>, iids: Vec<String>) -> PyResult<()> {
         let (batch, control) = self.prepare_delete_batch(iids)?;
         if !batch.is_empty()
-            && let Some(transaction) = &self.transaction
+            && let Some(transaction) = self.transaction()
         {
             let transaction = transaction.clone();
             let runtime = Arc::clone(&self.runtime);
@@ -4157,7 +4157,7 @@ impl PyProjectedModelManager {
         F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic> + Send,
     {
         let executor = ProjectedBatchExecutor::new(self.package.projection.as_ref());
-        match (&self.database, &self.transaction) {
+        match (self.database(), self.transaction()) {
             (Some(database), None) => provider_block_on(
                 py,
                 self.runtime.as_ref(),
@@ -4224,7 +4224,7 @@ impl PyProjectedModelManager {
         &self,
         descriptor: Arc<EntityDescriptor>,
     ) -> PyResult<DynamicEntityManager<'_>> {
-        if let Some(transaction) = &self.transaction {
+        if let Some(transaction) = self.transaction() {
             let manager = DynamicEntityManager::with_registry_transaction(
                 transaction.clone(),
                 self.package
@@ -4240,8 +4240,7 @@ impl PyProjectedModelManager {
             });
         }
         let database = self
-            .database
-            .as_ref()
+            .database()
             .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
         Ok(DynamicEntityManager::from_registry(
             database.as_ref(),
@@ -4257,7 +4256,7 @@ impl PyProjectedModelManager {
         &self,
         descriptor: Arc<RelationDescriptor>,
     ) -> PyResult<DynamicRelationManager<'_>> {
-        if let Some(transaction) = &self.transaction {
+        if let Some(transaction) = self.transaction() {
             let manager = DynamicRelationManager::with_registry_transaction(
                 transaction.clone(),
                 self.package
@@ -4273,8 +4272,7 @@ impl PyProjectedModelManager {
             });
         }
         let database = self
-            .database
-            .as_ref()
+            .database()
             .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
         Ok(DynamicRelationManager::from_registry(
             database.as_ref(),
@@ -11534,8 +11532,12 @@ class StructBase:
             transaction_supports_given_stage: false,
             package,
             type_id,
-            database,
-            transaction,
+            target: match (database, transaction) {
+                (Some(database), None) => Some(OwnedQueryTarget::Database(database)),
+                (None, Some(transaction)) => Some(OwnedQueryTarget::Transaction(transaction)),
+                (None, None) => None,
+                _ => panic!("one manager target"),
+            },
             successor_batch_marker,
             runtime,
             filters: vec![],
@@ -11643,8 +11645,7 @@ class StructBase:
                 ProjectedManagerFilter::try_new(&package.projection, switch_id).unwrap();
             let switch_filter = PyProjectedManagerFilter {
                 package: Arc::clone(&package),
-                database: None,
-                transaction: None,
+                target: None,
                 runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
                 filter: switch_filter,
             };
@@ -12492,8 +12493,7 @@ class StructBase:
                 transaction_supports_given_stage: false,
                 package,
                 type_id: person_id,
-                database: None,
-                transaction: None,
+                target: None,
                 successor_batch_marker: None,
                 runtime: Arc::new(
                     ProviderRuntimeOwner::new().expect("provider runtime should start"),
@@ -15394,8 +15394,7 @@ def failing_initialize(target, original):
                         .type_by_label("person", TypeKind::Entity)
                         .unwrap()
                         .clone(),
-                    database: None,
-                    transaction: Some(transaction.clone()),
+                    target: Some(OwnedQueryTarget::Transaction(transaction.clone())),
                     successor_batch_marker: Some(Arc::clone(&marker)),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
@@ -15497,8 +15496,7 @@ def failing_initialize(target, original):
                         transaction_supports_given_stage: false,
                         package: Arc::clone(&package),
                         type_id: package.type_by_label(label, kind).unwrap().clone(),
-                        database: None,
-                        transaction: Some(transaction.clone()),
+                        target: Some(OwnedQueryTarget::Transaction(transaction.clone())),
                         successor_batch_marker: Some(Arc::clone(&marker)),
                         runtime: Arc::clone(&runtime),
                         filters: Vec::new(),
@@ -15681,8 +15679,7 @@ def failing_initialize(target, original):
                         .type_by_label("person", TypeKind::Entity)
                         .unwrap()
                         .clone(),
-                    database: None,
-                    transaction: Some(transaction),
+                    target: Some(OwnedQueryTarget::Transaction(transaction)),
                     successor_batch_marker: Some(Arc::clone(&marker)),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
@@ -15771,8 +15768,7 @@ def failing_initialize(target, original):
                         .type_by_label("person", TypeKind::Entity)
                         .unwrap()
                         .clone(),
-                    database: None,
-                    transaction: Some(transaction),
+                    target: Some(OwnedQueryTarget::Transaction(transaction)),
                     successor_batch_marker: Some(Arc::clone(&marker)),
                     runtime: Arc::clone(&runtime),
                     filters: Vec::new(),
@@ -17743,8 +17739,7 @@ class CyclicFinalizer:
                 transaction_supports_given_stage: false,
                 package: Arc::clone(&package),
                 type_id,
-                database: None,
-                transaction: None,
+                target: None,
                 successor_batch_marker: None,
                 runtime: Arc::new(
                     ProviderRuntimeOwner::new().expect("provider runtime should start"),

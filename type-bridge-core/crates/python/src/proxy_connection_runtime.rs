@@ -29,13 +29,13 @@ use type_bridge_orm::session::staged::TransactionOptions;
 /// One connection to a TypeBridge server reached over its HTTP routes.
 #[pyclass(name = "ProxyConnection", frozen)]
 pub(crate) struct PyProxyConnection {
-    connection: ProxyQueryConnection,
+    connection: Arc<ProxyQueryConnection>,
     runtime: Arc<ProviderRuntimeOwner>,
     authority: Arc<QueryAuthority>,
 }
 
 impl PyProxyConnection {
-    pub(crate) const fn connection(&self) -> &ProxyQueryConnection {
+    pub(crate) fn connection(&self) -> &ProxyQueryConnection {
         &self.connection
     }
 
@@ -83,7 +83,10 @@ impl PyProxyConnection {
         admission_window_milliseconds: std::num::NonZeroU64,
         query_limits: Option<PyRef<'_, PyQueryLimits>>,
     ) -> PyResult<Self> {
-        let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        let query_limits = query_limits
+            .map(|limits| limits.inner().validate_v3())
+            .transpose()
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         let tls = direct_tls_from_python(tls_mode, tls_root_ca)?;
         let endpoint = headers.into_iter().flatten().fold(
             ProxyEndpoint::new(endpoint).tls(tls),
@@ -135,7 +138,9 @@ impl PyProxyConnection {
         .map_err(py_sdk_diagnostic)?
         .with_admission_window_milliseconds(admission_window_milliseconds);
         let connection = match query_limits {
-            Some(limits) => connection.with_query_limits(limits).map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
+            Some(limits) => connection
+                .with_query_limits(limits)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?,
             None => connection,
         };
         // A pinned staged advertisement must name the same executor and
@@ -147,7 +152,7 @@ impl PyProxyConnection {
             None => connection,
         };
         Ok(Self {
-            connection,
+            connection: Arc::new(connection),
             runtime,
             authority: authority.authority(),
         })
@@ -199,7 +204,7 @@ impl PyProxyConnection {
 
     /// The ceiling every terminal on this connection is constrained by.
     #[getter]
-    const fn answer_limits(&self) -> PyQueryExecutionResourceLimits {
+    fn answer_limits(&self) -> PyQueryExecutionResourceLimits {
         PyQueryExecutionResourceLimits::from_inner(self.connection.answer_limits())
     }
 }

@@ -173,7 +173,7 @@ pub use projected_query::{
 };
 pub use provider_runtime::ProviderRuntimeOwner;
 pub use query::{EntityQuery, GroupByEntityQuery, GroupByRelationQuery, RelationQuery};
-pub use query_connection::{ProxyQueryConnection, QueryTarget, QueryTargetError};
+pub use query_connection::{OwnedQueryTarget, ProxyQueryConnection, QueryTarget, QueryTargetError};
 pub use query_execution_limits::{
     AnswerTransport, DEFAULT_DIRECT_QUERY_ATTRIBUTE_VALUES, DEFAULT_DIRECT_QUERY_BYTES,
     DEFAULT_DIRECT_QUERY_COLLECTION_MEMBERS, DEFAULT_DIRECT_QUERY_GRAPH_NODES,
