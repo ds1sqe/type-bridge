@@ -161,7 +161,9 @@ All notable changes to TypeBridge will be documented in this file.
   `create_router_with_v2`, `/v2/query`, `/v2/capabilities`, and the
   `v2_smoke_server` example; use `transport::v3::create_v3_router` and
   `/v3/staged` or `/v3/capabilities`. `V2QueryState` moves to
-  `transport::staged_state::StagedQueryState`.
+  `transport::staged_state::StagedQueryState`. `RemoteReplayStore`,
+  `InMemoryReplayStore`, and `ReplayStoreError` move from `transport::v2`
+  to `transport::staged_state`.
 
 - Native Python `PyRustDatabase` and `PyRustTransactionContext` are renamed to
   `PyDatabase` and `PyTransactionContext`. Update direct native consumers and

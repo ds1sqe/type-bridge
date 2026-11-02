@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::io::Write;
 use std::sync::Arc;
 

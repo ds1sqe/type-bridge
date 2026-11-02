@@ -3091,7 +3091,6 @@ dependencies = [
  "tower 0.5.3",
  "tower-layer",
  "tower-service",
- "tracing",
 ]
 
 [[package]]
@@ -3526,7 +3525,6 @@ dependencies = [
  "tokio",
  "toml",
  "tower 0.5.3",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "type-bridge-contract",

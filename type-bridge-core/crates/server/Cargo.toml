@@ -31,7 +31,6 @@ band9 = [
 ]
 axum-transport = [
     "dep:axum",
-    "dep:tower-http",
     "dep:axum-server",
     "dep:type-bridge-schema-compat",
 ]
@@ -60,7 +59,6 @@ cap-std = "4.0"
 # Optional: Axum HTTP transport
 axum = { version = "0.8", optional = true }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"], optional = true }
-tower-http = { version = "0.6", features = ["cors", "trace"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["fs"] }

@@ -1,5 +1,3 @@
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
-
 use futures::future::join_all;
 
 use super::traits::{InterceptError, Interceptor, RequestContext};

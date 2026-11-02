@@ -1,6 +1,5 @@
 //! Shared authority, replay protection and framing for staged requests.
 
-#![allow(deprecated)] // Legacy node bridges are removed in 3.0.
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::future::Future;

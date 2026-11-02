@@ -4,7 +4,6 @@
 //! and the Rust SDK's live plan-builder tests, so the server's own tests
 //! never depend on the SDK crate.
 
-#![allow(deprecated)] // `Interceptor::on_request` still takes legacy AST clauses.
 #![allow(dead_code)]
 
 #[path = "../../../orm/tests/support/plan_v3_race.rs"]

@@ -102,7 +102,7 @@ fn source_line_column(content: &str, byte_offset: usize) -> Option<(usize, usize
 }
 
 #[derive(Debug, Deserialize)]
-/// Released server configuration projection.
+/// Listener, plaintext connection and logging configuration.
 pub struct ServerConfig {
     /// Listener address configuration.
     pub server: ServerSection,
@@ -116,13 +116,7 @@ pub struct ServerConfig {
     pub logging: LoggingSection,
 }
 
-/// Standalone-server configuration with additive secure and staged settings.
-///
-/// [`ServerConfig`] remains the released plaintext configuration surface so
-/// downstream exhaustive struct literals and patterns keep compiling. The
-/// standalone binary parses this projection instead; its private wire types
-/// accept the same TOML tables while keeping new fields out of the released
-/// structs.
+/// Standalone-server configuration with captured TLS and staged authority.
 pub struct RuntimeServerConfig {
     /// Listener address configuration.
     pub server: ServerSection,
@@ -140,7 +134,7 @@ pub struct RuntimeServerConfig {
 
 /// TypeDB connection settings for the standalone server's secure entry point.
 ///
-/// The credential-bearing V1 projection is deliberately not publicly
+/// The credential-bearing plaintext projection is deliberately not publicly
 /// reachable from a loaded runtime config:
 ///
 /// ```compile_fail
