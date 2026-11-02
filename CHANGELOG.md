@@ -12,6 +12,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- `TransactionContext::execute_plans` now accepts write plans in caller-owned
+  Write and Schema transactions. A write plan on a Read context fails with
+  `query_plan_read_only`; the old `borrowed_target_not_read_only` refusal is
+  removed.
 - Typed Long SUM/MEAN share exact high/low partial aggregates, preventing
   native integer wrap without an extra query. SUM checks the final `i64`
   domain (`reduction_overflow`); MEAN divides the exact total by the count in
