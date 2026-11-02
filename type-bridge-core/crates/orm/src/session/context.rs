@@ -201,16 +201,29 @@ impl TransactionContextMutationLease {
                 "Streaming snapshots use a separate read plan".into(),
             ));
         }
-        let rows = query
-            .rows
-            .ok_or_else(|| OrmError::Transaction("Native batch plans require given rows".into()))?;
-        // Readback retains the poison latch already armed by an earlier write.
-        if query.writes || self.phase == MutationLeasePhase::PossibleEffect {
-            self.mutate_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
-                .await
-        } else {
-            self.query_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
-                .await
+        match query.rows {
+            Some(rows) => {
+                if query.writes || self.phase == MutationLeasePhase::PossibleEffect {
+                    self.mutate_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                        .await
+                } else {
+                    self.query_v2_with_rows_bounded(&query.typeql, rows, limits, consumer)
+                        .await
+                }
+            }
+            None => {
+                if self.phase == MutationLeasePhase::Finished {
+                    return Err(OrmError::Transaction(
+                        "Completed mutation lease cannot dispatch provider work".into(),
+                    ));
+                }
+                if query.writes {
+                    self.phase = MutationLeasePhase::PossibleEffect;
+                }
+                self.transaction()?
+                    .query_v2_bounded(&query.typeql, limits, consumer)
+                    .await
+            }
         }
     }
 
@@ -753,6 +766,10 @@ impl TransactionContext {
             return Ok(());
         };
         transaction.close().await
+    }
+
+    pub(crate) fn server_version(&self) -> Option<Version> {
+        self.server_version
     }
 
     /// The transaction type.

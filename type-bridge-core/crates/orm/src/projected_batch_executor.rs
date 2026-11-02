@@ -185,7 +185,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             return Ok(empty);
         }
         prepared.check_control()?;
-        require_given_capability(database.supports_given_stage())?;
+        require_native_provider(database.server_version())?;
         let identity = database.execution_identity();
         let plan = BatchPlan::compile(self.installed, &prepared, &identity, self.return_deleted)?;
         prepared.check_control()?;
@@ -297,14 +297,7 @@ impl<'projection> ProjectedBatchExecutor<'projection> {
             ));
         }
         prepared.check_control()?;
-        let supported = await_controlled(
-            transaction.supports_given_stage(),
-            prepared.deadline(),
-            prepared.cancellation(),
-        )
-        .await
-        .map_err(|error| controlled_orm(error, SdkProviderOperation::Read, batch.model()))?;
-        require_given_capability(supported)?;
+        require_native_provider(transaction.server_version())?;
         let identity = transaction.execution_identity().clone();
         let plan = BatchPlan::compile(self.installed, &prepared, &identity, self.return_deleted)?;
         prepared.check_control()?;
@@ -473,6 +466,21 @@ pub(crate) fn require_given_capability(
     }
 }
 
+pub(crate) fn require_native_provider(
+    version: Option<type_bridge_core_lib::version::Version>,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    if version
+        .is_none_or(|version| version >= type_bridge_core_lib::version::Version::new(3, 12, 0))
+    {
+        Ok(())
+    } else {
+        Err(SdkExecutionDiagnostic::unsupported_capability(
+            code("projected_batch_transport_unsupported"),
+            message("Projected batch execution requires TypeDB 3.12 or newer"),
+        ))
+    }
+}
+
 enum ControlledAwaitError<E> {
     Interrupted(SdkExecutionDiagnostic),
     Inner(E),
@@ -560,6 +568,10 @@ struct BatchPlan<'a> {
     row_count: usize,
     statement_count: u32,
     preflight_bytes: u64,
+    write_program: Option<(
+        crate::plan_builders::bulk_write::WriteProgram,
+        ExecutionLedger,
+    )>,
 }
 
 impl<'a> BatchPlan<'a> {
@@ -619,6 +631,37 @@ impl<'a> BatchPlan<'a> {
             &reference_routes,
             &role_references,
         )?;
+        if !DIAGNOSIS && batch.operation() != ProjectedBatchOperation::Delete {
+            let mut plan = Self {
+                installed,
+                model,
+                operation: batch.operation(),
+                rows,
+                field_routes,
+                role_routes,
+                role_references,
+                prerequisite: None,
+                reference_routes,
+                return_deleted,
+                row_count: batch.len(),
+                statement_count: batch.resource_measure().statements(),
+                preflight_bytes: 0,
+                write_program: None,
+            };
+            let program = plan.complete_write_plans()?;
+            let statements =
+                u32::try_from(program.statement_count()).map_err(|_| complexity_overflow())?;
+            let mut ledger = ExecutionLedger::new(
+                prepared
+                    .limits()
+                    .for_adapter_statements(program.statement_count()),
+                batch.resource_measure().bytes(),
+            );
+            ledger.charge_preflight(0, statements)?;
+            plan.statement_count = statements;
+            plan.write_program = Some((program, ledger));
+            return Ok(plan);
+        }
         let prerequisite = compile_prerequisite(
             model,
             batch.operation(),
@@ -633,9 +676,6 @@ impl<'a> BatchPlan<'a> {
         } else {
             batch.resource_measure().statements()
         };
-        if actual_statement_count != statement_count {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        }
         let preflight_bytes = {
             preflight_transport_bytes(
                 prepared,
@@ -672,6 +712,7 @@ impl<'a> BatchPlan<'a> {
             row_count: batch.len(),
             statement_count,
             preflight_bytes,
+            write_program: None,
         })
     }
 
@@ -2074,7 +2115,7 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
                 ordinal,
             ));
         }
-        let expected = self.targets.get(ordinal).ok_or_else(|| {
+        let expected = self.targets.get_mut(ordinal).ok_or_else(|| {
             integrity_at_row(
                 "projected_batch_hydration_target_missing",
                 "Provider hydration arrived before its mutation identity",
@@ -2082,6 +2123,34 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
                 ordinal,
             )
         })?;
+        if expected.is_empty() {
+            expected.push_str(
+                document
+                    .get("_iid")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        integrity_at_row(
+                            "projected_batch_hydration_target_missing",
+                            "Provider hydration omitted its mutation identity",
+                            self.plan.model.id(),
+                            ordinal,
+                        )
+                    })?,
+            );
+        }
+        if self.plan.operation == ProjectedBatchOperation::Update
+            && document
+                .get("_iid")
+                .and_then(Value::as_str)
+                .is_some_and(|iid| !iid.eq_ignore_ascii_case(expected))
+        {
+            return Err(integrity_at_row(
+                "projected_batch_update_identity_changed",
+                "A projected update returned a different exact target IID",
+                self.plan.model.id(),
+                ordinal,
+            ));
+        }
         let thing = match self.plan.model.id().kind() {
             TypeKind::Entity => {
                 let descriptor = self
@@ -2144,6 +2213,62 @@ impl<'executor, 'projection, 'plan> HydrationConsumer<'executor, 'projection, 'p
         }
         Ok(self.ordered)
     }
+}
+
+fn validate_written_role_identities(
+    installed: &InstalledRuntimeProjection,
+    plan: &BatchPlan<'_>,
+    thing: &ProjectedThing,
+    ordinal: usize,
+) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    let create =
+        row_create(plan.rows[ordinal].1).ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+    for (role, read_role) in plan.model.complete_read().roles() {
+        if !read_role.multiplicity().collection_mode().is_unordered() {
+            continue;
+        }
+        let requested = create
+            .roles()
+            .get(role)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let returned = thing
+            .roles()
+            .get(role)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if requested.len() != returned.len() {
+            return Err(integrity_at_row(
+                "provider_identity_mismatch",
+                "Returned role players differ from the write input",
+                plan.model.id(),
+                ordinal,
+            ));
+        }
+        for expected in requested {
+            let found = returned.iter().any(|player| {
+                is_same_or_subtype(installed, player.type_id(), expected.type_id())
+                    && expected
+                        .iid()
+                        .is_none_or(|iid| iid.eq_ignore_ascii_case(player.iid()))
+                    && expected.keys().iter().all(|(field, value)| {
+                        player.keys().iter().any(|(actual, supplied)| {
+                            actual.attribute() == field.attribute()
+                                && supplied.value() == value.value()
+                        })
+                    })
+            });
+            if !found {
+                return Err(integrity_at_row(
+                    "provider_identity_mismatch",
+                    "Returned role player contradicts its requested IID or key",
+                    plan.model.id(),
+                    ordinal,
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 impl AnswerConsumer for HydrationConsumer<'_, '_, '_> {
@@ -3667,19 +3792,6 @@ plays:
 
     fn allocation_answers(kind: TypeKind) -> VecDeque<Vec<Value>> {
         let mut answers = VecDeque::new();
-        if kind == TypeKind::Relation {
-            answers.push_back(vec![json!({
-                "kind": 1,
-                "ordinal": 0,
-                "reference_ordinal": 0,
-                "iid": "0x10",
-                "type": "person"
-            })]);
-        }
-        answers.push_back(vec![json!({
-            "ordinal": 0,
-            "iid": if kind == TypeKind::Entity { "0x20" } else { "0x30" }
-        })]);
         answers.push_back(vec![json!({
             "ordinal": 0,
             "_iid": if kind == TypeKind::Entity { "0x20" } else { "0x30" },
@@ -3870,7 +3982,7 @@ plays:
             );
             let state = state.lock().unwrap();
             assert!(state.answers.is_empty());
-            assert_eq!(state.calls, if kind == TypeKind::Entity { 2 } else { 3 });
+            assert_eq!(state.calls, 1);
             assert_eq!(state.rollbacks, 1);
             assert_eq!(state.commits, 0);
         }

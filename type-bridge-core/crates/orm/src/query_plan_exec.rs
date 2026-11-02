@@ -548,7 +548,7 @@ pub(crate) fn remote_value(
     })
 }
 
-fn row_value(
+pub(crate) fn row_value(
     row: &serde_json::Value,
     name: &str,
     limits: type_bridge_contract::limits::CodecLimits,

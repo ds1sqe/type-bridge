@@ -130,8 +130,10 @@ pub fn result(source: &str, result: QueryResult) -> QueryResult {
 }
 
 pub fn item(source: &str, mut document: Value) -> AnswerItem {
-    let snapshot =
-        source.contains("$root0") && (source.contains("fetch") || source.contains("delete"));
+    let snapshot = source.contains("$root0")
+        && !source.contains("$ordinal1")
+        && !source.contains("\"ordinal\"")
+        && (source.contains("fetch") || source.contains("delete"));
     if !snapshot && !source.contains("$ordinal0") && !source.contains("$ordinal1") {
         return AnswerItem::Document(document);
     }
@@ -188,14 +190,19 @@ pub fn item(source: &str, mut document: Value) -> AnswerItem {
             .and_then(|object| object.remove("role_players"));
         if let Some(players) = players {
             let players = players.as_array().expect("legacy role fixture list");
+            let variable = if source.contains("$root0") {
+                "$root0"
+            } else {
+                "$thing1"
+            };
+            let exact = format!("{variable} isa! ");
+            let inclusive = format!("{variable} isa ");
             let relation = source
-                .split(if snapshot {
-                    "$root0 isa! "
-                } else {
-                    "$thing1 isa! "
-                })
-                .nth(1)
-                .and_then(|value| value.split(';').next())
+                .split(&exact)
+                .skip(1)
+                .chain(source.split(&inclusive).skip(1))
+                .filter_map(|value| value.split([';', ',', ' ']).next())
+                .find(|label| !label.starts_with('$'))
                 .unwrap_or("");
             if players.iter().any(|player| {
                 player["role"].as_str().is_some_and(|role| {
@@ -251,6 +258,16 @@ pub fn item(source: &str, mut document: Value) -> AnswerItem {
             attributes(values);
         }
         return AnswerItem::Document(document);
+    }
+    if source.contains("$root0") && source.contains("$ordinal1") && !source.contains("fetch") {
+        let label = document
+            .get("_type")
+            .and_then(Value::as_str)
+            .unwrap_or("person");
+        return AnswerItem::Row(json!({
+            "ordinal1": scalar(&document["ordinal"]),
+            "root0": {"kind":"thing", "iid":document["iid"], "type_id":{"kind":if relation(label) {"relation"} else {"entity"}, "label":label}},
+        }));
     }
     if snapshot {
         return AnswerItem::Row(json!({}));

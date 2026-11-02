@@ -1357,7 +1357,7 @@ fn measures_do_not_conflate_structural_members_and_forecast_bulk_statements() {
     assert_eq!(person_measure.attribute_values(), 3);
     assert_eq!(person_measure.collection_members(), 3);
     assert_eq!(person_measure.role_players(), 0);
-    assert_eq!(person_measure.statements(), 2);
+    assert_eq!(person_measure.statements(), 1);
 
     let relation = ProjectedBatch::try_new(
         &installed,
@@ -1374,7 +1374,7 @@ fn measures_do_not_conflate_structural_members_and_forecast_bulk_statements() {
     assert_eq!(relation_measure.attribute_values(), 2);
     assert_eq!(relation_measure.collection_members(), 3);
     assert_eq!(relation_measure.role_players(), 1);
-    assert_eq!(relation_measure.statements(), 3);
+    assert_eq!(relation_measure.statements(), 1);
 
     let delete = ProjectedBatch::try_new(
         &installed,

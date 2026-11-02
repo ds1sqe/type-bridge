@@ -224,11 +224,7 @@ impl ProjectedBatchBudgetState {
             control,
         )?;
         next_measure.items = item_count;
-        next_measure.statements = statement_forecast(
-            self.operation,
-            next_measure.role_players > 0,
-            next_row_count,
-        );
+        next_measure.statements = statement_forecast(next_row_count);
         check_control(control)?;
         validate_limits(next_measure, limits)?;
 
@@ -668,7 +664,7 @@ impl ProjectedBatch {
         measure.statements = if SINGLE_WRITE {
             1
         } else {
-            statement_forecast(operation, measure.role_players > 0, row_count)
+            statement_forecast(row_count)
         };
         check_control(control)?;
         validate_limits(measure, resource_ceiling)?;
@@ -1243,6 +1239,7 @@ fn validate_limits(
     measure: ProjectedBatchResourceMeasure,
     limits: QueryExecutionResourceLimits,
 ) -> Result<(), SdkExecutionDiagnostic> {
+    let limits = limits.for_adapter_statements(measure.statements as usize);
     for (name, code, actual, ceiling) in [
         ("items", "batch_item_limit", measure.items, limits.items),
         ("bytes", "batch_byte_limit", measure.bytes, limits.bytes),
@@ -1284,24 +1281,8 @@ fn validate_limits(
     Ok(())
 }
 
-fn statement_forecast(
-    operation: ProjectedBatchOperation,
-    requires_reference_resolution: bool,
-    rows: usize,
-) -> u32 {
-    if rows == 0 {
-        return 0;
-    }
-    match operation {
-        ProjectedBatchOperation::Delete => 1,
-        ProjectedBatchOperation::Put => 3,
-        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update
-            if requires_reference_resolution =>
-        {
-            3
-        }
-        ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update => 2,
-    }
+fn statement_forecast(rows: usize) -> u32 {
+    u32::try_from(rows.div_ceil(type_bridge_contract::limits::MAX_INPUT_ROWS)).unwrap_or(u32::MAX)
 }
 
 fn reserved<T>(
@@ -1746,29 +1727,10 @@ plays:
     }
 
     #[test]
-    fn statement_forecast_covers_every_operation_and_never_exceeds_hard_cap() {
-        for operation in [
-            ProjectedBatchOperation::Insert,
-            ProjectedBatchOperation::Put,
-            ProjectedBatchOperation::Update,
-            ProjectedBatchOperation::Delete,
-        ] {
-            for requires_references in [false, true] {
-                assert_eq!(statement_forecast(operation, requires_references, 0), 0);
-                let expected = match operation {
-                    ProjectedBatchOperation::Delete => 1,
-                    ProjectedBatchOperation::Put => 3,
-                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update
-                        if requires_references =>
-                    {
-                        3
-                    }
-                    ProjectedBatchOperation::Insert | ProjectedBatchOperation::Update => 2,
-                };
-                let actual = statement_forecast(operation, requires_references, 1);
-                assert_eq!(actual, expected);
-                assert!(actual <= DEFAULT_DIRECT_QUERY_STATEMENTS);
-            }
+    fn statement_forecast_counts_only_canonical_row_chunks() {
+        let ceiling = type_bridge_contract::limits::MAX_INPUT_ROWS;
+        for (rows, expected) in [(0, 0), (1, 1), (ceiling, 1), (ceiling + 1, 2)] {
+            assert_eq!(statement_forecast(rows), expected);
         }
     }
 

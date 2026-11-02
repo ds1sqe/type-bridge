@@ -23,7 +23,7 @@ use super::{BuiltPlan, PlanDraft, ValueTransport};
 mod program;
 #[path = "bulk_write_sequence.rs"]
 mod sequence;
-pub(crate) use program::WriteProgram;
+pub(crate) use program::{WriteProgram, forces_pieces};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WriteKind {

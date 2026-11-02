@@ -22,6 +22,149 @@ fn diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
 }
 
 impl BatchPlan<'_> {
+    pub(super) fn complete_write_plans(
+        &self,
+    ) -> std::result::Result<crate::plan_builders::bulk_write::WriteProgram, SdkExecutionDiagnostic>
+    {
+        use crate::plan_builders::bulk_write::{WriteKind, WriteRow, WriteShape};
+        use crate::plan_builders::reference::{Reference, ReferenceIdentity};
+        let authority = self.installed.plan_authority().map_err(diagnostic)?;
+        let fields = self
+            .rows
+            .iter()
+            .map(|(_, row)| {
+                let create =
+                    row_create(row).ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                let mut fields = Vec::new();
+                for (field, values) in create.fields() {
+                    let declaring = self.declaring_field(field)?;
+                    fields.extend(
+                        values
+                            .iter()
+                            .map(|value| (declaring.clone(), value.value().clone())),
+                    );
+                }
+                Ok(fields)
+            })
+            .collect::<std::result::Result<Vec<_>, SdkExecutionDiagnostic>>()?;
+        let routes = self
+            .reference_routes
+            .iter()
+            .map(|route| (route.key.clone(), &route.candidate_types))
+            .collect::<BTreeMap<_, _>>();
+        let mut references = (0..self.row_count).map(|_| Vec::new()).collect::<Vec<_>>();
+        for reference in &self.role_references {
+            let route_key = if reference.reference.iid().is_some() {
+                ReferenceRouteKey::Iid(
+                    reference.role.clone(),
+                    reference.reference.type_id().clone(),
+                )
+            } else {
+                ReferenceRouteKey::Key(
+                    reference.role.clone(),
+                    reference.reference.type_id().clone(),
+                    reference
+                        .reference
+                        .keys()
+                        .first_key_value()
+                        .ok_or_else(SdkExecutionDiagnostic::internal_failure)?
+                        .0
+                        .clone(),
+                )
+            };
+            let candidates = routes
+                .get(&route_key)
+                .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+            let identity = if let Some(iid) = reference.reference.iid() {
+                ReferenceIdentity::Iid(iid)
+            } else {
+                let (field, value) = reference
+                    .reference
+                    .keys()
+                    .first_key_value()
+                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+                ReferenceIdentity::Key {
+                    attribute: field.attribute(),
+                    value: value.value().clone(),
+                }
+            };
+            references[reference.owner_ordinal].push((
+                reference.role.clone(),
+                Reference {
+                    candidates,
+                    identity,
+                },
+            ));
+        }
+        let rows = self
+            .rows
+            .iter()
+            .zip(&fields)
+            .zip(&references)
+            .map(|(((_, row), fields), players)| WriteRow {
+                iid: row_iid(row),
+                fields,
+                players,
+            })
+            .collect::<Vec<_>>();
+        let keys = self
+            .model
+            .reference_read()
+            .key_fields()
+            .iter()
+            .map(|key| self.declaring_field(key).cloned())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let cleared_fields = self
+            .field_routes
+            .iter()
+            .map(|route| self.declaring_field(&route.field).cloned())
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let cleared_roles = self
+            .model
+            .complete_read()
+            .roles()
+            .iter()
+            .filter(|(_, projection)| projection.multiplicity().collection_mode().is_unordered())
+            .map(|(role, _)| role.clone())
+            .collect::<Vec<_>>();
+        let document_roles = self
+            .model
+            .complete_read()
+            .roles()
+            .iter()
+            .map(|(role, projection)| {
+                if projection.multiplicity().collection_mode().is_unordered() {
+                    DocumentRole::collected(role.clone())
+                } else {
+                    DocumentRole::new(role.clone(), false)
+                }
+            })
+            .collect();
+        let kind = match self.operation {
+            ProjectedBatchOperation::Insert => WriteKind::Insert,
+            ProjectedBatchOperation::Put => WriteKind::Put,
+            ProjectedBatchOperation::Update => WriteKind::Update,
+            ProjectedBatchOperation::Delete => {
+                return Err(SdkExecutionDiagnostic::internal_failure());
+            }
+        };
+        crate::plan_builders::bulk_write::write_many(
+            &authority,
+            kind,
+            WriteShape {
+                include_subtypes: false,
+                return_documents: true,
+                type_id: self.model.id(),
+                keys: &keys,
+                cleared_fields: &cleared_fields,
+                cleared_roles: &cleared_roles,
+                document_roles,
+            },
+            &rows,
+        )
+        .map_err(diagnostic)
+    }
+
     fn declaring_field(
         &self,
         field: &OwnsFactId,
@@ -591,6 +734,98 @@ impl ProjectedBatchExecutor<'_> {
             prepared.check_control()?;
             return Ok(ProjectedBatchResult::Things(things));
         }
+        if plan.operation != ProjectedBatchOperation::Delete {
+            let (mut program, mut ledger) = plan
+                .write_program
+                .take()
+                .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+            let authority = plan.installed.plan_authority().map_err(diagnostic)?;
+            let mut consumer = HydrationConsumer::new(self, plan, identity)?;
+            for (_, row) in &plan.rows {
+                consumer
+                    .targets
+                    .push(row_iid(row).unwrap_or_default().to_owned());
+            }
+            while let Some(step) = program.next().map_err(diagnostic)? {
+                if !step.complete {
+                    let mut returned = None;
+                    let mut capture = |item: AnswerItem| {
+                        let AnswerItem::Document(document) = item else {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                SdkExecutionDiagnostic::internal_failure(),
+                            )));
+                        };
+                        let ordinal = document_index(&document, "ordinal", plan.row_count)
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        let iid = document_string(&document, "iid")
+                            .map_err(|error| OrmError::ExecutionDiagnostic(Box::new(error)))?;
+                        if ordinal != step.ordinal || returned.is_some() {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(integrity_at_row(
+                                "provider_identity_mismatch",
+                                "A write piece repeated or changed its input ordinal",
+                                plan.model.id(),
+                                step.ordinal,
+                            ))));
+                        }
+                        step.check_identity(&iid).map_err(evidence)?;
+                        returned = Some(iid);
+                        Ok(AnswerControl::Continue)
+                    };
+                    dispatch(
+                        lease,
+                        &step.plan,
+                        Reply::Mutation,
+                        prepared,
+                        &mut capture,
+                        &mut ledger,
+                        false,
+                        &authority,
+                    )
+                    .await?;
+                    let iid = returned.ok_or_else(|| {
+                        integrity_at_row(
+                            "provider_identity_mismatch",
+                            "A write piece omitted its model identity",
+                            plan.model.id(),
+                            step.ordinal,
+                        )
+                    })?;
+                    program.accept_identity(&step, iid).map_err(diagnostic)?;
+                    continue;
+                }
+                dispatch(
+                    lease,
+                    &step.plan,
+                    Reply::Hydration,
+                    prepared,
+                    &mut consumer,
+                    &mut ledger,
+                    false,
+                    &authority,
+                )
+                .await
+                .map_err(|later| consumer.take_deferred().unwrap_or(later))?;
+            }
+            let things = consumer.finish()?;
+            let mut identities = BTreeSet::new();
+            for (ordinal, thing) in things.iter().enumerate() {
+                if !identities.insert(thing.iid()) {
+                    return Err(integrity_at_row(
+                        "projected_batch_mutation_identity_duplicate",
+                        "A projected batch returned one identity for multiple input rows",
+                        plan.model.id(),
+                        ordinal,
+                    ));
+                }
+            }
+            ledger.charge_projected(&things)?;
+            for (ordinal, thing) in things.iter().enumerate() {
+                validate_written_role_identities(self.installed, plan, thing, ordinal)?;
+            }
+
+            prepared.check_control()?;
+            return Ok(ProjectedBatchResult::Things(things));
+        }
         let authority = plan.installed.plan_authority().map_err(diagnostic)?;
         let mut ledger = ExecutionLedger::new(
             prepared.limits(),
@@ -979,7 +1214,22 @@ async fn dispatch(
         .prepare_plan(plan.local())
         .map_err(|error| lower_orm_error(&error, SdkProviderOperation::Write))?;
     preflight_statement_complexity(&query.typeql)?;
-    let rows = query.rows.take().expect("native batch rows");
+    let Some(rows) = query.rows.take() else {
+        ledger.charge_bytes(
+            source_bytes(&query.typeql)?,
+            "projected_batch_transport_byte_limit",
+        )?;
+        return dispatch_query(
+            lease,
+            plan.local(),
+            query,
+            reply,
+            prepared,
+            consumer,
+            ledger,
+        )
+        .await;
+    };
     ledger.charge_bytes(
         checked_add_u64(source_bytes(&query.typeql)?, given_rows_bytes(&rows)?)?,
         "projected_batch_transport_byte_limit",
