@@ -59,8 +59,8 @@ where
 {
     /// Reads one canonical IID across the root and its generated concrete descendants.
     /// Invalid IIDs are rejected before I/O; a valid but absent IID returns `None`.
-    pub async fn get_by_iid(&self, _iid: &str) -> Result<Option<M::Subtypes>> {
-        if !is_canonical_thing_iid(_iid) {
+    pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M::Subtypes>> {
+        if !is_canonical_thing_iid(iid) {
             return Err(invalid_iid());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
@@ -87,7 +87,7 @@ where
             manager.literal_values()
         };
         let result = async {
-            let Some(row) = manager.get_by_iid(_iid).await.map_err(Error::from_orm)? else {
+            let Some(row) = manager.get_by_iid(iid).await.map_err(Error::from_orm)? else {
                 return Ok(None);
             };
             let (child_id, _) =
