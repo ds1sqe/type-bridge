@@ -53,7 +53,7 @@ use crate::match_runtime::{
     PyQueryInvocationBudget, py_sdk_diagnostic, validated_invocation_handle,
 };
 use crate::orm_runtime::{commit_outcome_class, provider_block_on, py_provider_diagnostic};
-use crate::plan_builder_runtime::{PyPlan, PyPlanProgram};
+use crate::plan_builder_runtime::{PyPlan, PyPlanProgram, PyStagedPlan};
 use crate::query_v2_runtime::{PythonBytes, value_error};
 use crate::validated_result_runtime::{MatchInvocation, PyValidatedMatchResultHandle};
 use type_bridge_orm::_registry::DescriptorRegistry;
@@ -277,6 +277,37 @@ impl PyStagedTransaction {
             decoder,
             origin: self.origin.clone(),
         })
+    }
+
+    /// Queue a complete authored invocation stack with block-local IID references.
+    fn stage_stack(&self, plans: Vec<PyRef<'_, PyStagedPlan>>) -> PyResult<Vec<PyPending>> {
+        let Some(first) = plans.first() else {
+            return Ok(vec![]);
+        };
+        let pending = self.with(|transaction| {
+            transaction
+                .stage_plan_stack(
+                    plans.iter().map(|plan| plan.entry.clone()).collect(),
+                    Arc::new(first.authority.declared().clone()),
+                )
+                .map_err(|error| pending_error(&error))
+        })?;
+        Ok(plans
+            .iter()
+            .zip(pending)
+            .map(|(plan, pending)| PyPending {
+                source: PendingSource::Plans {
+                    pending: vec![pending],
+                    models: None,
+                    plans: Arc::new(PyPlanProgram::Raw(Box::new(BuiltPlans::single(
+                        plan.entry.plan().clone(),
+                    )))),
+                    projected: std::sync::OnceLock::new(),
+                },
+                decoder: None,
+                origin: self.origin.clone(),
+            })
+            .collect())
     }
 
     /// Fire the staged plans as one transaction and resolve their answers.

@@ -18,7 +18,8 @@ use type_bridge_contract::query_plan::v3::{
     ArithOp, BuildSelection, BuiltPlans, Builtin, DocumentRole, Expr, PlanBuilder, QueryPlanV3,
     Site, ThingDocument,
 };
-use type_bridge_contract::query_plan::{InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_plan::{InputColumn, InputColumnId, InputRow, QueryOperand};
+use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
 use type_bridge_contract::schema::OwnsFactId;
 use type_bridge_contract::value::{CanonicalValue, ValueTypeTag};
 use type_bridge_orm::query_v2_builder::query_builder_value_type;
@@ -33,6 +34,50 @@ fn plan_scalar(value_type: ValueTypeTag, value: &Bound<'_, PyAny>) -> PyResult<C
         return crate::runtime_projection::canonical_plan_duration(value.py(), value);
     }
     python_scalar(value_type, value)
+}
+
+fn invocation_rows(
+    inputs: &[InputColumn],
+    rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
+) -> PyResult<Vec<InputRow>> {
+    let mut bound = Vec::with_capacity(rows.len());
+    for cells in rows {
+        let mut values = vec![None; inputs.len()];
+        let mut seen = std::collections::BTreeSet::new();
+        for (column, value) in cells {
+            let column = usize::try_from(column).map_err(|_| value_error(&handle_error()))?;
+            let input = inputs
+                .get(column)
+                .ok_or_else(|| value_error(&handle_error()))?;
+            if !seen.insert(column) {
+                return Err(value_error(&invalid(
+                    "plan_input_duplicate",
+                    "an input row gives one column twice",
+                )));
+            }
+            values[column] = value
+                .map(|value| plan_scalar(input.value_type(), &value))
+                .transpose()?;
+        }
+        bound.push(InputRow::new(values));
+    }
+    Ok(bound)
+}
+
+/// One immutable invocation template authored by the shared builder.
+#[pyclass(name = "StagedPlan", module = "type_bridge_core", frozen)]
+pub(crate) struct PyStagedPlan {
+    pub(crate) entry: StagedPlanV3,
+    pub(crate) authority: Arc<type_bridge_orm::query_v2_prepared::QueryAuthority>,
+}
+
+#[pymethods]
+impl PyStagedPlan {
+    /// Dependency metadata, without future IID values.
+    fn result_refs_json(&self) -> PyResult<String> {
+        serde_json::to_string(self.entry.result_refs())
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
 }
 
 fn invalid(code: &'static str, message: &'static str) -> Diagnostic {
@@ -238,6 +283,19 @@ impl PyPlanBuilderCore {
     fn by_iid(&mut self, owner: u32, iid: &str) {
         let owner = self.binding(owner);
         self.core.by_iid(owner, iid);
+    }
+
+    /// Restrict a matched binding to an invocation IID column.
+    fn by_iid_input(&mut self, owner: u32, column: u32) {
+        let owner = self.binding(owner);
+        let Some(column) = self.check(
+            u16::try_from(column)
+                .map(InputColumnId::new)
+                .map_err(|_| handle_error()),
+        ) else {
+            return;
+        };
+        self.core.by_iid_input(owner, column);
     }
 
     /// Bind the value of `owner`'s field named by its owns identity.
@@ -647,6 +705,41 @@ impl PyPlanBuilderCore {
             models,
         )
     }
+    /// Finalize an invocation template with earlier IID result references.
+    fn build_staged(
+        &self,
+        py: Python<'_>,
+        authority: PyRef<'_, PyQueryV2Authority>,
+        rows: Vec<Vec<(u32, Option<Bound<'_, PyAny>>)>>,
+        references: &str,
+    ) -> PyResult<PyStagedPlan> {
+        if let Some(error) = &self.error {
+            return Err(error.clone_ref(py));
+        }
+        let authority = authority.authority();
+        let rows = invocation_rows(self.core.input_columns(), rows)?;
+        let refs: Vec<StagedResultRefV3> = serde_json::from_str(references).map_err(|_| {
+            value_error(&invalid(
+                "query_stage_result_ref_input",
+                "result references are malformed",
+            ))
+        })?;
+        let entry = self
+            .core
+            .build_staged(
+                authority.declared(),
+                authority
+                    .context()
+                    .managed_state()
+                    .managed_semantic_schema()
+                    .clone(),
+                rows,
+                refs,
+            )
+            .map_err(|error| value_error(&error))?;
+        Ok(PyStagedPlan { entry, authority })
+    }
+
     /// Build a selected result directly from this immutable recording.
     #[pyo3(signature = (authority, kind, thing, roles, columns, projection=None, declared=None, model_slots=None))]
     #[expect(
@@ -877,28 +970,7 @@ impl PyPlan {
                 "binding requires the plan's schema authority",
             )));
         }
-        let mut bound = Vec::with_capacity(rows.len());
-        for cells in rows {
-            let mut values = vec![None; plan.inputs().len()];
-            let mut seen = std::collections::BTreeSet::new();
-            for (column, value) in cells {
-                let column = usize::try_from(column).map_err(|_| value_error(&handle_error()))?;
-                let input = plan
-                    .inputs()
-                    .get(column)
-                    .ok_or_else(|| value_error(&handle_error()))?;
-                if !seen.insert(column) {
-                    return Err(value_error(&invalid(
-                        "plan_input_duplicate",
-                        "an input row gives one column twice",
-                    )));
-                }
-                values[column] = value
-                    .map(|value| plan_scalar(input.value_type(), &value))
-                    .transpose()?;
-            }
-            bound.push(InputRow::new(values));
-        }
+        let bound = invocation_rows(plan.inputs(), rows)?;
         let plan = plan
             .with_given_rows(bound, authority.declared())
             .map_err(|error| value_error(&error))?;
@@ -984,6 +1056,7 @@ impl PyPlan {
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPlanBuilderCore>()?;
     module.add_class::<PyPlan>()?;
+    module.add_class::<PyStagedPlan>()?;
     Ok(())
 }
 

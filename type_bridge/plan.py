@@ -43,6 +43,7 @@ from type_bridge_core import (
     QueryV2Authority,
     QueryV2Error,
     Rows,
+    StagedPlan,
     Transaction,
     _Plan,
     _PlanBuilderCore,
@@ -73,6 +74,8 @@ __all__ = [
     "PlanValue",
     "PlanAnswer",
     "Rows",
+    "StagedPlan",
+    "StagedResultRef",
     "Transaction",
     "Value",
     "literal",
@@ -287,6 +290,16 @@ class PlanInput[T](_Handle, _Comparable):
         return PlanInputCell(self, None)
 
 
+@dataclass(frozen=True)
+class StagedResultRef:
+    """One template column reads an earlier selected thing IID."""
+
+    input: PlanInput
+    source_plan: int
+    source_column: int
+    expected_types: Sequence[type[Any]]
+
+
 class PlanInputCell[T]:
     """One cell of an input row; see ``PlanInput.value``."""
 
@@ -480,6 +493,11 @@ class PlanBuilder:
         """Match things of ``model`` or any subtype."""
         return PlanThing(self, self._native.subtypes(_type_json(model)), model)
 
+    def by_iid_input(self, thing: PlanThing, column: PlanInput[str]) -> PlanBuilder:
+        """Restrict a matched thing to an invocation IID column."""
+        self._native.by_iid_input(self._own(thing)._index, self._own(column)._index)
+        return self
+
     def _check_field(self, thing: PlanThing, token: _FieldToken) -> None:
         self._own(thing)
         owner = getattr(token, "owner", None)
@@ -614,6 +632,42 @@ class PlanBuilder:
         plan._builder = self
         plan._authority = authority
         return plan
+
+    def build_staged(
+        self,
+        authority: QueryV2Authority,
+        rows: Iterable[Iterable[PlanInputCell]],
+        result_refs: Iterable[StagedResultRef] = (),
+    ) -> StagedPlan:
+        """Finalize templates for ``Transaction.stage_stack``.
+
+        Referenced cells use ``column.absent()``; their values bind inside the
+        transaction. Source indexes are relative to that complete stack.
+        """
+        lowered = [
+            [
+                (
+                    self._own(cell.input)._index,
+                    None
+                    if cell.value is None
+                    else _literal_parts(cell.value, cell.input.value_type)[1],
+                )
+                for cell in row
+            ]
+            for row in rows
+        ]
+        references = [
+            {
+                "input": self._own(reference.input)._index,
+                "source_plan": reference.source_plan,
+                "source_column": reference.source_column,
+                "expected_types": [
+                    json.loads(_type_json(model)) for model in reference.expected_types
+                ],
+            }
+            for reference in result_refs
+        ]
+        return self._native.build_staged(authority, lowered, json.dumps(references))
 
 
 class ExplainedType(TypedDict):
