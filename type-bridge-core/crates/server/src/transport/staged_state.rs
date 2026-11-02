@@ -40,7 +40,10 @@ fn new_staged_preflight_slots() -> Arc<tokio::sync::Semaphore> {
 pub(super) static STAGED_PREFLIGHT_SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(new_staged_preflight_slots);
 
-pub(super) async fn await_before_deadline<F>(deadline: impl Into<Option<Instant>>, future: F) -> Option<F::Output>
+pub(super) async fn await_before_deadline<F>(
+    deadline: impl Into<Option<Instant>>,
+    future: F,
+) -> Option<F::Output>
 where
     F: Future,
 {
@@ -282,12 +285,16 @@ impl StagedQueryState {
     /// Set the finite delivery window shared by staged and raw admission.
     /// Execution may continue after that admission window has closed.
     pub fn with_admission_window(mut self, window: Duration) -> Result<Self, Diagnostic> {
-        let milliseconds = u64::try_from(window.as_millis()).map_err(|_| diagnostic(
-            DiagnosticCategory::InvalidInput,
-            "query_remote_admission_window",
-            "request admission window exceeds the supported range",
-        ))?;
-        self.advertisement = self.advertisement.with_admission_window_milliseconds(milliseconds)?;
+        let milliseconds = u64::try_from(window.as_millis()).map_err(|_| {
+            diagnostic(
+                DiagnosticCategory::InvalidContract,
+                "query_remote_admission_window",
+                "request admission window exceeds the supported range",
+            )
+        })?;
+        self.advertisement = self
+            .advertisement
+            .with_admission_window_milliseconds(milliseconds)?;
         self.admission_window = Duration::from_millis(milliseconds);
         Ok(self)
     }
@@ -378,7 +385,10 @@ impl StagedQueryState {
             .with_answer_limits(ceilings.overrides())?;
         advertisement.fingerprint()?;
         self.advertisement = advertisement;
-        self.execution_timeout = ceilings.timeout_milliseconds.milliseconds().map(Duration::from_millis);
+        self.execution_timeout = ceilings
+            .timeout_milliseconds
+            .milliseconds()
+            .map(Duration::from_millis);
         self.ceilings.answer.max_items = ceilings.items;
         self.ceilings.answer.max_bytes = ceilings.bytes;
         self.ceilings.max_collection_members = ceilings.collection_members;
@@ -666,7 +676,8 @@ pub(super) fn declared_staged_body_oversized(headers: &HeaderMap, limit_bytes: u
 
 pub(super) fn response_audit_deadline(request_deadline: impl Into<Option<Instant>>) -> Instant {
     let now = Instant::now();
-    now.checked_add(RESPONSE_AUDIT_GRACE).unwrap_or_else(|| request_deadline.into().unwrap_or(now))
+    now.checked_add(RESPONSE_AUDIT_GRACE)
+        .unwrap_or_else(|| request_deadline.into().unwrap_or(now))
 }
 
 pub(super) fn staged_request_metadata(

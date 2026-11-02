@@ -136,6 +136,8 @@ impl StagedExecutor {
             .expect("validated limits")
             .with_answer_limits(advertisement.answer_limits().clone())
             .expect("validated limits")
+            .with_admission_window_milliseconds(advertisement.admission_window_milliseconds())
+            .expect("validated admission window")
         } else {
             advertisement
         };

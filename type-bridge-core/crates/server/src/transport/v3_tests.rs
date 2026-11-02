@@ -1740,6 +1740,24 @@ mod raw_tests {
         assert!(records.iter().all(|record|record["compiled_typeql"]==query));
     }
     #[tokio::test]
+    async fn one_admission_window_caps_staged_and_raw_requests() {
+        let host = Arc::new(RawHost::default());
+        let fixture = fixture_with_query(Arc::clone(&host), None, |query| {
+            query.with_admission_window(Duration::from_secs(5)).unwrap()
+        });
+        assert_eq!(fixture.query.admission_window, Duration::from_secs(5));
+        assert_eq!(fixture.advertisement.admission_window_milliseconds(), 5_000);
+        let plan = count_plan(&fixture.declared);
+        let staged = staged(&fixture, &[plan], "shared-admission-window");
+        assert_eq!(staged.limits().admission_window_milliseconds, 5_000);
+        assert_eq!(raw(&fixture, request("read", "read", "raw-window-too-far")).await.0, StatusCode::BAD_REQUEST);
+        assert!(host.queries.lock().unwrap().is_empty());
+        let mut request = request("read", "read", "raw-window-admitted");
+        request["expires_at_unix_ms"] = serde_json::json!(now_ms() + 2_000);
+        assert_eq!(raw(&fixture, request).await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn raw_policy_and_admission_refusals_never_dispatch() {
         let host = Arc::new(RawHost { refuse:true,..Default::default() });
         let fixture = fixture(Arc::clone(&host),None);
