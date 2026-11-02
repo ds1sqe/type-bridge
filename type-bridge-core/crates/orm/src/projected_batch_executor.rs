@@ -701,159 +701,24 @@ impl<'a> BatchPlan<'a> {
         })
     }
 
-    fn mutation_rows(
-        &self,
-        _resolved: &ResolvedPrerequisites,
-    ) -> std::result::Result<GivenRowsSpec, SdkExecutionDiagnostic> {
-        let mut variables = vec!["ordinal".to_owned()];
-        let mut result_rows = Vec::new();
-        result_rows
-            .try_reserve_exact(self.row_count)
+    fn delete_rows(&self) -> std::result::Result<GivenRowsSpec, SdkExecutionDiagnostic> {
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(self.row_count)
             .map_err(|_| allocation_failure())?;
-        match self.operation {
-            ProjectedBatchOperation::Insert => {
-                for (ordinal, _) in &self.rows {
-                    result_rows.push(vec![ordinal_value(*ordinal)?]);
-                }
-            }
-            ProjectedBatchOperation::Update | ProjectedBatchOperation::Delete => {
-                variables.push("target-iid".to_owned());
-                for (ordinal, row) in &self.rows {
-                    result_rows.push(vec![
-                        ordinal_value(*ordinal)?,
-                        GivenValue::String(
-                            row_iid(row)
-                                .expect("update/delete normalized row has IID")
-                                .to_ascii_lowercase(),
-                        ),
-                    ]);
-                }
-            }
-            ProjectedBatchOperation::Put => {
-                for index in 0..self.model.reference_read().key_fields().len() {
-                    variables.push(format!("put-key-{index}"));
-                }
-                for (ordinal, row) in &self.rows {
-                    let create = row_create(row).expect("put row is create");
-                    let mut values = Vec::new();
-                    values
-                        .try_reserve_exact(variables.len())
-                        .map_err(|_| allocation_failure())?;
-                    values.push(ordinal_value(*ordinal)?);
-                    for field in self.model.reference_read().key_fields() {
-                        values.push(given_from_canonical(
-                            create.fields()[field][0].value().clone(),
-                        )?);
-                    }
-                    result_rows.push(values);
-                }
-            }
+        for (ordinal, row) in &self.rows {
+            rows.push(vec![
+                ordinal_value(*ordinal)?,
+                GivenValue::String(
+                    row_iid(row)
+                        .expect("normalized delete IID")
+                        .to_ascii_lowercase(),
+                ),
+            ]);
         }
         Ok(GivenRowsSpec {
-            variables,
-            rows: result_rows,
+            variables: vec!["ordinal".to_owned(), "target-iid".to_owned()],
+            rows,
         })
-    }
-
-    fn attach_rows(
-        &self,
-        resolved: &ResolvedPrerequisites,
-        target_iids: Option<&[String]>,
-    ) -> std::result::Result<GivenRowsSpec, SdkExecutionDiagnostic> {
-        let mut variables = vec!["ordinal".to_owned(), "target-iid".to_owned()];
-        variables.extend(self.field_routes.iter().map(|route| route.variable.clone()));
-        variables.extend(self.role_routes.iter().map(|route| route.variable.clone()));
-        let width = variables.len();
-        let event_count = self
-            .rows
-            .iter()
-            .map(|(_, row)| {
-                row_create(row)
-                    .map_or(0, |create| {
-                        create.fields().values().map(Vec::len).sum::<usize>()
-                            + create.roles().values().map(Vec::len).sum::<usize>()
-                    })
-                    .max(1)
-            })
-            .try_fold(0_usize, usize::checked_add)
-            .ok_or_else(complexity_overflow)?;
-        let mut rows = Vec::new();
-        rows.try_reserve_exact(event_count)
-            .map_err(|_| allocation_failure())?;
-        let field_index = self
-            .field_routes
-            .iter()
-            .enumerate()
-            .map(|(index, route)| (route.field.clone(), index + 2))
-            .collect::<BTreeMap<_, _>>();
-        let role_index = self
-            .role_routes
-            .iter()
-            .enumerate()
-            .map(|(index, route)| (route.key.clone(), index + 2 + self.field_routes.len()))
-            .collect::<BTreeMap<_, _>>();
-
-        let mut flat_reference = 0_usize;
-        for (ordinal, row) in &self.rows {
-            let create = row_create(row).expect("non-delete row has create");
-            let mut emitted = false;
-            for (field, values) in create
-                .fields()
-                .iter()
-                .filter(|(_, values)| !values.is_empty())
-            {
-                let column = *field_index
-                    .get(field)
-                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                for value in values {
-                    let mut event = empty_event(
-                        width,
-                        *ordinal,
-                        target_iids.map(|iids| iids[*ordinal].as_str()),
-                    )?;
-                    event[column] = given_from_canonical(value.value().clone())?;
-                    rows.push(event);
-                    emitted = true;
-                }
-            }
-            for (role, references) in create.roles() {
-                for reference in references {
-                    let prepared_reference = self
-                        .role_references
-                        .get(flat_reference)
-                        .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                    debug_assert_eq!(prepared_reference.reference, reference);
-                    let resolved_reference = resolved.reference(flat_reference)?;
-                    let route = RoleRouteKey {
-                        role: role.clone(),
-                        player_type: resolved_reference.concrete_type.clone(),
-                    };
-                    let column = *role_index
-                        .get(&route)
-                        .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                    let mut event = empty_event(
-                        width,
-                        *ordinal,
-                        target_iids.map(|iids| iids[*ordinal].as_str()),
-                    )?;
-                    event[column] = GivenValue::String(resolved_reference.iid.clone());
-                    rows.push(event);
-                    flat_reference += 1;
-                    emitted = true;
-                }
-            }
-            if !emitted {
-                rows.push(empty_event(
-                    width,
-                    *ordinal,
-                    target_iids.map(|iids| iids[*ordinal].as_str()),
-                )?);
-            }
-        }
-        if flat_reference != self.role_references.len() {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        }
-        Ok(GivenRowsSpec { variables, rows })
     }
 }
 
@@ -1045,31 +910,6 @@ fn empty_event(
     event.push(target_iid);
     event.resize(width, GivenValue::Empty);
     Ok(event)
-}
-
-fn fill_target_iids(
-    rows: &mut GivenRowsSpec,
-    target_iids: &[String],
-) -> std::result::Result<(), SdkExecutionDiagnostic> {
-    for row in &mut rows.rows {
-        let Some(GivenValue::Integer(ordinal)) = row.first() else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        };
-        let ordinal =
-            usize::try_from(*ordinal).map_err(|_| SdkExecutionDiagnostic::internal_failure())?;
-        let iid = target_iids
-            .get(ordinal)
-            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-        let target = row
-            .get_mut(1)
-            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-        let GivenValue::String(target) = target else {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        };
-        target.clear();
-        target.push_str(iid);
-    }
-    Ok(())
 }
 
 fn compile_field_routes(
@@ -1416,15 +1256,10 @@ fn base_prerequisite_row(
     Ok(values)
 }
 
-struct ResolvedReference {
-    concrete_type: TypeId,
-    iid: String,
-}
-
 struct ResolvedPrerequisites {
     put_hits: Vec<Option<String>>,
     put_seen: Vec<bool>,
-    references: Vec<Option<ResolvedReference>>,
+    references: Vec<bool>,
 }
 
 impl ResolvedPrerequisites {
@@ -1445,7 +1280,7 @@ impl ResolvedPrerequisites {
         references
             .try_reserve_exact(plan.role_references.len())
             .map_err(|_| allocation_failure())?;
-        references.resize_with(plan.role_references.len(), || None);
+        references.resize(plan.role_references.len(), false);
         Ok(Self {
             put_hits,
             put_seen,
@@ -1455,7 +1290,7 @@ impl ResolvedPrerequisites {
 
     fn finish(&self, plan: &BatchPlan<'_>) -> std::result::Result<(), SdkExecutionDiagnostic> {
         for (index, resolved) in self.references.iter().enumerate() {
-            if resolved.is_none() {
+            if !resolved {
                 let prepared = &plan.role_references[index];
                 return Err(integrity_at_reference(
                     "projected_batch_reference_missing",
@@ -1469,16 +1304,6 @@ impl ResolvedPrerequisites {
             }
         }
         Ok(())
-    }
-
-    fn reference(
-        &self,
-        index: usize,
-    ) -> std::result::Result<&ResolvedReference, SdkExecutionDiagnostic> {
-        self.references
-            .get(index)
-            .and_then(Option::as_ref)
-            .ok_or_else(SdkExecutionDiagnostic::internal_failure)
     }
 }
 
@@ -1499,10 +1324,6 @@ impl<'plan, 'result> PrerequisiteConsumer<'plan, 'result> {
 
     fn finish(self) -> std::result::Result<(), SdkExecutionDiagnostic> {
         self.deferred.map_or(Ok(()), Err)
-    }
-
-    fn take_deferred(&mut self) -> Option<SdkExecutionDiagnostic> {
-        self.deferred.take()
     }
 
     fn accept_document(
@@ -1560,7 +1381,7 @@ impl<'plan, 'result> PrerequisiteConsumer<'plan, 'result> {
                         prepared.reference.type_id(),
                     ));
                 }
-                let concrete_type = resolve_concrete_type(self.plan, prepared, &concrete_label)?;
+                resolve_concrete_type(self.plan, prepared, &concrete_label)?;
                 if let Some(expected_iid) = prepared.reference.iid()
                     && !iid.eq_ignore_ascii_case(expected_iid)
                 {
@@ -1574,7 +1395,7 @@ impl<'plan, 'result> PrerequisiteConsumer<'plan, 'result> {
                         prepared.reference.type_id(),
                     ));
                 }
-                if self.resolved.references[reference_ordinal].is_some() {
+                if self.resolved.references[reference_ordinal] {
                     return Err(integrity_at_reference(
                         "projected_batch_reference_ambiguous",
                         "A projected role-player reference resolved more than one exact thing",
@@ -1585,8 +1406,7 @@ impl<'plan, 'result> PrerequisiteConsumer<'plan, 'result> {
                         prepared.reference.type_id(),
                     ));
                 }
-                self.resolved.references[reference_ordinal] =
-                    Some(ResolvedReference { concrete_type, iid });
+                self.resolved.references[reference_ordinal] = true;
                 Ok(())
             }
             _ => Err(integrity_at_type(
@@ -1659,17 +1479,13 @@ fn resolve_concrete_type(
     }
 }
 
-struct OrdinalIdentityConsumer {
+struct DeleteIdentityConsumer {
     slots: Vec<Option<String>>,
-    operation: ProjectedBatchOperation,
     deferred: Option<SdkExecutionDiagnostic>,
 }
 
-impl OrdinalIdentityConsumer {
-    fn new(
-        row_count: usize,
-        operation: ProjectedBatchOperation,
-    ) -> std::result::Result<Self, SdkExecutionDiagnostic> {
+impl DeleteIdentityConsumer {
+    fn new(row_count: usize) -> std::result::Result<Self, SdkExecutionDiagnostic> {
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(row_count)
@@ -1677,60 +1493,16 @@ impl OrdinalIdentityConsumer {
         slots.resize(row_count, None);
         Ok(Self {
             slots,
-            operation,
             deferred: None,
         })
     }
 
-    fn finish(
-        &self,
-        plan: &BatchPlan<'_>,
-        resolved: &ResolvedPrerequisites,
-    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
+    fn finish(&self, plan: &BatchPlan<'_>) -> std::result::Result<(), SdkExecutionDiagnostic> {
         if let Some(error) = &self.deferred {
             return Err(error.clone());
         }
         for (ordinal, value) in self.slots.iter().enumerate() {
-            if value.is_none() {
-                return Err(integrity_at_row(
-                    "projected_batch_mutation_result_missing",
-                    "A projected batch mutation omitted one input ordinal",
-                    plan.model.id(),
-                    ordinal,
-                ));
-            }
-            if plan.operation == ProjectedBatchOperation::Put
-                && let Some(expected) = &resolved.put_hits[ordinal]
-                && !value
-                    .as_deref()
-                    .is_some_and(|value| value.eq_ignore_ascii_case(expected))
-            {
-                return Err(integrity_at_row(
-                    "projected_batch_put_identity_changed",
-                    "A projected put hit returned a different exact IID",
-                    plan.model.id(),
-                    ordinal,
-                ));
-            }
-            if plan.operation == ProjectedBatchOperation::Update {
-                let expected = row_iid(plan.rows[ordinal].1)
-                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                if !value
-                    .as_deref()
-                    .is_some_and(|value| value.eq_ignore_ascii_case(expected))
-                {
-                    return Err(integrity_at_row(
-                        "projected_batch_update_identity_changed",
-                        "A projected update returned a different exact target IID",
-                        plan.model.id(),
-                        ordinal,
-                    ));
-                }
-            }
-            if plan.operation == ProjectedBatchOperation::Delete
-                && let Some(returned) = value.as_deref()
-                && !returned.is_empty()
-            {
+            if let Some(returned) = value.as_deref().filter(|iid| !iid.is_empty()) {
                 let expected = row_iid(plan.rows[ordinal].1)
                     .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
                 if !is_canonical_thing_iid(returned) || !returned.eq_ignore_ascii_case(expected) {
@@ -1743,48 +1515,15 @@ impl OrdinalIdentityConsumer {
                 }
             }
         }
-        if plan.operation != ProjectedBatchOperation::Delete {
-            for (ordinal, iid) in self.slots.iter().enumerate() {
-                let iid = iid
-                    .as_deref()
-                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                if let Some(first) = self.slots[..ordinal].iter().position(|candidate| {
-                    candidate
-                        .as_deref()
-                        .is_some_and(|candidate| candidate.eq_ignore_ascii_case(iid))
-                }) {
-                    return Err(integrity_at_row_with_first(
-                        "projected_batch_mutation_identity_duplicate",
-                        "Provider mutation returned the same IID for two input ordinals",
-                        plan.model.id(),
-                        ordinal,
-                        first,
-                    ));
-                }
-            }
-        }
         Ok(())
     }
 
     fn take_deferred(&mut self) -> Option<SdkExecutionDiagnostic> {
         self.deferred.take()
     }
-
-    fn move_iids_into(
-        self,
-        output: &mut Vec<String>,
-    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        if !output.is_empty() || output.capacity() < self.slots.len() {
-            return Err(SdkExecutionDiagnostic::internal_failure());
-        }
-        for value in self.slots {
-            output.push(value.ok_or_else(SdkExecutionDiagnostic::internal_failure)?);
-        }
-        Ok(())
-    }
 }
 
-impl AnswerConsumer for OrdinalIdentityConsumer {
+impl AnswerConsumer for DeleteIdentityConsumer {
     fn accept(&mut self, item: AnswerItem) -> crate::Result<AnswerControl> {
         if self.deferred.is_some() {
             return Ok(AnswerControl::Continue);
@@ -1799,13 +1538,7 @@ impl AnswerConsumer for OrdinalIdentityConsumer {
             let ordinal = document_index(&document, "ordinal", self.slots.len())?;
             let iid = document.as_object().and_then(|object| object.get("iid"));
             let mut value = match iid {
-                None if self.operation == ProjectedBatchOperation::Delete => String::new(),
-                None => {
-                    return Err(integrity(
-                        "projected_batch_mutation_identity_missing",
-                        "A projected batch mutation omitted its canonical IID",
-                    ));
-                }
+                None => String::new(),
                 Some(value) => unwrap_scalar(value)
                     .as_str()
                     .map(str::to_owned)
@@ -1816,13 +1549,6 @@ impl AnswerConsumer for OrdinalIdentityConsumer {
                         )
                     })?,
             };
-            if self.operation != ProjectedBatchOperation::Delete && !is_canonical_thing_iid(&value)
-            {
-                return Err(integrity(
-                    "provider_identity_mismatch",
-                    "A projected batch mutation returned a noncanonical IID",
-                ));
-            }
             value.make_ascii_lowercase();
             if self.slots[ordinal].replace(value).is_some() {
                 return Err(integrity(
@@ -1942,23 +1668,6 @@ impl ExecutionLedger {
 
     pub(crate) fn remaining_items(&self) -> u64 {
         self.limits.items.saturating_sub(self.items)
-    }
-
-    fn require_remaining_items(
-        &self,
-        required: u64,
-    ) -> std::result::Result<(), SdkExecutionDiagnostic> {
-        let remaining = self.remaining_items();
-        if required > remaining {
-            return Err(resource_limit(
-                "projected_batch_reply_item_limit",
-                "Projected batch requires more correlated provider answers than remain",
-                "items",
-                self.items.saturating_add(required),
-                self.limits.items,
-            ));
-        }
-        Ok(())
     }
 
     pub(crate) fn charge_projected(
@@ -3452,21 +3161,6 @@ pub(crate) fn integrity_at_row(
             SdkDiagnosticPathSegment::Type(type_id.clone()),
         ],
     )
-}
-
-fn integrity_at_row_with_first(
-    code_value: &'static str,
-    message_value: &'static str,
-    type_id: &TypeId,
-    ordinal: usize,
-    first: usize,
-) -> SdkExecutionDiagnostic {
-    integrity_at_row(code_value, message_value, type_id, ordinal)
-        .try_with_detail(
-            name("first_conflicting_index"),
-            SdkDiagnosticDetailValue::Count(u64::try_from(first).unwrap_or(u64::MAX)),
-        )
-        .unwrap_or_else(|_| SdkExecutionDiagnostic::internal_failure())
 }
 
 #[allow(clippy::too_many_arguments)]

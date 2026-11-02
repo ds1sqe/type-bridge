@@ -8,10 +8,8 @@ use crate::plan_builders::{
 use crate::query_plan_exec::{self, remote_value};
 use crate::session::backend::QueryResult;
 use type_bridge_contract::diagnostic::Diagnostic;
-use type_bridge_contract::query_plan::v3::{
-    AttachItem, DeleteItem, DocumentRole, InsertThing, Stage,
-};
-use type_bridge_contract::query_plan::{QueryOperand, QueryPattern, ReduceAssignment, Reducer};
+use type_bridge_contract::query_plan::v3::{DeleteItem, DocumentRole, Stage};
+use type_bridge_contract::query_plan::{QueryOperand, QueryPattern};
 use type_bridge_contract::query_remote::RemoteValue;
 
 fn diagnostic(error: Diagnostic) -> SdkExecutionDiagnostic {
@@ -290,350 +288,41 @@ impl BatchPlan<'_> {
             .map_err(diagnostic)
     }
 
-    fn native_mutation(
+    fn native_delete(
         &self,
         rows: GivenRowsSpec,
-        first: Option<&RoleRouteKey>,
-        operation: ProjectedBatchOperation,
     ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
-        let mut columns = vec![(ValueTypeTag::Long, false)];
-        match operation {
-            ProjectedBatchOperation::Update | ProjectedBatchOperation::Delete => {
-                columns.push((ValueTypeTag::String, false))
-            }
-            ProjectedBatchOperation::Put => {
-                for key in self.model.reference_read().key_fields() {
-                    columns.push((self.domain(key)?, false));
-                }
-            }
-            _ => {}
-        }
-        if first.is_some() {
-            columns.push((ValueTypeTag::String, false));
-        }
+        let columns = [(ValueTypeTag::Long, false), (ValueTypeTag::String, false)];
         let mut draft = BatchDraft::new(rows, &columns).map_err(diagnostic)?;
         let mut patterns = Vec::new();
         let ordinal = draft
             .bind_input(0, "ordinal", &mut patterns)
             .map_err(diagnostic)?;
         let thing = draft.draft.bind("thing").map_err(diagnostic)?;
-        let mut players = Vec::new();
-        if let Some(first) = first {
-            let player = draft.draft.bind("first").map_err(diagnostic)?;
-            patterns.push(build::isa(player, &first.player_type).into());
-            patterns.push(
-                QueryPattern::Iid {
-                    binding: player,
-                    iid: draft.inputs.last().expect("first player input").clone(),
-                }
-                .into(),
-            );
-            players.push((first.role.clone(), player));
-        }
-        if matches!(
-            operation,
-            ProjectedBatchOperation::Update | ProjectedBatchOperation::Delete
-        ) {
-            patterns.push(build::isa(thing, self.model.id()).into());
-            patterns.push(
-                QueryPattern::Iid {
-                    binding: thing,
-                    iid: draft.inputs[1].clone(),
-                }
-                .into(),
-            );
-        }
-        let mut pipeline = vec![Stage::Match { patterns }];
-        let mut writes = false;
-        if matches!(
-            operation,
-            ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put
-        ) {
-            let fields = if operation == ProjectedBatchOperation::Put {
-                self.model
-                    .reference_read()
-                    .key_fields()
-                    .iter()
-                    .enumerate()
-                    .map(|(index, key)| {
-                        Ok((
-                            self.declaring_field(key)?.clone(),
-                            draft.inputs[index + 1].clone(),
-                        ))
-                    })
-                    .collect::<std::result::Result<Vec<_>, SdkExecutionDiagnostic>>()?
-            } else {
-                Vec::new()
-            };
-            let things = vec![InsertThing {
-                binding: thing,
-                type_id: self.model.id().clone(),
-                fields,
-                players,
-            }];
-            pipeline.push(if operation == ProjectedBatchOperation::Put {
-                Stage::Put {
-                    things,
-                    include_subtypes: false,
-                }
-            } else {
-                Stage::Insert { things }
-            });
-            writes = true;
-        }
-        if matches!(
-            operation,
-            ProjectedBatchOperation::Update | ProjectedBatchOperation::Put
-        ) {
-            for field in self
-                .model
-                .complete_read()
-                .fields()
-                .iter()
-                .filter(|field| field.multiplicity().collection_mode().is_unordered())
-            {
-                if operation == ProjectedBatchOperation::Put
-                    && self
-                        .model
-                        .reference_read()
-                        .key_fields()
-                        .contains(field.token())
-                {
-                    continue;
-                }
-                pipeline.push(Stage::Delete {
-                    items: vec![DeleteItem::Has {
-                        owner: thing,
-                        field: self.declaring_field(field.token())?.clone(),
-                    }],
-                });
-                writes = true;
-                pipeline.push(Stage::Select {
-                    bindings: vec![ordinal, thing],
-                });
-                pipeline.push(Stage::Distinct);
-            }
-            for (role, _) in self
-                .model
-                .complete_read()
-                .roles()
-                .iter()
-                .filter(|(_, role)| role.multiplicity().collection_mode().is_unordered())
-            {
-                pipeline.push(Stage::Delete {
-                    items: vec![DeleteItem::Players {
-                        relation: thing,
-                        role: role.clone(),
-                    }],
-                });
-                writes = true;
-                pipeline.push(Stage::Select {
-                    bindings: vec![ordinal, thing],
-                });
-                pipeline.push(Stage::Distinct);
-            }
-        }
-        if operation == ProjectedBatchOperation::Delete {
-            pipeline.push(Stage::Delete {
-                items: vec![DeleteItem::Thing { binding: thing }],
-            });
-            return draft
-                .finish(
-                    self.installed
-                        .plan_authority()
-                        .map_err(diagnostic)?
-                        .as_ref(),
-                    pipeline,
-                    true,
-                    vec![ordinal],
-                )
-                .map_err(diagnostic);
-        }
-        draft
-            .finish(
-                self.installed
-                    .plan_authority()
-                    .map_err(diagnostic)?
-                    .as_ref(),
-                pipeline,
-                writes,
-                vec![ordinal, thing],
-            )
-            .map_err(diagnostic)
-    }
-
-    fn native_attach(
-        &self,
-        rows: GivenRowsSpec,
-        snapshot: bool,
-    ) -> std::result::Result<BuiltPlan, SdkExecutionDiagnostic> {
-        let mut columns = vec![(ValueTypeTag::Long, false), (ValueTypeTag::String, false)];
-        if !snapshot {
-            for field in &self.field_routes {
-                columns.push((self.domain(&field.field)?, true));
-            }
-            columns.extend(
-                self.role_routes
-                    .iter()
-                    .map(|_| (ValueTypeTag::String, true)),
-            );
-        }
-        let mut draft = BatchDraft::new(rows, &columns).map_err(diagnostic)?;
-        let mut patterns = Vec::new();
-        let ordinal = draft
-            .bind_input(0, "ordinal", &mut patterns)
-            .map_err(diagnostic)?;
-        let thing = draft.draft.bind("thing").map_err(diagnostic)?;
-        patterns.extend([
-            build::isa(thing, self.model.id()).into(),
+        patterns.push(build::isa(thing, self.model.id()).into());
+        patterns.push(
             QueryPattern::Iid {
                 binding: thing,
                 iid: draft.inputs[1].clone(),
             }
             .into(),
-        ]);
-        let mut items = Vec::new();
-        if !snapshot {
-            for (index, field) in self.field_routes.iter().enumerate() {
-                items.push(AttachItem::Has {
-                    optional: true,
-                    owner: thing,
-                    field: self.declaring_field(&field.field)?.clone(),
-                    operand: draft.inputs[index + 2].clone(),
-                });
-            }
-            for (index, role) in self.role_routes.iter().enumerate() {
-                let player = draft.draft.bind("player").map_err(diagnostic)?;
-                patterns.push(
-                    QueryPattern::Try {
-                        patterns: vec![
-                            build::isa(player, &role.key.player_type),
-                            QueryPattern::Iid {
-                                binding: player,
-                                iid: draft.inputs[index + 2 + self.field_routes.len()].clone(),
-                            },
-                        ],
-                    }
-                    .into(),
-                );
-                items.push(AttachItem::Links {
-                    optional: true,
-                    relation: thing,
-                    role: role.key.role.clone(),
-                    player,
-                });
-            }
-        }
-        let mut pipeline = vec![Stage::Match { patterns }];
-        let writes = !items.is_empty();
-        if writes {
-            pipeline.push(Stage::Attach { items });
-        }
-        pipeline.push(Stage::Select {
-            bindings: vec![ordinal, thing],
-        });
-        pipeline.push(Stage::Distinct);
-        if self.model.id().kind() == TypeKind::Relation && !snapshot {
-            let count = draft.draft.bind("events").map_err(diagnostic)?;
-            pipeline.push(Stage::Reduce {
-                assignments: vec![ReduceAssignment::new(count, Reducer::Count, None)],
-                groups: vec![ordinal, thing],
-            });
-        }
-        pipeline.push(Stage::Fetch(
-            build::document(
-                thing,
-                ordinal,
-                self.model
-                    .complete_read()
-                    .roles()
-                    .iter()
-                    .map(|(role, projection)| {
-                        if projection.multiplicity().collection_mode().is_unordered() {
-                            DocumentRole::collected(role.clone())
-                        } else {
-                            DocumentRole::new(role.clone(), false)
-                        }
-                    }),
-            )
-            .map_err(diagnostic)?,
-        ));
+        );
         draft
             .finish(
                 self.installed
                     .plan_authority()
                     .map_err(diagnostic)?
                     .as_ref(),
-                pipeline,
-                writes,
-                vec![],
+                vec![
+                    Stage::Match { patterns },
+                    Stage::Delete {
+                        items: vec![DeleteItem::Thing { binding: thing }],
+                    },
+                ],
+                true,
+                vec![ordinal],
             )
             .map_err(diagnostic)
-    }
-
-    fn native_mutation_groups(
-        &self,
-        resolved: &ResolvedPrerequisites,
-    ) -> std::result::Result<
-        Vec<(ProjectedBatchOperation, Option<RoleRouteKey>, GivenRowsSpec)>,
-        SdkExecutionDiagnostic,
-    > {
-        if self.model.id().kind() != TypeKind::Relation
-            || !matches!(
-                self.operation,
-                ProjectedBatchOperation::Insert | ProjectedBatchOperation::Put
-            )
-        {
-            return Ok(vec![(self.operation, None, self.mutation_rows(resolved)?)]);
-        }
-        let mut firsts = BTreeMap::new();
-        for (index, reference) in self.role_references.iter().enumerate() {
-            firsts
-                .entry(reference.owner_ordinal)
-                .or_insert((reference, resolved.reference(index)?));
-        }
-        let mut groups: BTreeMap<Option<RoleRouteKey>, Vec<Vec<GivenValue>>> = BTreeMap::new();
-        for (ordinal, _) in &self.rows {
-            if self.operation == ProjectedBatchOperation::Put
-                && let Some(iid) = &resolved.put_hits[*ordinal]
-            {
-                groups.entry(None).or_default().push(vec![
-                    ordinal_value(*ordinal)?,
-                    GivenValue::String(iid.clone()),
-                ]);
-                continue;
-            }
-            let (reference, resolved) = firsts
-                .get(ordinal)
-                .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-            let key = RoleRouteKey {
-                role: reference.role.clone(),
-                player_type: resolved.concrete_type.clone(),
-            };
-            groups.entry(Some(key)).or_default().push(vec![
-                ordinal_value(*ordinal)?,
-                GivenValue::String(resolved.iid.clone()),
-            ]);
-        }
-        Ok(groups
-            .into_iter()
-            .map(|(key, rows)| {
-                let operation = if key.is_some() {
-                    ProjectedBatchOperation::Insert
-                } else {
-                    ProjectedBatchOperation::Update
-                };
-                let variables = vec![
-                    "ordinal".into(),
-                    if key.is_some() {
-                        "first-iid".into()
-                    } else {
-                        "target-iid".into()
-                    },
-                ];
-                (operation, key, GivenRowsSpec { variables, rows })
-            })
-            .collect())
     }
 }
 
@@ -836,67 +525,17 @@ impl ProjectedBatchExecutor<'_> {
             prepared.batch().resource_measure().bytes(),
         );
         preflight.charge_preflight(plan.preflight_bytes, plan.statement_count)?;
-        ledger.charge_preflight(0, plan.statement_count)?;
-        let mut prerequisite_statements = 0_usize;
-        let mut resolved = ResolvedPrerequisites::new(plan)?;
-        if let Some(statement) = plan.prerequisite.take() {
-            let mut consumer = PrerequisiteConsumer::new(plan, &mut resolved);
-            for chunk in input_chunks(statement.rows, true)? {
-                prerequisite_statements += 1;
-                ledger.limits = prepared
-                    .limits()
-                    .for_adapter_statements(prerequisite_statements + 2);
-                ledger.charge_preflight(0, (prerequisite_statements + 2) as u32)?;
-                let native = plan.native_prerequisite(chunk)?;
-                dispatch(
-                    lease,
-                    &native,
-                    Reply::Prerequisite,
-                    prepared,
-                    &mut consumer,
-                    &mut ledger,
-                    true,
-                    &authority,
-                )
-                .await
-                .map_err(|later| consumer.take_deferred().unwrap_or(later))?;
-            }
-            consumer.finish()?;
-        }
-        resolved.finish(plan)?;
-        if plan.operation != ProjectedBatchOperation::Delete {
-            ledger.require_remaining_items(
-                (plan.row_count as u64)
-                    .saturating_mul(2)
-                    .saturating_add(plan.role_references.len() as u64),
-            )?;
-        }
-        let groups = plan.native_mutation_groups(&resolved)?;
-        // Build every mutation before the first write, so invalid groups cannot partially execute.
-        let mut mutations = Vec::new();
-        for (operation, first, rows) in groups {
-            for chunk in input_chunks(rows, false)? {
-                mutations.push(plan.native_mutation(chunk, first.as_ref(), operation)?);
-            }
-        }
-        let mut pending_attach = if plan.operation == ProjectedBatchOperation::Delete {
-            None
-        } else {
-            Some(input_chunks_reserved(
-                plan.attach_rows(&resolved, None)?,
-                false,
-                MAX_PROVIDER_IID_BYTES as usize,
-            )?)
-        };
-        let statement_count =
-            prerequisite_statements + mutations.len() + pending_attach.as_ref().map_or(0, Vec::len);
+        let mutations = input_chunks(plan.delete_rows()?, false)?
+            .into_iter()
+            .map(|rows| plan.native_delete(rows))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let statement_count = mutations.len();
         ledger.limits = prepared.limits().for_adapter_statements(statement_count);
         ledger.charge_preflight(
             0,
             u32::try_from(statement_count).map_err(|_| complexity_overflow())?,
         )?;
-        let mut identities = OrdinalIdentityConsumer::new(plan.row_count, plan.operation)?;
-        // A missing exact delete is idempotent; only present targets produce native rows.
+        let mut identities = DeleteIdentityConsumer::new(plan.row_count)?;
         for native in mutations {
             dispatch(
                 lease,
@@ -911,40 +550,9 @@ impl ProjectedBatchExecutor<'_> {
             .await
             .map_err(|later| identities.take_deferred().unwrap_or(later))?;
         }
-        if plan.operation == ProjectedBatchOperation::Delete {
-            for slot in &mut identities.slots {
-                if slot.is_none() {
-                    *slot = Some(String::new());
-                }
-            }
-        }
-        identities.finish(plan, &resolved)?;
-        if plan.operation == ProjectedBatchOperation::Delete {
-            prepared.check_control()?;
-            return Ok(ProjectedBatchResult::Deleted);
-        }
-        let mut consumer = HydrationConsumer::new(self, plan, identity)?;
-        identities.move_iids_into(&mut consumer.targets)?;
-        for mut rows in pending_attach.take().expect("non-delete attach rows") {
-            fill_target_iids(&mut rows, &consumer.targets)?;
-            let native = plan.native_attach(rows, false)?;
-            dispatch(
-                lease,
-                &native,
-                Reply::Hydration,
-                prepared,
-                &mut consumer,
-                &mut ledger,
-                false,
-                &authority,
-            )
-            .await
-            .map_err(|later| consumer.take_deferred().unwrap_or(later))?;
-        }
-        let things = consumer.finish()?;
-        ledger.charge_projected(&things)?;
+        identities.finish(plan)?;
         prepared.check_control()?;
-        Ok(ProjectedBatchResult::Things(things))
+        Ok(ProjectedBatchResult::Deleted)
     }
 }
 

@@ -5,10 +5,8 @@ use super::{BuiltPlan, PlanDraft, ValueTransport};
 use crate::session::backend::{GivenRowsSpec, GivenValue};
 use type_bridge_contract::diagnostic::{Diagnostic, DiagnosticCategory};
 use type_bridge_contract::id::TypeId;
-use type_bridge_contract::migration_assertion::{BindingId, QueryVariable, ValueComparator};
-use type_bridge_contract::query_plan::v3::{
-    DocumentRole, DocumentScalar, Expr, Operation, Pattern, Stage, ThingDocument, WriteReturns,
-};
+use type_bridge_contract::migration_assertion::{BindingId, ValueComparator};
+use type_bridge_contract::query_plan::v3::{Expr, Operation, Pattern, Stage, WriteReturns};
 use type_bridge_contract::query_plan::{InputRow, QueryOperand, QueryOutput, QueryPattern};
 use type_bridge_contract::temporal::{CanonicalDateTimeTz, CanonicalDuration, TimeZoneDesignator};
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, ValueTypeTag};
@@ -110,19 +108,6 @@ pub(crate) fn literal(value: i64) -> QueryOperand {
     QueryOperand::Literal {
         value: CanonicalValue::Long(value),
     }
-}
-
-pub(crate) fn document(
-    thing: BindingId,
-    ordinal: BindingId,
-    roles: impl Iterator<Item = DocumentRole>,
-) -> Result<ThingDocument, Diagnostic> {
-    let mut document = ThingDocument::new(thing, roles.collect());
-    document.scalars.push(DocumentScalar {
-        key: QueryVariable::new("ordinal")?,
-        binding: ordinal,
-    });
-    Ok(document)
 }
 
 fn invalid() -> Diagnostic {
