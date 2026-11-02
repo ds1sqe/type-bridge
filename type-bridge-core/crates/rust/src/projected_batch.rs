@@ -1,7 +1,6 @@
-//! Successor-runtime adapters for binding-neutral projected mutation batches.
+//! V3 adapters for binding-neutral projected mutation batches.
 
 use type_bridge_contract::id::TypeId;
-use type_bridge_contract::projection::ProjectionHandler;
 use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticCategory, SdkExecutionDiagnostic};
 use type_bridge_orm::session::context::TransactionContext;
 use type_bridge_orm::{
@@ -19,8 +18,25 @@ use crate::projected_codec::{materialize_projected, project_create, project_enco
 #[cfg(test)]
 mod tests;
 
-pub(crate) fn uses_successor_batch_runtime(installed: &InstalledRuntimeProjection) -> bool {
-    installed.projection().generator_handlers() == [ProjectionHandler::rust_v2()]
+pub(crate) fn create_operation(
+    installed: &InstalledRuntimeProjection,
+    model: &TypeId,
+    put: bool,
+) -> ProjectedBatchOperation {
+    if put
+        && !installed
+            .projection()
+            .models()
+            .get(model)
+            .expect("validated manager model")
+            .reference_read()
+            .key_fields()
+            .is_empty()
+    {
+        ProjectedBatchOperation::Put
+    } else {
+        ProjectedBatchOperation::Insert
+    }
 }
 
 pub(crate) fn validate_binding_row_count(row_count: usize) -> Result<()> {

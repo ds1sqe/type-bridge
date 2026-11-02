@@ -182,6 +182,35 @@ All notable changes to TypeBridge will be documented in this file.
   `InMemoryReplayStore`, and `ReplayStoreError` move from `transport::v2`
   to `transport::staged_state`.
 
+- Rust manager `insert_many`, `put_many`, `update_many` and `delete_many`
+  always execute shared V3 plans, including managers from older generated
+  packages and managers borrowing a write transaction. Regenerate packages
+  and handle the shared batch diagnostics: `invalid_iid` becomes
+  `noncanonical_iid` with a `rows[index].iid` path, and post-write generated
+  materialization failures use `generated_model_materialization_failed`
+  instead of the model's private validation code. Separate identity/refetch
+  failures `iid_count_mismatch` and `missing_post_write_row` become
+  `projected_batch_hydration_missing` for an omitted result ordinal;
+  duplicate result ordinals use `projected_batch_hydration_duplicate`
+  instead of `ambiguous_provider_row`. Generated input-validation codes
+  retain their field suffix beneath the new `rows[index]` path. Duplicate
+  create-field and role tokens use `duplicate_field_token` and
+  `duplicate_role_token` from shared projected validation instead of
+  `duplicate_field_evidence` and `duplicate_role_evidence`.
+- Rust managers from older generated packages now share V3 batch preflight:
+  repeated Put keys fail with `duplicate_batch_key`, and repeated Update or
+  Delete IIDs fail with `duplicate_batch_target` before provider I/O.
+  Earlier Rust loops accepted repeated keys and targets, including repeated
+  idempotent deletes. Batch provider failures now use redacted
+  `provider_operation_failed` diagnostics instead of an unclassified
+  `Error::QueryExecution` carrying provider text.
+- Empty Rust manager batches now validate schema and model authority before
+  returning without provider work; previously bypassed errors now include
+  `schema_not_bound` and `wrong_model_kind`. Rust write-transaction commits
+  use the shared classified boundary: an unclassified transaction error is
+  replaced by `commit_definitely_aborted`, `commit_outcome_unknown`, or
+  `transaction_rollback_only`, according to the retained transaction state.
+
 - Native Python `PyRustDatabase` and `PyRustTransactionContext` are renamed to
   `PyDatabase` and `PyTransactionContext`. Update direct native consumers and
   regenerate Python packages.

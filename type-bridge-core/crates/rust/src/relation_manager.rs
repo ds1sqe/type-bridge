@@ -7,8 +7,8 @@ use type_bridge_contract::id::is_canonical_thing_iid;
 use type_bridge_orm::_manager::DynamicRelationManager;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::{
-    DynamicAttributeMap, DynamicRelationRow, DynamicRolePlayerInput, ProjectedBatchOperation,
-    ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
+    DynamicRelationRow, ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor,
+    ProjectedManagerComparison,
 };
 
 use crate::__codegen::{
@@ -18,15 +18,14 @@ use crate::__codegen::{
 use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
 use crate::projected_batch::{
-    checked_batch_ordinal, create_rows, delete_rows, encode_batch_create, execute_owned_delete,
-    execute_owned_things, prepare_batch, project_encoded_batch_create, reserved_binding_vec,
-    uses_successor_batch_runtime, validate_binding_row_count,
+    checked_batch_ordinal, create_operation, create_rows, delete_rows, encode_batch_create,
+    execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
+    reserved_binding_vec, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
 use crate::projected_filter::ProjectedRelationFilter;
 use crate::relation_codec::{
-    hydrate_relation, lower_relation_create, resolve_discovered_relation,
-    resolve_relation_authority,
+    hydrate_relation, resolve_discovered_relation, resolve_relation_authority,
 };
 use crate::schema::Schema;
 use crate::{Database, Result};
@@ -54,16 +53,6 @@ fn schema_not_bound() -> Error {
     )
 }
 
-fn missing_post_write_row() -> Error {
-    Error::model_validation(
-        ModelValidationPhase::Hydration,
-        "missing_post_write_row",
-        vec!["iid".into()],
-        "written relation was not returned",
-        None,
-    )
-}
-
 fn ambiguous_provider_row() -> Error {
     Error::model_validation(
         ModelValidationPhase::Hydration,
@@ -82,28 +71,6 @@ pub(crate) fn one_coalesced_row(
         1 => Ok(Some(rows.remove(0))),
         _ => Err(ambiguous_provider_row()),
     }
-}
-
-/// Exact-fetch, coalesce, hydrate, and materialize one freshly written relation
-/// through the shared open context without any transaction-terminal operation.
-pub(crate) async fn rehydrate_written_relation<M>(
-    manager: &DynamicRelationManager<'_>,
-    iid: &str,
-    id: &type_bridge_contract::id::TypeId,
-    installed: &type_bridge_orm::InstalledRuntimeProjection,
-) -> Result<M>
-where
-    M: crate::__codegen::CompleteModel,
-{
-    let rows = manager
-        .get_by_iid_exact(iid)
-        .await
-        .map_err(Error::from_orm)?;
-    let row = one_coalesced_row(rows)?.ok_or_else(missing_post_write_row)?;
-    let hydrated = hydrate_relation(row, id, installed)?;
-    M::materialize(&hydrated, &HydrationCapability::new()).map_err(|error| {
-        crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
-    })
 }
 
 /// Schema-bound, model-branded manager for exact relation operations.
@@ -156,12 +123,6 @@ where
         V: Model<Schema = S> + QueryValued,
     {
         self.filter()?.where_(field, operator, value)
-    }
-
-    fn successor_batches_enabled(&self) -> bool {
-        self.db
-            .installed_schema()
-            .is_some_and(|installed| uses_successor_batch_runtime(installed))
     }
 
     /// Register one generated-model lifecycle hook on this manager.
@@ -249,114 +210,23 @@ where
     /// Inserts each item and returns complete freshly hydrated models in input order, or one
     /// error for the whole call with no partial result vector.
     pub async fn insert_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
-        let successor = self.successor_batches_enabled();
-        if successor {
-            validate_binding_row_count(inputs.len())?;
-        }
-        if inputs.is_empty() && !successor {
-            return Ok(Vec::new());
-        }
+        validate_binding_row_count(inputs.len())?;
         if !self.hooks.has_hooks() {
             return self.write_many(inputs, false).await;
         }
-        if successor {
-            return self
-                .successor_write_many_with_hooks(
-                    inputs,
-                    CrudOperation::Insert,
-                    ProjectedBatchOperation::Insert,
-                )
-                .await;
-        }
-        let encoded = inputs
-            .iter()
-            .map(Self::encode_hook_input)
-            .collect::<Result<Vec<_>>>()?;
-        let mut states = Vec::with_capacity(inputs.len());
-        for input in &encoded {
-            states.push(
-                self.hooks
-                    .run_pre(
-                        M::TYPE_ID_JSON,
-                        ModelKind::Relation,
-                        CrudOperation::Insert,
-                        None,
-                        Some(input),
-                    )
-                    .await?,
-            );
-        }
-        let outputs = self.write_many(inputs, false).await?;
-        for ((input, output), state) in encoded.iter().zip(&outputs).zip(states) {
-            self.hooks
-                .run_post(
-                    M::TYPE_ID_JSON,
-                    ModelKind::Relation,
-                    CrudOperation::Insert,
-                    Some(output.iid()),
-                    Some(input),
-                    state,
-                )
-                .await;
-        }
-        Ok(outputs)
+        self.write_many_with_hooks(inputs, CrudOperation::Insert)
+            .await
     }
     /// Applies the per-item [`Self::put`] key-or-insert rule, including complete replacement
     /// of non-key ownership and active role players for existing exact rows, returning
     /// complete freshly hydrated models in input order, or one error for the whole call with
     /// no partial vector.
     pub async fn put_many(&self, inputs: Vec<M::Create>) -> Result<Vec<M>> {
-        let successor = self.successor_batches_enabled();
-        if successor {
-            validate_binding_row_count(inputs.len())?;
-        }
-        if inputs.is_empty() && !successor {
-            return Ok(Vec::new());
-        }
+        validate_binding_row_count(inputs.len())?;
         if !self.hooks.has_hooks() {
             return self.write_many(inputs, true).await;
         }
-        if successor {
-            return self
-                .successor_write_many_with_hooks(
-                    inputs,
-                    CrudOperation::Put,
-                    ProjectedBatchOperation::Put,
-                )
-                .await;
-        }
-        let encoded = inputs
-            .iter()
-            .map(Self::encode_hook_input)
-            .collect::<Result<Vec<_>>>()?;
-        let mut states = Vec::with_capacity(inputs.len());
-        for input in &encoded {
-            states.push(
-                self.hooks
-                    .run_pre(
-                        M::TYPE_ID_JSON,
-                        ModelKind::Relation,
-                        CrudOperation::Put,
-                        None,
-                        Some(input),
-                    )
-                    .await?,
-            );
-        }
-        let outputs = self.write_many(inputs, true).await?;
-        for ((input, output), state) in encoded.iter().zip(&outputs).zip(states) {
-            self.hooks
-                .run_post(
-                    M::TYPE_ID_JSON,
-                    ModelKind::Relation,
-                    CrudOperation::Put,
-                    Some(output.iid()),
-                    Some(input),
-                    state,
-                )
-                .await;
-        }
-        Ok(outputs)
+        self.write_many_with_hooks(inputs, CrudOperation::Put).await
     }
     /// Completely replaces non-key ownership and the complete effective active-role player
     /// set on the exact relation at canonical `iid`, preserves that IID and its keys, and
@@ -419,7 +289,11 @@ where
             ProjectedBatchOperation::Delete,
             delete_rows(iids)?,
         )?;
-        let mut states = reserved_binding_vec(iids.len())?;
+        let mut states = if self.hooks.has_hooks() {
+            reserved_binding_vec(iids.len())?
+        } else {
+            Vec::new()
+        };
         if self.hooks.has_hooks() {
             for (ordinal, iid) in iids.iter().enumerate() {
                 states.push(
@@ -496,147 +370,62 @@ where
     /// complete freshly hydrated models in input order. Every input and pre-hook completes
     /// before database work begins; any write or hydration failure rolls back the whole batch.
     pub async fn update_many(&self, inputs: Vec<(String, M::Create)>) -> Result<Vec<M>> {
-        let successor = self.successor_batches_enabled();
-        if successor {
-            validate_binding_row_count(inputs.len())?;
-        }
-        if inputs.is_empty() && !successor {
-            return Ok(Vec::new());
-        }
+        validate_binding_row_count(inputs.len())?;
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
+        let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        if uses_successor_batch_runtime(installed) {
-            if !self.hooks.has_hooks() {
-                let rows = crate::projected_batch::update_rows(installed, &id, inputs)?;
-                let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
-                return execute_owned_things(self.db.inner_orm(), installed, &batch).await;
-            }
-            let mut hook_inputs = reserved_binding_vec(inputs.len())?;
-            let mut rows = reserved_binding_vec(inputs.len())?;
-            for (ordinal, (iid, input)) in inputs.into_iter().enumerate() {
-                let encoded = encode_batch_create(input, ordinal)?;
-                rows.push(ProjectedBatchRow::Update {
-                    iid: iid.clone(),
-                    replacement: project_encoded_batch_create(&encoded, &id, installed, ordinal)?,
-                });
-                hook_inputs.push((iid, encoded));
-            }
+
+        if !self.hooks.has_hooks() {
+            let rows = crate::projected_batch::update_rows(installed, &id, inputs)?;
             let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
+            return execute_owned_things(self.db.inner_orm(), installed, &batch).await;
+        }
+        let mut hook_inputs = reserved_binding_vec(inputs.len())?;
+        let mut rows = reserved_binding_vec(inputs.len())?;
+        for (ordinal, (iid, input)) in inputs.into_iter().enumerate() {
+            let encoded = encode_batch_create(input, ordinal)?;
+            rows.push(ProjectedBatchRow::Update {
+                iid: iid.clone(),
+                replacement: project_encoded_batch_create(&encoded, &id, installed, ordinal)?,
+            });
+            hook_inputs.push((iid, encoded));
+        }
+        let batch = prepare_batch(installed, id, ProjectedBatchOperation::Update, rows)?;
 
-            let mut states = reserved_binding_vec(hook_inputs.len())?;
-            for (ordinal, (iid, encoded)) in hook_inputs.iter().enumerate() {
-                states.push(
-                    self.hooks
-                        .run_pre(
-                            M::TYPE_ID_JSON,
-                            ModelKind::Relation,
-                            CrudOperation::Update,
-                            Some(iid),
-                            Some(encoded),
-                        )
-                        .await
-                        .map_err(|error| {
-                            error.with_projected_batch_row(checked_batch_ordinal(ordinal))
-                        })?,
-                );
-            }
-
-            let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
-            for (((_, encoded), output), state) in hook_inputs.iter().zip(&outputs).zip(states) {
+        let mut states = reserved_binding_vec(hook_inputs.len())?;
+        for (ordinal, (iid, encoded)) in hook_inputs.iter().enumerate() {
+            states.push(
                 self.hooks
-                    .run_post(
+                    .run_pre(
                         M::TYPE_ID_JSON,
                         ModelKind::Relation,
                         CrudOperation::Update,
-                        Some(output.iid()),
+                        Some(iid),
                         Some(encoded),
-                        state,
                     )
-                    .await;
-            }
-            return Ok(outputs);
-        }
-        let mut prepared = Vec::with_capacity(inputs.len());
-        for (iid, input) in inputs {
-            if !is_canonical_thing_iid(&iid) {
-                return Err(invalid_iid());
-            }
-            let encoded = Self::encode_hook_input(&input)?;
-            let lowered = lower_relation_create(input, &id, installed)?;
-            prepared.push((iid, encoded, lowered));
+                    .await
+                    .map_err(|error| {
+                        error.with_projected_batch_row(checked_batch_ordinal(ordinal))
+                    })?,
+            );
         }
 
-        let mut states = Vec::new();
-        if self.hooks.has_hooks() {
-            states.reserve(prepared.len());
-            for (iid, encoded, _) in &prepared {
-                states.push(
-                    self.hooks
-                        .run_pre(
-                            M::TYPE_ID_JSON,
-                            ModelKind::Relation,
-                            CrudOperation::Update,
-                            Some(iid),
-                            Some(encoded),
-                        )
-                        .await?,
-                );
-            }
-        }
-
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        );
-        let manager = if self.db.inner_orm().supports_given_stage() {
-            manager
-        } else {
-            manager.literal_values()
-        };
-        let mut outputs = Vec::with_capacity(prepared.len());
-        for (iid, _, lowered) in &prepared {
-            if let Err(error) = manager
-                .update_exact(iid, &lowered.attributes, &lowered.role_players)
-                .await
-            {
-                let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
-            }
-            match rehydrate_written_relation::<M>(&manager, iid, &id, installed).await {
-                Ok(output) => outputs.push(output),
-                Err(error) => {
-                    let _ = tx.rollback().await;
-                    return Err(error);
-                }
-            }
-        }
-        tx.commit().await.map_err(Error::from_orm)?;
-
-        if self.hooks.has_hooks() {
-            for (((_, encoded, _), output), state) in prepared.iter().zip(&outputs).zip(states) {
-                self.hooks
-                    .run_post(
-                        M::TYPE_ID_JSON,
-                        ModelKind::Relation,
-                        CrudOperation::Update,
-                        Some(output.iid()),
-                        Some(encoded),
-                        state,
-                    )
-                    .await;
-            }
+        let outputs = execute_owned_things::<M>(self.db.inner_orm(), installed, &batch).await?;
+        for (((_, encoded), output), state) in hook_inputs.iter().zip(&outputs).zip(states) {
+            self.hooks
+                .run_post(
+                    M::TYPE_ID_JSON,
+                    ModelKind::Relation,
+                    CrudOperation::Update,
+                    Some(output.iid()),
+                    Some(encoded),
+                    state,
+                )
+                .await;
         }
         Ok(outputs)
     }
@@ -645,43 +434,26 @@ where
     /// pre-hooks are accepted before database work begins; any write failure rolls back the
     /// whole batch, and post-hook failures do not change the committed result.
     pub async fn delete_many(&self, iids: &[String]) -> Result<()> {
-        let successor = self.successor_batches_enabled();
-        if successor {
-            validate_binding_row_count(iids.len())?;
-        }
-        if iids.is_empty() && !successor {
-            return Ok(());
-        }
-        if !successor && iids.iter().any(|iid| !is_canonical_thing_iid(iid)) {
-            return Err(invalid_iid());
-        }
+        validate_binding_row_count(iids.len())?;
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
+        let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-
-        let batch = if successor {
-            Some(prepare_batch(
-                installed,
-                id.clone(),
-                ProjectedBatchOperation::Delete,
-                delete_rows(iids)?,
-            )?)
-        } else {
-            None
-        };
-        let mut states = if successor && self.hooks.has_hooks() {
+        let batch = prepare_batch(
+            installed,
+            id,
+            ProjectedBatchOperation::Delete,
+            delete_rows(iids)?,
+        )?;
+        let mut states = if self.hooks.has_hooks() {
             reserved_binding_vec(iids.len())?
         } else {
             Vec::new()
         };
         if self.hooks.has_hooks() {
-            if !successor {
-                states.reserve(iids.len());
-            }
             for (ordinal, iid) in iids.iter().enumerate() {
                 states.push(
                     self.hooks
@@ -694,62 +466,23 @@ where
                         )
                         .await
                         .map_err(|error| {
-                            if successor {
-                                error.with_projected_batch_row(checked_batch_ordinal(ordinal))
-                            } else {
-                                error
-                            }
+                            error.with_projected_batch_row(checked_batch_ordinal(ordinal))
                         })?,
                 );
             }
         }
-
-        if uses_successor_batch_runtime(installed) {
-            execute_owned_delete(
-                self.db.inner_orm(),
-                installed,
-                batch.as_ref().expect("successor batch was prepared"),
-            )
-            .await?;
-        } else {
-            let tx = self
-                .db
-                .inner_orm()
-                .transaction_context(TxType::Write)
-                .await
-                .map_err(Error::from_orm)?;
-            let manager = DynamicRelationManager::with_registry_transaction(
-                tx.clone(),
-                installed.manager_registry().map_err(Error::from_orm)?,
-                Arc::new(descriptor),
-            );
-            let manager = if self.db.inner_orm().supports_given_stage() {
-                manager
-            } else {
-                manager.literal_values()
-            };
-            for iid in iids {
-                if let Err(error) = manager.delete_by_iid_exact(iid).await {
-                    let _ = tx.rollback().await;
-                    return Err(Error::from_orm(error));
-                }
-            }
-            tx.commit().await.map_err(Error::from_orm)?;
-        }
-
-        if self.hooks.has_hooks() {
-            for (iid, state) in iids.iter().zip(states) {
-                self.hooks
-                    .run_post(
-                        M::TYPE_ID_JSON,
-                        ModelKind::Relation,
-                        CrudOperation::Delete,
-                        Some(iid),
-                        None,
-                        state,
-                    )
-                    .await;
-            }
+        execute_owned_delete(self.db.inner_orm(), installed, &batch).await?;
+        for (iid, state) in iids.iter().zip(states) {
+            self.hooks
+                .run_post(
+                    M::TYPE_ID_JSON,
+                    ModelKind::Relation,
+                    CrudOperation::Delete,
+                    Some(iid),
+                    None,
+                    state,
+                )
+                .await;
         }
         Ok(())
     }
@@ -855,11 +588,10 @@ where
             .map_err(|error| Error::from_orm(error.into_orm_error()))
     }
 
-    async fn successor_write_many_with_hooks(
+    async fn write_many_with_hooks(
         &self,
         inputs: Vec<M::Create>,
         crud_operation: CrudOperation,
-        batch_operation: ProjectedBatchOperation,
     ) -> Result<Vec<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
         let (id, _descriptor) = resolve_relation_authority(
@@ -868,6 +600,8 @@ where
             ModelValidationPhase::Input,
             true,
         )?;
+        let batch_operation =
+            create_operation(installed, &id, matches!(crud_operation, CrudOperation::Put));
         let mut encoded = reserved_binding_vec(inputs.len())?;
         let mut rows = reserved_binding_vec(inputs.len())?;
         for (ordinal, input) in inputs.into_iter().enumerate() {
@@ -915,90 +649,16 @@ where
 
     async fn write_many(&self, inputs: Vec<M::Create>, put: bool) -> Result<Vec<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
+        let (id, _descriptor) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        if uses_successor_batch_runtime(installed) {
-            let rows = create_rows(installed, &id, inputs)?;
-            let operation = if put {
-                ProjectedBatchOperation::Put
-            } else {
-                ProjectedBatchOperation::Insert
-            };
-            let batch = prepare_batch(installed, id, operation, rows)?;
-            return execute_owned_things(self.db.inner_orm(), installed, &batch).await;
-        }
-        let mut lowered: Vec<(DynamicAttributeMap, Vec<DynamicRolePlayerInput>)> =
-            Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let prepared = lower_relation_create(input, &id, installed)?;
-            lowered.push((prepared.attributes, prepared.role_players));
-        }
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Write)
-            .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        );
-        let manager = if self.db.inner_orm().supports_given_stage() {
-            manager
-        } else {
-            manager.literal_values()
-        };
-        let iids = match if put {
-            manager.put_many_exact(&lowered).await
-        } else {
-            manager.insert_many(&lowered).await
-        } {
-            Ok(iids) if iids.len() == lowered.len() => iids,
-            Ok(_) => {
-                let _ = tx.rollback().await;
-                return Err(Error::model_validation(
-                    ModelValidationPhase::Hydration,
-                    "iid_count_mismatch",
-                    vec!["iid".into()],
-                    "provider returned an unexpected IID count",
-                    None,
-                ));
-            }
-            Err(error) => {
-                let _ = tx.rollback().await;
-                return Err(Error::from_orm(error));
-            }
-        };
-        let mut out = Vec::with_capacity(iids.len());
-        for iid in iids {
-            match self
-                .hydrate_in_transaction(&manager, &iid, &id, installed)
-                .await
-            {
-                Ok(value) => out.push(value),
-                Err(error) => {
-                    let _ = tx.rollback().await;
-                    return Err(error);
-                }
-            }
-        }
-        tx.commit().await.map_err(Error::from_orm)?;
-        Ok(out)
-    }
-
-    async fn hydrate_in_transaction(
-        &self,
-        manager: &DynamicRelationManager<'_>,
-        iid: &str,
-        id: &type_bridge_contract::id::TypeId,
-        installed: &type_bridge_orm::InstalledRuntimeProjection,
-    ) -> Result<M> {
-        rehydrate_written_relation(manager, iid, id, installed).await
+        let rows = create_rows(installed, &id, inputs)?;
+        let operation = create_operation(installed, &id, put);
+        let batch = prepare_batch(installed, id, operation, rows)?;
+        execute_owned_things(self.db.inner_orm(), installed, &batch).await
     }
 
     /// Counts only exact relations, excluding subtypes.

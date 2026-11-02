@@ -3705,14 +3705,15 @@ fn sdk_models_generated_package_integrity() {
     let schema_runtime =
         fs::read_to_string(root.join("type-bridge-core/crates/rust/src/schema.rs"))
             .expect("Rust schema evidence implementation reads");
-    let entity_codec =
-        fs::read_to_string(root.join("type-bridge-core/crates/rust/src/entity_codec.rs"))
-            .expect("Rust entity codec reads");
+    let projected_model =
+        fs::read_to_string(root.join("type-bridge-core/crates/orm/src/projected_model.rs"))
+            .expect("shared projected input authority reads");
     let relation_codec =
         fs::read_to_string(root.join("type-bridge-core/crates/rust/src/relation_codec.rs"))
             .expect("Rust relation codec reads");
     assert!(schema_runtime.contains("projection_evidence_mismatch"));
-    assert!(entity_codec.contains("duplicate_field_evidence"));
+    assert!(projected_model.contains("duplicate_field_token"));
+    assert!(projected_model.contains("duplicate_role_token"));
     assert!(relation_codec.contains("duplicate_role_evidence"));
 
     let rejection_families = [

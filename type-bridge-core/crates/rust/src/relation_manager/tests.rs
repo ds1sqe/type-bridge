@@ -389,6 +389,35 @@ impl TransactionOps for Tx {
         self.state.lock().unwrap().query_modes.push("canonical");
         self.query_recorded(q)
     }
+    fn query_v2_bounded<'a>(
+        &'a mut self,
+        source: &'a str,
+        limits: type_bridge_orm::session::backend::AnswerLimits,
+        consumer: &'a mut dyn type_bridge_orm::session::backend::AnswerConsumer,
+    ) -> BoxFuture<'a, Result<type_bridge_orm::session::backend::BoundedAnswerStats, OrmError>>
+    {
+        Box::pin(async move {
+            use type_bridge_orm::session::backend::{
+                AnswerControl, AnswerItem, BoundedAnswerReader,
+            };
+            let result = self.query_canonical(source).await?;
+            let items = match result {
+                QueryResult::Ok => vec![],
+                QueryResult::Rows(rows) => rows.into_iter().map(AnswerItem::Row).collect(),
+                QueryResult::Documents(documents) => {
+                    documents.into_iter().map(AnswerItem::Document).collect()
+                }
+            };
+            let mut reader = BoundedAnswerReader::new(limits.answer);
+            reader.check_before_read()?;
+            for item in items {
+                if reader.accept(item, consumer)? == AnswerControl::Stop {
+                    break;
+                }
+            }
+            Ok(reader.stats())
+        })
+    }
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         self.state.lock().unwrap().events.push(Event::Commit);
         Box::pin(async { Ok(()) })
@@ -439,12 +468,6 @@ fn test_db(responses: Vec<Response>) -> (crate::session::Database<TestSchema>, A
         ),
         state,
     )
-}
-
-fn iid_doc(iid: &str) -> Response {
-    Response::Result(QueryResult::Documents(vec![serde_json::json!({
-        "iid": iid
-    })]))
 }
 
 fn fetch_doc(iid: &str, position: &str, worker_iid: &str, worker_name: &str) -> serde_json::Value {
@@ -549,14 +572,21 @@ async fn public_relation_preflight_failures_are_zero_io() {
         "invalid_iid",
         &["iid"],
     );
-    assert_model_error(
-        db.relations::<Assignment>()
-            .insert_many(vec![create("ok", "0x9"), create("reject-input", "0x9")])
-            .await
-            .unwrap_err(),
-        crate::error::ModelValidationPhase::Input,
-        "rejected_create",
-        &["position"],
+    let error = db
+        .relations::<Assignment>()
+        .insert_many(vec![create("ok", "0x9"), create("reject-input", "0x9")])
+        .await
+        .unwrap_err();
+    assert!(matches!(&error, crate::Error::Classified { .. }));
+    assert_eq!(error.category(), crate::ErrorCategory::ModelValidation);
+    assert_eq!(
+        error.model_validation_phase(),
+        Some(crate::error::ModelValidationPhase::Input)
+    );
+    assert_eq!(error.code(), Some("rejected_create"));
+    assert_eq!(
+        error.path(),
+        Some(&["rows".into(), "[1]".into(), "position".into()][..])
     );
     assert_model_error(
         db.relations::<Assignment>()
@@ -854,12 +884,18 @@ async fn public_relation_materializer_failure_rolls_back() {
 
 #[tokio::test]
 async fn public_relation_batch_correlates_in_input_order() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x1"),
-        iid_doc("0x2"),
-        fetch("0x1", "first", "0x9", "alice"),
-        fetch("0x2", "second", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![Response::Result(QueryResult::Documents(vec![
+        {
+            let mut document = fetch_doc("0x2", "second", "0x9", "alice");
+            document["ordinal"] = serde_json::json!(1);
+            document
+        },
+        {
+            let mut document = fetch_doc("0x1", "first", "0x9", "alice");
+            document["ordinal"] = serde_json::json!(0);
+            document
+        },
+    ]))]);
     let values = db
         .relations::<Assignment>()
         .insert_many(vec![create("first", "0x9"), create("second", "0x9")])
@@ -869,23 +905,23 @@ async fn public_relation_batch_correlates_in_input_order() {
     assert_assignment(&values[0], "0x1", "first", "0x9");
     assert_assignment(&values[1], "0x2", "second", "0x9");
     let guard = state.lock().unwrap();
+    assert_eq!(guard.query_modes, ["canonical"]);
     assert!(matches!(guard.events.last(), Some(Event::Commit)));
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
 }
 
 #[tokio::test]
 async fn public_relation_batch_provider_error_rolls_back_whole_call() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x1"),
-        Response::Error("second insert failed".into()),
-    ]);
+    let (db, state) = test_db(vec![Response::Error("batch insert failed".into())]);
     let error = db
         .relations::<Assignment>()
         .insert_many(vec![create("first", "0x9"), create("second", "0x9")])
         .await
         .unwrap_err();
-    assert!(matches!(error, crate::Error::QueryExecution { .. }));
-    assert!(error.to_string().contains("second insert failed"));
+    assert!(matches!(&error, crate::Error::Classified { .. }));
+    assert_eq!(error.category(), crate::ErrorCategory::QueryExecution);
+    assert_eq!(error.code(), Some("provider_operation_failed"));
+    assert!(!error.to_string().contains("batch insert failed"));
     let guard = state.lock().unwrap();
     assert!(matches!(guard.events.last(), Some(Event::Rollback)));
 }
@@ -999,10 +1035,7 @@ async fn public_relation_update_replaces_and_rehydrates() {
 
 #[tokio::test]
 async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
-    let (db, state) = test_db(vec![
-        iid_doc("0x1"),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
         .put(create("captain", "0x9"))
@@ -1023,16 +1056,14 @@ async fn public_relation_put_key_hit_replaces_existing_and_preserves_iid() {
             _ => None,
         })
         .collect();
-    assert_eq!(queries.len(), 2);
+    assert_eq!(queries.len(), 1);
+    assert!(queries[0].contains("put") && queries[0].contains("fetch"));
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
 }
 
 #[tokio::test]
 async fn public_relation_put_key_miss_inserts_and_rehydrates() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(Vec::new())),
-        fetch("0x1", "captain", "0x9", "alice"),
-    ]);
+    let (db, state) = test_db(vec![fetch("0x1", "captain", "0x9", "alice")]);
     let value = db
         .relations::<Assignment>()
         .put(create("captain", "0x9"))

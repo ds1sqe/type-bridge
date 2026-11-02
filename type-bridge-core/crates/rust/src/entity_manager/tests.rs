@@ -259,6 +259,12 @@ fn fetch(iid: &str, name: &str, value: &str) -> Response {
     ]))
 }
 
+fn batch_fetch(rows: &[(u64, &str, &str, &str)]) -> Response {
+    Response::Result(QueryResult::Documents(rows.iter().map(|(ordinal, iid, name, value)| {
+        serde_json::json!({"ordinal":ordinal,"_iid":iid,"_type":"record","attributes":{"name":name,"text":value}})
+    }).collect()))
+}
+
 fn assert_queries(events: &[Event], query_needles: &[&[&str]]) {
     assert_eq!(events.len(), query_needles.len() + 2);
     assert!(matches!(events[0], Event::Open(TxType::Write)));
@@ -359,11 +365,16 @@ async fn public_preflight_failures_are_zero_io() {
         ])
         .await
         .unwrap_err();
-    assert_model_error(
-        err,
-        crate::error::ModelValidationPhase::Input,
-        "rejected_create",
-        &["name"],
+    assert!(matches!(&err, crate::Error::Classified { .. }));
+    assert_eq!(err.category(), crate::ErrorCategory::ModelValidation);
+    assert_eq!(
+        err.model_validation_phase(),
+        Some(crate::error::ModelValidationPhase::Input)
+    );
+    assert_eq!(err.code(), Some("rejected_create"));
+    assert_eq!(
+        err.path(),
+        Some(&["rows".into(), "[1]".into(), "name".into()][..])
     );
     assert_eq!(state.lock().unwrap().events.as_slice(), &[] as &[Event]);
 }
@@ -372,10 +383,7 @@ async fn public_preflight_failures_are_zero_io() {
 async fn public_canonical_database_and_batch_paths_select_canonical_queries() {
     let responses = vec![
         fetch("0x1", "n1", "v"),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x2"}),
-        ])),
-        fetch("0x2", "n2", "v2"),
+        batch_fetch(&[(0, "0x2", "n2", "v2")]),
         Response::Result(QueryResult::Rows(vec![serde_json::json!({"$count": 2})])),
     ];
     let (db, state) = test_db(responses);
@@ -396,7 +404,7 @@ async fn public_canonical_database_and_batch_paths_select_canonical_queries() {
     db.entities::<Record>().count().await.unwrap();
     assert_eq!(
         state.lock().unwrap().query_modes,
-        vec!["canonical", "canonical", "canonical", "canonical"]
+        vec!["canonical", "canonical", "canonical"]
     );
 }
 
@@ -713,18 +721,9 @@ async fn public_insert_materializer_rejection_rolls_back() {
 }
 
 #[tokio::test]
-async fn public_insert_many_second_refetch_failure_returns_no_partial_vector_and_rolls_back() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x2"}),
-        ])),
-        fetch("0x1", "n1", "a"),
-        Response::Error("second refetch failed".into()),
-    ]);
-    let result = db
+async fn public_insert_many_provider_failure_returns_no_partial_vector_and_rolls_back() {
+    let (db, state) = test_db(vec![Response::Error("batch insert failed".into())]);
+    let error = db
         .entities::<Record>()
         .insert_many(vec![
             RecordCreate {
@@ -736,41 +735,24 @@ async fn public_insert_many_second_refetch_failure_returns_no_partial_vector_and
                 value: "b".into(),
             },
         ])
-        .await;
-    let error = result.unwrap_err();
-    let crate::Error::QueryExecution { message, .. } = &error else {
-        panic!("expected query error")
-    };
-    assert_eq!(message, "Query execution error: second refetch failed");
-    let source = std::error::Error::source(&error).expect("query source");
-    assert!(source.is::<type_bridge_orm::OrmError>());
-    assert_eq!(
-        source.to_string(),
-        "Query execution error: second refetch failed"
-    );
+        .await
+        .unwrap_err();
+    assert!(matches!(&error, crate::Error::Classified { .. }));
+    assert_eq!(error.category(), crate::ErrorCategory::QueryExecution);
+    assert_eq!(error.code(), Some("provider_operation_failed"));
+    assert!(!error.to_string().contains("batch insert failed"));
+    assert!(std::error::Error::source(&error).is_some());
     let events = state.lock().unwrap();
     let [
         Event::Open(TxType::Write),
-        Event::Query(i1),
-        Event::Query(i2),
-        Event::Query(f1),
-        Event::Query(f2),
+        Event::Query(query),
         Event::Rollback,
     ] = events.events.as_slice()
     else {
         panic!("unexpected events: {:?}", events.events)
     };
-    for needle in ["insert", "isa record", "n1", "\"a\""] {
-        assert!(i1.contains(needle));
-    }
-    for needle in ["insert", "isa record", "n2", "\"b\""] {
-        assert!(i2.contains(needle));
-    }
-    for needle in ["isa! record", "iid 0x1", "fetch"] {
-        assert!(f1.contains(needle));
-    }
-    for needle in ["isa! record", "iid 0x2", "fetch"] {
-        assert!(f2.contains(needle));
+    for needle in ["insert", "isa record", "n1", "n2", "fetch"] {
+        assert!(query.contains(needle), "{query}");
     }
 }
 
@@ -1757,16 +1739,10 @@ async fn public_put_update_delete_success_lifecycles() {
 
 #[tokio::test]
 async fn public_insert_many_and_put_many_preserve_order() {
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x2"}),
-        ])),
-        fetch("0x1", "n1", "a"),
-        fetch("0x2", "n2", "b"),
-    ]);
+    let (db, state) = test_db(vec![batch_fetch(&[
+        (1, "0x2", "n2", "b"),
+        (0, "0x1", "n1", "a"),
+    ])]);
     let out = db
         .entities::<Record>()
         .insert_many(vec![
@@ -1791,25 +1767,14 @@ async fn public_insert_many_and_put_many_preserve_order() {
         let s = state.lock().unwrap();
         assert_queries(
             &s.events,
-            &[
-                &["insert", "isa record", "n1", "a"],
-                &["insert", "isa record", "n2", "b"],
-                &["isa! record", "iid 0x1", "fetch"],
-                &["isa! record", "iid 0x2", "fetch"],
-            ],
+            &[&["insert", "isa record", "n1", "n2", "a", "b", "fetch"]],
         );
     }
 
-    let (db, state) = test_db(vec![
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x1"}),
-        ])),
-        Response::Result(QueryResult::Documents(vec![
-            serde_json::json!({"iid":"0x2"}),
-        ])),
-        fetch("0x1", "n1", "a"),
-        fetch("0x2", "n2", "b"),
-    ]);
+    let (db, state) = test_db(vec![batch_fetch(&[
+        (1, "0x2", "n2", "b"),
+        (0, "0x1", "n1", "a"),
+    ])]);
     let out = db
         .entities::<Record>()
         .put_many(vec![
@@ -1827,12 +1792,7 @@ async fn public_insert_many_and_put_many_preserve_order() {
     let s = state.lock().unwrap();
     assert_queries(
         &s.events,
-        &[
-            &["put", "record", "name", "n1", "a"],
-            &["put", "record", "name", "n2", "b"],
-            &["isa! record", "iid 0x1", "fetch"],
-            &["isa! record", "iid 0x2", "fetch"],
-        ],
+        &[&["put", "record", "name", "n1", "n2", "a", "b", "fetch"]],
     );
     assert_eq!(
         out.iter()
@@ -1907,6 +1867,35 @@ impl TransactionOps for Tx {
     fn query_canonical(&mut self, q: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
         self.state.lock().unwrap().query_modes.push("canonical");
         self.query_recorded(q)
+    }
+    fn query_v2_bounded<'a>(
+        &'a mut self,
+        source: &'a str,
+        limits: type_bridge_orm::session::backend::AnswerLimits,
+        consumer: &'a mut dyn type_bridge_orm::session::backend::AnswerConsumer,
+    ) -> BoxFuture<'a, Result<type_bridge_orm::session::backend::BoundedAnswerStats, OrmError>>
+    {
+        Box::pin(async move {
+            use type_bridge_orm::session::backend::{
+                AnswerControl, AnswerItem, BoundedAnswerReader,
+            };
+            let result = self.query_canonical(source).await?;
+            let items = match result {
+                QueryResult::Ok => vec![],
+                QueryResult::Rows(rows) => rows.into_iter().map(AnswerItem::Row).collect(),
+                QueryResult::Documents(documents) => {
+                    documents.into_iter().map(AnswerItem::Document).collect()
+                }
+            };
+            let mut reader = BoundedAnswerReader::new(limits.answer);
+            reader.check_before_read()?;
+            for item in items {
+                if reader.accept(item, consumer)? == AnswerControl::Stop {
+                    break;
+                }
+            }
+            Ok(reader.stats())
+        })
     }
     fn commit(&mut self) -> BoxFuture<'_, Result<(), OrmError>> {
         self.state.lock().unwrap().events.push(Event::Commit);
