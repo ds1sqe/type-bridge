@@ -2322,22 +2322,57 @@ def _sdk_models_counter_plan_lifecycle(generated: ModuleType, database: Database
     for name, value in zip(("counter-left", "counter-right"), values, strict=True):
         assert isinstance(value.iid, str)
         _model_plan_identity(name, value.iid)
+    _model_plan_mark("unkeyed_entity_iid_lifecycle.count")
     assert manager.count() == before + 2
+    _model_plan_mark()
+    transaction = database.staged_transaction("read", commit_on_exit=False)
+    session = generated.Counter.query(transaction)
+    root = session.exact(generated.Counter)
+    pending = asyncio.run(session.query(root).count_by(root))
+    with pytest.raises(RuntimeError):
+        pending.result()
+    session.close()
+    _model_plan_mark("borrowed_transaction_lifecycle.staged_count")
+    transaction.commit()
+    _model_plan_mark()
+    assert pending.result() == before + 2
+    transaction.close()
     values[0].counter_value = generated.CounterValue(11)
     _model_plan_mark("update")
     manager.update(values[0])
     _model_plan_mark()
+    _model_plan_mark("unkeyed_entity_iid_lifecycle.get_by_iid")
     assert manager.get_by_iid(values[0].iid).counter_value.value == 11
+    _model_plan_mark()
+    _model_plan_mark("entity_batch_update_delete_atomic.update")
+    manager.update_many(values)
+    _model_plan_mark()
     _model_plan_mark("delete")
     assert manager.delete_many(values) == values
     _model_plan_mark()
     assert manager.count() == before
 
+    returned_inputs = [
+        generated.Counter(counter_value=generated.CounterValue(value)) for value in (1, 2)
+    ]
+    manager.insert_many(returned_inputs)
+    for name, value in zip(("counter-left", "counter-right"), returned_inputs, strict=True):
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("manager_returning_delete.entity")
+    snapshot = manager.delete_returning(returned_inputs[0])
+    _model_plan_mark()
+    assert snapshot.counter_value.value == 1
+    _model_plan_mark("manager_returning_delete.entity_many")
+    snapshots = manager.delete_many_returning(returned_inputs)
+    _model_plan_mark()
+    assert [value.counter_value.value for value in snapshots] == [2]
+    assert manager.count() == before
+
 
 def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Database) -> None:
-    def person(*, nonempty: bool = False) -> Any:
+    def person(*, nonempty: bool = False, identifier: str = "data-ada") -> Any:
         return generated.Person(
-            identifier=generated.Identifier("data-ada"),
+            identifier=generated.Identifier(identifier),
             aliases=[generated.Aliases("unsupported")] if nonempty else [],
             score=generated.Score(30),
             val_bool=generated.ValBool(True),
@@ -2356,6 +2391,12 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
     _model_plan_mark()
     _model_plan_identity("data-ada", ada.iid)
     assert ada.aliases == ()
+    _model_plan_mark("ordered_distinct_collections.entity_put")
+    assert people.put(person()).iid == ada.iid
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.entity_count")
+    assert people.count() == 1
+    _model_plan_mark()
     _model_plan_mark("ordered_distinct_collections.entity_update")
     people.update(ada)
     _model_plan_mark()
@@ -2374,6 +2415,19 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
     _model_plan_mark()
     _model_plan_identity("link-forward", link.iid)
     assert link.participant == ()
+    _model_plan_mark("ordered_distinct_collections.role_put")
+    assert (
+        links.put(
+            generated.NetworkLink(
+                identifier=generated.Identifier("data-link-forward"), origin=ada, destination=ada
+            )
+        ).iid
+        == link.iid
+    )
+    _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_count")
+    assert links.count() == 1
+    _model_plan_mark()
     _model_plan_mark("ordered_distinct_collections.role_update")
     links.update(link)
     _model_plan_mark()
@@ -2401,8 +2455,68 @@ def _sdk_models_empty_ordered_lifecycle(generated: ModuleType, database: Databas
             raise AssertionError("nonempty ordered write was accepted")
         finally:
             _model_plan_mark()
+    _model_plan_mark("ordered_distinct_collections.role_delete")
     links.delete(link)
+    _model_plan_mark()
+    _model_plan_mark("entity_batch_insert_put.put")
+    put_people = people.put_many([person(), person(identifier="data-dana")])
+    _model_plan_mark()
+    assert put_people[0].iid == ada.iid
+    _model_plan_identity("data-dana", put_people[1].iid)
+    people.delete(put_people[1])
+    inputs = [
+        generated.NetworkLink(
+            identifier=generated.Identifier(identifier), origin=ada, destination=ada
+        )
+        for identifier in ("data-link-forward", "data-link-return")
+    ]
+    _model_plan_mark("relation_batch_insert_put.put")
+    put_links = links.put_many(inputs)
+    _model_plan_mark()
+    for name, value in zip(("link-forward", "link-return"), put_links, strict=True):
+        _model_plan_identity(name, value.iid)
+    links.delete_many(put_links)
+    inputs = [
+        generated.NetworkLink(
+            identifier=generated.Identifier(identifier), origin=ada, destination=ada
+        )
+        for identifier in ("data-link-forward", "data-link-return")
+    ]
+    _model_plan_mark("relation_batch_insert_put.insert")
+    batch_links = links.insert_many(inputs)
+    _model_plan_mark()
+    for name, value in zip(("link-forward", "link-return"), batch_links, strict=True):
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("relation_batch_update_delete_atomic.update")
+    links.update_many(batch_links)
+    _model_plan_mark()
+    _model_plan_mark("relation_batch_update_delete_atomic.delete")
+    links.delete_many(batch_links)
+    _model_plan_mark()
+    returned_inputs = [
+        generated.NetworkLink(
+            identifier=generated.Identifier(identifier), origin=ada, destination=ada
+        )
+        for identifier in ("data-link-forward", "data-link-return")
+    ]
+    links.insert_many(returned_inputs)
+    for name, value in zip(("link-forward", "link-return"), returned_inputs, strict=True):
+        _model_plan_identity(name, value.iid)
+    _model_plan_mark("manager_returning_delete.relation")
+    snapshot = links.delete_returning(returned_inputs[0])
+    _model_plan_mark()
+    assert snapshot.identifier.value == "data-link-forward" and snapshot.origin.iid == ada.iid
+    _model_plan_mark("manager_returning_delete.relation_many")
+    snapshots = links.delete_many_returning(returned_inputs)
+    _model_plan_mark()
+    assert (
+        len(snapshots) == 1
+        and snapshots[0].identifier.value == "data-link-return"
+        and snapshots[0].origin.iid == ada.iid
+    )
+    _model_plan_mark("ordered_distinct_collections.entity_delete")
     people.delete(ada)
+    _model_plan_mark()
 
 
 def sdk_models_data_model_runtime_live(

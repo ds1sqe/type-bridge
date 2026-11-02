@@ -956,7 +956,7 @@ function modelPlanIdentity(name: string, iid: string): void {
   if (path !== undefined) appendFileSync(path, `${JSON.stringify([name, iid])}\n`);
 }
 
-function sdkModelsCounterPlanLifecycle(generated: any, database: any): void {
+async function sdkModelsCounterPlanLifecycle(generated: any, database: any): Promise<void> {
   const manager = generated.Counter.manager(database);
   const before = manager.count();
   modelPlanMark("insert");
@@ -969,7 +969,20 @@ function sdkModelsCounterPlanLifecycle(generated: any, database: any): void {
     assertIid(value.iid);
     modelPlanIdentity(index === 0 ? "counter-left" : "counter-right", value.iid);
   });
+  modelPlanMark("unkeyed_entity_iid_lifecycle.count");
   assert.equal(manager.count(), before + 2n);
+  modelPlanMark();
+  const transaction = database.stagedTransaction("read");
+  const session = new generated.QuerySession(transaction);
+  const root = session.exact(generated.Counter);
+  const pending = await session.query(root).countBy(root);
+  assert.throws(() => pending.result(), /Transaction has not committed/);
+  session.close();
+  modelPlanMark("borrowed_transaction_lifecycle.staged_count");
+  await transaction.commit();
+  modelPlanMark();
+  assert.equal(pending.result(), before + 2n);
+  transaction.close();
   modelPlanMark("update");
   const updated = manager.update(values[0].iid, generated.Counter.create({
     counterValue: generated.CounterValue.create(11n),
@@ -977,15 +990,34 @@ function sdkModelsCounterPlanLifecycle(generated: any, database: any): void {
   modelPlanMark();
   assert.equal(updated.iid, values[0].iid);
   assert.equal(updated.counterValue.value, 11n);
+  modelPlanMark("unkeyed_entity_iid_lifecycle.get_by_iid");
+  assert.equal(manager.getByIid(values[0].iid)?.counterValue.value, 11n);
+  modelPlanMark();
+  modelPlanMark("entity_batch_update_delete_atomic.update");
+  const updatedMany = manager.updateMany(values.map((value: any, index: number) => [value.iid, generated.Counter.create({ counterValue: generated.CounterValue.create(index === 0 ? 11n : 2n) })]));
+  modelPlanMark();
+  assert.deepEqual(updatedMany.map((value: any) => value.iid), values.map((value: any) => value.iid));
   modelPlanMark("delete");
   manager.deleteMany(values.map((value: any) => value.iid));
   modelPlanMark();
   assert.equal(manager.count(), before);
+  const returnedInputs = manager.insertMany([1n,2n].map((value) => generated.Counter.create({ counterValue: generated.CounterValue.create(value) })));
+  returnedInputs.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "counter-left" : "counter-right",value.iid));
+  modelPlanMark("manager_returning_delete.entity");
+  const snapshot = manager.deleteReturning(returnedInputs[0].iid);
+  modelPlanMark();
+  assert.equal(snapshot.counterValue.value,1n);
+  modelPlanMark("manager_returning_delete.entity_many");
+  const snapshots = manager.deleteManyReturning(returnedInputs.map((value: any) => value.iid));
+  modelPlanMark();
+  assert.deepEqual(snapshots.map((value: any) => value.counterValue.value),[2n]);
+  assert.equal(manager.count(),before);
+
 }
 
 function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
-  const person = (nonempty = false) => g.Person.create({
-    identifier: g.Identifier.create("data-ada"),
+  const person = (nonempty = false, identifier = "data-ada") => g.Person.create({
+    identifier: g.Identifier.create(identifier),
     aliases: nonempty ? [g.Aliases.create("unsupported")] : [],
     score: g.Score.create(30n), valBool: g.ValBool.create(true),
     valConstrained: g.ValConstrained.create(30n),
@@ -1001,6 +1033,12 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   modelPlanMark();
   modelPlanIdentity("data-ada", ada.iid);
   assert.deepEqual(ada.aliases, []);
+  modelPlanMark("ordered_distinct_collections.entity_put");
+  assert.equal(people.put(person()).iid, ada.iid);
+  modelPlanMark();
+  modelPlanMark("ordered_distinct_collections.entity_count");
+  assert.equal(people.count(), 1n);
+  modelPlanMark();
   modelPlanMark("ordered_distinct_collections.entity_update");
   people.update(ada.iid, person());
   modelPlanMark();
@@ -1017,6 +1055,12 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
   modelPlanMark();
   modelPlanIdentity("link-forward", link.iid);
   assert.deepEqual(link.participant, []);
+  modelPlanMark("ordered_distinct_collections.role_put");
+  assert.equal(links.put(linkInput()).iid, link.iid);
+  modelPlanMark();
+  modelPlanMark("ordered_distinct_collections.role_count");
+  assert.equal(links.count(), 1n);
+  modelPlanMark();
   modelPlanMark("ordered_distinct_collections.role_update");
   links.update(link.iid, linkInput());
   modelPlanMark();
@@ -1034,8 +1078,48 @@ function sdkModelsEmptyOrderedLifecycle(g: any, database: any): void {
     });
     modelPlanMark();
   }
+  modelPlanMark("ordered_distinct_collections.role_delete");
   links.delete(link.iid);
+  modelPlanMark();
+  modelPlanMark("entity_batch_insert_put.put");
+  const putPeople = people.putMany([person(), person(false, "data-dana")]);
+  modelPlanMark();
+  assert.equal(putPeople[0].iid, ada.iid);
+  modelPlanIdentity("data-dana", putPeople[1].iid);
+  people.delete(putPeople[1].iid);
+  const inputs = ["data-link-forward", "data-link-return"].map((identifier) => g.NetworkLink.create({ identifier: g.Identifier.create(identifier), origin: ada, destination: ada }));
+  modelPlanMark("relation_batch_insert_put.put");
+  const putLinks = links.putMany(inputs);
+  modelPlanMark();
+  putLinks.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return", value.iid));
+  links.deleteMany(putLinks.map((value: any) => value.iid));
+  modelPlanMark("relation_batch_insert_put.insert");
+  const batchLinks = links.insertMany(inputs);
+  modelPlanMark();
+  batchLinks.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return", value.iid));
+  modelPlanMark("relation_batch_update_delete_atomic.update");
+  const updatedLinks = links.updateMany(batchLinks.map((value: any,index: number) => [value.iid,inputs[index]]));
+  modelPlanMark();
+  assert.deepEqual(updatedLinks.map((value: any) => value.iid), batchLinks.map((value: any) => value.iid));
+  modelPlanMark("relation_batch_update_delete_atomic.delete");
+  links.deleteMany(batchLinks.map((value: any) => value.iid));
+  modelPlanMark();
+  const returnedInputs = links.insertMany(inputs);
+  returnedInputs.forEach((value: any,index: number) => modelPlanIdentity(index === 0 ? "link-forward" : "link-return",value.iid));
+  modelPlanMark("manager_returning_delete.relation");
+  const snapshot = links.deleteReturning(returnedInputs[0].iid);
+  modelPlanMark();
+  assert.equal(snapshot.identifier.value,"data-link-forward");
+  assert.equal(snapshot.origin.iid,ada.iid);
+  modelPlanMark("manager_returning_delete.relation_many");
+  const snapshots = links.deleteManyReturning(returnedInputs.map((value: any) => value.iid));
+  modelPlanMark();
+  assert.equal(snapshots.length,1);
+  assert.equal(snapshots[0].identifier.value,"data-link-return");
+  assert.equal(snapshots[0].origin.iid,ada.iid);
+  modelPlanMark("ordered_distinct_collections.entity_delete");
   people.delete(ada.iid);
+  modelPlanMark();
 }
 
 class FixturePlanWitness {
@@ -3259,7 +3343,7 @@ test(
       database = connectIntegration();
       database.resetDatabase();
       defineSchema(database, await readFile(SDK_MODELS_PROVIDER_SCHEMA, "utf8"));
-      sdkModelsCounterPlanLifecycle(generated, database);
+      await sdkModelsCounterPlanLifecycle(generated, database);
       sdkModelsEmptyOrderedLifecycle(generated, database);
 
       const personInput = (identifierValue: string, scoreValue: bigint) => Person.create({

@@ -7,9 +7,10 @@
       "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
     },
     "borrowed_transaction_lifecycle": {
-      "calls": [],
-      "kind": "answer_gate_auxiliary",
-      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+      "calls": [
+        "borrowed_transaction_lifecycle.staged_count"
+      ],
+      "kind": "native"
     },
     "complete_connection_policy": {
       "calls": [],
@@ -32,19 +33,32 @@
       "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
     },
     "data_resource_lifecycle": {
-      "calls": [],
-      "kind": "answer_gate_auxiliary",
-      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+      "bindings": [
+        "python",
+        "node",
+        "rust"
+      ],
+      "calls": [
+        "manager_returning_delete.entity",
+        "manager_returning_delete.entity_many",
+        "manager_returning_delete.relation",
+        "manager_returning_delete.relation_many"
+      ],
+      "kind": "native"
     },
     "entity_batch_insert_put": {
-      "calls": [],
-      "kind": "answer_gate_auxiliary",
-      "reason": "The existing batch journey remains covered by the unchanged answer gate; ordered_distinct_collections pins the empty ordered single-write and read native plans."
+      "calls": [
+        "unkeyed_entity_iid_lifecycle.insert",
+        "entity_batch_insert_put.put"
+      ],
+      "kind": "native"
     },
     "entity_batch_update_delete_atomic": {
-      "calls": [],
-      "kind": "answer_gate_auxiliary",
-      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+      "calls": [
+        "entity_batch_update_delete_atomic.update",
+        "unkeyed_entity_iid_lifecycle.delete"
+      ],
+      "kind": "native"
     },
     "field_name_identity": {
       "calls": [],
@@ -86,7 +100,13 @@
         "ordered_distinct_collections.entity_read",
         "ordered_distinct_collections.role_insert",
         "ordered_distinct_collections.role_update",
-        "ordered_distinct_collections.role_read"
+        "ordered_distinct_collections.role_read",
+        "ordered_distinct_collections.entity_put",
+        "ordered_distinct_collections.entity_count",
+        "ordered_distinct_collections.entity_delete",
+        "ordered_distinct_collections.role_put",
+        "ordered_distinct_collections.role_count",
+        "ordered_distinct_collections.role_delete"
       ],
       "kind": "native"
     },
@@ -101,14 +121,18 @@
       "reason": "Generated values, validation or package publication have no selected provider plan; the existing journey and frozen answers remain required."
     },
     "relation_batch_insert_put": {
-      "calls": [],
-      "kind": "answer_gate_auxiliary",
-      "reason": "The existing batch journey remains covered by the unchanged answer gate; ordered_distinct_collections pins the empty ordered single-write and read native plans."
+      "calls": [
+        "relation_batch_insert_put.insert",
+        "relation_batch_insert_put.put"
+      ],
+      "kind": "native"
     },
     "relation_batch_update_delete_atomic": {
-      "calls": [],
-      "kind": "answer_gate_auxiliary",
-      "reason": "Existing setup, cleanup, lifecycle, budget, diagnostic or additional CRUD probes remain required by the journey and frozen-answer gate; the selected native recipes have their own call twins."
+      "calls": [
+        "relation_batch_update_delete_atomic.update",
+        "relation_batch_update_delete_atomic.delete"
+      ],
+      "kind": "native"
     },
     "token_package_fencing": {
       "calls": [],
@@ -119,7 +143,9 @@
       "calls": [
         "unkeyed_entity_iid_lifecycle.insert",
         "unkeyed_entity_iid_lifecycle.update",
-        "unkeyed_entity_iid_lifecycle.delete"
+        "unkeyed_entity_iid_lifecycle.delete",
+        "unkeyed_entity_iid_lifecycle.get_by_iid",
+        "unkeyed_entity_iid_lifecycle.count"
       ],
       "kind": "native"
     },

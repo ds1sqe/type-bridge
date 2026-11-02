@@ -355,3 +355,77 @@ def test_plan_comparator_requires_every_binding_and_the_exact_committed_bytes(
     paths["node"].write_text(json.dumps(value))
     with pytest.raises(parity.ContractError, match="plan_unknown_iid"):
         parity.compare_twins(suite, profile, paths, root=tmp_path)
+
+
+def test_binding_scoped_twins_keep_shared_manager_calls_required_in_every_sdk(
+    tmp_path: Path,
+) -> None:
+    suite = "models"
+    profile = "typedb-3.13.6/v1"
+    directory = tmp_path / "tests/contracts/sdk_conformance/models"
+    twins = directory / "plans/typedb-3.13.6_v1"
+    twins.mkdir(parents=True)
+    (directory / "journey.json").write_text(
+        json.dumps(
+            {"create_order": ["counter-left"], "expected_observations": ["shared", "returning"]}
+        )
+    )
+    plan = {
+        "format": "typebridge.query-plan/v3",
+        "managed_semantics": {"semantic_profile": profile},
+        "bindings": [{"id": 0, "variable": "counter"}],
+        "output": {"kind": "rows", "columns": [0]},
+        "pipeline": [{"kind": "match", "patterns": [{"kind": "iid", "binding": 0, "iid": "0x01"}]}],
+    }
+    canonical = parity.logical_iids(
+        [{"plan": parity.alpha_bindings(plan), "rows": []}], {"0x01": "counter-left"}
+    )
+    paths = {}
+    for binding in parity.BINDINGS:
+        calls = {"shared.one": {"source": "trace", "plans": [plan]}}
+        if binding != "c":
+            calls["returning.one"] = {"source": "trace", "plans": [plan]}
+        value = {
+            "format": parity.FORMAT,
+            "suite": suite,
+            "binding": binding,
+            "semantic_profile": profile,
+            "records": {"counter-left": ["0x01"]},
+            "calls": calls,
+        }
+        paths[binding] = tmp_path / f"{binding}.json"
+        paths[binding].write_bytes(parity.canonical_json_bytes(value))
+    for call in ("shared.one", "returning.one"):
+        (twins / f"{call}.json").write_bytes(parity.canonical_json_bytes(canonical))
+    coverage = {
+        "format": "typebridge.sdk-plan-coverage/v1",
+        "suite": suite,
+        "observations": {
+            "shared": {"kind": "native", "calls": ["shared.one"]},
+            "returning": {
+                "kind": "native",
+                "calls": ["returning.one"],
+                "bindings": ["python", "node", "rust"],
+            },
+        },
+    }
+    coverage_path = directory / "plans/coverage.json"
+    coverage_path.write_text(json.dumps(coverage))
+    assert parity.compare_twins(suite, profile, paths, root=tmp_path)["calls"] == 2
+    original = paths["c"].read_bytes()
+    value = json.loads(original)
+    value["calls"]["shared.one"]["plans"].append(plan)
+    paths["c"].write_bytes(parity.canonical_json_bytes(value))
+    with pytest.raises(parity.ContractError, match="plan_manager_count"):
+        parity.compare_twins(suite, profile, paths, root=tmp_path)
+    paths["c"].write_bytes(original)
+    value = json.loads(original)
+    value["calls"] = {"unexpected.one": value["calls"]["shared.one"]}
+    paths["c"].write_bytes(parity.canonical_json_bytes(value))
+    with pytest.raises(parity.ContractError, match="plan_coverage_inventory"):
+        parity.compare_twins(suite, profile, paths, root=tmp_path)
+    paths["c"].write_bytes(original)
+    del coverage["observations"]["returning"]["bindings"]
+    coverage_path.write_text(json.dumps(coverage))
+    with pytest.raises(parity.ContractError, match="plan_coverage_inventory"):
+        parity.compare_twins(suite, profile, paths, root=tmp_path)

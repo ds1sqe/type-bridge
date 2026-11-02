@@ -560,7 +560,6 @@ def compare_twins(
         )
         for binding, path in paths.items()
     }
-    expected = calls["rust"]
     coverage_path = root / f"tests/contracts/sdk_conformance/{suite}/plans/coverage.json"
     coverage = _load_json(coverage_path, "selected plan coverage").value
     journey = _load_json(
@@ -578,7 +577,7 @@ def compare_twins(
             "plan_coverage_inventory",
             "coverage must annotate every unchanged journey observation",
         )
-    required: set[str] = set()
+    required: dict[str, set[str]] = {}
     for observation in coverage["observations"].values():
         if (
             type(observation) is not dict
@@ -593,15 +592,50 @@ def compare_twins(
                 "plan_coverage_inventory",
                 "each observation needs selected native calls or an explicit empty/raw/auxiliary reason",
             )
-        required.update(observation["calls"])
-    if required != set(expected):
-        _fail(
-            "plan_coverage_inventory",
-            "selected native call witnesses differ from the required coverage",
-        )
+        bindings = observation.get("bindings", list(BINDINGS))
+        if (
+            type(bindings) is not list
+            or len(bindings) < 2
+            or not all(type(binding) is str for binding in bindings)
+            or len(bindings) != len(set(bindings))
+            or not set(bindings) <= set(BINDINGS)
+            or ("bindings" in observation and observation["kind"] != "native")
+        ):
+            _fail("plan_coverage_inventory", "native coverage must name its exposed SDK bindings")
+        for call in observation["calls"]:
+            selected = set(bindings)
+            if call in required and required[call] != selected:
+                _fail("plan_coverage_inventory", "one call has conflicting binding coverage")
+            required[call] = selected
     for binding, actual in calls.items():
-        if canonical_json_bytes(actual) != canonical_json_bytes(expected):
-            _fail("plan_binding_drift", f"{suite}/{profile} {binding} plan stacks differ from Rust")
+        selected = {call for call, bindings in required.items() if binding in bindings}
+        if set(actual) != selected:
+            _fail(
+                "plan_coverage_inventory",
+                f"{binding} native call witnesses differ from its required coverage",
+            )
+    if suite == "models":
+        for binding, actual in calls.items():
+            for call, entries in actual.items():
+                if len(entries) != 1:
+                    _fail(
+                        "plan_manager_count",
+                        f"{binding}/{call} must execute exactly one native plan",
+                    )
+    expected = {}
+    for call, bindings in required.items():
+        reference = (
+            "rust"
+            if "rust" in bindings
+            else next(binding for binding in BINDINGS if binding in bindings)
+        )
+        expected[call] = calls[reference][call]
+        for binding in bindings:
+            if canonical_json_bytes(calls[binding][call]) != canonical_json_bytes(expected[call]):
+                _fail(
+                    "plan_binding_drift",
+                    f"{suite}/{profile} {binding}/{call} plan stack differs from {reference}",
+                )
     directory = root / f"tests/contracts/sdk_conformance/{suite}/plans" / profile.replace("/", "_")
     if set(path.stem for path in directory.glob("*.json")) != set(expected):
         _fail("plan_twin_inventory", f"{suite}/{profile} twin files differ from the measured calls")

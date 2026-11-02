@@ -6312,7 +6312,20 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     for (name, iid) in ["counter-left", "counter-right"].into_iter().zip(&ids) {
         model_plan_identity(name, iid);
     }
+    model_plan_mark("unkeyed_entity_iid_lifecycle.count");
     assert_eq!(manager.count().await.unwrap(), before + 2);
+    model_plan_mark("");
+    let mut transaction = db.transaction(Default::default());
+    let pending = {
+        let mut session = transaction.query().unwrap();
+        let root = session.exact::<Counter>().unwrap();
+        session.query(root).unwrap().count_by(root).await.unwrap()
+    };
+    assert!(pending.result().is_err());
+    model_plan_mark("borrowed_transaction_lifecycle.staged_count");
+    transaction.commit().await.unwrap();
+    model_plan_mark("");
+    assert_eq!(pending.result().unwrap(), before + 2);
     model_plan_mark("update");
     let updated = manager
         .update(
@@ -6324,14 +6337,80 @@ async fn sdk_models_counter_plan_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("");
     assert_eq!(updated.iid(), ids[0]);
     assert_eq!(*updated.counter_value().value(), 11);
+    model_plan_mark("unkeyed_entity_iid_lifecycle.get_by_iid");
+    assert_eq!(
+        *manager
+            .get_by_iid(&ids[0])
+            .await
+            .unwrap()
+            .unwrap()
+            .counter_value()
+            .value(),
+        11
+    );
+    model_plan_mark("");
+    model_plan_mark("entity_batch_update_delete_atomic.update");
+    let updated_many = manager
+        .update_many(vec![
+            (
+                ids[0].clone(),
+                CounterCreate::new(CounterValue::new(11).unwrap()).unwrap(),
+            ),
+            (
+                ids[1].clone(),
+                CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
+            ),
+        ])
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(
+        updated_many
+            .iter()
+            .map(|value| value.iid())
+            .collect::<Vec<_>>(),
+        ids.iter().map(String::as_str).collect::<Vec<_>>()
+    );
     model_plan_mark("delete");
     manager.delete_many(&ids).await.unwrap();
     model_plan_mark("");
     assert_eq!(manager.count().await.unwrap(), before);
+    let returned = manager
+        .insert_many(vec![
+            CounterCreate::new(CounterValue::new(1).unwrap()).unwrap(),
+            CounterCreate::new(CounterValue::new(2).unwrap()).unwrap(),
+        ])
+        .await
+        .unwrap();
+    for (name, value) in ["counter-left", "counter-right"].into_iter().zip(&returned) {
+        model_plan_identity(name, value.iid());
+    }
+    model_plan_mark("manager_returning_delete.entity");
+    let snapshot = manager
+        .delete_returning(returned[0].iid())
+        .await
+        .unwrap()
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(*snapshot.counter_value().value(), 1);
+    model_plan_mark("manager_returning_delete.entity_many");
+    let snapshots = manager
+        .delete_many_returning(
+            &returned
+                .iter()
+                .map(|value| value.iid().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(*snapshots[0].counter_value().value(), 2);
+    assert_eq!(manager.count().await.unwrap(), before);
 }
 
 async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
-    let person = |nonempty| {
+    let person = |nonempty, identifier: &str| {
         PersonCreate::try_new(
             if nonempty {
                 vec![Aliases::new("unsupported").unwrap()]
@@ -6339,7 +6418,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
                 vec![]
             },
             None,
-            Identifier::new("data-ada").unwrap(),
+            Identifier::new(identifier).unwrap(),
             None,
             Score::new(30).unwrap(),
             None,
@@ -6356,12 +6435,24 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     };
     let people = db.entities::<Person>();
     model_plan_mark("ordered_distinct_collections.entity_insert");
-    let ada = people.insert(person(false)).await.unwrap();
+    let ada = people.insert(person(false, "data-ada")).await.unwrap();
     model_plan_mark("");
     model_plan_identity("data-ada", ada.iid());
     assert!(ada.aliases().is_empty());
+    model_plan_mark("ordered_distinct_collections.entity_put");
+    assert_eq!(
+        people.put(person(false, "data-ada")).await.unwrap().iid(),
+        ada.iid()
+    );
+    model_plan_mark("");
+    model_plan_mark("ordered_distinct_collections.entity_count");
+    assert_eq!(people.count().await.unwrap(), 1);
+    model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.entity_update");
-    people.update(ada.iid(), person(false)).await.unwrap();
+    people
+        .update(ada.iid(), person(false, "data-ada"))
+        .await
+        .unwrap();
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.entity_read");
     assert!(
@@ -6394,6 +6485,15 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     model_plan_mark("");
     model_plan_identity("link-forward", link.iid());
     assert!(link.participant().is_empty());
+    model_plan_mark("ordered_distinct_collections.role_put");
+    assert_eq!(
+        links.put(link_input(false)).await.unwrap().iid(),
+        link.iid()
+    );
+    model_plan_mark("");
+    model_plan_mark("ordered_distinct_collections.role_count");
+    assert_eq!(links.count().await.unwrap(), 1);
+    model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.role_update");
     links.update(link.iid(), link_input(false)).await.unwrap();
     model_plan_mark("");
@@ -6409,7 +6509,7 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
     );
     model_plan_mark("");
     model_plan_mark("ordered_distinct_collections.refused_nonempty");
-    let error = people.insert(person(true)).await.unwrap_err();
+    let error = people.insert(person(true, "data-ada")).await.unwrap_err();
     assert_eq!(
         error.code(),
         Some("query_plan_ordered_collection_unsupported")
@@ -6420,8 +6520,130 @@ async fn sdk_models_empty_ordered_lifecycle(db: &Database<AppSchema>) {
         Some("query_plan_ordered_collection_unsupported")
     );
     model_plan_mark("");
+    model_plan_mark("ordered_distinct_collections.role_delete");
     links.delete(link.iid()).await.unwrap();
+    model_plan_mark("");
+    model_plan_mark("entity_batch_insert_put.put");
+    let put_people = people
+        .put_many(vec![person(false, "data-ada"), person(false, "data-dana")])
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(put_people[0].iid(), ada.iid());
+    model_plan_identity("data-dana", put_people[1].iid());
+    people.delete(put_people[1].iid()).await.unwrap();
+    let batch_input = |identifier: &str| {
+        NetworkLinkCreate::new(
+            Identifier::new(identifier).unwrap(),
+            None,
+            ada.reference(),
+            ada.reference(),
+            vec![],
+        )
+        .unwrap()
+    };
+    model_plan_mark("relation_batch_insert_put.put");
+    let put_links = links
+        .put_many(vec![
+            batch_input("data-link-forward"),
+            batch_input("data-link-return"),
+        ])
+        .await
+        .unwrap();
+    model_plan_mark("");
+    for (name, value) in ["link-forward", "link-return"].into_iter().zip(&put_links) {
+        model_plan_identity(name, value.iid());
+    }
+    links
+        .delete_many(
+            &put_links
+                .iter()
+                .map(|value| value.iid().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    model_plan_mark("relation_batch_insert_put.insert");
+    let batch_links = links
+        .insert_many(vec![
+            batch_input("data-link-forward"),
+            batch_input("data-link-return"),
+        ])
+        .await
+        .unwrap();
+    model_plan_mark("");
+    for (name, value) in ["link-forward", "link-return"]
+        .into_iter()
+        .zip(&batch_links)
+    {
+        model_plan_identity(name, value.iid());
+    }
+    model_plan_mark("relation_batch_update_delete_atomic.update");
+    let updated = links
+        .update_many(vec![
+            (
+                batch_links[0].iid().into(),
+                batch_input("data-link-forward"),
+            ),
+            (batch_links[1].iid().into(), batch_input("data-link-return")),
+        ])
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(
+        updated.iter().map(|value| value.iid()).collect::<Vec<_>>(),
+        batch_links
+            .iter()
+            .map(|value| value.iid())
+            .collect::<Vec<_>>()
+    );
+    model_plan_mark("relation_batch_update_delete_atomic.delete");
+    links
+        .delete_many(
+            &batch_links
+                .iter()
+                .map(|value| value.iid().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    model_plan_mark("");
+    let returned = links
+        .insert_many(vec![
+            batch_input("data-link-forward"),
+            batch_input("data-link-return"),
+        ])
+        .await
+        .unwrap();
+    for (name, value) in ["link-forward", "link-return"].into_iter().zip(&returned) {
+        model_plan_identity(name, value.iid());
+    }
+    model_plan_mark("manager_returning_delete.relation");
+    let snapshot = links
+        .delete_returning(returned[0].iid())
+        .await
+        .unwrap()
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(snapshot.identifier().value(), "data-link-forward");
+    assert_eq!(snapshot.origin().iid(), ada.iid());
+    model_plan_mark("manager_returning_delete.relation_many");
+    let snapshots = links
+        .delete_many_returning(
+            &returned
+                .iter()
+                .map(|value| value.iid().to_owned())
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+    model_plan_mark("");
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0].identifier().value(), "data-link-return");
+    assert_eq!(snapshots[0].origin().iid(), ada.iid());
+    model_plan_mark("ordered_distinct_collections.entity_delete");
     people.delete(ada.iid()).await.unwrap();
+    model_plan_mark("");
 }
 
 #[tokio::test]
