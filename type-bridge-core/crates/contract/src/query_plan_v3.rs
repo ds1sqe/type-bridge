@@ -342,7 +342,8 @@ impl DocumentRole {
 pub struct DocumentScalar {
     /// Named output field, distinct from the hydration keys.
     pub key: QueryVariable,
-    /// Present scalar binding to fetch.
+    /// Scalar binding, or an entity/relation whose IID is emitted. An
+    /// optional thing binding omits this field when absent.
     pub binding: BindingId,
 }
 
@@ -1742,13 +1743,21 @@ fn validate_stages(
             });
         index.thing_document(document, answer_mandatory, answer_optional, &types)?;
         for scalar in &document.scalars {
-            if !answer_mandatory.contains(&scalar.binding)
-                || answer_optional.contains(&scalar.binding)
-                || !scalar_types.contains_key(&scalar.binding)
-            {
+            let present_scalar = answer_mandatory.contains(&scalar.binding)
+                && !answer_optional.contains(&scalar.binding)
+                && scalar_types.contains_key(&scalar.binding);
+            let thing_iid = (answer_mandatory.contains(&scalar.binding)
+                || answer_optional.contains(&scalar.binding))
+                && types.get(&scalar.binding).is_some_and(|domains| {
+                    !domains.is_empty()
+                        && domains.iter().all(|domain| {
+                            matches!(domain.kind(), TypeKind::Entity | TypeKind::Relation)
+                        })
+                });
+            if !present_scalar && !thing_iid {
                 return Err(invalid(
                     "query_plan_fetch_scalar_binding",
-                    "scalar fetch fields require present scalar bindings",
+                    "scalar fetch fields require a present scalar or bound entity/relation IID",
                 ));
             }
         }
@@ -1764,6 +1773,7 @@ fn validate_stages(
                 document,
                 &types,
                 &scalar_types,
+                answer_optional,
                 &profile,
             )),
             scalar_types,

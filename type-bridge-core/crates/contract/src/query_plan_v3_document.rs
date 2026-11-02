@@ -13,9 +13,16 @@ type Types = BTreeMap<String, BTreeMap<String, AttributeShape>>;
 pub struct FetchDocumentShape {
     types: Types,
     roles: Vec<RoleShape>,
-    scalars: BTreeMap<String, ValueTypeTag>,
+    scalars: BTreeMap<String, ScalarShape>,
     ordered_roles: bool,
     complete_model_roles: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScalarShape {
+    domain: ValueTypeTag,
+    optional: bool,
+    iid: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +52,7 @@ impl FetchDocumentShape {
         document: &ThingDocument,
         bindings: &BTreeMap<BindingId, BTreeSet<TypeId>>,
         scalar_types: &BTreeMap<BindingId, ValueTypeTag>,
+        optional: &BTreeSet<BindingId>,
         profile: &SemanticProfile,
     ) -> Self {
         let types = index.document_types(&bindings[&document.thing], profile);
@@ -132,7 +140,22 @@ impl FetchDocumentShape {
                 .map(|scalar| {
                     (
                         scalar.key.as_str().to_owned(),
-                        scalar_types[&scalar.binding],
+                        ScalarShape {
+                            domain: scalar_types
+                                .get(&scalar.binding)
+                                .copied()
+                                .unwrap_or(ValueTypeTag::String),
+                            optional: optional.contains(&scalar.binding),
+                            iid: bindings.get(&scalar.binding).is_some_and(|domains| {
+                                !domains.is_empty()
+                                    && domains.iter().all(|domain| {
+                                        matches!(
+                                            domain.kind(),
+                                            TypeKind::Entity | TypeKind::Relation
+                                        )
+                                    })
+                            }),
+                        },
                     )
                 })
                 .collect(),
@@ -186,7 +209,7 @@ impl FetchDocumentShape {
 
     /// Domain of one additional scalar output field.
     pub fn scalar_domain(&self, key: &str) -> Option<ValueTypeTag> {
-        self.scalars.get(key).copied()
+        self.scalars.get(key).map(|scalar| scalar.domain)
     }
 
     /// Verify complete typed fetch evidence before materializing host objects.
@@ -198,8 +221,17 @@ impl FetchDocumentShape {
             "attributes".to_owned(),
         ]);
         allowed.extend(self.scalars.keys().cloned());
-        for (key, domain) in &self.scalars {
-            if !matches!(document.get(key), Some(RemoteFieldValue::Scalar { value }) if value.value_type() == *domain)
+        for (key, scalar) in &self.scalars {
+            if scalar.optional && matches!(document.get(key), None | Some(RemoteFieldValue::Absent))
+            {
+                continue;
+            }
+            let Some(RemoteFieldValue::Scalar { value }) = document.get(key) else {
+                return Err(document_error("value"));
+            };
+            if value.value_type() != scalar.domain
+                || (scalar.iid
+                    && !matches!(value, CanonicalValue::String(value) if crate::id::is_canonical_thing_iid(value.as_str())))
             {
                 return Err(document_error("value"));
             }

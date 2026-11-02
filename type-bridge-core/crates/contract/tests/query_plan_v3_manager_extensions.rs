@@ -346,3 +346,114 @@ fn frozen_plan_constructors_refuse_the_native_only_iid_node() {
         }
     }
 }
+
+#[test]
+fn document_scalars_capture_bound_thing_iids_and_optional_absence() {
+    use std::collections::BTreeMap;
+    use type_bridge_contract::migration_assertion::QueryVariable;
+    use type_bridge_contract::query_plan::v3::{DocumentScalar, ThingDocument};
+    use type_bridge_contract::query_remote::RemoteFieldValue;
+    use type_bridge_contract::query_remote_v3::StagedAnswerV3;
+    let text = |value: &str| RemoteFieldValue::Scalar {
+        value: CanonicalValue::String(CanonicalString::new(value).unwrap()),
+    };
+    for optional in [false, true] {
+        let mut document = ThingDocument::new(id(0), vec![]);
+        document.scalars.push(DocumentScalar {
+            key: QueryVariable::new("reference").unwrap(),
+            binding: id(1),
+        });
+        let peer = isa(1, entity("account"));
+        let plan = QueryPlanV3::new(
+            spec(
+                vec![
+                    Stage::Match {
+                        patterns: vec![
+                            isa(0, entity("account")).into(),
+                            if optional {
+                                QueryPattern::Try {
+                                    patterns: vec![peer],
+                                }
+                                .into()
+                            } else {
+                                peer.into()
+                            },
+                        ],
+                    },
+                    Stage::Fetch(document.clone()),
+                ],
+                vec![],
+            ),
+            &schema(),
+        )
+        .unwrap();
+        let bytes = plan.canonical_bytes().unwrap();
+        assert_eq!(
+            decode_query_plan_v3(&bytes, &schema())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            bytes
+        );
+        let root = BTreeMap::from([
+            ("_iid".into(), text("0x01")),
+            ("_type".into(), text("account")),
+            (
+                "attributes".into(),
+                RemoteFieldValue::Document {
+                    fields: BTreeMap::from([("id".into(), text("A"))]),
+                },
+            ),
+            ("reference".into(), text("0x02")),
+        ]);
+        let answer = |document| StagedAnswerV3::Documents {
+            documents: vec![document],
+        };
+        answer(root.clone()).validate_for(&plan).unwrap();
+        let mut absent = root.clone();
+        absent.remove("reference");
+        assert_eq!(answer(absent.clone()).validate_for(&plan).is_ok(), optional);
+        absent.insert("reference".into(), RemoteFieldValue::Absent);
+        assert_eq!(answer(absent).validate_for(&plan).is_ok(), optional);
+        let mut malformed = root.clone();
+        malformed.insert("reference".into(), text("not-an-iid"));
+        assert!(answer(malformed).validate_for(&plan).is_err());
+        let mut bad = spec(
+            vec![
+                Stage::Match {
+                    patterns: vec![isa(0, entity("account")).into()],
+                },
+                Stage::Fetch(document.clone()),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            QueryPlanV3::new(bad.clone(), &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_fetch_scalar_binding"
+        );
+        // An optional attribute is not a thing IID and remains outside the allowance.
+        let Stage::Match { patterns } = &mut bad.pipeline[0] else {
+            unreachable!()
+        };
+        patterns.push(
+            QueryPattern::Try {
+                patterns: vec![QueryPattern::Has {
+                    attribute: id(1),
+                    owner: id(0),
+                    attribute_id: type_bridge_contract::id::AttributeId::new("id").unwrap(),
+                }],
+            }
+            .into(),
+        );
+        assert_eq!(
+            QueryPlanV3::new(bad, &schema())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "query_plan_fetch_scalar_binding"
+        );
+    }
+}

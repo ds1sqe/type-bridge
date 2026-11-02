@@ -1861,7 +1861,23 @@ impl Scope<'_> {
         ];
         for scalar in &document.scalars {
             keys.push(scalar.key.as_str().to_owned());
-            values.push(tql::fetch_expr(ast(tql::var(self.name(scalar.binding)?))?));
+            let variable = ast(tql::var(self.name(scalar.binding)?))?;
+            values.push(tql::fetch_expr(
+                if self
+                    .plan
+                    .binding_types(scalar.binding)
+                    .is_some_and(|domains| {
+                        !domains.is_empty()
+                            && domains.iter().all(|domain| {
+                                matches!(domain.kind(), TypeKind::Entity | TypeKind::Relation)
+                            })
+                    })
+                {
+                    ast(tql::function("iid", vec![variable]))?
+                } else {
+                    variable
+                },
+            ));
         }
         for (index, listed) in document.roles.iter().enumerate() {
             let player = format!("PlanFetchRole{index}");
@@ -2432,6 +2448,69 @@ mod tests {
             &typeql(&race::attach_on_call()).0,
             "match $doctor isa! doctor; insert $doctor has on-call true;",
         );
+    }
+
+    #[test]
+    fn thing_iid_document_scalars_lower_without_an_extra_statement() {
+        use crate::plan_builders::{PlanDraft, ValueTransport, authority::PlanAuthority};
+        use type_bridge_contract::migration_assertion::QueryVariable;
+        use type_bridge_contract::query_plan::v3::DocumentScalar;
+        for optional in [false, true] {
+            let authority = PlanAuthority::new(
+                race::schema(),
+                race::purchase_fetch().managed_semantics().clone(),
+            );
+            let mut draft = PlanDraft::new(ValueTransport::Given);
+            let root = draft.bind("root").unwrap();
+            let peer = draft.bind("peer").unwrap();
+            let isa = |binding| QueryPattern::Isa {
+                binding,
+                type_id: TypeId::new(TypeKind::Entity, "account").unwrap(),
+                include_subtypes: false,
+            };
+            let mut document = ThingDocument::new(root, vec![]);
+            document.scalars.push(DocumentScalar {
+                key: QueryVariable::new("reference").unwrap(),
+                binding: peer,
+            });
+            let plan = draft
+                .finish(
+                    &authority,
+                    vec![
+                        Stage::Match {
+                            patterns: vec![
+                                isa(root).into(),
+                                if optional {
+                                    QueryPattern::Try {
+                                        patterns: vec![isa(peer)],
+                                    }
+                                    .into()
+                                } else {
+                                    isa(peer).into()
+                                },
+                            ],
+                        },
+                        Stage::Fetch(document),
+                    ],
+                    Operation::Rows,
+                    QueryOutput::Rows { columns: vec![] },
+                )
+                .unwrap();
+            let source = typeql(plan.local()).0;
+            assert!(source.contains("\"reference\": iid($peer1)"), "{source}");
+            assert_eq!(
+                crate::plan_explain::explain(plan.local())
+                    .unwrap()
+                    .statements
+                    .len(),
+                1
+            );
+            let base = serde_json::json!({"_iid":"0x01", "_type":"account", "attributes":{}, "reference":"0x02"});
+            remote_document(&base, plan.local()).unwrap();
+            let mut absent = base;
+            absent.as_object_mut().unwrap().remove("reference");
+            assert_eq!(remote_document(&absent, plan.local()).is_ok(), optional);
+        }
     }
 
     #[test]
