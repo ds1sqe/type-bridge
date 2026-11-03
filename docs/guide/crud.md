@@ -15,6 +15,13 @@ No model registry or handwritten descriptor is involved. Native execution
 accepts only the exact generated class and value wrappers installed by that
 package.
 
+Single writes return `WriteResult` with `count`, `items`, and `item`. `item`
+is present only when exactly one root was written. Python attaches the input
+facade's IID only in that case; zero or multiple roots leave it unchanged.
+Successor managers hydrate and stage publication before completing the write.
+A failed owned write restores the input facade; a materialization failure in a
+borrowed write makes that transaction rollback-only.
+
 ## Entity manager operations
 
 | Operation | Result |

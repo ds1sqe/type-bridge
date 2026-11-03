@@ -32,6 +32,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Python projected single writes hydrate and stage facade publication under
+  Core's controlled write mapper. A failed write restores the input facade;
+  zero or multiple roots leave it unchanged.
+
 - Rust single writes retain the mutation lease through generated model
   materialization. A failed materializer makes a borrowed transaction
   rollback-only and preserves the original binding error.

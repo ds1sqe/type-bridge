@@ -138,6 +138,10 @@ def projected_manager_for(
     connection: object,
 ) -> PyProjectedModelManager:
     """Bind a package projection to an existing native connection handle."""
+    from type_bridge_core import ProxyConnection
+
+    if isinstance(connection, ProxyConnection):
+        return projection.manager_for_proxy(model, connection)
     transaction = core_transaction_for(connection)
     if transaction is not None:
         return projection.manager_for_transaction(model, transaction)

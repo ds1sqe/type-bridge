@@ -91,17 +91,14 @@ fn python_administration_control(
     )
 }
 
-/// Drive one successor-batch future while a dedicated worker owns the GIL.
+/// Drive one successor write while one thread retains the GIL through cleanup.
 ///
-/// The callback and its root future are both created on the scoped worker.
-/// The worker acquires the GIL before the callback runs and does not release it
-/// until the callback, root future, and every interior unwind guard have been
-/// destroyed. The inert `T` crosses the worker-release/join interval and is
-/// observed only after the caller reacquires the GIL; consequently `T` must not
-/// require Python access or Python-visible drop side effects while unbound.
-/// This narrow helper is reserved for the Python-V2 many-operation adapter,
-/// whose provider path is native-only and whose Python facade publication must
-/// be linearized with the terminal owned commit.
+/// Ordinary callers create, poll and destroy the callback future under their
+/// current GIL. A host already inside Tokio uses a scoped worker to avoid a
+/// nested runtime panic; its inert result crosses the join before the caller
+/// reacquires the GIL. Python-visible drop effects stay under the owning GIL.
+/// This helper is reserved for native-only Python-V2 write adapters whose
+/// facade publication must be linearized with terminal owned commit.
 pub(crate) fn provider_block_on_with_gil<T, F>(
     py: Python<'_>,
     runtime: &ProviderRuntimeOwner,
@@ -111,6 +108,9 @@ where
     T: Send,
     F: for<'py> FnOnce(Python<'py>) -> Pin<Box<dyn Future<Output = T> + 'py>> + Send,
 {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return drive_provider_future(runtime, operation(py));
+    }
     py.detach(move || {
         std::thread::scope(|scope| {
             match scope

@@ -35,6 +35,10 @@ pub(crate) struct PyProxyConnection {
 }
 
 impl PyProxyConnection {
+    pub(crate) fn handles(&self) -> (Arc<ProxyQueryConnection>, Arc<ProviderRuntimeOwner>) {
+        (Arc::clone(&self.connection), Arc::clone(&self.runtime))
+    }
+
     pub(crate) fn connection(&self) -> &ProxyQueryConnection {
         &self.connection
     }

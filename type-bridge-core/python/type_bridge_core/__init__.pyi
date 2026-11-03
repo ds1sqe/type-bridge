@@ -1190,6 +1190,11 @@ class PyRuntimeProjection:
         cancellation: QueryCancellation | None = ...,
         query_limits: QueryLimits | None = ...,
     ) -> PyDatabase: ...
+    def manager_for_proxy(
+        self,
+        model: type[object],
+        connection: ProxyConnection,
+    ) -> PyProjectedModelManager: ...
     def manager_for_database(
         self,
         model: type[object],

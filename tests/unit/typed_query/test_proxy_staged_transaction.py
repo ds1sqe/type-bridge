@@ -57,3 +57,27 @@ def test_admission_window_defaults_and_round_trips() -> None:
     assert connection.admission_window_milliseconds == 1234
     with pytest.raises((ValueError, OverflowError)):
         ProxyConnection.connect(_authority(), _closed_endpoint(), admission_window_milliseconds=0)
+
+
+def test_generated_manager_selects_the_native_proxy_connection() -> None:
+    from typing import cast
+
+    from type_bridge_core import PyProjectedModelManager, PyRuntimeProjection
+
+    from type_bridge._runtime_projection import projected_manager_for
+
+    connection = _connection()
+    expected = cast(PyProjectedModelManager, object())
+
+    class Projection:
+        def manager_for_proxy(
+            self, model: type[object], target: ProxyConnection
+        ) -> PyProjectedModelManager:
+            assert model is object
+            assert target is connection
+            return expected
+
+    assert (
+        projected_manager_for(cast(PyRuntimeProjection, Projection()), object, connection)
+        is expected
+    )
