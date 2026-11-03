@@ -674,8 +674,15 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         expressions: &[crate::_dynamic::DynamicExpr],
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
-        self.compatibility_fetch_on_target(target, model, expressions, None, control)
-            .await
+        self.compatibility_fetch_on_target(
+            target,
+            model,
+            expressions,
+            MatchMode::Exact,
+            None,
+            control,
+        )
+        .await
     }
 
     /// Return the released arbitrary first match without an identity-only precondition.
@@ -688,9 +695,86 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
         let values = self
-            .compatibility_fetch_on_target(target, model, expressions, Some(1), control)
+            .compatibility_fetch_on_target(
+                target,
+                model,
+                expressions,
+                MatchMode::Exact,
+                Some(1),
+                control,
+            )
             .await?;
         Ok(values.into_iter().next())
+    }
+
+    /// Read a generated subtype association through the common native materializer.
+    #[doc(hidden)]
+    pub async fn all_including_subtypes_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        self.compatibility_fetch_on_target(target, model, &[], MatchMode::Subtypes, None, control)
+            .await
+    }
+
+    /// Read one IID across a generated subtype association, retaining its concrete model.
+    #[doc(hidden)]
+    pub async fn get_by_iid_including_subtypes_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        iid: &str,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<Option<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        crate::projected_crud::validate_iid(model, iid)?;
+        let expressions = [crate::_dynamic::DynamicExpr::Iid {
+            iid: iid.to_owned(),
+        }];
+        let mut values = self
+            .compatibility_fetch_on_target(
+                target,
+                model,
+                &expressions,
+                MatchMode::Subtypes,
+                None,
+                control,
+            )
+            .await?;
+        if values.len() > 1 {
+            return Err(integrity(
+                "manager_iid_cardinality_invalid",
+                "A manager IID lookup returned multiple roots",
+                type_path(model),
+            )
+            .into());
+        }
+        if let Some(value) = values.last() {
+            crate::projected_crud::validate_returned_iid(value.iid(), iid, model)?;
+        }
+        Ok(values.pop())
+    }
+
+    /// Count a generated subtype association using the common scalar answer owner.
+    #[doc(hidden)]
+    pub async fn count_including_subtypes_on_target(
+        &self,
+        target: crate::QueryTarget<'_>,
+        model: &TypeId,
+        control: ProjectedManagerFilterInvocationControl,
+    ) -> Result<u64, crate::QueryTargetError> {
+        let (program, answer) = self
+            .compatibility_scalar_on_target(
+                target,
+                model,
+                &[],
+                crate::plan_builders::manager::ReadTerminal::Count,
+                MatchMode::Subtypes,
+                control,
+            )
+            .await?;
+        self.compatibility_count_answer(model, &program, answer)
     }
 
     /// Count exact keyword-filter matches through the common plan target.
@@ -708,9 +792,19 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 model,
                 expressions,
                 crate::plan_builders::manager::ReadTerminal::Count,
+                MatchMode::Exact,
                 control,
             )
             .await?;
+        self.compatibility_count_answer(model, &program, answer)
+    }
+
+    fn compatibility_count_answer(
+        &self,
+        model: &TypeId,
+        program: &crate::plan_builders::manager::ManagerRead,
+        answer: crate::query_plan_exec::PlanAnswer,
+    ) -> Result<u64, crate::QueryTargetError> {
         let type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows { rows } =
             answer.to_staged_v3(&program.plans()[0]).map_err(|error| {
                 crate::QueryTargetError::Direct(crate::plan_builders::manager::diagnostic(error))
@@ -753,6 +847,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
                 model,
                 expressions,
                 crate::plan_builders::manager::ReadTerminal::Exists,
+                MatchMode::Exact,
                 control,
             )
             .await?;
@@ -788,6 +883,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         model: &TypeId,
         expressions: &[crate::_dynamic::DynamicExpr],
         terminal: crate::plan_builders::manager::ReadTerminal,
+        mode: MatchMode,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<
         (
@@ -809,7 +905,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             .with_query_limits(limits.as_ref());
         let program = plans.read(
             model.label().as_str(),
-            true,
+            mode == MatchMode::Exact,
             expressions,
             &[],
             None,
@@ -836,6 +932,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         target: crate::QueryTarget<'_>,
         model: &TypeId,
         expressions: &[crate::_dynamic::DynamicExpr],
+        mode: MatchMode,
         limit: Option<u64>,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
@@ -852,7 +949,7 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             .with_query_limits(limits.as_ref());
         let program = plans.read(
             model.label().as_str(),
-            true,
+            mode == MatchMode::Exact,
             expressions,
             &[],
             limit,
@@ -875,16 +972,30 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
             .resolve(&registry, &answers, stack.execution_limits(control.limits))
             .map_err(|error| reply_error(lower_match_error(&error)))?;
         let roots = collect_manager_roots(proof.request(), proof.result()).map_err(reply_error)?;
-        materialize_projected_manager_things_with_budget(
-            self.installed,
-            &registry,
-            ProjectedQueryOrigin::for_manager_target(&target)?,
-            model,
-            &roots,
-            control.limits.projected(),
-            &control.cancellation,
-            Some(control.deadline),
-        )
+        match mode {
+            MatchMode::Exact => materialize_projected_manager_things_with_budget(
+                self.installed,
+                &registry,
+                ProjectedQueryOrigin::for_manager_target(&target)?,
+                model,
+                &roots,
+                control.limits.projected(),
+                &control.cancellation,
+                Some(control.deadline),
+            ),
+            MatchMode::Subtypes => {
+                crate::projected_query::materialize_projected_manager_subtypes_with_budget(
+                    self.installed,
+                    &registry,
+                    ProjectedQueryOrigin::for_manager_target(&target)?,
+                    model,
+                    &roots,
+                    control.limits.projected(),
+                    &control.cancellation,
+                    Some(control.deadline),
+                )
+            }
+        }
         .map_err(reply_error)
     }
 

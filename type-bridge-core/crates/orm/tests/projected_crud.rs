@@ -4265,3 +4265,96 @@ async fn borrowed_manager_reads_use_the_transaction_given_transport_capability()
         assert_eq!((state.commits, state.rollbacks, state.closes), (0, 0, 0));
     }
 }
+
+#[tokio::test]
+async fn subtype_manager_reads_share_native_origins_and_keep_exact_and_iid_fences() {
+    use type_bridge_orm::{
+        ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, QueryTarget,
+    };
+    for borrowed in [None, Some(TxType::Read), Some(TxType::Write)] {
+        let installed = installed_with_authority();
+        let root = type_id(TypeKind::Entity, "actor");
+        let (mut backend, state) = RecordingBackend::new(
+            vec![
+                documents(vec![person_document("0x10")]),
+                documents(vec![person_document("0x10")]),
+                RecordingResponse::Result(QueryResult::Rows(vec![
+                    serde_json::json!({"count1":{"kind":"value","value":CanonicalValue::Long(1)}}),
+                ])),
+                documents(vec![]),
+                documents(vec![person_document("0x11")]),
+                documents(vec![person_document("0x10")]),
+            ],
+            CommitBehavior::Success,
+        );
+        backend.given_enabled = true;
+        let database = Database::with_backend(Box::new(backend), "subtype-native-read");
+        let transaction = match borrowed {
+            Some(kind) => Some(database.transaction_context(kind).await.unwrap()),
+            None => None,
+        };
+        let target = transaction
+            .as_ref()
+            .map_or(QueryTarget::Database(&database), QueryTarget::Transaction);
+        let executor = ProjectedManagerFilterExecutor::new(&installed);
+        let control = || {
+            ProjectedManagerFilterInvocationControl::capture(Default::default(), Default::default())
+        };
+        let all = executor
+            .all_including_subtypes_on_target(target, &root, control())
+            .await
+            .unwrap();
+        let one = executor
+            .get_by_iid_including_subtypes_on_target(target, &root, "0x10", control())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(all.len(), 1);
+        for thing in [&all[0], &one] {
+            assert_eq!(thing.type_id(), &type_id(TypeKind::Entity, "person"));
+            assert_eq!(thing.iid(), "0x10");
+            assert!(
+                thing
+                    .try_to_reference(&installed)
+                    .unwrap()
+                    .origin_carrier()
+                    .is_some()
+            );
+        }
+        assert_eq!(
+            executor
+                .count_including_subtypes_on_target(target, &root, control())
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(
+            executor
+                .get_by_iid_including_subtypes_on_target(target, &root, "0x10", control())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let wrong_iid = executor
+            .get_by_iid_including_subtypes_on_target(target, &root, "0x10", control())
+            .await
+            .unwrap_err()
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
+        assert_eq!(wrong_iid.code().as_str(), "hydrated_iid_mismatch");
+        let wrong_exact = executor
+            .compatibility_all_on_target(target, &root, &[], control())
+            .await
+            .unwrap_err()
+            .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
+        assert_eq!(wrong_exact.category(), SdkDiagnosticCategory::Integrity);
+        let state = state.lock().unwrap();
+        assert_eq!(state.queries.len(), 6);
+        assert!(
+            state.queries[..5]
+                .iter()
+                .all(|query| query.contains("isa actor") && !query.contains("isa! actor"))
+        );
+        assert!(state.queries[5].contains("isa! actor"));
+        assert_eq!((state.commits, state.rollbacks), (0, 0));
+    }
+}

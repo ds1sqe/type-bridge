@@ -545,6 +545,61 @@ pub(crate) fn materialize_projected_manager_things_with_budget(
     cancellation: &AnswerCancellation,
     deadline: Option<QueryExecutionDeadline>,
 ) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    materialize_manager_roots_with_budget(
+        installed,
+        registry,
+        origin,
+        things,
+        limits,
+        cancellation,
+        deadline,
+        |_, value| value.type_id() == model,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the manager materializer keeps authority, scope and invocation budget explicit"
+)]
+pub(crate) fn materialize_projected_manager_subtypes_with_budget(
+    installed: &InstalledRuntimeProjection,
+    registry: &DescriptorRegistry,
+    origin: ProjectedQueryOrigin,
+    model: &TypeId,
+    things: &[&HydratedThing],
+    limits: ProjectedQueryMaterializationLimits,
+    cancellation: &AnswerCancellation,
+    deadline: Option<QueryExecutionDeadline>,
+) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
+    let expected = registry
+        .descriptor_id(model.label().as_str())
+        .ok_or_else(result_integrity)?;
+    materialize_manager_roots_with_budget(
+        installed,
+        registry,
+        origin,
+        things,
+        limits,
+        cancellation,
+        deadline,
+        |thing, _| registry.is_same_or_subtype(thing.concrete_descriptor(), &expected),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the manager materializer keeps every authority and invocation budget explicit"
+)]
+fn materialize_manager_roots_with_budget(
+    installed: &InstalledRuntimeProjection,
+    registry: &DescriptorRegistry,
+    origin: ProjectedQueryOrigin,
+    things: &[&HydratedThing],
+    limits: ProjectedQueryMaterializationLimits,
+    cancellation: &AnswerCancellation,
+    deadline: Option<QueryExecutionDeadline>,
+    accepts: impl Fn(&HydratedThing, &ProjectedThing) -> bool,
+) -> Result<Vec<Arc<ProjectedThing>>, SdkExecutionDiagnostic> {
     check_materialization_budget(cancellation, deadline)?;
     let mut materializer =
         Materializer::new(installed, registry, origin, limits, cancellation, deadline);
@@ -556,7 +611,7 @@ pub(crate) fn materialize_projected_manager_things_with_budget(
     for thing in things {
         materializer.checkpoint()?;
         let value = materializer.thing(thing)?;
-        if value.type_id() != model {
+        if !accepts(thing, &value) {
             return Err(result_integrity());
         }
         projected.push(value);

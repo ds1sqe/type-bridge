@@ -5726,7 +5726,7 @@ fn require_transaction(
     }
 }
 
-fn validate_iid(type_id: &TypeId, iid: &str) -> Result<(), SdkExecutionDiagnostic> {
+pub(crate) fn validate_iid(type_id: &TypeId, iid: &str) -> Result<(), SdkExecutionDiagnostic> {
     if is_canonical_thing_iid(iid) {
         Ok(())
     } else {
@@ -5736,6 +5736,21 @@ fn validate_iid(type_id: &TypeId, iid: &str) -> Result<(), SdkExecutionDiagnosti
             type_id,
         ))
     }
+}
+
+pub(crate) fn validate_returned_iid(
+    iid: &str,
+    requested_iid: &str,
+    type_id: &TypeId,
+) -> Result<(), SdkExecutionDiagnostic> {
+    if iid != requested_iid || !is_canonical_thing_iid(iid) {
+        return Err(integrity_at_type(
+            "hydrated_iid_mismatch",
+            "The provider row returned a different or noncanonical IID",
+            type_id,
+        ));
+    }
+    Ok(())
 }
 
 fn exact_row_identity(
@@ -5751,13 +5766,7 @@ fn exact_row_identity(
             type_id,
         )
     })?;
-    if iid != requested_iid || !is_canonical_thing_iid(&iid) {
-        return Err(integrity_at_type(
-            "hydrated_iid_mismatch",
-            "The provider row returned a different or noncanonical IID",
-            type_id,
-        ));
-    }
+    validate_returned_iid(&iid, requested_iid, type_id)?;
     if concrete_type.as_deref() != Some(type_id.label().as_str()) {
         return Err(integrity_at_type(
             "hydrated_type_mismatch",
