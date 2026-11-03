@@ -41,14 +41,10 @@ use type_bridge_contract::temporal::{
 use type_bridge_contract::value::{CanonicalDouble, CanonicalString, CanonicalValue, DecimalValue};
 use type_bridge_core_lib::ast::{Clause, Constraint, Pattern, RolePlayer, Statement};
 use type_bridge_orm::_attribute::ValueType;
-use type_bridge_orm::_descriptor::{
-    EntityDescriptor, OwnedAttributeDescriptor, RelationDescriptor, RoleDescriptor, TypeDescriptor,
-};
-use type_bridge_orm::_dynamic::{
-    DynamicAttributeMap, DynamicComparisonOp, DynamicEntityRow, DynamicExpr, DynamicRelationRow,
-    DynamicRolePlayer,
-};
-use type_bridge_orm::_manager::{DynamicEntityManager, DynamicRelationManager};
+use type_bridge_orm::_descriptor::{OwnedAttributeDescriptor, RoleDescriptor, TypeDescriptor};
+use type_bridge_orm::_dynamic::{DynamicAttributeMap, DynamicComparisonOp, DynamicExpr};
+#[cfg(test)]
+use type_bridge_orm::_dynamic::{DynamicEntityRow, DynamicRelationRow, DynamicRolePlayer};
 use type_bridge_orm::_registry::DescriptorRegistry;
 use type_bridge_orm::projected_batch::ProjectedBatchBindingBudget;
 use type_bridge_orm::session::{Database, TransactionContext, TransactionContextState};
@@ -1850,7 +1846,6 @@ impl PyRuntimeProjection {
         let compatibility_filter = initial_compatibility_filter(self.package.as_ref(), &type_id)?;
         let (database, runtime) = database.handles();
         Ok(PyProjectedModelManager {
-            transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
             target: Some(OwnedQueryTarget::Database(database)),
@@ -1873,7 +1868,6 @@ impl PyRuntimeProjection {
         let compatibility_filter = initial_compatibility_filter(self.package.as_ref(), &type_id)?;
         let (connection, runtime) = connection.handles();
         Ok(PyProjectedModelManager {
-            transaction_supports_given_stage: false,
             package: Arc::clone(&self.package),
             type_id,
             target: Some(OwnedQueryTarget::Proxy(connection)),
@@ -1894,7 +1888,6 @@ impl PyRuntimeProjection {
         let type_id = self.package.model_id_for_class(py, &model)?;
         ensure_manageable(self.package.as_ref(), &type_id)?;
         let successor_batch_marker = transaction.successor_batch_marker();
-        let supports_given_stage = transaction.supports_given_stage();
         let (transaction, runtime) = transaction.handles();
         let compatibility_filter = if transaction.tx_type() == type_bridge_orm::TxType::Read {
             initial_compatibility_filter(self.package.as_ref(), &type_id)?
@@ -1902,7 +1895,6 @@ impl PyRuntimeProjection {
             None
         };
         Ok(PyProjectedModelManager {
-            transaction_supports_given_stage: supports_given_stage,
             package: Arc::clone(&self.package),
             type_id,
             target: Some(OwnedQueryTarget::Transaction(transaction)),
@@ -2726,7 +2718,6 @@ impl PyRuntimeProjection {
 /// Exact CRUD manager for one generated projected entity or relation class.
 #[pyclass]
 pub struct PyProjectedModelManager {
-    transaction_supports_given_stage: bool,
     package: Arc<InstalledPackage>,
     type_id: TypeId,
     target: Option<OwnedQueryTarget>,
@@ -3039,7 +3030,6 @@ impl PyProjectedModelManager {
             None => None,
         };
         Ok(Self {
-            transaction_supports_given_stage: self.transaction_supports_given_stage,
             package: Arc::clone(&self.package),
             type_id: self.type_id.clone(),
             target: self.target.clone(),
@@ -3058,80 +3048,57 @@ impl PyProjectedModelManager {
         self.legacy_all(py)
     }
 
-    /// Preserve released dynamic-query selection for generated mutations.
+    /// Preserve keyword selection while retaining native projected origins.
     fn legacy_all(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                let rows = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.get_exact_with_query(&self.filters, &[], None, None),
-                )
-                .map_err(py_orm_error)?;
-                let values = PyList::empty(py);
-                for row in rows {
-                    values.append(hydrate_entity(
-                        py,
-                        self.package.as_ref(),
-                        &self.type_id,
-                        &row,
-                    )?)?;
-                }
-                Ok(values.into_any().unbind())
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let rows = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.get_exact_with_query(&self.filters, &[], None, None),
-                )
-                .map_err(py_orm_error)?;
-                let values = PyList::empty(py);
-                for row in rows {
-                    values.append(hydrate_relation(
-                        py,
-                        self.package.as_ref(),
-                        &self.type_id,
-                        &row,
-                    )?)?;
-                }
-                Ok(values.into_any().unbind())
-            }
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        let things = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.compatibility_all_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            ),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
+        .map_err(py_sdk_diagnostic)?;
+        let values = PyList::empty(py);
+        for thing in things {
+            values.append(hydrate_projected_thing(py, self.package.as_ref(), thing)?)?;
         }
+        Ok(values.into_any().unbind())
     }
 
     /// Return the first exact filtered model, or `None` when no model matches.
     fn first(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                let row = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.first_exact_with_query(&self.filters),
-                )
-                .map_err(py_orm_error)?;
-                row.as_ref()
-                    .map(|row| hydrate_entity(py, self.package.as_ref(), &self.type_id, row))
-                    .transpose()
-                    .map(|value| value.unwrap_or_else(|| py.None()))
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                let row = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.first_exact_with_query(&self.filters),
-                )
-                .map_err(py_orm_error)?;
-                row.as_ref()
-                    .map(|row| hydrate_relation(py, self.package.as_ref(), &self.type_id, row))
-                    .transpose()
-                    .map(|value| value.unwrap_or_else(|| py.None()))
-            }
-        }
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        let thing = provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.compatibility_first_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            ),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
+        .map_err(py_sdk_diagnostic)?;
+        thing
+            .map(|thing| hydrate_projected_thing(py, self.package.as_ref(), thing))
+            .transpose()
+            .map(|value| value.unwrap_or_else(|| py.None()))
     }
 
     /// Count exact filtered models.
@@ -3139,55 +3106,49 @@ impl PyProjectedModelManager {
         if let Some(filter) = &self.compatibility_filter {
             return self.compatibility_filter_handle(filter.clone()).count(py);
         }
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.count_exact_with_query(&self.filters),
-                )
-                .map_err(py_orm_error)
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.count_exact_with_query(&self.filters),
-                )
-                .map_err(py_orm_error)
-            }
-        }
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.compatibility_count_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            ),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
+        .map_err(py_sdk_diagnostic)
     }
-
     /// Return whether at least one exact filtered model exists.
     fn exists(&self, py: Python<'_>) -> PyResult<bool> {
         if let Some(filter) = &self.compatibility_filter {
             return self.compatibility_filter_handle(filter.clone()).exists(py);
         }
-        match self.descriptor()? {
-            TypeDescriptor::Entity(descriptor) => {
-                let manager = self.entity_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.exists_exact_with_query(&self.filters),
-                )
-                .map_err(py_orm_error)
-            }
-            TypeDescriptor::Relation(descriptor) => {
-                let manager = self.relation_manager(Arc::new(descriptor))?;
-                provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    manager.exists_exact_with_query(&self.filters),
-                )
-                .map_err(py_orm_error)
-            }
-        }
+        let executor = ProjectedManagerFilterExecutor::new(self.package.projection.as_ref());
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            executor.compatibility_exists_on_target(
+                self.execution_target()?,
+                &self.type_id,
+                &self.filters,
+                ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            ),
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read)
+        })
+        .map_err(py_sdk_diagnostic)
     }
-
     /// Fetch one exact instance by TypeDB IID using `isa!`.
     fn get_by_iid(&self, py: Python<'_>, iid: &str) -> PyResult<Py<PyAny>> {
         // Preserve the released Python manager contract: malformed IIDs are
@@ -3207,13 +3168,15 @@ impl PyProjectedModelManager {
 
 impl PyProjectedModelManager {
     #[inline]
-    fn database(&self) -> Option<&Arc<Database>> {
-        self.target.as_ref().and_then(OwnedQueryTarget::database)
-    }
-
-    #[inline]
     fn transaction(&self) -> Option<&TransactionContext> {
         self.target.as_ref().and_then(OwnedQueryTarget::transaction)
+    }
+
+    fn execution_target(&self) -> PyResult<QueryTarget<'_>> {
+        self.target
+            .as_ref()
+            .map(OwnedQueryTarget::as_target)
+            .ok_or_else(|| py_runtime_error("projected manager has no execution target"))
     }
 
     fn compatibility_filter_handle(
@@ -3760,70 +3723,6 @@ impl PyProjectedModelManager {
             ));
         }
         Ok(())
-    }
-
-    fn entity_manager(
-        &self,
-        descriptor: Arc<EntityDescriptor>,
-    ) -> PyResult<DynamicEntityManager<'_>> {
-        if let Some(transaction) = self.transaction() {
-            let manager = DynamicEntityManager::with_registry_transaction(
-                transaction.clone(),
-                self.package
-                    .projection
-                    .manager_registry()
-                    .map_err(py_orm_error)?,
-                descriptor,
-            );
-            return Ok(if self.transaction_supports_given_stage {
-                manager
-            } else {
-                manager.literal_values()
-            });
-        }
-        let database = self
-            .database()
-            .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicEntityManager::from_registry(
-            database.as_ref(),
-            self.package
-                .projection
-                .manager_registry()
-                .map_err(py_orm_error)?,
-            descriptor,
-        ))
-    }
-
-    fn relation_manager(
-        &self,
-        descriptor: Arc<RelationDescriptor>,
-    ) -> PyResult<DynamicRelationManager<'_>> {
-        if let Some(transaction) = self.transaction() {
-            let manager = DynamicRelationManager::with_registry_transaction(
-                transaction.clone(),
-                self.package
-                    .projection
-                    .manager_registry()
-                    .map_err(py_orm_error)?,
-                descriptor,
-            );
-            return Ok(if self.transaction_supports_given_stage {
-                manager
-            } else {
-                manager.literal_values()
-            });
-        }
-        let database = self
-            .database()
-            .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
-        Ok(DynamicRelationManager::from_registry(
-            database.as_ref(),
-            self.package
-                .projection
-                .manager_registry()
-                .map_err(py_orm_error)?,
-            descriptor,
-        ))
     }
 }
 
@@ -7872,6 +7771,7 @@ fn hydrate_validated_attributes<'py>(
     Ok(values)
 }
 
+#[cfg(test)]
 fn hydrate_entity(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7893,6 +7793,7 @@ fn hydrate_entity(
     hydrate_complete(py, package, id, &values, row.iid.as_deref())
 }
 
+#[cfg(test)]
 fn hydrate_relation(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7940,6 +7841,7 @@ fn hydrate_relation(
     hydrate_complete(py, package, id, &values, row.iid.as_deref())
 }
 
+#[cfg(test)]
 fn hydrate_player(
     py: Python<'_>,
     package: &InstalledPackage,
@@ -7998,6 +7900,7 @@ fn hydrate_player(
     }
 }
 
+#[cfg(test)]
 fn hydrate_attributes<'py>(
     py: Python<'py>,
     package: &InstalledPackage,
@@ -8148,6 +8051,7 @@ fn allocate<'py>(py: Python<'py>, class: &Py<PyType>) -> PyResult<Bound<'py, PyA
     class.getattr("__new__")?.call1((class,))
 }
 
+#[cfg(test)]
 fn ensure_row_type(id: &TypeId, actual: Option<&str>) -> PyResult<()> {
     if actual.is_some_and(|actual| actual != id.label().as_str()) {
         return Err(py_runtime_error(
@@ -10425,7 +10329,6 @@ class StructBase:
                 .unwrap()
                 .clone();
             let manager = PyProjectedModelManager {
-                transaction_supports_given_stage: false,
                 package,
                 type_id,
                 target: Some(OwnedQueryTarget::Proxy(Arc::new(proxy))),
@@ -10480,6 +10383,97 @@ class StructBase:
                         .unwrap(),
                     "proxy_exchange_caller_owned"
                 );
+            }
+        });
+    }
+
+    #[test]
+    fn keyword_reads_keep_native_origins_for_direct_and_borrowed_transactions() {
+        Python::initialize();
+        Python::attach(|py| {
+            for borrowed in [None, Some(TxType::Read), Some(TxType::Write)] {
+                let (_, package) = install_batch(py);
+                let model = package
+                    .type_by_label("person", TypeKind::Entity)
+                    .unwrap()
+                    .clone();
+                let doc = batch_person_document(0, "0xa1", "ada", "safe");
+                let (backend, state) = OriginRecordingBackend::new(vec![
+                    QueryResult::Documents(vec![doc.clone()]),
+                    QueryResult::Documents(vec![doc]),
+                    QueryResult::Rows(vec![
+                        serde_json::json!({"count2":{"kind":"value","value":CanonicalValue::Long(1)}}),
+                    ]),
+                    QueryResult::Rows(vec![
+                        serde_json::json!({"root0":{"kind":"thing","iid":"0xa1","type_id":{"kind":"entity","label":"person"}}}),
+                    ]),
+                    QueryResult::Documents(vec![]),
+                ]);
+                let database =
+                    Arc::new(Database::with_backend(Box::new(backend), "keyword-origins"));
+                let runtime = Arc::new(ProviderRuntimeOwner::new().unwrap());
+                let transaction = borrowed.map(|kind| {
+                    runtime
+                        .block_on(database.transaction_context(kind))
+                        .unwrap()
+                });
+                let manager = PyProjectedModelManager {
+                    package: Arc::clone(&package),
+                    type_id: model.clone(),
+                    target: Some(transaction.as_ref().map_or_else(
+                        || OwnedQueryTarget::Database(Arc::clone(&database)),
+                        |tx| OwnedQueryTarget::Transaction(tx.clone()),
+                    )),
+                    successor_batch_marker: None,
+                    runtime: Arc::clone(&runtime),
+                    filters: vec![],
+                    compatibility_filter: initial_compatibility_filter(package.as_ref(), &model)
+                        .unwrap(),
+                };
+                let identifier = package
+                    .class(
+                        package
+                            .type_by_label("identifier", TypeKind::Attribute)
+                            .unwrap(),
+                        ProjectedModelForm::Complete,
+                    )
+                    .unwrap()
+                    .bind(py)
+                    .call1(("ada",))
+                    .unwrap();
+                let kwargs = PyDict::new(py);
+                kwargs
+                    .set_item("identifier__in", PyList::new(py, [identifier]).unwrap())
+                    .unwrap();
+                let manager = manager.filter(py, Some(&kwargs)).unwrap();
+                assert!(manager.compatibility_filter.is_none());
+                let all = manager
+                    .all(py)
+                    .unwrap_or_else(|error| panic!("target={borrowed:?}: {error:?}"));
+                let all = all.bind(py).cast::<PyList>().unwrap();
+                assert_eq!(all.len(), 1);
+                assert!(matches!(
+                    package.facade_origins.proof(&all.get_item(0).unwrap()),
+                    Some(FacadeProjectionProof::Thing(_))
+                ));
+                let first = manager.first(py).unwrap();
+                assert!(matches!(
+                    package.facade_origins.proof(first.bind(py)),
+                    Some(FacadeProjectionProof::Thing(_))
+                ));
+                assert_eq!(manager.count(py).unwrap(), 1);
+                assert!(manager.exists(py).unwrap());
+                assert!(manager.first(py).unwrap().bind(py).is_none());
+                if let Some(tx) = transaction {
+                    assert_eq!(
+                        runtime.block_on(tx.lifecycle_state()),
+                        TransactionContextState::Active
+                    );
+                }
+                let state = state.lock().unwrap();
+                assert_eq!(state.queries.len(), 5);
+                assert_eq!(state.commits, 0);
+                assert_eq!(state.rollbacks, 0);
             }
         });
     }
@@ -10960,7 +10954,6 @@ class StructBase:
             .as_ref()
             .map(|_| Arc::new(AtomicBool::new(false)));
         PyProjectedModelManager {
-            transaction_supports_given_stage: false,
             package,
             type_id,
             target: match (database, transaction) {
@@ -11921,7 +11914,6 @@ class StructBase:
                 .call_method1("attach_runtime_iid", ("0xa",))
                 .unwrap();
             let manager = PyProjectedModelManager {
-                transaction_supports_given_stage: false,
                 package,
                 type_id: person_id,
                 target: None,
@@ -15198,7 +15190,6 @@ def public_state(value):
                 );
                 let marker = context.successor_batch_marker();
                 let manager = PyProjectedModelManager {
-                    transaction_supports_given_stage: false,
                     package: Arc::clone(&package),
                     type_id: package
                         .type_by_label("person", TypeKind::Entity)
@@ -15323,7 +15314,6 @@ def public_state(value):
                 );
                 let marker = context.successor_batch_marker();
                 let manager = PyProjectedModelManager {
-                    transaction_supports_given_stage: false,
                     package: Arc::clone(&package),
                     type_id: package
                         .type_by_label("person", TypeKind::Entity)
@@ -15412,7 +15402,6 @@ def public_state(value):
                 );
                 let marker = context.successor_batch_marker();
                 let manager = PyProjectedModelManager {
-                    transaction_supports_given_stage: false,
                     package: Arc::clone(&package),
                     type_id: package
                         .type_by_label("person", TypeKind::Entity)
@@ -17393,7 +17382,6 @@ class CyclicFinalizer:
                     .clone()
             };
             let manager = |type_id: TypeId| PyProjectedModelManager {
-                transaction_supports_given_stage: false,
                 package: Arc::clone(&package),
                 type_id,
                 target: None,

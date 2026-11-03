@@ -961,7 +961,6 @@ impl PyDatabase {
         )
         .map_err(py_orm_error)?;
         Ok(PyTransactionContext {
-            supports_given_stage: self.db.supports_given_stage(),
             context,
             runtime: Arc::clone(&self.runtime),
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
@@ -1000,16 +999,12 @@ impl PyDatabase {
 /// Python-facing native transaction context.
 #[pyclass]
 pub struct PyTransactionContext {
-    supports_given_stage: bool,
     context: TransactionContext,
     runtime: Arc<ProviderRuntimeOwner>,
     successor_batch_invoked: Arc<AtomicBool>,
 }
 
 impl PyTransactionContext {
-    pub(crate) fn supports_given_stage(&self) -> bool {
-        self.supports_given_stage
-    }
     pub(crate) fn handles(&self) -> (TransactionContext, Arc<ProviderRuntimeOwner>) {
         (self.context.clone(), Arc::clone(&self.runtime))
     }
@@ -1024,7 +1019,6 @@ impl PyTransactionContext {
         runtime: Arc<ProviderRuntimeOwner>,
     ) -> Self {
         Self {
-            supports_given_stage: false,
             context,
             runtime,
             successor_batch_invoked: Arc::new(AtomicBool::new(false)),
