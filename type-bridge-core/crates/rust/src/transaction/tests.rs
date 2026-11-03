@@ -185,6 +185,9 @@ impl MaterializeModel for Worker {
             Some(EncodedScalar::String(value)) => value.clone(),
             _ => return Err(ValidationError::new("name", "missing_name")),
         };
+        if name == "reject-materialize" {
+            return Err(ValidationError::new("name", "rejected_materialization"));
+        }
         Ok(Self {
             iid: row.iid().to_owned(),
             name,
@@ -599,6 +602,56 @@ async fn write_transaction_commits_multiple_operations_in_one_context() {
             .any(|event| matches!(event, Event::Rollback | Event::Close))
     );
     assert!(guard.query_modes.iter().all(|mode| *mode == "canonical"));
+}
+
+#[tokio::test]
+async fn borrowed_single_materializer_failure_marks_rollback_only_and_retains_binding_error() {
+    let (db, state) = test_db(vec![worker_fetch("0x1", "reject-materialize")]);
+    let tx = db.write().await.unwrap();
+    let error = tx
+        .entities::<Worker>()
+        .insert(WorkerCreate {
+            name: "reject-materialize".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_model_error(
+        error,
+        crate::error::ModelValidationPhase::Hydration,
+        "rejected_materialization",
+        &["name"],
+    );
+    assert_eq!(
+        tx.tx.lifecycle_state().await,
+        type_bridge_orm::TransactionContextState::RollbackOnly
+    );
+    let cause = tx
+        .tx
+        .rollback_only_cause()
+        .await
+        .expect("materialization latches its cause");
+    assert_eq!(
+        cause.code().as_str(),
+        "generated_model_materialization_failed"
+    );
+    assert!(tx.tx.commit_sdk().await.is_err());
+    tx.rollback().await.unwrap();
+    let state = state.lock().unwrap();
+    assert_eq!(
+        state
+            .events
+            .iter()
+            .filter(|event| matches!(event, Event::Query(_)))
+            .count(),
+        1
+    );
+    assert!(
+        !state
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Commit))
+    );
+    assert!(matches!(state.events.last(), Some(Event::Rollback)));
 }
 
 #[tokio::test]

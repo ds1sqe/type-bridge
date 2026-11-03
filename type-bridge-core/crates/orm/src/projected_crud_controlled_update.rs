@@ -158,8 +158,13 @@ impl ProjectedCrudExecutor<'_> {
                     let Some(PlanAnswer::Documents(documents)) = answers.pop() else {
                         return Err(write_plan_invalid(batch.model()));
                     };
-                    let things =
-                        self.hydrate_controlled_documents(identity, batch, &single, &documents)?;
+                    let things = self.hydrate_controlled_documents(
+                        identity,
+                        batch,
+                        &single,
+                        &documents,
+                        ExecutionMode::default(),
+                    )?;
                     ledger.charge_projected(things.items())?;
                     prepared.check_control()?;
                     mapper(things)
@@ -179,6 +184,53 @@ impl ProjectedCrudExecutor<'_> {
         target: WriteTarget<'_>,
         batch: &ProjectedBatch,
         control: ProjectedBatchInvocationControl,
+        mapper: F,
+    ) -> Result<T, SdkExecutionDiagnostic>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        self.execute_controlled_single_write_with_mode(
+            target,
+            batch,
+            control,
+            ExecutionMode::default(),
+            mapper,
+        )
+        .await
+    }
+
+    /// Map a borrowed single write while retaining the Rust facade's original
+    /// provider cause and compatibility phase under the mutation lease.
+    #[doc(hidden)]
+    pub async fn execute_single_write_in_transaction_with_compatibility<T, F>(
+        &self,
+        transaction: &TransactionContext,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        mapper: F,
+    ) -> Result<T, ProjectedCrudCompatibilityFailure>
+    where
+        F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
+    {
+        let capture = CompatibilityCapture::default();
+        let result = self
+            .execute_controlled_single_write_with_mode(
+                WriteTarget::Transaction(transaction),
+                batch,
+                control,
+                ExecutionMode::compatibility(&capture),
+                mapper,
+            )
+            .await;
+        compatibility_result(result, &capture)
+    }
+
+    async fn execute_controlled_single_write_with_mode<T, F>(
+        &self,
+        target: WriteTarget<'_>,
+        batch: &ProjectedBatch,
+        control: ProjectedBatchInvocationControl,
+        mode: ExecutionMode<'_>,
         mapper: F,
     ) -> Result<T, SdkExecutionDiagnostic>
     where
@@ -223,7 +275,7 @@ impl ProjectedCrudExecutor<'_> {
             )
             .await
             .map_err(|error| {
-                controlled_crud_orm(error, SdkProviderOperation::Write, batch.model())
+                mode.controlled_crud_orm(error, SdkProviderOperation::Write, batch.model())
             })?,
         };
         crate::projected_batch_executor::require_native_provider(match target {
@@ -265,7 +317,7 @@ impl ProjectedCrudExecutor<'_> {
                 )
                 .await
                 .map_err(|error| {
-                    controlled_crud_orm(
+                    mode.controlled_crud_orm(
                         error,
                         SdkProviderOperation::OpenWriteTransaction,
                         batch.model(),
@@ -279,6 +331,7 @@ impl ProjectedCrudExecutor<'_> {
                         query,
                         &mut ledger,
                         mapper,
+                        mode,
                     )
                     .await;
                 match result.and_then(|thing| prepared.check_control().map(|()| thing)) {
@@ -305,6 +358,7 @@ impl ProjectedCrudExecutor<'_> {
                     query,
                     &mut ledger,
                     mapper,
+                    mode,
                 )
                 .await
             }
@@ -476,6 +530,7 @@ impl ProjectedCrudExecutor<'_> {
         batch: &ProjectedBatch,
         single: &SingleWrite,
         documents: &[serde_json::Value],
+        mode: ExecutionMode<'_>,
     ) -> Result<WriteResult<ProjectedThing>, SdkExecutionDiagnostic> {
         let thing = match &single.model {
             WriteModel::Entity(model) => self.hydrate_entity_documents(
@@ -483,14 +538,14 @@ impl ProjectedCrudExecutor<'_> {
                 &model.type_id,
                 &model.descriptor,
                 documents,
-                ExecutionMode::default(),
+                mode,
             )?,
             WriteModel::Relation(model) => self.hydrate_relation_documents(
                 identity,
                 &model.type_id,
                 &model.descriptor,
                 documents,
-                ExecutionMode::default(),
+                mode,
             )?,
         };
         if let Some((_, ProjectedBatchRow::Update { iid, .. })) = batch.row_at(0) {
@@ -501,6 +556,10 @@ impl ProjectedCrudExecutor<'_> {
         Ok(thing)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Compatibility capture follows the controlled mutation lease"
+    )]
     async fn run_controlled_write<T, F>(
         &self,
         transaction: &TransactionContext,
@@ -509,6 +568,7 @@ impl ProjectedCrudExecutor<'_> {
         query: crate::session::staged::StagedQuery,
         ledger: &mut ExecutionLedger,
         mapper: F,
+        mode: ExecutionMode<'_>,
     ) -> Result<T, SdkExecutionDiagnostic>
     where
         F: FnOnce(WriteResult<ProjectedThing>) -> Result<T, SdkExecutionDiagnostic>,
@@ -520,10 +580,10 @@ impl ProjectedCrudExecutor<'_> {
             prepared.cancellation(),
         )
         .await
-        .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Write, type_id))?;
+        .map_err(|error| mode.controlled_crud_orm(error, SdkProviderOperation::Write, type_id))?;
         lease
             .check_plan_provider(single.plan.local())
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id))?;
         let result = async {
             prepared.check_control()?;
             let mut policy = prepared.limits();
@@ -534,18 +594,20 @@ impl ProjectedCrudExecutor<'_> {
                 prepared.cancellation(),
                 prepared.deadline(),
             )
-            .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+            .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id))?;
             let (answer, stats) = await_crud_controlled(
                 lease.dispatch_plan_counted(query, limits, Some(single.plan.local())),
                 prepared.deadline(),
                 prepared.cancellation(),
             )
             .await
-            .map_err(|error| controlled_crud_orm(error, SdkProviderOperation::Write, type_id))?;
+            .map_err(|error| {
+                mode.controlled_crud_orm(error, SdkProviderOperation::Write, type_id)
+            })?;
             ledger.record_reply(stats)?;
             prepared.check_control()?;
             let answer = TransactionContext::resolve_plan(single.plan.local(), answer)
-                .map_err(|error| orm_at_type(error, SdkProviderOperation::Write, type_id))?;
+                .map_err(|error| mode.orm_at_type(error, SdkProviderOperation::Write, type_id))?;
             let PlanAnswer::Documents(documents) = answer else {
                 return Err(write_plan_invalid(type_id));
             };
@@ -555,6 +617,7 @@ impl ProjectedCrudExecutor<'_> {
                 prepared.batch(),
                 single,
                 &documents,
+                mode,
             )?;
             ledger.charge_projected(thing.items())?;
             prepared.check_control()?;

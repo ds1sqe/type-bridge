@@ -23,7 +23,7 @@ use crate::projected_batch::{
     create_operation, create_rows, delete_rows, execute_borrowed_delete, execute_borrowed_things,
     prepare_batch, update_rows, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, materialize_write_result, project_create};
+use crate::projected_codec::{materialize_projected, project_create};
 use crate::relation_codec::{hydrate_relation, resolve_relation_authority};
 use crate::schema::Schema;
 use crate::{Database, Result, WriteResult};
@@ -147,8 +147,9 @@ impl<'db, S: Schema> ReadTransaction<'db, S> {
 /// retained, and a second terminal operation is unrepresentable. Operations
 /// never auto-commit: an operation error leaves terminal control with the
 /// caller, and dropping an open wrapper releases the context without commit.
-/// A batch failure before mutation dispatch
-/// leaves the transaction active, while a failure after dispatch makes it
+/// Single writes retain the mutation lease through generated model materialization.
+/// A failure before mutation dispatch leaves the transaction active, while a
+/// failure after dispatch makes it
 /// rollback-only and [`Self::commit`] returns `transaction_rollback_only`.
 pub struct WriteTransaction<'db, S: Schema> {
     tx: TransactionContext,
@@ -282,13 +283,15 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
-        let projected = ProjectedCrudExecutor::new(installed)
-            .insert_entity_in_transaction_with_compatibility(&self.transaction.tx, &create)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Insert))
-            })?;
-        materialize_write_result(projected, installed)
+        crate::projected_batch::execute_transaction_single(
+            &self.transaction.tx,
+            installed,
+            create,
+            CrudOperation::Insert,
+            None,
+            ModelKind::Entity,
+        )
+        .await
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
@@ -303,13 +306,15 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
-        let projected = ProjectedCrudExecutor::new(installed)
-            .put_entity_in_transaction_with_compatibility(&self.transaction.tx, &create)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Put))
-            })?;
-        materialize_write_result(projected, installed)
+        crate::projected_batch::execute_transaction_single(
+            &self.transaction.tx,
+            installed,
+            create,
+            CrudOperation::Put,
+            None,
+            ModelKind::Entity,
+        )
+        .await
     }
 
     /// Inserts each item in input order in the open transaction, returning
@@ -358,13 +363,15 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
-        let projected = ProjectedCrudExecutor::new(installed)
-            .update_entity_in_transaction_with_compatibility(&self.transaction.tx, iid, &create)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Entity, Some(CrudOperation::Update))
-            })?;
-        materialize_write_result(projected, installed)
+        crate::projected_batch::execute_transaction_single(
+            &self.transaction.tx,
+            installed,
+            create,
+            CrudOperation::Update,
+            Some(iid),
+            ModelKind::Entity,
+        )
+        .await
     }
 
     /// Delete the exact model and return its pre-delete snapshot without committing.
@@ -569,13 +576,15 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
-        let projected = ProjectedCrudExecutor::new(installed)
-            .insert_relation_in_transaction_with_compatibility(&self.transaction.tx, &create)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Insert))
-            })?;
-        materialize_write_result(projected, installed)
+        crate::projected_batch::execute_transaction_single(
+            &self.transaction.tx,
+            installed,
+            create,
+            CrudOperation::Insert,
+            None,
+            ModelKind::Relation,
+        )
+        .await
     }
 
     /// Applies the exact key-or-insert put rule in the open transaction,
@@ -590,13 +599,15 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
-        let projected = ProjectedCrudExecutor::new(installed)
-            .put_relation_in_transaction_with_compatibility(&self.transaction.tx, &create)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Put))
-            })?;
-        materialize_write_result(projected, installed)
+        crate::projected_batch::execute_transaction_single(
+            &self.transaction.tx,
+            installed,
+            create,
+            CrudOperation::Put,
+            None,
+            ModelKind::Relation,
+        )
+        .await
     }
 
     /// Inserts each item in input order in the open transaction, returning
@@ -646,13 +657,15 @@ where
             true,
         )?;
         let create = project_create(input, &id, installed)?;
-        let projected = ProjectedCrudExecutor::new(installed)
-            .update_relation_in_transaction_with_compatibility(&self.transaction.tx, iid, &create)
-            .await
-            .map_err(|error| {
-                Error::from_projected_crud(error, ModelKind::Relation, Some(CrudOperation::Update))
-            })?;
-        materialize_write_result(projected, installed)
+        crate::projected_batch::execute_transaction_single(
+            &self.transaction.tx,
+            installed,
+            create,
+            CrudOperation::Update,
+            Some(iid),
+            ModelKind::Relation,
+        )
+        .await
     }
 
     /// Delete the exact model and return its pre-delete snapshot without committing.

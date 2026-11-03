@@ -154,6 +154,10 @@ let person = write.entities::<Person>().put(create).await?;
 write.commit().await?;
 ```
 
+Single writes materialize their generated models while the mutation lease is
+held. A materialization failure leaves a borrowed write transaction rollback-only;
+roll it back before continuing.
+
 Dropping an open write transaction never commits it; `commit` and `rollback`
 consume the transaction. Use `rollback_keep(&mut self)` to discard writes and
 continue using the same transaction before an explicit commit.

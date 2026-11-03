@@ -18,6 +18,69 @@ use crate::projected_codec::{materialize_projected, project_create, project_enco
 #[cfg(test)]
 mod tests;
 
+pub(crate) async fn execute_transaction_single<M: CompleteModel>(
+    transaction: &TransactionContext,
+    installed: &InstalledRuntimeProjection,
+    create: type_bridge_orm::ProjectedCreate,
+    operation: crate::hooks::CrudOperation,
+    iid: Option<&str>,
+    kind: crate::hooks::ModelKind,
+) -> Result<crate::WriteResult<M>> {
+    use crate::hooks::CrudOperation;
+
+    let model = create.type_id().clone();
+    let (batch_operation, row) = match operation {
+        CrudOperation::Insert => (
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchRow::Create(create),
+        ),
+        CrudOperation::Put => (
+            ProjectedBatchOperation::Put,
+            ProjectedBatchRow::Create(create),
+        ),
+        CrudOperation::Update => (
+            ProjectedBatchOperation::Update,
+            ProjectedBatchRow::Update {
+                iid: iid
+                    .expect("single update requires its validated IID")
+                    .to_owned(),
+                replacement: create,
+            },
+        ),
+        CrudOperation::Delete => unreachable!("a create payload cannot select deletion"),
+    };
+    let control = transaction_control(transaction);
+    let executor = type_bridge_orm::ProjectedCrudExecutor::new(installed);
+    let batch = executor
+        .single_controlled_write_batch(&model, batch_operation, row, &control)
+        .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
+    let binding_error = std::sync::Mutex::new(None);
+    let result = executor
+        .execute_single_write_in_transaction_with_compatibility(
+            transaction,
+            &batch,
+            control,
+            |things| {
+                crate::projected_codec::materialize_write_result(things, installed).map_err(
+                    |error| {
+                        *binding_error
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+                        ProjectedBatchExecutor::binding_materialization_failure(0)
+                    },
+                )
+            },
+        )
+        .await;
+    if let Some(error) = binding_error
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return Err(error);
+    }
+    result.map_err(|error| Error::from_projected_crud(error, kind, Some(operation)))
+}
+
 pub(crate) fn create_operation(
     installed: &InstalledRuntimeProjection,
     model: &TypeId,

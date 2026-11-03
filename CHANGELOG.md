@@ -32,6 +32,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Rust single writes retain the mutation lease through generated model
+  materialization. A failed materializer makes a borrowed transaction
+  rollback-only and preserves the original binding error.
+
 - Node projected single-write envelopes materialize inside Core's controlled
   write mapper and use the connection-selected direct or proxy target.
 

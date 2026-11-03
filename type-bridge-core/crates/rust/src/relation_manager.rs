@@ -22,7 +22,7 @@ use crate::projected_batch::{
     execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
     reserved_binding_vec, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, materialize_write_result, project_create};
+use crate::projected_codec::{materialize_projected, project_create};
 use crate::projected_filter::ProjectedRelationFilter;
 use crate::relation_codec::{
     hydrate_relation, resolve_discovered_relation, resolve_relation_authority,
@@ -506,8 +506,7 @@ where
         create
             .validate_native_write()
             .map_err(|error| Error::from_sdk_execution(error, ModelValidationPhase::Input))?;
-        let executor = ProjectedCrudExecutor::new(installed);
-        executor
+        ProjectedCrudExecutor::new(installed)
             .preflight_relation_create_for_database_with_compatibility(self.db.inner_orm(), &create)
             .map_err(|error| {
                 Error::from_projected_crud(error, ModelKind::Relation, Some(operation))
@@ -518,38 +517,16 @@ where
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let projected = match operation {
-            CrudOperation::Insert => {
-                executor
-                    .insert_relation_in_transaction_with_compatibility(&tx, &create)
-                    .await
-            }
-            CrudOperation::Put => {
-                executor
-                    .put_relation_in_transaction_with_compatibility(&tx, &create)
-                    .await
-            }
-            CrudOperation::Update => {
-                executor
-                    .update_relation_in_transaction_with_compatibility(
-                        &tx,
-                        iid.expect("projected relation update requires a checked IID"),
-                        &create,
-                    )
-                    .await
-            }
-            CrudOperation::Delete => unreachable!("delete has no generated create payload"),
-        };
-        let projected = match projected {
-            Ok(value) => value,
-            Err(error) => {
-                let mapped =
-                    Error::from_projected_crud(error, ModelKind::Relation, Some(operation));
-                let _ = tx.rollback().await;
-                return Err(mapped);
-            }
-        };
-        let value = match materialize_write_result(projected, installed) {
+        let value = match crate::projected_batch::execute_transaction_single(
+            &tx,
+            installed,
+            create,
+            operation,
+            iid,
+            ModelKind::Relation,
+        )
+        .await
+        {
             Ok(value) => value,
             Err(error) => {
                 let _ = tx.rollback().await;

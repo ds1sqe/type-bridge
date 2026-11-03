@@ -24,7 +24,7 @@ use crate::projected_batch::{
     execute_owned_delete, execute_owned_things, prepare_batch, project_encoded_batch_create,
     reserved_binding_vec, validate_binding_row_count,
 };
-use crate::projected_codec::{materialize_projected, materialize_write_result, project_create};
+use crate::projected_codec::{materialize_projected, project_create};
 use crate::projected_filter::ProjectedEntityFilter;
 use crate::schema::Schema;
 use crate::{Database, Result, WriteResult};
@@ -656,38 +656,16 @@ where
             .transaction_context(TxType::Write)
             .await
             .map_err(Error::from_orm)?;
-        let executor = ProjectedCrudExecutor::new(installed);
-        let projected = match operation {
-            CrudOperation::Insert => {
-                executor
-                    .insert_entity_in_transaction_with_compatibility(&tx, &create)
-                    .await
-            }
-            CrudOperation::Put => {
-                executor
-                    .put_entity_in_transaction_with_compatibility(&tx, &create)
-                    .await
-            }
-            CrudOperation::Update => {
-                executor
-                    .update_entity_in_transaction_with_compatibility(
-                        &tx,
-                        iid.expect("projected entity update requires a checked IID"),
-                        &create,
-                    )
-                    .await
-            }
-            CrudOperation::Delete => unreachable!("delete has no generated create payload"),
-        };
-        let projected = match projected {
-            Ok(value) => value,
-            Err(error) => {
-                let mapped = Error::from_projected_crud(error, ModelKind::Entity, Some(operation));
-                let _ = tx.rollback().await;
-                return Err(mapped);
-            }
-        };
-        let value = match materialize_write_result(projected, installed) {
+        let value = match crate::projected_batch::execute_transaction_single(
+            &tx,
+            installed,
+            create,
+            operation,
+            iid,
+            ModelKind::Entity,
+        )
+        .await
+        {
             Ok(value) => value,
             Err(error) => {
                 let _ = tx.rollback().await;

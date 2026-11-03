@@ -217,6 +217,21 @@ impl<'capture> ExecutionMode<'capture> {
         }
     }
 
+    fn controlled_crud_orm(
+        self,
+        error: CrudControlledAwaitError<OrmError>,
+        operation: SdkProviderOperation,
+        type_id: &TypeId,
+    ) -> SdkExecutionDiagnostic {
+        match error {
+            CrudControlledAwaitError::Interrupted(diagnostic) => append_path(
+                diagnostic,
+                [SdkDiagnosticPathSegment::Type(type_id.clone())],
+            ),
+            CrudControlledAwaitError::Inner(error) => self.orm_at_type(error, operation, type_id),
+        }
+    }
+
     fn orm_at_type(
         self,
         error: OrmError,
@@ -5134,13 +5149,7 @@ fn controlled_crud_orm(
     operation: SdkProviderOperation,
     type_id: &TypeId,
 ) -> SdkExecutionDiagnostic {
-    match error {
-        CrudControlledAwaitError::Interrupted(diagnostic) => append_path(
-            diagnostic,
-            [SdkDiagnosticPathSegment::Type(type_id.clone())],
-        ),
-        CrudControlledAwaitError::Inner(error) => orm_at_type(error, operation, type_id),
-    }
+    ExecutionMode::default().controlled_crud_orm(error, operation, type_id)
 }
 
 #[derive(Clone, Copy)]
