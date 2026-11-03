@@ -78,6 +78,68 @@ use crate::orm_runtime::{
 };
 use crate::validated_result_runtime::PyValidatedMatchThingHandle;
 
+async fn execute_projected_batch_on_target<T, F>(
+    executor: ProjectedBatchExecutor<'_>,
+    target: &OwnedQueryTarget,
+    batch: &ProjectedBatch,
+    control: ProjectedBatchInvocationControl,
+    empty: T,
+    marker: Option<&AtomicBool>,
+    mapper: F,
+) -> Result<T, type_bridge_orm::QueryTargetError>
+where
+    F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic>,
+{
+    let transaction = target.transaction().filter(|_| !batch.is_empty());
+    let prior = match transaction {
+        Some(transaction) => Some(transaction.lifecycle_state().await),
+        None => None,
+    };
+    let result = executor
+        .execute_on_target_mapped(target.as_target(), batch, control, empty, |result| {
+            if let Some(marker) = marker {
+                marker.store(true, Ordering::Release);
+            }
+            mapper(result)
+        })
+        .await;
+    if let Some(transaction) = transaction
+        && matches!(
+            prior,
+            Some(TransactionContextState::Active | TransactionContextState::RolledBack)
+        )
+        && (result.is_ok()
+            || transaction.lifecycle_state().await == TransactionContextState::RollbackOnly)
+        && let Some(marker) = marker
+    {
+        marker.store(true, Ordering::Release);
+    }
+    result
+}
+
+fn projected_write_error(
+    py: Python<'_>,
+    error: type_bridge_orm::QueryTargetError,
+    original: Option<PyErr>,
+) -> PyErr {
+    if matches!(error, type_bridge_orm::QueryTargetError::Commit(_)) {
+        let error = py_sdk_diagnostic(
+            error
+                .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write),
+        );
+        error.set_cause(py, original);
+        error
+    } else {
+        original.unwrap_or_else(|| {
+            py_sdk_diagnostic(
+                error.into_diagnostic(
+                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
+                ),
+            )
+        })
+    }
+}
+
 struct PythonCanonicalControl {
     cancellation: AnswerCancellation,
     deadline: Option<Instant>,
@@ -3271,22 +3333,11 @@ impl PyProjectedModelManager {
                     .await;
                 let result = match result {
                     Ok(output) => Ok(output.finish()),
-                    Err(error) => {
-                        let original = take_binding_materialization_error(&binding_error);
-                        if matches!(error, type_bridge_orm::QueryTargetError::Commit(_)) {
-                            let error = py_sdk_diagnostic(error.into_diagnostic(
-                                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                            ));
-                            error.set_cause(py, original);
-                            Err(error)
-                        } else {
-                            Err(original.unwrap_or_else(|| {
-                                py_sdk_diagnostic(error.into_diagnostic(
-                                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                            ))
-                            }))
-                        }
-                    }
+                    Err(error) => Err(projected_write_error(
+                        py,
+                        error,
+                        take_binding_materialization_error(&binding_error),
+                    )),
                 };
                 drop(pool);
                 result
@@ -3297,36 +3348,7 @@ impl PyProjectedModelManager {
     /// Delete one thing through the projected executor, which runs it as a
     /// delete plan when the projection carries plan authority.
     fn delete_projected(&self, py: Python<'_>, iid: &str) -> PyResult<()> {
-        let executor = ProjectedCrudExecutor::new(self.package.projection.as_ref());
-        let type_id = &self.type_id;
-        let result = match (type_id.kind(), self.database(), self.transaction()) {
-            (TypeKind::Entity, Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.delete_entity_by_iid(database.as_ref(), type_id, iid),
-            ),
-            (TypeKind::Entity, None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.delete_entity_by_iid_in_transaction(transaction, type_id, iid),
-            ),
-            (TypeKind::Relation, Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.delete_relation_by_iid(database.as_ref(), type_id, iid),
-            ),
-            (TypeKind::Relation, None, Some(transaction)) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.delete_relation_by_iid_in_transaction(transaction, type_id, iid),
-            ),
-            _ => {
-                return Err(py_runtime_error(
-                    "projected manager has no execution target",
-                ));
-            }
-        };
-        result.map_err(py_sdk_diagnostic)
+        self.delete_many_projected(py, vec![iid.to_owned()])
     }
 
     fn get_projected(&self, py: Python<'_>, iid: &str) -> PyResult<Option<ProjectedThing>> {
@@ -3363,8 +3385,7 @@ impl PyProjectedModelManager {
         let package = Arc::clone(&self.package);
         let type_id = self.type_id.clone();
         let slots = self.package.batch_slots(&self.type_id)?;
-        let database = self.database().cloned();
-        let transaction = self.transaction().cloned();
+        let target = self.target.clone();
         let successor_batch_marker = self.successor_batch_marker.clone();
         let runtime = Arc::clone(&self.runtime);
         provider_block_on_with_gil(py, runtime.as_ref(), move |py| {
@@ -3450,28 +3471,19 @@ impl PyProjectedModelManager {
                 if batch.is_empty() {
                     let empty = output.output;
                     let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
-                    let result = match (&database, &transaction) {
-                        (Some(database), None) => {
-                            executor
-                                .execute_mapped(database.as_ref(), &batch, control, empty, |_| {
-                                    Err(SdkExecutionDiagnostic::internal_failure())
-                                })
-                                .await
-                        }
-                        (None, Some(transaction)) => {
-                            executor
-                                .execute_in_transaction_mapped(
-                                    transaction,
-                                    &batch,
-                                    control,
-                                    empty,
-                                    |_| Err(SdkExecutionDiagnostic::internal_failure()),
-                                )
-                                .await
-                        }
-                        _ => Err(SdkExecutionDiagnostic::internal_failure()),
-                    };
-                    return result.map_err(py_sdk_diagnostic);
+                    let result = execute_projected_batch_on_target(
+                        executor,
+                        target.as_ref().ok_or_else(|| {
+                            py_sdk_diagnostic(SdkExecutionDiagnostic::internal_failure())
+                        })?,
+                        &batch,
+                        control,
+                        empty,
+                        successor_batch_marker.as_deref(),
+                        |_| Err(SdkExecutionDiagnostic::internal_failure()),
+                    )
+                    .await;
+                    return result.map_err(|error| projected_write_error(py, error, None));
                 }
                 let _gc_guard = SuccessorBatchGcGuard::disable(py);
                 let hydration_pool =
@@ -3503,15 +3515,8 @@ impl PyProjectedModelManager {
                 let mapper_package = Arc::clone(&package);
                 let mapper_slots = Arc::clone(&slots);
                 let mapper_error = &binding_error;
-                let mapper_marker = successor_batch_marker.clone();
                 let mapper_pool = &hydration_pool;
                 let mapper = move |result| {
-                    // Mapper entry proves nonempty mutation dispatch. The
-                    // exclusive worker GIL keeps the marker unobservable until
-                    // success/error/panic cleanup has made the state terminal.
-                    if let Some(marker) = &mapper_marker {
-                        marker.store(true, Ordering::Release);
-                    }
                     materialize_projected_batch_with_output(
                         py,
                         mapper_package,
@@ -3526,56 +3531,25 @@ impl PyProjectedModelManager {
                     .map(BatchMappedOutput::Publication)
                 };
                 let executor = ProjectedBatchExecutor::new(package.projection.as_ref());
-                let nonempty = !batch.is_empty();
-                let result = match (&database, &transaction) {
-                    (Some(database), None) => {
-                        executor
-                            .execute_mapped(database.as_ref(), &batch, control, empty, mapper)
-                            .await
-                    }
-                    (None, Some(transaction)) => {
-                        let prior_state = if nonempty {
-                            Some(transaction.lifecycle_state().await)
-                        } else {
-                            None
-                        };
-                        let result = executor
-                            .execute_in_transaction_mapped(
-                                transaction,
-                                &batch,
-                                control,
-                                empty,
-                                mapper,
-                            )
-                            .await;
-                        let mark = if !nonempty
-                            || !matches!(
-                                prior_state,
-                                Some(
-                                    TransactionContextState::Active
-                                        | TransactionContextState::RolledBack
-                                )
-                            ) {
-                            false
-                        } else if result.is_ok() {
-                            true
-                        } else {
-                            transaction.lifecycle_state().await
-                                == TransactionContextState::RollbackOnly
-                        };
-                        if mark && let Some(marker) = &successor_batch_marker {
-                            marker.store(true, Ordering::Release);
-                        }
-                        result
-                    }
-                    _ => Err(SdkExecutionDiagnostic::internal_failure()),
-                };
+                let result = execute_projected_batch_on_target(
+                    executor,
+                    target.as_ref().ok_or_else(|| {
+                        py_sdk_diagnostic(SdkExecutionDiagnostic::internal_failure())
+                    })?,
+                    &batch,
+                    control,
+                    empty,
+                    successor_batch_marker.as_deref(),
+                    mapper,
+                )
+                .await;
                 let output = match result {
                     Ok(mapped) => Ok(mapped.finish()),
-                    Err(diagnostic) => match take_binding_materialization_error(&binding_error) {
-                        Some(error) => Err(error),
-                        None => Err(py_sdk_diagnostic(diagnostic)),
-                    },
+                    Err(error) => Err(projected_write_error(
+                        py,
+                        error,
+                        take_binding_materialization_error(&binding_error),
+                    )),
                 };
                 // This outer owner survives mapper-capture unwind and common
                 // rollback/poison. Any unpublished generated objects are
@@ -3631,8 +3605,10 @@ impl PyProjectedModelManager {
         let (batch, control) = self.prepare_delete_batch(iids)?;
         let output = PreparedWriteResult::new(py, !single)?;
         let package = Arc::clone(&self.package);
-        let database = self.database().cloned();
-        let transaction = self.transaction().cloned();
+        let target = self
+            .target
+            .clone()
+            .ok_or_else(|| py_runtime_error("projected manager has no execution target"))?;
         let marker = self.successor_batch_marker.clone();
         provider_block_on_with_gil(py, self.runtime.as_ref(), move |py| {
             Box::pin(async move {
@@ -3657,44 +3633,23 @@ impl PyProjectedModelManager {
                 };
                 let executor =
                     ProjectedBatchExecutor::new(package.projection.as_ref()).returning_deleted();
-                let result = match (&database, &transaction) {
-                    (Some(database), None) => {
-                        executor
-                            .execute_mapped(database.as_ref(), &batch, control, empty, mapper)
-                            .await
-                    }
-                    (None, Some(transaction)) => {
-                        let prior_state = transaction.lifecycle_state().await;
-                        let result = executor
-                            .execute_in_transaction_mapped(
-                                transaction,
-                                &batch,
-                                control,
-                                empty,
-                                mapper,
-                            )
-                            .await;
-                        if !batch.is_empty()
-                            && matches!(
-                                prior_state,
-                                TransactionContextState::Active
-                                    | TransactionContextState::RolledBack
-                            )
-                            && (result.is_ok()
-                                || transaction.lifecycle_state().await
-                                    == TransactionContextState::RollbackOnly)
-                            && let Some(marker) = marker
-                        {
-                            marker.store(true, Ordering::Release);
-                        }
-                        result
-                    }
-                    _ => Err(SdkExecutionDiagnostic::internal_failure()),
-                };
+                let result = execute_projected_batch_on_target(
+                    executor,
+                    &target,
+                    &batch,
+                    control,
+                    empty,
+                    marker.as_deref(),
+                    mapper,
+                )
+                .await;
                 let output = match result {
                     Ok(mapped) => Ok(mapped.finish()),
-                    Err(diagnostic) => Err(take_binding_materialization_error(&binding_error)
-                        .unwrap_or_else(|| py_sdk_diagnostic(diagnostic))),
+                    Err(error) => Err(projected_write_error(
+                        py,
+                        error,
+                        take_binding_materialization_error(&binding_error),
+                    )),
                 };
                 drop(pool);
                 output
@@ -3764,46 +3719,26 @@ impl PyProjectedModelManager {
         F: FnOnce(ProjectedBatchResult) -> Result<T, SdkExecutionDiagnostic> + Send,
     {
         let executor = ProjectedBatchExecutor::new(self.package.projection.as_ref());
-        match (self.database(), self.transaction()) {
-            (Some(database), None) => provider_block_on(
-                py,
-                self.runtime.as_ref(),
-                executor.execute_mapped(database.as_ref(), batch, control, empty, mapper),
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        provider_block_on(
+            py,
+            self.runtime.as_ref(),
+            execute_projected_batch_on_target(
+                executor,
+                target,
+                batch,
+                control,
+                empty,
+                self.successor_batch_marker.as_deref(),
+                mapper,
             ),
-            (None, Some(transaction)) => {
-                let prior_state = (!batch.is_empty()).then(|| {
-                    provider_block_on(py, self.runtime.as_ref(), transaction.lifecycle_state())
-                });
-                let result = provider_block_on(
-                    py,
-                    self.runtime.as_ref(),
-                    executor.execute_in_transaction_mapped(
-                        transaction,
-                        batch,
-                        control,
-                        empty,
-                        mapper,
-                    ),
-                );
-                let mark = if batch.is_empty()
-                    || !matches!(
-                        prior_state,
-                        Some(TransactionContextState::Active | TransactionContextState::RolledBack)
-                    ) {
-                    false
-                } else if result.is_ok() {
-                    true
-                } else {
-                    provider_block_on(py, self.runtime.as_ref(), transaction.lifecycle_state())
-                        == TransactionContextState::RollbackOnly
-                };
-                if mark && let Some(marker) = &self.successor_batch_marker {
-                    marker.store(true, Ordering::Release);
-                }
-                result
-            }
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
-        }
+        )
+        .map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+        })
     }
 
     fn descriptor(&self) -> PyResult<TypeDescriptor> {
@@ -10455,6 +10390,98 @@ class StructBase:
         )
         .unwrap();
         (projection, package)
+    }
+
+    #[test]
+    fn proxy_batch_target_validates_empty_calls_and_reaches_the_staged_transport() {
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+        use type_bridge_orm::query_v2_prepared::QueryAuthority;
+        use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+        let verified = authority(BATCH_SCHEMA, "python-proxy-batch.yaml");
+        let declared =
+            type_bridge_contract::schema::encode_declared_schema(verified.declared_schema())
+                .unwrap();
+        let authority =
+            QueryAuthority::from_declared_bytes(&declared, "python-native", "typedb-3.12.1/v1")
+                .unwrap();
+        let advertisement = RemoteCapabilities::new(
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
+            RemoteExecutorBinding::new("batch-target-selector", "epoch-00000000001").unwrap(),
+            RemoteReplySigningKey::from_secret_bytes([0x5c; 32]).public_key(),
+        )
+        .encode()
+        .unwrap();
+        let proxy = type_bridge_orm::ProxyQueryConnection::with_exchange(
+            advertisement,
+            Arc::new(authority),
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap();
+        Python::initialize();
+        Python::attach(|py| {
+            let (_, package) = install_batch(py);
+            let type_id = package
+                .type_by_label("person", TypeKind::Entity)
+                .unwrap()
+                .clone();
+            let manager = PyProjectedModelManager {
+                transaction_supports_given_stage: false,
+                package,
+                type_id,
+                target: Some(OwnedQueryTarget::Proxy(Arc::new(proxy))),
+                successor_batch_marker: None,
+                runtime: Arc::new(ProviderRuntimeOwner::new().unwrap()),
+                filters: vec![],
+                compatibility_filter: None,
+            };
+            for operation in [
+                ProjectedBatchOperation::Insert,
+                ProjectedBatchOperation::Put,
+                ProjectedBatchOperation::Update,
+            ] {
+                let result = manager.write_many_projected(py, vec![], operation).unwrap();
+                assert_eq!(
+                    result
+                        .bind(py)
+                        .getattr("count")
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    0
+                );
+            }
+            manager.delete_many_projected(py, vec![]).unwrap();
+            for single in [false, true] {
+                let result = manager
+                    .delete_many_returning_projected(py, vec![], single)
+                    .unwrap();
+                assert_eq!(
+                    result
+                        .bind(py)
+                        .getattr("count")
+                        .unwrap()
+                        .extract::<usize>()
+                        .unwrap(),
+                    0
+                );
+            }
+            for error in [
+                manager.delete_projected(py, "0xa1").unwrap_err(),
+                manager
+                    .delete_many_returning_projected(py, vec!["0xa1".into()], false)
+                    .unwrap_err(),
+            ] {
+                assert_eq!(
+                    error
+                        .value(py)
+                        .getattr("code")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "proxy_exchange_caller_owned"
+                );
+            }
+        });
     }
 
     fn origin_person_document(iid: &str) -> serde_json::Value {

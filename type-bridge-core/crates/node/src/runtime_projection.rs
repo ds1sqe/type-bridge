@@ -3818,7 +3818,7 @@ impl NodeProjectedModelManager {
         Ok((batch, control))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "contract-test-adapter"))]
     fn delete_returning_envelopes(
         &self,
         iids: Vec<String>,
@@ -4039,55 +4039,47 @@ impl NodeProjectedModelManager {
         } else {
             executor
         };
-        match (self.database(), self.transaction()) {
-            (Some(database), None) => self
-                .runtime
-                .block_on(executor.execute_mapped(database, batch, control, empty, mapper)),
-            (None, Some(transaction)) if batch.is_empty() => {
-                self.runtime
-                    .block_on(executor.execute_in_transaction_mapped(
-                        transaction,
-                        batch,
-                        control,
-                        empty,
-                        mapper,
-                    ))
-            }
-            (None, Some(transaction)) => {
-                let prior = self.runtime.block_on(transaction.lifecycle_state());
-                let marker = self
-                    .successor_batch_marker
-                    .as_ref()
-                    .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
-                let mark_successor = matches!(
-                    prior,
-                    TransactionContextState::Active | TransactionContextState::RolledBack
-                );
-                let result = self
-                    .runtime
-                    .block_on(executor.execute_in_transaction_mapped(
-                        transaction,
-                        batch,
-                        control,
-                        empty,
-                        |result| {
-                            if mark_successor {
-                                marker.store(true, Ordering::Release);
-                            }
-                            mapper(result)
-                        },
-                    ));
-                if mark_successor
-                    && (result.is_ok()
-                        || self.runtime.block_on(transaction.lifecycle_state())
-                            == TransactionContextState::RollbackOnly)
-                {
+        let target = self
+            .target
+            .as_ref()
+            .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+        let transaction = target.transaction().filter(|_| !batch.is_empty());
+        let marker = if let Some(transaction) = transaction {
+            let prior = self.runtime.block_on(transaction.lifecycle_state());
+            let marker = self
+                .successor_batch_marker
+                .as_ref()
+                .ok_or_else(SdkExecutionDiagnostic::internal_failure)?;
+            matches!(
+                prior,
+                TransactionContextState::Active | TransactionContextState::RolledBack
+            )
+            .then_some(marker)
+        } else {
+            None
+        };
+        let result = self.runtime.block_on(executor.execute_on_target_mapped(
+            target.as_target(),
+            batch,
+            control,
+            empty,
+            |result| {
+                if let Some(marker) = marker {
                     marker.store(true, Ordering::Release);
                 }
-                result
-            }
-            _ => Err(SdkExecutionDiagnostic::internal_failure()),
+                mapper(result)
+            },
+        ));
+        if let (Some(transaction), Some(marker)) = (transaction, marker)
+            && (result.is_ok()
+                || self.runtime.block_on(transaction.lifecycle_state())
+                    == TransactionContextState::RollbackOnly)
+        {
+            marker.store(true, Ordering::Release);
         }
+        result.map_err(|error| {
+            error.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write)
+        })
     }
 
     fn projected_create_input(
@@ -7327,6 +7319,73 @@ entities:
         )
         .unwrap();
         (batch, control)
+    }
+
+    #[test]
+    fn proxy_batch_target_validates_empty_calls_and_reaches_the_staged_transport() {
+        use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
+        use type_bridge_orm::query_v2_prepared::QueryAuthority;
+        use type_bridge_orm::query_v2_remote::RemoteReplySigningKey;
+        let verified = authority(ORDERED_SCHEMA, "node-proxy-batch.yaml");
+        let declared =
+            type_bridge_contract::schema::encode_declared_schema(verified.declared_schema())
+                .unwrap();
+        let authority =
+            QueryAuthority::from_declared_bytes(&declared, "node-native", "typedb-3.12.1/v1")
+                .unwrap();
+        let advertisement = RemoteCapabilities::new(
+            type_bridge_contract::query_plan::v3::query_plan_v3_capability_vocabulary(),
+            RemoteExecutorBinding::new("batch-target-selector", "epoch-00000000001").unwrap(),
+            RemoteReplySigningKey::from_secret_bytes([0x5c; 32]).public_key(),
+        )
+        .encode()
+        .unwrap();
+        let proxy = type_bridge_orm::ProxyQueryConnection::with_exchange(
+            advertisement,
+            Arc::new(authority),
+            QueryExecutionResourceLimits::default(),
+        )
+        .unwrap();
+        let runtime = ordered_runtime();
+        let model = TypeId::new(TypeKind::Entity, "person").unwrap();
+        let mut manager = manager_without_execution_target(&runtime, model.clone());
+        manager.target = Some(OwnedQueryTarget::Proxy(Arc::new(proxy)));
+        for operation in [
+            ProjectedBatchOperation::Insert,
+            ProjectedBatchOperation::Put,
+            ProjectedBatchOperation::Update,
+            ProjectedBatchOperation::Delete,
+        ] {
+            let control =
+                ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+            let batch = ProjectedBatch::try_new_for_invocation(
+                manager.package.projection.as_ref(),
+                model.clone(),
+                operation,
+                vec![],
+                &control,
+            )
+            .unwrap();
+            assert_eq!(
+                manager
+                    .execute_projected_batch(&batch, control, false, 7, |_| panic!(
+                        "empty mapper invoked"
+                    ),)
+                    .unwrap(),
+                7
+            );
+        }
+        for returning in [false, true] {
+            let (batch, control) = manager
+                .prepare_returning_delete(vec!["0xa1".into()])
+                .unwrap();
+            let error = manager
+                .execute_projected_batch(&batch, control, returning, (), |_| {
+                    panic!("no transport installed")
+                })
+                .unwrap_err();
+            assert_eq!(error.code().as_str(), "proxy_exchange_caller_owned");
+        }
     }
 
     fn type_key(kind: TypeKind, label: &str) -> String {
