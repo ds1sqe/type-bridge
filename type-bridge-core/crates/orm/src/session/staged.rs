@@ -412,14 +412,12 @@ fn format_op_index(index: Option<usize>) -> String {
 }
 
 /// Commit failure retaining the released ORM/provider error without reclassification.
-#[derive(Debug, thiserror::Error)]
-#[error("{error}")]
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct CommitError {
     /// Failing query index, or none for opening/commit.
     pub op_index: Option<usize>,
     /// Original failure, including existing commit certainty.
-    #[source]
     pub error: Box<ClassifiedCommitError>,
     /// Structural classification with the staged operation index.
     pub failure: Option<Box<Failure>>,
@@ -427,6 +425,20 @@ pub struct CommitError {
     pub context: Box<FailureContext>,
     /// The signed server refusal of a proxy commit, kept under its own code.
     remote: Option<Box<SdkExecutionDiagnostic>>,
+    transport_error: Option<Box<crate::QueryTargetError>>,
+}
+impl std::fmt::Display for CommitError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+impl std::error::Error for CommitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match &self.transport_error {
+            Some(error) => error.as_ref(),
+            None => self.error.as_ref(),
+        })
+    }
 }
 impl CommitError {
     fn new(error: ClassifiedCommitError, op_index: Option<usize>, context: FailureContext) -> Self {
@@ -442,6 +454,7 @@ impl CommitError {
             failure: failure.map(Box::new),
             context: Box::new(context),
             remote: None,
+            transport_error: None,
         }
     }
     fn lifecycle(error: PendingError) -> Self {
@@ -2344,13 +2357,17 @@ impl Transaction {
             };
             tokio::select! {
                 biased;
-                () = cancelled => Err(SdkExecutionDiagnostic::internal_failure()),
-                () = expired => Err(SdkExecutionDiagnostic::internal_failure()),
+                () = cancelled => Err(crate::QueryTargetError::Interrupted(SdkExecutionDiagnostic::internal_failure())),
+                () = expired => Err(crate::QueryTargetError::Interrupted(SdkExecutionDiagnostic::internal_failure())),
                 result = proxy.send(bytes, timeout) => result,
             }
         };
         let outcome = match sent {
-            Err(_) => Err(unknown("the proxy reply was not received")),
+            Err(cause) => {
+                let mut error = unknown("the proxy reply was not received");
+                error.transport_error = Some(Box::new(cause));
+                Err(error)
+            }
             Ok(reply) => match proxy.verify(&reply, &request) {
                 Err(_) => Err(unknown("the proxy reply could not be verified")),
                 Ok(verified) => match verified.diagnostic() {
@@ -2586,6 +2603,15 @@ mod tests {
         bad_projection: bool,
         pending_reply: Option<Arc<tokio::sync::Notify>>,
     ) -> (Transaction, DescriptorRegistry, Arc<Mutex<usize>>) {
+        proxy_match_fixture_with_transport(options, bad_projection, pending_reply, None)
+    }
+
+    fn proxy_match_fixture_with_transport(
+        options: TransactionOptions,
+        bad_projection: bool,
+        pending_reply: Option<Arc<tokio::sync::Notify>>,
+        transport: Option<Arc<dyn super::super::staged_proxy::StagedTransport>>,
+    ) -> (Transaction, DescriptorRegistry, Arc<Mutex<usize>>) {
         use type_bridge_contract::query_remote::{RemoteCapabilities, RemoteExecutorBinding};
         use type_bridge_contract::query_remote_v3::{
             StagedAnswerV3, StagedOutcomeV3, StagedReplyV3, StagedRequestV3,
@@ -2684,6 +2710,18 @@ mod tests {
             ),
         )
         .unwrap();
+        let proxy = match transport {
+            Some(transport) => ProxyStaging::with_route(
+                super::super::staged_proxy::Route::Transport(transport),
+                &ad_bytes,
+                Arc::new(proxy.declared().clone()),
+                crate::QueryExecutionResourceLimits::default_for(
+                    crate::query_execution_limits::AnswerTransport::Proxy,
+                ),
+            )
+            .unwrap(),
+            None => proxy,
+        };
         (Transaction::new_proxy(proxy, options), registry, committed)
     }
     fn proxy_count_request(registry: &DescriptorRegistry) -> ValidatedMatchRequest {
@@ -2786,6 +2824,60 @@ mod tests {
                 assert!(second.get().is_ok());
             }
         }
+    }
+
+    #[tokio::test]
+    async fn proxy_commit_keeps_the_application_cause_and_unknown_outcome() {
+        struct Fails;
+        impl super::super::staged_proxy::StagedTransport for Fails {
+            fn staged_capabilities(
+                &self,
+            ) -> BoxFuture<'_, Result<Vec<u8>, crate::QueryTargetError>> {
+                panic!("fixture already has its advertisement")
+            }
+            fn exchange_staged<'a>(
+                &'a self,
+                _: &'a [u8],
+            ) -> BoxFuture<'a, Result<Vec<u8>, crate::QueryTargetError>> {
+                Box::pin(async {
+                    Err(crate::QueryTargetError::Callback(Box::new(
+                        std::io::Error::other("application-secret"),
+                    )))
+                })
+            }
+        }
+        let (mut tx, registry, _) = proxy_match_fixture_with_transport(
+            TransactionOptions::default(),
+            false,
+            None,
+            Some(Arc::new(Fails)),
+        );
+        let pending = tx
+            .stage_match(&registry, proxy_count_request(&registry))
+            .unwrap();
+        let error = tx.commit().await.unwrap_err();
+        assert_eq!(error.diagnostic().code().as_str(), "commit_outcome_unknown");
+        assert!(matches!(
+            error.error.as_ref(),
+            ClassifiedCommitError::Driver {
+                certainty: crate::error::CommitFailureCertainty::Unknown,
+                ..
+            }
+        ));
+        assert!(matches!(
+            pending.get().unwrap_err().failure(),
+            Some(Failure::Indeterminate { .. })
+        ));
+        assert!(!format!("{error:?} {error}").contains("application-secret"));
+        let target = std::error::Error::source(&error)
+            .unwrap()
+            .downcast_ref::<crate::QueryTargetError>()
+            .unwrap();
+        let cause = std::error::Error::source(target)
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(cause.to_string(), "application-secret");
     }
 
     #[tokio::test(start_paused = true)]

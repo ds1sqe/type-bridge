@@ -32,6 +32,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Proxy staged commit failures retain a caller-owned transport error as
+  their source while keeping `commit_outcome_unknown` as the outcome.
+  Application error text remains absent from public diagnostics and rendering.
+
 - Single writes that match nothing now return `count: 0`, empty `items`, and
   absent `item`, including missing-player inserts and absent-root updates.
   The zero-answer `provider_identity_cardinality_invalid`,

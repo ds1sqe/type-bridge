@@ -254,9 +254,9 @@ impl ProxyStaging {
         &self,
         bytes: Vec<u8>,
         timeout: Option<Duration>,
-    ) -> Result<Vec<u8>, SdkExecutionDiagnostic> {
+    ) -> Result<Vec<u8>, crate::QueryTargetError> {
         if let Route::Exchange(exchange) = &self.route {
-            return exchange(bytes).await;
+            return exchange(bytes).await.map_err(Into::into);
         }
         let cancellation = AnswerCancellation::default();
         let deadline = match timeout {
@@ -268,11 +268,6 @@ impl ProxyStaging {
         self.route
             .exchange(Cow::Owned(bytes), deadline, &cancellation)
             .await
-            .map_err(|error| {
-                error.into_diagnostic(
-                    type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Write,
-                )
-            })
     }
 
     pub(crate) fn verify(
