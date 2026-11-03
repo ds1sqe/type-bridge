@@ -6,7 +6,8 @@ use type_bridge_orm::session::context::TransactionContext;
 use type_bridge_orm::{
     AnswerCancellation, InstalledRuntimeProjection, ProjectedManagerComparison,
     ProjectedManagerFilter, ProjectedManagerFilterExecutor,
-    ProjectedManagerFilterInvocationControl, QueryTarget, QueryTargetError,
+    ProjectedManagerFilterInvocationControl, QueryExecutionResourceLimits, QueryTarget,
+    QueryTargetError,
 };
 
 use crate::__codegen::{CompleteModel, EntityModel, FieldToken, Model, QueryValued, RelationModel};
@@ -27,10 +28,12 @@ struct ProjectedFilterCore<'target> {
 
 impl<'target> ProjectedFilterCore<'target> {
     fn control(&self) -> ProjectedManagerFilterInvocationControl {
-        ProjectedManagerFilterInvocationControl::capture(
-            self.target.answer_limits().unwrap_or_default(),
-            AnswerCancellation::default(),
-        )
+        let mut limits = self.target.answer_limits().unwrap_or_default();
+        limits.items = self
+            .target
+            .manager_item_limit()
+            .unwrap_or_else(|| QueryExecutionResourceLimits::default().items);
+        ProjectedManagerFilterInvocationControl::capture(limits, AnswerCancellation::default())
     }
 
     fn try_new(

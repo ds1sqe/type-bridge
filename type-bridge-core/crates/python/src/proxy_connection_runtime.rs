@@ -115,6 +115,7 @@ impl PyProxyConnection {
             )
         };
         let connection_limits = limits(connection_limits);
+        let caller_item_limit = answer_limits.as_ref().map(|limits| limits.inner().items);
         let answer_limits = limits(answer_limits);
         let cancellation: AnswerCancellation =
             cancellation.map(|value| value.inner()).unwrap_or_default();
@@ -136,7 +137,8 @@ impl PyProxyConnection {
             ),
         )
         .map_err(py_sdk_diagnostic)?
-        .with_admission_window_milliseconds(admission_window_milliseconds);
+        .with_admission_window_milliseconds(admission_window_milliseconds)
+        .with_caller_item_limit(caller_item_limit);
         let connection = match query_limits {
             Some(limits) => connection
                 .with_query_limits(limits)

@@ -98,6 +98,7 @@ pub struct ProxyQueryConnection {
     authority: Arc<QueryAuthority>,
     answer_limits: QueryExecutionResourceLimits,
     admission_window_milliseconds: std::num::NonZeroU64,
+    caller_item_limit: Option<u64>,
     /// The staged (`/v3/capabilities`) advertisement, pinned or verified
     /// on first use against `advertisement`, then reused.
     staged_advertisement: Mutex<Option<StagedAdvertisement>>,
@@ -227,6 +228,7 @@ impl ProxyQueryConnection {
                 type_bridge_contract::query_remote::DEFAULT_ADMISSION_WINDOW_MILLISECONDS,
             )
             .unwrap(),
+            caller_item_limit: Some(answer_limits.items),
             staged_advertisement: Mutex::new(staged),
             requested_query_limits: None,
             execution_identity,
@@ -248,6 +250,16 @@ impl ProxyQueryConnection {
     #[must_use]
     pub const fn admission_window_milliseconds(&self) -> u64 {
         self.admission_window_milliseconds.get()
+    }
+
+    /// Retain the caller's authored manager item window separately from the
+    /// transport's execution ceiling. `None` preserves the ordinary default
+    /// manager window when a binding supplies proxy transport defaults.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_caller_item_limit(mut self, items: Option<u64>) -> Self {
+        self.caller_item_limit = items;
+        self
     }
 
     /// Attach a caller-owned staged transport to this connection target.
@@ -709,6 +721,19 @@ impl QueryTarget<'_> {
             Self::Database(database) => database.answer_limits(),
             Self::Transaction(transaction) => transaction.answer_limits(),
             Self::Proxy(proxy) => Some(proxy.answer_limits),
+        }
+    }
+
+    /// The caller-authored manager item ceiling, excluding implicit transport defaults.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn manager_item_limit(&self) -> Option<u64> {
+        match self {
+            Self::Database(database) => database.answer_limits().map(|limits| limits.items),
+            Self::Transaction(transaction) => {
+                transaction.answer_limits().map(|limits| limits.items)
+            }
+            Self::Proxy(proxy) => proxy.caller_item_limit,
         }
     }
 

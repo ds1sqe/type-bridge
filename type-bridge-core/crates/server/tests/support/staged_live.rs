@@ -58,6 +58,7 @@ pub struct LivePolicy {
     pub refuse: Option<&'static str>,
     pub query_limits: Option<type_bridge_contract::limits::QueryLimits>,
     pub execution_timeout: Option<type_bridge_orm::QueryTimeout>,
+    pub answer_limits: Option<type_bridge_orm::QueryExecutionResourceLimits>,
     pub withhold_next_reply: Arc<AtomicBool>,
     pub commits: Arc<Mutex<Vec<CommitRecord>>>,
 }
@@ -293,25 +294,29 @@ pub async fn proxy_with_database(
         CapabilitySet::new(),
     );
     let managed = managed_schema_state(&declared, &delta_context).expect("managed");
-    let state = Arc::new(
-        StagedQueryState::new_query_only(
-            CapabilitySet::new(),
-            AnswerLimits::default(),
-            database,
-            declared.clone(),
-            delta_context,
-            managed,
-        )
-        .expect("executor advertisement")
-        .with_query_limits(policy.query_limits.unwrap_or_default())
-        .expect("query limits")
-        .with_answer_limits(type_bridge_orm::QueryExecutionResourceLimits {
-            timeout_milliseconds: policy.execution_timeout.unwrap_or_default(),
-            ..type_bridge_orm::QueryExecutionResourceLimits::default()
-        })
-        .expect("answer limits")
-        .with_unauthenticated_staged_writes(allow_unauthenticated),
-    );
+    let mut state = StagedQueryState::new_query_only(
+        CapabilitySet::new(),
+        AnswerLimits::default(),
+        database,
+        declared.clone(),
+        delta_context,
+        managed,
+    )
+    .expect("executor advertisement")
+    .with_query_limits(policy.query_limits.unwrap_or_default())
+    .expect("query limits")
+    .with_unauthenticated_staged_writes(allow_unauthenticated);
+    let answer_limits = policy.answer_limits.map(|mut limits| {
+        if let Some(timeout) = policy.execution_timeout { limits.timeout_milliseconds = timeout; }
+        limits
+    }).or_else(|| policy.execution_timeout.map(|timeout| type_bridge_orm::QueryExecutionResourceLimits {
+        timeout_milliseconds: timeout,
+        ..type_bridge_orm::QueryExecutionResourceLimits::default()
+    }));
+    if let Some(limits) = answer_limits {
+        state = state.with_answer_limits(limits).expect("answer limits");
+    }
+    let state = Arc::new(state);
     let commits = Arc::clone(&policy.commits);
     let pipeline = PipelineBuilder::new()
         .with_default_database(name)

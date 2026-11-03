@@ -618,6 +618,13 @@ Rules that hold in every binding:
 - Answer ceilings are separate. How much a query may return is the answer
   policy described under [Answer Limits](#answer-limits), not a query limit.
 
+Manager `all()` authors its window from the caller's item policy. With no
+caller override, that window remains 100,000 on both direct and proxy targets.
+A proxy's transport default or a tighter server ceiling only bounds execution;
+it never rewrites that window or its plan bytes. Equal caller policies therefore
+produce equal plans. An answer exceeding the execution budget returns the
+existing typed resource-limit refusal, without publishing a truncated list.
+
 ### Remote agreement
 
 An executor states its query limits in its capability advertisement and

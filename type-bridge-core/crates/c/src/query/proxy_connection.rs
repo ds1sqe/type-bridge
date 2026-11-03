@@ -145,6 +145,7 @@ struct CopiedOptions {
     advertisement: Option<Vec<u8>>,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
+    caller_item_limit: Option<u64>,
 }
 
 fn options_invalid(code_text: &'static str, text: &'static str) -> SdkExecutionDiagnostic {
@@ -292,6 +293,7 @@ unsafe fn copy_options(
         advertisement,
         connection_limits,
         answer_limits,
+        caller_item_limit: (!options.answer_limits.is_null()).then_some(answer_limits.items),
     })
 }
 
@@ -502,7 +504,7 @@ unsafe fn proxy_connection_open_with_query_limits(
             ))
         }));
         let connection = match outcome {
-            Ok(Ok(value)) => value,
+            Ok(Ok(value)) => value.with_caller_item_limit(copied.caller_item_limit),
             Ok(Err(error)) => return return_execution_error(error, out_diagnostics),
             Err(_) => return TypeBridgeStatus::Panic,
         };

@@ -31,6 +31,10 @@ All notable changes to TypeBridge will be documented in this file.
 
 ### Changed
 
+- Manager `all()` keeps the caller's authored window across direct and proxy
+  targets. Proxy execution ceilings stay outside plan bytes and refuse an
+  oversized answer without silently truncating it.
+
 - `TransactionContext::execute_plans` now accepts write plans in caller-owned
   Write and Schema transactions. A write plan on a Read context fails with
   `query_plan_read_only`; the old `borrowed_target_not_read_only` refusal is

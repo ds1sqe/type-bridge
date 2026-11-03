@@ -81,6 +81,7 @@ pub struct ProxyConnectionPolicy {
     semantic_profile: Option<String>,
     connection_limits: QueryExecutionResourceLimits,
     answer_limits: QueryExecutionResourceLimits,
+    caller_item_limit: Option<u64>,
     route: ProxyRoute,
     advertisement: Option<Vec<u8>>,
     staged_advertisement: Option<Vec<u8>>,
@@ -113,6 +114,7 @@ impl ProxyConnectionPolicy {
             semantic_profile: None,
             connection_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
             answer_limits: QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy),
+            caller_item_limit: None,
             route,
             advertisement: None,
             staged_advertisement: None,
@@ -164,6 +166,7 @@ impl ProxyConnectionPolicy {
     #[must_use]
     pub const fn answer_limits(mut self, limits: QueryExecutionResourceLimits) -> Self {
         self.answer_limits = limits.effective();
+        self.caller_item_limit = Some(limits.items);
         self
     }
 
@@ -380,7 +383,8 @@ impl ProxyDatabase<Unbound> {
             options.answer_limits,
         )
         .map_err(connect_error)?
-        .with_admission_window_milliseconds(options.admission_window_milliseconds);
+        .with_admission_window_milliseconds(options.admission_window_milliseconds)
+        .with_caller_item_limit(options.caller_item_limit);
         let connection = match options.query_limits {
             Some(limits) => connection
                 .with_query_limits(*limits)
@@ -634,6 +638,10 @@ mod tests {
         let policy = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"));
         let proxy = QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         assert_eq!(policy.answer_limits, proxy);
+        assert_eq!(policy.caller_item_limit, None);
+        let explicit = ProxyConnectionPolicy::new(ProxyEndpoint::new("http://127.0.0.1:1"))
+            .answer_limits(proxy);
+        assert_eq!(explicit.caller_item_limit, Some(proxy.items));
         assert_eq!(policy.connection_limits, proxy);
         assert_ne!(
             proxy,

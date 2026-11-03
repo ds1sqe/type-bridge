@@ -66,7 +66,10 @@ impl NodeProxyConnection {
         admission_window_milliseconds: Option<napi::bindgen_prelude::BigInt>,
         query_limits: Option<&NodeQueryLimits>,
     ) -> napi::Result<Object<'static>> {
-        let query_limits = query_limits.map(|limits| limits.inner().validate_v3()).transpose().map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
+        let query_limits = query_limits
+            .map(|limits| limits.inner().validate_v3())
+            .transpose()
+            .map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?;
         if header_names.len() != header_values.len() {
             return Err(napi::Error::new(
                 napi::Status::InvalidArg,
@@ -97,6 +100,7 @@ impl NodeProxyConnection {
         let proxy_default = || QueryExecutionResourceLimits::default_for(AnswerTransport::Proxy);
         let connection_limits =
             connection_limits.map_or_else(proxy_default, NodeQueryExecutionResources::inner);
+        let caller_item_limit = answer_limits.map(|limits| limits.inner().items);
         let answer_limits =
             answer_limits.map_or_else(proxy_default, NodeQueryExecutionResources::inner);
         let cancellation = cancellation
@@ -117,9 +121,12 @@ impl NodeProxyConnection {
             )
             .await
             .map_err(napi_sdk_diagnostic)?
-            .with_admission_window_milliseconds(admission_window_milliseconds);
+            .with_admission_window_milliseconds(admission_window_milliseconds)
+            .with_caller_item_limit(caller_item_limit);
             let connection = match query_limits {
-                Some(limits) => connection.with_query_limits(limits).map_err(|error| napi::Error::new(napi::Status::InvalidArg, error.to_string()))?,
+                Some(limits) => connection.with_query_limits(limits).map_err(|error| {
+                    napi::Error::new(napi::Status::InvalidArg, error.to_string())
+                })?,
                 None => connection,
             };
             // A pinned staged advertisement must name the connection's

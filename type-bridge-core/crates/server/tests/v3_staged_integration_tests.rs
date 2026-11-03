@@ -1875,24 +1875,28 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         &scope,
     )
     .await;
-    let requests = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
-    let captured = Arc::clone(&requests);
-    proxy.router = proxy.router.clone().layer(axum::middleware::from_fn(
-        move |request: Request<Body>, next: axum::middleware::Next| {
-            let captured = Arc::clone(&captured);
-            async move {
-                if request.uri().path() == "/v3/staged" {
-                    let (parts, body) = request.into_parts();
-                    let bytes = body.collect().await.unwrap().to_bytes();
-                    captured.lock().unwrap().push(bytes.to_vec());
-                    next.run(Request::from_parts(parts, Body::from(bytes)))
-                        .await
-                } else {
-                    next.run(request).await
+    fn record_staged(proxy: &mut Proxy) -> Arc<Mutex<Vec<Vec<u8>>>> {
+        let requests = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let captured = Arc::clone(&requests);
+        proxy.router = proxy.router.clone().layer(axum::middleware::from_fn(
+            move |request: Request<Body>, next: axum::middleware::Next| {
+                let captured = Arc::clone(&captured);
+                async move {
+                    if request.uri().path() == "/v3/staged" {
+                        let (parts, body) = request.into_parts();
+                        let bytes = body.collect().await.unwrap().to_bytes();
+                        captured.lock().unwrap().push(bytes.to_vec());
+                        next.run(Request::from_parts(parts, Body::from(bytes)))
+                            .await
+                    } else {
+                        next.run(request).await
+                    }
                 }
-            }
-        },
-    ));
+            },
+        ));
+        requests
+    }
+    let requests = record_staged(&mut proxy);
     let port = serve(&proxy).await;
     let authority = Arc::new(
         QueryAuthority::from_declared_bytes(
@@ -1909,7 +1913,7 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
     let connection = ProxyQueryConnection::connect(
         &ProxyEndpoint::new(format!("http://127.0.0.1:{port}")),
         Some(proxy.advertisement.encode().unwrap()),
-        authority,
+        Arc::clone(&authority),
         policy,
         policy,
         &AnswerCancellation::default(),
@@ -2086,6 +2090,110 @@ async fn generated_manager_filter_targets_share_answers_and_one_staged_exchange(
         }
     }
     assert_eq!(proxy.commits.lock().unwrap().len(), 11);
+    let defaults =
+        QueryExecutionResourceLimits::default_for(type_bridge_orm::AnswerTransport::Proxy);
+    let default_connection = ProxyQueryConnection::connect(
+        &ProxyEndpoint::new(format!("http://127.0.0.1:{port}")),
+        Some(proxy.advertisement.encode().unwrap()),
+        Arc::clone(&authority),
+        defaults,
+        defaults,
+        &AnswerCancellation::default(),
+    )
+    .await
+    .unwrap()
+    .with_caller_item_limit(None);
+    assert_eq!(
+        executor
+            .all_on_target(
+                QueryTarget::Proxy(&default_connection),
+                &all,
+                ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default()
+                )
+            )
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    {
+        let captured = requests.lock().unwrap();
+        assert_eq!(captured.len(), 12);
+        let request =
+            StagedRequestV3::decode(captured.last().unwrap(), &declared, &proxy.advertisement)
+                .unwrap();
+        assert_eq!(request.limits().max_items, 65_536);
+        assert!(
+            request.plans()[0]
+                .plan()
+                .pipeline()
+                .iter()
+                .any(|stage| matches!(
+                    stage,
+                    type_bridge_contract::query_plan::v3::Stage::Limit { rows: 100_001 }
+                ))
+        );
+    }
+    assert_eq!(proxy.commits.lock().unwrap().len(), 12);
+    let mut bounded = staged_live::proxy_with(
+        &name,
+        LivePolicy {
+            answer_limits: Some(QueryExecutionResourceLimits {
+                items: 1,
+                ..defaults
+            }),
+            ..Default::default()
+        },
+        false,
+        declared.clone(),
+        &scope,
+    )
+    .await;
+    let bounded_requests = record_staged(&mut bounded);
+    let bounded_port = serve(&bounded).await;
+    let bounded_connection = ProxyQueryConnection::connect(
+        &ProxyEndpoint::new(format!("http://127.0.0.1:{bounded_port}")),
+        Some(bounded.advertisement.encode().unwrap()),
+        Arc::clone(&authority),
+        policy,
+        policy,
+        &AnswerCancellation::default(),
+    )
+    .await
+    .unwrap();
+    let diagnostic = executor
+        .all_on_target(QueryTarget::Proxy(&bounded_connection), &all, control())
+        .await
+        .unwrap_err()
+        .into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read);
+    assert_eq!(diagnostic.code().as_str(), "processed_item_limit");
+    {
+        let captured = bounded_requests.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        let request =
+            StagedRequestV3::decode(&captured[0], &declared, &bounded.advertisement).unwrap();
+        assert_eq!(request.limits().max_items, 1);
+        assert!(
+            request.plans()[0]
+                .plan()
+                .pipeline()
+                .iter()
+                .any(|stage| matches!(
+                    stage,
+                    type_bridge_contract::query_plan::v3::Stage::Limit { rows: 101 }
+                ))
+        );
+    }
+    {
+        let bounded_outcomes = bounded.commits.lock().unwrap();
+        assert_eq!(bounded_outcomes.len(), 1);
+        assert!(!bounded_outcomes[0].0);
+    }
+    drop(bounded_connection);
+    drop(bounded);
+    drop(default_connection);
     drop(connection);
     drop(proxy);
     drop_database(database).await;

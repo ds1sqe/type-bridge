@@ -702,9 +702,10 @@ impl<'projection> ProjectedManagerFilterExecutor<'projection> {
         filter: &ProjectedManagerFilter,
         control: ProjectedManagerFilterInvocationControl,
     ) -> Result<Vec<Arc<ProjectedThing>>, crate::QueryTargetError> {
+        let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
         let control = control.constrained_by(target.answer_limits());
         self.preflight(filter, &control, false)?;
-        let (registry, request) = self.build_request(filter, ManagerTerminal::all(&control))?;
+        let (registry, request) = self.build_request(filter, terminal)?;
         let (request, result) = target
             .execute(
                 &registry,
@@ -1172,9 +1173,11 @@ enum ManagerTerminal {
 
 impl ManagerTerminal {
     /// Every match the terminal's item ceiling can hold.
-    fn all(control: &ProjectedManagerFilterInvocationControl) -> Self {
+    fn all(control: &ProjectedManagerFilterInvocationControl, caller_items: Option<u64>) -> Self {
         Self::Rows {
-            limit: control.limits.items,
+            limit: caller_items.map_or(control.limits.items, |items| {
+                items.min(control.limits.items)
+            }),
         }
     }
 
@@ -1607,7 +1610,7 @@ mod target_tests {
         };
         let proxy = crate::ProxyQueryConnection::with_exchange(
             advertisement.encode().unwrap(),
-            authority,
+            Arc::clone(&authority),
             policy,
         )
         .unwrap();
@@ -1641,7 +1644,7 @@ mod target_tests {
         let control =
             ProjectedManagerFilterInvocationControl::capture(policy, AnswerCancellation::default());
         for terminal in [
-            ManagerTerminal::all(&control),
+            ManagerTerminal::all(&control, None),
             ManagerTerminal::first(),
             ManagerTerminal::Count,
             ManagerTerminal::Exists,
@@ -1668,6 +1671,67 @@ mod target_tests {
                 staged.plans()[0].plan().canonical_bytes().unwrap(),
                 direct.plans[0].canonical_bytes().unwrap()
             );
+        }
+        // A binding's implicit proxy execution default must not author a
+        // smaller manager window than the same direct caller policy.
+        for (caller_items, requested_items, expected_window) in [
+            (None, 100_000, 100_000),
+            (Some(100), 100_000, 100),
+            (Some(65_536), 100_000, 65_536),
+            (Some(100), 50, 50),
+        ] {
+            let requested = QueryExecutionResourceLimits {
+                items: requested_items,
+                ..Default::default()
+            };
+            let control = ProjectedManagerFilterInvocationControl::capture(
+                requested,
+                AnswerCancellation::default(),
+            );
+            let proxy = crate::ProxyQueryConnection::with_exchange(
+                advertisement.encode().unwrap(),
+                Arc::clone(&authority),
+                QueryExecutionResourceLimits {
+                    items: caller_items.unwrap_or(65_536),
+                    ..QueryExecutionResourceLimits::default_for(crate::AnswerTransport::Proxy)
+                },
+            )
+            .unwrap()
+            .with_caller_item_limit(caller_items);
+            let target = crate::QueryTarget::Proxy(&proxy);
+            let terminal = ManagerTerminal::all(&control, target.manager_item_limit());
+            assert!(
+                matches!(terminal, ManagerTerminal::Rows { limit } if limit == expected_window)
+            );
+            let execution = target.constrain(requested);
+            assert_eq!(
+                execution.items,
+                requested_items.min(caller_items.unwrap_or(65_536))
+            );
+            let (registry, direct_request) = executor
+                .build_request(&filter, ManagerTerminal::all(&control, caller_items))
+                .unwrap();
+            let direct =
+                crate::match_request::plan_adapter::adapt_match_request(&registry, &direct_request)
+                    .unwrap();
+            let (_, request) = executor.build_request(&filter, terminal).unwrap();
+            let pending = proxy
+                .prepare(
+                    &registry,
+                    request,
+                    execution,
+                    &control.cancellation,
+                    control.deadline,
+                )
+                .unwrap();
+            let staged =
+                StagedRequestV3::decode(pending.request_bytes(), &declared, &advertisement)
+                    .unwrap();
+            assert_eq!(
+                staged.plans()[0].plan().canonical_bytes().unwrap(),
+                direct.plans[0].canonical_bytes().unwrap()
+            );
+            assert_eq!(staged.limits().max_items, execution.items);
         }
     }
 }
