@@ -1,7 +1,7 @@
 //! Full-match upserts whose predicates cannot fit one canonical plan.
 use super::*;
 use crate::plan_builders::reference::reference_binding;
-use type_bridge_contract::migration_assertion::AssertionRolePlayer;
+use type_bridge_contract::migration_assertion::{AssertionRolePlayer, BindingId};
 
 pub(crate) struct MatchProgram {
     probes: VecDeque<BuiltPlan>,
@@ -138,13 +138,12 @@ fn group_reads(mut patterns: Vec<Pattern>, terms: usize) -> Result<Vec<Pattern>,
     Ok(patterns)
 }
 
-fn probe(
-    authority: &PlanAuthority,
+fn predicate_patterns(
+    draft: &mut crate::plan_builders::PlanDraft,
+    root: BindingId,
     shape: &WriteShape<'_>,
     row: &Row,
-) -> Result<BuiltPlan, Diagnostic> {
-    let mut draft = authority.draft(ValueTransport::Given);
-    let root = draft.bind("root")?;
+) -> Result<Vec<Pattern>, Diagnostic> {
     let mut patterns = vec![
         QueryPattern::Isa {
             binding: root,
@@ -182,7 +181,7 @@ fn probe(
             }
         };
         let binding = reference_binding(
-            &mut draft,
+            draft,
             &Reference {
                 candidates: &player.candidates,
                 identity,
@@ -198,6 +197,17 @@ fn probe(
             .into(),
         );
     }
+    Ok(patterns)
+}
+
+fn probe(
+    authority: &PlanAuthority,
+    shape: &WriteShape<'_>,
+    row: &Row,
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = authority.draft(ValueTransport::Given);
+    let root = draft.bind("root")?;
+    let patterns = predicate_patterns(&mut draft, root, shape, row)?;
     // Given columns and concept bindings both become provider variables.
     // Apply the same canonical binding ceiling to their combined width.
     if draft.bindings.len() + draft.inputs.len() > authority.query_limits().structural.bindings {
@@ -748,6 +758,192 @@ fn predicate_probe(
     draft.finish_rows(authority, pipeline, Operation::Rows, output, Some(rows))
 }
 
+#[derive(Clone, Copy)]
+enum ProbeMode {
+    Candidates,
+    Existence,
+    Final,
+}
+
+fn fixed_probe(
+    authority: &PlanAuthority,
+    shape: &WriteShape<'_>,
+    row: &Row,
+    ordinal: usize,
+    source: bool,
+    mode: ProbeMode,
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = authority.draft(ValueTransport::Given);
+    let root = draft.bind("root")?;
+    let output_ordinal = draft.bind("ordinal")?;
+    let mut patterns = predicate_patterns(&mut draft, root, shape, row)?;
+    if source {
+        let target = draft.input("target_iid", ValueTypeTag::String, true)?;
+        // Bound IIDs can be longer than the unbound reference cell.
+        draft.row.push(Some(super::iid(&format!(
+            "0x{}",
+            "0".repeat(type_bridge_contract::id::MAX_THING_IID_HEX_DIGITS)
+        ))?));
+        patterns.push(present(&target).into());
+        patterns.push(
+            QueryPattern::Iid {
+                binding: root,
+                iid: target,
+            }
+            .into(),
+        );
+    }
+    patterns.push(Pattern::Let {
+        binding: output_ordinal,
+        expr: Expr::Operand(QueryOperand::Literal {
+            value: CanonicalValue::Long(i64::try_from(ordinal).map_err(|_| identity_error())?),
+        }),
+    });
+    if patterns.len() > authority.query_limits().structural.boolean_terms {
+        return Err(invalid(
+            "query_plan_pattern_limit",
+            "Fixed match predicates exceed the configured Boolean-term ceiling",
+        ));
+    }
+    if draft.bindings.len() + draft.inputs.len() > authority.query_limits().structural.bindings {
+        return Err(invalid(
+            "query_plan_binding_limit",
+            "Fixed match predicates exceed the configured variable ceiling",
+        ));
+    }
+    let mut pipeline = vec![
+        Stage::Match { patterns },
+        Stage::Select {
+            bindings: vec![root, output_ordinal],
+        },
+        Stage::Distinct,
+    ];
+    if matches!(mode, ProbeMode::Existence) {
+        pipeline.push(Stage::Sort {
+            terms: vec![type_bridge_contract::query_plan::OrderTerm::new(
+                output_ordinal,
+                type_bridge_contract::query_plan::OrderDirection::Ascending,
+            )],
+        });
+        pipeline.push(Stage::Limit { rows: 1 });
+    }
+    let output = if matches!(mode, ProbeMode::Final) && shape.return_documents {
+        let mut document = ThingDocument::new(root, shape.document_roles.clone());
+        document
+            .scalars
+            .push(type_bridge_contract::query_plan::v3::DocumentScalar {
+                key: type_bridge_contract::migration_assertion::QueryVariable::new("ordinal")?,
+                binding: output_ordinal,
+            });
+        pipeline.push(Stage::Fetch(document));
+        QueryOutput::Rows { columns: vec![] }
+    } else {
+        QueryOutput::Rows {
+            columns: vec![output_ordinal, root],
+        }
+    };
+    let mut built = draft.finish(authority, pipeline, Operation::Rows, output)?;
+    if source {
+        let rows = built
+            .plan
+            .given_rows()
+            .ok_or_else(identity_error)?
+            .iter()
+            .map(|row| {
+                let mut cells = row.values().to_vec();
+                *cells.last_mut().expect("source input") = None;
+                InputRow::new(cells)
+            })
+            .collect();
+        built.plan = built.plan.with_given_rows(rows, authority.declared())?;
+    }
+    Ok(built)
+}
+
+fn fixed_match_probes(
+    authority: &PlanAuthority,
+    shape: &WriteShape<'_>,
+    row: &WriteRow<'_>,
+    ordinal: usize,
+) -> Result<(Vec<BuiltPlan>, Vec<BuiltPlan>), Diagnostic> {
+    let empty = Row {
+        iid: None,
+        fields: vec![],
+        players: vec![],
+    };
+    let mut remaining = Row::of(row);
+    let mut chunks = Vec::new();
+    while remaining.len() > 0 {
+        let mut low = 0;
+        let mut high = remaining.len();
+        while low < high {
+            let count = low + (high - low).div_ceil(2);
+            // Reserve the dependency input even for the first candidate read.
+            match fixed_probe(
+                authority,
+                shape,
+                &Row::prefix(&empty, &remaining, count),
+                ordinal,
+                true,
+                ProbeMode::Candidates,
+            ) {
+                Ok(_) => low = count,
+                Err(error) if forces_pieces(&error) => high = count - 1,
+                Err(error) => return Err(error),
+            }
+        }
+        if low == 0 {
+            fixed_probe(
+                authority,
+                shape,
+                &Row::prefix(&empty, &remaining, 1),
+                ordinal,
+                true,
+                ProbeMode::Candidates,
+            )?;
+            return Err(identity_error());
+        }
+        chunks.push(Row::prefix(&empty, &remaining, low));
+        remaining.drain(low);
+    }
+    if chunks.is_empty() {
+        chunks.push(empty.clone());
+    }
+    let mut probes = Vec::new();
+    let mut final_reads = Vec::new();
+    for (index, chunk) in chunks.iter().enumerate() {
+        probes.push(fixed_probe(
+            authority,
+            shape,
+            chunk,
+            ordinal,
+            index != 0,
+            if index + 1 == chunks.len() {
+                ProbeMode::Existence
+            } else {
+                ProbeMode::Candidates
+            },
+        )?);
+        final_reads.push(fixed_probe(
+            authority,
+            shape,
+            chunk,
+            ordinal,
+            index != 0,
+            ProbeMode::Candidates,
+        )?);
+    }
+    final_reads.push(fixed_probe(
+        authority,
+        shape,
+        &empty,
+        ordinal,
+        true,
+        ProbeMode::Final,
+    )?);
+    Ok((probes, final_reads))
+}
+
 fn static_match(
     authority: &PlanAuthority,
     shape: &WriteShape<'_>,
@@ -758,12 +954,25 @@ fn static_match(
         .fields
         .iter()
         .all(|(field, _)| field == &row.fields[0].0);
-    let probe = match predicate_probe(authority, shape, row, ordinal, false, single_field) {
-        Ok(plan) => plan,
-        Err(error) if forces_pieces(&error) => return Ok(None),
+    let table =
+        predicate_probe(authority, shape, row, ordinal, false, single_field).and_then(|probe| {
+            Ok((
+                vec![probe],
+                vec![predicate_probe(
+                    authority,
+                    shape,
+                    row,
+                    ordinal,
+                    true,
+                    single_field,
+                )?],
+            ))
+        });
+    let (probes, final_reads) = match table {
+        Ok(plans) => plans,
+        Err(error) if forces_pieces(&error) => fixed_match_probes(authority, shape, row, ordinal)?,
         Err(error) => return Err(error),
     };
-    let final_read = predicate_probe(authority, shape, row, ordinal, true, single_field)?;
     let mut miss_shape = shape.clone();
     miss_shape.return_documents = false;
     let WriteProgram::Split(miss) = split_with_guards(
@@ -784,11 +993,17 @@ fn static_match(
         .iter()
         .any(|step| matches!(step, Step::Target { .. }))
     {
-        references::guards(authority, shape.type_id, &owned.players, ordinal, &probe)?
+        references::guards(
+            authority,
+            shape.type_id,
+            &owned.players,
+            ordinal,
+            &probes[0],
+        )?
     } else {
         Vec::new()
     };
     Ok(Some(WriteProgram::Static(Box::new(
-        static_stack::StaticProgram::with_match_probe(miss, guards, probe, final_read, ordinal)?,
+        static_stack::StaticProgram::with_match_probe(miss, guards, probes, final_reads, ordinal)?,
     ))))
 }

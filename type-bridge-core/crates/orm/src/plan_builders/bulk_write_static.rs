@@ -279,8 +279,8 @@ impl StaticProgram {
     pub(super) fn with_match_probe(
         miss: SplitProgram,
         guards: Vec<WriteStep>,
-        probe: BuiltPlan,
-        final_read: BuiltPlan,
+        probes: Vec<BuiltPlan>,
+        final_reads: Vec<BuiltPlan>,
         ordinal: usize,
     ) -> Result<Self, Diagnostic> {
         use type_bridge_contract::migration_assertion::QueryVariable;
@@ -288,6 +288,7 @@ impl StaticProgram {
         use type_bridge_contract::query_plan::{InputColumn, InputColumnId};
         use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
         let mut program = Self::new(miss)?;
+        let probe = probes.last().ok_or_else(identity_error)?;
         let QueryOutput::Rows { columns } = probe.local().output() else {
             return Err(identity_error());
         };
@@ -298,8 +299,10 @@ impl StaticProgram {
             .iter()
             .cloned()
             .collect::<Vec<_>>();
-        let mut entries = Vec::with_capacity(program.entries.len() + guards.len() + 2);
-        let mut prefix = VecDeque::with_capacity(guards.len() + 1);
+        let mut entries = Vec::with_capacity(
+            program.entries.len() + guards.len() + probes.len() + final_reads.len(),
+        );
+        let mut prefix = VecDeque::with_capacity(guards.len() + probes.len());
         for guard in guards {
             let mut entry = StagedPlanV3::new(
                 guard.plan.local(),
@@ -318,16 +321,29 @@ impl StaticProgram {
                 reference_resolution: guard.reference_resolution,
             });
         }
-        let probe_index = entries.len();
-        let mut entry = StagedPlanV3::new(
-            probe.local(),
-            probe.local().given_rows().unwrap_or_default().to_vec(),
-            program.authority.declared(),
-        )?;
-        if let Some(source) = entries.last() {
-            entry = gate(entry, source, entries.len() - 1, &program.authority)?;
+        for (position, probe) in probes.iter().enumerate() {
+            let mut entry = StagedPlanV3::new(
+                probe.local(),
+                probe.local().given_rows().unwrap_or_default().to_vec(),
+                program.authority.declared(),
+            )?;
+            if let Some(source) = entries.last() {
+                entry = if position == 0 {
+                    gate(entry, source, entries.len() - 1, &program.authority)?
+                } else {
+                    root_source(entry, source, entries.len() - 1, &program.authority)?
+                };
+            }
+            entries.push(entry);
+            prefix.push_back(StaticStep {
+                complete: false,
+                ordinal,
+                missing_iid_noop: true,
+                expected_iid: None,
+                reference_resolution: None,
+            });
         }
-        entries.push(entry);
+        let probe_index = entries.len().checked_sub(1).ok_or_else(identity_error)?;
         for (index, entry) in program.entries.into_iter().enumerate() {
             let plan = entry.plan();
             let mut inputs = plan.inputs().to_vec();
@@ -409,27 +425,32 @@ impl StaticProgram {
             step.complete = false;
             step.missing_iid_noop = true;
         }
-        prefix.push_back(StaticStep {
-            complete: false,
-            ordinal,
-            missing_iid_noop: true,
-            expected_iid: None,
-            reference_resolution: None,
-        });
         prefix.append(&mut program.steps);
         program.steps = prefix;
-        program.steps.push_back(StaticStep {
-            complete: true,
-            ordinal,
-            missing_iid_noop: false,
-            expected_iid: None,
-            reference_resolution: None,
-        });
-        entries.push(StagedPlanV3::new(
-            final_read.local(),
-            final_read.local().given_rows().unwrap_or_default().to_vec(),
-            program.authority.declared(),
-        )?);
+        for (index, final_read) in final_reads.iter().enumerate() {
+            let mut entry = StagedPlanV3::new(
+                final_read.local(),
+                final_read.local().given_rows().unwrap_or_default().to_vec(),
+                program.authority.declared(),
+            )?;
+            if index != 0 {
+                entry = root_source(
+                    entry,
+                    entries.last().ok_or_else(identity_error)?,
+                    entries.len() - 1,
+                    &program.authority,
+                )?;
+            }
+            entries.push(entry);
+            let complete = index + 1 == final_reads.len();
+            program.steps.push_back(StaticStep {
+                complete,
+                ordinal,
+                missing_iid_noop: !complete,
+                expected_iid: None,
+                reference_resolution: None,
+            });
+        }
         type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
             &entries,
             program.authority.declared(),
@@ -579,6 +600,44 @@ impl StaticProgram {
             reference_resolution: step.reference_resolution,
         }))
     }
+}
+
+fn root_source(
+    entry: type_bridge_contract::query_remote_v3::StagedPlanV3,
+    source: &type_bridge_contract::query_remote_v3::StagedPlanV3,
+    source_index: usize,
+    authority: &PlanAuthority,
+) -> Result<type_bridge_contract::query_remote_v3::StagedPlanV3, Diagnostic> {
+    use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+    let QueryOutput::Rows { columns } = source.plan().output() else {
+        return Err(identity_error());
+    };
+    let input = entry
+        .plan()
+        .inputs()
+        .iter()
+        .find(|input| input.public_name().as_str() == "target_iid")
+        .ok_or_else(identity_error)?
+        .id();
+    let mut refs = entry.result_refs().to_vec();
+    refs.push(StagedResultRefV3 {
+        input,
+        source_plan: u32::try_from(source_index).map_err(|_| identity_error())?,
+        source_column: 1,
+        expected_types: source
+            .plan()
+            .binding_types(*columns.get(1).ok_or_else(identity_error)?)
+            .ok_or_else(identity_error)?
+            .iter()
+            .cloned()
+            .collect(),
+    });
+    StagedPlanV3::new_with_result_refs(
+        entry.plan(),
+        entry.rows().to_vec(),
+        refs,
+        authority.declared(),
+    )
 }
 
 fn gate(
@@ -840,6 +899,91 @@ plays:
                 assert!(query.typeql.contains(name));
             }
             assert!(!program.entries.last().unwrap().plan().writes());
+        }
+        for resource in [
+            "input_rows",
+            "predicate_nodes",
+            "canonical_bytes",
+            "collections",
+        ] {
+            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            match resource {
+                "input_rows" => limits.structural.input_rows = 2,
+                "predicate_nodes" => limits.structural.predicate_nodes = 128,
+                "canonical_bytes" => limits.codec.max_bytes = 20_000,
+                _ => limits.codec.max_collection_len = 128,
+            }
+            let authority = authority
+                .clone()
+                .with_query_limits(std::sync::Arc::new(limits));
+            let WriteProgram::Static(program) = super::super::match_put::wide_match(
+                &authority,
+                WriteShape {
+                    type_id: &note,
+                    keys: &[],
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: false,
+                    return_documents: true,
+                    references_see_prior_writes: true,
+                    single_input: false,
+                },
+                &WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                },
+                0,
+            )
+            .unwrap_or_else(|error| panic!("{resource}: {error:?}")) else {
+                panic!("bounded full-match graph")
+            };
+            let reads = program
+                .entries
+                .iter()
+                .take_while(|entry| !entry.plan().writes())
+                .count();
+            assert!(reads > 1);
+            assert!(
+                program
+                    .entries
+                    .iter()
+                    .all(|entry| entry.rows().len() <= limits.structural.input_rows)
+            );
+            assert!(
+                program.entries[reads - 1]
+                    .plan()
+                    .pipeline()
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Limit { rows: 1 }))
+            );
+            assert!(program.entries[..reads - 1].iter().all(|entry| {
+                !entry
+                    .plan()
+                    .pipeline()
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Limit { .. }))
+            }));
+            assert!(
+                !program
+                    .entries
+                    .last()
+                    .unwrap()
+                    .plan()
+                    .pipeline()
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Limit { .. }))
+            );
+            assert!(program.entries.iter().all(|entry| {
+                entry
+                    .result_refs()
+                    .iter()
+                    .map(|reference| reference.source_plan)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    <= 1
+            }));
         }
     }
 
@@ -1449,142 +1593,173 @@ plays:
                 )
             })
             .collect::<Vec<_>>();
-        for (fields, players, guarded) in [
-            (fields.as_slice(), players.as_slice(), true),
-            (&[][..], many.as_slice(), false),
+        for input_rows in [
+            type_bridge_contract::limits::QueryLimits::V3
+                .structural
+                .input_rows,
+            2,
         ] {
-            for hit in [false, true] {
-                let mut program = super::super::match_put::wide_match(
-                    &authority,
-                    WriteShape {
-                        references_see_prior_writes: true,
-                        single_input: false,
-                        type_id: &relation,
-                        keys: &[],
-                        cleared_fields: &[],
-                        cleared_roles: &[],
-                        document_roles: vec![],
-                        include_subtypes: true,
-                        return_documents: false,
-                    },
-                    &WriteRow {
-                        iid: None,
-                        fields,
-                        players,
-                    },
-                    0,
-                )
-                .unwrap();
-                let entries = program
-                    .staged_entries(&authority)
-                    .unwrap()
-                    .expect("a complete fixed graph");
-                type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
-                    &entries,
-                    authority.declared(),
-                )
-                .unwrap();
-                let probe_index = usize::from(guarded);
-                if guarded {
-                    assert_eq!(entries[1].result_refs().len(), 2);
-                }
-                assert_eq!(
-                    entries[probe_index + 1].result_refs()[0].source_plan,
-                    probe_index as u32
-                );
-                if !guarded {
-                    assert_eq!(
-                        entries[1].rows().len(),
-                        1,
-                        "the hit gate preserves the compact allocation's single input row"
-                    );
-                }
-                let expected_roots = if hit {
-                    vec!["0x20", "0x22"]
-                } else {
-                    vec!["0x10"]
-                };
-                let mut completed = Vec::new();
-                let mut probes = 0;
-                while let Some(step) = program.next().unwrap() {
-                    let identity_row = |iid: &str| {
-                        vec![
-                            RemoteValue::Value {
-                                value: CanonicalValue::Long(0),
-                            },
-                            RemoteValue::Thing {
-                                iid: iid.into(),
-                                type_id: relation.clone(),
-                            },
-                        ]
-                    };
-                    let rows = if let Some(resolution) = &step.reference_resolution {
-                        vec![
-                            resolution
-                                .ordinals
-                                .iter()
-                                .flat_map(|ordinal| {
-                                    [
-                                        RemoteValue::Value {
-                                            value: CanonicalValue::Long(*ordinal as i64),
-                                        },
-                                        RemoteValue::Thing {
-                                            iid: iids[*ordinal].into(),
-                                            type_id: candidates[0].clone(),
-                                        },
-                                    ]
-                                })
-                                .collect(),
-                        ]
-                    } else if step.plan.local().writes() {
-                        if hit {
-                            vec![]
-                        } else {
-                            vec![identity_row("0x10")]
-                        }
-                    } else if step.complete {
-                        expected_roots.iter().map(|iid| identity_row(iid)).collect()
-                    } else {
-                        probes += 1;
-                        assert!(step.plan.local().pipeline().iter().any(|stage| matches!(
-                            stage,
-                            type_bridge_contract::query_plan::v3::Stage::Limit { rows: 1 }
-                        )));
-                        if hit {
-                            vec![identity_row("0x20")]
-                        } else {
-                            vec![]
-                        }
-                    };
-                    let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
-                        &StagedAnswerV3::Rows { rows },
-                        step.plan.local(),
+            let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+            limits.structural.input_rows = input_rows;
+            let authority = authority
+                .clone()
+                .with_query_limits(std::sync::Arc::new(limits));
+            for (fields, players, guarded) in [
+                (fields.as_slice(), players.as_slice(), true),
+                (&[][..], many.as_slice(), false),
+            ] {
+                for hit in [false, true] {
+                    let mut program = super::super::match_put::wide_match(
+                        &authority,
+                        WriteShape {
+                            references_see_prior_writes: true,
+                            single_input: false,
+                            type_id: &relation,
+                            keys: &[],
+                            cleared_fields: &[],
+                            cleared_roles: &[],
+                            document_roles: vec![],
+                            include_subtypes: true,
+                            return_documents: false,
+                        },
+                        &WriteRow {
+                            iid: None,
+                            fields,
+                            players,
+                        },
+                        0,
                     )
                     .unwrap();
-                    if step.complete {
-                        assert!(!step.plan.local().pipeline().iter().any(|stage| matches!(
-                            stage,
-                            type_bridge_contract::query_plan::v3::Stage::Limit { .. }
-                        )));
-                        completed = step
-                            .reference_iids(&answer)
-                            .unwrap()
-                            .into_iter()
-                            .map(|(_, iid)| iid)
-                            .collect();
+                    let entries = program
+                        .staged_entries(&authority)
+                        .unwrap()
+                        .expect("a complete fixed graph");
+                    type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+                        &entries,
+                        authority.declared(),
+                    )
+                    .unwrap();
+                    if input_rows != 2 {
+                        let probe_index = usize::from(guarded);
+                        if guarded {
+                            assert_eq!(entries[1].result_refs().len(), 2);
+                        }
+                        assert_eq!(
+                            entries[probe_index + 1].result_refs()[0].source_plan,
+                            probe_index as u32
+                        );
+                        if !guarded {
+                            assert_eq!(
+                                entries[1].rows().len(),
+                                1,
+                                "the hit gate preserves the compact allocation's single input row"
+                            );
+                        }
                     }
-                    if let Some(resolution) = &step.reference_resolution {
-                        resolution
-                            .guard
-                            .as_ref()
-                            .unwrap()
-                            .validate(&step.reference_iids(&answer).unwrap(), |_, _| None)
-                            .unwrap();
+                    let expected_roots = if hit {
+                        vec!["0x20", "0x22"]
+                    } else {
+                        vec!["0x10"]
+                    };
+                    let mut completed = Vec::new();
+                    let mut probes = 0;
+                    let mut after_write = false;
+                    while let Some(step) = program.next().unwrap() {
+                        let identity_row = |iid: &str| {
+                            vec![
+                                RemoteValue::Value {
+                                    value: CanonicalValue::Long(0),
+                                },
+                                RemoteValue::Thing {
+                                    iid: iid.into(),
+                                    type_id: relation.clone(),
+                                },
+                            ]
+                        };
+                        let rows = if let Some(resolution) = &step.reference_resolution {
+                            vec![
+                                resolution
+                                    .ordinals
+                                    .iter()
+                                    .flat_map(|ordinal| {
+                                        [
+                                            RemoteValue::Value {
+                                                value: CanonicalValue::Long(*ordinal as i64),
+                                            },
+                                            RemoteValue::Thing {
+                                                iid: iids[*ordinal].into(),
+                                                type_id: candidates[0].clone(),
+                                            },
+                                        ]
+                                    })
+                                    .collect(),
+                            ]
+                        } else if step.plan.local().writes() {
+                            after_write = true;
+                            if hit {
+                                vec![]
+                            } else {
+                                vec![identity_row("0x10")]
+                            }
+                        } else if step.complete {
+                            expected_roots.iter().map(|iid| identity_row(iid)).collect()
+                        } else {
+                            probes += 1;
+                            let witness = step.plan.local().pipeline().iter().any(|stage| {
+                                matches!(
+                                    stage,
+                                    type_bridge_contract::query_plan::v3::Stage::Limit { rows: 1 }
+                                )
+                            });
+                            if witness {
+                                if hit {
+                                    vec![identity_row("0x20")]
+                                } else {
+                                    vec![]
+                                }
+                            } else {
+                                assert_eq!(input_rows, 2);
+                                if after_write || hit {
+                                    expected_roots.iter().map(|iid| identity_row(iid)).collect()
+                                } else {
+                                    vec![]
+                                }
+                            }
+                        };
+                        let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
+                            &StagedAnswerV3::Rows { rows },
+                            step.plan.local(),
+                        )
+                        .unwrap();
+                        if step.complete {
+                            assert!(!step.plan.local().pipeline().iter().any(|stage| matches!(
+                                stage,
+                                type_bridge_contract::query_plan::v3::Stage::Limit { .. }
+                            )));
+                            completed = step
+                                .reference_iids(&answer)
+                                .unwrap()
+                                .into_iter()
+                                .map(|(_, iid)| iid)
+                                .collect();
+                        }
+                        if let Some(resolution) = &step.reference_resolution {
+                            resolution
+                                .guard
+                                .as_ref()
+                                .unwrap()
+                                .validate(&step.reference_iids(&answer).unwrap(), |_, _| None)
+                                .unwrap();
+                        }
+                        program.record_answer(&step, &answer).unwrap();
                     }
-                    program.record_answer(&step, &answer).unwrap();
+                    if input_rows == 2 {
+                        assert!(probes > 1);
+                    } else {
+                        assert_eq!(probes, 1);
+                    }
+                    assert_eq!(completed, expected_roots);
                 }
-                assert_eq!(probes, 1);
-                assert_eq!(completed, expected_roots);
             }
         }
     }

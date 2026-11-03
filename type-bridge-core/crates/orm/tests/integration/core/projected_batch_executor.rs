@@ -4228,8 +4228,17 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
             .await
             .unwrap();
     }
-    for literal in [false, true] {
+    let default_rows = type_bridge_contract::limits::QueryLimits::V3
+        .structural
+        .input_rows;
+    for (literal, input_rows) in [false, true]
+        .into_iter()
+        .flat_map(|literal| [default_rows, 8].map(move |rows| (literal, rows)))
+    {
         let (counted, log) = counted_connection(&database, literal).await;
+        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        limits.structural.input_rows = input_rows;
+        let counted = counted.with_query_limits(limits).unwrap();
         let manager =
             DynamicRelationManager::from_registry(&counted, registry.clone(), relation.clone());
         let manager = if literal {
@@ -5921,7 +5930,13 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
             .map(|(name, value)| format!("{name}={value:?}"))
             .collect::<std::collections::BTreeSet<_>>()
     };
-    for literal in [false, true] {
+    let default_rows = type_bridge_contract::limits::QueryLimits::V3
+        .structural
+        .input_rows;
+    for (literal, input_rows) in [false, true]
+        .into_iter()
+        .flat_map(|literal| [default_rows, 8].map(move |rows| (literal, rows)))
+    {
         let raw = DynamicEntityManager::from_registry(
             &database,
             installed.manager_registry().unwrap(),
@@ -5932,11 +5947,11 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
                 [
                     (
                         "mixed-tag".to_owned(),
-                        AttributeValue::String(format!("mixed-{literal}-{index}")),
+                        AttributeValue::String(format!("mixed-{literal}-{input_rows}-{index}")),
                     ),
                     (
                         "mixed-alias".to_owned(),
-                        AttributeValue::String(format!("mixed-{literal}-{index}")),
+                        AttributeValue::String(format!("mixed-{literal}-{input_rows}-{index}")),
                     ),
                     ("mixed-number".to_owned(), AttributeValue::Long(index)),
                 ]
@@ -5957,6 +5972,10 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
         repeated.extend(full[..3].iter().cloned());
         let expected = [normalized(full.clone()), normalized(near.clone())];
         let (counted, log) = counted_connection(&database, literal).await;
+        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        limits.structural.input_rows = input_rows;
+        let counted = counted.with_query_limits(limits).unwrap();
+        let statements = if input_rows == 8 { 20 } else { 8 };
         let manager = DynamicEntityManager::from_registry(&counted, registry.clone(), note.clone());
         let before = raw.count().await.unwrap();
         let actual = manager.put_many(&[repeated.clone(), near]).await.unwrap();
@@ -5971,27 +5990,52 @@ async fn mixed_wide_full_match_puts_use_static_probes_and_rollback_last_piece_li
         }
         {
             let observed = log.lock().unwrap();
-            assert_eq!(observed.statements.len(), 8);
+            assert_eq!(observed.statements.len(), statements);
             assert_eq!(observed.opened, [TxType::Write]);
             assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+        }
+        if input_rows == 8 {
+            let mut absent = full.clone();
+            absent[1] = (
+                "mixed-alias".into(),
+                AttributeValue::String(format!("empty-first-{literal}")),
+            );
+            *log.lock().unwrap() = DispatchLog::default();
+            let created = manager
+                .put_many(std::slice::from_ref(&absent))
+                .await
+                .unwrap();
+            assert_eq!(created.len(), 1);
+            assert!(!actual.contains(&created[0]));
+            assert_eq!(
+                normalized(
+                    raw.get_by_iid(&created[0])
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .attributes
+                ),
+                normalized(absent)
+            );
+            assert_eq!(log.lock().unwrap().statements.len(), 10);
         }
         let before = raw.count().await.unwrap();
         let mut failing = full;
         failing[299] = ("mixed-number".into(), AttributeValue::Long(20_000));
         *log.lock().unwrap() = DispatchLog {
-            fail_at: Some(8),
+            fail_at: Some(statements),
             ..Default::default()
         };
         assert!(manager.put_many(&[repeated, failing]).await.is_err());
         assert_eq!(raw.count().await.unwrap(), before);
         {
             let observed = log.lock().unwrap();
-            assert_eq!(observed.statements.len(), 8);
+            assert_eq!(observed.statements.len(), statements);
             assert_eq!(observed.opened, [TxType::Write]);
             assert_eq!((observed.commits, observed.rollbacks), (0, 1));
         }
         eprintln!(
-            "mixed scalar full-match literal={literal}: 300 field/value pairs, same values across fields, duplicate predicates; full hit reused, one-value near miss allocated, last piece rolled back; eight fixed statements per two-row call"
+            "mixed scalar full-match literal={literal} input_rows={input_rows}: 300 field/value pairs, same values across fields, duplicate predicates; full hit reused, one-value near miss allocated, last piece rolled back; {statements} fixed statements per two-row call"
         );
     }
     database.delete_database().await.unwrap();

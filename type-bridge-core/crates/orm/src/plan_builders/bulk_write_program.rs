@@ -352,12 +352,16 @@ pub(crate) fn forces_pieces_code(code: &str) -> bool {
         "query_plan_binding_limit"
             | "query_plan_write_term_limit"
             | "query_plan_pattern_limit"
+            | "query_plan_pattern_node_limit"
+            | "query_plan_stage_limit"
             | "migration_assertion_binding_id_out_of_range"
             | "query_plan_input_limit"
             | "query_plan_output_limit"
             | "projected_batch_input_unit_byte_limit"
             | "query_invocation_input_byte_limit"
             | "query_invocation_row_limit"
+            | "canonical_json_too_large"
+            | "canonical_collection_too_large"
     )
 }
 
