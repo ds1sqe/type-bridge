@@ -136,6 +136,139 @@ impl StaticProgram {
         })
     }
 
+    pub(super) fn with_match_probe(
+        miss: SplitProgram,
+        probe: BuiltPlan,
+        final_read: BuiltPlan,
+        ordinal: usize,
+    ) -> Result<Self, Diagnostic> {
+        use type_bridge_contract::migration_assertion::QueryVariable;
+        use type_bridge_contract::query_plan::v3::QueryPlanV3;
+        use type_bridge_contract::query_plan::{InputColumn, InputColumnId};
+        use type_bridge_contract::query_remote_v3::{StagedPlanV3, StagedResultRefV3};
+        let mut program = Self::new(miss)?;
+        let QueryOutput::Rows { columns } = probe.local().output() else {
+            return Err(identity_error());
+        };
+        let expected_types = probe
+            .local()
+            .binding_types(columns[1])
+            .ok_or_else(identity_error)?
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut entries = Vec::with_capacity(program.entries.len() + 2);
+        entries.push(StagedPlanV3::new(
+            probe.local(),
+            probe.local().given_rows().unwrap_or_default().to_vec(),
+            program.authority.declared(),
+        )?);
+        for (index, entry) in program.entries.into_iter().enumerate() {
+            let plan = entry.plan();
+            let mut inputs = plan.inputs().to_vec();
+            let mut pipeline = plan.pipeline().to_vec();
+            let mut rows = entry.rows().to_vec();
+            let mut refs = entry.result_refs().to_vec();
+            if index == 0 {
+                let input =
+                    InputColumnId::new(u16::try_from(inputs.len()).map_err(|_| identity_error())?);
+                inputs.push(InputColumn::new(
+                    input,
+                    QueryVariable::new("matched_iid")?,
+                    ValueTypeTag::String,
+                    true,
+                ));
+                for row in &mut rows {
+                    let mut cells = row.values().to_vec();
+                    cells.push(None);
+                    *row = InputRow::new(cells);
+                }
+                let Some(Stage::Match { patterns }) = pipeline.first_mut() else {
+                    return Err(identity_error());
+                };
+                patterns.push(
+                    QueryPattern::Not {
+                        patterns: vec![QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: QueryOperand::Input { column: input },
+                            right: QueryOperand::Input { column: input },
+                        }],
+                    }
+                    .into(),
+                );
+                refs.push(StagedResultRefV3 {
+                    input,
+                    source_plan: 0,
+                    source_column: 1,
+                    expected_types: expected_types.clone(),
+                });
+            } else {
+                for reference in &mut refs {
+                    reference.source_plan = reference
+                        .source_plan
+                        .checked_add(1)
+                        .ok_or_else(identity_error)?;
+                    let column = usize::from(reference.input.get());
+                    let input = &inputs[column];
+                    inputs[column] = InputColumn::new(
+                        input.id(),
+                        input.public_name().clone(),
+                        input.value_type(),
+                        true,
+                    );
+                }
+            }
+            let plan = QueryPlanV3::new_with_limits(
+                crate::plan_builders::PlanSpec {
+                    bindings: plan.bindings().to_vec(),
+                    inputs,
+                    given_rows: None,
+                    operation: plan.operation(),
+                    pipeline,
+                    output: plan.output().clone(),
+                    managed_semantics: plan.managed_semantics().clone(),
+                    compatibility: plan.compatibility().cloned(),
+                    functions: plan.functions().to_vec(),
+                },
+                program.authority.declared(),
+                plan.limits(),
+            )?;
+            entries.push(StagedPlanV3::new_with_result_refs(
+                &plan,
+                rows,
+                refs,
+                program.authority.declared(),
+            )?);
+        }
+        for step in &mut program.steps {
+            step.complete = false;
+            step.missing_iid_noop = true;
+        }
+        program.steps.push_front(StaticStep {
+            complete: false,
+            ordinal,
+            missing_iid_noop: true,
+            expected_iid: None,
+        });
+        program.steps.push_back(StaticStep {
+            complete: true,
+            ordinal,
+            missing_iid_noop: false,
+            expected_iid: None,
+        });
+        entries.push(StagedPlanV3::new(
+            final_read.local(),
+            final_read.local().given_rows().unwrap_or_default().to_vec(),
+            program.authority.declared(),
+        )?);
+        type_bridge_contract::query_remote_v3::validate_staged_result_refs_v3(
+            &entries,
+            program.authority.declared(),
+        )?;
+        program.entries = entries;
+        Ok(program)
+    }
+
     pub(super) fn statement_count(&self) -> usize {
         self.entries.len()
     }
@@ -201,6 +334,143 @@ mod static_tests {
     use super::*;
     use type_bridge_contract::fingerprint::SemanticProfileId;
     use type_bridge_contract::schema_fingerprint::ManagedSemanticSchemaFingerprint;
+
+    #[test]
+    fn wide_scalar_full_match_has_static_optional_hit_and_miss_dependencies() {
+        let account = TypeId::new(TypeKind::Entity, "account").unwrap();
+        let field = OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|index| (field.clone(), CanonicalValue::Long(index)))
+            .collect::<Vec<_>>();
+        let authority = PlanAuthority::new(
+            crate::query_plan_exec::race::schema(),
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"static-scalar-match",
+            )
+            .unwrap(),
+        );
+        for duplicate in [false, true] {
+            let mut fields = fields.clone();
+            if duplicate {
+                fields[299] = fields[0].clone();
+            }
+            let expected_values = 300 - usize::from(duplicate);
+            let WriteProgram::Static(program) = super::super::match_put::wide_match(
+                &authority,
+                WriteShape {
+                    type_id: &account,
+                    keys: &[],
+                    cleared_fields: &[],
+                    cleared_roles: &[],
+                    document_roles: vec![],
+                    include_subtypes: false,
+                    return_documents: false,
+                    references_see_prior_writes: true,
+                },
+                &WriteRow {
+                    iid: None,
+                    fields: &fields,
+                    players: &[],
+                },
+                0,
+            )
+            .unwrap() else {
+                panic!("static wide scalar match")
+            };
+            assert_eq!(program.entries[0].rows().len(), expected_values);
+            assert!(
+                matches!(&program.entries[0].plan().pipeline()[0], Stage::Match { patterns }
+            if patterns.iter().any(|pattern| matches!(pattern, Pattern::Read(QueryPattern::Isa { include_subtypes: true, .. }))))
+            );
+            assert!(program.entries[0].plan().pipeline().iter().any(|stage| matches!(stage, Stage::Match { patterns }
+            if patterns.iter().any(|pattern| matches!(pattern, Pattern::Read(QueryPattern::Value { right: QueryOperand::Literal { value: CanonicalValue::Long(count) }, .. }) if *count == expected_values as i64)))));
+            let QueryOutput::Rows { columns } = program.entries[3].plan().output() else {
+                panic!("common identity row")
+            };
+            assert_eq!(
+                columns
+                    .iter()
+                    .map(
+                        |column| program.entries[3].plan().bindings()[usize::from(column.get())]
+                            .variable()
+                            .as_str()
+                    )
+                    .collect::<Vec<_>>(),
+                ["ordinal1", "root0"]
+            );
+            assert_eq!(program.entries.len(), 4);
+            assert_eq!(program.completion_count(), 1);
+            assert!(
+                program.entries[0]
+                    .plan()
+                    .pipeline()
+                    .iter()
+                    .any(|stage| matches!(stage, Stage::Reduce { .. }))
+            );
+            assert!(!program.entries[0].plan().writes());
+            assert!(!program.entries[3].plan().writes());
+            assert_eq!(program.entries[1].result_refs()[0].source_plan, 0);
+            assert_eq!(program.entries[2].result_refs()[0].source_plan, 1);
+            for index in [1, 2] {
+                let entry = &program.entries[index];
+                let input = usize::from(entry.result_refs()[0].input.get());
+                assert!(entry.plan().inputs()[input].optional());
+                assert!(entry.rows().iter().all(|row| row.values()[input].is_none()));
+            }
+            let root = |iid: &str| {
+                vec![
+                    RemoteValue::Value {
+                        value: CanonicalValue::Long(0),
+                    },
+                    RemoteValue::Thing {
+                        iid: iid.into(),
+                        type_id: account.clone(),
+                    },
+                ]
+            };
+            for source in [
+                StagedAnswerV3::Rows { rows: vec![] },
+                StagedAnswerV3::Rows {
+                    rows: vec![root("0x10")],
+                },
+            ] {
+                let plan = program.entries[1]
+                    .bind_source_result(&source, authority.declared())
+                    .unwrap();
+                let input = usize::from(program.entries[1].result_refs()[0].input.get());
+                let present = matches!(&source, StagedAnswerV3::Rows { rows } if !rows.is_empty());
+                assert_eq!(
+                    plan.given_rows().unwrap()[0].values()[input].is_some(),
+                    present
+                );
+            }
+            assert_eq!(
+                program.entries[1]
+                    .bind_source_result(
+                        &StagedAnswerV3::Rows {
+                            rows: vec![root("0x10"), root("0x20")]
+                        },
+                        authority.declared()
+                    )
+                    .unwrap_err()
+                    .code()
+                    .as_str(),
+                "query_stage_result_ref_rows"
+            );
+            let absent = program.entries[2]
+                .bind_source_result(&StagedAnswerV3::Rows { rows: vec![] }, authority.declared())
+                .unwrap();
+            let input = usize::from(program.entries[2].result_refs()[0].input.get());
+            assert!(
+                absent
+                    .given_rows()
+                    .unwrap()
+                    .iter()
+                    .all(|row| row.values()[input].is_none())
+            );
+        }
+    }
 
     #[test]
     fn forced_scalar_pieces_are_authored_references_before_execution() {

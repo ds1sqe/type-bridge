@@ -3617,7 +3617,13 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
         tx.rollback().await.unwrap();
         let (counted, log) = counted_connection(&database, literal).await;
         let manager = DynamicEntityManager::from_registry(&counted, registry.clone(), note.clone());
+        let before_put = raw_note.count().await.unwrap();
         let actual = manager.put_many(&items).await.unwrap();
+        assert_eq!(
+            raw_note.count().await.unwrap(),
+            before_put + 1,
+            "the hit branch must not allocate"
+        );
         assert_eq!(actual[0], hit);
         assert_ne!(actual[1], hit, "a one-field near miss must allocate");
         for (iid, (_, fields)) in actual.iter().zip(&expected) {
@@ -3630,7 +3636,8 @@ async fn wide_sequential_and_full_match_puts_preserve_loop_answers_live() {
             let observed = log.lock().unwrap();
             assert_eq!(observed.opened, [TxType::Write]);
             assert_eq!((observed.commits, observed.rollbacks), (1, 0));
-            assert_eq!(observed.statements.len(), 9);
+            // Each row now has a fixed probe/allocation/attachment/final-read stack.
+            assert_eq!(observed.statements.len(), 8);
             observed.statements.len()
         };
         let before = raw_note.count().await.unwrap();

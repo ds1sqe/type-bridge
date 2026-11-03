@@ -276,7 +276,9 @@ mod tests {
             .map(|value| (balance.clone(), CanonicalValue::Long(value)))
             .collect::<Vec<_>>();
         for (bindings, terms, expected) in
-            [(256, 256, 5), (1024, 256, 4), (256, 512, 5), (1024, 512, 1)]
+            // Raised bindings let the gated allocation hold all values; the
+            // default Boolean ceiling still needs separate candidate reads.
+            [(256, 256, 4), (1024, 256, 3), (256, 512, 4), (1024, 512, 1)]
         {
             let mut limits = QueryLimits::V3;
             limits.structural.bindings = bindings;
@@ -307,12 +309,29 @@ mod tests {
             while let Some(step) = program.next().unwrap() {
                 statements += 1;
                 assert_eq!(step.plan.local().limits(), limits);
-                if step.candidate_filter {
-                    program
-                        .accept_candidates(&step, &crate::query_plan_exec::PlanAnswer::Rows(vec![]))
+                let wire = type_bridge_contract::query_remote_v3::StagedAnswerV3::Rows {
+                    rows: if expected > 1 && statements == 1 {
+                        vec![]
+                    } else {
+                        vec![vec![
+                            type_bridge_contract::query_remote::RemoteValue::Value {
+                                value: CanonicalValue::Long(0),
+                            },
+                            type_bridge_contract::query_remote::RemoteValue::Thing {
+                                iid: "0x10".into(),
+                                type_id: account.clone(),
+                            },
+                        ]]
+                    },
+                };
+                let answer =
+                    crate::query_plan_exec::PlanAnswer::from_staged_v3(&wire, step.plan.local())
                         .unwrap();
-                } else if !step.complete {
-                    program.accept_identity(&step, Some("0x10".into())).unwrap();
+                program.record_answer(&step, &answer).unwrap();
+                if !step.complete {
+                    program
+                        .accept_identity(&step, step.identity(&answer).unwrap())
+                        .unwrap();
                 }
             }
             assert_eq!(statements, expected);
@@ -456,10 +475,10 @@ mod tests {
     }
 
     #[test]
-    fn wide_match_put_intersects_every_predicate_before_reuse_or_allocation() {
+    fn wide_match_put_keeps_every_predicate_in_its_static_branches() {
         use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
-        use type_bridge_contract::query_plan::QueryOutput;
         use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::query_remote_v3::StagedAnswerV3;
         let authority = authority();
         let account = TypeId::new(TypeKind::Entity, "account").unwrap();
         let balance =
@@ -488,53 +507,87 @@ mod tests {
                 }],
             )
             .unwrap();
-            let mut probes = 0;
-            let mut writes = 0;
+            let mut statements = 0;
             let mut completed = 0;
             while let Some(step) = program.next().unwrap() {
+                statements += 1;
                 assert!(
                     step.plan.local().bindings().len()
                         <= type_bridge_contract::limits::MAX_BINDINGS
                 );
-                if step.candidate_filter {
-                    probes += 1;
-                    let QueryOutput::Rows { columns } = step.plan.local().output() else {
-                        panic!("candidate identities");
+                let plan = step.plan.local();
+                if statements == 1 || step.complete {
+                    let values = plan
+                        .given_rows()
+                        .unwrap()
+                        .iter()
+                        .map(|row| {
+                            let Some(CanonicalValue::Long(value)) = &row.values()[0] else {
+                                panic!("predicate value")
+                            };
+                            *value
+                        })
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(
+                        values,
+                        (0..300).collect(),
+                        "all predicates, including the last, reach both probes"
+                    );
+                } else {
+                    let name = if statements == 2 {
+                        "matched_iid"
+                    } else {
+                        "target_iid"
                     };
-                    let column = step.plan.local().bindings()[usize::from(columns[0].get())]
-                        .variable()
-                        .as_str();
-                    let candidates = if full_match || probes == 1 {
-                        vec![
-                            serde_json::json!({column:RemoteValue::Thing { iid: "0x02".into(), type_id: account.clone() }}),
-                        ]
+                    let column = plan
+                        .inputs()
+                        .iter()
+                        .position(|input| input.public_name().as_str() == name)
+                        .unwrap();
+                    assert!(plan.given_rows().unwrap().iter().all(|row| {
+                        row.values()[column].is_some()
+                            == if statements == 2 {
+                                full_match
+                            } else {
+                                !full_match
+                            }
+                    }));
+                }
+                let present = match statements {
+                    1 => full_match,
+                    2 | 3 => !full_match,
+                    4 => true,
+                    _ => unreachable!(),
+                };
+                let iid = if full_match { "0x02" } else { "0x03" };
+                let wire = StagedAnswerV3::Rows {
+                    rows: if present {
+                        vec![vec![
+                            RemoteValue::Value {
+                                value: CanonicalValue::Long(0),
+                            },
+                            RemoteValue::Thing {
+                                iid: iid.into(),
+                                type_id: account.clone(),
+                            },
+                        ]]
                     } else {
                         vec![]
-                    };
-                    program
-                        .accept_candidates(
-                            &step,
-                            &crate::query_plan_exec::PlanAnswer::Rows(candidates),
-                        )
-                        .unwrap();
+                    },
+                };
+                let answer =
+                    crate::query_plan_exec::PlanAnswer::from_staged_v3(&wire, plan).unwrap();
+                program.record_answer(&step, &answer).unwrap();
+                if step.complete {
+                    completed += 1;
                 } else {
-                    writes += step
-                        .plan
-                        .local()
-                        .pipeline()
-                        .iter()
-                        .filter(|stage| stage.is_write())
-                        .count();
-                    if step.complete {
-                        completed += 1;
-                    } else {
-                        program.accept_identity(&step, Some("0x03".into())).unwrap();
-                    }
+                    program
+                        .accept_identity(&step, step.identity(&answer).unwrap())
+                        .unwrap();
                 }
             }
-            assert!(probes > 1);
+            assert_eq!(statements, 4);
             assert_eq!(completed, 1);
-            assert_eq!(writes == 0, full_match);
         }
     }
 
