@@ -210,7 +210,7 @@ fn control() -> ProjectedBatchInvocationControl {
 
 fn things(result: ProjectedBatchResult) -> Vec<type_bridge_orm::ProjectedThing> {
     match result {
-        ProjectedBatchResult::Things(things) => things,
+        ProjectedBatchResult::Things(things) => things.into_items(),
         ProjectedBatchResult::Deleted => panic!("write unexpectedly returned delete result"),
         _ => panic!("unknown projected batch result"),
     }
@@ -4007,7 +4007,7 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
     let database = setup_db().await;
     database.delete_database().await.unwrap();
     database.create_database().await.unwrap();
-    let yaml = "format: typebridge.schema/v2\nattributes:\n  guard-tag: { value: string }\nentities:\n  guard-person: {}\nrelations:\n  guard-relation:\n    owns:\n      guard-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0 } }\nplays:\n  guard-person:\n    guard-relation: [member]\n";
+    let yaml = "format: typebridge.schema/v2\nattributes:\n  guard-tag: { value: string }\n  guard-selector: { value: string }\nentities:\n  guard-person:\n    owns:\n      guard-selector: { card: { min: 0, max: 1 } }\nrelations:\n  guard-relation:\n    owns:\n      guard-tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 0 } }\nplays:\n  guard-person:\n    guard-relation: [member]\n";
     let documents =
         SchemaDocumentSet::parse([(DocumentId::new("wide-reference-guard.yaml").unwrap(), yaml)])
             .unwrap();
@@ -4027,7 +4027,7 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
         .unwrap(),
     )
     .unwrap();
-    database.execute_raw("define attribute guard-tag, value string; entity guard-person, plays guard-relation:member; relation guard-relation, owns guard-tag @card(0..), relates member @card(0..);", TxType::Schema).await.unwrap();
+    database.execute_raw("define attribute guard-tag, value string; attribute guard-selector, value string; entity guard-person, owns guard-selector @card(0..1), plays guard-relation:member; relation guard-relation, owns guard-tag @card(0..), relates member @card(0..);", TxType::Schema).await.unwrap();
     let registry = installed.manager_registry().unwrap();
     let person = registry.entity("guard-person").unwrap();
     let relation = registry.relation("guard-relation").unwrap();
@@ -4213,6 +4213,69 @@ async fn wide_relation_missing_player_refuses_before_allocation_live() {
             assert_eq!((observed.commits, observed.rollbacks), (0, 1));
         }
         raw.delete_by_iid(&target).await.unwrap();
+    }
+    let people = DynamicEntityManager::from_registry(
+        &database,
+        registry.clone(),
+        registry.entity("guard-person").unwrap(),
+    );
+    for selector in ["seed", "seed", "guard", "guard"] {
+        people
+            .insert(&vec![(
+                "guard-selector".into(),
+                AttributeValue::String(selector.into()),
+            )])
+            .await
+            .unwrap();
+    }
+    for literal in [false, true] {
+        let (counted, log) = counted_connection(&database, literal).await;
+        let manager =
+            DynamicRelationManager::from_registry(&counted, registry.clone(), relation.clone());
+        let manager = if literal {
+            manager.literal_values()
+        } else {
+            manager
+        };
+        let players = ["seed", "guard"].map(|selector| DynamicRolePlayerInput {
+            role_name: "member".into(),
+            player_type_name: "guard-person".into(),
+            iid: None,
+            key: Some((
+                "guard-selector".into(),
+                AttributeValue::String(selector.into()),
+            )),
+        });
+        let result = manager.insert(&fields, &players).await.unwrap();
+        assert_eq!(result.count(), 2, "the seed retains both non-key matches");
+        for row in result.items() {
+            assert_eq!(row.attributes.len(), 300);
+            assert_eq!(
+                row.role_players.len(),
+                3,
+                "each root retains both later non-key players"
+            );
+        }
+        assert_eq!(raw.count().await.unwrap(), 2);
+        {
+            let observed = log.lock().unwrap();
+            assert_eq!(observed.opened, [TxType::Write]);
+            assert_eq!((observed.commits, observed.rollbacks), (1, 0));
+            assert_eq!(
+                observed
+                    .statements
+                    .iter()
+                    .filter(|statement| statement.contains("$reference_ordinal"))
+                    .count(),
+                1
+            );
+        }
+        for row in result.items() {
+            raw.delete_by_iid(row.iid.as_deref().unwrap())
+                .await
+                .unwrap();
+        }
+        assert_eq!(raw.count().await.unwrap(), 0);
     }
 }
 

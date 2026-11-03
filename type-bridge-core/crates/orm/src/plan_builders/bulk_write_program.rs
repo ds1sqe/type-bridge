@@ -44,7 +44,10 @@ impl WriteProgram {
                     .any(|step| matches!(step, Step::Target { .. }))
                     && program.steps.iter().all(|step| match step {
                         Step::Ready(step) => {
-                            !step.reference_guard && step.reference_resolution.is_none()
+                            !step.candidate_filter
+                                && step.reference_resolution.as_ref().is_none_or(|resolution| {
+                                    step.reference_guard && resolution.guard.is_some()
+                                })
                         }
                         Step::Target { .. } => true,
                     }) =>
@@ -138,6 +141,27 @@ impl WriteProgram {
             }
         }
     }
+    pub(crate) fn guard_contexts(&self) -> BTreeMap<(usize, u16), references::GuardContext> {
+        match self {
+            Self::Static(program) => program.guard_contexts(),
+            Self::Chain(programs) => {
+                let mut contexts = BTreeMap::new();
+                let mut offset = 0;
+                for program in programs {
+                    contexts.extend(
+                        program
+                            .guard_contexts()
+                            .into_iter()
+                            .map(|((index, column), context)| ((index + offset, column), context)),
+                    );
+                    offset += program.statement_count();
+                }
+                contexts
+            }
+            _ => BTreeMap::new(),
+        }
+    }
+
     pub(crate) fn staged_entries(
         &self,
         authority: &PlanAuthority,
@@ -319,6 +343,7 @@ pub(crate) fn forces_pieces_code(code: &str) -> bool {
             | "query_plan_pattern_limit"
             | "migration_assertion_binding_id_out_of_range"
             | "query_plan_input_limit"
+            | "query_plan_output_limit"
             | "projected_batch_input_unit_byte_limit"
             | "query_invocation_input_byte_limit"
     )
@@ -342,35 +367,46 @@ impl WriteStep {
         let StagedAnswerV3::Rows { rows } = answer.to_staged_v3(self.plan.local())? else {
             return Err(identity_error());
         };
-        rows.into_iter()
-            .map(|row| {
-                let [
-                    RemoteValue::Value {
-                        value: CanonicalValue::Long(ordinal),
-                    },
-                    RemoteValue::Thing { iid, type_id },
-                ] = row.as_slice()
+        let QueryOutput::Rows { columns } = self.plan.local().output() else {
+            return Err(identity_error());
+        };
+        if columns.len() % 2 != 0 {
+            return Err(identity_error());
+        }
+        let mut identities = Vec::new();
+        for row in rows {
+            if row.len() != columns.len() {
+                return Err(identity_error());
+            }
+            for (cells, bindings) in row.chunks_exact(2).zip(columns.chunks_exact(2)) {
+                let RemoteValue::Value {
+                    value: CanonicalValue::Long(ordinal),
+                } = &cells[0]
                 else {
                     return Err(identity_error());
                 };
-                let QueryOutput::Rows { columns } = self.plan.local().output() else {
-                    return Err(identity_error());
-                };
-                if !self
-                    .plan
-                    .local()
-                    .binding_types(columns[1])
-                    .is_some_and(|types| types.contains(type_id))
-                {
-                    return Err(identity_error());
+                match &cells[1] {
+                    RemoteValue::Absent if self.reference_guard => {}
+                    RemoteValue::Thing { iid, type_id } => {
+                        if !self
+                            .plan
+                            .local()
+                            .binding_types(bindings[1])
+                            .is_some_and(|types| types.contains(type_id))
+                        {
+                            return Err(identity_error());
+                        }
+                        self.check_identity(iid)?;
+                        identities.push((
+                            usize::try_from(*ordinal).map_err(|_| identity_error())?,
+                            iid.clone(),
+                        ));
+                    }
+                    _ => return Err(identity_error()),
                 }
-                self.check_identity(iid)?;
-                Ok((
-                    usize::try_from(*ordinal).map_err(|_| identity_error())?,
-                    iid.clone(),
-                ))
-            })
-            .collect()
+            }
+        }
+        Ok(identities)
     }
 
     pub(crate) fn identity(&self, answer: &PlanAnswer) -> Result<Option<String>, Diagnostic> {
@@ -840,15 +876,6 @@ fn split_with_guards(
             return one(authority, kind, shape.clone(), &row, true, output_ordinal)
                 .map(|_| unreachable!("a deletion row exceeded its canonical limits"));
         }
-        // The seed matches its first player before any write. Guard later
-        // players because a mixed attachment answer cannot prove every event
-        // matched, and one skipped reference must not leave a partial write.
-        if guard_references {
-            for step in references::guards(authority, shape.type_id, &row.players, output_ordinal)?
-            {
-                steps.push_back(Step::Ready(step));
-            }
-        }
         let (keys, fields) = row
             .fields
             .iter()
@@ -878,6 +905,18 @@ fn split_with_guards(
             seed_shape.cleared_fields = &cleared_fields;
         }
         let plan = one(authority, kind, seed_shape, &seed, false, output_ordinal)?;
+        // Prove later references before allocation; witnesses never narrow attachments.
+        if guard_references {
+            for step in references::guards(
+                authority,
+                shape.type_id,
+                &row.players,
+                output_ordinal,
+                &plan,
+            )? {
+                steps.push_back(Step::Ready(step));
+            }
+        }
         steps.push_back(Step::Ready(WriteStep {
             plan,
             complete: false,

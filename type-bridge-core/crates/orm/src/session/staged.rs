@@ -465,6 +465,30 @@ impl CommitError {
         self
     }
 
+    pub(crate) fn map_remote_diagnostic(
+        mut self,
+        map: impl FnOnce(&SdkExecutionDiagnostic) -> Option<SdkExecutionDiagnostic>,
+    ) -> Self {
+        if let Some(remote) = &self.remote
+            && let Some(mapped) = map(remote)
+        {
+            let mut mapped = mapped;
+            for (name, value) in remote.details() {
+                if !mapped.details().contains_key(name) {
+                    let Ok(next) = mapped.try_with_detail(name.clone(), value.clone()) else {
+                        return self;
+                    };
+                    mapped = next;
+                }
+            }
+            if let Some(failure) = &self.failure {
+                mapped = mapped.with_failure(failure, self.context.as_ref().clone());
+            }
+            self.remote = Some(Box::new(mapped));
+        }
+        self
+    }
+
     fn new(error: ClassifiedCommitError, op_index: Option<usize>, context: FailureContext) -> Self {
         let failure = error.failure().map(|failure| {
             match op_index.and_then(|index| u32::try_from(index).ok()) {

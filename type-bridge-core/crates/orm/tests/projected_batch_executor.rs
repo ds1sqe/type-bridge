@@ -64,12 +64,52 @@ struct State {
 }
 
 enum Response {
+    ReferenceGuard(Vec<Value>),
     Documents(Vec<Value>),
     ProviderAfter(Vec<Value>),
     CancelAfter(Vec<Value>, AnswerCancellation),
     PendingAfter(Vec<Value>),
     Underreported(Vec<Value>),
     Error(&'static str),
+}
+
+fn reference_proof_row(
+    source: &str,
+    documents: &[Value],
+) -> type_bridge_orm::session::backend::AnswerItem {
+    let names = source
+        .rsplit("select ")
+        .next()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .split(',')
+        .map(|name| name.trim().trim_start_matches('$'))
+        .collect::<Vec<_>>();
+    let mut row = serde_json::Map::new();
+    for pair in names.chunks_exact(2) {
+        let marker = format!("let ${} = ", pair[0]);
+        let ordinal: usize = source
+            .split(&marker)
+            .nth(1)
+            .expect("reference ordinal assignment")
+            .split(';')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        row.insert(
+            pair[0].into(),
+            json!({"kind":"value", "value":CanonicalValue::Long(ordinal as i64)}),
+        );
+        let identity = documents
+            .iter()
+            .find(|document| document["ordinal"].as_u64() == Some(ordinal as u64));
+        row.insert(pair[1].into(), identity.map_or_else(|| json!({"kind":"absent"}), |document| json!({"kind":"thing", "iid":document["iid"], "type_id":{"kind":"entity", "label":document["_type"]}})));
+    }
+    type_bridge_orm::session::backend::AnswerItem::Row(row.into())
 }
 
 #[derive(Clone, Copy)]
@@ -159,10 +199,20 @@ impl TransactionOps for RecordingTransaction {
         let response = {
             let mut state = self.state.lock().unwrap();
             state.calls.push((typeql.to_owned(), rows));
-            state
-                .responses
-                .pop_front()
-                .expect("unexpected projected batch provider call")
+            if typeql.contains("$reference_ordinal") {
+                let Some(Response::ReferenceGuard(documents)) = state.responses.front() else {
+                    panic!("explicit reference guard evidence");
+                };
+                Response::ReferenceGuard(documents.clone())
+            } else {
+                if matches!(state.responses.front(), Some(Response::ReferenceGuard(_))) {
+                    state.responses.pop_front();
+                }
+                state
+                    .responses
+                    .pop_front()
+                    .expect("unexpected projected batch provider call")
+            }
         };
         let source = typeql.to_owned();
         Box::pin(async move {
@@ -179,6 +229,10 @@ impl TransactionOps for RecordingTransaction {
                 Ok(())
             };
             match response {
+                Response::ReferenceGuard(documents) => {
+                    reader.accept(reference_proof_row(&source, &documents), consumer)?;
+                    Ok(reader.stats())
+                }
                 Response::Documents(documents) => {
                     deliver(documents)?;
                     Ok(reader.stats())
@@ -2560,9 +2614,15 @@ async fn wide_unordered_players_use_only_forced_pieces_and_last_failure_rolls_ba
                 let mut document = membership_document(0, "0x8000", "wide-role", "0x01");
                 document["role_players"] = (0..count).map(|index| json!({"role":"member", "iid":format!("0x{:04x}",index+1), "type_name":"person", "attributes":{"identifier":[{"value":format!("p-{index:04}")}]}})).collect::<Vec<_>>().into();
                 let mut responses = Vec::new();
-                let guard_count = usize::from(count > boundary);
+                let guard_count = if count <= boundary {
+                    0
+                } else if count == 300 {
+                    5
+                } else {
+                    4
+                };
                 if guard_count > 0 {
-                    responses.push(Response::Documents((1..count).map(|index| json!({"ordinal":index,"iid":format!("0x{:04x}", index + 1),"_type":"person"})).collect()));
+                    responses.push(Response::ReferenceGuard((1..count).map(|index| json!({"ordinal":index,"iid":format!("0x{:04x}", index + 1),"_type":"person"})).collect()));
                 }
                 if count > boundary {
                     responses.push(Response::Documents(vec![
@@ -3007,4 +3067,89 @@ async fn raised_query_dimensions_keep_wide_projected_batches_in_one_statement() 
             assert_eq!((state.commits, state.rollbacks), (1, 0));
         }
     }
+}
+
+#[tokio::test]
+async fn missing_wide_player_rolls_back_before_allocation() {
+    let installed = installed_with_schema(
+        &SCHEMA.replace("  membership:\n    owns:\n      identifier: { key: true }", "  membership:\n    owns:\n      identifier: { key: true }\n      tag: { card: { min: 0 } }"),
+        ProjectionHandler::python_v1(),
+    );
+    let membership = type_id(TypeKind::Relation, "membership");
+    let person = type_id(TypeKind::Entity, "person");
+    let member = RoleId::new("membership", "member").unwrap();
+    let create = ProjectedCreate::try_new(
+        &installed,
+        membership.clone(),
+        vec![
+            (
+                field(&membership, "identifier"),
+                vec![string_value(
+                    &installed,
+                    "identifier",
+                    "missing-wide-player",
+                )],
+            ),
+            (
+                field(&membership, "tag"),
+                (0..300)
+                    .map(|index| string_value(&installed, "tag", &format!("tag-{index}")))
+                    .collect(),
+            ),
+        ],
+        vec![(
+            member.clone(),
+            (1..=3)
+                .map(|index| {
+                    ProjectedReference::try_new(
+                        &installed,
+                        person.clone(),
+                        Some(format!("0x{index:04x}")),
+                        vec![],
+                    )
+                    .unwrap()
+                })
+                .collect(),
+        )],
+    )
+    .unwrap();
+    let batch = ProjectedBatch::try_new(
+        &installed,
+        membership.clone(),
+        ProjectedBatchOperation::Insert,
+        vec![ProjectedBatchRow::Create(create)],
+    )
+    .unwrap();
+    let (database, state) = fixture(
+        vec![Response::ReferenceGuard(vec![
+            json!({"ordinal":1,"iid":"0x0002","_type":"person"}),
+        ])],
+        Version::new(3, 13, 6),
+        true,
+        CommitBehavior::Success,
+    );
+    let error = ProjectedBatchExecutor::new(&installed)
+        .execute(&database, &batch, control())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code().as_str(), "projected_batch_reference_missing");
+    assert_eq!(error.category(), SdkDiagnosticCategory::Integrity);
+    assert_eq!(
+        error.path(),
+        &[
+            SdkDiagnosticPathSegment::Argument(
+                type_bridge_contract::sdk_diagnostic::SdkDiagnosticName::new("rows").unwrap()
+            ),
+            SdkDiagnosticPathSegment::Index(0),
+            SdkDiagnosticPathSegment::Type(membership),
+            SdkDiagnosticPathSegment::Role(member),
+            SdkDiagnosticPathSegment::Index(2),
+            SdkDiagnosticPathSegment::Type(person),
+        ]
+    );
+    let state = state.lock().unwrap();
+    assert_eq!(state.opens, [TxType::Write]);
+    assert_eq!(state.calls.len(), 1);
+    assert!(!state.calls[0].0.contains("insert"));
+    assert_eq!((state.commits, state.rollbacks), (0, 1));
 }

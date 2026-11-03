@@ -307,6 +307,7 @@ impl ProjectedBatchExecutor<'_> {
                     .expect("static message"),
                 )
             })?;
+        let guard_contexts = program.guard_contexts();
         prepared.check_control()?;
         proxy
             .execute_write_stack_mapped(
@@ -333,6 +334,23 @@ impl ProjectedBatchExecutor<'_> {
                         }
                         let records_answers = program.records_answers();
                         program.record_answer(&step, &answer).map_err(diagnostic)?;
+                        if let Some(guard) = step
+                            .reference_resolution
+                            .as_ref()
+                            .and_then(|resolution| resolution.guard.as_ref())
+                        {
+                            let iids = step.reference_iids(&answer).map_err(diagnostic)?;
+                            guard.validate(&iids, |role, reference_ordinal| {
+                                plan.role_references
+                                    .iter()
+                                    .find(|reference| {
+                                        reference.owner_ordinal == step.ordinal
+                                            && reference.role == *role
+                                            && reference.reference_ordinal == reference_ordinal
+                                    })
+                                    .map(|reference| reference.reference.type_id().clone())
+                            })?;
+                        }
                         if step.complete {
                             accept_hydration_answer(step.plan.local(), answer, &mut consumer)?;
                         } else if !records_answers {
@@ -362,7 +380,42 @@ impl ProjectedBatchExecutor<'_> {
                 },
             )
             .await
-            .map_err(|error| crate::QueryTargetError::Commit(Box::new(error)))
+            .map_err(|error| {
+                crate::QueryTargetError::Commit(Box::new(error.map_remote_diagnostic(
+                    |diagnostic| {
+                        use type_bridge_contract::sdk_diagnostic::{
+                            SdkDiagnosticDetailValue, SdkDiagnosticName,
+                        };
+                        if diagnostic.code().as_str() != "query_stage_result_ref_missing" {
+                            return None;
+                        }
+                        let coordinate = |name| match diagnostic
+                            .details()
+                            .get(&SdkDiagnosticName::new(name).ok()?)?
+                        {
+                            SdkDiagnosticDetailValue::Signed(value) => usize::try_from(*value).ok(),
+                            SdkDiagnosticDetailValue::Count(value) => usize::try_from(*value).ok(),
+                            _ => None,
+                        };
+                        let context = guard_contexts.get(&(
+                            coordinate("source_plan")?,
+                            u16::try_from(coordinate("source_column")?).ok()?,
+                        ))?;
+                        context
+                            .validate(&[], |role, reference_ordinal| {
+                                plan.role_references
+                                    .iter()
+                                    .find(|reference| {
+                                        reference.owner_ordinal == context.row()
+                                            && reference.role == *role
+                                            && reference.reference_ordinal == reference_ordinal
+                                    })
+                                    .map(|reference| reference.reference.type_id().clone())
+                            })
+                            .err()
+                    },
+                )))
+            })
     }
 
     async fn execute_proxy_delete<T, F>(
@@ -643,7 +696,11 @@ impl ProjectedBatchExecutor<'_> {
                         &mut ledger,
                         true,
                         &authority,
-                        &mut |_: &AnswerItem| {},
+                        &mut |item: &AnswerItem| {
+                            if records_answers {
+                                recorded.push(item.clone());
+                            }
+                        },
                     )
                     .await?;
                     guard.validate(&returned, |role, ordinal| {
@@ -656,6 +713,7 @@ impl ProjectedBatchExecutor<'_> {
                             })
                             .map(|reference| reference.reference.type_id().clone())
                     })?;
+                    record_static_answer(&mut program, &step, recorded, records_answers)?;
                     continue;
                 }
                 if let Some(resolution) = &step.reference_resolution {
@@ -1121,6 +1179,60 @@ impl<R: FnMut(&AnswerItem) + Send> Consumer<'_, R> {
                 else {
                     unreachable!("row output")
                 };
+                if matches!(self.reply, Reply::ReferenceResolution) {
+                    if columns.len() % 2 != 0 {
+                        return Err(OrmError::ExecutionDiagnostic(Box::new(
+                            SdkExecutionDiagnostic::internal_failure(),
+                        )));
+                    }
+                    for pair in columns.chunks_exact(2) {
+                        let value =
+                            |column: type_bridge_contract::migration_assertion::BindingId| {
+                                let name = self.plan.bindings()[usize::from(column.get())]
+                                    .variable()
+                                    .as_str();
+                                remote_value(&row, name, self.plan.limits().codec).map_err(evidence)
+                            };
+                        let RemoteValue::Value {
+                            value: type_bridge_contract::value::CanonicalValue::Long(ordinal),
+                        } = value(pair[0])?
+                        else {
+                            return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                SdkExecutionDiagnostic::internal_failure(),
+                            )));
+                        };
+                        match value(pair[1])? {
+                            RemoteValue::Absent => {}
+                            RemoteValue::Thing { iid, type_id } => {
+                                if !self
+                                    .plan
+                                    .binding_types(pair[1])
+                                    .is_some_and(|types| types.contains(&type_id))
+                                {
+                                    return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                        integrity_at_type(
+                                            "provider_identity_mismatch",
+                                            "Reference lookup returned a type outside its declared candidates",
+                                            &type_id,
+                                        ),
+                                    )));
+                                }
+                                if self.inner.accept(AnswerItem::Document(
+                                    serde_json::json!({"ordinal":ordinal,"iid":iid}),
+                                ))? == AnswerControl::Stop
+                                {
+                                    return Ok(AnswerControl::Stop);
+                                }
+                            }
+                            _ => {
+                                return Err(OrmError::ExecutionDiagnostic(Box::new(
+                                    SdkExecutionDiagnostic::internal_failure(),
+                                )));
+                            }
+                        }
+                    }
+                    return Ok(AnswerControl::Continue);
+                }
                 let names = &["ordinal", "iid"];
                 let mut document = serde_json::Map::new();
                 for (column, key) in columns.iter().zip(names) {

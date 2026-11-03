@@ -12,6 +12,25 @@ pub(crate) struct GuardContext {
     references: Vec<(usize, RoleId, usize, TypeId, Option<String>)>,
 }
 impl GuardContext {
+    pub(crate) fn row(&self) -> usize {
+        self.row
+    }
+    pub(super) fn cells(&self) -> impl Iterator<Item = (u16, Self)> + '_ {
+        self.references
+            .iter()
+            .enumerate()
+            .map(|(index, reference)| {
+                (
+                    u16::try_from(index * 2 + 1).expect("validated output column"),
+                    Self {
+                        relation: self.relation.clone(),
+                        row: self.row,
+                        references: vec![reference.clone()],
+                    },
+                )
+            })
+    }
+
     pub(crate) fn validate(
         &self,
         answers: &[(usize, String)],
@@ -66,6 +85,7 @@ pub(super) fn guards(
     relation: &TypeId,
     players: &[Player],
     row: usize,
+    seed: &BuiltPlan,
 ) -> Result<Vec<WriteStep>, Diagnostic> {
     let mut routes: Vec<(LookupRoute, Vec<InputRow>)> = Vec::new();
     let mut references = Vec::new();
@@ -113,11 +133,39 @@ pub(super) fn guards(
             player.iid.clone(),
         ));
     }
-    let mut guards = Vec::new();
+    let mut guards: Vec<WriteStep> = Vec::new();
     for (route, rows) in routes {
-        let chunks = crate::plan_builders::input::chunks(rows, 0, crate::plan_builders::input::canonical_upper_bound, |row| usize::try_from(crate::projected_batch_executor::given_rows_bytes(row)?).map_err(|_| type_bridge_contract::sdk_diagnostic::SdkExecutionDiagnostic::internal_failure()), |_, _| false).map_err(|error| invalid(error.code().as_str(), error.message().as_str()))?;
-        for rows in chunks {
-            let ordinals = rows
+        let mut offset = 0;
+        while offset < rows.len() {
+            let mut low = 0;
+            let mut high = rows.len() - offset;
+            while low < high {
+                let count = low + (high - low).div_ceil(2);
+                let proof = guard_proof(authority, &route, &rows[offset..offset + count]).and_then(
+                    |proof| {
+                        if let Some(previous) = guards.last() {
+                            StaticProgram::guard_fits(&proof, &previous.plan, authority)?;
+                        }
+                        StaticProgram::guard_fits(seed, &proof, authority)?;
+                        Ok(proof)
+                    },
+                );
+                match proof {
+                    Ok(_) => low = count,
+                    Err(error) if forces_pieces(&error) => high = count - 1,
+                    Err(error) => return Err(error),
+                }
+            }
+            if low == 0 {
+                let proof = guard_proof(authority, &route, &rows[offset..offset + 1])?;
+                if let Some(previous) = guards.last() {
+                    StaticProgram::guard_fits(&proof, &previous.plan, authority)?;
+                }
+                StaticProgram::guard_fits(seed, &proof, authority)?;
+                return Err(identity_error());
+            }
+            let chunk = &rows[offset..offset + low];
+            let ordinals = chunk
                 .iter()
                 .map(|row| match row.values()[0].as_ref() {
                     Some(CanonicalValue::Long(ordinal)) => {
@@ -132,7 +180,7 @@ pub(super) fn guards(
                 .cloned()
                 .collect();
             guards.push(WriteStep {
-                plan: lookup(authority, &route, rows)?,
+                plan: guard_proof(authority, &route, chunk)?,
                 complete: false,
                 ordinal: row,
                 expected_iid: None,
@@ -148,9 +196,72 @@ pub(super) fn guards(
                     }),
                 })),
             });
+            offset += low;
         }
     }
     Ok(guards)
+}
+
+// Any witnesses prove existence; the attachment still matches every player.
+
+fn guard_proof(
+    authority: &PlanAuthority,
+    route: &LookupRoute,
+    rows: &[InputRow],
+) -> Result<BuiltPlan, Diagnostic> {
+    let mut draft = authority.draft(ValueTransport::Given);
+    let mut patterns = Vec::new();
+    let mut columns = Vec::new();
+    for row in rows {
+        let ordinal = draft.bind("reference_ordinal")?;
+        let root = draft.bind("reference")?;
+        let value = draft.value(row.values()[1].clone().ok_or_else(identity_error)?)?;
+        patterns.push(Pattern::Let {
+            binding: ordinal,
+            expr: Expr::Operand(QueryOperand::Literal {
+                value: row.values()[0].clone().ok_or_else(identity_error)?,
+            }),
+        });
+        let branches = route
+            .candidates
+            .iter()
+            .map(|candidate| {
+                reference_patterns(&mut draft, root, candidate, route.key.as_ref(), &value)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let body = if branches.len() == 1 {
+            branches.into_iter().next().expect("one branch")
+        } else {
+            vec![QueryPattern::Or { branches }]
+        };
+        patterns.push(QueryPattern::Try { patterns: body }.into());
+        columns.extend([ordinal, root]);
+    }
+    if draft.bindings.len() + draft.inputs.len() > authority.query_limits().structural.bindings {
+        return Err(invalid(
+            "query_plan_binding_limit",
+            "Reference proof variables exceed the configured binding ceiling",
+        ));
+    }
+    draft.finish(
+        authority,
+        vec![
+            Stage::Match { patterns },
+            Stage::Select {
+                bindings: columns.clone(),
+            },
+            // Any witness suffices; the constant ordinal supplies explicit ordering.
+            Stage::Sort {
+                terms: vec![type_bridge_contract::query_plan::OrderTerm::new(
+                    columns[0],
+                    type_bridge_contract::query_plan::OrderDirection::Ascending,
+                )],
+            },
+            Stage::Limit { rows: 1 },
+        ],
+        Operation::Rows,
+        QueryOutput::Rows { columns },
+    )
 }
 
 #[derive(Clone)]

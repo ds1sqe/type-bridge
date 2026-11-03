@@ -1754,4 +1754,153 @@ fetch { \"_iid\": iid($relation0), \"_type\": label($PlanFetchType), \"attribute
         );
         assert_eq!(unverified.local(), verified.local());
     }
+    #[test]
+    fn guarded_wide_graphs_bound_proofs_and_refuse_absent_cells_before_allocation() {
+        use super::bulk_write::{WriteKind, WriteRow, WriteShape, write_many};
+        use type_bridge_contract::limits::QueryLimits;
+        use type_bridge_contract::query_plan::QueryOutput;
+        use type_bridge_contract::query_remote::RemoteValue;
+        use type_bridge_contract::query_remote_v3::{
+            StagedAnswerV3, validate_staged_result_refs_v3,
+        };
+        let relation = TypeId::new(TypeKind::Relation, "purchase").unwrap();
+        let candidates = [TypeId::new(TypeKind::Entity, "account").unwrap()];
+        let role = RoleId::new("purchase", "buyer").unwrap();
+        let field =
+            OwnsFactId::new(relation.clone(), AttributeId::new("order-id").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|index| (field.clone(), text(&format!("v-{index}"))))
+            .collect::<Vec<_>>();
+        let iids = (1..=20)
+            .map(|index| format!("0x{index:04x}"))
+            .collect::<Vec<_>>();
+        let players = iids
+            .iter()
+            .map(|iid| {
+                (
+                    role.clone(),
+                    Reference {
+                        candidates: &candidates,
+                        identity: ReferenceIdentity::Iid(iid),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        for slots in [256, 4] {
+            for missing in [false, true] {
+                let mut limits = QueryLimits::V3;
+                limits.structural.selected_slots = slots;
+                let authority = authority().with_query_limits(std::sync::Arc::new(limits));
+                let mut program = write_many(
+                    &authority,
+                    WriteKind::Update,
+                    WriteShape {
+                        references_see_prior_writes: true,
+                        single_input: false,
+                        type_id: &relation,
+                        keys: &[],
+                        cleared_fields: std::slice::from_ref(&field),
+                        cleared_roles: std::slice::from_ref(&role),
+                        document_roles: vec![],
+                        include_subtypes: true,
+                        return_documents: false,
+                    },
+                    &[WriteRow {
+                        iid: Some("0x10"),
+                        fields: &fields,
+                        players: &players,
+                    }],
+                )
+                .unwrap()
+                .prepare_static()
+                .unwrap();
+                let entries = program
+                    .staged_entries(&authority)
+                    .unwrap()
+                    .expect("guarded proxy graph");
+                validate_staged_result_refs_v3(&entries, authority.declared()).unwrap();
+                let contexts = program.guard_contexts();
+                let mut proofs = 0;
+                loop {
+                    let step = program.next().unwrap().unwrap();
+                    let Some(resolution) = &step.reference_resolution else {
+                        assert!(!missing);
+                        assert!(step.plan.local().writes());
+                        step.check_identity("0x10").unwrap();
+                        assert!(step.check_identity("0xff").is_err());
+                        break;
+                    };
+                    assert!(!step.plan.local().writes());
+                    let QueryOutput::Rows { columns } = step.plan.local().output() else {
+                        panic!("proof rows");
+                    };
+                    assert!(columns.len() <= slots);
+                    assert!(step.plan.local().pipeline().iter().any(|stage| matches!(
+                        stage,
+                        type_bridge_contract::query_plan::v3::Stage::Limit { rows: 1 }
+                    )));
+                    let cells = resolution
+                        .ordinals
+                        .iter()
+                        .flat_map(|ordinal| {
+                            [
+                                RemoteValue::Value {
+                                    value: CanonicalValue::Long(*ordinal as i64),
+                                },
+                                if missing && *ordinal == 2 {
+                                    RemoteValue::Absent
+                                } else {
+                                    RemoteValue::Thing {
+                                        iid: iids[*ordinal].clone(),
+                                        type_id: candidates[0].clone(),
+                                    }
+                                },
+                            ]
+                        })
+                        .collect();
+                    let answer = crate::query_plan_exec::PlanAnswer::from_staged_v3(
+                        &StagedAnswerV3::Rows { rows: vec![cells] },
+                        step.plan.local(),
+                    )
+                    .unwrap();
+                    let returned = step.reference_iids(&answer).unwrap();
+                    program.record_answer(&step, &answer).unwrap();
+                    proofs += 1;
+                    if missing {
+                        let expected = resolution
+                            .guard
+                            .as_ref()
+                            .unwrap()
+                            .validate(&returned, |_, _| None)
+                            .unwrap_err();
+                        assert_eq!(
+                            expected.code().as_str(),
+                            "projected_batch_reference_missing"
+                        );
+                        assert_eq!(
+                            contexts[&(0, 3)].validate(&[], |_, _| None).unwrap_err(),
+                            expected
+                        );
+                        let refusal = program
+                            .next()
+                            .err()
+                            .expect("no allocating statement can bind");
+                        assert_eq!(refusal.code().as_str(), "query_stage_result_ref_missing");
+                        assert_eq!(
+                            refusal.details().get("source_column"),
+                            Some(&type_bridge_contract::diagnostic::DiagnosticDetailValue::Long(3))
+                        );
+                        break;
+                    }
+                    resolution
+                        .guard
+                        .as_ref()
+                        .unwrap()
+                        .validate(&returned, |_, _| None)
+                        .unwrap();
+                }
+                assert_eq!(proofs, if missing || slots == 256 { 1 } else { 10 });
+            }
+        }
+    }
 }

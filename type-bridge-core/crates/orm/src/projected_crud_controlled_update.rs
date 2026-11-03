@@ -843,6 +843,8 @@ mod tests {
         tags: usize,
         input_indexes: std::sync::Mutex<Option<Vec<usize>>>,
         mutation_columns: std::sync::atomic::AtomicUsize,
+        missing_guard_ordinal: std::sync::atomic::AtomicUsize,
+        dispatched_writes: std::sync::atomic::AtomicUsize,
         seen: std::sync::Mutex<Vec<type_bridge_contract::query_remote_v3::StagedRequestV3>>,
     }
     impl crate::session::staged_proxy::StagedTransport for SingleProxyTransport {
@@ -872,7 +874,70 @@ mod tests {
                 let input_indexes = self.input_indexes.lock().unwrap().clone();
                 let mut answers = Vec::new();
                 for entry in request.plans() {
-                    let plan = entry.bind_results(&answers, &self.schema).unwrap();
+                    let plan = match entry.bind_results(&answers, &self.schema) {
+                        Ok(plan) => plan,
+                        Err(error) => {
+                            let reply = StagedReplyV3::new(
+                                &request,
+                                StagedOutcomeV3::Failed {
+                                    diagnostic:
+                                        crate::execution_diagnostic::lower_remote_query_diagnostic(
+                                            error,
+                                        ),
+                                },
+                                vec![],
+                            )
+                            .unwrap()
+                            .encode_signed(&request, &self.advertisement, &self.signer)
+                            .unwrap();
+                            self.seen.lock().unwrap().push(request);
+                            return Ok(reply);
+                        }
+                    };
+                    if plan.writes() {
+                        self.dispatched_writes
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if let type_bridge_contract::query_plan::QueryOutput::Rows { columns } =
+                        plan.output()
+                        && columns.first().is_some_and(|column| {
+                            plan.bindings()[usize::from(column.get())]
+                                .variable()
+                                .as_str()
+                                .starts_with("reference_ordinal")
+                        })
+                    {
+                        let mut cells = Vec::new();
+                        for pair in columns.chunks_exact(2) {
+                            let ordinal = plan.pipeline().iter().find_map(|stage| {
+                                let type_bridge_contract::query_plan::v3::Stage::Match { patterns } = stage else { return None; };
+                                patterns.iter().find_map(|pattern| match pattern {
+                                    type_bridge_contract::query_plan::v3::Pattern::Let { binding, expr: type_bridge_contract::query_plan::v3::Expr::Operand(type_bridge_contract::query_plan::QueryOperand::Literal { value: CanonicalValue::Long(ordinal) }) } if *binding == pair[0] => Some(*ordinal),
+                                    _ => None,
+                                })
+                            }).unwrap();
+                            cells.push(RemoteValue::Value {
+                                value: CanonicalValue::Long(ordinal),
+                            });
+                            cells.push(
+                                if usize::try_from(ordinal).unwrap()
+                                    == self
+                                        .missing_guard_ordinal
+                                        .load(std::sync::atomic::Ordering::Relaxed)
+                                {
+                                    RemoteValue::Absent
+                                } else {
+                                    RemoteValue::Thing {
+                                        iid: format!("0x{:02x}", 0x10 + ordinal),
+                                        type_id: TypeId::new(TypeKind::Entity, "wide-item")
+                                            .unwrap(),
+                                    }
+                                },
+                            );
+                        }
+                        answers.push(StagedAnswerV3::Rows { rows: vec![cells] });
+                        continue;
+                    }
                     let answer = if let Some(fetch) =
                         plan.pipeline().iter().find_map(|stage| match stage {
                             type_bridge_contract::query_plan::v3::Stage::Fetch(fetch) => {
@@ -1038,6 +1103,8 @@ mod tests {
             tags,
             input_indexes: std::sync::Mutex::new(None),
             mutation_columns: std::sync::atomic::AtomicUsize::new(2),
+            missing_guard_ordinal: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            dispatched_writes: std::sync::atomic::AtomicUsize::new(0),
             seen: std::sync::Mutex::new(vec![]),
         });
         (
@@ -1103,6 +1170,99 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn proxy_wide_guard_maps_signed_missing_cell_before_any_write() {
+        let model = TypeId::new(TypeKind::Relation, "wide-edge").unwrap();
+        let player = TypeId::new(TypeKind::Entity, "wide-item").unwrap();
+        let role = RoleId::new("wide-edge", "member").unwrap();
+        let (installed, proxy, transport) = single_proxy_fixture(model.clone(), 1, 300);
+        transport
+            .missing_guard_ordinal
+            .store(2, std::sync::atomic::Ordering::Relaxed);
+        let base = proxy_single_input(&installed, &model, 300);
+        let create = ProjectedCreate::try_new(
+            &installed,
+            model.clone(),
+            base.fields()
+                .iter()
+                .map(|(field, values)| (field.clone(), values.clone()))
+                .collect(),
+            vec![(
+                role.clone(),
+                (0..3)
+                    .map(|index| {
+                        ProjectedReference::try_new(
+                            &installed,
+                            player.clone(),
+                            Some(format!("0x{:02x}", 0x10 + index)),
+                            vec![],
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            )],
+        )
+        .unwrap();
+        let control =
+            ProjectedBatchInvocationControl::capture(Default::default(), Default::default());
+        let batch = ProjectedBatch::try_new_for_invocation(
+            &installed,
+            model.clone(),
+            ProjectedBatchOperation::Insert,
+            vec![ProjectedBatchRow::Create(create)],
+            &control,
+        )
+        .unwrap();
+        let error = ProjectedBatchExecutor::new(&installed)
+            .execute_on_target_mapped(
+                crate::QueryTarget::Proxy(&proxy),
+                &batch,
+                control,
+                (),
+                |_| panic!("a refused graph cannot publish roots"),
+            )
+            .await
+            .unwrap_err();
+        let crate::QueryTargetError::Commit(error) = error else {
+            panic!("classified signed refusal");
+        };
+        let expected = crate::projected_batch_executor::integrity_at_reference(
+            "projected_batch_reference_missing",
+            "A projected role-player reference did not resolve exactly once",
+            &model,
+            &role,
+            0,
+            2,
+            &player,
+        );
+        let actual = error.diagnostic();
+        assert_eq!(actual.code(), expected.code());
+        assert_eq!(actual.category(), expected.category());
+        assert_eq!(actual.path(), expected.path());
+        assert_eq!(
+            error.error.commit_failure_certainty(),
+            Some(crate::CommitFailureCertainty::DefinitelyAborted)
+        );
+        assert!(std::error::Error::source(error.as_ref()).is_some());
+        assert_eq!(
+            transport
+                .dispatched_writes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        let seen = transport.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert!(seen[0].plans().len() > 1);
+        assert_eq!(seen[0].plans()[1].result_refs().len(), 2);
+        use type_bridge_contract::sdk_diagnostic::{SdkDiagnosticDetailValue, SdkDiagnosticName};
+        assert_eq!(
+            actual
+                .details()
+                .get(&SdkDiagnosticName::new("source_column").unwrap()),
+            Some(&SdkDiagnosticDetailValue::Signed(3))
+        );
     }
 
     #[tokio::test]

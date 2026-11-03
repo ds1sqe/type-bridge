@@ -18,6 +18,15 @@ use crate::projected_codec::{materialize_projected, project_create, project_enco
 fn map_target_execution_error(error: QueryTargetError) -> Error {
     match error {
         QueryTargetError::Interrupted(error) => map_execution_error(error),
+        QueryTargetError::Commit(error)
+            if error.diagnostic().category() == SdkDiagnosticCategory::Integrity =>
+        {
+            Error::from_sdk_execution_with_source(
+                error.diagnostic(),
+                ModelValidationPhase::Hydration,
+                Some(error),
+            )
+        }
         other => crate::remote::target_error(other),
     }
 }
