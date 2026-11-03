@@ -193,9 +193,10 @@ impl TransactionContextMutationLease {
             crate::query_plan_exec::check_provider(plan, self.server_version)
                 .map_err(crate::query_plan_exec::plan_diagnostic_error)?;
         }
+        let supports_given = self.transaction()?.supports_given_rows();
         crate::query_plan_exec::execute_plans_counted::<false>(
             self.transaction()?,
-            true,
+            supports_given,
             plans,
             policy,
             cancellation,

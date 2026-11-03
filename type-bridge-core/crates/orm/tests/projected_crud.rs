@@ -100,6 +100,7 @@ enum CommitBehavior {
 
 struct RecordingBackend {
     given_enabled: bool,
+    given_transport_enabled: bool,
     responses: Arc<Mutex<VecDeque<RecordingResponse>>>,
     state: Arc<Mutex<RecordingState>>,
     commit: CommitBehavior,
@@ -114,6 +115,7 @@ impl RecordingBackend {
         (
             Self {
                 given_enabled: false,
+                given_transport_enabled: true,
                 responses: Arc::new(Mutex::new(responses.into())),
                 state: Arc::clone(&state),
                 commit,
@@ -143,6 +145,7 @@ impl DriverBackend for RecordingBackend {
             responses: Arc::clone(&self.responses),
             state: Arc::clone(&self.state),
             commit: self.commit,
+            given_transport_enabled: self.given_transport_enabled,
         };
         Box::pin(async move { Ok(Box::new(transaction) as Box<dyn TransactionOps>) })
     }
@@ -153,6 +156,7 @@ impl DriverBackend for RecordingBackend {
 }
 
 struct RecordingTransaction {
+    given_transport_enabled: bool,
     responses: Arc<Mutex<VecDeque<RecordingResponse>>>,
     state: Arc<Mutex<RecordingState>>,
     commit: CommitBehavior,
@@ -170,7 +174,7 @@ impl RecordingTransaction {
 
 impl TransactionOps for RecordingTransaction {
     fn supports_given_rows(&self) -> bool {
-        true
+        self.given_transport_enabled
     }
 
     fn query(&mut self, typeql: &str) -> BoxFuture<'_, Result<QueryResult, OrmError>> {
@@ -4021,6 +4025,7 @@ async fn compatibility_reads_preserve_arbitrary_first_and_native_origins_on_ever
                 let state = state.lock().unwrap();
                 assert_eq!(state.opens, [borrowed.unwrap_or(TxType::Read)]);
                 assert_eq!(state.queries.len(), 1);
+                assert_eq!(state.query_modes, ["given"]);
                 assert_eq!(state.queries[0].contains("limit 1;"), first);
                 assert_eq!(state.commits, 0);
                 assert_eq!(state.rollbacks, 0);
@@ -4209,4 +4214,54 @@ async fn compatibility_read_admission_checks_budget_and_cancellation_before_prov
     let state = state.lock().unwrap();
     assert!(state.opens.is_empty());
     assert!(state.queries.is_empty());
+}
+
+#[tokio::test]
+async fn borrowed_manager_reads_use_the_transaction_given_transport_capability() {
+    use type_bridge_orm::_dynamic::{DynamicComparisonOp, DynamicExpr};
+    use type_bridge_orm::{
+        ProjectedManagerFilterExecutor, ProjectedManagerFilterInvocationControl, QueryTarget,
+    };
+    for given in [false, true] {
+        let installed = installed_with_authority();
+        let (mut backend, state) = RecordingBackend::new(
+            vec![documents(vec![person_document("0x10")])],
+            CommitBehavior::Success,
+        );
+        backend.given_enabled = true;
+        backend.given_transport_enabled = given;
+        let database = Database::with_backend(Box::new(backend), "manager-read-transport");
+        let transaction = database.transaction_context(TxType::Write).await.unwrap();
+        let things = ProjectedManagerFilterExecutor::new(&installed)
+            .compatibility_all_on_target(
+                QueryTarget::Transaction(&transaction),
+                &type_id(TypeKind::Entity, "person"),
+                &[DynamicExpr::Compare {
+                    attr_name: "email".into(),
+                    operator: DynamicComparisonOp::Eq,
+                    value: type_bridge_orm::value::AttributeValue::String(
+                        "ada@example.test".into(),
+                    ),
+                }],
+                ProjectedManagerFilterInvocationControl::capture(
+                    Default::default(),
+                    Default::default(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(things.len(), 1);
+        assert_eq!(things[0].iid(), "0x10");
+        assert_eq!(
+            transaction.lifecycle_state().await,
+            type_bridge_orm::TransactionContextState::Active
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(
+            state.query_modes,
+            [if given { "given" } else { "canonical" }]
+        );
+        assert_eq!(state.queries.len(), 1);
+        assert_eq!((state.commits, state.rollbacks, state.closes), (0, 0, 0));
+    }
 }
