@@ -357,6 +357,7 @@ pub(crate) fn forces_pieces_code(code: &str) -> bool {
             | "query_plan_output_limit"
             | "projected_batch_input_unit_byte_limit"
             | "query_invocation_input_byte_limit"
+            | "query_invocation_row_limit"
     )
 }
 
@@ -674,7 +675,10 @@ fn one(
         })
         .collect::<Vec<_>>();
     let mut events = Vec::new();
-    if kind == WriteKind::Attach && !shape.single_input {
+    if kind == WriteKind::Attach
+        && !shape.single_input
+        && row.len() <= authority.query_limits().structural.input_rows
+    {
         for field in &row.fields {
             events.push(WriteRow {
                 iid: row.iid.as_deref(),

@@ -1126,6 +1126,38 @@ mod tests {
     }
 
     #[test]
+    fn tight_input_row_limits_use_fixed_scalar_pieces_instead_of_many_events() {
+        let WriteProgram::References(mut owner) = program(false) else {
+            panic!("references")
+        };
+        let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+        limits.structural.input_rows = 2;
+        owner.authority = owner
+            .authority
+            .with_query_limits(std::sync::Arc::new(limits));
+        let authority = owner.authority.clone();
+        let program = WriteProgram::References(owner).prepare_static().unwrap();
+        let entries = program
+            .staged_entries(&authority)
+            .unwrap()
+            .expect("closed fixed-row pieces");
+        assert!(entries.len() < 10);
+        assert!(entries.iter().all(|entry| entry.rows().len() <= 2));
+        assert!(
+            entries
+                .iter()
+                .all(|entry| entry.plan().limits().structural.input_rows == 2)
+        );
+        let body = entries
+            .iter()
+            .map(|entry| String::from_utf8(entry.plan().canonical_bytes().unwrap()).unwrap())
+            .collect::<String>();
+        for index in 0..300 {
+            assert!(body.contains(&format!("\"v-{index}\"")));
+        }
+    }
+
+    #[test]
     fn oversized_snapshot_tuples_chain_before_writes_and_split_sources() {
         use type_bridge_contract::query_remote::RemoteValue;
         let WriteProgram::References(mut owner) = program(false) else {

@@ -4448,18 +4448,19 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
         registry.relation("snapshot-edge").unwrap(),
     );
     let mut failures = Vec::new();
-    for (literal, selected_slots) in [false, true].into_iter().flat_map(|literal| {
+    let defaults = type_bridge_contract::limits::QueryLimits::V3.structural;
+    for (literal, (selected_slots, input_rows)) in [false, true].into_iter().flat_map(|literal| {
         [
-            type_bridge_contract::limits::QueryLimits::V3
-                .structural
-                .selected_slots,
-            4,
+            (defaults.selected_slots, defaults.input_rows),
+            (4, defaults.input_rows),
+            (defaults.selected_slots, 2),
         ]
-        .map(move |slots| (literal, slots))
+        .map(move |limits| (literal, limits))
     }) {
         let (counted, log) = counted_connection(&database, literal).await;
         let mut limits = type_bridge_contract::limits::QueryLimits::V3;
         limits.structural.selected_slots = selected_slots;
+        limits.structural.input_rows = input_rows;
         let counted = counted.with_query_limits(limits).unwrap();
         for by_iid in [false, true] {
             let predecessor = || {
@@ -4517,14 +4518,11 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
                     }
                     let statements = if width == 0 {
                         1
-                    } else if self_playing {
-                        3
-                    } else if by_iid {
-                        3
-                    } else if selected_slots == 4 {
-                        5
                     } else {
-                        4
+                        let ordinary = if self_playing || by_iid { 3 } else { 4 };
+                        ordinary
+                            + usize::from(selected_slots == 4 && !self_playing && !by_iid)
+                            + usize::from(input_rows == 2)
                     };
                     assert_eq!(log.lock().unwrap().statements.len(), statements);
                     let output = things(result.unwrap());
@@ -4616,7 +4614,11 @@ async fn explicit_wide_updates_keep_invocation_start_key_references_live() {
             }
             assert_eq!(
                 log.lock().unwrap().statements.len(),
-                if selected_slots == 4 { 5 } else { 4 }
+                if selected_slots == 4 || input_rows == 2 {
+                    5
+                } else {
+                    4
+                }
             );
             tx.rollback().await.unwrap();
             assert_eq!(log.lock().unwrap().commits, 0);
