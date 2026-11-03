@@ -885,6 +885,61 @@ impl QueryTarget<'_> {
         }
     }
 
+    pub(crate) async fn execute_manager_read(
+        &self,
+        program: &crate::plan_builders::manager::ManagerRead,
+        resources: QueryExecutionResourceLimits,
+        cancellation: &AnswerCancellation,
+        deadline: QueryExecutionDeadline,
+    ) -> Result<Vec<crate::query_plan_exec::PlanAnswer>, QueryTargetError> {
+        use crate::session::backend::TxType;
+        let resources = match program {
+            crate::plan_builders::manager::ManagerRead::Fetch(stack) => {
+                stack.execution_limits(resources)
+            }
+            _ => resources,
+        };
+        let (resources, deadline) = self.budget(resources, deadline);
+        match self {
+            Self::Database(database) => database
+                .execute_plans(program.plans(), &resources, cancellation, deadline)
+                .await
+                .map_err(Into::into),
+            Self::Transaction(transaction) if transaction.tx_type() == TxType::Read => transaction
+                .execute_plans(program.plans(), &resources, cancellation, deadline)
+                .await
+                .map_err(Into::into),
+            Self::Transaction(transaction) => {
+                crate::session::context::ensure_transaction_can_execute(
+                    transaction.tx_type(),
+                    TxType::Write,
+                )?;
+                let mut lease = transaction.acquire_mutation_lease().await?;
+                match lease
+                    .execute_plans(program.plans(), resources, cancellation, deadline, None)
+                    .await
+                {
+                    Ok((answers, _)) => {
+                        lease.complete_success();
+                        Ok(answers)
+                    }
+                    Err(error) => {
+                        lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
+                            &error,
+                            SdkProviderOperation::Read,
+                        ));
+                        Err(error.into())
+                    }
+                }
+            }
+            Self::Proxy(proxy) => {
+                proxy
+                    .execute_read_plans(program.plans(), resources, cancellation, deadline)
+                    .await
+            }
+        }
+    }
+
     /// Run one validated request under `resources` and `deadline`, both of
     /// which this call constrains by the connection's ceiling again, so a
     /// caller cannot exceed it.

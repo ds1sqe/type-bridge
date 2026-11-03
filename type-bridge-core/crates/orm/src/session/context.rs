@@ -21,6 +21,21 @@ use type_bridge_contract::sdk_diagnostic::{
 };
 use type_bridge_core_lib::version::Version;
 
+pub(crate) fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()> {
+    let allowed = match required {
+        TxType::Read => matches!(active, TxType::Read | TxType::Write),
+        TxType::Write => active == TxType::Write,
+        TxType::Schema => active == TxType::Schema,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(OrmError::Transaction(format!(
+            "Cannot execute {required:?} operation in {active:?} transaction"
+        )))
+    }
+}
+
 /// Binding-neutral lifecycle state shared by every clone of a transaction context.
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

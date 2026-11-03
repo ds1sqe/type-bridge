@@ -19,6 +19,7 @@ use crate::query_execution_limits::{QueryExecutionDeadline, QueryExecutionResour
 use crate::query_plan_exec::PlanAnswer;
 use crate::session::backend::AnswerCancellation;
 use crate::session::backend::{QueryResult, TxType};
+use crate::session::context::ensure_transaction_can_execute;
 use crate::session::{Database, TransactionContext};
 
 use super::hydration::{
@@ -2696,50 +2697,22 @@ impl DynamicExecutionTarget<'_> {
         program: &ManagerRead,
     ) -> impl std::future::Future<Output = Result<Vec<PlanAnswer>>> {
         async move {
-            let limits = match program {
-                ManagerRead::Fetch(stack) => {
-                    stack.execution_limits(QueryExecutionResourceLimits::default())
-                }
-                ManagerRead::Scalar { .. } | ManagerRead::Aggregate { .. } => {
-                    QueryExecutionResourceLimits::default()
-                }
-            };
+            let limits = QueryExecutionResourceLimits::default();
             let cancellation = AnswerCancellation::default();
             let deadline = QueryExecutionDeadline::for_limits(limits);
-            match self {
-                Self::Database(db) => {
-                    db.execute_plans(program.plans(), &limits, &cancellation, deadline)
-                        .await
-                }
-                Self::Transaction(tx) => {
-                    if tx.tx_type() == TxType::Read {
-                        return tx
-                            .execute_plans(program.plans(), &limits, &cancellation, deadline)
-                            .await;
-                    }
-                    ensure_transaction_can_execute(tx.tx_type(), TxType::Write)?;
-                    let limits = tx
-                        .answer_limits()
-                        .map_or(limits, |ceiling| limits.constrained_by(ceiling));
-                    let mut lease = tx.acquire_mutation_lease().await?;
-                    let result = lease
-                        .execute_plans(program.plans(), limits, &cancellation, deadline, None)
-                        .await;
-                    match result {
-                        Ok((answers, _)) => {
-                            lease.complete_success();
-                            Ok(answers)
-                        }
-                        Err(error) => {
-                            lease.record_failure(&crate::execution_diagnostic::lower_orm_error(
-                                &error,
-                                type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
-                            ));
-                            Err(error)
-                        }
-                    }
-                }
-            }
+            let target = match self {
+                Self::Database(database) => crate::QueryTarget::Database(database),
+                Self::Transaction(transaction) => crate::QueryTarget::Transaction(transaction),
+            };
+            target
+                .execute_manager_read(program, limits, &cancellation, deadline)
+                .await
+                .map_err(|error| match error {
+                    crate::QueryTargetError::Direct(error) => error,
+                    error => OrmError::ExecutionDiagnostic(Box::new(error.into_diagnostic(
+                        type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read,
+                    ))),
+                })
         }
     }
 
@@ -3630,21 +3603,6 @@ fn validate_snapshot_identity(
         return Err(snapshot_error(type_name));
     }
     Ok(())
-}
-
-fn ensure_transaction_can_execute(active: TxType, required: TxType) -> Result<()> {
-    let allowed = match required {
-        TxType::Read => matches!(active, TxType::Read | TxType::Write),
-        TxType::Write => active == TxType::Write,
-        TxType::Schema => active == TxType::Schema,
-    };
-    if allowed {
-        Ok(())
-    } else {
-        Err(OrmError::Transaction(format!(
-            "Cannot execute {required:?} operation in {active:?} transaction"
-        )))
-    }
 }
 
 fn extract_exists(type_name: &str, result: QueryResult) -> Result<bool> {
