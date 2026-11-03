@@ -540,6 +540,102 @@ plays:
     }
 
     #[test]
+    fn wide_relation_full_match_includes_the_role_identity_in_its_static_proof() {
+        use type_bridge_contract::schema::DocumentId;
+        use type_bridge_contract::value::CanonicalString;
+        use type_bridge_schema::{SchemaDocumentSet, normalize_documents};
+        let yaml = "format: typebridge.schema/v2\nattributes:\n  selector: { value: string }\n  tag: { value: string }\nentities:\n  person:\n    owns:\n      selector: { card: { min: 0, max: 1 } }\nrelations:\n  edge:\n    owns:\n      tag: { card: { min: 0 } }\n    relates:\n      member: { card: { min: 1, max: 1 } }\nplays:\n  person:\n    edge: [member]\n";
+        let declared = normalize_documents(
+            &SchemaDocumentSet::parse([(DocumentId::new("static-relation.yaml").unwrap(), yaml)])
+                .unwrap(),
+        )
+        .unwrap();
+        let relation = TypeId::new(TypeKind::Relation, "edge").unwrap();
+        let field = OwnsFactId::new(relation.clone(), AttributeId::new("tag").unwrap()).unwrap();
+        let fields = (0..300)
+            .map(|index| {
+                (
+                    field.clone(),
+                    CanonicalValue::String(CanonicalString::new(format!("tag-{index}")).unwrap()),
+                )
+            })
+            .collect::<Vec<_>>();
+        let authority = PlanAuthority::new(
+            declared,
+            ManagedSemanticSchemaFingerprint::compute(
+                SemanticProfileId::new("typedb-3.13.6/v1").unwrap(),
+                b"static-relation-match",
+            )
+            .unwrap(),
+        );
+        let candidates = [TypeId::new(TypeKind::Entity, "person").unwrap()];
+        let selector = AttributeId::new("selector").unwrap();
+        for by_iid in [false, true] {
+            for terms in [256, 8] {
+                let mut limits = type_bridge_contract::limits::QueryLimits::V3;
+                limits.structural.boolean_terms = terms;
+                let authority = authority
+                    .clone()
+                    .with_query_limits(std::sync::Arc::new(limits));
+                let players = [(
+                    RoleId::new("edge", "member").unwrap(),
+                    Reference {
+                        candidates: &candidates,
+                        identity: if by_iid {
+                            ReferenceIdentity::Iid("0x10")
+                        } else {
+                            ReferenceIdentity::Key {
+                                attribute: &selector,
+                                value: CanonicalValue::String(
+                                    CanonicalString::new("shared").unwrap(),
+                                ),
+                            }
+                        },
+                    },
+                )];
+                let WriteProgram::Static(program) = super::super::match_put::wide_match(
+                    &authority,
+                    WriteShape {
+                        type_id: &relation,
+                        keys: &[],
+                        cleared_fields: &[],
+                        cleared_roles: &[],
+                        document_roles: vec![],
+                        include_subtypes: false,
+                        return_documents: true,
+                        references_see_prior_writes: true,
+                        single_input: true,
+                    },
+                    &WriteRow {
+                        iid: None,
+                        fields: &fields,
+                        players: &players,
+                    },
+                    0,
+                )
+                .unwrap() else {
+                    panic!("scalar and role predicates must form one static proof")
+                };
+                let probe = &program.entries[0];
+                assert_eq!(probe.rows().len(), 300);
+                assert_eq!(probe.plan().inputs().len(), 1);
+                assert_eq!(probe.plan().bindings().len(), if by_iid { 6 } else { 7 });
+                let plan = probe.bound_plan(authority.declared()).unwrap();
+                let query = crate::query_plan_exec::staged_query(&plan, true).unwrap();
+                assert!(!query.writes);
+                assert!(query.typeql.contains("links (member:"));
+                assert!(
+                    query
+                        .typeql
+                        .contains(if by_iid { "0x10" } else { "selector" })
+                );
+                assert!(query.typeql.contains("300"));
+                assert!(!program.entries.last().unwrap().plan().writes());
+            }
+        }
+    }
+
+    #[test]
     fn wide_scalar_full_match_has_static_optional_hit_and_miss_dependencies() {
         let account = TypeId::new(TypeKind::Entity, "account").unwrap();
         let field = OwnsFactId::new(account.clone(), AttributeId::new("balance").unwrap()).unwrap();

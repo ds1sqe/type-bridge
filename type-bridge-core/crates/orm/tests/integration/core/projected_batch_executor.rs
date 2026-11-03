@@ -6131,7 +6131,12 @@ plays:
             } else {
                 manager.put(&attributes, &players).await
             }
-            .unwrap();
+            .unwrap_or_else(|error| {
+                panic!(
+                    "wide {operation} literal={literal}: {error}; statements={:#?}",
+                    log.lock().unwrap().statements
+                )
+            });
             assert_eq!(result.count(), 2);
             for row in result.items() {
                 assert_eq!(row.role_players.len(), 1);
@@ -6151,7 +6156,10 @@ plays:
             }
             {
                 let observed = log.lock().unwrap();
-                assert!(observed.statements.len() > 1);
+                assert_eq!(
+                    observed.statements.len(),
+                    if operation == "insert" { 3 } else { 5 }
+                );
                 assert_eq!(observed.opened, [TxType::Write]);
                 assert_eq!((observed.commits, observed.rollbacks), (1, 0));
                 eprintln!(
@@ -6204,7 +6212,15 @@ plays:
             assert!(result.item().is_none());
             {
                 let observed = log.lock().unwrap();
-                assert!(observed.statements.len() > 1, "wide {operation}");
+                assert_eq!(
+                    observed.statements.len(),
+                    match operation {
+                        "insert" => 3,
+                        "put" => 5,
+                        _ => 2,
+                    },
+                    "wide {operation}"
+                );
                 assert_eq!(observed.opened, [TxType::Write]);
                 assert_eq!((observed.commits, observed.rollbacks), (1, 0));
                 eprintln!(

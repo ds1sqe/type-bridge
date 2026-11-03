@@ -237,7 +237,7 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
     row: &WriteRow<'_>,
     ordinal: usize,
 ) -> Result<WriteProgram, Diagnostic> {
-    if let Some(program) = static_scalar_match(authority, &shape, row, ordinal)? {
+    if let Some(program) = static_match(authority, &shape, row, ordinal)? {
         return Ok(program);
     }
     let mut remaining = Row::of(row);
@@ -341,7 +341,7 @@ pub(in crate::plan_builders::bulk_write) fn wide_match(
     })))
 }
 
-fn scalar_probe(
+fn predicate_probe(
     authority: &PlanAuthority,
     shape: &WriteShape<'_>,
     row: &WriteRow<'_>,
@@ -357,7 +357,7 @@ fn scalar_probe(
     let count = draft.bind("matched")?;
     // Duplicate unordered predicates remain existential, including when two
     // distinct fields carry the same scalar value.
-    let (patterns, rows) = if single_field {
+    let (mut patterns, rows) = if single_field {
         let input = draft.input("wanted_value", row.fields[0].1.value_type(), false)?;
         let values = row
             .fields
@@ -472,6 +472,54 @@ fn scalar_probe(
             rows,
         )
     };
+    for (role, reference) in row.players {
+        let player = draft.bind("player")?;
+        let key = matches!(reference.identity, ReferenceIdentity::Key { .. })
+            .then(|| draft.bind("player_key"))
+            .transpose()?;
+        let mut branches = Vec::with_capacity(reference.candidates.len());
+        for candidate in reference.candidates {
+            let mut branch = vec![
+                QueryPattern::Links {
+                    relation: root,
+                    relation_id: shape.type_id.clone(),
+                    players: vec![AssertionRolePlayer::new(role.clone(), player)],
+                },
+                QueryPattern::Isa {
+                    binding: player,
+                    type_id: candidate.clone(),
+                    include_subtypes: false,
+                },
+            ];
+            match &reference.identity {
+                ReferenceIdentity::Iid(iid) => branch.push(QueryPattern::Iid {
+                    binding: player,
+                    iid: QueryOperand::Literal {
+                        value: super::iid(iid)?,
+                    },
+                }),
+                ReferenceIdentity::Key { attribute, value } => {
+                    let key = key.ok_or_else(identity_error)?;
+                    branch.extend([
+                        QueryPattern::Has {
+                            owner: player,
+                            attribute: key,
+                            attribute_id: (*attribute).clone(),
+                        },
+                        QueryPattern::Value {
+                            comparator: ValueComparator::Equal,
+                            left: QueryOperand::Binding { binding: key },
+                            right: QueryOperand::Literal {
+                                value: value.clone(),
+                            },
+                        },
+                    ]);
+                }
+            }
+            branches.push(branch);
+        }
+        patterns.push(QueryPattern::Or { branches }.into());
+    }
     let required = i64::try_from(rows.len()).map_err(|_| identity_error())?;
     let mut pipeline = vec![
         Stage::Match { patterns },
@@ -525,7 +573,7 @@ fn scalar_probe(
     draft.finish_rows(authority, pipeline, Operation::Rows, output, Some(rows))
 }
 
-fn static_scalar_match(
+fn static_match(
     authority: &PlanAuthority,
     shape: &WriteShape<'_>,
     row: &WriteRow<'_>,
@@ -534,19 +582,20 @@ fn static_scalar_match(
     if row.fields.is_empty() {
         return Ok(None);
     }
-    if shape.type_id.kind() != TypeKind::Entity || !row.players.is_empty() {
+    // Additional references retain their existing pre-write existence guards.
+    if row.players.len() > 1 {
         return Ok(None);
     }
     let single_field = row
         .fields
         .iter()
         .all(|(field, _)| field == &row.fields[0].0);
-    let probe = match scalar_probe(authority, shape, row, ordinal, false, single_field) {
+    let probe = match predicate_probe(authority, shape, row, ordinal, false, single_field) {
         Ok(plan) => plan,
         Err(error) if forces_pieces(&error) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let final_read = scalar_probe(authority, shape, row, ordinal, true, single_field)?;
+    let final_read = predicate_probe(authority, shape, row, ordinal, true, single_field)?;
     let mut miss_shape = shape.clone();
     miss_shape.return_documents = false;
     let WriteProgram::Split(miss) = split_at(
