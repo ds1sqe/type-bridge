@@ -34,6 +34,7 @@ All notable changes to TypeBridge will be documented in this file.
 
 - Proxy staged commit failures retain a caller-owned transport error as
   their source while keeping `commit_outcome_unknown` as the outcome.
+  Rust SDK conversion preserves that cause and the typed commit failure.
   Application error text remains absent from public diagnostics and rendering.
 
 - Single writes that match nothing now return `count: 0`, empty `items`, and

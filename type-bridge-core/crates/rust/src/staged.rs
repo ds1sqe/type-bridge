@@ -202,7 +202,11 @@ impl<S: Schema> Transaction<S> {
 /// [`failure`](crate::Error::failure).
 impl From<CommitError> for crate::Error {
     fn from(error: CommitError) -> Self {
-        Self::from_sdk_execution(error.diagnostic(), crate::ModelValidationPhase::Input)
+        Self::from_sdk_execution_with_source(
+            error.diagnostic(),
+            crate::ModelValidationPhase::Input,
+            Some(Box::new(error)),
+        )
     }
 }
 

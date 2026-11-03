@@ -1397,6 +1397,50 @@ mod tests {
             std::error::Error::source(&error).unwrap().to_string(),
             "application cause"
         );
+        let mut builder = crate::plan::PlanBuilder::<TestSchema>::new();
+        let _person = builder.exact::<Person>();
+        builder.count();
+        let plan = builder.build(&package()).unwrap();
+        let mut transaction = remote
+            .transaction(TransactionOptions::default())
+            .await
+            .unwrap();
+        let pending = transaction.stage(&plan).unwrap();
+        let commit = transaction.commit().await.unwrap_err();
+        assert_eq!(
+            commit.diagnostic().code().as_str(),
+            "commit_outcome_unknown"
+        );
+        let error = Error::from(commit);
+        assert_eq!(error.category(), crate::ErrorCategory::Transaction);
+        assert_eq!(error.sdk_category(), Some("transaction"));
+        assert!(matches!(
+            error.failure(),
+            Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+        ));
+        assert!(matches!(
+            pending.get().unwrap_err().failure(),
+            Some(type_bridge_contract::failure::Failure::Indeterminate { .. })
+        ));
+        let source = std::error::Error::source(&error).unwrap();
+        assert!(source.is::<type_bridge_orm::session::staged::CommitError>());
+        let mut cause = Some(source);
+        let mut found = false;
+        while let Some(source) = cause {
+            if let Some(source) = source.downcast_ref::<std::io::Error>() {
+                assert_eq!(source.to_string(), "application cause");
+                found = true;
+                break;
+            }
+            cause = source.source();
+        }
+        assert!(
+            found,
+            "the original application transport cause must survive SDK conversion"
+        );
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains("application cause"));
+        assert!(!rendered.contains("Application transport is unavailable"));
     }
 
     fn sdk_queries_transport(seed: u8) -> (Transport, Arc<Mutex<Vec<Vec<u8>>>>) {

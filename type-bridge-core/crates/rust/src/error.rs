@@ -454,6 +454,11 @@ impl Error {
             if let Some(error) = error.downcast_ref::<type_bridge_orm::OrmError>() {
                 return error.failure();
             }
+            if let Some(error) =
+                error.downcast_ref::<type_bridge_orm::session::staged::CommitError>()
+            {
+                return error.failure.as_deref().cloned();
+            }
             source = error.source();
         }
         None
@@ -486,6 +491,14 @@ impl Error {
     pub(crate) fn from_sdk_execution(
         error: SdkExecutionDiagnostic,
         model_phase: ModelValidationPhase,
+    ) -> Self {
+        Self::from_sdk_execution_with_source(error, model_phase, None)
+    }
+
+    pub(crate) fn from_sdk_execution_with_source(
+        error: SdkExecutionDiagnostic,
+        model_phase: ModelValidationPhase,
+        source: Option<Box<dyn StdError + Send + Sync + 'static>>,
     ) -> Self {
         let code = error.code().as_str().to_owned();
         let message = error.message().as_str().to_owned();
@@ -523,7 +536,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             );
         }
         match error.category() {
@@ -533,16 +546,16 @@ impl Error {
                     code,
                     path,
                     message,
-                    source: Some(Box::new(error)),
+                    source: Some(source.unwrap_or_else(|| Box::new(error))),
                 }
             }
             SdkDiagnosticCategory::Provider => Self::QueryExecution {
                 message,
-                source: Some(Box::new(error)),
+                source: Some(source.unwrap_or_else(|| Box::new(error))),
             },
             SdkDiagnosticCategory::Transaction => Self::Transaction {
                 message,
-                source: Some(Box::new(error)),
+                source: Some(source.unwrap_or_else(|| Box::new(error))),
             },
             SdkDiagnosticCategory::UnsupportedCapability => Self::classified_with_diagnostic(
                 ErrorCategory::Capability,
@@ -551,7 +564,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             SdkDiagnosticCategory::ResourceLimit => Self::classified_with_diagnostic(
                 ErrorCategory::ResourceLimit,
@@ -560,7 +573,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             SdkDiagnosticCategory::Cancelled => Self::classified_with_diagnostic(
                 ErrorCategory::Cancelled,
@@ -569,7 +582,7 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             SdkDiagnosticCategory::Internal => Self::classified_with_diagnostic(
                 ErrorCategory::Other,
@@ -578,11 +591,11 @@ impl Error {
                 path,
                 Some(diagnostic),
                 message,
-                Some(Box::new(error)),
+                Some(source.unwrap_or_else(|| Box::new(error))),
             ),
             _ => Self::Other {
                 message,
-                source: Some(Box::new(error)),
+                source: Some(source.unwrap_or_else(|| Box::new(error))),
             },
         }
     }
@@ -1000,8 +1013,8 @@ impl Error {
         }
     }
 
-    /// Return the exact common SDK diagnostic category, when this error
-    /// directly retains one.
+    /// Return the exact common SDK diagnostic category retained by this error
+    /// or its staged commit source.
     ///
     /// This is an additive, lossless view for generated manager and projected
     /// batch diagnostics. [`Self::category`] remains the released Rust
@@ -1009,9 +1022,13 @@ impl Error {
     /// `invalid_input` to [`ErrorCategory::ModelValidation`].
     #[must_use]
     pub fn sdk_category(&self) -> Option<&'static str> {
-        StdError::source(self)
-            .and_then(|source| source.downcast_ref::<SdkExecutionDiagnostic>())
-            .map(|diagnostic| diagnostic.category().as_str())
+        let source = StdError::source(self)?;
+        if let Some(diagnostic) = source.downcast_ref::<SdkExecutionDiagnostic>() {
+            return Some(diagnostic.category().as_str());
+        }
+        source
+            .downcast_ref::<type_bridge_orm::session::staged::CommitError>()
+            .map(|error| error.diagnostic().category().as_str())
     }
 
     /// Return the error message string.
