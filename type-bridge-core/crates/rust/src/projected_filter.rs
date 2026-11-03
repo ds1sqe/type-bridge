@@ -85,7 +85,7 @@ impl<'target> ProjectedFilterCore<'target> {
             .map_err(filter_target_error)?;
         values
             .into_iter()
-            .map(|value| materialize_projected::<M>((*value).clone(), self.installed))
+            .map(|value| materialize_projected::<M>(value, self.installed))
             .collect()
     }
 
@@ -95,7 +95,7 @@ impl<'target> ProjectedFilterCore<'target> {
             .await
             .map_err(filter_target_error)?;
         value
-            .map(|value| materialize_projected::<M>((*value).clone(), self.installed))
+            .map(|value| materialize_projected::<M>(value, self.installed))
             .transpose()
     }
 
@@ -387,6 +387,18 @@ fn filter_target_error(error: QueryTargetError) -> Error {
             other.into_diagnostic(type_bridge_contract::sdk_diagnostic::SdkProviderOperation::Read),
         ),
     }
+}
+
+/// Preserve the manager item ceiling while capturing the ordinary read budget.
+pub(crate) fn manager_read_control(
+    database: &type_bridge_orm::Database,
+) -> ProjectedManagerFilterInvocationControl {
+    let target = QueryTarget::Database(database);
+    let mut limits = target.answer_limits().unwrap_or_default();
+    limits.items = target
+        .manager_item_limit()
+        .unwrap_or_else(|| QueryExecutionResourceLimits::default().items);
+    ProjectedManagerFilterInvocationControl::capture(limits, AnswerCancellation::default())
 }
 
 #[cfg(test)]

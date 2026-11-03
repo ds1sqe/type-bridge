@@ -4,7 +4,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use type_bridge_contract::id::is_canonical_thing_iid;
-use type_bridge_orm::_manager::DynamicEntityManager;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::{
     ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
@@ -14,9 +13,7 @@ use crate::__codegen::{
     CompleteModel, EncodedCreate, EntityModel, FieldToken, HydrationCapability, IntoEncodedCreate,
     Model, QueryValued, SubtypeRootModel,
 };
-use crate::entity_codec::{
-    hydrate_entity, map_validation_error, resolve_discovered_entity, resolve_entity_authority,
-};
+use crate::entity_codec::{map_validation_error, resolve_entity_authority};
 use crate::error::{Error, ModelValidationPhase};
 use crate::hooks::{CrudOperation, HookRunner, LifecycleHook, ModelKind};
 use crate::projected_batch::{
@@ -25,7 +22,10 @@ use crate::projected_batch::{
     reserved_binding_vec, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
+use type_bridge_orm::{ProjectedManagerFilterExecutor, QueryTarget};
+
 use crate::projected_filter::ProjectedEntityFilter;
+use crate::projected_filter::manager_read_control;
 use crate::schema::Schema;
 use crate::{Database, Result, WriteResult};
 
@@ -64,122 +64,82 @@ where
             return Err(invalid_iid());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_entity_authority(
+        let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Read)
+        ProjectedManagerFilterExecutor::new(installed)
+            .get_by_iid_including_subtypes_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                iid,
+                manager_read_control(self.db.inner_orm()),
+            )
             .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicEntityManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        );
-        let manager = if self.db.inner_orm().supports_given_stage() {
-            manager
-        } else {
-            manager.literal_values()
-        };
-        let result = async {
-            let Some(row) = manager.get_by_iid(iid).await.map_err(Error::from_orm)? else {
-                return Ok(None);
-            };
-            let (child_id, _) =
-                resolve_discovered_entity(row.type_name.as_deref().unwrap_or_default(), installed)?;
-            let hydrated = hydrate_entity(row, &child_id, installed)?;
-            M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new())
-                .map(Some)
-                .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
-        }
-        .await;
-        match result {
-            Ok(value) => {
-                tx.close().await.map_err(Error::from_orm)?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = tx.close().await;
-                Err(error)
-            }
-        }
+            .map_err(crate::remote::target_error)?
+            .map(|thing| {
+                let hydrated =
+                    crate::projected_codec::projected_to_hydrated_row(&thing, installed)?;
+                M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
+                    crate::entity_codec::map_validation_error(
+                        error,
+                        ModelValidationPhase::Hydration,
+                    )
+                })
+            })
+            .transpose()
     }
     /// Reads all root/descendant models in application result order, materialized as the
     /// generated leaf or family result. Validation, database, hydration, and close errors
     /// are returned without exposing implementation details.
     pub async fn all(&self) -> Result<Vec<M::Subtypes>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_entity_authority(
+        let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Read)
+        ProjectedManagerFilterExecutor::new(installed)
+            .all_including_subtypes_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                manager_read_control(self.db.inner_orm()),
+            )
             .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicEntityManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        );
-        let manager = if self.db.inner_orm().supports_given_stage() {
-            manager
-        } else {
-            manager.literal_values()
-        };
-        let result = async {
-            let rows = manager.all().await.map_err(Error::from_orm)?;
-            rows.into_iter()
-                .map(|row| {
-                    let (child_id, _) = resolve_discovered_entity(
-                        row.type_name.as_deref().unwrap_or_default(),
-                        installed,
-                    )?;
-                    let hydrated = hydrate_entity(row, &child_id, installed)?;
-                    M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(
-                        |error| map_validation_error(error, ModelValidationPhase::Hydration),
+            .map_err(crate::remote::target_error)?
+            .into_iter()
+            .map(|thing| {
+                let hydrated =
+                    crate::projected_codec::projected_to_hydrated_row(&thing, installed)?;
+                M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
+                    crate::entity_codec::map_validation_error(
+                        error,
+                        ModelValidationPhase::Hydration,
                     )
                 })
-                .collect()
-        }
-        .await;
-        match result {
-            Ok(value) => {
-                tx.close().await.map_err(Error::from_orm)?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = tx.close().await;
-                Err(error)
-            }
-        }
+            })
+            .collect()
     }
     /// Counts the root and all concrete descendants using the inclusive subtype scope.
     pub async fn count(&self) -> Result<u64> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_entity_authority(
+        let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        DynamicEntityManager::from_registry(
-            self.db.inner_orm(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        )
-        .count()
-        .await
-        .map_err(Error::from_orm)
+        ProjectedManagerFilterExecutor::new(installed)
+            .count_including_subtypes_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                manager_read_control(self.db.inner_orm()),
+            )
+            .await
+            .map_err(crate::remote::target_error)
     }
 }
 
@@ -824,26 +784,23 @@ where
     /// a complete hydrated model.
     pub async fn all(&self) -> Result<Vec<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_entity_authority(
+        let (id, _) = resolve_entity_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        let rows = DynamicEntityManager::from_registry(
-            self.db.inner_orm(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor.clone()),
-        )
-        .all_exact()
-        .await
-        .map_err(Error::from_orm)?;
-        rows.into_iter()
-            .map(|r| {
-                let h = hydrate_entity(r, &id, installed)?;
-                M::materialize(&h, &HydrationCapability::new())
-                    .map_err(|e| map_validation_error(e, ModelValidationPhase::Hydration))
-            })
+        ProjectedManagerFilterExecutor::new(installed)
+            .compatibility_all_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                &[],
+                manager_read_control(self.db.inner_orm()),
+            )
+            .await
+            .map_err(crate::remote::target_error)?
+            .into_iter()
+            .map(|thing| materialize_projected(thing, installed))
             .collect()
     }
 }

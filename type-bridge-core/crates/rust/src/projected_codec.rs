@@ -858,10 +858,10 @@ fn hydrated_attribute_value(value: &EncodedScalar) -> AttributeValue {
 /// Convert one engine-validated projected thing into the closed generated
 /// hydration representation, then materialize the generated nominal model.
 pub(crate) fn materialize_projected<M: CompleteModel>(
-    thing: ProjectedThing,
+    thing: impl std::borrow::Borrow<ProjectedThing>,
     installed: &InstalledRuntimeProjection,
 ) -> Result<M> {
-    let row = projected_to_hydrated_row(&thing, installed)?;
+    let row = projected_to_hydrated_row(thing.borrow(), installed)?;
     M::materialize(&row, &HydrationCapability::new())
         .map_err(|error| map_validation_error(error, ModelValidationPhase::Hydration))
 }

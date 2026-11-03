@@ -4,11 +4,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use type_bridge_contract::id::is_canonical_thing_iid;
-use type_bridge_orm::_manager::DynamicRelationManager;
 use type_bridge_orm::session::backend::TxType;
 use type_bridge_orm::{
-    DynamicRelationRow, ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor,
-    ProjectedManagerComparison,
+    ProjectedBatchOperation, ProjectedBatchRow, ProjectedCrudExecutor, ProjectedManagerComparison,
 };
 
 use crate::__codegen::{
@@ -23,10 +21,11 @@ use crate::projected_batch::{
     reserved_binding_vec, validate_binding_row_count,
 };
 use crate::projected_codec::{materialize_projected, project_create};
+use type_bridge_orm::{ProjectedManagerFilterExecutor, QueryTarget};
+
 use crate::projected_filter::ProjectedRelationFilter;
-use crate::relation_codec::{
-    hydrate_relation, resolve_discovered_relation, resolve_relation_authority,
-};
+use crate::projected_filter::manager_read_control;
+use crate::relation_codec::resolve_relation_authority;
 use crate::schema::Schema;
 use crate::{Database, Result, WriteResult};
 
@@ -51,26 +50,6 @@ fn schema_not_bound() -> Error {
         "database is not schema-bound",
         None,
     )
-}
-
-fn ambiguous_provider_row() -> Error {
-    Error::model_validation(
-        ModelValidationPhase::Hydration,
-        "ambiguous_provider_row",
-        vec!["iid".into()],
-        "provider returned multiple coalesced rows for one exact IID",
-        None,
-    )
-}
-
-pub(crate) fn one_coalesced_row(
-    mut rows: Vec<DynamicRelationRow>,
-) -> Result<Option<DynamicRelationRow>> {
-    match rows.len() {
-        0 => Ok(None),
-        1 => Ok(Some(rows.remove(0))),
-        _ => Err(ambiguous_provider_row()),
-    }
 }
 
 /// Schema-bound, model-branded manager for exact relation operations.
@@ -686,30 +665,23 @@ where
     /// each result is a complete hydrated model.
     pub async fn all(&self) -> Result<Vec<M>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (id, descriptor) = resolve_relation_authority(
+        let (id, _) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             true,
         )?;
-        let rows = DynamicRelationManager::from_registry(
-            self.db.inner_orm(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor.clone()),
-        )
-        .all_exact()
-        .await
-        .map_err(Error::from_orm)?;
-        rows.into_iter()
-            .map(|row| {
-                let hydrated = hydrate_relation(row, &id, installed)?;
-                M::materialize(&hydrated, &HydrationCapability::new()).map_err(|error| {
-                    crate::entity_codec::map_validation_error(
-                        error,
-                        ModelValidationPhase::Hydration,
-                    )
-                })
-            })
+        ProjectedManagerFilterExecutor::new(installed)
+            .compatibility_all_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                &[],
+                manager_read_control(self.db.inner_orm()),
+            )
+            .await
+            .map_err(crate::remote::target_error)?
+            .into_iter()
+            .map(|thing| materialize_projected(thing, installed))
             .collect()
     }
 }
@@ -755,18 +727,6 @@ where
     S: Schema,
     M: SubtypeRootModel<Schema = S> + RelationModel<Schema = S>,
 {
-    fn materialize_subtype(
-        row: DynamicRelationRow,
-        installed: &type_bridge_orm::InstalledRuntimeProjection,
-    ) -> Result<M::Subtypes> {
-        let (child_id, _) =
-            resolve_discovered_relation(row.type_name.as_deref().unwrap_or_default(), installed)?;
-        let hydrated = hydrate_relation(row, &child_id, installed)?;
-        M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
-            crate::entity_codec::map_validation_error(error, ModelValidationPhase::Hydration)
-        })
-    }
-
     /// Reads one canonical IID across the root and its generated concrete descendants.
     /// Invalid IIDs are rejected before I/O; a valid but absent IID returns `None`.
     pub async fn get_by_iid(&self, iid: &str) -> Result<Option<M::Subtypes>> {
@@ -774,44 +734,32 @@ where
             return Err(invalid_iid());
         }
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
+        let (id, _) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Read)
+        ProjectedManagerFilterExecutor::new(installed)
+            .get_by_iid_including_subtypes_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                iid,
+                manager_read_control(self.db.inner_orm()),
+            )
             .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        );
-        let manager = if self.db.inner_orm().supports_given_stage() {
-            manager
-        } else {
-            manager.literal_values()
-        };
-        let result = async {
-            one_coalesced_row(manager.get_by_iid(iid).await.map_err(Error::from_orm)?)?
-                .map(|row| Self::materialize_subtype(row, installed))
-                .transpose()
-        }
-        .await;
-        match result {
-            Ok(value) => {
-                tx.close().await.map_err(Error::from_orm)?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = tx.close().await;
-                Err(error)
-            }
-        }
+            .map_err(crate::remote::target_error)?
+            .map(|thing| {
+                let hydrated =
+                    crate::projected_codec::projected_to_hydrated_row(&thing, installed)?;
+                M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
+                    crate::entity_codec::map_validation_error(
+                        error,
+                        ModelValidationPhase::Hydration,
+                    )
+                })
+            })
+            .transpose()
     }
 
     /// Reads all root/descendant relations in application result order, materialized as the
@@ -819,66 +767,50 @@ where
     /// are returned without exposing implementation details.
     pub async fn all(&self) -> Result<Vec<M::Subtypes>> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
+        let (id, _) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        let tx = self
-            .db
-            .inner_orm()
-            .transaction_context(TxType::Read)
+        ProjectedManagerFilterExecutor::new(installed)
+            .all_including_subtypes_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                manager_read_control(self.db.inner_orm()),
+            )
             .await
-            .map_err(Error::from_orm)?;
-        let manager = DynamicRelationManager::with_registry_transaction(
-            tx.clone(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        );
-        let manager = if self.db.inner_orm().supports_given_stage() {
-            manager
-        } else {
-            manager.literal_values()
-        };
-        let result = async {
-            manager
-                .all()
-                .await
-                .map_err(Error::from_orm)?
-                .into_iter()
-                .map(|row| Self::materialize_subtype(row, installed))
-                .collect()
-        }
-        .await;
-        match result {
-            Ok(value) => {
-                tx.close().await.map_err(Error::from_orm)?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = tx.close().await;
-                Err(error)
-            }
-        }
+            .map_err(crate::remote::target_error)?
+            .into_iter()
+            .map(|thing| {
+                let hydrated =
+                    crate::projected_codec::projected_to_hydrated_row(&thing, installed)?;
+                M::__tb_dispatch_subtype(&hydrated, &HydrationCapability::new()).map_err(|error| {
+                    crate::entity_codec::map_validation_error(
+                        error,
+                        ModelValidationPhase::Hydration,
+                    )
+                })
+            })
+            .collect()
     }
 
     /// Counts the root and all concrete descendants using the inclusive subtype scope.
     pub async fn count(&self) -> Result<u64> {
         let installed = self.db.installed_schema().ok_or_else(schema_not_bound)?;
-        let (_id, descriptor) = resolve_relation_authority(
+        let (id, _) = resolve_relation_authority(
             M::TYPE_ID_JSON,
             installed,
             ModelValidationPhase::Input,
             false,
         )?;
-        DynamicRelationManager::from_registry(
-            self.db.inner_orm(),
-            installed.manager_registry().map_err(Error::from_orm)?,
-            Arc::new(descriptor),
-        )
-        .count()
-        .await
-        .map_err(Error::from_orm)
+        ProjectedManagerFilterExecutor::new(installed)
+            .count_including_subtypes_on_target(
+                QueryTarget::Database(self.db.inner_orm()),
+                &id,
+                manager_read_control(self.db.inner_orm()),
+            )
+            .await
+            .map_err(crate::remote::target_error)
     }
 }

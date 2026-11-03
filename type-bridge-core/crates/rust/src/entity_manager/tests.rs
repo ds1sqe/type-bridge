@@ -64,6 +64,7 @@ impl IntoEncodedCreate for RecordCreate {
 
 #[derive(Debug)]
 struct Record {
+    origin: __codegen::ReferenceOrigin,
     iid: String,
     name: String,
     value: String,
@@ -159,6 +160,7 @@ impl MaterializeModel for Record {
             return Err(ValidationError::new("text", "rejected_materialization"));
         }
         Ok(Self {
+            origin: row.origin().clone(),
             iid: row.iid().to_owned(),
             name,
             value,
@@ -554,6 +556,7 @@ async fn public_all_preserves_provider_order_with_exact_read() {
         serde_json::json!({"_iid":"0x1","_type":"record","attributes":{"name":["n1"],"text":["first"]}}),
     ]))]);
     let rows = db.entities::<Record>().all().await.unwrap();
+    assert!(rows.iter().all(|row| row.origin.projected().is_some()));
     assert_eq!(
         rows.iter()
             .map(|r| (r.iid.as_str(), r.name.as_str(), r.value.as_str()))
@@ -931,6 +934,10 @@ async fn public_subtypes_all_fetches_concrete_children_in_one_plan() {
         subtype_document("0x1", "n1", "first"),
     ]))]);
     let rows = db.entities::<Base>().subtypes().all().await.unwrap();
+    assert!(rows.iter().all(|row| {
+        let BaseFamily::Record(value) = row;
+        value.origin.projected().is_some()
+    }));
     assert_eq!(
         rows.iter()
             .map(|row| match row {
@@ -970,6 +977,7 @@ async fn public_subtypes_get_by_iid_fetches_or_omits_in_one_plan() {
             let Some(BaseFamily::Record(row)) = result else {
                 panic!("expected child");
             };
+            assert!(row.origin.projected().is_some());
             assert_eq!(
                 (row.iid.as_str(), row.name.as_str(), row.value.as_str()),
                 ("0x1", "n1", "child")

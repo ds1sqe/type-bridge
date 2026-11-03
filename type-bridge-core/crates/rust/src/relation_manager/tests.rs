@@ -208,6 +208,7 @@ impl IntoEncodedReference for PersonRef {
 
 #[derive(Debug)]
 struct Assignment {
+    origin: ReferenceOrigin,
     iid: String,
     position: String,
     worker_iid: String,
@@ -282,6 +283,7 @@ impl MaterializeModel for Assignment {
             },
         );
         Ok(Self {
+            origin: row.origin().clone(),
             iid: row.iid().to_owned(),
             position,
             worker_iid: worker_iid.to_owned(),
@@ -981,6 +983,11 @@ async fn public_relation_all_preserves_provider_order() {
         fetch_doc("0x1", "first", "0x8", "bob"),
     ]))]);
     let values = db.relations::<Assignment>().all().await.unwrap();
+    assert!(
+        values
+            .iter()
+            .all(|value| value.origin.projected().is_some())
+    );
     assert_eq!(values.len(), 2);
     assert_assignment(&values[0], "0x2", "second", "0x9");
     assert_assignment(&values[1], "0x1", "first", "0x8");
@@ -1163,6 +1170,10 @@ async fn public_relation_subtypes_all_fetches_complete_children_in_one_plan() {
         fetch_doc("0x1", "first", "0x8", "bob"),
     ]))]);
     let values = db.relations::<Engagement>().subtypes().all().await.unwrap();
+    assert!(values.iter().all(|value| {
+        let EngagementFamily::Assignment(assignment) = value;
+        assignment.origin.projected().is_some()
+    }));
     assert_eq!(
         values
             .iter()
@@ -1206,6 +1217,7 @@ async fn public_relation_subtypes_get_by_iid_zero_and_one() {
                 panic!("expected child");
             };
             assert_assignment(&assignment, "0x1", "captain", "0x9");
+            assert!(assignment.origin.projected().is_some());
         } else {
             assert!(value.is_none());
         }
